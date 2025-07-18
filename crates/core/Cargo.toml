@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rustc-hash = { version = "2.1.1", features = ["rand"] }
+strum = { version = "0.27.1", features = ["derive"] }
 ustr = "1.1.0"
