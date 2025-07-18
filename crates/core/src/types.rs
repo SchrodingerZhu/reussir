@@ -52,9 +52,15 @@ pub enum Primitive {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Capacity {
+    /// Data is stored as a plain value
     Value,
+    /// Data is behind a rigid reference. That is, the data is frozen and cannot be mutated.
     Rigid,
+    /// Data is behind a mutable reference. A flex reference must be inside a region. It cannot be materialized.
     Flex,
+    /// An assignable field for flex references. A field can be mutated if the object it resides is behind a flex reference.
+    Field,
+    /// Normal RC-managed data. It is immutable but can be reused via compiler analysis.
     Shared,
 }
 

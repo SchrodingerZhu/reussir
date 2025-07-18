@@ -1,4 +1,6 @@
 use std::fmt::Debug;
+use std::ops::Range;
+use chumsky::span::Span;
 use ustr::Ustr;
 
 pub mod types;
@@ -41,25 +43,44 @@ impl Debug for Path {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Location {
     file: Ustr,
-    line: u32,
-    column: u32,
+    span: (u32, u32),
 }
 
 impl Location {
-    pub fn new(file: Ustr, line: u32, column: u32) -> Self {
-        Location { file, line, column }
+    pub fn new(file: Ustr, span: (u32, u32)) -> Self {
+        Location { file, span }
     }
 
     pub fn file(&self) -> Ustr {
         self.file
     }
 
-    pub fn line(&self) -> u32 {
-        self.line
+    pub fn span(&self) -> (u32, u32) {
+        self.span
+    }
+}
+
+impl Span for Location {
+    type Context = Ustr;
+    type Offset = u32;
+
+    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
+        Location {
+            file: context,
+            span: (range.start, range.end),
+        }
     }
 
-    pub fn column(&self) -> u32 {
-        self.column
+    fn context(&self) -> Self::Context {
+        self.file
+    }
+
+    fn start(&self) -> Self::Offset {
+        self.span.0
+    }
+
+    fn end(&self) -> Self::Offset {
+        self.span.1
     }
 }
 
