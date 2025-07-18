@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 chumsky = { version = "0.10.1", features = ["pratt", "lexical-numbers"] }
+logos = "0.15.0"
+reussir-core = { path = "../core" }
