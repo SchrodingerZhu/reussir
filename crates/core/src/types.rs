@@ -30,6 +30,8 @@ pub enum Primitive {
     U64,
     #[strum(to_string = "u128")]
     U128,
+    #[strum(to_string = "bf16")]
+    BF16,
     #[strum(to_string = "f16")]
     F16,
     #[strum(to_string = "f32")]
@@ -136,11 +138,15 @@ pub struct TypeDatabase {
 
 impl Debug for TypeDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_map()
-            .entries(self.types.iter().map(|(k, v)| (k, v)))
-            .finish()
+        f.debug_map().entries(self.types.iter()).finish()
     }
 }
+impl Default for TypeDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeDatabase {
     pub fn new() -> Self {
         TypeDatabase {
@@ -200,13 +206,12 @@ impl TypeDatabase {
             _ => None,
         })
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::type_path;
     use super::*;
+    use crate::type_path;
 
     #[test]
     fn test_type_database() {
@@ -214,9 +219,6 @@ mod tests {
         println!("Type database: {:#?}", db);
         assert!(db.get(&type_path!("f128")).is_some());
         assert!(db.get(&type_path!("u64")).is_some());
-        assert!(
-            db.get(&type_path!("non_existent_type"))
-                .is_none()
-        );
+        assert!(db.get(&type_path!("non_existent_type")).is_none());
     }
 }

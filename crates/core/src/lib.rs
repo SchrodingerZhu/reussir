@@ -1,6 +1,6 @@
+use chumsky::span::Span;
 use std::fmt::Debug;
 use std::ops::Range;
-use chumsky::span::Span;
 use ustr::Ustr;
 
 pub mod types;
