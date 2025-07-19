@@ -88,7 +88,11 @@ pub struct FunctionType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct OpaqueType(pub Layout);
+pub struct OpaqueType {
+    pub path: Path,
+    pub location: Option<Location>,
+    pub layout: Layout,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConcreteType {

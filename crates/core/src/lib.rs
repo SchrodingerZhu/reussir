@@ -26,6 +26,11 @@ impl Path {
             .cloned()
             .expect("Path must have at least one segment")
     }
+    pub fn append(self, segment: Ustr) -> Self {
+        let mut new_segments = self.0.into_vec();
+        new_segments.push(segment);
+        Path(new_segments.into_boxed_slice())
+    }
 }
 
 impl Debug for Path {
@@ -84,10 +89,26 @@ impl Span for Location {
     }
 }
 
+impl ariadne::Span for Location {
+    type SourceId = Ustr;
+
+    fn source(&self) -> &Self::SourceId {
+        &self.file
+    }
+
+    fn start(&self) -> usize {
+        self.span.0 as usize
+    }
+
+    fn end(&self) -> usize {
+        self.span.1 as usize
+    }
+}
+
 #[macro_export]
 macro_rules! type_path {
         ($basename:expr $(, $prefix:expr)*) => {
-            Path::new(
+            $crate::Path::new(
                 ustr::Ustr::from($basename),
                 [$($prefix.into()),*],
             )
