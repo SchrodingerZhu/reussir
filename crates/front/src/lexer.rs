@@ -1,23 +1,35 @@
 use std::convert::identity;
-use std::num::NonZeroU8;
 use std::num;
+use std::num::NonZeroU8;
 
 use chumsky::input::{Input, Stream, ValueInput};
 use lexical::parse_integer_options::Options as ParseIntegerOptions;
 use lexical::{NumberFormatBuilder, parse_with_options};
 use logos::{Lexer, Logos};
-use reussir_core::types::Primitive;
 use reussir_core::Location;
+use reussir_core::types::Primitive;
 use rustc_apfloat::ieee::{BFloat, Double, Half, Quad, Single};
 use ustr::Ustr;
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub enum FloatLiteral {
     BF16(BFloat),
     F16(Half),
     F32(Single),
     F64(Double),
     F128(Quad),
+}
+
+impl std::fmt::Debug for FloatLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FloatLiteral::BF16(val) => write!(f, "{val}bf16"),
+            FloatLiteral::F16(val) => write!(f, "{val}f16"),
+            FloatLiteral::F32(val) => write!(f, "{val}f32"),
+            FloatLiteral::F64(val) => write!(f, "{val}f64"),
+            FloatLiteral::F128(val) => write!(f, "{val}f128"),
+        }
+    }
 }
 
 fn parse_float<'a>(s: &mut Lexer<'a, Token<'a>>) -> Result<FloatLiteral, Error> {
@@ -90,48 +102,39 @@ fn parse_integer<'s, const FORMAT: u128>(
     let options = ParseIntegerOptions::new();
     let res = if let Some(s) = input.strip_suffix("i8") {
         IntegerLiteral::I8(
-            parse_with_options::<i8, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<i8, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("i16") {
         IntegerLiteral::I16(
-            parse_with_options::<i16, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<i16, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("i64") {
         IntegerLiteral::I64(
-            parse_with_options::<i64, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<i64, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("i128") {
         IntegerLiteral::I128(
-            parse_with_options::<i128, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<i128, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("u8") {
         IntegerLiteral::U8(
-            parse_with_options::<u8, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<u8, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("u16") {
         IntegerLiteral::U16(
-            parse_with_options::<u16, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<u16, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("u32") {
         IntegerLiteral::U32(
-            parse_with_options::<u32, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<u32, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("u64") {
         IntegerLiteral::U64(
-            parse_with_options::<u64, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<u64, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else if let Some(s) = input.strip_suffix("u128") {
         IntegerLiteral::U128(
-            parse_with_options::<u128, _, FORMAT>(&s, &options)
-                .map_err(Error::InvalidInteger)?,
+            parse_with_options::<u128, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
     } else {
         IntegerLiteral::I32(
@@ -142,9 +145,7 @@ fn parse_integer<'s, const FORMAT: u128>(
     Ok(res)
 }
 
-pub fn parse_primitive_keyword<'s>(
-    input: &mut Lexer<'s, Token<'s>>,
-) -> Result<Primitive, Error> {
+pub fn parse_primitive_keyword<'s>(input: &mut Lexer<'s, Token<'s>>) -> Result<Primitive, Error> {
     input.slice().parse().map_err(Error::InvalidKeyword)
 }
 
@@ -174,6 +175,8 @@ pub enum Token<'src> {
     Struct,
     #[token("enum")]
     Enum,
+    #[token("opaque")]
+    Opaque,
 
     #[token("<")]
     LAngle,
@@ -213,7 +216,7 @@ pub enum Token<'src> {
     At,
     #[token("bool")]
     Bool,
-    
+
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]
     #[token("i32", parse_primitive_keyword)]
@@ -232,7 +235,6 @@ pub enum Token<'src> {
     #[token("char", parse_primitive_keyword)]
     #[token("str", parse_primitive_keyword)]
     Primitive(Primitive),
-
 
     #[token("true", |_|true)]
     #[token("false", |_|false)]
@@ -253,12 +255,21 @@ pub enum Token<'src> {
 }
 
 impl Token<'_> {
-    pub fn stream(file: Ustr, src: &str) -> impl ValueInput<'_, Token = Token<'_>, Span = Location> {
+    pub fn stream(
+        file: Ustr,
+        src: &str,
+    ) -> impl ValueInput<'_, Token = Token<'_>, Span = Location> {
         let iter = Token::lexer(src)
             .spanned()
             .map(move |(res, range)| match res {
-                Ok(tk) => (tk, Location::new(file, (range.start as u32, range.end as u32))),
-                Err(err) => (Token::Error(Box::new(err)), Location::new(file, (range.start as u32, range.end as u32))),
+                Ok(tk) => (
+                    tk,
+                    Location::new(file, (range.start as u32, range.end as u32)),
+                ),
+                Err(err) => (
+                    Token::Error(Box::new(err)),
+                    Location::new(file, (range.start as u32, range.end as u32)),
+                ),
             });
         Stream::from_iter(iter).map(Location::new(file, (0, src.len() as u32)), identity)
     }
@@ -267,6 +278,15 @@ impl Token<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_token_streaming() {
+        let src = "struct Foo { bar: i32 }";
+        let lexer = Token::lexer(src);
+        let tokens: Vec<_> = lexer.collect();
+        println!("{:?}", tokens);
+        assert_eq!(tokens.len(), 7);
+    }
 
     #[test]
     fn test_float_literal_parsing() {

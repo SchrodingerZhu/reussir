@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ariadne = { version = "0.5.1", features = ["auto-color"] }
 chumsky = { version = "0.10.1", features = ["pratt", "lexical-numbers"] }
 lexical = { version = "7.0.4", default-features = false, features = ["format", "power-of-two", "parse-integers"] }
 logos = "0.15.0"
 reussir-core = { path = "../core" }
 rustc_apfloat = "0.2.3"
+smallvec = { version = "=2.0.0-alpha.11", features = ["specialization", "std"] }
 strum = "0.27.1"
 thiserror = "2.0.12"
 ustr = "1.1.0"
