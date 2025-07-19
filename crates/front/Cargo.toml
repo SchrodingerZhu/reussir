@@ -5,5 +5,8 @@ edition = "2024"
 
 [dependencies]
 chumsky = { version = "0.10.1", features = ["pratt", "lexical-numbers"] }
+lexical = { version = "7.0.4", default-features = false, features = ["format", "power-of-two", "parse-integers"] }
 logos = "0.15.0"
 reussir-core = { path = "../core" }
+rustc_apfloat = "0.2.3"
+thiserror = "2.0.12"
