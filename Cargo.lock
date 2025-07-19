@@ -483,7 +483,9 @@ dependencies = [
  "logos",
  "reussir-core",
  "rustc_apfloat",
+ "strum",
  "thiserror",
+ "ustr",
 ]
 
 [[package]]
