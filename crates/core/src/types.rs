@@ -1,54 +1,54 @@
 use rustc_hash::FxHashMapRand;
 use std::alloc::Layout;
 use std::fmt::Debug;
-use strum::{Display, EnumIter, IntoEnumIterator, IntoStaticStr};
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 use ustr::Ustr;
 
 use crate::{Location, Path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, IntoStaticStr, Display, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, IntoStaticStr, Display, EnumIter, EnumString)]
 pub enum Primitive {
-    #[strum(to_string = "bool")]
+    #[strum(serialize = "bool")]
     Bool,
-    #[strum(to_string = "i8")]
+    #[strum(serialize = "i8")]
     I8,
-    #[strum(to_string = "i16")]
+    #[strum(serialize = "i16")]
     I16,
-    #[strum(to_string = "i32")]
+    #[strum(serialize = "i32")]
     I32,
-    #[strum(to_string = "i64")]
+    #[strum(serialize = "i64")]
     I64,
-    #[strum(to_string = "i128")]
+    #[strum(serialize = "i128")]
     I128,
-    #[strum(to_string = "u8")]
+    #[strum(serialize = "u8")]
     U8,
-    #[strum(to_string = "u16")]
+    #[strum(serialize = "u16")]
     U16,
-    #[strum(to_string = "u32")]
+    #[strum(serialize = "u32")]
     U32,
-    #[strum(to_string = "u64")]
+    #[strum(serialize = "u64")]
     U64,
-    #[strum(to_string = "u128")]
+    #[strum(serialize = "u128")]
     U128,
-    #[strum(to_string = "bf16")]
+    #[strum(serialize = "bf16")]
     BF16,
-    #[strum(to_string = "f16")]
+    #[strum(serialize = "f16")]
     F16,
-    #[strum(to_string = "f32")]
+    #[strum(serialize = "f32")]
     F32,
-    #[strum(to_string = "f64")]
+    #[strum(serialize = "f64")]
     F64,
-    #[strum(to_string = "f128")]
+    #[strum(serialize = "f128")]
     F128,
-    #[strum(to_string = "char")]
+    #[strum(serialize = "char")]
     Char,
-    #[strum(to_string = "str")]
+    #[strum(serialize = "str")]
     Str,
-    #[strum(to_string = "unit")]
+    #[strum(serialize = "unit")]
     Unit,
-    #[strum(to_string = "never")]
+    #[strum(serialize = "never")]
     Never,
-    #[strum(to_string = "region")]
+    #[strum(serialize = "region")]
     Region,
 }
 
