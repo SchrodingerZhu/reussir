@@ -10,6 +10,7 @@ indexmap = "2.10.0"
 lexical = { version = "7.0.4", default-features = false, features = ["format", "power-of-two", "parse-integers"] }
 logos = "0.15.0"
 reussir-core = { path = "../core" }
+rustc-hash = { version = "2.1.1", features = ["rand"] }
 rustc_apfloat = "0.2.3"
 smallvec = { version = "=2.0.0-alpha.11", features = ["specialization", "std"] }
 strum = "0.27.1"

@@ -4,7 +4,6 @@ use chumsky::{
     IterParser, Parser,
     error::Rich,
     input::ValueInput,
-    number::format::XML,
     prelude::{choice, just, recursive, skip_then_retry_until, skip_until, via_parser},
     select,
 };
