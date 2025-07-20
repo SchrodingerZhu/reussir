@@ -223,6 +223,40 @@ pub enum Token<'src> {
     PathSep,
     #[token("->")]
     Arrow,
+    #[token("=>")]
+    FatArrow,
+    #[token("=")]
+    Eq,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    NotEq,
+    #[token("<=")]
+    LessEq,
+    #[token(">=")]
+    GreaterEq,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("/")]
+    Slash,
+    #[token("%")]
+    Percent,
+    #[token("|")]
+    Or,
+    #[token("&&")]
+    AndAnd,
+    #[token("||")]
+    OrOr,
+    #[token("^")]
+    Caret,
+    #[token("<<")]
+    ShiftLeft,
+    #[token(">>")]
+    ShiftRight,
+    #[token("~")]
+    Tilde,
     #[token("&")]
     Ampersand,
     #[token("?")]
@@ -233,8 +267,14 @@ pub enum Token<'src> {
     Asterisk,
     #[token("@")]
     At,
-    #[token("bool")]
-    Bool,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("match")]
+    Match,
+    #[token("()")]
+    Unit,
 
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]
@@ -253,6 +293,7 @@ pub enum Token<'src> {
     #[token("f128", parse_primitive_keyword)]
     #[token("char", parse_primitive_keyword)]
     #[token("str", parse_primitive_keyword)]
+    #[token("bool", parse_primitive_keyword)]
     Primitive(Primitive),
 
     #[token("true", |_|true)]
