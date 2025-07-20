@@ -62,6 +62,9 @@ impl ParserState {
     pub fn add_type_var<S: Into<Ustr>>(&mut self, name: S) -> bool {
         self.type_vars.insert(name.into())
     }
+    pub fn clear_type_vars(&mut self) {
+        self.type_vars.clear();
+    }
 }
 
 impl<'src, I: Input<'src>> Inspector<'src, I> for ParserState {
