@@ -382,9 +382,14 @@ mod tests {
             Variant1(!T),
             Variant2(i32, f64),
             Variant3,
+            Variant4 { name: String, value: i32 },
         }
         struct Singleton
         struct MyStruct<T>(T, i32, f64)
+        struct Named {
+            name: String,
+            value: i32,
+        }
         "#;
         let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
         let parser = type_decl()
@@ -392,6 +397,6 @@ mod tests {
             .collect::<Vec<_>>();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
-        println!("{:?}", result);
+        println!("{:#?}", result);
     }
 }
