@@ -549,6 +549,7 @@ dependencies = [
  "lexical 7.0.4",
  "logos",
  "reussir-core",
+ "rustc-hash",
  "rustc_apfloat",
  "smallvec 2.0.0-alpha.11",
  "strum",

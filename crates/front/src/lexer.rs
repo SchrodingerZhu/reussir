@@ -49,7 +49,7 @@ fn parse_float<'a>(s: &mut Lexer<'a, Token<'a>>) -> Result<FloatLiteral, Error> 
     .map_err(|e| Error::InvalidFloatLiteral(e.0))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum IntegerLiteral {
     I8(i8),
     I16(i16),
@@ -61,6 +61,23 @@ pub enum IntegerLiteral {
     U32(u32),
     U64(u64),
     U128(u128),
+}
+
+impl std::fmt::Debug for IntegerLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntegerLiteral::I8(val) => write!(f, "{val}i8"),
+            IntegerLiteral::I16(val) => write!(f, "{val}i16"),
+            IntegerLiteral::I32(val) => write!(f, "{val}i32"),
+            IntegerLiteral::I64(val) => write!(f, "{val}i64"),
+            IntegerLiteral::I128(val) => write!(f, "{val}i128"),
+            IntegerLiteral::U8(val) => write!(f, "{val}u8"),
+            IntegerLiteral::U16(val) => write!(f, "{val}u16"),
+            IntegerLiteral::U32(val) => write!(f, "{val}u32"),
+            IntegerLiteral::U64(val) => write!(f, "{val}u64"),
+            IntegerLiteral::U128(val) => write!(f, "{val}u128"),
+        }
+    }
 }
 
 const DEFAULT_FORMAT_BUILDER: NumberFormatBuilder = NumberFormatBuilder::new()

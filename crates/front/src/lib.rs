@@ -12,8 +12,9 @@ use chumsky::{
     input::{Checkpoint, Cursor, Input, ValueInput},
     inspector::Inspector,
 };
-use indexmap::{IndexMap, map::Entry};
+use indexmap::IndexSet;
 use reussir_core::{Location, Path};
+use rustc_hash::FxRandomState;
 use smallvec::SmallVec;
 use thiserror::Error;
 use ustr::Ustr;
@@ -25,7 +26,7 @@ type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
 pub struct ParserState {
     pub module_path: Path,
     pub input_file: Ustr,
-    pub type_vars: IndexMap<Ustr, usize>,
+    pub type_vars: IndexSet<Ustr, FxRandomState>,
 }
 
 impl ParserState {
@@ -33,7 +34,7 @@ impl ParserState {
         Ok(ParserState {
             module_path,
             input_file: input_file.into(),
-            type_vars: IndexMap::default(),
+            type_vars: IndexSet::default(),
         })
     }
     pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>, source: &str) {
@@ -56,17 +57,10 @@ impl ParserState {
             });
     }
     pub fn lookup_type_var<S: Into<Ustr>>(&self, name: S) -> Option<usize> {
-        self.type_vars.get(&name.into()).copied()
+        self.type_vars.get_index_of(&name.into())
     }
     pub fn add_type_var<S: Into<Ustr>>(&mut self, name: S) -> bool {
-        let len = self.type_vars.len();
-        match self.type_vars.entry(name.into()) {
-            Entry::Occupied(_) => false,
-            Entry::Vacant(entry) => {
-                entry.insert(len);
-                true
-            }
-        }
+        self.type_vars.insert(name.into())
     }
 }
 
