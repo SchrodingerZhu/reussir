@@ -12,6 +12,7 @@ use chumsky::{
     input::{Checkpoint, Cursor, Input, ValueInput},
     inspector::Inspector,
 };
+use indexmap::{IndexMap, map::Entry};
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -19,29 +20,23 @@ use ustr::Ustr;
 pub use {lexer::FloatLiteral, lexer::IntegerLiteral, lexer::Token};
 
 type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
-type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, &'a ParserState, ()>;
+type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
 
 pub struct ParserState {
     pub module_path: Path,
     pub input_file: Ustr,
-    pub source: String,
+    pub type_vars: IndexMap<Ustr, usize>,
 }
 
 impl ParserState {
-    pub fn load<R: std::io::Read, S: Into<Ustr>>(
-        mut reader: R,
-        module_path: Path,
-        input_file: S,
-    ) -> Result<Self> {
-        let mut source = String::new();
-        reader.read_to_string(&mut source)?;
+    pub fn new<S: Into<Ustr>>(module_path: Path, input_file: S) -> Result<Self> {
         Ok(ParserState {
             module_path,
             input_file: input_file.into(),
-            source,
+            type_vars: IndexMap::default(),
         })
     }
-    pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>) {
+    pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>, source: &str) {
         result
             .errors()
             .cloned()
@@ -54,24 +49,39 @@ impl ParserState {
                             .with_color(true),
                     )
                     .with_message(e.reason())
-                    .with_label(
-                        ariadne::Label::new(*e.span()).with_color(ariadne::Color::Red),
-                    )
+                    .with_label(ariadne::Label::new(*e.span()).with_color(ariadne::Color::Red))
                     .finish()
-                    .print(sources([(self.input_file, &self.source)]))
+                    .print(sources([(self.input_file, source)]))
                     .unwrap();
             });
     }
+    pub fn lookup_type_var<S: Into<Ustr>>(&self, name: S) -> Option<usize> {
+        self.type_vars.get(&name.into()).copied()
+    }
+    pub fn add_type_var<S: Into<Ustr>>(&mut self, name: S) -> bool {
+        let len = self.type_vars.len();
+        match self.type_vars.entry(name.into()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(len);
+                true
+            }
+        }
+    }
 }
 
-impl<'src, I: Input<'src>> Inspector<'src, I> for &'src ParserState {
-    type Checkpoint = ();
+impl<'src, I: Input<'src>> Inspector<'src, I> for ParserState {
+    type Checkpoint = usize;
     #[inline(always)]
     fn on_token(&mut self, _: &<I as Input<'src>>::Token) {}
     #[inline(always)]
-    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {}
+    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {
+        self.type_vars.len()
+    }
     #[inline(always)]
-    fn on_rewind<'parse>(&mut self, _: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {}
+    fn on_rewind<'parse>(&mut self, chk: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {
+        self.type_vars.truncate(*chk.inspector());
+    }
 }
 
 #[derive(Debug, Error)]
@@ -173,11 +183,11 @@ mod tests {
 
     #[test]
     fn test_path_parser() {
-        let input = "foo::bar::baz".as_bytes();
-        let state = ParserState::load(input, type_path!("test"), "<stdin>").unwrap();
+        let source = "foo::bar::baz";
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
         let parser = path();
-        let token_stream = Token::stream(Ustr::from("<stdin>"), &state.source);
-        let result = parser.parse_with_state(token_stream, &mut &state).unwrap();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), source);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:?}", result);
     }
 }
