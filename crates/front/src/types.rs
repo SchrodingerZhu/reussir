@@ -9,12 +9,13 @@ use chumsky::{
 };
 use reussir_core::{
     Location, type_path,
-    types::{Capacity, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr},
+    types::{Capability, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr, Variant},
 };
 use ustr::Ustr;
 
 use crate::{IntegerLiteral, ParserExtra, ParserState, SmallCollector, Token, path};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeDecl {
     OpaqueDecl(OpaqueType),
     RecordDecl(Record),
@@ -46,22 +47,22 @@ where
 {
     recursive(|ty| {
         let ty_expr = type_expr(ty);
-        let capacity = choice((
-            just(Token::Bang).to(Capacity::Value),
-            just(Token::Asterisk).to(Capacity::Rigid),
-            just(Token::Question).to(Capacity::Flex),
-            just(Token::At).to(Capacity::Field),
+        let capability = choice((
+            just(Token::Bang).to(Capability::Value),
+            just(Token::Asterisk).to(Capability::Rigid),
+            just(Token::Question).to(Capability::Flex),
+            just(Token::At).to(Capability::Field),
         ))
         .or_not()
-        .map(|x| x.unwrap_or(Capacity::Default));
-        capacity
+        .map(|x| x.unwrap_or(Capability::Default));
+        capability
             .then(ty_expr)
-            .map(|(capacity, expr)| Type { capacity, expr })
+            .map(|(capability, expr)| Type { capability, expr })
             .labelled("type")
     })
 }
 
-pub fn type_arglist<'a, I>() -> impl Parser<'a, I, Option<Box<[Ustr]>>, ParserExtra<'a>> + Clone
+fn type_arglist<'a, I>() -> impl Parser<'a, I, Option<Box<[Ustr]>>, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
@@ -80,7 +81,126 @@ where
         .labelled("type argument list")
 }
 
-pub fn tuple_like_struct<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
+fn compound_struct<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => Ustr::from(x)
+    };
+    let types = ident
+        .then_ignore(just(Token::Colon))
+        .then(r#type())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|x| x.0.into_boxed_slice());
+    just(Token::Struct)
+        .ignore_then(ident)
+        .then(type_arglist())
+        .then(types)
+        .map_with(|((name, type_args), fields), m| {
+            let path = m.state().module_path.clone().append(name);
+            let location = Some(m.span());
+            let compound = Compound::Struct(fields);
+            let kind = RecordKind::Compound(Box::new(compound));
+            Record {
+                path,
+                location,
+                kind,
+                type_args,
+            }
+        })
+}
+
+fn compound_variant<'a, I>() -> impl Parser<'a, I, Variant, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => Ustr::from(x)
+    };
+    let types = ident
+        .then_ignore(just(Token::Colon))
+        .then(r#type())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|x| x.0.into_boxed_slice());
+    ident
+        .then(types)
+        .map_with(|(name, fields), m| {
+            let body = Box::new(Compound::Struct(fields));
+            let location = Some(m.span());
+            Variant {
+                name,
+                body,
+                location,
+            }
+        })
+}
+
+fn tuple_variant<'a, I>() -> impl Parser<'a, I, Variant, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => Ustr::from(x)
+    };
+    let types = r#type()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map(|x| x.0.into_boxed_slice())
+        .or_not();
+    ident
+        .then(types)
+        .map_with(|(name, fields), m| {
+            let body = Box::new(Compound::Tuple(fields));
+            let location = Some(m.span());
+            Variant {
+                name,
+                body,
+                location,
+            }
+        })
+}
+
+fn enum_record<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => Ustr::from(x)
+    };
+    let variants = choice((compound_variant(), tuple_variant()))
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|x| x.0.into_boxed_slice());
+
+    just(Token::Enum)
+        .ignore_then(ident)
+        .then(type_arglist())
+        .then(variants)
+        .map_with(|((name, type_args), variants), m| {
+            let path = m.state().module_path.clone().append(name);
+            let location = Some(m.span());
+            let kind = RecordKind::Enum(variants);
+            Record {
+                path,
+                location,
+                kind,
+                type_args,
+            }
+        })
+}
+
+fn tuple_like_struct<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
@@ -92,7 +212,8 @@ where
         .allow_trailing()
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LParen), just(Token::RParen))
-        .map(|x| x.0.into_boxed_slice());
+        .map(|x| x.0.into_boxed_slice())
+        .or_not();
     just(Token::Struct)
         .ignore_then(ident)
         .then(type_arglist())
@@ -101,7 +222,7 @@ where
             let path = m.state().module_path.clone().append(name.into());
             let location = Some(m.span());
             let compound = Compound::Tuple(fields);
-            let kind = RecordKind::Compound(compound);
+            let kind = RecordKind::Compound(Box::new(compound));
             Record {
                 path,
                 location,
@@ -111,7 +232,7 @@ where
         })
 }
 
-pub fn opaque_type<'a, I>() -> impl Parser<'a, I, OpaqueType, ParserExtra<'a>> + Clone
+fn opaque_type<'a, I>() -> impl Parser<'a, I, OpaqueType, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
@@ -169,6 +290,18 @@ where
             })
         })
         .labelled("opaque type declaration")
+}
+
+pub fn type_decl<'a, I>() -> impl Parser<'a, I, TypeDecl, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    choice((
+        opaque_type().map(TypeDecl::OpaqueDecl),
+        enum_record().map(TypeDecl::RecordDecl),
+        compound_struct().map(TypeDecl::RecordDecl),
+        tuple_like_struct().map(TypeDecl::RecordDecl),
+    ))
 }
 
 #[cfg(test)]
@@ -236,6 +369,26 @@ mod tests {
         let parser = tuple_like_struct()
             .separated_by(just(Token::Semicolon))
             .allow_trailing()
+            .collect::<Vec<_>>();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:?}", result);
+    }
+
+    #[test]
+    fn test_type_decls() {
+        let input = r#"
+        enum MyEnum<T> {
+            Variant1(!T),
+            Variant2(i32, f64),
+            Variant3,
+        }
+        struct Singleton
+        struct MyStruct<T>(T, i32, f64)
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let parser = type_decl()
+            .repeated()
             .collect::<Vec<_>>();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
