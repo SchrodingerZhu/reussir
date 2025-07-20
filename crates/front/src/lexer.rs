@@ -208,6 +208,8 @@ pub enum Token<'src> {
     Arrow,
     #[token("&")]
     Ampersand,
+    #[token("?")]
+    Question,
     #[token("!")]
     Bang,
     #[token("*")]

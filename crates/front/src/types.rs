@@ -1,22 +1,72 @@
 use std::alloc::Layout;
 
 use chumsky::{
-    Parser,
+    IterParser, Parser,
     error::Rich,
     input::ValueInput,
-    prelude::{just, via_parser},
+    number::format::XML,
+    prelude::{choice, just, recursive, skip_then_retry_until, skip_until, via_parser},
     select,
 };
 use reussir_core::{
-    Location,
-    types::{OpaqueType, Record},
+    Location, type_path,
+    types::{Capacity, OpaqueType, Record, Type, TypeExpr},
 };
 
-use crate::{IntegerLiteral, ParserExtra, ParserState, Token};
+use crate::{IntegerLiteral, ParserExtra, ParserState, SmallCollector, Token, path};
 
 pub enum TypeDecl {
     OpaqueDecl(OpaqueType),
     RecordDecl(Record),
+}
+
+fn type_expr<'a, I, P>(types: P) -> impl Parser<'a, I, TypeExpr, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+    P: Parser<'a, I, Type, ParserExtra<'a>> + Clone,
+{
+    path()
+        .or(select! { Token::Primitive(x) => type_path!(x.into()) })
+        .then(
+            types
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<SmallCollector<_, 4>>()
+                .delimited_by(just(Token::LAngle), just(Token::RAngle))
+                .map(|x| x.0.into_boxed_slice())
+                .or_not()
+                .map(|x| x.unwrap_or_else(|| Box::new([]))),
+        )
+        .map_with(|(path, args), m| {
+            if path.prefix().is_empty() && args.is_empty() {
+                if let Some(usize) = m.state().lookup_type_var(path.basename()) {
+                    return TypeExpr::Var(usize);
+                }
+            }
+            TypeExpr::App(path, args)
+        })
+        .labelled("type application")
+}
+
+fn r#type<'a, I>() -> impl Parser<'a, I, Type, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    recursive(|ty| {
+        let ty_expr = type_expr(ty);
+        let capacity = choice((
+            just(Token::Bang).to(Capacity::Value),
+            just(Token::Asterisk).to(Capacity::Rigid),
+            just(Token::Question).to(Capacity::Flex),
+            just(Token::At).to(Capacity::Field),
+        ))
+        .or_not()
+        .map(|x| x.unwrap_or(Capacity::Default));
+        capacity
+            .then(ty_expr)
+            .map(|(capacity, expr)| Type { capacity, expr })
+            .labelled("type")
+    })
 }
 
 pub fn opaque_type<'a, I>() -> impl Parser<'a, I, OpaqueType, ParserExtra<'a>> + Clone
@@ -62,7 +112,7 @@ where
         .try_map_with(|parsed, extra| {
             let ((ident, alignment), size) = parsed;
             #[allow(clippy::explicit_auto_deref)]
-            let state: &ParserState = *extra.state();
+            let state: &ParserState = extra.state();
             let path = state.module_path.clone().append(ident.into());
             let location = extra.span();
             let layout = match Layout::from_size_align(size as usize, alignment as usize) {
@@ -89,12 +139,11 @@ mod tests {
     fn test_opaque_parser() {
         let input = r#"
         opaque MyType { alignment: 8u64, size: 64u64 }
-        "#
-        .as_bytes();
-        let state = ParserState::load(input, type_path!("test"), "<stdin>").unwrap();
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
         let parser = opaque_type();
-        let token_stream = Token::stream(Ustr::from("<stdin>"), &state.source);
-        let result = parser.parse_with_state(token_stream, &mut &state).unwrap();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:?}", result);
     }
 
@@ -102,13 +151,36 @@ mod tests {
     fn test_invalid_opaque_parser() {
         let input = r#"
         opaque MyType { alignment: 8, size: -8.0f64 }
-        "#
-        .as_bytes();
-        let state = ParserState::load(input, type_path!("test"), "<stdin>").unwrap();
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
         let parser = opaque_type();
-        let token_stream = Token::stream(Ustr::from("<stdin>"), &state.source);
-        let result = parser.parse_with_state(token_stream, &mut &state);
-        state.print_result(&result);
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state);
+        state.print_result(&result, input);
+        assert!(result.has_errors());
+    }
+
+    #[test]
+    fn test_type_parser() {
+        let input = r#"
+        MyType<T, i32>
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let parser = r#type();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:?}", result);
+    }
+    #[test]
+    fn test_type_parser_error() {
+        let input = r#"
+        MyType<T, 12, f128, 21>
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let parser = r#type();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state);
+        state.print_result(&result, input);
         assert!(result.has_errors());
     }
 }

@@ -62,8 +62,8 @@ pub enum Capacity {
     Flex,
     /// An assignable field for flex references. A field can be mutated if the object it resides is behind a flex reference.
     Field,
-    /// Normal RC-managed data. It is immutable but can be reused via compiler analysis.
-    Shared,
+    /// Normal RC-managed data or primitive types. It is immutable but can be reused via compiler analysis.
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -73,12 +73,9 @@ pub struct Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DeBruijnIdx(pub usize);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeExpr {
-    Var(DeBruijnIdx),
-    App(Path, Box<Type>),
+    Var(usize),
+    App(Path, Box<[Type]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
