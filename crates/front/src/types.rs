@@ -8,8 +8,7 @@ use chumsky::{
     select,
 };
 use reussir_core::{
-    Location, type_path,
-    types::{Capacity, OpaqueType, Record, Type, TypeExpr},
+    type_path, types::{Capacity, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr}, Location
 };
 
 use crate::{IntegerLiteral, ParserExtra, ParserState, SmallCollector, Token, path};
@@ -66,6 +65,67 @@ where
             .map(|(capacity, expr)| Type { capacity, expr })
             .labelled("type")
     })
+}
+
+pub fn type_arglist<'a, I>() -> impl Parser<'a, I, usize, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => x
+    };
+    let comma = just(Token::Comma);
+    ident.separated_by(comma).allow_trailing().collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LAngle), just(Token::RAngle))
+        .try_map_with(|args, extra| {
+            let state: &mut ParserState = extra.state();
+            let len = args.0.len();
+            for arg in args.0.into_iter() {
+                if !state.add_type_var(arg) {
+                    return Err(Rich::custom(
+                        extra.span(),
+                        format!("Type variable `{}` already exists", arg),
+                    ));
+                }
+            }
+            Ok(len)
+        })
+        .or_not()
+        .map(|x| x.unwrap_or(0))
+        .labelled("type argument list")
+}
+
+pub fn tuple_like_struct<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => x
+    };
+    let types = r#type()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map(|x| x.0.into_boxed_slice());
+    just(Token::Struct)
+        .ignore_then(ident)
+        .then(type_arglist())
+        .then(types)
+        .map_with(|((name, num_args), fields), m| {
+            let path = m.state().module_path.clone().append(name.into());
+            let location = Some(m.span());
+            let compound = Compound::Tuple(fields);
+            let kind = RecordKind::Compound(compound);
+            m.state().clear_type_vars();
+            Record {
+                path,
+                location,
+                kind,
+                num_args,
+            }
+        })
+        
 }
 
 pub fn opaque_type<'a, I>() -> impl Parser<'a, I, OpaqueType, ParserExtra<'a>> + Clone
@@ -181,5 +241,18 @@ mod tests {
         let result = parser.parse_with_state(token_stream, &mut state);
         state.print_result(&result, input);
         assert!(result.has_errors());
+    }
+
+    #[test]
+    fn test_tuple_like_struct_parser() {
+        let input = r#"
+        struct MyStruct<T>(T, i32, f64);
+        struct MyStruct2<T2>(T2, std::vec::Vec<T2>, f64);
+        "#;
+        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let parser = tuple_like_struct().separated_by(just(Token::Semicolon)).allow_trailing().collect::<Vec<_>>();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), input);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:?}", result);
     }
 }

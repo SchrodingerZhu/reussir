@@ -130,7 +130,7 @@ pub enum Compound {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RecordKind {
     Enum(Box<[Variant]>),
-    Compound(Box<[Compound]>),
+    Compound(Compound),
 }
 
 pub struct TypeDatabase {
@@ -174,13 +174,13 @@ impl TypeDatabase {
         path: Path,
         location: Option<Location>,
         num_args: usize,
-        fields: impl IntoIterator<Item = Compound>,
+        compound: Compound,
     ) {
         let concrete_type = ConcreteType::Record(Record {
             path: path.clone(),
             location,
             num_args,
-            kind: RecordKind::Compound(fields.into_iter().collect()),
+            kind: RecordKind::Compound(compound),
         });
         self.types.insert(path, concrete_type);
     }
