@@ -15,6 +15,7 @@ use chumsky::{
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
 use thiserror::Error;
+pub use types::type_decl;
 use ustr::Ustr;
 pub use {lexer::FloatLiteral, lexer::IntegerLiteral, lexer::Token};
 

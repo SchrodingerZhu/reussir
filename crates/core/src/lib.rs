@@ -45,10 +45,16 @@ impl Debug for Path {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Location {
     file: Ustr,
     span: (u32, u32),
+}
+
+impl Debug for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}-{}", self.file, self.span.0, self.span.1)
+    }
 }
 
 impl Location {

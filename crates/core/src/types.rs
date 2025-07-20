@@ -53,7 +53,7 @@ pub enum Primitive {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Capacity {
+pub enum Capability {
     /// Data is stored as a plain value
     Value,
     /// Data is behind a rigid reference. That is, the data is frozen and cannot be mutated.
@@ -68,7 +68,7 @@ pub enum Capacity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Type {
-    pub capacity: Capacity,
+    pub capability: Capability,
     pub expr: TypeExpr,
 }
 
@@ -117,20 +117,21 @@ pub struct Record {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Variant {
-    pub name: String,
-    pub fields: Box<[Compound]>,
+    pub location: Option<Location>,
+    pub name: Ustr,
+    pub body: Box<Compound>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Compound {
-    Tuple(Box<[Type]>),
+    Tuple(Option<Box<[Type]>>),
     Struct(Box<[(Ustr, Type)]>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RecordKind {
     Enum(Box<[Variant]>),
-    Compound(Compound),
+    Compound(Box<Compound>),
 }
 
 pub struct TypeDatabase {
@@ -180,7 +181,7 @@ impl TypeDatabase {
             path: path.clone(),
             location,
             type_args,
-            kind: RecordKind::Compound(compound),
+            kind: RecordKind::Compound(Box::new(compound)),
         });
         self.types.insert(path, concrete_type);
     }
