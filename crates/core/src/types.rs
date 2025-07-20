@@ -73,9 +73,9 @@ pub struct Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TypeExpr {
-    Var(usize),
-    App(Path, Box<[Type]>),
+pub struct TypeExpr {
+    pub path: Path,
+    pub args: Option<Box<[Type]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -111,7 +111,7 @@ pub struct Array {
 pub struct Record {
     pub path: Path,
     pub location: Option<Location>,
-    pub num_args: usize,
+    pub type_args: Option<Box<[Ustr]>>,
     pub kind: RecordKind,
 }
 
@@ -173,13 +173,13 @@ impl TypeDatabase {
         &mut self,
         path: Path,
         location: Option<Location>,
-        num_args: usize,
+        type_args: Option<Box<[Ustr]>>,
         compound: Compound,
     ) {
         let concrete_type = ConcreteType::Record(Record {
             path: path.clone(),
             location,
-            num_args,
+            type_args,
             kind: RecordKind::Compound(compound),
         });
         self.types.insert(path, concrete_type);
@@ -189,13 +189,13 @@ impl TypeDatabase {
         &mut self,
         path: Path,
         location: Option<Location>,
-        num_args: usize,
+        type_args: Option<Box<[Ustr]>>,
         variants: impl IntoIterator<Item = Variant>,
     ) {
         let concrete_type = ConcreteType::Record(Record {
             path: path.clone(),
             location,
-            num_args,
+            type_args,
             kind: RecordKind::Enum(variants.into_iter().collect()),
         });
         self.types.insert(path, concrete_type);

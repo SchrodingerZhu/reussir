@@ -12,9 +12,7 @@ use chumsky::{
     input::{Checkpoint, Cursor, Input, ValueInput},
     inspector::Inspector,
 };
-use indexmap::IndexSet;
 use reussir_core::{Location, Path};
-use rustc_hash::FxRandomState;
 use smallvec::SmallVec;
 use thiserror::Error;
 use ustr::Ustr;
@@ -26,7 +24,6 @@ type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
 pub struct ParserState {
     pub module_path: Path,
     pub input_file: Ustr,
-    pub type_vars: IndexSet<Ustr, FxRandomState>,
 }
 
 impl ParserState {
@@ -34,7 +31,6 @@ impl ParserState {
         Ok(ParserState {
             module_path,
             input_file: input_file.into(),
-            type_vars: IndexSet::default(),
         })
     }
     pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>, source: &str) {
@@ -56,29 +52,16 @@ impl ParserState {
                     .unwrap();
             });
     }
-    pub fn lookup_type_var<S: Into<Ustr>>(&self, name: S) -> Option<usize> {
-        self.type_vars.get_index_of(&name.into())
-    }
-    pub fn add_type_var<S: Into<Ustr>>(&mut self, name: S) -> bool {
-        self.type_vars.insert(name.into())
-    }
-    pub fn clear_type_vars(&mut self) {
-        self.type_vars.clear();
-    }
 }
 
 impl<'src, I: Input<'src>> Inspector<'src, I> for ParserState {
-    type Checkpoint = usize;
+    type Checkpoint = ();
     #[inline(always)]
     fn on_token(&mut self, _: &<I as Input<'src>>::Token) {}
     #[inline(always)]
-    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {
-        self.type_vars.len()
-    }
+    fn on_save<'parse>(&self, _: &Cursor<'src, 'parse, I>) -> Self::Checkpoint {}
     #[inline(always)]
-    fn on_rewind<'parse>(&mut self, chk: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {
-        self.type_vars.truncate(*chk.inspector());
-    }
+    fn on_rewind<'parse>(&mut self, _: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {}
 }
 
 #[derive(Debug, Error)]

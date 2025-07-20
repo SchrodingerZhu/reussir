@@ -4,12 +4,14 @@ use chumsky::{
     IterParser, Parser,
     error::Rich,
     input::ValueInput,
-    prelude::{choice, just, recursive, skip_then_retry_until, skip_until, via_parser},
+    prelude::{choice, just, recursive, via_parser},
     select,
 };
 use reussir_core::{
-    type_path, types::{Capacity, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr}, Location
+    Location, type_path,
+    types::{Capacity, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr},
 };
+use ustr::Ustr;
 
 use crate::{IntegerLiteral, ParserExtra, ParserState, SmallCollector, Token, path};
 
@@ -32,17 +34,9 @@ where
                 .collect::<SmallCollector<_, 4>>()
                 .delimited_by(just(Token::LAngle), just(Token::RAngle))
                 .map(|x| x.0.into_boxed_slice())
-                .or_not()
-                .map(|x| x.unwrap_or_else(|| Box::new([]))),
+                .or_not(),
         )
-        .map_with(|(path, args), m| {
-            if path.prefix().is_empty() && args.is_empty() {
-                if let Some(usize) = m.state().lookup_type_var(path.basename()) {
-                    return TypeExpr::Var(usize);
-                }
-            }
-            TypeExpr::App(path, args)
-        })
+        .map(|(path, args)| TypeExpr { path, args })
         .labelled("type application")
 }
 
@@ -67,7 +61,7 @@ where
     })
 }
 
-pub fn type_arglist<'a, I>() -> impl Parser<'a, I, usize, ParserExtra<'a>> + Clone
+pub fn type_arglist<'a, I>() -> impl Parser<'a, I, Option<Box<[Ustr]>>, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
@@ -75,23 +69,14 @@ where
         Token::Ident(x) => x
     };
     let comma = just(Token::Comma);
-    ident.separated_by(comma).allow_trailing().collect::<SmallCollector<_, 4>>()
+    ident
+        .map(Ustr::from)
+        .separated_by(comma)
+        .allow_trailing()
+        .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LAngle), just(Token::RAngle))
-        .try_map_with(|args, extra| {
-            let state: &mut ParserState = extra.state();
-            let len = args.0.len();
-            for arg in args.0.into_iter() {
-                if !state.add_type_var(arg) {
-                    return Err(Rich::custom(
-                        extra.span(),
-                        format!("Type variable `{}` already exists", arg),
-                    ));
-                }
-            }
-            Ok(len)
-        })
+        .map(|args| args.0.into_boxed_slice())
         .or_not()
-        .map(|x| x.unwrap_or(0))
         .labelled("type argument list")
 }
 
@@ -112,20 +97,18 @@ where
         .ignore_then(ident)
         .then(type_arglist())
         .then(types)
-        .map_with(|((name, num_args), fields), m| {
+        .map_with(|((name, type_args), fields), m| {
             let path = m.state().module_path.clone().append(name.into());
             let location = Some(m.span());
             let compound = Compound::Tuple(fields);
             let kind = RecordKind::Compound(compound);
-            m.state().clear_type_vars();
             Record {
                 path,
                 location,
                 kind,
-                num_args,
+                type_args,
             }
         })
-        
 }
 
 pub fn opaque_type<'a, I>() -> impl Parser<'a, I, OpaqueType, ParserExtra<'a>> + Clone
@@ -250,7 +233,10 @@ mod tests {
         struct MyStruct2<T2>(T2, std::vec::Vec<T2>, f64);
         "#;
         let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
-        let parser = tuple_like_struct().separated_by(just(Token::Semicolon)).allow_trailing().collect::<Vec<_>>();
+        let parser = tuple_like_struct()
+            .separated_by(just(Token::Semicolon))
+            .allow_trailing()
+            .collect::<Vec<_>>();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:?}", result);
