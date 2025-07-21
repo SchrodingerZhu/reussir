@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ariadne = { version = "0.5.1", features = ["auto-color"] }
 chumsky = { version = "0.10.1", features = ["pratt", "lexical-numbers"] }
+either = "1.15.0"
 indexmap = "2.10.0"
 lexical = { version = "7.0.4", default-features = false, features = ["format", "power-of-two", "parse-integers"] }
 logos = "0.15.0"

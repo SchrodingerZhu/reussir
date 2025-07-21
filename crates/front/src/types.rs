@@ -13,7 +13,10 @@ use reussir_core::{
 };
 use ustr::Ustr;
 
-use crate::{make_spanbox_with, path, IntegerLiteral, ParserExtra, ParserState, SmallCollector, SpanBox, Token};
+use crate::{
+    IntegerLiteral, ParserExtra, ParserState, SmallCollector, SpanBox, Token, make_spanbox_with,
+    path,
+};
 
 pub type TypeBox = SpanBox<Type>;
 
@@ -68,8 +71,7 @@ pub(crate) fn type_box<'a, I>() -> impl Parser<'a, I, TypeBox, ParserExtra<'a>> 
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
-    r#type()
-        .map_with(make_spanbox_with)
+    r#type().map_with(make_spanbox_with)
 }
 
 fn type_arglist<'a, I>() -> impl Parser<'a, I, Option<Box<[Ustr]>>, ParserExtra<'a>> + Clone
@@ -139,17 +141,15 @@ where
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map(|x| x.0.into_boxed_slice());
-    ident
-        .then(types)
-        .map_with(|(name, fields), m| {
-            let body = Box::new(Compound::Struct(fields));
-            let location = Some(m.span());
-            Variant {
-                name,
-                body,
-                location,
-            }
-        })
+    ident.then(types).map_with(|(name, fields), m| {
+        let body = Box::new(Compound::Struct(fields));
+        let location = Some(m.span());
+        Variant {
+            name,
+            body,
+            location,
+        }
+    })
 }
 
 fn tuple_variant<'a, I>() -> impl Parser<'a, I, Variant, ParserExtra<'a>> + Clone
@@ -166,17 +166,15 @@ where
         .delimited_by(just(Token::LParen), just(Token::RParen))
         .map(|x| x.0.into_boxed_slice())
         .or_not();
-    ident
-        .then(types)
-        .map_with(|(name, fields), m| {
-            let body = Box::new(Compound::Tuple(fields));
-            let location = Some(m.span());
-            Variant {
-                name,
-                body,
-                location,
-            }
-        })
+    ident.then(types).map_with(|(name, fields), m| {
+        let body = Box::new(Compound::Tuple(fields));
+        let location = Some(m.span());
+        Variant {
+            name,
+            body,
+            location,
+        }
+    })
 }
 
 fn enum_record<'a, I>() -> impl Parser<'a, I, Record, ParserExtra<'a>> + Clone
@@ -402,9 +400,7 @@ mod tests {
         }
         "#;
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
-        let parser = type_decl()
-            .repeated()
-            .collect::<Vec<_>>();
+        let parser = type_decl().repeated().collect::<Vec<_>>();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:#?}", result);

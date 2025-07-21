@@ -1,6 +1,7 @@
 use crate::types::{TypeBox, type_box};
 use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with};
 use chumsky::prelude::*;
+use either::Either;
 use ustr::Ustr;
 
 pub type ExprBox = SpanBox<Expr>;
@@ -54,6 +55,7 @@ pub enum Expr {
     Sequence(Box<[ExprBox]>),
     Let(WithSpan<String>, Option<TypeBox>, ExprBox),
     Call(CallTarget, Option<Box<[ExprBox]>>),
+    CtorCall(CallTarget, Box<[(WithSpan<Ustr>, ExprBox)]>),
 }
 
 macro_rules! expr_parser {
@@ -139,6 +141,34 @@ where
         })
 }
 
+type CallBody = Either<Option<Box<[ExprBox]>>, Box<[(WithSpan<Ustr>, ExprBox)]>>;
+
+fn call_body<'a, I, P>(expr: P) -> impl Parser<'a, I, CallBody, crate::ParserExtra<'a>> + Clone
+where
+    I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
+    P: Parser<'a, I, ExprBox, crate::ParserExtra<'a>> + Clone,
+{
+    let ident = select! {
+            Token::Ident(x) = m => WithSpan(Ustr::from(x), m.span())
+    };
+    let ctor_body = ident
+        .then_ignore(just(Token::Colon))
+        .then(expr.clone())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|x| Either::Right(x.into_boxed_slice()));
+    let function_or_tuple = expr
+        .separated_by(just(Token::Comma))
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map(|x| Some(x.into_boxed_slice()))
+        .or(just(Token::Unit).map(|_| None))
+        .map(Either::Left);
+    ctor_body.or(function_or_tuple)
+}
+
 expr_parser! {
     primitive -> {
         select! {
@@ -165,14 +195,11 @@ expr_parser! {
 
     call_expr => | expr : P | {
         call_target()
-            .then(
-                expr.separated_by(just(Token::Comma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .map(|x| Some(x.into_boxed_slice()))
-                    .or(just(Token::Unit).map(|_| None))
-            )
-            .map(|(target, args)| Expr::Call(target, args))
+            .then(call_body(expr))
+            .map(|(target, args)| match args {
+                Either::Left(args) => Expr::Call(target, args),
+                Either::Right(ctor_args) => Expr::CtorCall(target, ctor_args),
+            })
             .map_with(make_spanbox_with)
     };
 
@@ -262,6 +289,27 @@ mod tests {
     #[test]
     fn test_expr_parser() {
         let source = "foo + bar * 123.0 + foo::baz::qux::<f32>(1, 2.0, true)";
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let parser = expr();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), source);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:#?}", result);
+    }
+
+    #[test]
+    fn test_expr_compound_parser() {
+        let source = r#"
+{
+    let x = 42;
+    let m = Point {
+        x: 123.0f32,
+        y: 456.0,
+    };
+    {
+        ()
+    }
+}
+        "#;
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
