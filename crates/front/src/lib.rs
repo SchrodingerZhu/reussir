@@ -1,21 +1,25 @@
+mod expr;
 mod lexer;
 mod stmt;
-mod expr;
 mod types;
 
 use std::ops::Deref;
 
 use ariadne::{Report, sources};
 use chumsky::{
-    container::Container, error::Rich, input::{Checkpoint, Cursor, Input, MapExtra, ValueInput}, inspector::Inspector, ParseResult, Parser
+    ParseResult, Parser,
+    container::Container,
+    error::Rich,
+    input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
+    inspector::Inspector,
 };
+pub use expr::expr;
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
 use thiserror::Error;
+pub use types::type_decl;
 use ustr::Ustr;
 pub use {lexer::FloatLiteral, lexer::IntegerLiteral, lexer::Token};
-pub use types::type_decl;
-pub use expr::expr;
 
 type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
 type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
@@ -155,12 +159,14 @@ where
         .labelled("path")
 }
 
-
 pub(crate) fn make_spanbox<T>(value: T, location: Location) -> SpanBox<T> {
     Box::new(WithSpan::new(value, location))
 }
 
-pub(crate) fn make_spanbox_with<'src, 'b, T, I>(value: T, extra: &mut MapExtra<'src, 'b, I, ParserExtra<'src>>) -> SpanBox<T> 
+pub(crate) fn make_spanbox_with<'src, 'b, T, I>(
+    value: T,
+    extra: &mut MapExtra<'src, 'b, I, ParserExtra<'src>>,
+) -> SpanBox<T>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Location>,
 {
