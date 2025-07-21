@@ -1,9 +1,7 @@
 use crate::types::{TypeBox, type_box};
-use crate::{
-    FloatLiteral, IntegerLiteral, SmallCollector, SpanBox, Token, WithSpan, make_spanbox_with, path,
-};
+use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with};
 use chumsky::prelude::*;
-use reussir_core::Path;
+use ustr::Ustr;
 
 pub type ExprBox = SpanBox<Expr>;
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -34,6 +32,16 @@ pub enum UnaryOp {
     Neg,
     Not,
 }
+
+#[derive(Debug, Clone)]
+pub enum CallTargetSegment {
+    TurboFish(Box<[TypeBox]>),
+    Ident(Ustr),
+}
+
+pub type CallTarget = WithSpan<Box<[CallTargetSegment]>>;
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Unit,
     Binary(ExprBox, WithSpan<BinaryOp>, ExprBox),
@@ -42,7 +50,7 @@ pub enum Expr {
     Integer(IntegerLiteral),
     Float(FloatLiteral),
     Variable(String),
-    IfThenElse(ExprBox, ExprBox, ExprBox),
+    IfThenElse(ExprBox, ExprBox, Option<ExprBox>),
     Sequence(Box<[ExprBox]>),
     Let(WithSpan<String>, Option<TypeBox>, ExprBox),
     Call(CallTarget, Option<Box<[ExprBox]>>),
@@ -82,13 +90,6 @@ macro_rules! expr_parser {
     };
 }
 
-pub enum CallTargetSegment {
-    TurboFish(Box<[TypeBox]>),
-    Path(Path),
-}
-
-pub type CallTarget = WithSpan<Box<[CallTargetSegment]>>;
-
 fn spanned_ident<'a, I>() -> impl Parser<'a, I, WithSpan<String>, crate::ParserExtra<'a>> + Clone
 where
     I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
@@ -104,10 +105,10 @@ where
     I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
 {
     type_box()
-        .delimited_by(just(Token::LAngle), just(Token::RAngle))
         .separated_by(just(Token::Comma))
-        .collect::<SmallCollector<_, 4>>()
-        .map(|types| types.0.into_boxed_slice())
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LAngle), just(Token::RAngle))
+        .map(|x| x.into_boxed_slice())
 }
 
 fn call_target<'a, I>() -> impl Parser<'a, I, CallTarget, crate::ParserExtra<'a>> + Clone
@@ -115,23 +116,24 @@ where
     I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
 {
     // path ~ (:: (turbo_fish | path))*
-    path()
-        .map(CallTargetSegment::Path)
+    let ident = select! {
+    Token::Ident(x) => CallTargetSegment::Ident(Ustr::from(x))};
+    ident
         .then(
             just(Token::PathSep)
                 .ignore_then(
                     turbo_fish_body()
                         .map(CallTargetSegment::TurboFish)
-                        .or(path().map(|p| CallTargetSegment::Path(p)))
-                        .repeated()
-                        .collect::<SmallCollector<_, 4>>(),
+                        .or(ident),
                 )
+                .repeated()
+                .collect::<Vec<_>>()
                 .or_not(),
         )
         .map_with(|(path, segments), m| {
             let res = [path]
                 .into_iter()
-                .chain(segments.into_iter().map(|x| x.0).flatten())
+                .chain(segments.into_iter().flatten())
                 .collect::<Box<[_]>>();
             WithSpan(res, m.span())
         })
@@ -146,6 +148,32 @@ expr_parser! {
             Token::Unit => Expr::Unit,
         }
         .map_with(make_spanbox_with)
+    };
+
+    if_then_else => | expr : P | {
+        just(Token::If)
+        .ignore_then(paren_expr(expr.clone()))
+            .then(expr
+                .clone()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)))
+            .then(just(Token::Else)
+                .ignore_then(expr.delimited_by(just(Token::LBrace), just(Token::RBrace)))
+                .or_not())
+            .map(|((cond, then), else_expr)| Expr::IfThenElse(cond, then, else_expr))
+            .map_with(make_spanbox_with)
+    };
+
+    call_expr => | expr : P | {
+        call_target()
+            .then(
+                expr.separated_by(just(Token::Comma))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .map(|x| Some(x.into_boxed_slice()))
+                    .or(just(Token::Unit).map(|_| None))
+            )
+            .map(|(target, args)| Expr::Call(target, args))
+            .map_with(make_spanbox_with)
     };
 
     let_expr => | expr | {
@@ -164,18 +192,20 @@ expr_parser! {
     braced_expr_sequence => | expr : P | {
         expr
             .separated_by(just(Token::Semicolon))
-            .collect::<SmallCollector<_, 8>>()
+            .collect::<Vec<_>>()
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
-            .map(|exprs| Expr::Sequence(exprs.0.into_boxed_slice()))
+            .map(|exprs| Expr::Sequence(exprs.into_boxed_slice()))
             .map_with(make_spanbox_with)
     };
 
     variable -> {
         select! { Token::Ident(x) => x.to_string() }.map(Expr::Variable).map_with(make_spanbox_with)
     };
+
     paren_expr => |expr : P| {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
+
     pratt_expr => |atom : P| {
         use chumsky::pratt::*;
         let uop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
@@ -205,4 +235,37 @@ expr_parser! {
             binary(Token::OrOr, BinaryOp::LOr, 5),
         ))
     };
+
+    pub expr -> {
+        recursive(|expr| {
+            let atom = choice((
+                call_expr(expr.clone()),
+                primitive(),
+                variable(),
+                if_then_else(expr.clone()),
+                let_expr(expr.clone()),
+                braced_expr_sequence(expr.clone()),
+                paren_expr(expr),
+            ));
+            pratt_expr(atom)
+        })
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ParserState;
+    use reussir_core::path;
+    use ustr::Ustr;
+
+    #[test]
+    fn test_expr_parser() {
+        let source = "foo + bar * 123.0 + foo::baz::qux::<f32>(1, 2.0, true)";
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let parser = expr();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), source);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:#?}", result);
+    }
 }
