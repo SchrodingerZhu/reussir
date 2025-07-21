@@ -1,9 +1,9 @@
-use ustr::Ustr;
-use crate::{Location, Path};
 use crate::types::Type;
+use crate::{Location, Path};
+use ustr::Ustr;
 #[derive(Clone, Debug)]
 pub struct Param {
-    pub name: Ustr,
+    pub name: Option<Ustr>,
     pub location: Location,
     pub ty: Type,
 }
@@ -14,7 +14,7 @@ pub struct FunctionProto {
     pub type_args: Option<Box<[Ustr]>>,
     pub params: Box<[Param]>,
     pub return_type: Type,
-    pub region: bool,
-    pub public: bool,
-    pub opaque: bool,
+    pub has_region: bool,
+    pub is_public: bool,
+    pub is_opaque: bool,
 }

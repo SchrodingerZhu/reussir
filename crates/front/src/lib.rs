@@ -16,6 +16,7 @@ use chumsky::{
 pub use expr::expr;
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
+pub use stmt::{Function, Stmt, StmtBox};
 use thiserror::Error;
 pub use types::type_decl;
 use ustr::Ustr;
@@ -23,6 +24,13 @@ pub use {lexer::FloatLiteral, lexer::IntegerLiteral, lexer::Token};
 
 type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
 type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
+
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub path: Path,
+    pub input_file: Ustr,
+    pub statements: Box<[StmtBox]>,
+}
 
 pub struct ParserState {
     pub module_path: Path,
@@ -173,6 +181,24 @@ where
     make_spanbox(value, extra.span())
 }
 
+pub fn module<'a, I>() -> impl Parser<'a, I, Module, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    use chumsky::prelude::*;
+    let statements = stmt::stmt()
+        .repeated()
+        .collect::<Vec<_>>()
+        .map(Vec::into_boxed_slice)
+        .then_ignore(end());
+
+    statements.map_with(|statements, extra| Module {
+        path: extra.state().module_path.clone(),
+        input_file: extra.state().input_file,
+        statements,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use reussir_core::path;
@@ -188,4 +214,39 @@ mod tests {
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:?}", result);
     }
+
+    macro_rules! parse_file {
+        (@ $input:literal, $test_name:ident, $success:literal) => {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
+            let canonical_path = path.join("misc").join($input);
+            let source = std::fs::read_to_string(&canonical_path).unwrap();
+            let canonical_path = canonical_path.to_string_lossy().to_owned();
+            let mut state =
+                ParserState::new(path!(stringify!($test_name)), canonical_path.clone()).unwrap();
+            let parser = module();
+            let token_stream = Token::stream(Ustr::from(&canonical_path), &source);
+            let res = parser.parse_with_state(token_stream, &mut state);
+            state.print_result(&res, &source);
+            if $success {
+                println!("{:#?}", res.unwrap());
+            } else {
+                assert!(res.has_errors(), "Parsing succeeded unexpectedly for {}", $input);
+            }
+        };
+        ([success] $input:literal, $test_name:ident) => {
+            #[test]
+            fn $test_name() {
+                parse_file!(@ $input, $test_name, true);
+            }
+        };
+        ([failure] $input:literal, $test_name:ident) => {
+            #[test]
+            fn $test_name() {
+                parse_file!(@ $input, $test_name, false);
+            }
+        };
+    }
+
+    parse_file!([success] "simple_test.rr", simple_test);
+    parse_file!([failure] "simple_failure_test.rr", simple_failure_test);
 }

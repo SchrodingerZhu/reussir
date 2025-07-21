@@ -1,0 +1,14 @@
+pub struct Test(i32, f64)
+pub enum List<T> {
+    Nil,
+    Cons(T, List<T>)
+}
+pub fn test(data : i32) -> fn(i32) -> i32 {
+    | x : i32 | x + data 
+}
+pub fn length<T>(xs: List<T>) -> u64 {
+    match xs {
+        List::Nil => 0u64,
+        List::Cons(_, ys) => 1u64 + length(ys)
+    }
+}

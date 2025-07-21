@@ -327,10 +327,10 @@ pub enum Token<'src> {
 }
 
 impl Token<'_> {
-    pub fn stream(
+    pub fn stream<'a>(
         file: Ustr,
-        src: &str,
-    ) -> impl ValueInput<'_, Token = Token<'_>, Span = Location> {
+        src: &'a str,
+    ) -> impl ValueInput<'a, Token = Token<'a>, Span = Location> {
         let iter = Token::lexer(src)
             .spanned()
             .map(move |(res, range)| match res {

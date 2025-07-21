@@ -46,7 +46,7 @@ where
         .labelled("type application")
 }
 
-fn r#type<'a, I>() -> impl Parser<'a, I, Type, ParserExtra<'a>> + Clone
+pub(crate) fn r#type<'a, I>() -> impl Parser<'a, I, Type, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
@@ -99,7 +99,8 @@ fn is_public<'a, I>() -> impl Parser<'a, I, bool, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
-    just(Token::Pub).or_not()
+    just(Token::Pub)
+        .or_not()
         .map(|x| x.is_some())
         .labelled("public modifier")
 }
@@ -144,8 +145,9 @@ where
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map(|x| x.0.into_boxed_slice());
-    
-    is_public().then_ignore(just(Token::Struct))
+
+    is_public()
+        .then_ignore(just(Token::Struct))
         .then(ident)
         .then(type_arglist())
         .then(types)
@@ -276,7 +278,7 @@ where
                 location,
                 kind,
                 type_args,
-                is_public
+                is_public,
             }
         })
 }

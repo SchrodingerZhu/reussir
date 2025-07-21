@@ -123,7 +123,9 @@ where
                 .map(|has_ellipsis| has_ellipsis.is_some()),
         )
         .delimited_by(just(Token::LParen), just(Token::RParen))
-        .map(|(x, y)| Either::Left((x.into_boxed_slice(), y)));
+        .map(|(x, y)| Either::Left((x.into_boxed_slice(), y)))
+        .or_not()
+        .map(|x| x.unwrap_or_else(|| Either::Left((vec![].into_boxed_slice(), false))));
     let named_pattern = ident.then_ignore(just(Token::Colon)).then(p);
     let direct_binding = select! {
         Token::Ident(x) = m => (WithSpan(Ustr::from(x), m.span()), make_spanbox_with(Pattern::Binding(x.to_string()), m))
@@ -140,7 +142,7 @@ where
         )
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map(|(x, y)| Either::Right((x.into_boxed_slice(), y)));
-    path.then(tuple_body.or(compound_body))
+    path.then(compound_body.or(tuple_body))
         .map(|(path, body)| match body {
             Either::Left((elements, has_ellipsis)) => Pattern::Tuple {
                 path,
@@ -385,7 +387,7 @@ expr_parser! {
             .map_with(make_spanbox_with)
     };
 
-    braced_expr_sequence => | expr : P | {
+    pub braced_expr_sequence => | expr : P | {
         expr
             .separated_by(just(Token::Semicolon))
             .collect::<Vec<_>>()
@@ -503,7 +505,8 @@ match foo {
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
-        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
-        println!("{:#?}", result);
+        let result = parser.parse_with_state(token_stream, &mut state);
+        state.print_result(&result, &source);
+        println!("{:#?}", result.unwrap());
     }
 }
