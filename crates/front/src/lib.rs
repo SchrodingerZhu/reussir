@@ -248,5 +248,6 @@ mod tests {
     }
 
     parse_file!([success] "simple_test.rr", simple_test);
-    parse_file!([failure] "simple_failure_test.rr", simple_failure_test);
+    parse_file!([failure] "simple_failure_test_1.rr", simple_failure_test_1);
+    parse_file!([failure] "simple_failure_test_2.rr", simple_failure_test_2);
 }
