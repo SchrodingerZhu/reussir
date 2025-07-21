@@ -95,6 +95,14 @@ where
     .labelled("type")
 }
 
+fn is_public<'a, I>() -> impl Parser<'a, I, bool, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    just(Token::Pub).or_not()
+        .map(|x| x.is_some())
+        .labelled("public modifier")
+}
 pub(crate) fn type_box<'a, I>() -> impl Parser<'a, I, TypeBox, ParserExtra<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
@@ -136,11 +144,12 @@ where
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map(|x| x.0.into_boxed_slice());
-    just(Token::Struct)
-        .ignore_then(ident)
+    
+    is_public().then_ignore(just(Token::Struct))
+        .then(ident)
         .then(type_arglist())
         .then(types)
-        .map_with(|((name, type_args), fields), m| {
+        .map_with(|(((is_public, name), type_args), fields), m| {
             let path = m.state().module_path.clone().append(name);
             let location = Some(m.span());
             let compound = Compound::Struct(fields);
@@ -150,6 +159,7 @@ where
                 location,
                 kind,
                 type_args,
+                is_public,
             }
         })
 }
@@ -218,12 +228,12 @@ where
         .collect::<SmallCollector<_, 4>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map(|x| x.0.into_boxed_slice());
-
-    just(Token::Enum)
-        .ignore_then(ident)
+    is_public()
+        .then_ignore(just(Token::Enum))
+        .then(ident)
         .then(type_arglist())
         .then(variants)
-        .map_with(|((name, type_args), variants), m| {
+        .map_with(|(((is_public, name), type_args), variants), m| {
             let path = m.state().module_path.clone().append(name);
             let location = Some(m.span());
             let kind = RecordKind::Enum(variants);
@@ -232,6 +242,7 @@ where
                 location,
                 kind,
                 type_args,
+                is_public,
             }
         })
 }
@@ -250,11 +261,12 @@ where
         .delimited_by(just(Token::LParen), just(Token::RParen))
         .map(|x| x.0.into_boxed_slice())
         .or_not();
-    just(Token::Struct)
-        .ignore_then(ident)
+    is_public()
+        .then_ignore(just(Token::Struct))
+        .then(ident)
         .then(type_arglist())
         .then(types)
-        .map_with(|((name, type_args), fields), m| {
+        .map_with(|(((is_public, name), type_args), fields), m| {
             let path = m.state().module_path.clone().append(name.into());
             let location = Some(m.span());
             let compound = Compound::Tuple(fields);
@@ -264,6 +276,7 @@ where
                 location,
                 kind,
                 type_args,
+                is_public
             }
         })
 }
@@ -296,20 +309,21 @@ where
         })
         .recover_with(via_parser(value.map(|_| 1u64)))
         .labelled("size or alignment value");
-
-    just(Token::Opaque)
-        .ignore_then(ident)
-        .then_ignore(just(Token::LBrace))
-        .then_ignore(alignment)
-        .then_ignore(just(Token::Colon))
-        .then(valid_value)
-        .then_ignore(just(Token::Comma))
-        .then_ignore(size)
-        .then_ignore(just(Token::Colon))
-        .then(valid_value)
-        .then_ignore(just(Token::RBrace))
+    is_public()
+        .then_ignore(just(Token::Opaque))
+        .then(ident)
+        .then(
+            alignment
+                .ignore_then(just(Token::Colon))
+                .ignore_then(valid_value)
+                .then_ignore(just(Token::Comma))
+                .then_ignore(size)
+                .then_ignore(just(Token::Colon))
+                .then(valid_value)
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
         .try_map_with(|parsed, extra| {
-            let ((ident, alignment), size) = parsed;
+            let ((is_public, ident), (alignment, size)) = parsed;
             #[allow(clippy::explicit_auto_deref)]
             let state: &ParserState = extra.state();
             let path = state.module_path.clone().append(ident.into());
@@ -323,6 +337,7 @@ where
                 path,
                 location: Some(location),
                 layout,
+                is_public,
             })
         })
         .labelled("opaque type declaration")

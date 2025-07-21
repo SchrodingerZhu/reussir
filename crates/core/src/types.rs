@@ -92,6 +92,7 @@ pub struct OpaqueType {
     pub path: Path,
     pub location: Option<Location>,
     pub layout: Layout,
+    pub is_public: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -116,6 +117,7 @@ pub struct Record {
     pub location: Option<Location>,
     pub type_args: Option<Box<[Ustr]>>,
     pub kind: RecordKind,
+    pub is_public: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -176,6 +178,7 @@ impl TypeDatabase {
     pub fn add_compound_record(
         &mut self,
         path: Path,
+        is_public: bool,
         location: Option<Location>,
         type_args: Option<Box<[Ustr]>>,
         compound: Compound,
@@ -185,6 +188,7 @@ impl TypeDatabase {
             location,
             type_args,
             kind: RecordKind::Compound(Box::new(compound)),
+            is_public,
         });
         self.types.insert(path, concrete_type);
     }
@@ -192,6 +196,7 @@ impl TypeDatabase {
     pub fn add_enum_record(
         &mut self,
         path: Path,
+        is_public: bool,
         location: Option<Location>,
         type_args: Option<Box<[Ustr]>>,
         variants: impl IntoIterator<Item = Variant>,
@@ -201,6 +206,7 @@ impl TypeDatabase {
             location,
             type_args,
             kind: RecordKind::Enum(variants.into_iter().collect()),
+            is_public,
         });
         self.types.insert(path, concrete_type);
     }
