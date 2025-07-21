@@ -8,7 +8,7 @@ pub struct Param {
     pub ty: Type,
 }
 #[derive(Clone, Debug)]
-pub struct Function {
+pub struct FunctionProto {
     pub path: Path,
     pub location: Location,
     pub type_args: Option<Box<[Ustr]>>,
@@ -16,4 +16,5 @@ pub struct Function {
     pub return_type: Type,
     pub region: bool,
     pub public: bool,
+    pub opaque: bool,
 }

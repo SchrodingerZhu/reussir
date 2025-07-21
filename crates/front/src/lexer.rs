@@ -281,6 +281,12 @@ pub enum Token<'src> {
     Underscore,
     #[token("..")]
     Ellipsis,
+    #[token("fn")]
+    Fn,
+    #[token("pub")]
+    Pub,
+    #[token("reg")]
+    Region,
 
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]

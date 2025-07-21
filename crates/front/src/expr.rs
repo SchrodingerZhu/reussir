@@ -2,7 +2,7 @@ use crate::types::{TypeBox, type_box};
 use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with, path};
 use chumsky::prelude::*;
 use either::Either;
-use reussir_core::Path;
+use reussir_core::{Location, Path};
 use ustr::Ustr;
 
 pub type ExprBox = SpanBox<Expr>;
@@ -44,6 +44,20 @@ pub enum CallTargetSegment {
 pub type CallTarget = WithSpan<Box<[CallTargetSegment]>>;
 
 #[derive(Debug, Clone)]
+pub struct LambdaParam {
+    pub location: Location,
+    pub name: Ustr,
+    pub anno: Option<TypeBox>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LambdaExpr {
+    pub params: Box<[LambdaParam]>,
+    pub body: ExprBox,
+    pub anno: Option<TypeBox>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Unit,
     Binary(ExprBox, WithSpan<BinaryOp>, ExprBox),
@@ -58,6 +72,7 @@ pub enum Expr {
     Call(CallTarget, Option<Box<[ExprBox]>>),
     CtorCall(CallTarget, Box<[(WithSpan<Ustr>, ExprBox)]>),
     Match(MatchExpr),
+    Lambda(LambdaExpr),
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +100,8 @@ pub enum Pattern {
     BooleanLiteral(bool),
     Binding(String),
 }
-pub fn tuple_or_compound_pattern<'a, I, P>(
+
+fn tuple_or_compound_pattern<'a, I, P>(
     p: P,
 ) -> impl Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone
 where
@@ -141,7 +157,7 @@ where
         .map_with(make_spanbox_with)
 }
 
-pub fn pattern<'a, I>() -> impl Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone
+fn pattern<'a, I>() -> impl Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone
 where
     I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
 {
@@ -158,6 +174,22 @@ where
         let tuple_or_compound = tuple_or_compound_pattern(p.clone());
         tuple_or_compound.or(patterns)
     })
+}
+
+fn lambda_param<'a, I>() -> impl Parser<'a, I, LambdaParam, crate::ParserExtra<'a>> + Clone
+where
+    I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
+{
+    let ident = select! {
+        Token::Ident(x) => Ustr::from(x),
+    };
+    ident
+        .then(just(Token::Colon).ignore_then(type_box()).or_not())
+        .map_with(|(name, anno), m| LambdaParam {
+            location: m.span(),
+            name,
+            anno,
+        })
 }
 
 macro_rules! expr_parser {
@@ -301,6 +333,22 @@ expr_parser! {
             .map_with(make_spanbox_with)
     };
 
+    lambda_expr => | expr : P | {
+        lambda_param()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::Or), just(Token::Or))
+            .then(just(Token::Arrow).ignore_then(type_box()).or_not())
+            .then(expr)
+            .map(|((params, anno), body)| Expr::Lambda(LambdaExpr {
+                params: params.into_boxed_slice(),
+                body,
+                anno,
+            }))
+            .map_with(make_spanbox_with)
+    };
+
     if_then_else => | expr : P | {
         just(Token::If)
         .ignore_then(paren_expr(expr.clone()))
@@ -387,6 +435,7 @@ expr_parser! {
     pub expr -> {
         recursive(|expr| {
             let atom = choice((
+                lambda_expr(expr.clone()),
                 call_expr(expr.clone()),
                 primitive(),
                 variable(),
@@ -448,7 +497,7 @@ match foo {
     Point { x: 1, y: _ } => bar::baz(),
     Tuple(1, 2, 3, ..) => {
         let x = 1;
-        x + 2
+        |y, z : f32| (x + 2.0) * y / z
     },
 }"#;
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();

@@ -51,7 +51,11 @@ where
     I: ValueInput<'a, Token = Token<'a>, Span = Location>,
 {
     recursive(|ty| {
-        let ty_expr = type_expr(ty);
+        let ty_expr = type_expr(ty.clone()).or(select! {
+        Token::Unit => TypeExpr {
+            path: path!("unit"),
+            args: None,
+        }});
         let capability = choice((
             just(Token::Bang).to(Capability::Value),
             just(Token::Asterisk).to(Capability::Rigid),
@@ -60,11 +64,35 @@ where
         ))
         .or_not()
         .map(|x| x.unwrap_or(Capability::Default));
-        capability
+        let atom = capability
             .then(ty_expr)
-            .map(|(capability, expr)| Type { capability, expr })
-            .labelled("type")
+            .map(|(capability, expr)| Type::Atom { capability, expr });
+        let arrow = just(Token::Fn)
+            .ignore_then(
+                ty.clone()
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .then(
+                just(Token::Arrow)
+                    .ignore_then(ty.clone())
+                    .or_not()
+                    .map(|x| {
+                        x.unwrap_or_else(|| Type::Atom {
+                            capability: Capability::Default,
+                            expr: TypeExpr {
+                                path: path!("unit"),
+                                args: None,
+                            },
+                        })
+                    }),
+            )
+            .map(|(params, ret)| Type::Arrow(params.into_boxed_slice(), Box::new(ret)));
+        arrow.or(atom)
     })
+    .labelled("type")
 }
 
 pub(crate) fn type_box<'a, I>() -> impl Parser<'a, I, TypeBox, ParserExtra<'a>> + Clone
@@ -391,6 +419,7 @@ mod tests {
             Variant2(i32, f64),
             Variant3,
             Variant4 { name: String, value: i32 },
+            Arrow(fn(i32, bool) -> f64),
         }
         struct Singleton
         struct MyStruct<T>(T, i32, f64)

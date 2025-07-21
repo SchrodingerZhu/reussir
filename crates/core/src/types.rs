@@ -67,9 +67,12 @@ pub enum Capability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Type {
-    pub capability: Capability,
-    pub expr: TypeExpr,
+pub enum Type {
+    Atom {
+        capability: Capability,
+        expr: TypeExpr,
+    },
+    Arrow(Box<[Self]>, Box<Self>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
