@@ -170,7 +170,7 @@ pub(crate) fn make_spanbox_with<'src, 'b, T, I>(
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Location>,
 {
-    Box::new(WithSpan::new(value, extra.span()))
+    make_spanbox(value, extra.span())
 }
 
 #[cfg(test)]

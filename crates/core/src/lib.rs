@@ -4,6 +4,7 @@ use std::ops::Range;
 use ustr::Ustr;
 
 pub mod types;
+pub mod func;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Path(Box<[Ustr]>);
