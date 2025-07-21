@@ -1,0 +1,6 @@
+fn test(x : List<i32>) -> i32 {
+    match x {
+        List::Cons(_, _) -> 0,
+        _ => 1
+    }
+}
