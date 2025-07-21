@@ -277,6 +277,10 @@ pub enum Token<'src> {
     Match,
     #[token("()")]
     Unit,
+    #[token("_")]
+    Underscore,
+    #[token("..")]
+    Ellipsis,
 
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]

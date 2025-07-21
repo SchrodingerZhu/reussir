@@ -1,7 +1,8 @@
 use crate::types::{TypeBox, type_box};
-use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with};
+use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with, path};
 use chumsky::prelude::*;
 use either::Either;
+use reussir_core::Path;
 use ustr::Ustr;
 
 pub type ExprBox = SpanBox<Expr>;
@@ -56,6 +57,107 @@ pub enum Expr {
     Let(WithSpan<String>, Option<TypeBox>, ExprBox),
     Call(CallTarget, Option<Box<[ExprBox]>>),
     CtorCall(CallTarget, Box<[(WithSpan<Ustr>, ExprBox)]>),
+    Match(MatchExpr),
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchExpr {
+    pub subject: ExprBox,
+    pub arms: Box<[(SpanBox<Pattern>, ExprBox)]>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Wildcard,
+    Tuple {
+        path: Path,
+        elements: Box<[SpanBox<Self>]>,
+        has_ellipsis: bool,
+    },
+    Compound {
+        path: Path,
+        fields: Box<[(WithSpan<Ustr>, SpanBox<Self>)]>,
+        has_ellipsis: bool,
+    },
+    IntegerLiteral(IntegerLiteral),
+    FloatLiteral(FloatLiteral),
+    UnitLiteral,
+    BooleanLiteral(bool),
+    Binding(String),
+}
+pub fn tuple_or_compound_pattern<'a, I, P>(
+    p: P,
+) -> impl Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone
+where
+    I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
+    P: Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone,
+{
+    let path = path();
+    let ident = select! {
+        Token::Ident(x) = m => WithSpan(x.into(), m.span())
+    };
+    let tuple_body = p
+        .clone()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(
+            just(Token::Ellipsis)
+                .or_not()
+                .map(|has_ellipsis| has_ellipsis.is_some()),
+        )
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map(|(x, y)| Either::Left((x.into_boxed_slice(), y)));
+    let named_pattern = ident.then_ignore(just(Token::Colon)).then(p);
+    let direct_binding = select! {
+        Token::Ident(x) = m => (WithSpan(Ustr::from(x), m.span()), make_spanbox_with(Pattern::Binding(x.to_string()), m))
+    };
+    let compound_body = named_pattern
+        .or(direct_binding)
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(
+            just(Token::Ellipsis)
+                .or_not()
+                .map(|has_ellipsis| has_ellipsis.is_some()),
+        )
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|(x, y)| Either::Right((x.into_boxed_slice(), y)));
+    path.then(tuple_body.or(compound_body))
+        .map(|(path, body)| match body {
+            Either::Left((elements, has_ellipsis)) => Pattern::Tuple {
+                path,
+                elements,
+                has_ellipsis,
+            },
+
+            Either::Right((fields, has_ellipsis)) => Pattern::Compound {
+                path,
+                fields,
+                has_ellipsis,
+            },
+        })
+        .map_with(make_spanbox_with)
+}
+
+pub fn pattern<'a, I>() -> impl Parser<'a, I, SpanBox<Pattern>, crate::ParserExtra<'a>> + Clone
+where
+    I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
+{
+    recursive(|p| {
+        let patterns = select! {
+            Token::Underscore => Pattern::Wildcard,
+            Token::Integer(x) => Pattern::IntegerLiteral(x),
+            Token::Float(x) => Pattern::FloatLiteral(x),
+            Token::Unit => Pattern::UnitLiteral,
+            Token::Ident(x) => Pattern::Binding(x.to_string()),
+            Token::Boolean(x) => Pattern::BooleanLiteral(x),
+        }
+        .map_with(make_spanbox_with);
+        let tuple_or_compound = tuple_or_compound_pattern(p.clone());
+        tuple_or_compound.or(patterns)
+    })
 }
 
 macro_rules! expr_parser {
@@ -180,6 +282,25 @@ expr_parser! {
         .map_with(make_spanbox_with)
     };
 
+    match_expr => | expr : P | {
+        just(Token::Match)
+            .ignore_then(expr.clone())
+            .then(
+                pattern()
+                    .then_ignore(just(Token::FatArrow))
+                    .then(expr.clone())
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            )
+            .map(|(subject, arms)| Expr::Match(MatchExpr {
+                subject,
+                arms: arms.into_boxed_slice(),
+            }))
+            .map_with(make_spanbox_with)
+    };
+
     if_then_else => | expr : P | {
         just(Token::If)
         .ignore_then(paren_expr(expr.clone()))
@@ -272,6 +393,7 @@ expr_parser! {
                 if_then_else(expr.clone()),
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
+                match_expr(expr.clone()),
                 paren_expr(expr),
             ));
             pratt_expr(atom)
@@ -310,6 +432,25 @@ mod tests {
     }
 }
         "#;
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let parser = expr();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), source);
+        let result = parser.parse_with_state(token_stream, &mut state).unwrap();
+        println!("{:#?}", result);
+    }
+
+    #[test]
+    fn test_expr_match_parser() {
+        let source = r#"
+match foo {
+    1 => 1 + 1,
+    Point { x, y: _ } => x + 1,
+    Point { x: 1, y: _ } => bar::baz(),
+    Tuple(1, 2, 3, ..) => {
+        let x = 1;
+        x + 2
+    },
+}"#;
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
