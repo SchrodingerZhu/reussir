@@ -213,14 +213,14 @@ impl TypeDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::type_path;
+    use crate::path;
 
     #[test]
     fn test_type_database() {
         let db = TypeDatabase::new_with_primitives();
         println!("Type database: {:#?}", db);
-        assert!(db.get(&type_path!("f128")).is_some());
-        assert!(db.get(&type_path!("u64")).is_some());
-        assert!(db.get(&type_path!("non_existent_type")).is_none());
+        assert!(db.get(&path!("f128")).is_some());
+        assert!(db.get(&path!("u64")).is_some());
+        assert!(db.get(&path!("non_existent_type")).is_none());
     }
 }

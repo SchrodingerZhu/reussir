@@ -267,6 +267,8 @@ pub enum Token<'src> {
     Asterisk,
     #[token("@")]
     At,
+    #[token("let")]
+    Let,
     #[token("if")]
     If,
     #[token("else")]

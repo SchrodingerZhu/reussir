@@ -112,7 +112,7 @@ impl ariadne::Span for Location {
 }
 
 #[macro_export]
-macro_rules! type_path {
+macro_rules! path {
         ($basename:expr $(, $prefix:expr)*) => {
             $crate::Path::new(
                 ustr::Ustr::from($basename),
