@@ -8,12 +8,14 @@ use chumsky::{
     select,
 };
 use reussir_core::{
-    Location, type_path,
+    Location, path,
     types::{Capability, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr, Variant},
 };
 use ustr::Ustr;
 
-use crate::{IntegerLiteral, ParserExtra, ParserState, SmallCollector, Token, path};
+use crate::{make_spanbox_with, path, IntegerLiteral, ParserExtra, ParserState, SmallCollector, SpanBox, Token};
+
+pub type TypeBox = SpanBox<Type>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeDecl {
@@ -27,7 +29,7 @@ where
     P: Parser<'a, I, Type, ParserExtra<'a>> + Clone,
 {
     path()
-        .or(select! { Token::Primitive(x) => type_path!(x.into()) })
+        .or(select! { Token::Primitive(x) => path!(x.into()) })
         .then(
             types
                 .separated_by(just(Token::Comma))
@@ -60,6 +62,14 @@ where
             .map(|(capability, expr)| Type { capability, expr })
             .labelled("type")
     })
+}
+
+pub(crate) fn type_box<'a, I>() -> impl Parser<'a, I, TypeBox, ParserExtra<'a>> + Clone
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = Location>,
+{
+    r#type()
+        .map_with(make_spanbox_with)
 }
 
 fn type_arglist<'a, I>() -> impl Parser<'a, I, Option<Box<[Ustr]>>, ParserExtra<'a>> + Clone
@@ -307,7 +317,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reussir_core::type_path;
+    use reussir_core::path;
     use ustr::Ustr;
 
     #[test]
@@ -315,7 +325,7 @@ mod tests {
         let input = r#"
         opaque MyType { alignment: 8u64, size: 64u64 }
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = opaque_type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -327,7 +337,7 @@ mod tests {
         let input = r#"
         opaque MyType { alignment: 8, size: -8.0f64 }
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = opaque_type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state);
@@ -340,7 +350,7 @@ mod tests {
         let input = r#"
         MyType<T, i32>
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = r#type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -351,7 +361,7 @@ mod tests {
         let input = r#"
         MyType<T, 12, f128, 21>
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = r#type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state);
@@ -365,7 +375,7 @@ mod tests {
         struct MyStruct<T>(T, i32, f64);
         struct MyStruct2<T2>(T2, std::vec::Vec<T2>, f64);
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = tuple_like_struct()
             .separated_by(just(Token::Semicolon))
             .allow_trailing()
@@ -391,7 +401,7 @@ mod tests {
             value: i32,
         }
         "#;
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = type_decl()
             .repeated()
             .collect::<Vec<_>>();

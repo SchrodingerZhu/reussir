@@ -1,16 +1,13 @@
 mod lexer;
 mod stmt;
+mod expr;
 mod types;
 
 use std::ops::Deref;
 
 use ariadne::{Report, sources};
 use chumsky::{
-    ParseResult, Parser,
-    container::Container,
-    error::Rich,
-    input::{Checkpoint, Cursor, Input, ValueInput},
-    inspector::Inspector,
+    container::Container, error::Rich, input::{Checkpoint, Cursor, Input, MapExtra, ValueInput}, inspector::Inspector, ParseResult, Parser
 };
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
@@ -156,16 +153,28 @@ where
         .map(|(prefix, basename)| Path::new(basename.into(), prefix.0))
 }
 
+
+pub(crate) fn make_spanbox<T>(value: T, location: Location) -> SpanBox<T> {
+    Box::new(WithSpan::new(value, location))
+}
+
+pub(crate) fn make_spanbox_with<'src, 'b, T, I>(value: T, extra: &mut MapExtra<'src, 'b, I, ParserExtra<'src>>) -> SpanBox<T> 
+where
+    I: ValueInput<'src, Token = Token<'src>, Span = Location>,
+{
+    Box::new(WithSpan::new(value, extra.span()))
+}
+
 #[cfg(test)]
 mod tests {
-    use reussir_core::type_path;
+    use reussir_core::path;
 
     use super::*;
 
     #[test]
     fn test_path_parser() {
         let source = "foo::bar::baz";
-        let mut state = ParserState::new(type_path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = path();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
