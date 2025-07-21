@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_expr_parser() {
-        let source = "foo + bar * 123.0 + foo::baz::qux::<f32>(1, 2.0, true)";
+        let source = "foo + bar * 123.0 + foo::baz::qux::<f32>((1 + 512) * test(), 2.0, true)";
         let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
