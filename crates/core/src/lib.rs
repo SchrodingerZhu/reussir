@@ -3,8 +3,9 @@ use std::fmt::Debug;
 use std::ops::Range;
 use ustr::Ustr;
 
-pub mod types;
 pub mod func;
+pub mod ir;
+pub mod types;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Path(Box<[Ustr]>);
