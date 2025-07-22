@@ -299,6 +299,7 @@ where
         .map(|x| Either::Right(x.into_boxed_slice()));
     let function_or_tuple = expr
         .separated_by(just(Token::Comma))
+        .allow_trailing()
         .collect::<Vec<_>>()
         .delimited_by(just(Token::LParen), just(Token::RParen))
         .map(|x| Some(x.into_boxed_slice()))
@@ -364,12 +365,10 @@ expr_parser! {
 
     if_then_else => | expr : P | {
         just(Token::If)
-        .ignore_then(paren_expr(expr.clone()))
-            .then(expr
-                .clone()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace)))
+        .ignore_then(expr.clone())
+            .then(braced_expr_sequence(expr.clone()))
             .then(just(Token::Else)
-                .ignore_then(expr.delimited_by(just(Token::LBrace), just(Token::RBrace)))
+                .ignore_then(braced_expr_sequence(expr.clone()))
                 .or_not())
             .map(|((cond, then), else_expr)| Expr::IfThenElse(cond, then, else_expr))
             .map_with(make_spanbox_with)
