@@ -2,9 +2,14 @@ use ustr::Ustr;
 
 use crate::{Location, Path, types::Type};
 
+pub struct TypedValue {
+    pub value: ValID,
+    pub ty: Type,
+}
+
 pub struct Operation {
     location: Option<Location>,
-    output: Option<usize>,
+    output: Option<Box<TypedValue>>,
     kind: OperationKind,
 }
 type TypeBox = Box<Type>;
@@ -21,11 +26,20 @@ pub struct Symbol {
     pub type_params: Option<Box<[Type]>>,
 }
 
+pub enum FieldIdentifer {
+    Named(Ustr),
+    Indexed(usize),
+}
+
+pub struct SwitchCase {
+    pub variants: Box<[Ustr]>,
+    pub region: Box<Region>,
+}
+
 pub enum OperationKind {
     FnCall {
         target: SymbolBox,
         args: Option<Box<[ValID]>>,
-        ret: Option<TypeBox>,
     },
     CtorCall {
         ty: SymbolBox,
@@ -42,20 +56,31 @@ pub enum OperationKind {
     },
     Evaluate {
         target: ValID,
-        ret: TypeBox,
     },
     FunctionToClosure {
         target: SymbolBox,
-        ret: TypeBox,
     },
     InlineClosure {
         region: Box<Region>,
-        ret: TypeBox,
     },
-    If {
+    Condition {
         cond: ValID,
         then_region: Box<Region>,
         else_region: Box<Region>,
-        ret: Option<TypeBox>,
     },
+    Yield (Option<ValID>),
+    Return (Option<ValID>),
+    Switch {
+        cond: ValID,
+        cases: Box<[SwitchCase]>,
+    },
+    VariantCast {
+        target: ValID,
+        ty: SymbolBox,
+    },
+    Proj {
+        target: ValID,
+        field: FieldIdentifer,
+    },
+    
 }
