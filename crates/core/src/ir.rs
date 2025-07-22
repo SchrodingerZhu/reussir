@@ -68,8 +68,8 @@ pub enum OperationKind {
         then_region: Box<Region>,
         else_region: Box<Region>,
     },
-    Yield (Option<ValID>),
-    Return (Option<ValID>),
+    Yield(Option<ValID>),
+    Return(Option<ValID>),
     Switch {
         cond: ValID,
         cases: Box<[SwitchCase]>,
@@ -82,5 +82,4 @@ pub enum OperationKind {
         target: ValID,
         field: FieldIdentifer,
     },
-    
 }

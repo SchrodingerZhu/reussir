@@ -2,6 +2,7 @@ use crate::types::{TypeBox, type_box};
 use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with, path};
 use chumsky::prelude::*;
 use either::Either;
+use reussir_core::types::Primitive;
 use reussir_core::{Location, Path};
 use ustr::Ustr;
 
@@ -73,6 +74,7 @@ pub enum Expr {
     CtorCall(CallTarget, Box<[(WithSpan<Ustr>, ExprBox)]>),
     Match(MatchExpr),
     Lambda(LambdaExpr),
+    Cast(ExprBox, Primitive),
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +307,15 @@ where
     ctor_body.or(function_or_tuple)
 }
 
+fn cast_postfix<'a, I>() -> impl Parser<'a, I, Primitive, crate::ParserExtra<'a>> + Clone
+where
+    I: chumsky::input::ValueInput<'a, Token = Token<'a>, Span = crate::Location>,
+{
+    just(Token::As).ignore_then(select! {
+        Token::Primitive(x) => x
+    })
+}
+
 expr_parser! {
     primitive -> {
         select! {
@@ -408,6 +419,7 @@ expr_parser! {
         use chumsky::pratt::*;
         let uop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
         let bop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
+        let cast = postfix(60, cast_postfix(), |expr, prim, m| make_spanbox_with(Expr::Cast(expr, prim), m));
         let unary = | a, b, p | prefix(p, uop(a, b), move |op, rhs, m| { make_spanbox_with(Expr::Unary(op, rhs), m) });
         let binary = | a, b, p | infix(right(p), bop(a, b), move |lhs, op, rhs, m| { make_spanbox_with(Expr::Binary(lhs, op, rhs), m) });
         atom.pratt((
@@ -431,6 +443,7 @@ expr_parser! {
             binary(Token::GreaterEq, BinaryOp::Ge, 20),
             binary(Token::AndAnd, BinaryOp::LAnd, 10),
             binary(Token::OrOr, BinaryOp::LOr, 5),
+            cast,
         ))
     };
 

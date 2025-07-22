@@ -287,6 +287,8 @@ pub enum Token<'src> {
     Pub,
     #[token("reg")]
     Region,
+    #[token("as")]
+    As,
 
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]

@@ -4,7 +4,7 @@ pub enum List<T> {
     Cons(T, List<T>)
 }
 pub fn test(data : i32) -> fn(i32) -> i32 {
-    | x : i32 | x + data 
+    | x : i32 | x + data * 3.14f32 as i32
 }
 pub fn length<T>(xs: List<T>) -> u64 {
     match xs {
