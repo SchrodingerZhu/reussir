@@ -1,29 +1,34 @@
+use std::cell::Cell;
+
+use indexmap::IndexMap;
 use ustr::Ustr;
 
-use crate::{Location, Path, types::Type};
+use crate::{
+    Location, Path,
+    literal::{FloatLiteral, IntegerLiteral},
+    types::Type,
+};
 
-pub struct TypedValue {
+pub struct OutputValue {
     pub value: ValID,
     pub ty: Type,
+    pub name: Option<Ustr>,
 }
 
-pub struct Operation {
+pub struct Operation<'a> {
     location: Option<Location>,
-    output: Option<Box<TypedValue>>,
-    kind: OperationKind,
+    output: Option<&'a OutputValue>,
+    kind: OperationKind<'a>,
 }
-type TypeBox = Box<Type>;
-type SymbolBox = Box<Symbol>;
 
 pub type ValID = usize;
 
-pub struct Region(Box<[Block]>);
-// Do I need block arguments?
-pub struct Block(Box<[Operation]>);
+// We will use structured control flow at this level, so there is no need for a region of multiple blocks.
+pub struct Block<'a>(&'a [Operation<'a>]);
 
-pub struct Symbol {
+pub struct Symbol<'a> {
     pub path: Path,
-    pub type_params: Option<Box<[Type]>>,
+    pub type_params: Option<&'a [Type]>,
 }
 
 pub enum FieldIdentifer {
@@ -31,24 +36,24 @@ pub enum FieldIdentifer {
     Indexed(usize),
 }
 
-pub struct SwitchCase {
-    pub variants: Box<[Ustr]>,
-    pub region: Box<Region>,
+pub struct SwitchCase<'a> {
+    pub variants: &'a [Ustr],
+    pub body: Block<'a>,
 }
 
-pub enum OperationKind {
+pub enum OperationKind<'a> {
     FnCall {
-        target: SymbolBox,
-        args: Option<Box<[ValID]>>,
+        target: &'a Symbol<'a>,
+        args: Option<&'a [ValID]>,
     },
     CtorCall {
-        ty: SymbolBox,
-        args: Option<Box<[ValID]>>,
+        ty: &'a Symbol<'a>,
+        args: Option<&'a [ValID]>,
     },
     VariantCall {
-        ty: SymbolBox,
+        ty: &'a Symbol<'a>,
         variant: Ustr,
-        args: Option<Box<[ValID]>>,
+        args: Option<&'a [ValID]>,
     },
     PartialApply {
         target: ValID,
@@ -58,28 +63,35 @@ pub enum OperationKind {
         target: ValID,
     },
     FunctionToClosure {
-        target: SymbolBox,
+        target: &'a Symbol<'a>,
     },
     InlineClosure {
-        region: Box<Region>,
+        region: &'a Block<'a>,
     },
     Condition {
         cond: ValID,
-        then_region: Box<Region>,
-        else_region: Box<Region>,
+        then_region: &'a Block<'a>,
+        else_region: &'a Block<'a>,
     },
     Yield(Option<ValID>),
     Return(Option<ValID>),
     Switch {
         cond: ValID,
-        cases: Box<[SwitchCase]>,
+        cases: &'a [SwitchCase<'a>],
     },
     VariantCast {
         target: ValID,
-        ty: SymbolBox,
+        ty: &'a Symbol<'a>,
     },
     Proj {
         target: ValID,
         field: FieldIdentifer,
     },
+    ConstInt(Box<IntegerLiteral>),
+    ConstFloat(Box<FloatLiteral>),
+}
+
+pub struct IRBuilder<'a> {
+    arena: &'a bumpalo::Bump,
+    next_val: ValID,
 }

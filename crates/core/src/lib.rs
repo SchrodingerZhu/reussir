@@ -5,6 +5,7 @@ use ustr::Ustr;
 
 pub mod func;
 pub mod ir;
+pub mod literal;
 pub mod types;
 
 #[derive(Clone, PartialEq, Eq, Hash)]

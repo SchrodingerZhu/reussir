@@ -7,30 +7,10 @@ use lexical::parse_integer_options::Options as ParseIntegerOptions;
 use lexical::{NumberFormatBuilder, parse_with_options};
 use logos::{Lexer, Logos};
 use reussir_core::Location;
+use reussir_core::literal::{FloatLiteral, IntegerLiteral};
 use reussir_core::types::Primitive;
-use rustc_apfloat::ieee::{BFloat, Double, Half, Quad, Single};
+
 use ustr::Ustr;
-
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
-pub enum FloatLiteral {
-    BF16(BFloat),
-    F16(Half),
-    F32(Single),
-    F64(Double),
-    F128(Quad),
-}
-
-impl std::fmt::Debug for FloatLiteral {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FloatLiteral::BF16(val) => write!(f, "{val}bf16"),
-            FloatLiteral::F16(val) => write!(f, "{val}f16"),
-            FloatLiteral::F32(val) => write!(f, "{val}f32"),
-            FloatLiteral::F64(val) => write!(f, "{val}f64"),
-            FloatLiteral::F128(val) => write!(f, "{val}f128"),
-        }
-    }
-}
 
 fn parse_float<'a>(s: &mut Lexer<'a, Token<'a>>) -> Result<FloatLiteral, Error> {
     let s = s.slice();
@@ -47,37 +27,6 @@ fn parse_float<'a>(s: &mut Lexer<'a, Token<'a>>) -> Result<FloatLiteral, Error> 
         s.trim_end_matches("f32").parse().map(FloatLiteral::F32)
     })
     .map_err(|e| Error::InvalidFloatLiteral(e.0))
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum IntegerLiteral {
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),
-    I128(i128),
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    U128(u128),
-}
-
-impl std::fmt::Debug for IntegerLiteral {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IntegerLiteral::I8(val) => write!(f, "{val}i8"),
-            IntegerLiteral::I16(val) => write!(f, "{val}i16"),
-            IntegerLiteral::I32(val) => write!(f, "{val}i32"),
-            IntegerLiteral::I64(val) => write!(f, "{val}i64"),
-            IntegerLiteral::I128(val) => write!(f, "{val}i128"),
-            IntegerLiteral::U8(val) => write!(f, "{val}u8"),
-            IntegerLiteral::U16(val) => write!(f, "{val}u16"),
-            IntegerLiteral::U32(val) => write!(f, "{val}u32"),
-            IntegerLiteral::U64(val) => write!(f, "{val}u64"),
-            IntegerLiteral::U128(val) => write!(f, "{val}u128"),
-        }
-    }
 }
 
 const DEFAULT_FORMAT_BUILDER: NumberFormatBuilder = NumberFormatBuilder::new()
@@ -105,12 +54,6 @@ const OCTAL_FORMAT: u128 = DEFAULT_FORMAT_BUILDER
     .radix(8)
     .base_prefix(NonZeroU8::new(b'o'))
     .build();
-
-impl From<u8> for IntegerLiteral {
-    fn from(value: u8) -> Self {
-        IntegerLiteral::U8(value)
-    }
-}
 
 fn parse_integer<'s, const FORMAT: u128>(
     input: &mut Lexer<'s, Token<'s>>,
@@ -289,6 +232,10 @@ pub enum Token<'src> {
     Region,
     #[token("as")]
     As,
+    #[token("return")]
+    Return,
+    #[token("yield")]
+    Yield,
 
     #[token("i8", parse_primitive_keyword)]
     #[token("i16", parse_primitive_keyword)]
@@ -371,7 +318,7 @@ mod tests {
                 $(
                     let mut lexer = Token::lexer($input);
                     let token = lexer.next().unwrap().unwrap();
-                    assert_eq!(token, Token::Float($crate::FloatLiteral::$ty(IeeeFloat::from_str(stringify!($raw)).unwrap())));
+                    assert_eq!(token, Token::Float(reussir_core::literal::FloatLiteral::$ty(IeeeFloat::from_str(stringify!($raw)).unwrap())));
                 )+
             };
         }

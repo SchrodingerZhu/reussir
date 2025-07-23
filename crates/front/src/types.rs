@@ -8,15 +8,14 @@ use chumsky::{
     select,
 };
 use reussir_core::{
-    Location, path,
+    Location,
+    literal::IntegerLiteral,
+    path,
     types::{Capability, Compound, OpaqueType, Record, RecordKind, Type, TypeExpr, Variant},
 };
 use ustr::Ustr;
 
-use crate::{
-    IntegerLiteral, ParserExtra, ParserState, SmallCollector, SpanBox, Token, make_spanbox_with,
-    path,
-};
+use crate::{ParserExtra, ParserState, SmallCollector, SpanBox, Token, make_spanbox_with, path};
 
 pub type TypeBox = SpanBox<Type>;
 

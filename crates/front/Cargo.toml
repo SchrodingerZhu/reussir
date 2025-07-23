@@ -8,7 +8,11 @@ ariadne = { version = "0.5.1", features = ["auto-color"] }
 chumsky = { version = "0.10.1", features = ["pratt", "lexical-numbers"] }
 either = "1.15.0"
 indexmap = "2.10.0"
-lexical = { version = "7.0.4", default-features = false, features = ["format", "power-of-two", "parse-integers"] }
+lexical = { version = "7.0.4", default-features = false, features = [
+    "format",
+    "power-of-two",
+    "parse-integers",
+] }
 logos = "0.15.0"
 reussir-core = { path = "../core" }
 rustc-hash = { version = "2.1.1", features = ["rand"] }
