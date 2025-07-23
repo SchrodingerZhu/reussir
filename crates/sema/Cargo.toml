@@ -1,0 +1,16 @@
+[package]
+name = "reussir-sema"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+archery = "1.2.1"
+ariadne = "0.5.1"
+bumpalo = "3.19.0"
+indexmap = "2.10.0"
+reussir-core = { path = "../core" }
+reussir-front = { path = "../front" }
+rpds = "1.1.1"
+rustc-hash = "2.1.1"
+thiserror = "2.0.12"
+ustr = "1.1.0"

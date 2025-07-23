@@ -1,7 +1,7 @@
-mod expr;
-mod lexer;
-mod stmt;
-mod types;
+pub mod expr;
+pub mod lexer;
+pub mod stmt;
+pub mod types;
 
 use std::ops::Deref;
 
@@ -13,16 +13,13 @@ use chumsky::{
     input::{Checkpoint, Cursor, Input, MapExtra, ValueInput},
     inspector::Inspector,
 };
-pub use expr::expr;
-pub use lexer::Token;
+use lexer::Token;
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
-pub use stmt::{Function, Stmt, StmtBox};
-use thiserror::Error;
-pub use types::type_decl;
+use stmt::StmtBox;
 use ustr::Ustr;
 
-type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
+pub type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
 type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
 
 #[derive(Debug, Clone)]
@@ -38,11 +35,11 @@ pub struct ParserState {
 }
 
 impl ParserState {
-    pub fn new<S: Into<Ustr>>(module_path: Path, input_file: S) -> Result<Self> {
-        Ok(ParserState {
+    pub fn new<S: Into<Ustr>>(module_path: Path, input_file: S) -> Self {
+        ParserState {
             module_path,
             input_file: input_file.into(),
-        })
+        }
     }
     pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>, source: &str) {
         result
@@ -74,17 +71,6 @@ impl<'src, I: Input<'src>> Inspector<'src, I> for ParserState {
     #[inline(always)]
     fn on_rewind<'parse>(&mut self, _: &Checkpoint<'src, 'parse, I, Self::Checkpoint>) {}
 }
-
-#[derive(Debug, Error)]
-pub enum ParserError {
-    #[error("Lexical error: {0}")]
-    LexerError(#[from] lexer::Error),
-
-    #[error("I/O error: {0}")]
-    IoError(#[from] std::io::Error),
-}
-
-pub type Result<T> = std::result::Result<T, ParserError>;
 
 struct SmallCollector<T, const N: usize>(SmallVec<T, N>);
 
@@ -208,7 +194,7 @@ mod tests {
     #[test]
     fn test_path_parser() {
         let source = "foo::bar::baz";
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = path();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -222,7 +208,7 @@ mod tests {
             let source = std::fs::read_to_string(&canonical_path).unwrap();
             let canonical_path = canonical_path.to_string_lossy().to_owned();
             let mut state =
-                ParserState::new(path!(stringify!($test_name)), canonical_path.clone()).unwrap();
+                ParserState::new(path!(stringify!($test_name)), canonical_path.clone());
             let parser = module();
             let token_stream = Token::stream(Ustr::from(&canonical_path), &source);
             let res = parser.parse_with_state(token_stream, &mut state);

@@ -420,14 +420,14 @@ expr_parser! {
     return_expr => |expr : P| {
         just(Token::Return)
             .ignore_then(expr.or_not())
-            .map(|e| Expr::Return(e))
+            .map(Expr::Return)
             .map_with(make_spanbox_with)
     };
 
     yield_expr => |expr : P| {
         just(Token::Yield)
             .ignore_then(expr.or_not())
-            .map(|e| Expr::Yield(e))
+            .map(Expr::Yield)
             .map_with(make_spanbox_with)
     };
 
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn test_expr_parser() {
         let source = "foo + bar * 123.0 + foo::baz::qux::<f32>((1 + 512) * test(), 2.0, true)";
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -514,7 +514,7 @@ mod tests {
     }
 }
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -533,7 +533,7 @@ match foo {
         |y, z : f32| (x + 2.0) * y / z
     },
 }"#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = expr();
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state);
