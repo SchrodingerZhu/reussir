@@ -1,7 +1,8 @@
 use crate::types::{TypeBox, type_box};
-use crate::{FloatLiteral, IntegerLiteral, SpanBox, Token, WithSpan, make_spanbox_with, path};
+use crate::{SpanBox, Token, WithSpan, make_spanbox_with, path};
 use chumsky::prelude::*;
 use either::Either;
+use reussir_core::literal::{FloatLiteral, IntegerLiteral};
 use reussir_core::types::Primitive;
 use reussir_core::{Location, Path};
 use ustr::Ustr;
@@ -75,6 +76,8 @@ pub enum Expr {
     Match(MatchExpr),
     Lambda(LambdaExpr),
     Cast(ExprBox, Primitive),
+    Return(Option<ExprBox>),
+    Yield(Option<ExprBox>),
 }
 
 #[derive(Debug, Clone)]
@@ -414,6 +417,20 @@ expr_parser! {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
 
+    return_expr => |expr : P| {
+        just(Token::Return)
+            .ignore_then(expr.or_not())
+            .map(|e| Expr::Return(e))
+            .map_with(make_spanbox_with)
+    };
+
+    yield_expr => |expr : P| {
+        just(Token::Yield)
+            .ignore_then(expr.or_not())
+            .map(|e| Expr::Yield(e))
+            .map_with(make_spanbox_with)
+    };
+
     pratt_expr => |atom : P| {
         use chumsky::pratt::*;
         let uop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
@@ -457,7 +474,9 @@ expr_parser! {
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
                 match_expr(expr.clone()),
-                paren_expr(expr),
+                paren_expr(expr.clone()),
+                return_expr(expr.clone()),
+                yield_expr(expr),
             ));
             pratt_expr(atom)
         })

@@ -14,13 +14,13 @@ use chumsky::{
     inspector::Inspector,
 };
 pub use expr::expr;
+pub use lexer::Token;
 use reussir_core::{Location, Path};
 use smallvec::SmallVec;
 pub use stmt::{Function, Stmt, StmtBox};
 use thiserror::Error;
 pub use types::type_decl;
 use ustr::Ustr;
-pub use {lexer::FloatLiteral, lexer::IntegerLiteral, lexer::Token};
 
 type RichError<'a> = Rich<'a, lexer::Token<'a>, Location>;
 type ParserExtra<'a> = chumsky::extra::Full<RichError<'a>, ParserState, ()>;
