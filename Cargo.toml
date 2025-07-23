@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/front"]
+members = ["crates/core", "crates/front", "crates/sema"]
 
 [profile.release]
 lto = true

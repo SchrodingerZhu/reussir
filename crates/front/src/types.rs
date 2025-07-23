@@ -367,7 +367,7 @@ mod tests {
         let input = r#"
         opaque MyType { alignment: 8u64, size: 64u64 }
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = opaque_type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -379,7 +379,7 @@ mod tests {
         let input = r#"
         opaque MyType { alignment: 8, size: -8.0f64 }
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = opaque_type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state);
@@ -392,7 +392,7 @@ mod tests {
         let input = r#"
         MyType<T, i32>
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = r#type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
@@ -403,7 +403,7 @@ mod tests {
         let input = r#"
         MyType<T, 12, f128, 21>
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = r#type();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state);
@@ -417,7 +417,7 @@ mod tests {
         struct MyStruct<T>(T, i32, f64);
         struct MyStruct2<T2>(T2, std::vec::Vec<T2>, f64);
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = tuple_like_struct()
             .separated_by(just(Token::Semicolon))
             .allow_trailing()
@@ -444,7 +444,7 @@ mod tests {
             value: i32,
         }
         "#;
-        let mut state = ParserState::new(path!("test"), "<stdin>").unwrap();
+        let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = type_decl().repeated().collect::<Vec<_>>();
         let token_stream = Token::stream(Ustr::from("<stdin>"), input);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();

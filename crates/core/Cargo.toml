@@ -10,7 +10,3 @@ rustc-hash = { version = "2.1.1", features = ["rand"] }
 strum = { version = "0.27.1", features = ["derive"] }
 ustr = "1.1.0"
 rustc_apfloat = "0.2.3"
-indexmap = "2.10.0"
-bumpalo = "3.19.0"
-rpds = "1.1.1"
-archery = "1.2.1"
