@@ -99,43 +99,83 @@ pub enum OperationKind<'a> {
 
 pub type Map<K, V> = HashTrieMap<K, V, RcK, FxRandomState>;
 
+pub enum DiagnosticLevel {
+    Error,
+    Warning,
+    Note,
+}
+
+pub struct Diagnostic {
+    level: DiagnosticLevel,
+    message: String,
+    location: Option<Location>,
+    nested_labels: Option<Box<[(Location, String)]>>,
+}
+
 pub struct IRBuilder<'a> {
     arena: &'a bumpalo::Bump,
     next_val: Cell<ValID>,
     value_types: RefCell<IndexMap<ValID, &'a Type>>,
     named_values: RefCell<Map<Ustr, ValID>>,
+    diagnostics: RefCell<Vec<Diagnostic>>,
 }
 
 impl<'a> IRBuilder<'a> {
-    pub fn snapshot(&self) -> Snapshot<'_, 'a> {
+    fn snapshot(&self) -> Snapshot {
         Snapshot {
-            parent: self,
             value_types: self.value_types.borrow().len(),
-            named_values: ManuallyDrop::new(self.named_values.borrow().clone()),
+            named_values: self.named_values.borrow().clone(),
         }
     }
-}
-
-pub struct Snapshot<'p, 'a: 'p> {
-    parent: &'p IRBuilder<'a>,
-    value_types: usize,
-    named_values: ManuallyDrop<Map<Ustr, ValID>>,
-}
-
-impl<'p, 'a> Drop for Snapshot<'p, 'a> {
-    fn drop(&mut self) {
-        self.parent
-            .value_types
-            .borrow_mut()
-            .truncate(self.value_types);
-        self.parent
-            .named_values
-            .replace(unsafe { ManuallyDrop::take(&mut self.named_values) });
+    fn recover_to(&self, snapshot: Snapshot) {
+        self.value_types.borrow_mut().truncate(snapshot.value_types);
+        self.named_values.replace(snapshot.named_values);
     }
+}
+
+pub struct Snapshot {
+    value_types: usize,
+    named_values: Map<Ustr, ValID>,
 }
 
 pub struct BlockBuilder<'p, 'a: 'p> {
     parent: &'p IRBuilder<'a>,
+    snapshot: ManuallyDrop<Snapshot>,
     operations: Vec<Operation<'a>>,
     location: Option<Location>,
+}
+
+impl<'p, 'a: 'p> BlockBuilder<'p, 'a> {
+    pub fn new(parent: &'p IRBuilder<'a>) -> Self {
+        let snapshot = parent.snapshot();
+        Self {
+            parent,
+            snapshot: ManuallyDrop::new(snapshot),
+            operations: Vec::new(),
+            location: None,
+        }
+    }
+
+    pub fn set_location(&mut self, location: Location) {
+        self.location = Some(location);
+    }
+
+    pub fn add_operation(&mut self, operation: Operation<'a>) {
+        self.operations.push(operation);
+    }
+
+    pub fn build(mut self) -> Block<'a> {
+        Block(
+            self.parent
+                .arena
+                .alloc_slice_fill_iter(self.operations.drain(..)),
+        )
+    }
+}
+
+impl Drop for BlockBuilder<'_, '_> {
+    fn drop(&mut self) {
+        let snapshot = unsafe { ManuallyDrop::take(&mut self.snapshot) };
+        self.parent.recover_to(snapshot);
+    }
 }
