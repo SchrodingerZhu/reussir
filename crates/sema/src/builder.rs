@@ -29,10 +29,16 @@ pub struct Diagnostic {
     nested_labels: Option<Box<[(Location, String)]>>,
 }
 
+#[derive(Clone)]
+pub struct ValueDef<'a> {
+    pub location: Option<Location>,
+    pub ty: &'a Type,
+}
+
 pub struct IRBuilder<'a> {
     arena: &'a bumpalo::Bump,
     next_val: Cell<ValID>,
-    value_types: RefCell<Map<ValID, &'a Type>>,
+    value_types: RefCell<Map<ValID, ValueDef<'a>>>,
     named_values: RefCell<Map<Ustr, ValID>>,
     diagnostics: RefCell<Vec<Diagnostic>>,
     primitive_types: RefCell<FxHashMapRand<Primitive, &'a Type>>,
@@ -54,6 +60,14 @@ impl<'a> IRBuilder<'a> {
         self.next_val.set(val + 1);
         val
     }
+    pub fn bind(&self, name: Ustr, value: ValID) {
+        self.named_values.borrow_mut().insert_mut(name, value);
+    }
+    pub fn lookup(&self, name: &Ustr) -> Option<(ValID, ValueDef<'a>)> {
+        let value = self.named_values.borrow().get(name).copied()?;
+        let def = self.value_types.borrow().get(&value).cloned()?;
+        Some((value, def))
+    }
     pub fn get_primitive_type(&self, primitive: Primitive) -> &'a Type {
         match self.primitive_types.borrow_mut().entry(primitive) {
             Entry::Occupied(entry) => entry.get(),
@@ -61,7 +75,7 @@ impl<'a> IRBuilder<'a> {
                 let ty = self.arena.alloc(Type::Atom {
                     capability: Capability::Default,
                     expr: TypeExpr {
-                        path: path!(&primitive.to_string()),
+                        path: path!(Into::<&'static str>::into(primitive)),
                         args: None,
                     },
                 });
@@ -85,7 +99,7 @@ impl<'a> IRBuilder<'a> {
     }
 }
 pub struct Snapshot<'a> {
-    value_types: Map<ValID, &'a Type>,
+    value_types: Map<ValID, ValueDef<'a>>,
     named_values: Map<Ustr, ValID>,
 }
 
@@ -154,6 +168,15 @@ impl<'p, 'b: 'p, 'a: 'b> OperationBuilder<'p, 'b, 'a> {
                 name: self.output_name,
             })
         });
+        if let Some(output) = &output {
+            self.parent.parent.value_types.borrow_mut().insert_mut(
+                output.value,
+                ValueDef {
+                    location: self.location,
+                    ty: output.ty,
+                },
+            );
+        }
         let operation = Operation {
             location: self.location,
             output,

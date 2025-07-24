@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use ustr::Ustr;
 
 use crate::{
@@ -16,6 +18,65 @@ pub struct Operation<'a> {
     pub location: Option<Location>,
     pub output: Option<&'a OutputValue<'a>>,
     pub kind: OperationKind<'a>,
+}
+
+pub struct CGContext<'a> {
+    output: std::fmt::Formatter<'a>,
+    identation: usize,
+}
+
+impl Operation<'_> {
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        (0..ctx.identation).try_for_each(|_| ctx.output.write_char('\t'))?;
+        match &self.output {
+            Some(OutputValue {
+                value,
+                ty: _,
+                name: _,
+            }) => {
+                write!(ctx.output, "%{value} = ")?;
+                self.kind.codegen(ctx)?;
+                write!(ctx.output, " : <todo-print-type>")?;
+            }
+            None => self.kind.codegen(ctx)?,
+        }
+        ctx.output.write_char('\n')
+    }
+}
+
+impl OperationKind<'_> {
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        match self {
+            OperationKind::FnCall { target, args } => todo!(),
+            OperationKind::CtorCall { ty, args } => todo!(),
+            OperationKind::VariantCall { ty, variant, args } => todo!(),
+            OperationKind::PartialApply { target, arg } => todo!(),
+            OperationKind::Evaluate { target } => todo!(),
+            OperationKind::FunctionToClosure { target } => todo!(),
+            OperationKind::InlineClosure { region } => todo!(),
+            OperationKind::Condition {
+                cond,
+                then_region,
+                else_region,
+            } => todo!(),
+            OperationKind::Yield(_) => todo!(),
+            OperationKind::Return(_) => todo!(),
+            OperationKind::Switch { cond, cases } => todo!(),
+            OperationKind::VariantCast { target, ty } => todo!(),
+            OperationKind::Proj { target, field } => todo!(),
+            OperationKind::ConstInt(integer_literal) => {
+                write!(ctx.output, "arith.constant {integer_literal}")
+            }
+            OperationKind::ConstFloat(float_literal) => {
+                write!(ctx.output, "arith.constant {float_literal}")
+            }
+            OperationKind::ConstantBool(value) => {
+                let val = if *value { 1 } else { 0 };
+                write!(ctx.output, "arith.constant {val}")
+            }
+            OperationKind::Unit => todo!(),
+        }
+    }
 }
 
 pub type ValID = usize;
@@ -88,4 +149,5 @@ pub enum OperationKind<'a> {
     ConstFloat(&'a FloatLiteral),
     ConstantBool(bool),
     Unit,
+    Panic(&'a str),
 }

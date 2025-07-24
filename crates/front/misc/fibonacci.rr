@@ -1,22 +1,22 @@
 
 pub fn fibonacci(n: u64) -> u64 {
-    if n <= 1 {
+    if n <= 1u64 {
         n
     } else {
-        fibonacci(n - 1) + fibonacci(n - 2)
+        fibonacci(n - 1u64) + fibonacci(n - 2u64)
     }
 }
 
 fn fibonacci_iter_impl(n: u64, acc0: u64, acc1: u64) -> u64 {
-    if n == 0 {
+    if n == 0u64 {
         acc0
     } else {
-        fibonacci_iter_impl(n - 1, acc1, acc0 + acc1)
+        fibonacci_iter_impl(n - 1u64, acc1, acc0 + acc1)
     }
 }
 
 pub fn fibonacci_iter(n: u64) -> u64 {
-    fibonacci_iter_impl(n, 0, 1)
+    fibonacci_iter_impl(n, 0u64, 1u64)
 }
 
 
@@ -31,16 +31,16 @@ fn fibonacci_logarithmic_impl(
     b10: u64,
     b11: u64,
 ) -> u64 {
-    if n == 0 {
+    if n == 0u64 {
         a01
     } else {
-        if n % 2 == 1 {
+        if n % 2u64 == 1u64 {
             let na00 = a00 * b00 + a01 * b10;
             let na01 = a00 * b01 + a01 * b11;
             let na10 = a10 * b00 + a11 * b10;
             let na11 = a10 * b01 + a11 * b11;
             fibonacci_logarithmic_impl(
-                n / 2,
+                n / 2u64,
                 na00,
                 na01,
                 na10,
@@ -52,7 +52,7 @@ fn fibonacci_logarithmic_impl(
             )
         } else {
             fibonacci_logarithmic_impl(
-                n / 2,
+                n / 2u64,
                 a00,
                 a01,
                 a10,
