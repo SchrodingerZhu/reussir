@@ -25,7 +25,7 @@ pub struct Block<'a>(pub &'a [Operation<'a>]);
 
 pub struct Symbol<'a> {
     pub path: Path,
-    pub type_params: Option<&'a [Type]>,
+    pub type_params: Option<&'a [&'a Type]>,
 }
 
 pub enum FieldIdentifer {
