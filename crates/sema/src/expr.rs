@@ -1,11 +1,12 @@
 use crate::Result;
 use crate::builder::BlockBuilder;
 use reussir_core::{
-    ir::{OperationKind, ValID},
+    ir::{OperationKind, Symbol, ValID},
     literal::{FloatLiteral, IntegerLiteral},
+    path,
     types::{Primitive, Type},
 };
-use reussir_front::expr::{BinaryOp, Expr, ExprBox};
+use reussir_front::expr::{BinaryOp, CallTarget, CallTargetSegment, Expr, ExprBox};
 use ustr::Ustr;
 
 pub struct ExprValue<'a> {
@@ -59,7 +60,23 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 };
                 self.unify(lhs_ty, rhs_ty)?;
                 match &**op {
-                    BinaryOp::Add => todo!(),
+                    BinaryOp::Add => {
+                        let target_function = path!["add", "core", "intrinsics", "arith"];
+                        let type_params = self.alloc_slice_fill_iter([lhs_ty]);
+                        let symbol = self.alloc(Symbol {
+                            path: target_function,
+                            type_params: Some(type_params),
+                        });
+                        let call = OperationKind::FnCall {
+                            target: symbol,
+                            args: Some(self.alloc_slice_fill_iter([lhs_value, rhs_value])),
+                        };
+                        operation_builder.add_output(lhs_ty, name);
+                        Ok(ExprValue {
+                            value: operation_builder.finish(call),
+                            ty: lhs_ty,
+                        })
+                    }
                     BinaryOp::Sub => todo!(),
                     BinaryOp::Mod => todo!(),
                     BinaryOp::Mul => todo!(),
@@ -82,6 +99,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             Expr::Unary(_, _) => todo!(),
             Expr::Boolean(value) => {
                 let bool_type = self.get_primitive_type(Primitive::Bool);
+                operation_builder.add_output(bool_type, name);
                 let val = operation_builder.finish(OperationKind::ConstantBool(*value));
                 Ok(ExprValue {
                     value: val,
@@ -93,6 +111,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     ($variant:ident) => {{
                         let int_type = self.get_primitive_type(Primitive::$variant);
                         let lit = self.parent.alloc(lit.clone());
+                        operation_builder.add_output(int_type, name);
                         let val = operation_builder.finish(OperationKind::ConstInt(lit));
                         Ok(ExprValue {
                             value: val,
@@ -118,6 +137,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     ($variant:ident) => {{
                         let float_type = self.get_primitive_type(Primitive::$variant);
                         let lit = self.alloc(lit.clone());
+                        operation_builder.add_output(float_type, name);
                         let val = operation_builder.finish(OperationKind::ConstFloat(lit));
                         Ok(ExprValue {
                             value: val,

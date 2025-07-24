@@ -73,6 +73,16 @@ impl<'a> IRBuilder<'a> {
     pub fn alloc<T: 'a>(&self, value: T) -> &'a T {
         self.arena.alloc(value)
     }
+    pub fn alloc_slice_fill_iter<
+        T: 'a,
+        I: IntoIterator<Item = T, IntoIter = II>,
+        II: ExactSizeIterator,
+    >(
+        &self,
+        iter: I,
+    ) -> &'a [T] {
+        self.arena.alloc_slice_fill_iter(iter)
+    }
 }
 pub struct Snapshot<'a> {
     value_types: Map<ValID, &'a Type>,
