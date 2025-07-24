@@ -7,7 +7,6 @@ edition = "2024"
 archery = "1.2.1"
 ariadne = "0.5.1"
 bumpalo = "3.19.0"
-indexmap = "2.10.0"
 reussir-core = { path = "../core" }
 reussir-front = { path = "../front" }
 rpds = "1.1.1"
