@@ -1,5 +1,4 @@
 use archery::RcK;
-use indexmap::IndexMap;
 use reussir_core::{
     Location,
     ir::{Block, Operation, OperationKind, OutputValue, ValID},
@@ -33,21 +32,21 @@ pub struct Diagnostic {
 pub struct IRBuilder<'a> {
     arena: &'a bumpalo::Bump,
     next_val: Cell<ValID>,
-    value_types: RefCell<IndexMap<ValID, &'a Type>>,
+    value_types: RefCell<Map<ValID, &'a Type>>,
     named_values: RefCell<Map<Ustr, ValID>>,
     diagnostics: RefCell<Vec<Diagnostic>>,
     primitive_types: RefCell<FxHashMapRand<Primitive, &'a Type>>,
 }
 
 impl<'a> IRBuilder<'a> {
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot<'a> {
         Snapshot {
-            value_types: self.value_types.borrow().len(),
+            value_types: self.value_types.borrow().clone(),
             named_values: self.named_values.borrow().clone(),
         }
     }
-    fn recover_to(&self, snapshot: Snapshot) {
-        self.value_types.borrow_mut().truncate(snapshot.value_types);
+    fn recover_to(&self, snapshot: Snapshot<'a>) {
+        self.value_types.replace(snapshot.value_types);
         self.named_values.replace(snapshot.named_values);
     }
     fn next_val(&self) -> ValID {
@@ -71,16 +70,18 @@ impl<'a> IRBuilder<'a> {
             }
         }
     }
+    pub fn alloc<T: 'a>(&self, value: T) -> &'a T {
+        self.arena.alloc(value)
+    }
 }
-
-pub struct Snapshot {
-    value_types: usize,
+pub struct Snapshot<'a> {
+    value_types: Map<ValID, &'a Type>,
     named_values: Map<Ustr, ValID>,
 }
 
 pub struct BlockBuilder<'p, 'a: 'p> {
-    parent: &'p IRBuilder<'a>,
-    snapshot: ManuallyDrop<Snapshot>,
+    pub(crate) parent: &'p IRBuilder<'a>,
+    snapshot: ManuallyDrop<Snapshot<'a>>,
     operations: RefCell<Vec<Operation<'a>>>,
 }
 
