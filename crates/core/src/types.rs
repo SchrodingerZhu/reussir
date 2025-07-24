@@ -154,6 +154,48 @@ impl Default for TypeDatabase {
     }
 }
 
+impl Type {
+    pub fn is_float(&self) -> bool {
+        match self {
+            Type::Atom {
+                capability: Capability::Default,
+                expr: TypeExpr { path, args: None },
+            } if path.prefix().is_empty() => [
+                Primitive::BF16,
+                Primitive::F16,
+                Primitive::F32,
+                Primitive::F64,
+                Primitive::F128,
+            ]
+            .iter()
+            .any(|&p| Into::<&'static str>::into(p) == path.basename()),
+            _ => false,
+        }
+    }
+    pub fn is_integer(&self) -> bool {
+        match self {
+            Type::Atom {
+                capability: Capability::Default,
+                expr: TypeExpr { path, args: None },
+            } if path.prefix().is_empty() => [
+                Primitive::I8,
+                Primitive::I16,
+                Primitive::I32,
+                Primitive::I64,
+                Primitive::I128,
+                Primitive::U8,
+                Primitive::U16,
+                Primitive::U32,
+                Primitive::U64,
+                Primitive::U128,
+            ]
+            .iter()
+            .any(|&p| Into::<&'static str>::into(p) == path.basename()),
+            _ => false,
+        }
+    }
+}
+
 impl TypeDatabase {
     pub fn new() -> Self {
         TypeDatabase {

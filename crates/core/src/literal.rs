@@ -32,6 +32,23 @@ impl std::fmt::Debug for IntegerLiteral {
     }
 }
 
+impl std::fmt::Display for IntegerLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntegerLiteral::I8(val) => write!(f, "{val}"),
+            IntegerLiteral::I16(val) => write!(f, "{val}"),
+            IntegerLiteral::I32(val) => write!(f, "{val}"),
+            IntegerLiteral::I64(val) => write!(f, "{val}"),
+            IntegerLiteral::I128(val) => write!(f, "{val}"),
+            IntegerLiteral::U8(val) => write!(f, "{val}"),
+            IntegerLiteral::U16(val) => write!(f, "{val}"),
+            IntegerLiteral::U32(val) => write!(f, "{val}"),
+            IntegerLiteral::U64(val) => write!(f, "{val}"),
+            IntegerLiteral::U128(val) => write!(f, "{val}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub enum FloatLiteral {
     BF16(BFloat),
@@ -49,6 +66,18 @@ impl std::fmt::Debug for FloatLiteral {
             FloatLiteral::F32(val) => write!(f, "{val}f32"),
             FloatLiteral::F64(val) => write!(f, "{val}f64"),
             FloatLiteral::F128(val) => write!(f, "{val}f128"),
+        }
+    }
+}
+
+impl std::fmt::Display for FloatLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FloatLiteral::BF16(val) => write!(f, "{val}"),
+            FloatLiteral::F16(val) => write!(f, "{val}"),
+            FloatLiteral::F32(val) => write!(f, "{val}"),
+            FloatLiteral::F64(val) => write!(f, "{val}"),
+            FloatLiteral::F128(val) => write!(f, "{val}"),
         }
     }
 }

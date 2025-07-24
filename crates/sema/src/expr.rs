@@ -1,5 +1,5 @@
-use crate::Result;
 use crate::builder::BlockBuilder;
+use crate::{Result, builder::ValueDef};
 use reussir_core::{
     ir::{OperationKind, Symbol, ValID},
     literal::{FloatLiteral, IntegerLiteral},
@@ -16,7 +16,7 @@ pub struct ExprValue<'a> {
 
 impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
     pub fn unify(&self, lhs: &'a Type, rhs: &'a Type) -> Result<'a, ()> {
-        if lhs == rhs {
+        if core::ptr::eq(lhs, rhs) || lhs == rhs {
             return Ok(());
         } else {
             unimplemented!("cannot handle unification besides equality for now");
@@ -58,10 +58,15 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 else {
                     todo!("report internal error if rhs_value is None");
                 };
-                self.unify(lhs_ty, rhs_ty)?;
-                match &**op {
-                    BinaryOp::Add => {
-                        let target_function = path!["add", "core", "intrinsics", "arith"];
+
+                macro_rules! arith_intrinsic_call {
+                    (unify $target:ident) => {{
+                        self.unify(lhs_ty, rhs_ty)?;
+                        if !lhs_ty.is_float() && !lhs_ty.is_integer() {
+                            todo!("report error for unsupported type for arithmetic operations");
+                        }
+                        let target_function =
+                            path![stringify!(target), "core", "intrinsics", "arith"];
                         let type_params = self.alloc_slice_fill_iter([lhs_ty]);
                         let symbol = self.alloc(Symbol {
                             path: target_function,
@@ -76,16 +81,19 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             value: operation_builder.finish(call),
                             ty: lhs_ty,
                         })
-                    }
-                    BinaryOp::Sub => todo!(),
-                    BinaryOp::Mod => todo!(),
-                    BinaryOp::Mul => todo!(),
-                    BinaryOp::Div => todo!(),
+                    }};
+                }
+                match &**op {
+                    BinaryOp::Add => arith_intrinsic_call!(unify add),
+                    BinaryOp::Sub => arith_intrinsic_call!(unify sub),
+                    BinaryOp::Mod => arith_intrinsic_call!(unify mod),
+                    BinaryOp::Mul => arith_intrinsic_call!(unify mul),
+                    BinaryOp::Div => arith_intrinsic_call!(unify div),
                     BinaryOp::LAnd => todo!(),
                     BinaryOp::BAnd => todo!(),
                     BinaryOp::LOr => todo!(),
                     BinaryOp::BOr => todo!(),
-                    BinaryOp::Xor => todo!(),
+                    BinaryOp::Xor => arith_intrinsic_call!(unify xor),
                     BinaryOp::Shr => todo!(),
                     BinaryOp::Shl => todo!(),
                     BinaryOp::Eq => todo!(),
@@ -153,15 +161,71 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     FloatLiteral::F128(_) => codegen_float!(F128),
                 }
             }
-            Expr::Variable(x) => todo!(),
+            Expr::Variable(x) => {
+                let Some((val, ValueDef { ty, .. })) = self.parent.lookup(&x.as_str().into())
+                else {
+                    todo!("report error for undefined variable {x}");
+                };
+                Ok(ExprValue {
+                    value: Some(val),
+                    ty,
+                })
+            }
             Expr::IfThenElse(_, _, _) => todo!(),
             Expr::Sequence(items) => todo!(),
-            Expr::Let(_, _, _) => todo!(),
+            Expr::Let(x, ty, val) => {
+                let ExprValue {
+                    value: Some(val),
+                    ty: expr_ty,
+                } = self.add_expr(val, true, Some(x.as_str().into()))?
+                else {
+                    todo!("report internal error if value is None");
+                };
+                if let Some(ty) = ty {
+                    self.unify(expr_ty, ty)?;
+                }
+                let unit_ty = self.get_primitive_type(Primitive::Unit);
+                if used {
+                    operation_builder.add_output(unit_ty, name);
+                }
+                Ok(ExprValue {
+                    value: operation_builder.finish(OperationKind::Unit),
+                    ty: unit_ty,
+                })
+            }
             Expr::Call(_, items) => todo!(),
             Expr::CtorCall(_, items) => todo!(),
             Expr::Match(match_expr) => todo!(),
             Expr::Lambda(lambda_expr) => todo!(),
-            Expr::Cast(_, primitive) => todo!(),
+            Expr::Cast(expr, primitive) => {
+                let ExprValue {
+                    value: Some(value),
+                    ty: expr_ty,
+                } = self.add_expr(expr, true, None)?
+                else {
+                    todo!("report internal error if value is None");
+                };
+                if !expr_ty.is_float() && !expr_ty.is_integer() {
+                    todo!("report error for unsupported type for cast");
+                }
+                let target_type = self.get_primitive_type(*primitive);
+                operation_builder.add_output(target_type, name);
+                let target_function = path!["cast", "core", "intrinsics", "arith"];
+                let type_params = self.alloc_slice_fill_iter([expr_ty, target_type]);
+                let symbol = self.alloc(Symbol {
+                    path: target_function,
+                    type_params: Some(type_params),
+                });
+                operation_builder.add_output(target_type, name);
+                let call = OperationKind::FnCall {
+                    target: symbol,
+                    args: Some(self.alloc_slice_fill_iter([value])),
+                };
+                Ok(ExprValue {
+                    value: operation_builder.finish(call),
+                    ty: target_type,
+                })
+            }
             Expr::Return(_) => todo!(),
             Expr::Yield(_) => todo!(),
         }
