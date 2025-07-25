@@ -6,6 +6,7 @@
 #book-meta(title: "Reussir Book", summary: [
   #prefix-chapter("chapters/about.typ")[About]
   = Language Reference
+  - #chapter("chapters/language/syntax.typ")[Syntax]
   - #chapter("chapters/language/reference-capabilities.typ")[Reference Capabilities]
   = Development Guide
   - #chapter("chapters/development/compilation-process.typ")[Compilation Process]
