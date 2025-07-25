@@ -45,6 +45,16 @@ pub struct IRBuilder<'a> {
 }
 
 impl<'a> IRBuilder<'a> {
+    pub fn new(arena: &'a bumpalo::Bump) -> Self {
+        Self {
+            arena,
+            next_val: Cell::new(0),
+            value_types: RefCell::new(Map::default()),
+            named_values: RefCell::new(Map::default()),
+            diagnostics: RefCell::new(Vec::new()),
+            primitive_types: RefCell::new(FxHashMapRand::default()),
+        }
+    }
     fn snapshot(&self) -> Snapshot<'a> {
         Snapshot {
             value_types: self.value_types.borrow().clone(),

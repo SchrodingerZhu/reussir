@@ -587,6 +587,7 @@ dependencies = [
  "archery",
  "ariadne",
  "bumpalo",
+ "chumsky",
  "reussir-core",
  "reussir-front",
  "rpds",

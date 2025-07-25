@@ -66,7 +66,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             todo!("report error for unsupported type for arithmetic operations");
                         }
                         let target_function =
-                            path![stringify!(target), "core", "intrinsics", "arith"];
+                            path![stringify!($target), "core", "intrinsics", "arith"];
                         let type_params = self.alloc_slice_fill_iter([lhs_ty]);
                         let symbol = self.alloc(Symbol {
                             path: target_function,
@@ -229,6 +229,37 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             }
             Expr::Return(_) => todo!(),
             Expr::Yield(_) => todo!(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use reussir_front::lexer::Token;
+
+    use crate::builder::IRBuilder;
+
+    use super::*;
+
+    #[test]
+    fn test_add_expr() {
+        use chumsky::prelude::*;
+        let bump = bumpalo::Bump::new();
+        let builder = IRBuilder::new(&bump);
+        let mut parser_state = reussir_front::ParserState::new(path!("test"), "<stdin>");
+        let expr_input = "1 + 2";
+        let expr_parser = reussir_front::expr::expr();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), expr_input);
+        let res = expr_parser
+            .parse_with_state(token_stream, &mut parser_state)
+            .unwrap();
+        let blk_builder = BlockBuilder::new(&builder);
+        blk_builder
+            .add_expr(&res, true, Some(Ustr::from("result")))
+            .expect("Failed to add expression");
+        let blk = blk_builder.build();
+        for op in blk.0 {
+            println!("{:?}", op);
         }
     }
 }
