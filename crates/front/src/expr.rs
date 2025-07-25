@@ -431,6 +431,18 @@ expr_parser! {
             .map_with(make_spanbox_with)
     };
 
+    empty_return -> {
+        just(Token::Return)
+            .map(|_| Expr::Return(None))
+            .map_with(make_spanbox_with)
+    };
+
+    empty_yield -> {
+        just(Token::Yield)
+            .map(|_| Expr::Yield(None))
+            .map_with(make_spanbox_with)
+    };
+
     pratt_expr => |atom : P| {
         use chumsky::pratt::*;
         let uop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
@@ -438,6 +450,8 @@ expr_parser! {
         let cast = postfix(60, cast_postfix(), |expr, prim, m| make_spanbox_with(Expr::Cast(expr, prim), m));
         let unary = | a, b, p | prefix(p, uop(a, b), move |op, rhs, m| { make_spanbox_with(Expr::Unary(op, rhs), m) });
         let binary = | a, b, p | infix(right(p), bop(a, b), move |lhs, op, rhs, m| { make_spanbox_with(Expr::Binary(lhs, op, rhs), m) });
+        let return_expr = prefix(0, just(Token::Return), move |_, expr, m| { make_spanbox_with(Expr::Return(Some(expr)), m) });
+        let yield_expr = prefix(0, just(Token::Yield), move |_, expr, m| { make_spanbox_with(Expr::Yield(Some(expr)), m) });
         atom.pratt((
             unary(Token::Bang, UnaryOp::Not, 50),
             unary(Token::Minus, UnaryOp::Neg, 50),
@@ -460,6 +474,8 @@ expr_parser! {
             binary(Token::AndAnd, BinaryOp::LAnd, 10),
             binary(Token::OrOr, BinaryOp::LOr, 5),
             cast,
+            return_expr,
+            yield_expr,
         ))
     };
 
@@ -475,8 +491,8 @@ expr_parser! {
                 braced_expr_sequence(expr.clone()),
                 match_expr(expr.clone()),
                 paren_expr(expr.clone()),
-                return_expr(expr.clone()),
-                yield_expr(expr),
+                empty_return(),
+                empty_yield(),
             ));
             pratt_expr(atom)
         })
