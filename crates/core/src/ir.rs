@@ -78,6 +78,7 @@ impl OperationKind<'_> {
             }
             OperationKind::Unit => todo!(),
             OperationKind::Panic(_) => todo!(),
+            OperationKind::Poison => todo!(),
         }
     }
 }
@@ -158,4 +159,5 @@ pub enum OperationKind<'a> {
     ConstantBool(bool),
     Unit,
     Panic(&'a str),
+    Poison,
 }

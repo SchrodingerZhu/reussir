@@ -1,4 +1,5 @@
 use archery::RcK;
+use ariadne::{Report, sources};
 use reussir_core::{
     Location,
     ir::{Block, Operation, OperationKind, OutputValue, ValID},
@@ -16,17 +17,47 @@ use ustr::Ustr;
 
 pub type Map<K, V> = HashTrieMap<K, V, RcK, FxRandomState>;
 
+#[derive(Debug, Clone, Copy)]
 pub enum DiagnosticLevel {
     Error,
     Warning,
     Note,
+    Ice,
 }
 
-pub struct Diagnostic {
+pub struct Diagnostic<'a> {
     level: DiagnosticLevel,
-    message: String,
-    location: Option<Location>,
-    nested_labels: Option<Box<[(Location, String)]>>,
+    message: &'a str,
+    location: Location,
+    nested_labels: Option<&'a [(Location, &'a str)]>,
+    backtrace: Option<Box<std::backtrace::Backtrace>>,
+}
+
+impl Diagnostic<'_> {
+    pub fn create_report(&self) -> Report<'static, Location> {
+        let (kind, color) = match self.level {
+            DiagnosticLevel::Error => (ariadne::ReportKind::Error, ariadne::Color::Red),
+            DiagnosticLevel::Warning => (ariadne::ReportKind::Warning, ariadne::Color::Yellow),
+            DiagnosticLevel::Note => (ariadne::ReportKind::Advice, ariadne::Color::Blue),
+            DiagnosticLevel::Ice => (ariadne::ReportKind::Advice, ariadne::Color::Magenta),
+        };
+        let mut builder = Report::build(kind, self.location)
+            .with_config(
+                ariadne::Config::default()
+                    .with_index_type(ariadne::IndexType::Char)
+                    .with_color(true),
+            )
+            .with_message(self.message)
+            .with_label(ariadne::Label::new(self.location).with_color(color));
+        for (location, message) in self.nested_labels.unwrap_or_default() {
+            builder = builder.with_label(
+                ariadne::Label::new(*location)
+                    .with_message(*message)
+                    .with_color(ariadne::Color::Cyan),
+            );
+        }
+        builder.finish()
+    }
 }
 
 #[derive(Clone)]
@@ -40,8 +71,44 @@ pub struct IRBuilder<'a> {
     next_val: Cell<ValID>,
     value_types: RefCell<Map<ValID, ValueDef<'a>>>,
     named_values: RefCell<Map<Ustr, ValID>>,
-    diagnostics: RefCell<Vec<Diagnostic>>,
+    diagnostics: RefCell<Vec<Diagnostic<'a>>>,
     primitive_types: RefCell<FxHashMapRand<Primitive, &'a Type>>,
+}
+
+pub struct DiagnosticBuilder<'b, 'a: 'b> {
+    builder: &'b IRBuilder<'a>,
+    level: DiagnosticLevel,
+    message: &'a str,
+    location: Location,
+    nested_labels: Vec<(Location, &'a str)>,
+    backtrace: Option<Box<std::backtrace::Backtrace>>,
+}
+
+impl<'b, 'a: 'b> DiagnosticBuilder<'b, 'a> {
+    pub fn add_nested_label(mut self, location: Location, message: &'a str) -> Self {
+        self.nested_labels.push((location, message));
+        self
+    }
+}
+
+impl<'b, 'a: 'b> Drop for DiagnosticBuilder<'b, 'a> {
+    fn drop(&mut self) {
+        let diagnostic = Diagnostic {
+            level: self.level,
+            message: self.message,
+            location: self.location,
+            nested_labels: if self.nested_labels.is_empty() {
+                None
+            } else {
+                Some(
+                    self.builder
+                        .alloc_slice_fill_iter(self.nested_labels.drain(..)),
+                )
+            },
+            backtrace: self.backtrace.take(),
+        };
+        self.builder.diagnostics.borrow_mut().push(diagnostic);
+    }
 }
 
 impl<'a> IRBuilder<'a> {
@@ -53,6 +120,36 @@ impl<'a> IRBuilder<'a> {
             named_values: RefCell::new(Map::default()),
             diagnostics: RefCell::new(Vec::new()),
             primitive_types: RefCell::new(FxHashMapRand::default()),
+        }
+    }
+    pub fn report_errors(&self, source: &str, file: Ustr) {
+        let _lock_out = std::io::stdout().lock();
+        let _lock_err = std::io::stderr().lock();
+        for e in self.diagnostics.borrow().iter() {
+            let report = e.create_report();
+            report.eprint(sources([(file, source)])).unwrap();
+        }
+    }
+    pub fn has_errors(&self) -> bool {
+        !self.diagnostics.borrow().is_empty()
+    }
+    pub fn diagnostic(
+        &self,
+        level: DiagnosticLevel,
+        message: &'a str,
+        location: Location,
+    ) -> DiagnosticBuilder<'_, 'a> {
+        DiagnosticBuilder {
+            builder: self,
+            level,
+            message,
+            location,
+            nested_labels: Vec::new(),
+            backtrace: if matches!(level, DiagnosticLevel::Ice) {
+                Some(Box::new(std::backtrace::Backtrace::capture()))
+            } else {
+                None
+            },
         }
     }
     fn snapshot(&self) -> Snapshot<'a> {

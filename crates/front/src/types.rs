@@ -42,7 +42,7 @@ where
                 .or_not(),
         )
         .map(|(path, args)| TypeExpr { path, args })
-        .labelled("type application")
+        .labelled("type expression")
 }
 
 pub(crate) fn r#type<'a, I>() -> impl Parser<'a, I, Type, ParserExtra<'a>> + Clone
@@ -62,7 +62,8 @@ where
             just(Token::At).to(Capability::Field),
         ))
         .or_not()
-        .map(|x| x.unwrap_or(Capability::Default));
+        .map(|x| x.unwrap_or(Capability::Default))
+        .labelled("capability modifier");
         let atom = capability
             .then(ty_expr)
             .map(|(capability, expr)| Type::Atom { capability, expr });

@@ -1,12 +1,12 @@
-use crate::builder::BlockBuilder;
-use crate::{Result, builder::ValueDef};
+use crate::builder::ValueDef;
+use crate::builder::{BlockBuilder, DiagnosticLevel};
 use reussir_core::{
     ir::{OperationKind, Symbol, ValID},
     literal::{FloatLiteral, IntegerLiteral},
     path,
     types::{Primitive, Type},
 };
-use reussir_front::expr::{BinaryOp, CallTarget, CallTargetSegment, Expr, ExprBox};
+use reussir_front::expr::{BinaryOp, Expr, ExprBox};
 use ustr::Ustr;
 
 pub struct ExprValue<'a> {
@@ -15,20 +15,36 @@ pub struct ExprValue<'a> {
 }
 
 impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
-    pub fn unify(&self, lhs: &'a Type, rhs: &'a Type) -> Result<'a, ()> {
+    pub fn unify(&self, lhs: &'a Type, rhs: &'a Type) -> bool {
         if core::ptr::eq(lhs, rhs) || lhs == rhs {
-            return Ok(());
+            true
         } else {
-            unimplemented!("cannot handle unification besides equality for now");
+            // Cannot unify besides pure equality for now
+            false
         }
     }
-    // TODO: should not do short-circuiting here. All errors should be reported.
-    pub fn add_expr(
-        &self,
-        expr: &ExprBox,
-        used: bool,
-        name: Option<Ustr>,
-    ) -> Result<'a, ExprValue<'a>> {
+
+    fn add_poison(&self, ty: &'a Type) -> ExprValue<'a> {
+        let mut operation_builder = self.new_operation();
+        operation_builder.add_output(ty, None);
+        let val = operation_builder.finish(OperationKind::Poison);
+        ExprValue { value: val, ty }
+    }
+
+    fn add_poison_never(&self) -> ExprValue<'a> {
+        let ty = self.get_primitive_type(Primitive::Never);
+        self.add_poison(ty)
+    }
+
+    fn add_panic(&self, message: &'a str) -> (usize, &'a Type) {
+        let mut operation_builder = self.new_operation();
+        let never = self.get_primitive_type(Primitive::Never);
+        operation_builder.add_output(never, None);
+        let value = operation_builder.finish(OperationKind::Panic(message));
+        (value.unwrap(), never)
+    }
+
+    pub fn add_expr(&self, expr: &ExprBox, used: bool, name: Option<Ustr>) -> ExprValue<'a> {
         let mut operation_builder = self.new_operation();
         operation_builder.add_location(expr.location());
         match &***expr {
@@ -38,30 +54,45 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     operation_builder.add_output(unit, name);
                 }
                 let val = operation_builder.finish(OperationKind::Unit);
-                Ok(ExprValue {
+                ExprValue {
                     value: val,
                     ty: unit,
-                })
+                }
             }
             Expr::Binary(lhs, op, rhs) => {
                 let ExprValue {
                     value: Some(lhs_value),
                     ty: lhs_ty,
-                } = self.add_expr(lhs, true, None)?
+                } = self.add_expr(lhs, true, None)
                 else {
-                    todo!("report internal error if lhs_value is None");
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "LHS does not return a value properly",
+                        expr.location(),
+                    );
+                    return self.add_poison_never();
                 };
                 let ExprValue {
                     value: Some(rhs_value),
                     ty: rhs_ty,
-                } = self.add_expr(rhs, true, None)?
+                } = self.add_expr(rhs, true, None)
                 else {
-                    todo!("report internal error if rhs_value is None");
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "RHS does not return a value properly",
+                        expr.location(),
+                    );
+                    return self.add_poison_never();
                 };
-
                 macro_rules! arith_intrinsic_call {
                     (unify $target:ident) => {{
-                        self.unify(lhs_ty, rhs_ty)?;
+                        if !self.unify(lhs_ty, rhs_ty) {
+                            self.diagnostic(
+                                DiagnosticLevel::Error,
+                                "type mismatch in arithmetic operation",
+                                expr.location(),
+                            );
+                        }
                         if !lhs_ty.is_float() && !lhs_ty.is_integer() {
                             todo!("report error for unsupported type for arithmetic operations");
                         }
@@ -77,10 +108,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             args: Some(self.alloc_slice_fill_iter([lhs_value, rhs_value])),
                         };
                         operation_builder.add_output(lhs_ty, name);
-                        Ok(ExprValue {
+                        ExprValue {
                             value: operation_builder.finish(call),
                             ty: lhs_ty,
-                        })
+                        }
                     }};
                 }
                 match &**op {
@@ -109,10 +140,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 let bool_type = self.get_primitive_type(Primitive::Bool);
                 operation_builder.add_output(bool_type, name);
                 let val = operation_builder.finish(OperationKind::ConstantBool(*value));
-                Ok(ExprValue {
+                ExprValue {
                     value: val,
                     ty: bool_type,
-                })
+                }
             }
             Expr::Integer(lit) => {
                 macro_rules! codegen_integer {
@@ -121,10 +152,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         let lit = self.parent.alloc(lit.clone());
                         operation_builder.add_output(int_type, name);
                         let val = operation_builder.finish(OperationKind::ConstInt(lit));
-                        Ok(ExprValue {
+                        ExprValue {
                             value: val,
                             ty: int_type,
-                        })
+                        }
                     }};
                 }
                 match lit {
@@ -147,10 +178,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         let lit = self.alloc(lit.clone());
                         operation_builder.add_output(float_type, name);
                         let val = operation_builder.finish(OperationKind::ConstFloat(lit));
-                        Ok(ExprValue {
+                        ExprValue {
                             value: val,
                             ty: float_type,
-                        })
+                        }
                     }};
                 }
                 match lit {
@@ -164,12 +195,17 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             Expr::Variable(x) => {
                 let Some((val, ValueDef { ty, .. })) = self.parent.lookup(&x.as_str().into())
                 else {
-                    todo!("report error for undefined variable {x}");
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "value not defined in value types",
+                        expr.location(),
+                    );
+                    return self.add_poison_never();
                 };
-                Ok(ExprValue {
+                ExprValue {
                     value: Some(val),
                     ty,
-                })
+                }
             }
             Expr::IfThenElse(_, _, _) => todo!(),
             Expr::Sequence(items) => todo!(),
@@ -177,39 +213,60 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 let ExprValue {
                     value: Some(val),
                     ty: expr_ty,
-                } = self.add_expr(val, true, Some(x.as_str().into()))?
+                } = self.add_expr(val, true, Some(x.as_str().into()))
                 else {
-                    todo!("report internal error if value is None");
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "value does not return a value properly",
+                        expr.location(),
+                    );
+                    return self.add_poison_never();
                 };
                 let ty = self.alloc(ty.clone());
-                if let Some(ty) = ty {
-                    self.unify(expr_ty, ty)?;
+                if let Some(ty) = ty
+                    && !self.unify(expr_ty, ty)
+                {
+                    self.diagnostic(
+                        DiagnosticLevel::Error,
+                        "type mismatch in let binding",
+                        expr.location(),
+                    );
                 }
                 let unit_ty = self.get_primitive_type(Primitive::Unit);
                 if used {
                     operation_builder.add_output(unit_ty, name);
                 }
-                Ok(ExprValue {
+                ExprValue {
                     value: operation_builder.finish(OperationKind::Unit),
                     ty: unit_ty,
-                })
+                }
             }
             Expr::Call(_, items) => todo!(),
             Expr::CtorCall(_, items) => todo!(),
             Expr::Match(match_expr) => todo!(),
             Expr::Lambda(lambda_expr) => todo!(),
             Expr::Cast(expr, primitive) => {
+                let target_type = self.get_primitive_type(*primitive);
                 let ExprValue {
                     value: Some(value),
                     ty: expr_ty,
-                } = self.add_expr(expr, true, None)?
+                } = self.add_expr(expr, true, None)
                 else {
-                    todo!("report internal error if value is None");
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "value does not return a value properly",
+                        expr.location(),
+                    );
+                    return self.add_poison(target_type);
                 };
                 if !expr_ty.is_float() && !expr_ty.is_integer() {
-                    todo!("report error for unsupported type for cast");
+                    self.diagnostic(
+                        DiagnosticLevel::Error,
+                        "cannot cast non-numeric type",
+                        expr.location(),
+                    );
+                    return self.add_poison(target_type);
                 }
-                let target_type = self.get_primitive_type(*primitive);
                 operation_builder.add_output(target_type, name);
                 let target_function = path!["cast", "core", "intrinsics", "arith"];
                 let type_params = self.alloc_slice_fill_iter([expr_ty, target_type]);
@@ -222,10 +279,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     target: symbol,
                     args: Some(self.alloc_slice_fill_iter([value])),
                 };
-                Ok(ExprValue {
+                ExprValue {
                     value: operation_builder.finish(call),
                     ty: target_type,
-                })
+                }
             }
             Expr::Return(_) => todo!(),
             Expr::Yield(_) => todo!(),
@@ -242,7 +299,7 @@ mod tests {
     use super::*;
 
     macro_rules! test_expr_codegen {
-        ($input:literal, $name:ident) => {
+        ($input:literal, $name:ident, $has_error:expr) => {
             #[test]
             fn $name() {
                 use chumsky::prelude::*;
@@ -255,21 +312,36 @@ mod tests {
                 let res = expr_parser
                     .parse_with_state(token_stream, &mut parser_state)
                     .unwrap();
-                let blk_builder = BlockBuilder::new(&builder);
-                blk_builder
-                    .add_expr(&res, true, Some(Ustr::from("result")))
-                    .expect("Failed to add expression");
-                let blk = blk_builder.build();
-                for op in blk.0 {
-                    println!("{:?}", op);
+                {
+                    let blk_builder = BlockBuilder::new(&builder);
+                    blk_builder.add_expr(&res, true, Some(Ustr::from("result")));
+                    let blk = blk_builder.build();
+                    for op in blk.0 {
+                        println!("{:?}", op);
+                    }
+                }
+                builder.report_errors(expr_input, Ustr::from("<stdin>"));
+                if $has_error {
+                    assert!(
+                        builder.has_errors(),
+                        "Expected errors during code generation"
+                    );
+                } else {
+                    assert!(
+                        !builder.has_errors(),
+                        "Unexpected errors during code generation"
+                    );
                 }
             }
         };
     }
 
-    test_expr_codegen!("1 + 2", test_addition_codegen);
+    test_expr_codegen!("1 + 2", test_addition_codegen, false);
     test_expr_codegen!(
         "1.0 * 2.0 + 3.0 * (114.512 + 1.0) + (5 * 5) as f32",
-        test_complex_arithmetic_codegen
+        test_complex_arithmetic_codegen,
+        false
     );
+    test_expr_codegen!("12 as f32 + () as f32", test_casting_unit_error, true);
+    test_expr_codegen!("1.0 + 12 as f64 + 1.0f32", test_mismatched_types, true);
 }
