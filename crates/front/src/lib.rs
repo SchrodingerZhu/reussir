@@ -42,6 +42,8 @@ impl ParserState {
         }
     }
     pub fn print_result<T>(&self, result: &ParseResult<T, RichError<'_>>, source: &str) {
+        let _lock_out = std::io::stdout().lock();
+        let _lock_err = std::io::stderr().lock();
         result
             .errors()
             .cloned()
@@ -56,7 +58,7 @@ impl ParserState {
                     .with_message(e.reason())
                     .with_label(ariadne::Label::new(*e.span()).with_color(ariadne::Color::Red))
                     .finish()
-                    .print(sources([(self.input_file, source)]))
+                    .eprint(sources([(self.input_file, source)]))
                     .unwrap();
             });
     }
