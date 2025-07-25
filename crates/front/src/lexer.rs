@@ -214,6 +214,8 @@ pub enum Token<'src> {
     Let,
     #[token("if")]
     If,
+    #[token("cond")]
+    Cond,
     #[token("else")]
     Else,
     #[token("match")]

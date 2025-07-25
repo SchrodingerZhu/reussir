@@ -75,6 +75,7 @@ impl OperationKind<'_> {
                 write!(ctx.output, "arith.constant {val}")
             }
             OperationKind::Unit => todo!(),
+            OperationKind::Panic(_) => todo!(),
         }
     }
 }

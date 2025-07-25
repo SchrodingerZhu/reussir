@@ -181,6 +181,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 else {
                     todo!("report internal error if value is None");
                 };
+                let ty = self.alloc(ty.clone());
                 if let Some(ty) = ty {
                     self.unify(expr_ty, ty)?;
                 }
