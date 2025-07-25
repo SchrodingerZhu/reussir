@@ -58,6 +58,11 @@ pub struct LambdaExpr {
     pub body: ExprBox,
     pub anno: Option<TypeBox>,
 }
+#[derive(Debug, Clone)]
+pub enum CondArm {
+    Expr(ExprBox, ExprBox),
+    Otherwise(ExprBox),
+}
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -78,6 +83,7 @@ pub enum Expr {
     Cast(ExprBox, Primitive),
     Return(Option<ExprBox>),
     Yield(Option<ExprBox>),
+    Cond(Box<[CondArm]>),
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +435,29 @@ expr_parser! {
             .map_with(make_spanbox_with)
     };
 
+    cond_expr => |expr : P| {
+        let arm = expr.clone()
+            .then_ignore(just(Token::FatArrow))
+            .then(expr.clone())
+            .map(|(cond, body)| CondArm::Expr(cond, body));
+        let otherwise = just(Token::Underscore)
+            .ignore_then(just(Token::FatArrow))
+            .ignore_then(expr)
+            .map(CondArm::Otherwise);
+        let body = arm.separated_by(just(Token::Comma))
+            .collect::<Vec<_>>()
+            .then_ignore(just(Token::Comma))
+            .then(otherwise)
+            .then_ignore(just(Token::Comma).or_not())
+            .map(|(mut arms, otherwise)| {
+                arms.push(otherwise);
+                Expr::Cond(arms.into_boxed_slice())
+            });
+        just(Token::Cond)
+            .ignore_then(body.delimited_by(just(Token::LBrace), just(Token::RBrace)))
+            .map_with(make_spanbox_with)
+    };
+
     pratt_expr => |atom : P| {
         use chumsky::pratt::*;
         let uop = | a, b | just(a).to_span().map(move |s| WithSpan(b, s));
@@ -476,6 +505,7 @@ expr_parser! {
                 let_expr(expr.clone()),
                 braced_expr_sequence(expr.clone()),
                 match_expr(expr.clone()),
+                cond_expr(expr.clone()),
                 paren_expr(expr.clone()),
                 empty_return(),
                 empty_yield(),
@@ -521,6 +551,25 @@ mod tests {
         let token_stream = Token::stream(Ustr::from("<stdin>"), source);
         let result = parser.parse_with_state(token_stream, &mut state).unwrap();
         println!("{:#?}", result);
+    }
+
+    #[test]
+    fn test_cond_expr_parser() {
+        let source = r#"
+{
+    cond {
+        x <= y => x + 1,
+        x <= z => x + 2,
+        _ => x + 3,
+    }
+}
+        "#;
+        let mut state = ParserState::new(path!("test"), "<stdin>");
+        let parser = expr();
+        let token_stream = Token::stream(Ustr::from("<stdin>"), source);
+        let result = parser.parse_with_state(token_stream, &mut state);
+        state.print_result(&result, source);
+        println!("{:#?}", result.unwrap());
     }
 
     #[test]

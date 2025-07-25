@@ -286,6 +286,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             }
             Expr::Return(_) => todo!(),
             Expr::Yield(_) => todo!(),
+            Expr::Cond(cond_arms) => todo!(),
         }
     }
 }
