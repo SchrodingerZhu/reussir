@@ -8,12 +8,14 @@ use crate::{
     types::Type,
 };
 
+#[derive(Debug, Clone)]
 pub struct OutputValue<'a> {
     pub value: ValID,
     pub ty: &'a Type,
     pub name: Option<Ustr>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Operation<'a> {
     pub location: Option<Location>,
     pub output: Option<&'a OutputValue<'a>>,
@@ -82,24 +84,29 @@ impl OperationKind<'_> {
 
 pub type ValID = usize;
 
+#[derive(Debug, Clone)]
 // We will use structured control flow at this level, so there is no need for a region of multiple blocks.
 pub struct Block<'a>(pub &'a [Operation<'a>]);
 
+#[derive(Debug, Clone)]
 pub struct Symbol<'a> {
     pub path: Path,
     pub type_params: Option<&'a [&'a Type]>,
 }
 
+#[derive(Debug, Clone)]
 pub enum FieldIdentifer {
     Named(Ustr),
     Indexed(usize),
 }
 
+#[derive(Debug, Clone)]
 pub struct SwitchCase<'a> {
     pub variants: &'a [Ustr],
     pub body: Block<'a>,
 }
 
+#[derive(Debug, Clone)]
 pub enum OperationKind<'a> {
     FnCall {
         target: &'a Symbol<'a>,
