@@ -417,20 +417,6 @@ expr_parser! {
         expr.delimited_by(just(Token::LParen), just(Token::RParen))
     };
 
-    return_expr => |expr : P| {
-        just(Token::Return)
-            .ignore_then(expr.or_not())
-            .map(Expr::Return)
-            .map_with(make_spanbox_with)
-    };
-
-    yield_expr => |expr : P| {
-        just(Token::Yield)
-            .ignore_then(expr.or_not())
-            .map(Expr::Yield)
-            .map_with(make_spanbox_with)
-    };
-
     empty_return -> {
         just(Token::Return)
             .map(|_| Expr::Return(None))
