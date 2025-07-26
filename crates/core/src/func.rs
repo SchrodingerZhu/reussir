@@ -20,7 +20,7 @@ pub struct FunctionProto {
     pub is_public: bool,
     pub is_opaque: bool,
 }
-
+#[derive(Debug)]
 pub struct FunctionDatabase {
     functions: FxHashMapRand<Path, FunctionProto>,
 }

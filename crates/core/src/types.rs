@@ -172,6 +172,15 @@ impl Type {
             _ => false,
         }
     }
+    pub fn is_never(&self) -> bool {
+        matches!(
+            self,
+            Type::Atom {
+                capability: Capability::Default,
+                expr: TypeExpr { path, args: None }
+            } if path.basename() == Into::<&'static str>::into(Primitive::Never)
+        )
+    }
     pub fn is_integer(&self) -> bool {
         match self {
             Type::Atom {

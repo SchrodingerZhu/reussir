@@ -1,10 +1,11 @@
 use archery::RcK;
 use ariadne::{Report, sources};
 use reussir_core::{
-    Location,
+    Context, Location,
+    func::FunctionDatabase,
     ir::{Block, Operation, OperationKind, OutputValue, ValID},
     path,
-    types::{Capability, Primitive, Type, TypeExpr},
+    types::{Capability, Primitive, Type, TypeDatabase, TypeExpr},
 };
 use rpds::HashTrieMap;
 use rustc_hash::{FxHashMapRand, FxRandomState};
@@ -67,7 +68,7 @@ pub struct ValueDef<'a> {
 }
 
 pub struct IRBuilder<'a> {
-    arena: &'a bumpalo::Bump,
+    ctx: &'a Context,
     next_val: Cell<ValID>,
     value_types: RefCell<Map<ValID, ValueDef<'a>>>,
     named_values: RefCell<Map<Ustr, ValID>>,
@@ -112,9 +113,9 @@ impl<'b, 'a: 'b> Drop for DiagnosticBuilder<'b, 'a> {
 }
 
 impl<'a> IRBuilder<'a> {
-    pub fn new(arena: &'a bumpalo::Bump) -> Self {
+    pub fn new(ctx: &'a Context) -> Self {
         Self {
-            arena,
+            ctx,
             next_val: Cell::new(0),
             value_types: RefCell::new(Map::default()),
             named_values: RefCell::new(Map::default()),
@@ -122,6 +123,14 @@ impl<'a> IRBuilder<'a> {
             primitive_types: RefCell::new(FxHashMapRand::default()),
         }
     }
+    pub fn functions(&self) -> &FunctionDatabase {
+        self.ctx.functions()
+    }
+
+    pub fn types(&self) -> &TypeDatabase {
+        self.ctx.types()
+    }
+
     pub fn report_errors(&self, source: &str, file: Ustr) {
         let _lock_out = std::io::stdout().lock();
         let _lock_err = std::io::stderr().lock();
@@ -179,7 +188,7 @@ impl<'a> IRBuilder<'a> {
         match self.primitive_types.borrow_mut().entry(primitive) {
             Entry::Occupied(entry) => entry.get(),
             Entry::Vacant(entry) => {
-                let ty = self.arena.alloc(Type::Atom {
+                let ty = self.ctx.bump().alloc(Type::Atom {
                     capability: Capability::Default,
                     expr: TypeExpr {
                         path: path!(Into::<&'static str>::into(primitive)),
@@ -192,7 +201,7 @@ impl<'a> IRBuilder<'a> {
         }
     }
     pub fn alloc<T: 'a>(&self, value: T) -> &'a T {
-        self.arena.alloc(value)
+        self.ctx.bump().alloc(value)
     }
     pub fn alloc_slice_fill_iter<
         T: 'a,
@@ -202,7 +211,7 @@ impl<'a> IRBuilder<'a> {
         &self,
         iter: I,
     ) -> &'a [T] {
-        self.arena.alloc_slice_fill_iter(iter)
+        self.ctx.bump().alloc_slice_fill_iter(iter)
     }
 }
 pub struct Snapshot<'a> {
@@ -237,7 +246,8 @@ impl<'p, 'a: 'p> BlockBuilder<'p, 'a> {
     pub fn build(self) -> Block<'a> {
         Block(
             self.parent
-                .arena
+                .ctx
+                .bump()
                 .alloc_slice_fill_iter(self.operations.borrow_mut().drain(..)),
         )
     }
@@ -269,7 +279,7 @@ impl<'p, 'b: 'p, 'a: 'b> OperationBuilder<'p, 'b, 'a> {
     }
     pub fn finish(self, kind: OperationKind<'a>) -> Option<ValID> {
         let output = self.output_value.map(|ty| {
-            &*self.parent.parent.arena.alloc(OutputValue {
+            &*self.parent.parent.ctx.bump().alloc(OutputValue {
                 value: self.parent.next_val(),
                 ty,
                 name: self.output_name,
@@ -283,6 +293,9 @@ impl<'p, 'b: 'p, 'a: 'b> OperationBuilder<'p, 'b, 'a> {
                     ty: output.ty,
                 },
             );
+            if let Some(name) = output.name {
+                self.parent.parent.bind(name, output.value);
+            }
         }
         let operation = Operation {
             location: self.location,

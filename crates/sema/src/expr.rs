@@ -1,18 +1,30 @@
 use crate::builder::ValueDef;
 use crate::builder::{BlockBuilder, DiagnosticLevel};
-use reussir_core::Location;
+use reussir_core::{Location, Path};
 use reussir_core::{
     ir::{OperationKind, Symbol, ValID},
     literal::{FloatLiteral, IntegerLiteral},
     path,
     types::{Primitive, Type},
 };
-use reussir_front::expr::{BinaryOp, Expr, ExprBox};
+use reussir_front::expr::{BinaryOp, CallTarget, CallTargetSegment, Expr, ExprBox};
 use ustr::Ustr;
 
 pub struct ExprValue<'a> {
     value: Option<ValID>,
     ty: &'a Type,
+}
+
+fn call_target_as_plain_path(target: &CallTarget) -> Option<Path> {
+    let mut path_segments = Vec::with_capacity(target.len());
+    for segment in target.iter() {
+        match segment {
+            CallTargetSegment::TurboFish(_) => return None,
+            CallTargetSegment::Ident(name) => path_segments.push(name.clone()),
+        }
+    }
+    let last = path_segments.pop()?;
+    Some(Path::new(last, path_segments))
 }
 
 impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
@@ -21,7 +33,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             true
         } else {
             // Cannot unify besides pure equality for now
-            false
+            // TODO: add meta variables and solve variables during unification
+            lhs.is_never() || rhs.is_never()
         }
     }
 
@@ -39,12 +52,40 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
         }
     }
 
+    fn add_unit(&self) -> usize {
+        let ty = self.get_primitive_type(Primitive::Unit);
+        let mut operation_builder = self.new_operation();
+        operation_builder.add_output(ty, None);
+        let value = operation_builder.finish(OperationKind::Unit);
+        value.unwrap()
+    }
+
     fn add_panic(&self, message: &'a str) -> (usize, &'a Type) {
         let mut operation_builder = self.new_operation();
         let never = self.get_primitive_type(Primitive::Never);
         operation_builder.add_output(never, None);
         let value = operation_builder.finish(OperationKind::Panic(message));
         (value.unwrap(), never)
+    }
+
+    pub fn add_expr_expect_value(
+        &self,
+        expr: &ExprBox,
+        used: bool,
+        name: Option<Ustr>,
+    ) -> (ValID, &'a Type) {
+        let ExprValue { value, ty } = self.add_expr(expr, used, name);
+        if let Some(value) = value {
+            (value, ty)
+        } else {
+            self.diagnostic(
+                DiagnosticLevel::Ice,
+                "expression does not return a value properly",
+                expr.location(),
+            );
+            let never = self.get_primitive_type(Primitive::Never);
+            (self.add_poison(never), never)
+        }
     }
 
     pub fn add_expr(&self, expr: &ExprBox, used: bool, name: Option<Ustr>) -> ExprValue<'a> {
@@ -63,30 +104,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 }
             }
             Expr::Binary(lhs, op, rhs) => {
-                let ExprValue {
-                    value: Some(lhs_value),
-                    ty: lhs_ty,
-                } = self.add_expr(lhs, true, None)
-                else {
-                    self.diagnostic(
-                        DiagnosticLevel::Ice,
-                        "LHS does not return a value properly",
-                        expr.location(),
-                    );
-                    return self.add_poison_never();
-                };
-                let ExprValue {
-                    value: Some(rhs_value),
-                    ty: rhs_ty,
-                } = self.add_expr(rhs, true, None)
-                else {
-                    self.diagnostic(
-                        DiagnosticLevel::Ice,
-                        "RHS does not return a value properly",
-                        expr.location(),
-                    );
-                    return self.add_poison_never();
-                };
+                let (lhs_value, lhs_ty) = self.add_expr_expect_value(lhs, true, None);
+                let (rhs_value, rhs_ty) = self.add_expr_expect_value(rhs, true, None);
                 macro_rules! arith_intrinsic_call {
                     (unify $target:ident) => {{
                         if !self.unify(lhs_ty, rhs_ty) {
@@ -234,8 +253,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 let Some((val, ValueDef { ty, .. })) = self.parent.lookup(&x.as_str().into())
                 else {
                     self.diagnostic(
-                        DiagnosticLevel::Ice,
-                        "value not defined in value types",
+                        DiagnosticLevel::Error,
+                        "undefined variable",
                         expr.location(),
                     );
                     return self.add_poison_never();
@@ -246,20 +265,25 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 }
             }
             Expr::IfThenElse(_, _, _) => todo!(),
-            Expr::Sequence(items) => todo!(),
+            Expr::Sequence(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    let used = used && idx == items.len() - 1;
+                    if !used {
+                        self.add_expr(item, false, None);
+                    } else {
+                        let (value, expr_ty) = self.add_expr_expect_value(item, true, None);
+                        return ExprValue {
+                            value: Some(value),
+                            ty: expr_ty,
+                        };
+                    }
+                }
+                let value = if used { Some(self.add_unit()) } else { None };
+                let unit_ty = self.get_primitive_type(Primitive::Unit);
+                ExprValue { value, ty: unit_ty }
+            }
             Expr::Let(x, ty, val) => {
-                let ExprValue {
-                    value: Some(val),
-                    ty: expr_ty,
-                } = self.add_expr(val, true, Some(x.as_str().into()))
-                else {
-                    self.diagnostic(
-                        DiagnosticLevel::Ice,
-                        "value does not return a value properly",
-                        expr.location(),
-                    );
-                    return self.add_poison_never();
-                };
+                let (_, expr_ty) = self.add_expr_expect_value(val, true, Some(x.as_str().into()));
                 let ty = self.alloc(ty.clone());
                 if let Some(ty) = ty
                     && !self.unify(expr_ty, ty)
@@ -271,15 +295,73 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     );
                 }
                 let unit_ty = self.get_primitive_type(Primitive::Unit);
-                if used {
-                    operation_builder.add_output(unit_ty, name);
-                }
-                ExprValue {
-                    value: operation_builder.finish(OperationKind::Unit),
-                    ty: unit_ty,
+                let value = if used { Some(self.add_unit()) } else { None };
+                ExprValue { value, ty: unit_ty }
+            }
+            // TODO: tuple-like ctor can also be in this Call expression.
+            // TODO: lambda call should also be handled here.
+            Expr::Call(target, items) => {
+                if let Some(path) = call_target_as_plain_path(target) {
+                    if let Some(proto) = self.functions().get(&path) {
+                        let args = items
+                            .iter()
+                            .flatten()
+                            .map(|item| {
+                                let (value, ty) = self.add_expr_expect_value(item, true, None);
+                                (value, ty)
+                            })
+                            .collect::<Vec<_>>();
+                        let mut unification_failed = false;
+                        let return_type = self.alloc(proto.return_type.clone());
+                        for (_, ty) in args.iter() {
+                            if !self.unify(return_type, *ty) {
+                                self.diagnostic(
+                                    DiagnosticLevel::Error,
+                                    "type mismatch in function call",
+                                    expr.location(),
+                                );
+                                unification_failed = true;
+                            }
+                        }
+                        if unification_failed {
+                            let value = self.add_poison(return_type);
+                            return ExprValue {
+                                value: Some(value),
+                                ty: return_type,
+                            };
+                        }
+                        operation_builder.add_output(return_type, name);
+                        operation_builder.add_location(expr.location());
+                        let symbol = self.alloc(Symbol {
+                            path,
+                            type_params: None,
+                        });
+                        ExprValue {
+                            value: operation_builder.finish(OperationKind::FnCall {
+                                target: symbol,
+                                args: Some(
+                                    self.alloc_slice_fill_iter(args.iter().map(|(v, _)| *v)),
+                                ),
+                            }),
+                            ty: return_type,
+                        }
+                    } else {
+                        self.diagnostic(
+                            DiagnosticLevel::Error,
+                            "function not found",
+                            expr.location(),
+                        );
+                        return self.add_poison_never();
+                    }
+                } else {
+                    self.diagnostic(
+                        DiagnosticLevel::Ice,
+                        "polymorphic functions are not supported yet",
+                        target.location(),
+                    );
+                    return self.add_poison_never();
                 }
             }
-            Expr::Call(_, items) => todo!(),
             Expr::CtorCall(_, items) => todo!(),
             Expr::Match(match_expr) => todo!(),
             Expr::Lambda(lambda_expr) => todo!(),
@@ -435,8 +517,8 @@ mod tests {
             #[test]
             fn $name() {
                 use chumsky::prelude::*;
-                let bump = bumpalo::Bump::new();
-                let builder = IRBuilder::new(&bump);
+                let ctx = reussir_core::Context::new();
+                let builder = IRBuilder::new(&ctx);
                 let mut parser_state = reussir_front::ParserState::new(path!("test"), "<stdin>");
                 let expr_input = $input;
                 let expr_parser = reussir_front::expr::expr();
@@ -482,4 +564,12 @@ mod tests {
         test_short_circuiting_codegen,
         false
     );
+
+    test_expr_codegen!(
+        "{ let x = 1; let y = 2; x + y }",
+        test_let_binding_codegen,
+        false
+    );
+
+    test_expr_codegen!("test(1, 2, 3)", test_function_call_codegen, true);
 }
