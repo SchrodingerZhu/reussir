@@ -1,8 +1,4 @@
-use std::collections::HashMap;
-
-use reussir_core::{Path, types::TypeDatabase};
-use reussir_front::RichError;
-use rustc_hash::FxHashMapRand;
+use reussir_front::{Module, RichError};
 use thiserror::Error;
 
 mod builder;
@@ -16,7 +12,14 @@ pub enum Error<'a> {
 
 pub type Result<'a, T> = std::result::Result<T, Error<'a>>;
 
-pub struct Context {
-    bump: bumpalo::Bump,
-    type_database: TypeDatabase,
+pub fn populate_module(ctx: &mut reussir_core::Context, module: &Module) {
+    for i in module.statements.iter() {
+        match &***i {
+            reussir_front::stmt::Stmt::TypeDecl(_) => todo!(),
+            reussir_front::stmt::Stmt::FunctionDecl(function) => {
+                let proto = function.proto.clone();
+                ctx.functions_mut().add_function(proto);
+            }
+        }
+    }
 }

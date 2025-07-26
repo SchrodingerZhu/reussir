@@ -554,6 +554,7 @@ name = "reussir-core"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "bumpalo",
  "chumsky",
  "rustc-hash",
  "rustc_apfloat",

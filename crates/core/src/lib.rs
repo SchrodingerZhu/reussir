@@ -6,6 +6,7 @@ use ustr::Ustr;
 pub mod func;
 pub mod ir;
 pub mod literal;
+pub mod module;
 pub mod types;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -123,3 +124,40 @@ macro_rules! path {
             )
         }
     }
+
+#[derive(Debug)]
+pub struct Context {
+    bump: bumpalo::Bump,
+    type_database: types::TypeDatabase,
+    function_database: func::FunctionDatabase,
+}
+
+impl Context {
+    pub fn new() -> Self {
+        Self {
+            bump: bumpalo::Bump::new(),
+            type_database: types::TypeDatabase::new(),
+            function_database: func::FunctionDatabase::new(),
+        }
+    }
+
+    pub fn bump(&self) -> &bumpalo::Bump {
+        &self.bump
+    }
+
+    pub fn types(&self) -> &types::TypeDatabase {
+        &self.type_database
+    }
+
+    pub fn functions(&self) -> &func::FunctionDatabase {
+        &self.function_database
+    }
+
+    pub fn types_mut(&mut self) -> &mut types::TypeDatabase {
+        &mut self.type_database
+    }
+
+    pub fn functions_mut(&mut self) -> &mut func::FunctionDatabase {
+        &mut self.function_database
+    }
+}
