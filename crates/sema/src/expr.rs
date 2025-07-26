@@ -1,5 +1,6 @@
 use crate::builder::ValueDef;
 use crate::builder::{BlockBuilder, DiagnosticLevel};
+use reussir_core::Location;
 use reussir_core::{
     ir::{OperationKind, Symbol, ValID},
     literal::{FloatLiteral, IntegerLiteral},
@@ -24,16 +25,18 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
         }
     }
 
-    fn add_poison(&self, ty: &'a Type) -> ExprValue<'a> {
+    fn add_poison(&self, ty: &'a Type) -> ValID {
         let mut operation_builder = self.new_operation();
         operation_builder.add_output(ty, None);
-        let val = operation_builder.finish(OperationKind::Poison);
-        ExprValue { value: val, ty }
+        operation_builder.finish(OperationKind::Poison).unwrap()
     }
 
     fn add_poison_never(&self) -> ExprValue<'a> {
         let ty = self.get_primitive_type(Primitive::Never);
-        self.add_poison(ty)
+        ExprValue {
+            value: Some(self.add_poison(ty)),
+            ty,
+        }
     }
 
     fn add_panic(&self, message: &'a str) -> (usize, &'a Type) {
@@ -113,6 +116,35 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             ty: lhs_ty,
                         }
                     }};
+                    (compare $target:ident) => {{
+                        if !self.unify(lhs_ty, rhs_ty) {
+                            self.diagnostic(
+                                DiagnosticLevel::Error,
+                                "type mismatch in arithmetic operation",
+                                expr.location(),
+                            );
+                        }
+                        if !lhs_ty.is_float() && !lhs_ty.is_integer() {
+                            todo!("report error for unsupported type for arithmetic operations");
+                        }
+                        let target_function =
+                            path![stringify!($target), "core", "intrinsics", "arith"];
+                        let type_params = self.alloc_slice_fill_iter([lhs_ty]);
+                        let symbol = self.alloc(Symbol {
+                            path: target_function,
+                            type_params: Some(type_params),
+                        });
+                        let call = OperationKind::FnCall {
+                            target: symbol,
+                            args: Some(self.alloc_slice_fill_iter([lhs_value, rhs_value])),
+                        };
+                        let boolean_type = self.get_primitive_type(Primitive::Bool);
+                        operation_builder.add_output(boolean_type, name);
+                        ExprValue {
+                            value: operation_builder.finish(call),
+                            ty: boolean_type,
+                        }
+                    }};
                 }
                 match &**op {
                     BinaryOp::Add => arith_intrinsic_call!(unify add),
@@ -120,19 +152,25 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     BinaryOp::Mod => arith_intrinsic_call!(unify mod),
                     BinaryOp::Mul => arith_intrinsic_call!(unify mul),
                     BinaryOp::Div => arith_intrinsic_call!(unify div),
-                    BinaryOp::LAnd => todo!(),
-                    BinaryOp::BAnd => todo!(),
-                    BinaryOp::LOr => todo!(),
-                    BinaryOp::BOr => todo!(),
+                    BinaryOp::LAnd => ExprValue {
+                        value: Some(self.short_circuit(false, lhs, rhs, expr.location())),
+                        ty: self.get_primitive_type(Primitive::Bool),
+                    },
+                    BinaryOp::BAnd => arith_intrinsic_call!(unify and),
+                    BinaryOp::LOr => ExprValue {
+                        value: Some(self.short_circuit(true, lhs, rhs, expr.location())),
+                        ty: self.get_primitive_type(Primitive::Bool),
+                    },
+                    BinaryOp::BOr => arith_intrinsic_call!(unify or),
                     BinaryOp::Xor => arith_intrinsic_call!(unify xor),
                     BinaryOp::Shr => todo!(),
                     BinaryOp::Shl => todo!(),
-                    BinaryOp::Eq => todo!(),
-                    BinaryOp::Ne => todo!(),
-                    BinaryOp::Le => todo!(),
-                    BinaryOp::Lt => todo!(),
-                    BinaryOp::Ge => todo!(),
-                    BinaryOp::Gt => todo!(),
+                    BinaryOp::Eq => arith_intrinsic_call!(compare eq),
+                    BinaryOp::Ne => arith_intrinsic_call!(compare ne),
+                    BinaryOp::Le => arith_intrinsic_call!(compare le),
+                    BinaryOp::Lt => arith_intrinsic_call!(compare lt),
+                    BinaryOp::Ge => arith_intrinsic_call!(compare ge),
+                    BinaryOp::Gt => arith_intrinsic_call!(compare gt),
                 }
             }
             Expr::Unary(_, _) => todo!(),
@@ -257,7 +295,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         "value does not return a value properly",
                         expr.location(),
                     );
-                    return self.add_poison(target_type);
+                    return ExprValue {
+                        value: Some(self.add_poison(target_type)),
+                        ty: target_type,
+                    };
                 };
                 if !expr_ty.is_float() && !expr_ty.is_integer() {
                     self.diagnostic(
@@ -265,7 +306,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         "cannot cast non-numeric type",
                         expr.location(),
                     );
-                    return self.add_poison(target_type);
+                    return ExprValue {
+                        value: Some(self.add_poison(target_type)),
+                        ty: target_type,
+                    };
                 }
                 operation_builder.add_output(target_type, name);
                 let target_function = path!["cast", "core", "intrinsics", "arith"];
@@ -288,6 +332,93 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             Expr::Yield(_) => todo!(),
             Expr::Cond(cond_arms) => todo!(),
         }
+    }
+    fn short_circuit(&self, is_or: bool, lhs: &ExprBox, rhs: &ExprBox, loc: Location) -> ValID {
+        let boolean_type = self.get_primitive_type(Primitive::Bool);
+        let never_type = self.get_primitive_type(Primitive::Never);
+        let mut cond;
+        match self.add_expr(lhs, true, None) {
+            ExprValue {
+                value: Some(value),
+                ty,
+            } if self.unify(ty, boolean_type) => {
+                cond = value;
+            }
+            ExprValue { value: None, .. } => {
+                self.diagnostic(
+                    DiagnosticLevel::Ice,
+                    "LHS does not return a value properly",
+                    loc,
+                );
+                return self.add_poison(boolean_type);
+            }
+            _ => {
+                self.diagnostic(
+                    DiagnosticLevel::Error,
+                    "type mismatch in short-circuit expression",
+                    loc,
+                );
+                return self.add_poison(boolean_type);
+            }
+        };
+        if !is_or {
+            let mut operation_builder = self.new_operation();
+            operation_builder.add_location(loc);
+            operation_builder.add_output(boolean_type, None);
+            let target_function = path!["not", "core", "intrinsics", "arith"];
+            let type_params = self.alloc_slice_fill_iter([boolean_type]);
+            let symbol = self.alloc(Symbol {
+                path: target_function,
+                type_params: Some(type_params),
+            });
+            let call = OperationKind::FnCall {
+                target: symbol,
+                args: Some(self.alloc_slice_fill_iter([cond])),
+            };
+            cond = operation_builder.finish(call).unwrap();
+        }
+        // now build the if-then-else, the first block returns constant true or false
+        let then_region = {
+            let block_builder = BlockBuilder::new(self.parent);
+            let mut operation_builder = block_builder.new_operation();
+            operation_builder.add_location(loc);
+            operation_builder.add_output(boolean_type, None);
+            let val = operation_builder
+                .finish(OperationKind::ConstantBool(is_or))
+                .unwrap();
+            let mut operation_builder = block_builder.new_operation();
+            operation_builder.add_location(loc);
+            operation_builder.add_output(never_type, None);
+            operation_builder.finish(OperationKind::Yield(Some(val)));
+            self.alloc(block_builder.build())
+        };
+        let else_region = {
+            let block_builder = BlockBuilder::new(self.parent);
+            let ExprValue { value, ty } = block_builder.add_expr(rhs, true, None);
+            if !self.unify(ty, boolean_type) {
+                block_builder.diagnostic(
+                    DiagnosticLevel::Error,
+                    "type mismatch in short-circuit expression",
+                    loc,
+                );
+            }
+            let value = value.unwrap_or_else(|| block_builder.add_poison(boolean_type));
+            let mut operation_builder = block_builder.new_operation();
+            operation_builder.add_location(loc);
+            operation_builder.add_output(never_type, None);
+            operation_builder.finish(OperationKind::Yield(Some(value)));
+            self.alloc(block_builder.build())
+        };
+        let mut operation_builder = self.new_operation();
+        operation_builder.add_location(loc);
+        operation_builder.add_output(boolean_type, None);
+        operation_builder
+            .finish(OperationKind::Condition {
+                cond,
+                then_region,
+                else_region,
+            })
+            .unwrap()
     }
 }
 
@@ -345,4 +476,10 @@ mod tests {
     );
     test_expr_codegen!("12 as f32 + () as f32", test_casting_unit_error, true);
     test_expr_codegen!("1.0 + 12 as f64 + 1.0f32", test_mismatched_types, true);
+
+    test_expr_codegen!(
+        "true || 1 >= 16 && false && (2 + 5 <= 3 * 8)",
+        test_short_circuiting_codegen,
+        false
+    );
 }
