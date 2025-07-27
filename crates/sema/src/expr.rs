@@ -456,7 +456,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             "function not found",
                             target.location(),
                         );
-                        for fuzzy_proto in self.functions().fuzzy_search(&path).into_iter() {
+                        for fuzzy_proto in self.functions().fuzzy_search(&path).into_iter().take(2)
+                        {
                             builder.add_nested_label(
                                 fuzzy_proto.name_location,
                                 "A function with similar name is found",

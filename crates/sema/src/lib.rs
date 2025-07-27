@@ -105,6 +105,7 @@ mod tests {
     test_module_codegen!(
         r#"
         pub fn test_name_x() -> u64 { test_name_y() }
+        pub fn apparently_different_function() -> u64 { 42 }
         pub fn test_name_1() -> u64 { 42 }
         pub fn test_name_2() -> u64 { 42 }
         pub fn test_name_3() -> u64 { 42 }

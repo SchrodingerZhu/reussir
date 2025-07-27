@@ -75,7 +75,7 @@ impl FunctionDatabase {
         };
         let options = Options {
             prefilter: true,
-            max_typos: None,
+            max_typos: Some(6),
             sort: true,
             min_score: string_search.len() as u16 * 6,
         };
