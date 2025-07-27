@@ -1,4 +1,3 @@
-use crate::ir::Block;
 use crate::types::Type;
 use crate::{Location, Path};
 use rustc_hash::FxHashMapRand;
