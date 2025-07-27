@@ -37,10 +37,11 @@ pub fn populate_module<'a>(
         match &***i {
             reussir_front::stmt::Stmt::TypeDecl(_) => todo!(),
             reussir_front::stmt::Stmt::FunctionDecl(function) => {
-                if function.proto.is_public && function.proto.type_args.is_none() {
-                    if let Some(body) = &function.body {
-                        builder.define_function(&function.proto, body);
-                    }
+                if function.proto.is_public
+                    && function.proto.type_args.is_none()
+                    && let Some(body) = &function.body
+                {
+                    builder.define_function(&function.proto, body);
                 }
             }
         }
@@ -66,7 +67,7 @@ mod tests {
             #[test]
             fn $name() {
                 use chumsky::prelude::*;
-                let mut ctx = reussir_core::Context::new();
+                let mut ctx = reussir_core::Context::new(path!("test"));
                 let mut parser_state = reussir_front::ParserState::new(path!("test"), "<stdin>");
                 let source = $input;
                 let parser = reussir_front::module();
@@ -92,6 +93,11 @@ mod tests {
     test_module_codegen!(
         "pub fn add_one(n: u64) -> u64 { n + 1u64 }",
         test_add_one_function,
+        false
+    );
+    test_module_codegen!(
+        "pub fn fibonacci(n: u64) -> u64 { if n < 2u64 { n } else { fibonacci(n - 1u64) + fibonacci(n - 2u64) } }",
+        test_fibonacci_function,
         false
     );
 }

@@ -3,15 +3,12 @@ use ariadne::{Report, sources};
 use reussir_core::{
     Context, Location,
     func::{FunctionDatabase, FunctionProto},
-    ir::{self, Block, Operation, OperationKind, OutputValue, ValID},
+    ir::{Block, Operation, OperationKind, OutputValue, ValID},
     module::{FunctionInstance, ModuleInstance},
     path,
     types::{Capability, Primitive, Type, TypeDatabase, TypeExpr},
 };
-use reussir_front::{
-    expr::{Expr, ExprBox},
-    stmt::Function,
-};
+use reussir_front::expr::ExprBox;
 use rpds::HashTrieMap;
 use rustc_hash::{FxHashMapRand, FxRandomState};
 use std::{
@@ -229,6 +226,9 @@ impl<'a> IRBuilder<'a> {
     ) -> &'a [T] {
         self.ctx.bump().alloc_slice_fill_iter(iter)
     }
+    pub fn ctx(&self) -> &'a Context {
+        self.ctx
+    }
 }
 pub struct Snapshot<'a> {
     value_types: Map<ValID, ValueDef<'a>>,
@@ -368,9 +368,7 @@ impl<'a> ModuleBuilder<'a> {
     }
 
     pub fn build(self) -> ModuleInstance<'a> {
-        let functions = self
-            .ir_builder
-            .alloc_slice_fill_iter(self.functions.into_iter());
+        let functions = self.ir_builder.alloc_slice_fill_iter(self.functions);
         ModuleInstance {
             ctx: self.ir_builder.ctx,
             functions,

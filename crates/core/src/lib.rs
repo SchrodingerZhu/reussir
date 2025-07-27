@@ -128,17 +128,23 @@ macro_rules! path {
 #[derive(Debug)]
 pub struct Context {
     bump: bumpalo::Bump,
+    module: Path,
     type_database: types::TypeDatabase,
     function_database: func::FunctionDatabase,
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(module: Path) -> Self {
         Self {
             bump: bumpalo::Bump::new(),
+            module,
             type_database: types::TypeDatabase::new(),
             function_database: func::FunctionDatabase::new(),
         }
+    }
+
+    pub fn module(&self) -> &Path {
+        &self.module
     }
 
     pub fn bump(&self) -> &bumpalo::Bump {
