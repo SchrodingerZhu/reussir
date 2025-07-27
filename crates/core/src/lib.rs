@@ -35,6 +35,16 @@ impl Path {
         new_segments.push(segment);
         Path(new_segments.into_boxed_slice())
     }
+    pub fn consolidate(&self) -> Box<str> {
+        let mut result = String::new();
+        for (i, segment) in self.0.iter().enumerate() {
+            if i > 0 {
+                result.push_str("::");
+            }
+            result.push_str(segment.as_str());
+        }
+        result.into_boxed_str()
+    }
 }
 
 impl Debug for Path {

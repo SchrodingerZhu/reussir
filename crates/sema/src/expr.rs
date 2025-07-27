@@ -403,12 +403,6 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             .copied()
                             .chain(path.prefix().iter().copied()),
                     );
-                    println!(
-                        "finding {:?} or {:?} in {:?}",
-                        prefixed_function,
-                        path,
-                        self.functions()
-                    );
                     if let Some(proto) = self
                         .functions()
                         .get(&prefixed_function)
@@ -457,11 +451,17 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             ty: return_type,
                         }
                     } else {
-                        self.diagnostic(
+                        let mut builder = self.diagnostic(
                             DiagnosticLevel::Error,
                             "function not found",
                             target.location(),
                         );
+                        for fuzzy_proto in self.functions().fuzzy_search(&path).into_iter() {
+                            builder.add_nested_label(
+                                fuzzy_proto.name_location,
+                                "A function with similar name is found",
+                            );
+                        }
                         self.add_poison_never()
                     }
                 } else {
