@@ -51,7 +51,12 @@ impl Diagnostic<'_> {
                     .with_color(true),
             )
             .with_message(self.message)
-            .with_label(ariadne::Label::new(self.location).with_color(color));
+            .with_label(
+                ariadne::Label::new(self.location)
+                    .with_message("this error occurred here")
+                    .with_color(color)
+                    .with_order(0),
+            );
         for (location, message) in self.nested_labels.unwrap_or_default() {
             builder = builder.with_label(
                 ariadne::Label::new(*location)
@@ -89,9 +94,8 @@ pub struct DiagnosticBuilder<'b, 'a: 'b> {
 }
 
 impl<'b, 'a: 'b> DiagnosticBuilder<'b, 'a> {
-    pub fn add_nested_label(mut self, location: Location, message: &'a str) -> Self {
+    pub fn add_nested_label(&mut self, location: Location, message: &'a str) {
         self.nested_labels.push((location, message));
-        self
     }
 }
 

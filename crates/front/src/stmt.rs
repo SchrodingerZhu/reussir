@@ -1,6 +1,6 @@
 use crate::expr::ExprBox;
 use crate::{ParserExtra, SpanBox, Token, types::TypeDecl};
-use crate::{ParserState, make_spanbox_with};
+use crate::{ParserState, WithSpan, make_spanbox_with};
 use chumsky::Parser;
 use chumsky::input::ValueInput;
 use chumsky::prelude::*;
@@ -81,16 +81,20 @@ where
         .then(is_opaque)
         .then(has_region)
         .then_ignore(just(Token::Fn))
-        .then(ident)
+        .then(ident.map_with(|x, extra| WithSpan::new(x, extra.span())))
         .then(type_args)
         .then(params)
         .then(return_type)
         .map_with(
-            |((((((is_public, is_opaque), has_region), path), type_args), params), return_type),
+            |(
+                (((((is_public, is_opaque), has_region), name_span), type_args), params),
+                return_type,
+            ),
              extra| {
                 let state: &ParserState = extra.state();
                 FunctionProto {
-                    path: state.module_path.clone().append(path),
+                    path: state.module_path.clone().append(*name_span.value()),
+                    name_location: name_span.location(),
                     location: extra.span(),
                     type_args,
                     params,

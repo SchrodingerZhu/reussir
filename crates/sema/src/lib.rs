@@ -30,6 +30,7 @@ pub fn populate_module<'a>(
             }
         }
     }
+    ctx.functions_mut().build_fuzzy_indices();
     let mut builder = ModuleBuilder::new(ctx);
     // Pass 2: instantiate public functions with type parameters
     // TODO: Populate their dependencies along the way.
@@ -99,5 +100,16 @@ mod tests {
         "pub fn fibonacci(n: u64) -> u64 { if n < 2u64 { n } else { fibonacci(n - 1u64) + fibonacci(n - 2u64) } }",
         test_fibonacci_function,
         false
+    );
+
+    test_module_codegen!(
+        r#"
+        pub fn test_name_x() -> u64 { test_name_y() }
+        pub fn test_name_1() -> u64 { 42 }
+        pub fn test_name_2() -> u64 { 42 }
+        pub fn test_name_3() -> u64 { 42 }
+        "#,
+        test_fuzzy_search,
+        true
     );
 }
