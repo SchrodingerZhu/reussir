@@ -2,10 +2,15 @@ use archery::RcK;
 use ariadne::{Report, sources};
 use reussir_core::{
     Context, Location,
-    func::FunctionDatabase,
-    ir::{Block, Operation, OperationKind, OutputValue, ValID},
+    func::{FunctionDatabase, FunctionProto},
+    ir::{self, Block, Operation, OperationKind, OutputValue, ValID},
+    module::{FunctionInstance, ModuleInstance},
     path,
     types::{Capability, Primitive, Type, TypeDatabase, TypeExpr},
+};
+use reussir_front::{
+    expr::{Expr, ExprBox},
+    stmt::Function,
 };
 use rpds::HashTrieMap;
 use rustc_hash::{FxHashMapRand, FxRandomState};
@@ -73,6 +78,7 @@ pub struct IRBuilder<'a> {
     value_types: RefCell<Map<ValID, ValueDef<'a>>>,
     named_values: RefCell<Map<Ustr, ValID>>,
     diagnostics: RefCell<Vec<Diagnostic<'a>>>,
+    // TODO: this should be cached globally in context or somewhere.
     primitive_types: RefCell<FxHashMapRand<Primitive, &'a Type>>,
 }
 
@@ -131,13 +137,14 @@ impl<'a> IRBuilder<'a> {
         self.ctx.types()
     }
 
-    pub fn report_errors(&self, source: &str, file: Ustr) {
+    pub fn report_errors(&self, source: &str, file: Ustr) -> bool {
         let _lock_out = std::io::stdout().lock();
         let _lock_err = std::io::stderr().lock();
         for e in self.diagnostics.borrow().iter() {
             let report = e.create_report();
             report.eprint(sources([(file, source)])).unwrap();
         }
+        self.has_errors()
     }
     pub fn has_errors(&self) -> bool {
         !self.diagnostics.borrow().is_empty()
@@ -170,6 +177,15 @@ impl<'a> IRBuilder<'a> {
     fn recover_to(&self, snapshot: Snapshot<'a>) {
         self.value_types.replace(snapshot.value_types);
         self.named_values.replace(snapshot.named_values);
+    }
+    fn add_val(&self, ty: &'a Type, location: Option<Location>, name: Option<Ustr>) {
+        let val = self.next_val();
+        self.value_types
+            .borrow_mut()
+            .insert_mut(val, ValueDef { location, ty });
+        if let Some(name) = name {
+            self.bind(name, val);
+        }
     }
     fn next_val(&self) -> ValID {
         let val = self.next_val.get();
@@ -311,5 +327,53 @@ impl Drop for BlockBuilder<'_, '_> {
     fn drop(&mut self) {
         let snapshot = unsafe { ManuallyDrop::take(&mut self.snapshot) };
         self.parent.recover_to(snapshot);
+    }
+}
+
+pub struct ModuleBuilder<'a> {
+    ir_builder: IRBuilder<'a>,
+    pub functions: Vec<FunctionInstance<'a>>,
+}
+
+impl<'a> ModuleBuilder<'a> {
+    pub fn new(ctx: &'a Context) -> Self {
+        Self {
+            ir_builder: IRBuilder::new(ctx),
+            functions: Vec::new(),
+        }
+    }
+
+    pub fn report_errors(&self, source: &str, file: Ustr) -> bool {
+        self.ir_builder.report_errors(source, file)
+    }
+
+    pub fn define_function(&mut self, proto: &FunctionProto, body: &ExprBox) {
+        let snapshot = self.ir_builder.snapshot();
+        for param in proto.params.iter() {
+            let ty = self.ir_builder.alloc(param.ty.clone());
+            self.ir_builder
+                .add_val(ty, Some(param.location), param.name);
+        }
+        let block_builder = BlockBuilder::new(&self.ir_builder);
+        block_builder.add_expr(body, false, None);
+        let blk = block_builder.build();
+        let body = self.ir_builder.ctx.bump().alloc(blk);
+        let function_instance = FunctionInstance {
+            path: proto.path.clone(),
+            type_params: None,
+            body,
+        };
+        self.functions.push(function_instance);
+        self.ir_builder.recover_to(snapshot);
+    }
+
+    pub fn build(self) -> ModuleInstance<'a> {
+        let functions = self
+            .ir_builder
+            .alloc_slice_fill_iter(self.functions.into_iter());
+        ModuleInstance {
+            ctx: self.ir_builder.ctx,
+            functions,
+        }
     }
 }
