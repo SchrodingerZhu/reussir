@@ -138,7 +138,7 @@ pub enum OperationKind<'a> {
     Condition {
         cond: ValID,
         then_region: &'a Block<'a>,
-        else_region: &'a Block<'a>,
+        else_region: Option<&'a Block<'a>>,
     },
     Yield(Option<ValID>),
     Return(Option<ValID>),

@@ -24,6 +24,12 @@ pub struct FunctionDatabase {
     functions: FxHashMapRand<Path, FunctionProto>,
 }
 
+impl Default for FunctionDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FunctionDatabase {
     pub fn new() -> Self {
         Self {

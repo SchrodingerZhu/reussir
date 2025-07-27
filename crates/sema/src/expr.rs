@@ -20,7 +20,7 @@ fn call_target_as_plain_path(target: &CallTarget) -> Option<Path> {
     for segment in target.iter() {
         match segment {
             CallTargetSegment::TurboFish(_) => return None,
-            CallTargetSegment::Ident(name) => path_segments.push(name.clone()),
+            CallTargetSegment::Ident(name) => path_segments.push(*name),
         }
     }
     let last = path_segments.pop()?;
@@ -116,7 +116,12 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             );
                         }
                         if !lhs_ty.is_float() && !lhs_ty.is_integer() {
-                            todo!("report error for unsupported type for arithmetic operations");
+                            self.diagnostic(
+                                DiagnosticLevel::Error,
+                                "unsupported type for arithmetic operations",
+                                expr.location(),
+                            );
+                            return self.add_poison_never();
                         }
                         let target_function =
                             path![stringify!($target), "core", "intrinsics", "arith"];
@@ -144,7 +149,12 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             );
                         }
                         if !lhs_ty.is_float() && !lhs_ty.is_integer() {
-                            todo!("report error for unsupported type for arithmetic operations");
+                            self.diagnostic(
+                                DiagnosticLevel::Error,
+                                "unsupported type for arithmetic operations",
+                                expr.location(),
+                            );
+                            return self.add_poison_never();
                         }
                         let target_function =
                             path![stringify!($target), "core", "intrinsics", "arith"];
@@ -264,7 +274,88 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     ty,
                 }
             }
-            Expr::IfThenElse(_, _, _) => todo!(),
+            Expr::IfThenElse(cond, then_branch, None) => {
+                let unit_ty = self.get_primitive_type(Primitive::Unit);
+                let boolean_type = self.get_primitive_type(Primitive::Bool);
+                let (cond, ty) = self.add_expr_expect_value(cond, true, None);
+                if !self.unify(ty, boolean_type) {
+                    self.diagnostic(
+                        DiagnosticLevel::Error,
+                        "condition in if-then-else must be a boolean",
+                        expr.location(),
+                    );
+                    return ExprValue {
+                        value: Some(self.add_poison(boolean_type)),
+                        ty: boolean_type,
+                    };
+                }
+                if used {
+                    operation_builder.add_output(unit_ty, name);
+                }
+                let then_region = self.alloc({
+                    let block_builder = BlockBuilder::new(self.parent);
+                    block_builder.add_expr(then_branch, false, None);
+                    let mut op_builder = block_builder.new_operation();
+                    op_builder.add_location(expr.location());
+                    op_builder.finish(OperationKind::Yield(None));
+                    block_builder.build()
+                });
+                ExprValue {
+                    value: operation_builder.finish(OperationKind::Condition {
+                        cond,
+                        then_region,
+                        else_region: None,
+                    }),
+                    ty,
+                }
+            }
+            Expr::IfThenElse(cond, then_branch, Some(else_branch)) => {
+                let boolean_type = self.get_primitive_type(Primitive::Bool);
+                let (cond, ty) = self.add_expr_expect_value(cond, true, None);
+                if !self.unify(ty, boolean_type) {
+                    self.diagnostic(
+                        DiagnosticLevel::Error,
+                        "condition in if-then-else must be a boolean",
+                        expr.location(),
+                    );
+                    return ExprValue {
+                        value: Some(self.add_poison(boolean_type)),
+                        ty: boolean_type,
+                    };
+                }
+                let (then_ty, then_region) = {
+                    let block_builder = BlockBuilder::new(self.parent);
+                    let (val, ty) = block_builder.add_expr_expect_value(then_branch, true, None);
+                    let mut operation_builder = block_builder.new_operation();
+                    operation_builder.add_location(expr.location());
+                    operation_builder.finish(OperationKind::Yield(Some(val)));
+                    (ty, self.alloc(block_builder.build()))
+                };
+                let (else_ty, else_region) = self.alloc({
+                    let block_builder = BlockBuilder::new(self.parent);
+                    let (val, ty) = block_builder.add_expr_expect_value(else_branch, true, None);
+                    let mut operation_builder = block_builder.new_operation();
+                    operation_builder.add_location(expr.location());
+                    operation_builder.finish(OperationKind::Yield(Some(val)));
+                    (ty, block_builder.build())
+                });
+                if !self.unify(then_ty, else_ty) {
+                    self.diagnostic(
+                        DiagnosticLevel::Error,
+                        "type mismatch in branches of if-then-else",
+                        expr.location(),
+                    );
+                }
+                let else_region = Some(else_region);
+                ExprValue {
+                    value: operation_builder.finish(OperationKind::Condition {
+                        cond,
+                        then_region,
+                        else_region,
+                    }),
+                    ty,
+                }
+            }
             Expr::Sequence(items) => {
                 for (idx, item) in items.iter().enumerate() {
                     let used = used && idx == items.len() - 1;
@@ -302,7 +393,27 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             // TODO: lambda call should also be handled here.
             Expr::Call(target, items) => {
                 if let Some(path) = call_target_as_plain_path(target) {
-                    if let Some(proto) = self.functions().get(&path) {
+                    // TODO: currently this is hard coded. Add a better way to resolve visiable aliases.
+                    let prefixed_function = Path::new(
+                        path.basename(),
+                        self.ctx()
+                            .module()
+                            .segments()
+                            .iter()
+                            .copied()
+                            .chain(path.prefix().iter().copied()),
+                    );
+                    println!(
+                        "finding {:?} or {:?} in {:?}",
+                        prefixed_function,
+                        path,
+                        self.functions()
+                    );
+                    if let Some(proto) = self
+                        .functions()
+                        .get(&prefixed_function)
+                        .or_else(|| self.functions().get(&path))
+                    {
                         let args = items
                             .iter()
                             .flatten()
@@ -314,7 +425,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         let mut unification_failed = false;
                         let return_type = self.alloc(proto.return_type.clone());
                         for (_, ty) in args.iter() {
-                            if !self.unify(return_type, *ty) {
+                            if !self.unify(return_type, ty) {
                                 self.diagnostic(
                                     DiagnosticLevel::Error,
                                     "type mismatch in function call",
@@ -349,9 +460,9 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         self.diagnostic(
                             DiagnosticLevel::Error,
                             "function not found",
-                            expr.location(),
+                            target.location(),
                         );
-                        return self.add_poison_never();
+                        self.add_poison_never()
                     }
                 } else {
                     self.diagnostic(
@@ -359,7 +470,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         "polymorphic functions are not supported yet",
                         target.location(),
                     );
-                    return self.add_poison_never();
+                    self.add_poison_never()
                 }
             }
             Expr::CtorCall(_, items) => todo!(),
@@ -417,7 +528,6 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
     }
     fn short_circuit(&self, is_or: bool, lhs: &ExprBox, rhs: &ExprBox, loc: Location) -> ValID {
         let boolean_type = self.get_primitive_type(Primitive::Bool);
-        let never_type = self.get_primitive_type(Primitive::Never);
         let mut cond;
         match self.add_expr(lhs, true, None) {
             ExprValue {
@@ -470,7 +580,6 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 .unwrap();
             let mut operation_builder = block_builder.new_operation();
             operation_builder.add_location(loc);
-            operation_builder.add_output(never_type, None);
             operation_builder.finish(OperationKind::Yield(Some(val)));
             self.alloc(block_builder.build())
         };
@@ -487,11 +596,11 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             let value = value.unwrap_or_else(|| block_builder.add_poison(boolean_type));
             let mut operation_builder = block_builder.new_operation();
             operation_builder.add_location(loc);
-            operation_builder.add_output(never_type, None);
             operation_builder.finish(OperationKind::Yield(Some(value)));
             self.alloc(block_builder.build())
         };
         let mut operation_builder = self.new_operation();
+        let else_region = Some(else_region);
         operation_builder.add_location(loc);
         operation_builder.add_output(boolean_type, None);
         operation_builder
@@ -517,7 +626,7 @@ mod tests {
             #[test]
             fn $name() {
                 use chumsky::prelude::*;
-                let ctx = reussir_core::Context::new();
+                let ctx = reussir_core::Context::new(path!("test"));
                 let builder = IRBuilder::new(&ctx);
                 let mut parser_state = reussir_front::ParserState::new(path!("test"), "<stdin>");
                 let expr_input = $input;
