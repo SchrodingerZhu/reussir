@@ -86,7 +86,6 @@ mod tests {
                 } else {
                     assert!(module.is_some(), "Module should be created successfully");
                     let module = module.unwrap();
-                    println!("{:#?}", module);
                     let output = std::io::stdout();
                     let mut codegen = CGContext::new(Source::from(source.to_owned()), output);
                     module.codegen(&mut codegen).unwrap();
@@ -124,5 +123,86 @@ pub fn fibonacci(n: u64) -> u64 {
         "#,
         test_fuzzy_search,
         true
+    );
+
+    test_module_codegen!(
+        r#"
+pub fn fibonacci(n: u64) -> u64 { 
+    if n == 0u64 || n == 1u64 { 
+        n 
+    } else { 
+        fibonacci(n - 1u64) + fibonacci(n - 2u64) 
+    } 
+}"#,
+        test_fibonacci_short_circuit,
+        false
+    );
+    test_module_codegen!(
+        r#"
+pub fn fibonacci(n: u64) -> u64 { 
+    if n == 0u64 || n == 1u64 { 
+        n 
+    } else { 
+        let x = fibonacci(n - 1u64);
+        let y = fibonacci(n - 2u64);
+        x + y
+    } 
+}"#,
+        test_fibonacci_with_let,
+        false
+    );
+    test_module_codegen!(
+        r#"
+pub fn fibonacci_logarithmic_impl(
+    n: u64,
+    a00: u64,
+    a01: u64,
+    a10: u64,
+    a11: u64,
+    b00: u64,
+    b01: u64,
+    b10: u64,
+    b11: u64,
+) -> u64 {
+    if n == 0u64 {
+        a01
+    } else {
+        let nb00 = b00 * b00 + b01 * b10;
+        let nb01 = b00 * b01 + b01 * b11;
+        let nb10 = b10 * b00 + b11 * b10;
+        let nb11 = b10 * b01 + b11 * b11;
+        if n % 2u64 == 1u64 {
+            let na00 = a00 * b00 + a01 * b10;
+            let na01 = a00 * b01 + a01 * b11;
+            let na10 = a10 * b00 + a11 * b10;
+            let na11 = a10 * b01 + a11 * b11;
+            fibonacci_logarithmic_impl(
+                n / 2u64,
+                na00,
+                na01,
+                na10,
+                na11,
+                nb00,
+                nb01,
+                nb10,
+                nb11,
+            )
+        } else {
+            fibonacci_logarithmic_impl(
+                n / 2u64,
+                a00,
+                a01,
+                a10,
+                a11,
+                nb00,
+                nb01,
+                nb10,
+                nb11,
+            )
+        }
+    }
+}"#,
+        test_fibonacci_fast,
+        false
     );
 }
