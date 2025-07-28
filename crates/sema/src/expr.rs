@@ -236,6 +236,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     IntegerLiteral::U32(_) => codegen_integer!(U32),
                     IntegerLiteral::U64(_) => codegen_integer!(U64),
                     IntegerLiteral::U128(_) => codegen_integer!(U128),
+                    IntegerLiteral::Usize(_) => codegen_integer!(Usize),
+                    IntegerLiteral::Isize(_) => codegen_integer!(Isize),
                 }
             }
             Expr::Float(lit) => {

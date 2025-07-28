@@ -13,6 +13,8 @@ pub enum IntegerLiteral {
     U32(u32),
     U64(u64),
     U128(u128),
+    Usize(usize),
+    Isize(isize),
 }
 
 impl std::fmt::Debug for IntegerLiteral {
@@ -28,6 +30,8 @@ impl std::fmt::Debug for IntegerLiteral {
             IntegerLiteral::U32(val) => write!(f, "{val}u32"),
             IntegerLiteral::U64(val) => write!(f, "{val}u64"),
             IntegerLiteral::U128(val) => write!(f, "{val}u128"),
+            IntegerLiteral::Usize(val) => write!(f, "{val}usize"),
+            IntegerLiteral::Isize(val) => write!(f, "{val}isize"),
         }
     }
 }
@@ -45,6 +49,8 @@ impl std::fmt::Display for IntegerLiteral {
             IntegerLiteral::U32(val) => write!(f, "{val}"),
             IntegerLiteral::U64(val) => write!(f, "{val}"),
             IntegerLiteral::U128(val) => write!(f, "{val}"),
+            IntegerLiteral::Usize(val) => write!(f, "{val}usize"),
+            IntegerLiteral::Isize(val) => write!(f, "{val}isize"),
         }
     }
 }

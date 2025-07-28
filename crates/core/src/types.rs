@@ -50,6 +50,10 @@ pub enum Primitive {
     Never,
     #[strum(serialize = "region")]
     Region,
+    #[strum(serialize = "usize")]
+    Usize,
+    #[strum(serialize = "isize")]
+    Isize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

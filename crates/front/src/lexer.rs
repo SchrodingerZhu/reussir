@@ -96,6 +96,14 @@ fn parse_integer<'s, const FORMAT: u128>(
         IntegerLiteral::U128(
             parse_with_options::<u128, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
         )
+    } else if let Some(s) = input.strip_suffix("usize") {
+        IntegerLiteral::Usize(
+            parse_with_options::<usize, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
+        )
+    } else if let Some(s) = input.strip_suffix("isize") {
+        IntegerLiteral::Isize(
+            parse_with_options::<isize, _, FORMAT>(&s, &options).map_err(Error::InvalidInteger)?,
+        )
     } else {
         IntegerLiteral::I32(
             parse_with_options::<i32, _, FORMAT>(&input.trim_end_matches("i32"), &options)
@@ -244,11 +252,13 @@ pub enum Token<'src> {
     #[token("i32", parse_primitive_keyword)]
     #[token("i64", parse_primitive_keyword)]
     #[token("i128", parse_primitive_keyword)]
+    #[token("isize", parse_primitive_keyword)]
     #[token("u8", parse_primitive_keyword)]
     #[token("u16", parse_primitive_keyword)]
     #[token("u32", parse_primitive_keyword)]
     #[token("u64", parse_primitive_keyword)]
     #[token("u128", parse_primitive_keyword)]
+    #[token("usize", parse_primitive_keyword)]
     #[token("bf16", parse_primitive_keyword)]
     #[token("f16", parse_primitive_keyword)]
     #[token("f32", parse_primitive_keyword)]
@@ -263,10 +273,10 @@ pub enum Token<'src> {
     #[token("false", |_|false)]
     Boolean(bool),
 
-    #[regex(r"-?\d[\d_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?", parse_integer::<DECIMAL_FORMAT>)]
-    #[regex(r"-?0b[01][01_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?", parse_integer::<BINARY_FORMAT>)]
-    #[regex(r"-?0x[0-9a-fA-F][0-9a-fA-F_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?", parse_integer::<HEXADECIMAL_FORMAT>)]
-    #[regex(r"-?0o[0-7][0-7_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?", parse_integer::<OCTAL_FORMAT>)]
+    #[regex(r"-?\d[\d_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|usize|isize)?", parse_integer::<DECIMAL_FORMAT>)]
+    #[regex(r"-?0b[01][01_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|usize|isize)?", parse_integer::<BINARY_FORMAT>)]
+    #[regex(r"-?0x[0-9a-fA-F][0-9a-fA-F_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|usize|isize)?", parse_integer::<HEXADECIMAL_FORMAT>)]
+    #[regex(r"-?0o[0-7][0-7_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|usize|isize)?", parse_integer::<OCTAL_FORMAT>)]
     Integer(IntegerLiteral),
 
     #[regex(
