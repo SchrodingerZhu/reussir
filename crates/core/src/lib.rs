@@ -1,3 +1,4 @@
+use ariadne::Source;
 use chumsky::span::Span;
 use std::fmt::Debug;
 use std::ops::Range;
@@ -141,6 +142,48 @@ pub struct Context {
     module: Path,
     type_database: types::TypeDatabase,
     function_database: func::FunctionDatabase,
+}
+
+pub struct CGContext<'a> {
+    source: Source,
+    output: std::fmt::Formatter<'a>,
+    identation: usize,
+}
+
+impl<'a> CGContext<'a> {
+    pub fn new(source: Source, output: std::fmt::Formatter<'a>) -> Self {
+        CGContext {
+            source,
+            output,
+            identation: 0,
+        }
+    }
+
+    pub fn location_to_line_span(&self, location: Location) -> Option<LocRange> {
+        let (_, line_start, col_start) = self.source.get_offset_line(location.start() as usize)?;
+        let (_, line_end, col_end) = self.source.get_offset_line(location.end() as usize)?;
+        Some(LocRange {
+            file: location.file(),
+            start: (line_start, col_start),
+            end: (line_end, col_end),
+        })
+    }
+}
+
+pub struct LocRange {
+    file: Ustr,
+    start: (usize, usize),
+    end: (usize, usize),
+}
+
+impl LocRange {
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        write!(
+            ctx.output,
+            "loc({:?}:{}:{} to {}:{})",
+            self.file, self.start.0, self.start.1, self.end.0, self.end.1
+        )
+    }
 }
 
 impl Context {

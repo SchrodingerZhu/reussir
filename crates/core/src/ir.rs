@@ -3,7 +3,7 @@ use std::fmt::Write;
 use ustr::Ustr;
 
 use crate::{
-    Location, Path,
+    CGContext, Location, Path,
     literal::{FloatLiteral, IntegerLiteral},
     types::Type,
 };
@@ -22,23 +22,19 @@ pub struct Operation<'a> {
     pub kind: OperationKind<'a>,
 }
 
-pub struct CGContext<'a> {
-    output: std::fmt::Formatter<'a>,
-    identation: usize,
-}
-
 impl Operation<'_> {
     pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
         (0..ctx.identation).try_for_each(|_| ctx.output.write_char('\t'))?;
         match &self.output {
             Some(OutputValue {
                 value,
-                ty: _,
+                ty: ty,
                 name: _,
             }) => {
                 write!(ctx.output, "%{value} = ")?;
                 self.kind.codegen(ctx)?;
-                write!(ctx.output, " : <todo-print-type>")?;
+                write!(ctx.output, " : ")?;
+                ty.codegen(ctx)?;
             }
             None => self.kind.codegen(ctx)?,
         }
@@ -93,6 +89,24 @@ pub struct Block<'a>(pub &'a [Operation<'a>]);
 pub struct Symbol<'a> {
     pub path: Path,
     pub type_params: Option<&'a [&'a Type]>,
+}
+
+impl<'a> Symbol<'a> {
+    // TODO: we need mangling
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        write!(ctx.output, "{:?}", self.path)?;
+        if let Some(type_params) = self.type_params {
+            write!(ctx.output, "<")?;
+            for (i, param) in type_params.iter().enumerate() {
+                if i > 0 {
+                    write!(ctx.output, ",")?;
+                }
+                param.codegen(ctx)?;
+            }
+            write!(ctx.output, ">")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
