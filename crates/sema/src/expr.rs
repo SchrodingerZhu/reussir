@@ -104,10 +104,10 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 }
             }
             Expr::Binary(lhs, op, rhs) => {
-                let (lhs_value, lhs_ty) = self.add_expr_expect_value(lhs, true, None);
-                let (rhs_value, rhs_ty) = self.add_expr_expect_value(rhs, true, None);
                 macro_rules! arith_intrinsic_call {
                     (unify $target:ident) => {{
+                        let (lhs_value, lhs_ty) = self.add_expr_expect_value(lhs, true, None);
+                        let (rhs_value, rhs_ty) = self.add_expr_expect_value(rhs, true, None);
                         if !self.unify(lhs_ty, rhs_ty) {
                             self.diagnostic(
                                 DiagnosticLevel::Error,
@@ -145,6 +145,8 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         }
                     }};
                     (compare $target:ident) => {{
+                        let (lhs_value, lhs_ty) = self.add_expr_expect_value(lhs, true, None);
+                        let (rhs_value, rhs_ty) = self.add_expr_expect_value(rhs, true, None);
                         if !self.unify(lhs_ty, rhs_ty) {
                             self.diagnostic(
                                 DiagnosticLevel::Error,
@@ -538,31 +540,15 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
     }
     fn short_circuit(&self, is_or: bool, lhs: &ExprBox, rhs: &ExprBox, loc: Location) -> ValID {
         let boolean_type = self.get_primitive_type(Primitive::Bool);
-        let mut cond;
-        match self.add_expr(lhs, true, None) {
-            ExprValue {
-                value: Some(value),
-                ty,
-            } if self.unify(ty, boolean_type) => {
-                cond = value;
-            }
-            ExprValue { value: None, .. } => {
-                self.diagnostic(
-                    DiagnosticLevel::Ice,
-                    "LHS does not return a value properly",
-                    loc,
-                );
-                return self.add_poison(boolean_type);
-            }
-            _ => {
-                self.diagnostic(
-                    DiagnosticLevel::Error,
-                    "type mismatch in short-circuit expression",
-                    loc,
-                );
-                return self.add_poison(boolean_type);
-            }
-        };
+        let (mut cond, cond_ty) = self.add_expr_expect_value(lhs, true, None);
+        if !self.unify(cond_ty, boolean_type) {
+            self.diagnostic(
+                DiagnosticLevel::Error,
+                "condition in short-circuit expression must be a boolean",
+                loc,
+            );
+            return self.add_poison(boolean_type);
+        }
         if !is_or {
             let mut operation_builder = self.new_operation();
             operation_builder.add_location(loc);

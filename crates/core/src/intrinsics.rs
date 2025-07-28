@@ -84,6 +84,11 @@ pub enum ArithIntrinsic {
     Subf(FastMathFlags),
     Cmpi(CmpIPredicate),
     Cmpf(CmpFPredicate),
+    Divsi,
+    Divui,
+    Muli(IntegerOverflowFlags),
+    Remsi,
+    Remui,
 }
 
 impl<'a> ArithIntrinsic {
@@ -95,6 +100,19 @@ impl<'a> ArithIntrinsic {
             ("sub", [t]) if t.is_float() => Some(Self::Subf(FastMathFlags::NONE)),
             ("lt", [t]) if t.is_signed_integer() => Some(Self::Cmpi(CmpIPredicate::Slt)),
             ("lt", [t]) if t.is_unsigned_integer() => Some(Self::Cmpi(CmpIPredicate::Ult)),
+            ("le", [t]) if t.is_signed_integer() => Some(Self::Cmpi(CmpIPredicate::Sle)),
+            ("le", [t]) if t.is_unsigned_integer() => Some(Self::Cmpi(CmpIPredicate::Ule)),
+            ("gt", [t]) if t.is_signed_integer() => Some(Self::Cmpi(CmpIPredicate::Sgt)),
+            ("gt", [t]) if t.is_unsigned_integer() => Some(Self::Cmpi(CmpIPredicate::Ugt)),
+            ("ge", [t]) if t.is_signed_integer() => Some(Self::Cmpi(CmpIPredicate::Sge)),
+            ("ge", [t]) if t.is_unsigned_integer() => Some(Self::Cmpi(CmpIPredicate::Uge)),
+            ("eq", [t]) if t.is_integer() => Some(Self::Cmpi(CmpIPredicate::Eq)),
+            ("ne", [t]) if t.is_integer() => Some(Self::Cmpi(CmpIPredicate::Ne)),
+            ("div", [t]) if t.is_signed_integer() => Some(Self::Divsi),
+            ("div", [t]) if t.is_unsigned_integer() => Some(Self::Divui),
+            ("mul", [t]) if t.is_integer() => Some(Self::Muli(IntegerOverflowFlags::NONE)),
+            ("mod", [t]) if t.is_signed_integer() => Some(Self::Remsi),
+            ("mod", [t]) if t.is_unsigned_integer() => Some(Self::Remui),
             _ => None,
         }
     }
@@ -157,6 +175,49 @@ impl ArithIntrinsic {
                     Into::<&str>::into(flags)
                 )?;
                 ty.codegen(ctx)?;
+            }
+            ArithIntrinsic::Divsi => {
+                let input = input.unwrap();
+                let out = result.unwrap();
+                let (lhs, _) = input.get(0).unwrap();
+                let (rhs, _) = input.get(1).unwrap();
+                write!(ctx.output, "%{} = arith.divsi %{lhs}, %{rhs} : ", out.value)?;
+                out.ty.codegen(ctx)?;
+            }
+            ArithIntrinsic::Divui => {
+                let input = input.unwrap();
+                let out = result.unwrap();
+                let (lhs, _) = input.get(0).unwrap();
+                let (rhs, _) = input.get(1).unwrap();
+                write!(ctx.output, "%{} = arith.divui %{lhs}, %{rhs} : ", out.value)?;
+                out.ty.codegen(ctx)?;
+            }
+            ArithIntrinsic::Muli(flags) => {
+                let input = input.unwrap();
+                let out = result.unwrap();
+                let (lhs, _) = input.get(0).unwrap();
+                let (rhs, _) = input.get(1).unwrap();
+                write!(ctx.output, "%{} = arith.muli %{lhs}, %{rhs} : ", out.value)?;
+                if !flags.is_empty() {
+                    unimplemented!()
+                }
+                out.ty.codegen(ctx)?;
+            }
+            ArithIntrinsic::Remsi => {
+                let input = input.unwrap();
+                let out = result.unwrap();
+                let (lhs, _) = input.get(0).unwrap();
+                let (rhs, _) = input.get(1).unwrap();
+                write!(ctx.output, "%{} = arith.remsi %{lhs}, %{rhs} : ", out.value)?;
+                out.ty.codegen(ctx)?;
+            }
+            ArithIntrinsic::Remui => {
+                let input = input.unwrap();
+                let out = result.unwrap();
+                let (lhs, _) = input.get(0).unwrap();
+                let (rhs, _) = input.get(1).unwrap();
+                write!(ctx.output, "%{} = arith.remui %{lhs}, %{rhs} : ", out.value)?;
+                out.ty.codegen(ctx)?;
             }
             _ => todo!(),
         }
