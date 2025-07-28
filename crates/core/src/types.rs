@@ -73,6 +73,7 @@ pub enum Type {
         expr: TypeExpr,
     },
     Arrow(Box<[Self]>, Box<Self>),
+    Meta(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
