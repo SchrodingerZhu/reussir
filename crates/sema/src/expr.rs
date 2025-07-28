@@ -130,10 +130,14 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             path: target_function,
                             type_params: Some(type_params),
                         });
-                        let call = OperationKind::FnCall {
-                            target: symbol,
-                            args: Some(self.alloc_slice_fill_iter([lhs_value, rhs_value])),
-                        };
+                        let call =
+                            OperationKind::FnCall {
+                                target: symbol,
+                                args: Some(self.alloc_slice_fill_iter([
+                                    (lhs_value, lhs_ty),
+                                    (rhs_value, rhs_ty),
+                                ])),
+                            };
                         operation_builder.add_output(lhs_ty, name);
                         ExprValue {
                             value: operation_builder.finish(call),
@@ -163,10 +167,14 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                             path: target_function,
                             type_params: Some(type_params),
                         });
-                        let call = OperationKind::FnCall {
-                            target: symbol,
-                            args: Some(self.alloc_slice_fill_iter([lhs_value, rhs_value])),
-                        };
+                        let call =
+                            OperationKind::FnCall {
+                                target: symbol,
+                                args: Some(self.alloc_slice_fill_iter([
+                                    (lhs_value, lhs_ty),
+                                    (rhs_value, rhs_ty),
+                                ])),
+                            };
                         let boolean_type = self.get_primitive_type(Primitive::Bool);
                         operation_builder.add_output(boolean_type, name);
                         ExprValue {
@@ -299,11 +307,11 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     block_builder.add_expr(then_branch, false, None);
                     let mut op_builder = block_builder.new_operation();
                     op_builder.add_location(expr.location());
-                    op_builder.finish(OperationKind::Yield(None));
+                    op_builder.finish(OperationKind::ScfYield(None));
                     block_builder.build()
                 });
                 ExprValue {
-                    value: operation_builder.finish(OperationKind::Condition {
+                    value: operation_builder.finish(OperationKind::ScfIf {
                         cond,
                         then_region,
                         else_region: None,
@@ -330,7 +338,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     let (val, ty) = block_builder.add_expr_expect_value(then_branch, true, None);
                     let mut operation_builder = block_builder.new_operation();
                     operation_builder.add_location(expr.location());
-                    operation_builder.finish(OperationKind::Yield(Some(val)));
+                    operation_builder.finish(OperationKind::ScfYield(Some((val, ty))));
                     (ty, self.alloc(block_builder.build()))
                 };
                 let (else_ty, else_region) = self.alloc({
@@ -338,7 +346,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                     let (val, ty) = block_builder.add_expr_expect_value(else_branch, true, None);
                     let mut operation_builder = block_builder.new_operation();
                     operation_builder.add_location(expr.location());
-                    operation_builder.finish(OperationKind::Yield(Some(val)));
+                    operation_builder.finish(OperationKind::ScfYield(Some((val, ty))));
                     (ty, block_builder.build())
                 });
                 if !self.unify(then_ty, else_ty) {
@@ -348,14 +356,15 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         expr.location(),
                     );
                 }
+                operation_builder.add_output(then_ty, name);
                 let else_region = Some(else_region);
                 ExprValue {
-                    value: operation_builder.finish(OperationKind::Condition {
+                    value: operation_builder.finish(OperationKind::ScfIf {
                         cond,
                         then_region,
                         else_region,
                     }),
-                    ty,
+                    ty: then_ty,
                 }
             }
             Expr::Sequence(items) => {
@@ -440,15 +449,13 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                         operation_builder.add_output(return_type, name);
                         operation_builder.add_location(expr.location());
                         let symbol = self.alloc(Symbol {
-                            path,
+                            path: proto.path.clone(),
                             type_params: None,
                         });
                         ExprValue {
                             value: operation_builder.finish(OperationKind::FnCall {
                                 target: symbol,
-                                args: Some(
-                                    self.alloc_slice_fill_iter(args.iter().map(|(v, _)| *v)),
-                                ),
+                                args: Some(self.alloc_slice_fill_iter(args.iter().copied())),
                             }),
                             ty: return_type,
                         }
@@ -517,7 +524,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 operation_builder.add_output(target_type, name);
                 let call = OperationKind::FnCall {
                     target: symbol,
-                    args: Some(self.alloc_slice_fill_iter([value])),
+                    args: Some(self.alloc_slice_fill_iter([(value, expr_ty)])),
                 };
                 ExprValue {
                     value: operation_builder.finish(call),
@@ -568,7 +575,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             });
             let call = OperationKind::FnCall {
                 target: symbol,
-                args: Some(self.alloc_slice_fill_iter([cond])),
+                args: Some(self.alloc_slice_fill_iter([(cond, boolean_type)])),
             };
             cond = operation_builder.finish(call).unwrap();
         }
@@ -583,7 +590,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
                 .unwrap();
             let mut operation_builder = block_builder.new_operation();
             operation_builder.add_location(loc);
-            operation_builder.finish(OperationKind::Yield(Some(val)));
+            operation_builder.finish(OperationKind::ScfYield(Some((val, boolean_type))));
             self.alloc(block_builder.build())
         };
         let else_region = {
@@ -599,7 +606,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
             let value = value.unwrap_or_else(|| block_builder.add_poison(boolean_type));
             let mut operation_builder = block_builder.new_operation();
             operation_builder.add_location(loc);
-            operation_builder.finish(OperationKind::Yield(Some(value)));
+            operation_builder.finish(OperationKind::ScfYield(Some((value, boolean_type))));
             self.alloc(block_builder.build())
         };
         let mut operation_builder = self.new_operation();
@@ -607,7 +614,7 @@ impl<'b, 'a: 'b> BlockBuilder<'b, 'a> {
         operation_builder.add_location(loc);
         operation_builder.add_output(boolean_type, None);
         operation_builder
-            .finish(OperationKind::Condition {
+            .finish(OperationKind::ScfIf {
                 cond,
                 then_region,
                 else_region,

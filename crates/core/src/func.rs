@@ -1,7 +1,8 @@
 use std::cell::RefCell;
+use std::io::Write;
 
 use crate::types::Type;
-use crate::{Location, Path};
+use crate::{CGContext, Location, Path, Result};
 use frizbee::{IncrementalMatcher, Options};
 use rustc_hash::FxHashMapRand;
 use ustr::Ustr;
@@ -11,6 +12,15 @@ pub struct Param {
     pub location: Location,
     pub ty: Type,
 }
+
+impl Param {
+    pub fn codegen<W: Write>(&self, ctx: &mut CGContext<W>, index: usize) -> Result<()> {
+        write!(ctx.output, "%{index} : ")?;
+        self.ty.codegen(ctx)?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionProto {
     pub path: Path,
