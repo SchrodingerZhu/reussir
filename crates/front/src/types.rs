@@ -300,16 +300,16 @@ where
 
     let valid_value = value
         .try_map(|x, location| {
-            if let IntegerLiteral::U64(val) = x {
+            if let IntegerLiteral::Usize(val) = x {
                 Ok(val)
             } else {
                 Err(Rich::custom(
                     location,
-                    "size and alignment must be in u64 format",
+                    "size and alignment must be in usize format",
                 ))
             }
         })
-        .recover_with(via_parser(value.map(|_| 1u64)))
+        .recover_with(via_parser(value.map(|_| 1usize)))
         .labelled("size or alignment value");
     is_public()
         .then_ignore(just(Token::Opaque))
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_opaque_parser() {
         let input = r#"
-        opaque MyType { alignment: 8u64, size: 64u64 }
+        opaque MyType { alignment: 8usize, size: 64usize }
         "#;
         let mut state = ParserState::new(path!("test"), "<stdin>");
         let parser = opaque_type();
