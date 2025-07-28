@@ -1,10 +1,13 @@
 use ariadne::Source;
 use chumsky::span::Span;
 use std::fmt::Debug;
+use std::io::Write;
 use std::ops::Range;
+use thiserror::Error;
 use ustr::Ustr;
 
 pub mod func;
+pub mod intrinsics;
 pub mod ir;
 pub mod literal;
 pub mod module;
@@ -144,14 +147,14 @@ pub struct Context {
     function_database: func::FunctionDatabase,
 }
 
-pub struct CGContext<'a> {
+pub struct CGContext<W: Write> {
     source: Source,
-    output: std::fmt::Formatter<'a>,
+    output: W,
     identation: usize,
 }
 
-impl<'a> CGContext<'a> {
-    pub fn new(source: Source, output: std::fmt::Formatter<'a>) -> Self {
+impl<W: Write> CGContext<W> {
+    pub fn new(source: Source, output: W) -> Self {
         CGContext {
             source,
             output,
@@ -177,12 +180,13 @@ pub struct LocRange {
 }
 
 impl LocRange {
-    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+    pub fn codegen<W: Write>(&self, ctx: &mut CGContext<W>) -> Result<()> {
         write!(
             ctx.output,
             "loc({:?}:{}:{} to {}:{})",
             self.file, self.start.0, self.start.1, self.end.0, self.end.1
-        )
+        )?;
+        Ok(())
     }
 }
 
@@ -220,3 +224,11 @@ impl Context {
         &mut self.function_database
     }
 }
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("IO error: {0}")]
+    IO(#[from] std::io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;

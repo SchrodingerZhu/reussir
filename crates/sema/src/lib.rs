@@ -17,7 +17,7 @@ pub type Result<'a, T> = std::result::Result<T, Error<'a>>;
 
 pub fn populate_module<'a>(
     ctx: &'a mut reussir_core::Context,
-    module: &Module,
+    module: &'a Module,
     source_code: &str,
 ) -> Option<ModuleInstance<'a>> {
     // Pass 1: record all functions and types.
@@ -59,7 +59,8 @@ pub fn populate_module<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reussir_core::path;
+    use ariadne::Source;
+    use reussir_core::{CGContext, path};
     use reussir_front::lexer::Token;
     use ustr::Ustr;
 
@@ -84,7 +85,11 @@ mod tests {
                     );
                 } else {
                     assert!(module.is_some(), "Module should be created successfully");
-                    println!("{:#?}", module.unwrap());
+                    let module = module.unwrap();
+                    println!("{:#?}", module);
+                    let output = std::io::stdout();
+                    let mut codegen = CGContext::new(Source::from(source.to_owned()), output);
+                    module.codegen(&mut codegen).unwrap();
                 }
             }
         };
@@ -97,7 +102,14 @@ mod tests {
         false
     );
     test_module_codegen!(
-        "pub fn fibonacci(n: u64) -> u64 { if n < 2u64 { n } else { fibonacci(n - 1u64) + fibonacci(n - 2u64) } }",
+        r#"
+pub fn fibonacci(n: u64) -> u64 { 
+    if n < 2u64 { 
+        n 
+    } else { 
+        fibonacci(n - 1u64) + fibonacci(n - 2u64) 
+    } 
+}"#,
         test_fibonacci_function,
         false
     );

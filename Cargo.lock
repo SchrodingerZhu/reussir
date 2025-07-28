@@ -609,12 +609,14 @@ name = "reussir-core"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "bitflags 2.9.1",
  "bumpalo",
  "chumsky",
  "frizbee",
  "rustc-hash",
  "rustc_apfloat",
  "strum",
+ "thiserror",
  "ustr",
 ]
 

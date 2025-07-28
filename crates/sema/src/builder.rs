@@ -3,7 +3,7 @@ use ariadne::{Report, sources};
 use reussir_core::{
     Context, Location,
     func::{FunctionDatabase, FunctionProto},
-    ir::{Block, Operation, OperationKind, OutputValue, ValID},
+    ir::{Block, Operation, OperationKind, OutputValue, Symbol, ValID},
     module::{FunctionInstance, ModuleInstance},
     path,
     types::{Capability, Primitive, Type, TypeDatabase, TypeExpr},
@@ -351,7 +351,7 @@ impl<'a> ModuleBuilder<'a> {
         self.ir_builder.report_errors(source, file)
     }
 
-    pub fn define_function(&mut self, proto: &FunctionProto, body: &ExprBox) {
+    pub fn define_function(&mut self, proto: &'a FunctionProto, body: &ExprBox) {
         let snapshot = self.ir_builder.snapshot();
         for param in proto.params.iter() {
             let ty = self.ir_builder.alloc(param.ty.clone());
@@ -359,13 +359,21 @@ impl<'a> ModuleBuilder<'a> {
                 .add_val(ty, Some(param.location), param.name);
         }
         let block_builder = BlockBuilder::new(&self.ir_builder);
-        block_builder.add_expr(body, false, None);
+        let (val, ty) = block_builder.add_expr_expect_value(body, true, None);
+        let mut operation_builder = block_builder.new_operation();
+        operation_builder.add_location(body.location());
+        operation_builder.finish(OperationKind::Return(Some((val, ty))));
         let blk = block_builder.build();
         let body = self.ir_builder.ctx.bump().alloc(blk);
-        let function_instance = FunctionInstance {
+        let symbol = Symbol {
             path: proto.path.clone(),
             type_params: None,
+        };
+        let symbol = self.ir_builder.alloc(symbol);
+        let function_instance = FunctionInstance {
+            symbol,
             body,
+            proto,
         };
         self.functions.push(function_instance);
         self.ir_builder.recover_to(snapshot);
