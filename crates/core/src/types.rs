@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 use ustr::Ustr;
 
-use crate::{Location, Path};
+use crate::{CGContext, Location, Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, IntoStaticStr, Display, EnumIter, EnumString)]
 pub enum Primitive {
@@ -84,6 +84,15 @@ pub enum Type {
 pub struct TypeExpr {
     pub path: Path,
     pub args: Option<Box<[Type]>>,
+}
+
+impl TypeExpr {
+    pub fn as_primitive(&self) -> Option<Primitive> {
+        if !self.path.prefix().is_empty() || !self.args.is_none() {
+            return None;
+        }
+        Primitive::iter().find(|p| Into::<&str>::into(*p) == self.path.basename())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -272,6 +281,54 @@ impl TypeDatabase {
             ConcreteType::Record(record) => record.location,
             _ => None,
         })
+    }
+}
+
+impl Primitive {
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        match self {
+            Primitive::Bool => write!(ctx.output, "i1"),
+            Primitive::I8 => write!(ctx.output, "i8"),
+            Primitive::I16 => write!(ctx.output, "i16"),
+            Primitive::I32 => write!(ctx.output, "i32"),
+            Primitive::I64 => write!(ctx.output, "i64"),
+            Primitive::I128 => write!(ctx.output, "i128"),
+            Primitive::U8 => write!(ctx.output, "u8"),
+            Primitive::U16 => write!(ctx.output, "u16"),
+            Primitive::U32 => write!(ctx.output, "u32"),
+            Primitive::U64 => write!(ctx.output, "u64"),
+            Primitive::U128 => write!(ctx.output, "u128"),
+            Primitive::BF16 => write!(ctx.output, "bf16"),
+            Primitive::F16 => write!(ctx.output, "f16"),
+            Primitive::F32 => write!(ctx.output, "f32"),
+            Primitive::F64 => write!(ctx.output, "f64"),
+            Primitive::F128 => write!(ctx.output, "f128"),
+            Primitive::Char => write!(ctx.output, "!reussir.char"),
+            Primitive::Str => write!(ctx.output, "!reussir.str"),
+            Primitive::Unit => write!(ctx.output, "none"),
+            Primitive::Never => write!(ctx.output, "<todo>"), // TODO: Adjust for actual never type
+            Primitive::Region => write!(ctx.output, "<todo>"), // TODO: Adjust for actual region
+            Primitive::Usize => write!(ctx.output, "index"),
+            Primitive::Isize => write!(ctx.output, "<todo>"),
+        }
+    }
+}
+
+impl Type {
+    pub fn codegen(&self, ctx: &mut CGContext) -> std::fmt::Result {
+        match self {
+            Type::Atom {
+                capability: Capability::Default,
+                expr,
+            } => {
+                if let Some(primitive) = expr.as_primitive() {
+                    primitive.codegen(ctx)
+                } else {
+                    todo!("Handle non-primitive atom types")
+                }
+            }
+            _ => todo!(),
+        }
     }
 }
 
