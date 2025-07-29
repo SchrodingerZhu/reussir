@@ -1,0 +1,11 @@
+[package]
+name = "reussir-utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bumpalo = { version = "3.19.0", features = ["boxed"] }
+thiserror = "2.0.12"
+
+[dev-dependencies]
+rand = "0.9.2"
