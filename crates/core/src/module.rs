@@ -29,6 +29,14 @@ impl<'a> ModuleInstance<'a> {
         }
         ctx.identation -= 1;
         writeln!(ctx.output, "}}")?;
+        let mut locs = ctx.location_uniqifer.values().copied().collect::<Vec<_>>();
+        locs.sort_unstable_by_key(|x| x.0);
+        for (idx, attr) in locs.into_iter() {
+            (0..ctx.identation).try_for_each(|_| write!(ctx.output, "\t"))?;
+            write!(ctx.output, "#loc{} = ", idx)?;
+            attr.codegen(ctx)?;
+            writeln!(ctx.output)?;
+        }
         Ok(())
     }
 }

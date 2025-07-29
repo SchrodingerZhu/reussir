@@ -1,5 +1,7 @@
 use ariadne::Source;
 use chumsky::span::Span;
+use rustc_hash::FxHashMapRand;
+use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::io::Write;
 use std::ops::Range;
@@ -151,6 +153,7 @@ pub struct CGContext<W: Write> {
     source: Source,
     output: W,
     identation: usize,
+    location_uniqifer: FxHashMapRand<Location, (usize, LocRange)>,
 }
 
 impl<W: Write> CGContext<W> {
@@ -159,20 +162,30 @@ impl<W: Write> CGContext<W> {
             source,
             output,
             identation: 0,
+            location_uniqifer: FxHashMapRand::default(),
         }
     }
 
-    pub fn location_to_line_span(&self, location: Location) -> Option<LocRange> {
+    pub fn location_to_line_span(&mut self, location: Location) -> Option<usize> {
         let (_, line_start, col_start) = self.source.get_offset_line(location.start() as usize)?;
         let (_, line_end, col_end) = self.source.get_offset_line(location.end() as usize)?;
-        Some(LocRange {
+        let range = LocRange {
             file: location.file(),
             start: (line_start, col_start),
             end: (line_end, col_end),
-        })
+        };
+        let counter = self.location_uniqifer.len();
+        match self.location_uniqifer.entry(location) {
+            Entry::Occupied(entry) => Some(entry.get().0),
+            Entry::Vacant(entry) => {
+                entry.insert((counter, range));
+                Some(counter)
+            }
+        }
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct LocRange {
     file: Ustr,
     start: (usize, usize),
@@ -184,7 +197,11 @@ impl LocRange {
         write!(
             ctx.output,
             "loc({:?}:{}:{} to {}:{})",
-            self.file, self.start.0, self.start.1, self.end.0, self.end.1
+            self.file.to_string(),
+            self.start.0,
+            self.start.1,
+            self.end.0,
+            self.end.1
         )?;
         Ok(())
     }
