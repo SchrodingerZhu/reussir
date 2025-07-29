@@ -1,9 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/front", "crates/sema"]
+members = ["crates/core", "crates/front", "crates/sema", "crates/utils"]
 
 [profile.release]
 lto = true
-
-[profile.dev]
-split-debuginfo = "unpacked"
