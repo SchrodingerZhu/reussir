@@ -167,17 +167,18 @@ impl<W: Write> CGContext<W> {
     }
 
     pub fn location_to_line_span(&mut self, location: Location) -> Option<usize> {
-        let (_, line_start, col_start) = self.source.get_offset_line(location.start() as usize)?;
-        let (_, line_end, col_end) = self.source.get_offset_line(location.end() as usize)?;
-        let range = LocRange {
-            file: location.file(),
-            start: (line_start, col_start),
-            end: (line_end, col_end),
-        };
         let counter = self.location_uniqifer.len();
         match self.location_uniqifer.entry(location) {
             Entry::Occupied(entry) => Some(entry.get().0),
             Entry::Vacant(entry) => {
+                let (_, line_start, col_start) =
+                    self.source.get_offset_line(location.start() as usize)?;
+                let (_, line_end, col_end) = self.source.get_offset_line(location.end() as usize)?;
+                let range = LocRange {
+                    file: location.file(),
+                    start: (line_start, col_start),
+                    end: (line_end, col_end),
+                };
                 entry.insert((counter, range));
                 Some(counter)
             }
