@@ -26,6 +26,9 @@ impl Operation<'_> {
     pub fn codegen<W: Write>(&self, ctx: &mut CGContext<W>) -> Result<()> {
         (0..ctx.identation).try_for_each(|_| write!(ctx.output, "\t"))?;
         self.kind.codegen(ctx, self.output)?;
+        if let Some(location) = self.location.and_then(|x| ctx.location_to_line_span(x)) {
+            write!(ctx.output, " loc(#loc{})", location)?;
+        }
         writeln!(ctx.output)?;
         Ok(())
     }
