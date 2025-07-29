@@ -152,7 +152,11 @@ impl OperationKind<'_> {
                 write!(ctx.output, "%{} = arith.constant {val} : ", out.value)?;
                 out.ty.codegen(ctx)?;
             }
-            OperationKind::Unit => todo!(),
+            OperationKind::Unit => {
+                let out = out.unwrap();
+                write!(ctx.output, "%{} = reussir.unit : ", out.value)?;
+                out.ty.codegen(ctx)?;
+            }
             OperationKind::Panic(_) => todo!(),
             OperationKind::Poison => todo!(),
         }
