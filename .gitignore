@@ -2,3 +2,4 @@
 .idea
 .cargo
 .vscode
+/build
