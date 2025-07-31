@@ -11,3 +11,4 @@ include(${LLVM_DIR}/HandleLLVMOptions.cmake)
 if(LLVM_PACKAGE_VERSION VERSION_LESS "20.0.0")
   message(FATAL_ERROR "LLVM version 20.0.0 or higher is required")
 endif()
+
