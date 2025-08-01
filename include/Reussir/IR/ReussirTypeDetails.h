@@ -32,19 +32,19 @@ namespace detail {
 
 struct RecordTypeStorage : public mlir::TypeStorage {
   llvm::ArrayRef<mlir::Type> members;
-  llvm::ArrayRef<reussir::CapabilityAttr> memberCapabilities;
+  llvm::ArrayRef<reussir::Capability> memberCapabilities;
   mlir::StringAttr name;
   bool complete;
-  reussir::RecordKindAttr kind;
-  reussir::CapabilityAttr defaultCapability;
+  reussir::RecordKind kind;
+  reussir::Capability defaultCapability;
 
   using KeyTy = RecordTypeStorage;
 
   RecordTypeStorage(llvm::ArrayRef<mlir::Type> members,
-                    llvm::ArrayRef<reussir::CapabilityAttr> memberCapabilities,
+                    llvm::ArrayRef<reussir::Capability> memberCapabilities,
                     mlir::StringAttr name, bool complete,
-                    reussir::RecordKindAttr kind,
-                    reussir::CapabilityAttr defaultCapability)
+                    reussir::RecordKind kind,
+                    reussir::Capability defaultCapability)
       : members(members), memberCapabilities(memberCapabilities), name(name),
         complete(complete), kind(kind), defaultCapability(defaultCapability) {}
 
@@ -82,8 +82,8 @@ struct RecordTypeStorage : public mlir::TypeStorage {
   llvm::LogicalResult
   mutate(mlir::TypeStorageAllocator &allocator,
          llvm::ArrayRef<mlir::Type> members,
-         llvm::ArrayRef<reussir::CapabilityAttr> memberCapabilities,
-         reussir::CapabilityAttr defaultCapability) {
+         llvm::ArrayRef<reussir::Capability> memberCapabilities,
+         reussir::Capability defaultCapability) {
 
     // Anonymous records cannot mutate.
     if (!name)

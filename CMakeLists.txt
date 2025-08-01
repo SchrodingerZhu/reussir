@@ -20,4 +20,5 @@ include_directories(include ${MLIR_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS} ${MLIR_TAB
 
 # Subdirectories
 add_subdirectory(include)
-add_subdirectory(src)
+add_subdirectory(lib)
+add_subdirectory(tool)

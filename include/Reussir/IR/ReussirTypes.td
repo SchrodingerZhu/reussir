@@ -63,11 +63,11 @@ def ReussirRecordType : ReussirType<"Record", "record", [
 
   let parameters = (ins 
     OptionalArrayRefParameter<"mlir::Type">:$members,
-    OptionalArrayRefParameter<"reussir::CapabilityAttr">:$memberCapabilities,
+    OptionalArrayRefParameter<"reussir::Capability">:$memberCapabilities,
     OptionalParameter<"mlir::StringAttr">:$name,
     "bool":$complete,
-    "reussir::RecordKindAttr":$kind,
-    "reussir::CapabilityAttr":$defaultCapability
+    "reussir::RecordKind":$kind,
+    "reussir::Capability":$defaultCapability
   );
 
   let storageClass = "RecordTypeStorage";
@@ -80,10 +80,10 @@ def ReussirRecordType : ReussirType<"Record", "record", [
     // Create an identified and complete record type.
     TypeBuilder<(ins
       "llvm::ArrayRef<mlir::Type>":$members,
-      "llvm::ArrayRef<reussir::CapabilityAttr>":$memberCapabilities,
+      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
       "mlir::StringAttr":$name,
-      "reussir::RecordKindAttr":$kind,
-      "reussir::CapabilityAttr":$defaultCapability
+      "reussir::RecordKind":$kind,
+      "reussir::Capability":$defaultCapability
     ), [{
       return $_get($_ctxt, members, memberCapabilities, name, /*complete=*/true,
                        kind, defaultCapability);
@@ -92,34 +92,35 @@ def ReussirRecordType : ReussirType<"Record", "record", [
     // Create an identified and incomplete record type.
     TypeBuilder<(ins
       "mlir::StringAttr":$name,
-      "reussir::RecordKindAttr":$kind
+      "reussir::RecordKind":$kind
     ), [{
       return $_get($_ctxt, 
         /* members= */ llvm::ArrayRef<Type>{}, 
-        /* memberCapabilities= */ llvm::ArrayRef<reussir::CapabilityAttr>{},
+        /* memberCapabilities= */ llvm::ArrayRef<reussir::Capability>{},
         name,
         /* complete= */ false, 
         kind,
-        /* defaultCapability= */ reussir::CapabilityAttr{});
+        /* defaultCapability= */ reussir::Capability::unspecified);
     }]>,
 
     // Create an anonymous record type (always complete).
     TypeBuilder<(ins
       "llvm::ArrayRef<mlir::Type>":$members,
-      "llvm::ArrayRef<reussir::CapabilityAttr>":$memberCapabilities,
-      "reussir::RecordKindAttr":$kind,
-      "reussir::CapabilityAttr":$defaultCapability
+      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
+      "reussir::RecordKind":$kind,
+      "reussir::Capability":$defaultCapability
     ), [{
       return $_get($_ctxt, members, memberCapabilities, mlir::StringAttr{}, /*complete=*/true,
                       kind, defaultCapability);
     }]>];
 
     let extraClassDeclaration = [{
-      bool isStruct() const { return getKind().getValue() == RecordKind::Struct; };
-      bool isEnum() const { return getKind().getValue() == RecordKind::Enum; };
+      using Base::verifyInvariants;
+      bool isCompound() const { return getKind() == RecordKind::compound; };
+      bool isVariant() const { return getKind() == RecordKind::variant; };
       void complete(llvm::ArrayRef<mlir::Type> members, 
-                    llvm::ArrayRef<reussir::CapabilityAttr> memberCapabilities,
-                    reussir::CapabilityAttr defaultCapability);
+                    llvm::ArrayRef<reussir::Capability> memberCapabilities,
+                    reussir::Capability defaultCapability);
     }];
 }
 

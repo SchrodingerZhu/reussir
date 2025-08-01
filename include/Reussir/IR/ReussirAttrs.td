@@ -21,8 +21,8 @@ class ReussirAttr<string name> : AttrDef<ReussirDialect, name>;
 //===----------------------------------------------------------------------===//
 // Atomicity Attributes
 //===----------------------------------------------------------------------===//
-def AK_Normal : I32EnumAttrCase<"Normal", 0>;
-def AK_Atomic : I32EnumAttrCase<"Atomic", 1>;
+def AK_Normal : I32EnumAttrCase<"normal", 0>;
+def AK_Atomic : I32EnumAttrCase<"atomic", 1>;
 def AtomicKind : I32EnumAttr<
     "AtomicKind",
     "atomic kind",
@@ -33,12 +33,12 @@ def AtomicKind : I32EnumAttr<
 //===----------------------------------------------------------------------===//
 // Capability Attributes
 //===----------------------------------------------------------------------===//
-def CAP_Default : I32EnumAttrCase<"Default", 0>;
-def CAP_Value : I32EnumAttrCase<"Value", 1>;
-def CAP_Shared : I32EnumAttrCase<"Shared", 2>;
-def CAP_Flex : I32EnumAttrCase<"Flex", 3>;
-def CAP_Rigid : I32EnumAttrCase<"Rigid", 4>;
-def CAP_Field : I32EnumAttrCase<"Field", 5>;
+def CAP_Default : I32EnumAttrCase<"unspecified", 0>;
+def CAP_Value : I32EnumAttrCase<"value", 1>;
+def CAP_Shared : I32EnumAttrCase<"shared", 2>;
+def CAP_Flex : I32EnumAttrCase<"flex", 3>;
+def CAP_Rigid : I32EnumAttrCase<"rigid", 4>;
+def CAP_Field : I32EnumAttrCase<"field", 5>;
 
 def Capability : I32EnumAttr<
     "Capability",
@@ -50,8 +50,8 @@ def Capability : I32EnumAttr<
 //===----------------------------------------------------------------------===//
 // Record Kind Attributes
 //===----------------------------------------------------------------------===//
-def RK_Struct : I32EnumAttrCase<"Struct", 0>;
-def RK_Enum : I32EnumAttrCase<"Enum", 1>;
+def RK_Struct : I32EnumAttrCase<"compound", 0>;
+def RK_Enum : I32EnumAttrCase<"variant", 1>;
 
 def RecordKind : I32EnumAttr<
     "RecordKind",
