@@ -13,9 +13,11 @@
 #ifndef REUSSIR_IR_REUSSIROPS_TD
 #define REUSSIR_IR_REUSSIROPS_TD
 
+include "mlir/IR/BuiltinAttributes.td"
 include "Reussir/IR/ReussirDialect.td"
 include "Reussir/IR/ReussirAttrs.td"
-include "mlir/IR/BuiltinAttributes.td"
+include "Reussir/IR/ReussirTypes.td"
+
 
 class ReussirOp<string mnemonic, list<Trait> traits>
   : Op<ReussirDialect, mnemonic, traits>;

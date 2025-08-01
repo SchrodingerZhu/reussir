@@ -18,6 +18,9 @@ include "mlir/IR/EnumAttr.td"
 
 class ReussirAttr<string name> : AttrDef<ReussirDialect, name>;
 
+//===----------------------------------------------------------------------===//
+// Atomicity Attributes
+//===----------------------------------------------------------------------===//
 def AK_Normal : I32EnumAttrCase<"Normal", 0>;
 def AK_Atomic : I32EnumAttrCase<"Atomic", 1>;
 def AtomicKind : I32EnumAttr<
@@ -27,17 +30,33 @@ def AtomicKind : I32EnumAttr<
   let cppNamespace = "::reussir";
 }
 
+//===----------------------------------------------------------------------===//
+// Capability Attributes
+//===----------------------------------------------------------------------===//
 def CAP_Default : I32EnumAttrCase<"Default", 0>;
 def CAP_Value : I32EnumAttrCase<"Value", 1>;
 def CAP_Shared : I32EnumAttrCase<"Shared", 2>;
 def CAP_Flex : I32EnumAttrCase<"Flex", 3>;
 def CAP_Rigid : I32EnumAttrCase<"Rigid", 4>;
+def CAP_Field : I32EnumAttrCase<"Field", 5>;
 
 def Capability : I32EnumAttr<
     "Capability",
     "capability",
-    [CAP_Default, CAP_Value, CAP_Shared, CAP_Flex, CAP_Rigid]> {
+    [CAP_Default, CAP_Value, CAP_Shared, CAP_Flex, CAP_Rigid, CAP_Field]> {
   let cppNamespace = "::reussir";
 }
 
+//===----------------------------------------------------------------------===//
+// Record Kind Attributes
+//===----------------------------------------------------------------------===//
+def RK_Struct : I32EnumAttrCase<"Struct", 0>;
+def RK_Enum : I32EnumAttrCase<"Enum", 1>;
+
+def RecordKind : I32EnumAttr<
+    "RecordKind",
+    "record kind",
+    [RK_Struct, RK_Enum]> {
+  let cppNamespace = "::reussir";
+}
 #endif // REUSSIR_IR_REUSSIRATTRS_TD

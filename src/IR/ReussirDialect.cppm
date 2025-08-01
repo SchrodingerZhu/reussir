@@ -1,3 +1,15 @@
+//===-- ReussirDialect.cppm - Reussir dialect implementation ----*- c++ -*-===//
+//
+// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// the MIT License.
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the Reussir dialect and its core functionality.
+//
+//===----------------------------------------------------------------------===//
+module;
 #include "Reussir/IR/ReussirDialect.h"
 
 #include "Reussir/IR/ReussirDialect.cpp.inc"
@@ -30,3 +42,5 @@ void ReussirDialect::registerAttributes() {}
 void ReussirDialect::registerTypes() {}
 
 } // namespace reussir
+
+export module Reussir.IR.Dialect;
