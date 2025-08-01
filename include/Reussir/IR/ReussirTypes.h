@@ -22,8 +22,7 @@
 
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
-
-import Reussir.IR.TypeDetails;
+#include "Reussir/IR/ReussirTypeDetails.h"
 
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.h.inc"

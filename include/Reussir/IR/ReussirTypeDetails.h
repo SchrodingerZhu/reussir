@@ -1,4 +1,4 @@
-//===-- ReussirTypeDetails.cppm - Reussir type details impl -----*- c++ -*-===//
+//===-- ReussirTypeDetails.h - Reussir type details impl --------*- c++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -6,19 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the types used in the Reussir dialect. Internal func
+// This file implements the types used in the Reussir dialect (internal
+// details).
 //
 //===----------------------------------------------------------------------===//
-module;
-
 #include <llvm/ADT/Hashing.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
-
-export module Reussir.IR.TypeDetails;
 
 namespace reussir {
 namespace detail {
@@ -33,7 +30,7 @@ namespace detail {
 //
 //===----------------------------------------------------------------------===//
 
-export struct RecordTypeStorage : public mlir::TypeStorage {
+struct RecordTypeStorage : public mlir::TypeStorage {
   llvm::ArrayRef<mlir::Type> members;
   llvm::ArrayRef<reussir::CapabilityAttr> memberCapabilities;
   mlir::StringAttr name;

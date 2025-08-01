@@ -1,4 +1,4 @@
-//===-- ReussirTypes.cppm - Reussir types implementation --------*- c++ -*-===//
+//===-- ReussirTypes.cpp - Reussir types implementation ---------*- c++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -9,7 +9,6 @@
 // This file implements the types used in the Reussir dialect.
 //
 //===----------------------------------------------------------------------===//
-module;
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
@@ -253,5 +252,3 @@ RecordType::getPreferredAlignment(const ::mlir::DataLayout &dataLayout,
 }
 
 } // namespace reussir
-
-export module Reussir.IR.Types;

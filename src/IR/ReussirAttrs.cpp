@@ -1,4 +1,4 @@
-//===-- ReussirEnumAttrs.cppm - Reussir enum attributes impl ----*- c++ -*-===//
+//===-- ReussirAttrs.cpp - Reussir attributes implementation ----*- c++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -6,14 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the enum attributes used in the Reussir dialect.
+// This file implements the attributes used in the Reussir dialect.
 //
 //===----------------------------------------------------------------------===//
+#include "Reussir/IR/ReussirAttrs.h"
 
-module;
-
-#include "Reussir/IR/ReussirEnumAttrs.h"
-
-#include "Reussir/IR/ReussirEnumAttrs.cpp.inc"
-
-export module Reussir.IR.EnumAttrs;
+#include "Reussir/IR/ReussirAttrs.cpp.inc"
