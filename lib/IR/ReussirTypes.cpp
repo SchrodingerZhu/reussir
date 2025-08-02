@@ -61,6 +61,18 @@
 
 namespace reussir {
 //===----------------------------------------------------------------------===//
+// isNonNullPointerType
+//===----------------------------------------------------------------------===//
+bool isNonNullPointerType(mlir::Type type) {
+  if (!type)
+    return false;
+  return llvm::TypeSwitch<mlir::Type, bool>(type)
+      .Case<TokenType, RegionType, RCType, RecordType, RawPtrType>(
+          [](auto) { return true; })
+      .Default([](mlir::Type) { return false; });
+}
+
+//===----------------------------------------------------------------------===//
 // RecordType
 //===----------------------------------------------------------------------===//
 llvm::LogicalResult
@@ -462,5 +474,12 @@ void RCType::print(mlir::AsmPrinter &printer) const {
   }
   printer << ">";
 }
+
+///===----------------------------------------------------------------------===//
+// Reussir Nullable Type
+//===----------------------------------------------------------------------===//
+// ReussirNullableType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 
 } // namespace reussir

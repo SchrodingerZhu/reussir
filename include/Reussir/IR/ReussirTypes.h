@@ -24,6 +24,10 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypeDetails.h"
 
+namespace reussir {
+bool isNonNullPointerType(mlir::Type type);
+} // namespace reussir
+
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.h.inc"
 

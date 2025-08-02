@@ -25,6 +25,13 @@ class ReussirType<string name, string typeMnemonic, list<Trait> traits = [],
 }
 
 //===----------------------------------------------------------------------===//
+// Pointer-like Type
+//===----------------------------------------------------------------------===//
+
+def ReussirNonNullPointerType : Type<CPred<"::reussir::isNonNullPointerType($_self)">,
+                          "Reussir non-null pointer type">;
+
+//===----------------------------------------------------------------------===//
 // Reussir Raw Pointer Type
 //===----------------------------------------------------------------------===//
 def ReussirRawPtrType : ReussirType<"RawPtr", "raw_ptr"> {
@@ -202,6 +209,19 @@ def ReussirRCType : ReussirType<"RC", "rc",
     using Base::verifyInvariants;
     mlir::Type getElementType() const { return getEleTy(); }
   }];
+}
+//===----------------------------------------------------------------------===//
+// Reussir Nullable Type
+//===----------------------------------------------------------------------===//
+def ReussirNullableType : ReussirType<"Nullable", "nullable",
+    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Nullable Type";
+  let description = [{
+    Pointers in reussir are nonnull by default. This type is used to
+    represent that a underlying pointer can be null.
+  }];
+  let parameters = (ins ReussirNonNullPointerType:$ptrTy);
+  let assemblyFormat = "`<` $ptrTy `>`";
 }
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
