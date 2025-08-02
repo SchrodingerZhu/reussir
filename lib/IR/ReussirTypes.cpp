@@ -22,7 +22,9 @@
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/DialectImplementation.h>
+#include <mlir/IR/OpImplementation.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <optional>
 
@@ -32,6 +34,30 @@
 
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.cpp.inc"
+
+// Macro to generate standard DataLayoutInterface implementations for
+// pointer-like types
+#define REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(TypeName)                   \
+  llvm::TypeSize TypeName::getTypeSizeInBits(                                  \
+      const mlir::DataLayout &dataLayout,                                      \
+      [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {            \
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());               \
+    return dataLayout.getTypeSizeInBits(ptrTy);                                \
+  }                                                                            \
+                                                                               \
+  uint64_t TypeName::getABIAlignment(                                          \
+      const mlir::DataLayout &dataLayout,                                      \
+      [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {            \
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());               \
+    return dataLayout.getTypeABIAlignment(ptrTy);                              \
+  }                                                                            \
+                                                                               \
+  uint64_t TypeName::getPreferredAlignment(                                    \
+      const mlir::DataLayout &dataLayout,                                      \
+      [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {            \
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());               \
+    return dataLayout.getTypePreferredAlignment(ptrTy);                        \
+  }
 
 namespace reussir {
 //===----------------------------------------------------------------------===//
@@ -350,48 +376,91 @@ TokenType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
 //===----------------------------------------------------------------------===//
 // TokenType DataLayoutInterface
 //===----------------------------------------------------------------------===//
-llvm::TypeSize TokenType::getTypeSizeInBits(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeSizeInBits(ptrTy);
-}
-uint64_t TokenType::getABIAlignment(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeABIAlignment(ptrTy);
-}
-uint64_t TokenType::getPreferredAlignment(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypePreferredAlignment(ptrTy);
-}
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(TokenType)
 
 ///===---------------------------------------------------------------------===//
 // Reussir Region Type
 //===----------------------------------------------------------------------===//
 // RegionType DataLayoutInterface
 //===----------------------------------------------------------------------===//
-llvm::TypeSize RegionType::getTypeSizeInBits(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeSizeInBits(ptrTy);
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RegionType)
+
+///===----------------------------------------------------------------------===//
+// Reussir RC Type
+//===----------------------------------------------------------------------===//
+// RCType validation
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult
+RCType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+               mlir::Type eleTy, reussir::Capability capability,
+               reussir::AtomicKind atomicKind) {
+  if (capability == reussir::Capability::field ||
+      capability == reussir::Capability::value) {
+    emitError() << "Capability must not be Field or Value for RCType";
+    return mlir::failure();
+  }
+
+  return mlir::success();
+}
+//===----------------------------------------------------------------------===//
+// RcType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RCType)
+//===----------------------------------------------------------------------===//
+// RcType pasrse/print
+//===----------------------------------------------------------------------===//
+mlir::Type RCType::parse(mlir::AsmParser &parser) {
+  using namespace mlir;
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  mlir::Location encLoc = parser.getEncodedSourceLoc(loc);
+  if (parser.parseLess().failed())
+    return {};
+  Type eleTy;
+  if (parser.parseType(eleTy).failed())
+    return {};
+  std::optional<reussir::Capability> capability;
+  std::optional<reussir::AtomicKind> atomicKind;
+  llvm::StringRef keyword;
+  while (parser.parseOptionalKeyword(&keyword).succeeded()) {
+    if (std::optional<reussir::Capability> cap = symbolizeCapability(keyword)) {
+      if (capability) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "Capability is already specified");
+        return {};
+      }
+      capability = cap;
+    } else if (std::optional<reussir::AtomicKind> kind =
+                   symbolizeAtomicKind(keyword)) {
+      if (atomicKind) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "AtomicKind is already specified");
+        return {};
+      }
+      atomicKind = kind;
+    } else {
+      parser.emitError(parser.getCurrentLocation(),
+                       "Unknown attribute in RCType: " + keyword);
+      return {};
+    }
+  }
+  Capability capValue =
+      capability ? *capability : reussir::Capability::unspecified;
+  AtomicKind atomicValue =
+      atomicKind ? *atomicKind : reussir::AtomicKind::normal;
+  return RCType::getChecked(encLoc, parser.getContext(), eleTy, capValue,
+                            atomicValue);
 }
 
-uint64_t RegionType::getABIAlignment(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeABIAlignment(ptrTy);
+void RCType::print(mlir::AsmPrinter &printer) const {
+  printer << "<";
+  printer.printType(getElementType());
+  if (getCapability() != reussir::Capability::unspecified) {
+    printer << ' ' << getCapability();
+  }
+  if (getAtomicKind() != reussir::AtomicKind::normal) {
+    printer << ' ' << getAtomicKind();
+  }
+  printer << ">";
 }
 
-uint64_t RegionType::getPreferredAlignment(
-    const mlir::DataLayout &dataLayout,
-    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypePreferredAlignment(ptrTy);
-}
 } // namespace reussir

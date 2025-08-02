@@ -1,4 +1,5 @@
-// RUN: %reussir-opt %s | %FileCheck %s
+// Pass twice to make sure the output is stable
+// RUN: %reussir-opt %s | %reussir-opt | %FileCheck %s
 !foo = !reussir.record<compound "foo" {i32, i32}>
 !list_cons = !reussir.record<compound "list.cons" {i32, [shared] !reussir.record<variant "list" incomplete>}>
 !list_nil = !reussir.record<compound "list.nil" {}>

@@ -166,6 +166,42 @@ def ReussirRegionType : ReussirType<"Region", "region",
     ```
   }];
 }
-
+///===----------------------------------------------------------------------===//
+// Reussir RC Type
+//===----------------------------------------------------------------------===//
+def ReussirRCType : ReussirType<"RC", "rc",
+    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Reference Counted Type";
+  let description = [{
+    `reussir.rc` represents a reference counted object. It is used to manage the
+    lifetime of objects in Reussir. The type itself serves as the context that
+    keeps track of all allocations.
+  }];
+  let parameters = (ins
+    "mlir::Type":$eleTy,
+    "reussir::Capability":$capability,
+    "reussir::AtomicKind":$atomicKind
+  );
+  let skipDefaultBuilders = 1;
+  let genVerifyDecl = 1;
+  let hasCustomAssemblyFormat = 1;
+  let builders = [
+    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+                 "reussir::AtomicKind":$atomicKind), [{
+      return $_get($_ctxt, eleTy, capability, atomicKind);
+    }]>,
+    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability), [{
+      return $_get($_ctxt, eleTy, capability, ::reussir::AtomicKind::normal);
+    }]>,
+    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+      return $_get($_ctxt, eleTy, ::reussir::Capability::unspecified, 
+        ::reussir::AtomicKind::normal);
+    }]>
+  ];
+  let extraClassDeclaration = [{
+    using Base::verifyInvariants;
+    mlir::Type getElementType() const { return getEleTy(); }
+  }];
+}
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
