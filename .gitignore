@@ -2,3 +2,5 @@
 .idea
 .cargo
 .vscode
+/build
+.cache
