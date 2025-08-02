@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <algorithm>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringSwitch.h>
@@ -46,9 +47,9 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
         << "Number of member capabilities must match number of members";
     return mlir::failure();
   }
-  if (complete && members.empty()) {
-    emitError().attachNote()
-        << "Record type must have at least one member when complete";
+  if (std::any_of(members.begin(), members.end(),
+                  [](mlir::Type type) { return !type; })) {
+    emitError().attachNote() << "Members must not be null";
     return mlir::failure();
   }
   if (complete && defaultCapability != reussir::Capability::shared &&
@@ -216,13 +217,15 @@ void RecordType::print(::mlir::AsmPrinter &printer) const {
     if (getDefaultCapability() != reussir::Capability::unspecified)
       printer << '[' << getDefaultCapability() << "] ";
     printer << '{';
-    llvm::interleaveComma(llvm::zip(getMembers(), getMemberCapabilities()),
-                          printer, [&](auto memberAndCap) {
-                            auto [member, cap] = memberAndCap;
-                            if (cap != reussir::Capability::unspecified)
-                              printer << '[' << cap << "] ";
-                            printer.printType(member);
-                          });
+    if (!getMembers().empty()) {
+      llvm::interleaveComma(llvm::zip(getMembers(), getMemberCapabilities()),
+                            printer, [&](auto memberAndCap) {
+                              auto [member, cap] = memberAndCap;
+                              if (cap != reussir::Capability::unspecified)
+                                printer << '[' << cap << "] ";
+                              printer << member;
+                            });
+    }
     printer << '}';
   }
   // End the record type.
