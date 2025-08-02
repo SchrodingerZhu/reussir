@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <algorithm>
+#include <bit>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringSwitch.h>
@@ -18,6 +19,7 @@
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/AsmParser/AsmParser.h>
+#include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/DialectImplementation.h>
@@ -43,19 +45,18 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
                    reussir::RecordKind kind,
                    reussir::Capability defaultCapability) {
   if (memberCapabilities.size() != members.size()) {
-    emitError().attachNote()
-        << "Number of member capabilities must match number of members";
+    emitError() << "Number of member capabilities must match number of members";
     return mlir::failure();
   }
   if (std::any_of(members.begin(), members.end(),
                   [](mlir::Type type) { return !type; })) {
-    emitError().attachNote() << "Members must not be null";
+    emitError() << "Members must not be null";
     return mlir::failure();
   }
   if (complete && defaultCapability != reussir::Capability::shared &&
       defaultCapability != reussir::Capability::value &&
       defaultCapability != reussir::Capability::unspecified) {
-    emitError().attachNote()
+    emitError()
         << "Default capability must be either Shared, Value, or Default";
     return mlir::failure();
   }
@@ -323,4 +324,74 @@ void ReussirDialect::printType(mlir::Type type,
       });
 }
 
+//===----------------------------------------------------------------------===//
+// Token Type
+//===----------------------------------------------------------------------===//
+// TokenType validation
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult
+TokenType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                  size_t align, size_t size) {
+  if (align == 0) {
+    emitError() << "Token alignment must be non-zero";
+    return mlir::failure();
+  }
+  if (!std::has_single_bit(align)) {
+    emitError() << "Token alignment must be a power of two";
+    return mlir::failure();
+  }
+
+  if (size % align != 0) {
+    emitError() << "Token size must be a multiple of alignment";
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+//===----------------------------------------------------------------------===//
+// TokenType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize TokenType::getTypeSizeInBits(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeSizeInBits(ptrTy);
+}
+uint64_t TokenType::getABIAlignment(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeABIAlignment(ptrTy);
+}
+uint64_t TokenType::getPreferredAlignment(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypePreferredAlignment(ptrTy);
+}
+
+///===---------------------------------------------------------------------===//
+// Reussir Region Type
+//===----------------------------------------------------------------------===//
+// RegionType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize RegionType::getTypeSizeInBits(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeSizeInBits(ptrTy);
+}
+
+uint64_t RegionType::getABIAlignment(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeABIAlignment(ptrTy);
+}
+
+uint64_t RegionType::getPreferredAlignment(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypePreferredAlignment(ptrTy);
+}
 } // namespace reussir

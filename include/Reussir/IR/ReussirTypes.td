@@ -24,6 +24,9 @@ class ReussirType<string name, string typeMnemonic, list<Trait> traits = [],
   let mnemonic = typeMnemonic;
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Raw Pointer Type
+//===----------------------------------------------------------------------===//
 def ReussirRawPtrType : ReussirType<"RawPtr", "raw_ptr"> {
   let summary = "Like LLVM pointer type";
 
@@ -47,6 +50,9 @@ def ReussirRawPtrType : ReussirType<"RawPtr", "raw_ptr"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Record Type
+//===----------------------------------------------------------------------===//
 def ReussirRecordType : ReussirType<"Record", "record", [
   DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
   MutableType,
@@ -123,5 +129,43 @@ def ReussirRecordType : ReussirType<"Record", "record", [
                     reussir::Capability defaultCapability);
     }];
 }
+
+//===----------------------------------------------------------------------===//
+// Reussir Token Type
+//===----------------------------------------------------------------------===//
+def ReussirTokenType : ReussirType<"Token", "token",
+    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Memory Token";
+  let description = [{
+    `reussir.token` represents a block of raw memory.
+  }];
+  let parameters = (ins
+    "size_t":$align,
+    "size_t":$size
+  );
+  let assemblyFormat = [{
+    `<` `align` `:` $align `,`  `size` `:` $size `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
+///===----------------------------------------------------------------------===//
+// Reussir Region Type
+//===----------------------------------------------------------------------===//
+def ReussirRegionType : ReussirType<"Region", "region",
+    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Region Type";
+  let description = [{
+    `reussir.region` represents a arena inside which flexible references can be
+    reassigned. The region type itself serves as the context that keeps track of
+    all allocations. Currently, it is just a pointer to the following struct:
+    ```c++
+    struct Region {
+      ObjHeader* obj;
+    };
+    ```
+  }];
+}
+
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
