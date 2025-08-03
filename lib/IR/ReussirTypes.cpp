@@ -519,9 +519,8 @@ mlir::LogicalResult
 RefType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
                 mlir::Type eleTy, reussir::Capability capability,
                 reussir::AtomicKind atomicKind) {
-  if (capability == reussir::Capability::field ||
-      capability == reussir::Capability::value) {
-    emitError() << "Capability must not be Field or Value for RefType";
+  if (capability == reussir::Capability::value) {
+    emitError() << "Capability must not be Value for RefType";
     return mlir::failure();
   }
   return mlir::success();
