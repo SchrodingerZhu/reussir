@@ -82,6 +82,7 @@ def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", []> {
   let assemblyFormat = [{
     `(` $token `:` type($token) `)` attr-dict `:` type($reinterpreted)
   }];
+  let hasVerifier = 1;
 }
 
 def ReussirTokenEnsureOp : ReussirTokenOp<"ensure", []> {
