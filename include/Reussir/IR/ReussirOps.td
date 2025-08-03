@@ -150,9 +150,28 @@ def ReussirNullableCheckOp : ReussirNullableOp<"check", []> {
   }];
 
   let results = (outs Res<I1, "is null">:$flag);
-  let arguments = (ins Arg<ReussirNullableType, "nullable token">:$nullable);
+  let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
   let assemblyFormat = [{
     `(` $nullable `:` type($nullable) `)` `:` type($flag) attr-dict
+  }];
+}
+
+def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
+  let summary = "Create a nullable token";
+  let description = [{
+    `reussir.nullable.create` creates a nullable token.
+    It can accept a inner pointer, which means it is acutally non-nullable,
+    or it can be a null pointer if there is no input argument.
+    ```mlir
+    %nullable = 
+      reussir.nullable.create : !reussir.nullable<!reussir.rc<index>>
+    ```
+  }];
+
+  let results = (outs Res<ReussirNullableType, "nullable pointer">:$nullable);
+  let arguments = (ins Optional<ReussirNonNullPointerType>:$ptr);
+  let assemblyFormat = [{
+    ( `(` $ptr^ `:` type($ptr) `)` )? `:` type($nullable) attr-dict
   }];
 }
 #endif // REUSSIR_IR_REUSSIROPS_TD
