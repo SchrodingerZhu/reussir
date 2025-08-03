@@ -80,7 +80,7 @@ def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", []> {
     Res<ReussirRefType, "reinterpreted reference">:$reinterpreted);
   let arguments = (ins Arg<ReussirTokenType, "Token to reinterpret">:$token);
   let assemblyFormat = [{
-    `(` $token `:` type($token) `)` attr-dict `:` type($reinterpreted)
+    `(` $token `:` type($token) `)` `:` qualified(type($reinterpreted)) attr-dict
   }];
   let hasVerifier = 1;
 }
@@ -101,7 +101,7 @@ def ReussirTokenEnsureOp : ReussirTokenOp<"ensure", []> {
   let arguments = (ins 
     Arg<ReussirNullableTokenType, "input token", [MemFree<DefaultResource>]>:$nullableToken);
   let assemblyFormat = [{
-    `(` $nullableToken `:` type($nullableToken) `)` attr-dict `:` type($result)
+    `(` $nullableToken `:` type($nullableToken) `)` `:` type($result) attr-dict
   }];
 }
 
@@ -130,8 +130,29 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
       [MemAlloc<DefaultResource>]>:$realloced);
 
   let assemblyFormat = [{
-    `(` $token `:` type($token) `)` attr-dict `:` type($realloced)
+    `(` $token `:` type($token) `)` `:` type($realloced) attr-dict
   }];
 }
+//===----------------------------------------------------------------------===//
+// Reussir Nullable Operations
+//===----------------------------------------------------------------------===//
+class ReussirNullableOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"nullable." # mnemonic, traits>;
 
+def ReussirNullableCheckOp : ReussirNullableOp<"check", []> {
+  let summary = "Check if a nullable token is null";
+  let description = [{
+    `reussir.nullable.check` checks if a nullable token is null.
+    ```mlir
+    %flag = reussir.nullable.check
+      (%nullable : !reussir.nullable<token<align: 8, size: 8>>) : i1
+    ```
+  }];
+
+  let results = (outs Res<I1, "is null">:$flag);
+  let arguments = (ins Arg<ReussirNullableType, "nullable token">:$nullable);
+  let assemblyFormat = [{
+    `(` $nullable `:` type($nullable) `)` `:` type($flag) attr-dict
+  }];
+}
 #endif // REUSSIR_IR_REUSSIROPS_TD

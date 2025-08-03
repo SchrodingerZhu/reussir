@@ -111,12 +111,11 @@ void printTypeWithCapabilityAndAtomicKind(mlir::AsmPrinter &printer,
                                           const T &type) {
   printer << "<";
   printer.printType(type.getElementType());
-  if (type.getCapability() != reussir::Capability::unspecified) {
+  if (type.getCapability() != reussir::Capability::unspecified)
     printer << ' ' << type.getCapability();
-  }
-  if (type.getAtomicKind() != reussir::AtomicKind::normal) {
+
+  if (type.getAtomicKind() != reussir::AtomicKind::normal)
     printer << ' ' << type.getAtomicKind();
-  }
   printer << ">";
 }
 //===----------------------------------------------------------------------===//
@@ -126,7 +125,7 @@ bool isNonNullPointerType(mlir::Type type) {
   if (!type)
     return false;
   return llvm::TypeSwitch<mlir::Type, bool>(type)
-      .Case<TokenType, RegionType, RCType, RecordType, RawPtrType>(
+      .Case<TokenType, RCType, RecordType, RawPtrType, RefType>(
           [](auto) { return true; })
       .Default([](mlir::Type) { return false; });
 }
