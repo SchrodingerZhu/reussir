@@ -22,4 +22,115 @@ include "Reussir/IR/ReussirTypes.td"
 class ReussirOp<string mnemonic, list<Trait> traits>
   : Op<ReussirDialect, mnemonic, traits>;
 
+//===----------------------------------------------------------------------===//
+// Reussir Token Operation
+//===----------------------------------------------------------------------===//
+
+class ReussirTokenOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"token." # mnemonic, traits>;
+
+def ReussirTokenAllocOp : ReussirTokenOp<"alloc", []> {
+  let summary = "Allocate memory token";
+  let description = [{
+    `reussir.token.alloc` allocates a memory token.
+    ```mlir
+    reussir.token.alloc : !reussir.token<align: 8, size: 16>
+    ```
+  }];
+
+  let results = (outs Res<
+    ReussirTokenType,
+    "Allocated Memory Token", [MemAlloc<DefaultResource>]>:$token);
+
+  let assemblyFormat = [{
+    `:` type($token) attr-dict
+  }];
+}
+
+def ReussirTokenFreeOp : ReussirTokenOp<"free", []> {
+  let summary = "Free memory token";
+  let description = [{
+    `reussir.token.free` deallocates a memory token.
+    ```mlir
+    reussir.token.free (%x : !reussir.token<align: 8, size: 16>)
+    ```
+  }];
+
+  let arguments = (ins Res<
+    AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+    "Free Memory Token", [MemFree<DefaultResource>]>:$token);
+
+  let assemblyFormat = [{
+    `(` $token `:` type($token) `)` attr-dict
+  }];
+}
+
+def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", []> {
+  let summary = "Reinterpret memory token";
+  let description = [{
+    `reussir.token.reinterpret` reinterprets a token into a reference.
+    ```mlir
+    %reinterpreted = reussir.token.reinterpret 
+      (%token : !reussir.token<align: 8, size: 8>) : !reussir.ref<i64>
+    ```
+    The layout of the token and the referenced type must match.
+  }];
+
+  let results = (outs 
+    Res<ReussirRefType, "reinterpreted reference">:$reinterpreted);
+  let arguments = (ins Arg<ReussirTokenType, "Token to reinterpret">:$token);
+  let assemblyFormat = [{
+    `(` $token `:` type($token) `)` attr-dict `:` type($reinterpreted)
+  }];
+}
+
+def ReussirTokenEnsureOp : ReussirTokenOp<"ensure", []> {
+  let summary = "Ensure a nonnull token";
+  let description = [{
+    `reussir.token.ensure` converts a possibly nullable token to a token by 
+    checking the nullability and allocate memory on need.
+    ```mlir
+    %result = reussir.token.ensure
+      (%nullableToken : !reussir.nullable.token<align: 8, size: 8>) 
+      : !reussir.token<align: 8, size: 8>
+    ```
+  }];
+  let results = (outs 
+    Res<ReussirTokenType, "output token", [MemAlloc<DefaultResource>]>:$result);
+  let arguments = (ins 
+    Arg<ReussirNullableTokenType, "input token", [MemFree<DefaultResource>]>:$nullableToken);
+  let assemblyFormat = [{
+    `(` $nullableToken `:` type($nullableToken) `)` attr-dict `:` type($result)
+  }];
+}
+
+def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
+  let summary = "Reallocate a token";
+  let description = [{
+    `reussir.token.realloc` converts a possibly nullable token to a token by checking
+    the nullability and reallocate the memory on need. During the process, if the original
+    layout and the new layout are different, the memory will be reallocated, such reallocation
+    may happen in place depending on the allocator and the new size.
+
+    ```mlir
+    %realloced = reussir.token.realloc
+      (%token : !reussir.token<align: 8, size: 8>) 
+      : !reussir.token<align: 8, size: 16>
+    ```
+  }];
+
+  let arguments = (ins Res<
+    AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+    "Target Token to Realloc", [MemFree<DefaultResource>]>:$token
+  );
+
+  let results = (outs
+    Res<ReussirTokenType, "Reallocated Memory Token", 
+      [MemAlloc<DefaultResource>]>:$realloced);
+
+  let assemblyFormat = [{
+    `(` $token `:` type($token) `)` attr-dict `:` type($realloced)
+  }];
+}
+
 #endif // REUSSIR_IR_REUSSIROPS_TD

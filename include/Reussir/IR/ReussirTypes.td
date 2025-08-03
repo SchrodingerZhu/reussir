@@ -265,4 +265,16 @@ def ReussirRefType : ReussirType<"Ref", "ref", [
     mlir::Type getElementType() const { return getEleTy(); }
   }];
 }
+
+///===----------------------------------------------------------------------===//
+// Special Type Constraints
+//===----------------------------------------------------------------------===//
+def ReussirNullableTokenType : Type<
+  /*predicate*/ Concat<"[](::mlir::Type pointer) { return ",
+         SubstLeaves<"$_self", "pointer", AnyTypeOf<[ReussirTokenType]>.predicate>,
+         "; }(::llvm::cast<::reussir::NullableType>($_self).getPtrTy())">,
+  /* descr */ "Nullable Token Type",
+  /* baseType */ "::reussir::NullableType"
+>;
+
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
