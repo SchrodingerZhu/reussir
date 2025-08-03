@@ -61,6 +61,65 @@
 
 namespace reussir {
 //===----------------------------------------------------------------------===//
+// Common Parser/Printer Helpers
+//===----------------------------------------------------------------------===//
+template <typename T>
+mlir::Type parseTypeWithCapabilityAndAtomicKind(mlir::AsmParser &parser) {
+  using namespace mlir;
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  mlir::Location encLoc = parser.getEncodedSourceLoc(loc);
+  if (parser.parseLess().failed())
+    return {};
+  Type eleTy;
+  if (parser.parseType(eleTy).failed())
+    return {};
+  std::optional<reussir::Capability> capability;
+  std::optional<reussir::AtomicKind> atomicKind;
+  llvm::StringRef keyword;
+  while (parser.parseOptionalKeyword(&keyword).succeeded()) {
+    if (std::optional<reussir::Capability> cap = symbolizeCapability(keyword)) {
+      if (capability) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "Capability is already specified");
+        return {};
+      }
+      capability = cap;
+    } else if (std::optional<reussir::AtomicKind> kind =
+                   symbolizeAtomicKind(keyword)) {
+      if (atomicKind) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "AtomicKind is already specified");
+        return {};
+      }
+      atomicKind = kind;
+    } else {
+      parser.emitError(parser.getCurrentLocation(),
+                       "Unknown attribute in RCType: " + keyword);
+      return {};
+    }
+  }
+  Capability capValue =
+      capability ? *capability : reussir::Capability::unspecified;
+  AtomicKind atomicValue =
+      atomicKind ? *atomicKind : reussir::AtomicKind::normal;
+  return T::getChecked(encLoc, parser.getContext(), eleTy, capValue,
+                       atomicValue);
+}
+
+template <typename T>
+void printTypeWithCapabilityAndAtomicKind(mlir::AsmPrinter &printer,
+                                          const T &type) {
+  printer << "<";
+  printer.printType(type.getElementType());
+  if (type.getCapability() != reussir::Capability::unspecified) {
+    printer << ' ' << type.getCapability();
+  }
+  if (type.getAtomicKind() != reussir::AtomicKind::normal) {
+    printer << ' ' << type.getAtomicKind();
+  }
+  printer << ">";
+}
+//===----------------------------------------------------------------------===//
 // isNonNullPointerType
 //===----------------------------------------------------------------------===//
 bool isNonNullPointerType(mlir::Type type) {
@@ -422,57 +481,11 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RCType)
 // RcType pasrse/print
 //===----------------------------------------------------------------------===//
 mlir::Type RCType::parse(mlir::AsmParser &parser) {
-  using namespace mlir;
-  llvm::SMLoc loc = parser.getCurrentLocation();
-  mlir::Location encLoc = parser.getEncodedSourceLoc(loc);
-  if (parser.parseLess().failed())
-    return {};
-  Type eleTy;
-  if (parser.parseType(eleTy).failed())
-    return {};
-  std::optional<reussir::Capability> capability;
-  std::optional<reussir::AtomicKind> atomicKind;
-  llvm::StringRef keyword;
-  while (parser.parseOptionalKeyword(&keyword).succeeded()) {
-    if (std::optional<reussir::Capability> cap = symbolizeCapability(keyword)) {
-      if (capability) {
-        parser.emitError(parser.getCurrentLocation(),
-                         "Capability is already specified");
-        return {};
-      }
-      capability = cap;
-    } else if (std::optional<reussir::AtomicKind> kind =
-                   symbolizeAtomicKind(keyword)) {
-      if (atomicKind) {
-        parser.emitError(parser.getCurrentLocation(),
-                         "AtomicKind is already specified");
-        return {};
-      }
-      atomicKind = kind;
-    } else {
-      parser.emitError(parser.getCurrentLocation(),
-                       "Unknown attribute in RCType: " + keyword);
-      return {};
-    }
-  }
-  Capability capValue =
-      capability ? *capability : reussir::Capability::unspecified;
-  AtomicKind atomicValue =
-      atomicKind ? *atomicKind : reussir::AtomicKind::normal;
-  return RCType::getChecked(encLoc, parser.getContext(), eleTy, capValue,
-                            atomicValue);
+  return parseTypeWithCapabilityAndAtomicKind<RCType>(parser);
 }
 
 void RCType::print(mlir::AsmPrinter &printer) const {
-  printer << "<";
-  printer.printType(getElementType());
-  if (getCapability() != reussir::Capability::unspecified) {
-    printer << ' ' << getCapability();
-  }
-  if (getAtomicKind() != reussir::AtomicKind::normal) {
-    printer << ' ' << getAtomicKind();
-  }
-  printer << ">";
+  printTypeWithCapabilityAndAtomicKind(printer, *this);
 }
 
 ///===----------------------------------------------------------------------===//
@@ -481,5 +494,37 @@ void RCType::print(mlir::AsmPrinter &printer) const {
 // ReussirNullableType DataLayoutInterface
 //===----------------------------------------------------------------------===//
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
+
+//===----------------------------------------------------------------------===//
+// Reussir Reference Type
+//===----------------------------------------------------------------------===//
+// RefType Parse/Print
+//===----------------------------------------------------------------------===//
+mlir::Type RefType::parse(mlir::AsmParser &parser) {
+  return parseTypeWithCapabilityAndAtomicKind<RefType>(parser);
+}
+void RefType::print(mlir::AsmPrinter &printer) const {
+  printTypeWithCapabilityAndAtomicKind(printer, *this);
+}
+
+//===----------------------------------------------------------------------===//
+// RefType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RefType)
+
+//===----------------------------------------------------------------------===//
+// RefType Validation
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult
+RefType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                mlir::Type eleTy, reussir::Capability capability,
+                reussir::AtomicKind atomicKind) {
+  if (capability == reussir::Capability::field ||
+      capability == reussir::Capability::value) {
+    emitError() << "Capability must not be Field or Value for RefType";
+    return mlir::failure();
+  }
+  return mlir::success();
+}
 
 } // namespace reussir

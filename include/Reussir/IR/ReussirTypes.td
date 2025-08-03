@@ -223,5 +223,46 @@ def ReussirNullableType : ReussirType<"Nullable", "nullable",
   let parameters = (ins ReussirNonNullPointerType:$ptrTy);
   let assemblyFormat = "`<` $ptrTy `>`";
 }
+//===----------------------------------------------------------------------===//
+// Reussir Reference Type
+//===----------------------------------------------------------------------===//
+def ReussirRefType : ReussirType<"Ref", "ref", [
+  DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+  MutableType
+]> {
+  let summary = "Reussir Reference Type";
+  let description = [{
+    A reference type that is used to represent a reference to an object in Reussir.
+    It is used to manage the lifetime of objects in Reussir.
+  }];
+  
+  let parameters = (ins 
+    "mlir::Type":$eleTy,
+    "reussir::Capability":$capability,
+    "reussir::AtomicKind":$atomicKind
+  );
+  
+  let skipDefaultBuilders = 1;
+  let genVerifyDecl = 1;
+  let hasCustomAssemblyFormat = 1;
+  
+  let builders = [
+    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+                 "reussir::AtomicKind":$atomicKind), [{
+      return $_get($_ctxt, eleTy, capability, atomicKind);
+    }]>,
+    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability), [{
+      return $_get($_ctxt, eleTy, capability, ::reussir::AtomicKind::normal);
+    }]>,
+    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+      return $_get($_ctxt, eleTy, ::reussir::Capability::unspecified,
+        ::reussir::AtomicKind::normal);
+    }]>
+  ];
 
+  let extraClassDeclaration = [{
+    using Base::verifyInvariants;
+    mlir::Type getElementType() const { return getEleTy(); }
+  }];
+}
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
