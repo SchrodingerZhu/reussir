@@ -47,6 +47,17 @@ mlir::LogicalResult ReussirTokenReinterpretOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir RC Operation
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRCIncOp::verify() {
+  RCType rcType = getRcPtr().getType();
+  if (rcType.getCapability() == reussir::Capability::flex)
+    return emitOpError("cannot increase reference count of a flex RC type");
+
+  return mlir::success();
+}
+
 ///===----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===----------------------------------------------------------------------===//

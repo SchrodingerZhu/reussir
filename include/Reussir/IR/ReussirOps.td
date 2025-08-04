@@ -174,4 +174,27 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
     ( `(` $ptr^ `:` type($ptr) `)` )? `:` type($nullable) attr-dict
   }];
 }
+//===----------------------------------------------------------------------===//
+// Reussir RC Operations
+//===----------------------------------------------------------------------===//
+class ReussirRCOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"rc." # mnemonic, traits>;
+
+def ReussirRCIncOp : ReussirRCOp<"inc", []> {
+  let summary = "Increment reference count";
+  let description = [{
+    `reussir.rc.inc` increments the reference count of a RC pointer.
+    ```mlir
+    reussir.rc.inc (%rc_ptr : !reussir.rc<i64>)
+    ```
+  }];
+
+  let arguments = (ins Arg<ReussirRCType, "Reference to increment">:$rcPtr);
+
+  let assemblyFormat = [{
+    `(` $rcPtr `:` type($rcPtr) `)` attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
 #endif // REUSSIR_IR_REUSSIROPS_TD
