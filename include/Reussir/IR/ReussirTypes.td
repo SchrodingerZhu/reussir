@@ -174,9 +174,9 @@ def ReussirRegionType : ReussirType<"Region", "region",
   }];
 }
 ///===----------------------------------------------------------------------===//
-// Reussir RC Type
+// Reussir Rc Type
 //===----------------------------------------------------------------------===//
-def ReussirRCType : ReussirType<"RC", "rc",
+def ReussirRcType : ReussirType<"Rc", "rc",
     [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Reference Counted Type";
   let description = [{

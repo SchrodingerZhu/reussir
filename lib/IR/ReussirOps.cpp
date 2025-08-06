@@ -54,8 +54,8 @@ mlir::LogicalResult ReussirTokenReinterpretOp::verify() {
 // RcIncOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcIncOp::verify() {
-  RCType rcType = getRcPtr().getType();
-  if (rcType.getCapability() == reussir::Capability::flex)
+  RcType RcType = getRcPtr().getType();
+  if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot increase reference count of a flex RC type");
 
   return mlir::success();
@@ -64,13 +64,13 @@ mlir::LogicalResult ReussirRcIncOp::verify() {
 // RcDecOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcDecOp::verify() {
-  RCType rcType = getRcPtr().getType();
+  RcType RcType = getRcPtr().getType();
   NullableType nullableType = getNullableToken().getType();
   TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
   if (!tokenType)
     return emitOpError("nullable token must be of TokenType");
-  mlir::Type eleTy = rcType.getElementType();
-  if (rcType.getCapability() == reussir::Capability::flex)
+  mlir::Type eleTy = RcType.getElementType();
+  if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
 
   auto module = getOperation()->getParentOfType<mlir::ModuleOp>();

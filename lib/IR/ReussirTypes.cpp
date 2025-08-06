@@ -94,7 +94,7 @@ mlir::Type parseTypeWithCapabilityAndAtomicKind(mlir::AsmParser &parser) {
       atomicKind = kind;
     } else {
       parser.emitError(parser.getCurrentLocation(),
-                       "Unknown attribute in RCType: " + keyword);
+                       "Unknown attribute in RcType: " + keyword);
       return {};
     }
   }
@@ -125,7 +125,7 @@ bool isNonNullPointerType(mlir::Type type) {
   if (!type)
     return false;
   return llvm::TypeSwitch<mlir::Type, bool>(type)
-      .Case<TokenType, RCType, RecordType, RawPtrType, RefType>(
+      .Case<TokenType, RcType, RecordType, RawPtrType, RefType>(
           [](auto) { return true; })
       .Default([](mlir::Type) { return false; });
 }
@@ -458,15 +458,15 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RegionType)
 ///===----------------------------------------------------------------------===//
 // Reussir RC Type
 //===----------------------------------------------------------------------===//
-// RCType validation
+// RcType validation
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult
-RCType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
                mlir::Type eleTy, reussir::Capability capability,
                reussir::AtomicKind atomicKind) {
   if (capability == reussir::Capability::field ||
       capability == reussir::Capability::value) {
-    emitError() << "Capability must not be Field or Value for RCType";
+    emitError() << "Capability must not be Field or Value for RcType";
     return mlir::failure();
   }
 
@@ -475,15 +475,15 @@ RCType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
 //===----------------------------------------------------------------------===//
 // RcType DataLayoutInterface
 //===----------------------------------------------------------------------===//
-REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RCType)
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RcType)
 //===----------------------------------------------------------------------===//
 // RcType pasrse/print
 //===----------------------------------------------------------------------===//
-mlir::Type RCType::parse(mlir::AsmParser &parser) {
-  return parseTypeWithCapabilityAndAtomicKind<RCType>(parser);
+mlir::Type RcType::parse(mlir::AsmParser &parser) {
+  return parseTypeWithCapabilityAndAtomicKind<RcType>(parser);
 }
 
-void RCType::print(mlir::AsmPrinter &printer) const {
+void RcType::print(mlir::AsmPrinter &printer) const {
   printTypeWithCapabilityAndAtomicKind(printer, *this);
 }
 

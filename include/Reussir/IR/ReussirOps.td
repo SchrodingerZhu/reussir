@@ -189,7 +189,7 @@ def ReussirRcIncOp : ReussirRcOp<"inc", []> {
     ```
   }];
 
-  let arguments = (ins Arg<ReussirRCType, "Reference to increment">:$rcPtr);
+  let arguments = (ins Arg<ReussirRcType, "Reference to increment">:$rcPtr);
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` attr-dict
@@ -209,7 +209,7 @@ def ReussirRcDecOp : ReussirRcOp<"dec", []> {
     ```
   }];
 
-  let arguments = (ins Arg<ReussirRCType, "Reference to decrement">:$rcPtr);
+  let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr);
   let results = (outs Res<ReussirNullableTokenType, "Nullable tokeno">:$nullableToken);
 
   let assemblyFormat = [{
@@ -218,4 +218,46 @@ def ReussirRcDecOp : ReussirRcOp<"dec", []> {
 
   let hasVerifier = 1;
 }
+
+// TODO: finish the below operation
+// def ReussirRcCreateOp : ReussirRcOp<"create", []> {
+//   let summary = "Create a RC pointer";
+//   let description = [{
+//     `reussir.rc.create` creates a RC pointer from a value.
+//     The memory resource must be provided by a token. It addtionally accepts
+//     a region argument.
+
+//     RC pointer created solely from token has shared capability, while RC pointer 
+//     created with region has flex capability.
+
+//     The token layout must meet the underlying Rc box layout.
+
+//     The created RC pointer will have reference count 1.
+
+//     RC with default capability:
+//     ```mlir
+//     %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+//     %val = arith.constant 42 : i64
+//     %rc_ptr = reussir.rc.create value(%val) token(%token) : !reussir.rc<i64>
+//     ```
+
+//     RC with flex capability:
+//     ```mlir
+//     func.func @region_funcion(%region: !reussir.region) {
+//       %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+//       %val = arith.constant 42 : i64
+//       %rc_ptr = reussir.rc.create value(%val) token(%token) region(%region) 
+//         : !reussir.rc<i64, flex>
+//       func.return
+//     }
+//     ```
+//   }];
+
+//   let arguments = (ins Arg<ReussirTokenType, "Token to create RC pointer">:$token);
+//   let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr);
+
+//   let assemblyFormat = [{
+//     `(` $token `:` type($token) `)` `:` qualified(type($rcPtr)) attr-dict
+//   }];
+// }
 #endif // REUSSIR_IR_REUSSIROPS_TD
