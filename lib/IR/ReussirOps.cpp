@@ -14,6 +14,7 @@
 
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
+#include "Reussir/IR/ReussirTypes.h"
 
 #define GET_OP_CLASSES
 #include "Reussir/IR/ReussirOps.cpp.inc"
@@ -43,17 +44,53 @@ mlir::LogicalResult ReussirTokenReinterpretOp::verify() {
   if (tokenType.getSize() != size)
     return emitOpError("token size must match reinterpreted type size, ")
            << "token size:  " << tokenType.getSize()
-           << ", element size: " << size;
+           << ", element size: " << size.getFixedValue();
   return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
 // Reussir RC Operation
 //===----------------------------------------------------------------------===//
-mlir::LogicalResult ReussirRCIncOp::verify() {
+// RcIncOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcIncOp::verify() {
   RCType rcType = getRcPtr().getType();
   if (rcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot increase reference count of a flex RC type");
+
+  return mlir::success();
+}
+//===----------------------------------------------------------------------===//
+// RcDecOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcDecOp::verify() {
+  RCType rcType = getRcPtr().getType();
+  NullableType nullableType = getNullableToken().getType();
+  TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
+  if (!tokenType)
+    return emitOpError("nullable token must be of TokenType");
+  mlir::Type eleTy = rcType.getElementType();
+  if (rcType.getCapability() == reussir::Capability::flex)
+    return emitOpError("cannot decrease reference count of a flex RC type");
+
+  auto module = getOperation()->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return emitOpError("RC operation must be in a module context");
+  mlir::DataLayout dataLayout{module};
+  auto alignment = dataLayout.getTypeABIAlignment(eleTy);
+  auto size = dataLayout.getTypeSize(eleTy);
+  if (!size.isFixed())
+    return emitOpError("managed type must have a fixed size");
+
+  if (tokenType.getAlign() != alignment)
+    return emitOpError("token alignment must match managed type alignment, ")
+           << "token alignment: " << tokenType.getAlign()
+           << ", element alignment: " << alignment;
+
+  if (tokenType.getSize() != size)
+    return emitOpError("token size must match managed type size, ")
+           << "token size: " << tokenType.getSize()
+           << ", element size: " << size.getFixedValue();
 
   return mlir::success();
 }

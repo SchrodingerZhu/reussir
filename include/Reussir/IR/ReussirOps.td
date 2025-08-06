@@ -177,10 +177,10 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
 //===----------------------------------------------------------------------===//
 // Reussir RC Operations
 //===----------------------------------------------------------------------===//
-class ReussirRCOp<string mnemonic, list<Trait> traits>
+class ReussirRcOp<string mnemonic, list<Trait> traits>
   : ReussirOp<"rc." # mnemonic, traits>;
 
-def ReussirRCIncOp : ReussirRCOp<"inc", []> {
+def ReussirRcIncOp : ReussirRcOp<"inc", []> {
   let summary = "Increment reference count";
   let description = [{
     `reussir.rc.inc` increments the reference count of a RC pointer.
@@ -192,7 +192,28 @@ def ReussirRCIncOp : ReussirRCOp<"inc", []> {
   let arguments = (ins Arg<ReussirRCType, "Reference to increment">:$rcPtr);
 
   let assemblyFormat = [{
-    `(` $rcPtr `:` type($rcPtr) `)` attr-dict
+    `(` $rcPtr `:` qualified(type($rcPtr)) `)` attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+def ReussirRcDecOp : ReussirRcOp<"dec", []> {
+  let summary = "Decrement reference count";
+  let description = [{
+    `reussir.rc.dec` decrements the reference count of a RC pointer.
+    If the reference count reaches zero, the memory will be freed.
+    ```mlir
+    %nullable = reussir.rc.dec (%rc_ptr : !reussir.rc<i64>) -> 
+      !reussir.nullable<!reussir.token<align: 8, size: 8>>
+    ```
+  }];
+
+  let arguments = (ins Arg<ReussirRCType, "Reference to decrement">:$rcPtr);
+  let results = (outs Res<ReussirNullableTokenType, "Nullable tokeno">:$nullableToken);
+
+  let assemblyFormat = [{
+    `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` type($nullableToken) attr-dict
   }];
 
   let hasVerifier = 1;
