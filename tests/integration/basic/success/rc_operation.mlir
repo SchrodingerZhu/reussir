@@ -10,4 +10,22 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
         : !reussir.nullable<!reussir.token<align: 8, size: 8>>
       return %tk : !reussir.nullable<!reussir.token<align: 8, size: 8>>
   }
+  func.func private @create_rc() 
+    -> !reussir.rc<i64> {
+      %zero = arith.constant 0 : i64
+      %tk = reussir.token.alloc : !reussir.token<align: 8, size: 16>
+      %rc = reussir.rc.create value(%zero : i64) token(%tk : !reussir.token<align: 8, size: 16>) 
+        : !reussir.rc<i64>
+      return %rc : !reussir.rc<i64>
+  }
+  func.func private @create_rc_in_region(%reg : !reussir.region)
+    -> !reussir.rc<i64 flex> {
+      %zero = arith.constant 0 : i64
+      %tk = reussir.token.alloc : !reussir.token<align: 8, size: 32>
+      %rc = reussir.rc.create 
+        value(%zero : i64) 
+        token(%tk : !reussir.token<align: 8, size: 32>)
+        region(%reg : !reussir.region) : !reussir.rc<i64 flex>
+      return %rc : !reussir.rc<i64 flex>
+  }
 }

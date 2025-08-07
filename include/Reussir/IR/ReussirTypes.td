@@ -309,8 +309,19 @@ def ReussirRcBoxType : ReussirType<"RcBox", "rc_box",
     "bool":$regional
   );
   let hasCustomAssemblyFormat = 1;
-  let genVerifyDecl = 1;
-  
+  let skipDefaultBuilders = 1;
+  let builders = [
+    TypeBuilder<(ins "mlir::Type":$eleTy, "bool":$regional), [{
+      return $_get($_ctxt, eleTy, regional);
+    }]>,
+    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+      return $_get($_ctxt, eleTy, /*regional=*/false);
+    }]>
+  ];
+  let extraClassDeclaration = [{
+    mlir::Type getElementType() const { return getEleTy(); }
+    bool isRegional() const { return getRegional(); }
+  }];
 }
   
   

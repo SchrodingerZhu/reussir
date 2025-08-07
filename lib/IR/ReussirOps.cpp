@@ -13,6 +13,7 @@
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 
 #include "Reussir/IR/ReussirDialect.h"
+#include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
 
@@ -28,10 +29,7 @@ mlir::LogicalResult ReussirTokenReinterpretOp::verify() {
   TokenType tokenType = getToken().getType();
   RefType resultType = getReinterpreted().getType();
   mlir::Type elementType = resultType.getElementType();
-  auto module = getOperation()->getParentOfType<mlir::ModuleOp>();
-  if (!module)
-    return emitOpError("reinterpreted type must be in a module context");
-  mlir::DataLayout dataLayout{module};
+  auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(elementType);
   auto size = dataLayout.getTypeSize(elementType);
   if (!size.isFixed())
@@ -72,11 +70,7 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
   mlir::Type eleTy = RcType.getElementType();
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
-
-  auto module = getOperation()->getParentOfType<mlir::ModuleOp>();
-  if (!module)
-    return emitOpError("RC operation must be in a module context");
-  mlir::DataLayout dataLayout{module};
+  auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(eleTy);
   auto size = dataLayout.getTypeSize(eleTy);
   if (!size.isFixed())
@@ -99,7 +93,35 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
 // RcCreateOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcCreateOp::verify() {
+  TokenType tokenType = getToken().getType();
   RcType RcType = getRcPtr().getType();
+  mlir::Type valueType = getValue().getType();
+  if (valueType != RcType.getElementType())
+    return emitOpError("value type must match RC element type, ")
+           << "value type: " << valueType
+           << ", RC element type: " << RcType.getElementType();
+  Capability expectedCap = getRegion() == nullptr ? reussir::Capability::shared
+                                                  : reussir::Capability::flex;
+  if (RcType.getCapability() != expectedCap)
+    return emitOpError("RC type capability must be ")
+           << stringifyCapability(expectedCap) << ", but got "
+           << stringifyCapability(RcType.getCapability());
+  auto rcBoxType =
+      RcBoxType::get(getContext(), valueType, getRegion() != nullptr);
+  auto dataLayout = mlir::DataLayout::closest(getOperation());
+  auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
+  auto size = dataLayout.getTypeSize(rcBoxType);
+  if (!size.isFixed())
+    return emitOpError("RC type must have a fixed size");
+  if (tokenType.getAlign() != alignment)
+    return emitOpError("token alignment must match RC type alignment, ")
+           << "token alignment: " << tokenType.getAlign()
+           << ", RC type alignment: " << alignment;
+  if (tokenType.getSize() != size)
+    return emitOpError("token size must match RC type size, ")
+           << "token size: " << tokenType.getSize()
+           << ", RC type size: " << size.getFixedValue();
+  return mlir::success();
 }
 
 ///===----------------------------------------------------------------------===//

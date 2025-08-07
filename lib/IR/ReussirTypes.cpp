@@ -12,16 +12,21 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringSwitch.h>
 #include <llvm/ADT/TypeSwitch.h>
+#include <llvm/Support/Alignment.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/LogicalResult.h>
+#include <llvm/Support/MathExtras.h>
+#include <llvm/Support/TypeSize.h>
 #include <mlir/AsmParser/AsmParser.h>
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/IR/OpImplementation.h>
@@ -63,7 +68,7 @@ namespace reussir {
 //===----------------------------------------------------------------------===//
 // Common Parser/Printer Helpers
 //===----------------------------------------------------------------------===//
-template <typename T>
+template <typename T, Capability DefaultCap = reussir::Capability::unspecified>
 mlir::Type parseTypeWithCapabilityAndAtomicKind(mlir::AsmParser &parser) {
   using namespace mlir;
   llvm::SMLoc loc = parser.getCurrentLocation();
@@ -98,20 +103,19 @@ mlir::Type parseTypeWithCapabilityAndAtomicKind(mlir::AsmParser &parser) {
       return {};
     }
   }
-  Capability capValue =
-      capability ? *capability : reussir::Capability::unspecified;
+  Capability capValue = capability ? *capability : DefaultCap;
   AtomicKind atomicValue =
       atomicKind ? *atomicKind : reussir::AtomicKind::normal;
   return T::getChecked(encLoc, parser.getContext(), eleTy, capValue,
                        atomicValue);
 }
 
-template <typename T>
+template <typename T, Capability DefaultCap = reussir::Capability::unspecified>
 void printTypeWithCapabilityAndAtomicKind(mlir::AsmPrinter &printer,
                                           const T &type) {
   printer << "<";
   printer.printType(type.getElementType());
-  if (type.getCapability() != reussir::Capability::unspecified)
+  if (type.getCapability() != DefaultCap)
     printer << ' ' << type.getCapability();
 
   if (type.getAtomicKind() != reussir::AtomicKind::normal)
@@ -128,6 +132,33 @@ bool isNonNullPointerType(mlir::Type type) {
       .Case<TokenType, RcType, RecordType, RawPtrType, RefType>(
           [](auto) { return true; })
       .Default([](mlir::Type) { return false; });
+}
+//===----------------------------------------------------------------------===//
+// deriveCompoundSizeAndAlignment
+//===----------------------------------------------------------------------===//
+std::optional<std::pair<
+    llvm::TypeSize,
+    uint64_t>> inline deriveCompoundSizeAndAlignment(llvm::ArrayRef<mlir::Type>
+                                                         members,
+                                                     const mlir::DataLayout
+                                                         &dataLayout) {
+  llvm::TypeSize resultSize = llvm::TypeSize::getFixed(0);
+  uint64_t resultAlignment = 1;
+  for (mlir::Type member : members) {
+    if (!member)
+      continue;
+    llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
+    if (!memberSize.isFixed())
+      return std::nullopt;
+    uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
+    llvm::Align memberAlign(memberAlignment);
+    uint64_t alignedSize = llvm::alignTo(resultSize, memberAlign);
+    resultAlignment = std::max(resultAlignment, memberAlignment);
+    resultSize =
+        llvm::TypeSize::getFixed(alignedSize + memberSize.getFixedValue());
+  }
+  resultSize = llvm::alignTo(resultSize, resultAlignment);
+  return std::make_optional(std::make_pair(resultSize, resultAlignment));
 }
 
 //===----------------------------------------------------------------------===//
@@ -360,18 +391,55 @@ void RecordType::complete(
 llvm::TypeSize
 RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
                               ::mlir::DataLayoutEntryListRef params) const {
-  llvm_unreachable("Not implemented yet");
+  if (isCompound()) {
+    auto derived = deriveCompoundSizeAndAlignment(getMembers(), dataLayout);
+    if (!derived)
+      llvm_unreachable("RecordType must have a fixed size");
+    auto [sizeInBytes, _] = *derived;
+    return sizeInBytes * 8; // Convert to bits
+  } else {
+    llvm::TypeSize largestSize = llvm::TypeSize::getZero();
+    llvm::Align largestAlignment = llvm::Align(1);
+    for (mlir::Type member : getMembers()) {
+      if (!member)
+        continue;
+      llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
+      if (!memberSize.isFixed())
+        llvm_unreachable("RecordType must have a fixed size");
+      largestSize = std::max(largestSize, memberSize);
+      uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
+      largestAlignment =
+          std::max(largestAlignment, llvm::Align(memberAlignment));
+    }
+    return llvm::alignTo(largestSize, largestAlignment.value()) *
+           8; // Convert to bits
+  }
 }
 uint64_t
 RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
                             ::mlir::DataLayoutEntryListRef params) const {
-  llvm_unreachable("Not implemented yet");
+  if (isCompound()) {
+    auto derived = deriveCompoundSizeAndAlignment(getMembers(), dataLayout);
+    if (!derived)
+      llvm_unreachable("RecordType must have a fixed alignment");
+    auto [_, alignment] = *derived;
+    return alignment;
+  } else {
+    uint64_t largestAlignment = 1;
+    for (mlir::Type member : getMembers()) {
+      if (!member)
+        continue;
+      uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
+      largestAlignment = std::max(largestAlignment, memberAlignment);
+    }
+    return largestAlignment;
+  }
 }
 
 uint64_t
 RecordType::getPreferredAlignment(const ::mlir::DataLayout &dataLayout,
                                   ::mlir::DataLayoutEntryListRef params) const {
-  llvm_unreachable("Not implemented yet");
+  return getABIAlignment(dataLayout, params);
 }
 
 //===----------------------------------------------------------------------===//
@@ -464,9 +532,10 @@ mlir::LogicalResult
 RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
                mlir::Type eleTy, reussir::Capability capability,
                reussir::AtomicKind atomicKind) {
-  if (capability == reussir::Capability::field ||
-      capability == reussir::Capability::value) {
-    emitError() << "Capability must not be Field or Value for RcType";
+  if (capability != reussir::Capability::shared &&
+      capability != reussir::Capability::flex &&
+      capability != reussir::Capability::rigid) {
+    emitError() << "Capability must be shared, flex or rigid for RcType";
     return mlir::failure();
   }
 
@@ -480,11 +549,13 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RcType)
 // RcType pasrse/print
 //===----------------------------------------------------------------------===//
 mlir::Type RcType::parse(mlir::AsmParser &parser) {
-  return parseTypeWithCapabilityAndAtomicKind<RcType>(parser);
+  return parseTypeWithCapabilityAndAtomicKind<RcType, Capability::shared>(
+      parser);
 }
 
 void RcType::print(mlir::AsmPrinter &printer) const {
-  printTypeWithCapabilityAndAtomicKind(printer, *this);
+  printTypeWithCapabilityAndAtomicKind<RcType, Capability::shared>(printer,
+                                                                   *this);
 }
 
 ///===----------------------------------------------------------------------===//
@@ -523,6 +594,78 @@ RefType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
   return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Rc Box Type
+//===----------------------------------------------------------------------===//
+// RcBoxType Parse/Print
+//===----------------------------------------------------------------------===//
+mlir::Type RcBoxType::parse(mlir::AsmParser &parser) {
+  using namespace mlir;
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  Location encLoc = parser.getEncodedSourceLoc(loc);
+  Type eleTy;
+  bool regional;
+
+  if (parser.parseLess().failed())
+    return {};
+
+  regional = parser.parseOptionalKeyword("regional").succeeded();
+
+  if (parser.parseType(eleTy).failed())
+    return {};
+
+  if (parser.parseGreater().failed())
+    return {};
+
+  return RcBoxType::getChecked(encLoc, parser.getContext(), eleTy, regional);
+}
+
+void RcBoxType::print(mlir::AsmPrinter &printer) const {
+  printer << "<";
+  if (this->isRegional())
+    printer << "regional ";
+  printer.printType(getEleTy());
+  printer << ">";
+}
+
+//===----------------------------------------------------------------------===//
+// RcBoxType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize
+RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                             mlir::DataLayoutEntryListRef params) const {
+  mlir::IndexType type = mlir::IndexType::get(getContext());
+  auto derived =
+      isRegional()
+          ? deriveCompoundSizeAndAlignment({type, type, type, getEleTy()},
+                                           dataLayout)
+          : deriveCompoundSizeAndAlignment({type, getEleTy()}, dataLayout);
+  if (!derived)
+    llvm_unreachable("RcBoxType must have a fixed size");
+  auto [sizeInBytes, _] = *derived;
+  return sizeInBytes * 8; // Convert to bits
+}
+
+uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                                    mlir::DataLayoutEntryListRef params) const {
+  mlir::IndexType type = mlir::IndexType::get(getContext());
+  auto derived =
+      isRegional()
+          ? deriveCompoundSizeAndAlignment({type, type, type, getEleTy()},
+                                           dataLayout)
+          : deriveCompoundSizeAndAlignment({type, getEleTy()}, dataLayout);
+  if (!derived)
+    llvm_unreachable("RcBoxType must have a fixed alignment");
+  auto [_, alignment] = *derived;
+  return alignment;
+}
+
+uint64_t
+RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
+                                 mlir::DataLayoutEntryListRef params) const {
+  return getABIAlignment(dataLayout, params);
 }
 
 } // namespace reussir
