@@ -267,6 +267,55 @@ def ReussirRefType : ReussirType<"Ref", "ref", [
 }
 
 ///===----------------------------------------------------------------------===//
+// Reussir RcBox Type
+//===----------------------------------------------------------------------===//
+def ReussirRcBoxType : ReussirType<"RcBox", "rc_box",
+    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Reference Counted Box Type";
+  let description = [{
+    `reussir.rc_box` represents a heap-allocated box that contains a value managed
+    by reference counting. The box contains a reference count and the value itself.
+    The layout of the box for shared Rc is as follows:
+    ```
+    RcBox<T> {
+        size_t status;
+        T data;
+    };
+    ```
+    For flex/rigid varaints, status is also of the same size but it is actually 
+    a tagged pointer. Please refer to https://dl.acm.org/doi/abs/10.1145/3652024.3665507
+    for more details:
+    ```
+    RcBox<T> {
+        union {
+          size_t status;
+          RcBox* root;
+        } status;
+        RcBox* next;
+        void* vtable;
+        T data;
+    };
+    struct VTable {
+      void*  drop;
+      size_t size;
+      size_t alignment;
+      ssize_t scan_count;
+      size_t scan_offset[0];
+    }
+    ```
+  ]}];
+  let parameters = (ins
+    "mlir::Type":$eleTy,
+    "bool":$regional
+  );
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+  
+}
+  
+  
+
+///===----------------------------------------------------------------------===//
 // Special Type Constraints
 //===----------------------------------------------------------------------===//
 def ReussirNullableTokenType : Type<

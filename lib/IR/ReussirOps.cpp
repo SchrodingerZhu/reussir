@@ -95,6 +95,13 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// RcCreateOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcCreateOp::verify() {
+  RcType RcType = getRcPtr().getType();
+}
+
 ///===----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===----------------------------------------------------------------------===//
