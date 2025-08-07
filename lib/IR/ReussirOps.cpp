@@ -124,9 +124,59 @@ mlir::LogicalResult ReussirRcCreateOp::verify() {
   return mlir::success();
 }
 
-///===----------------------------------------------------------------------===//
-// Reussir Dialect Operations Registration
 //===----------------------------------------------------------------------===//
+// Reussir Borrow Operation
+//===----------------------------------------------------------------------===//
+// BorrowOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcBorrowOp::verify() {
+  RcType rcType = getRcPtr().getType();
+  RefType refType = getBorrowed().getType();
+  if (refType.getCapability() != rcType.getCapability())
+    return emitOpError(
+               "borrowed type capability must match RC type capability, ")
+           << "borrowed type capability: "
+           << stringifyCapability(refType.getCapability())
+           << ", RC type capability: "
+           << stringifyCapability(rcType.getCapability());
+
+  if (refType.getElementType() != rcType.getElementType())
+    return emitOpError(
+               "borrowed type element type must match RC element type, ")
+           << "borrowed type element type: " << refType.getElementType()
+           << ", RC element type: " << rcType.getElementType();
+
+  if (refType.getAtomicKind() != rcType.getAtomicKind())
+    return emitOpError(
+               "borrowed type atomic kind must match RC type atomic kind, ")
+           << "borrowed type atomic kind: "
+           << stringifyAtomicKind(refType.getAtomicKind())
+           << ", RC type atomic kind: "
+           << stringifyAtomicKind(rcType.getAtomicKind());
+
+  return mlir::success();
+}
+//===----------------------------------------------------------------------===//
+// Reussir Stack Spilling Operation
+//===----------------------------------------------------------------------===//
+// SpillOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirSpillOp::verify() {
+  mlir::Type valueType = getValue().getType();
+  RefType refType = getSpilled().getType();
+  if (valueType != refType.getElementType())
+    return emitOpError("value type must match spilled element type, ")
+           << "value type: " << valueType
+           << ", spilled element type: " << refType.getElementType();
+  if (refType.getCapability() != reussir::Capability::unspecified)
+    return emitOpError("spilled type capability must be unspecified, ")
+           << "spilled type capability: "
+           << stringifyCapability(refType.getCapability());
+  return mlir::success();
+}
+//===-----------------------------------------------------------------------===//
+// Reussir Dialect Operations Registration
+//===-----------------------------------------------------------------------===//
 void ReussirDialect::registerOperations() {
   addOperations<
 #define GET_OP_LIST

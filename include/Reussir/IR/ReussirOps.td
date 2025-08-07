@@ -271,4 +271,54 @@ def ReussirRcCreateOp : ReussirRcOp<"create", []> {
 
   let hasVerifier = 1;
 }
+
+//===----------------------------------------------------------------------===//
+// Reussir RC Borrow Operation
+//===----------------------------------------------------------------------===//
+def ReussirRcBorrowOp : ReussirRcOp<"borrow", []> {
+  let summary = "Borrow a RC pointer";
+  let description = [{
+    `reussir.rc.borrow` borrows a RC pointer, which gives you an access reference 
+    to the underlying value. The shared/flex/rigid capability from Rc will be inherited
+    by the borrowed reference. The borrow will not change the reference count of 
+    the RC pointer.
+    ```mlir
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+    %rc_ptr = reussir.rc.create 
+      value(%val : i64) 
+      token(%token : !reussir.token<align: 8, size: 8>) : !reussir.rc<i64>
+    %ref = reussir.rc.borrow 
+      (%rc_ptr : !reussir.rc<i64>) : !reussir.ref<i64 shared>
+    ```
+  }];
+
+  let arguments = (ins Arg<ReussirRcType, "RC pointer to borrow">:$rcPtr);
+  let results = (outs Res<ReussirRefType, "Borrowed reference">:$borrowed);
+
+  let assemblyFormat = [{
+    `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` qualified(type($borrowed)) attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Spill Operation
+//===----------------------------------------------------------------------===//
+def ReussirSpillOp : ReussirOp<"spill", []> {
+  let summary = "Spill a value to stack allocation";
+  let description = [{
+    `reussir.spill` spills a value to a stack allocation, which can be
+    used to pass values between regions or functions. This also gives user
+    the power to project inner fields from a compound value. 
+    
+    The result reference must have unspecified capability.
+  }];
+  let arguments = (ins Arg<AnyType, "value to spill">:$value);
+  let results = (outs Res<ReussirRefType, "spilled reference">:$spilled);
+  let assemblyFormat = [{
+    `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
+  }];
+  let hasVerifier = 1;
+}
 #endif // REUSSIR_IR_REUSSIROPS_TD
