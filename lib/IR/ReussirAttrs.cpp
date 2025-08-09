@@ -10,5 +10,27 @@
 //
 //===----------------------------------------------------------------------===//
 #include "Reussir/IR/ReussirAttrs.h"
+#include "Reussir/IR/ReussirDialect.h"
 
 #include "Reussir/IR/ReussirAttrs.cpp.inc"
+
+namespace reussir {
+
+//===----------------------------------------------------------------------===//
+// ReussirDialect Attributes Registration
+//===----------------------------------------------------------------------===//
+mlir::Attribute ReussirDialect::parseAttribute(mlir::DialectAsmParser &parser,
+                                               mlir::Type type) const {
+  return {};
+}
+
+void ReussirDialect::printAttribute(mlir::Attribute attr,
+                                    mlir::DialectAsmPrinter &p) const {}
+
+void ReussirDialect::registerAttributes() {
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "Reussir/IR/ReussirAttrs.cpp.inc"
+      >();
+}
+} // namespace reussir

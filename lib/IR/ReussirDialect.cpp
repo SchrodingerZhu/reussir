@@ -21,16 +21,7 @@ void ReussirDialect::initialize() {
   registerAttributes();
   // Register the builtin Types.
   registerTypes();
+  // Register the builtin Operations.
+  registerOperations();
 }
-
-mlir::Attribute ReussirDialect::parseAttribute(mlir::DialectAsmParser &parser,
-                                               mlir::Type type) const {
-  return {};
-}
-
-void ReussirDialect::printAttribute(mlir::Attribute attr,
-                                    mlir::DialectAsmPrinter &p) const {}
-
-void ReussirDialect::registerAttributes() {}
-
 } // namespace reussir

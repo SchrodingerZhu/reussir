@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 4.0)
 project(Reussir LANGUAGES CXX C VERSION 0.1.0)
 
+# Options
+option(REUSSIR_ENABLE_TESTS "Build tests for Reussir" ON)
+
 # Adjust output paths
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -22,3 +25,8 @@ include_directories(include ${MLIR_INCLUDE_DIRS} ${LLVM_INCLUDE_DIRS} ${MLIR_TAB
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tool)
+
+if (REUSSIR_ENABLE_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

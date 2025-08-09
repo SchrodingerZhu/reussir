@@ -43,6 +43,8 @@ def ReussirDialect : Dialect {
     void registerAttributes();
     // Register the builtin Types.
     void registerTypes();
+    // Register the builtin Operations.
+    void registerOperations();
   public:
     mlir::Type parseType(mlir::DialectAsmParser &parser) const override;
     void printType(mlir::Type ty, mlir::DialectAsmPrinter &p) const override;

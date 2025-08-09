@@ -24,6 +24,17 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypeDetails.h"
 
+namespace reussir {
+std::optional<std::pair<
+    llvm::TypeSize,
+    uint64_t>> inline deriveCompoundSizeAndAlignment(llvm::ArrayRef<mlir::Type>
+                                                         members,
+                                                     const mlir::DataLayout
+                                                         &dataLayout);
+bool isNonNullPointerType(mlir::Type type);
+mlir::Type getProjectedType(mlir::Type type);
+} // namespace reussir
+
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.h.inc"
 

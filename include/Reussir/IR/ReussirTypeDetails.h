@@ -10,8 +10,11 @@
 // details).
 //
 //===----------------------------------------------------------------------===//
+#include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/Hashing.h>
+#include <llvm/Support/TypeSize.h>
 #include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <mlir/Support/LogicalResult.h>
 
 #include "Reussir/IR/ReussirAttrs.h"
@@ -24,9 +27,10 @@ namespace detail {
 // RecordTypeStorage
 //===----------------------------------------------------------------------===//
 //
-// We manually define the storage class for RecordType to handle self-references
-// in the members and memberCapabilities arrays. Named structures can be
-// initialized as incomplete such that they can be referred by their own.
+// We manually define the storage class for RecordType to handle
+// self-references in the members and memberCapabilities arrays. Named
+// structures can be initialized as incomplete such that they can be referred
+// by their own.
 //
 //===----------------------------------------------------------------------===//
 
