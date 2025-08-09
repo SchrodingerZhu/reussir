@@ -337,4 +337,14 @@ def ReussirNullableTokenType : Type<
   /* baseType */ "::reussir::NullableType"
 >;
 
+def ReussirCompoundType : Type<CPred<[{
+  ::llvm::isa<::reussir::RecordType>($_self) 
+    && ::llvm::cast<::reussir::RecordType>($_self).isCompound()}]>,
+                          "Reussir compound type">;
+
+def ReussirVariantType : Type<CPred<[{
+  ::llvm::isa<::reussir::RecordType>($_self) 
+    && ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
+                          "Reussir variant type">;
+
 #endif // REUSSIR_IR_REUSSIRTYPES_TD

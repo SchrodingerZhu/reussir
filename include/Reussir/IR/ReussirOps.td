@@ -321,4 +321,41 @@ def ReussirSpillOp : ReussirOp<"spill", []> {
   }];
   let hasVerifier = 1;
 }
+//===----------------------------------------------------------------------===//
+// Reussir Record Operations
+//===----------------------------------------------------------------------===//
+class ReussirRecordOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"record." # mnemonic, traits>;
+
+def ReussirRecordCompoundOp : ReussirRecordOp<"compound", []> {
+  let summary = "Create a compound record";
+  let description = [{
+    `reussir.record.compound` creates a compound record.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$fields);
+  let results = (outs Res<ReussirCompoundType, "Created record">:$compound);
+
+  let assemblyFormat = [{
+    `(` $fields `:` type($fields) `)` `:` qualified(type($compound)) attr-dict
+  }];
+}
+
+def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
+  let summary = "Create a variant record";
+  let description = [{
+    `reussir.record.variant` creates a variant record.
+  }];
+
+  let arguments = (ins 
+     Arg<IndexAttr, "tag">:$tag, 
+     Arg<AnyType, "value">:$value);
+  let results = (outs Res<ReussirVariantType, "Created record">:$variant);
+
+  let assemblyFormat = [{
+   `[` $tag `]` `(` $value `:` type($value) `)` 
+   `:` qualified(type($variant)) attr-dict
+  }];
+}
+
 #endif // REUSSIR_IR_REUSSIROPS_TD
