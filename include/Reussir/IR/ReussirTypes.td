@@ -71,7 +71,16 @@ def ReussirRecordType : ReussirType<"Record", "record", [
     complex data structures in Reussir. Records are uniquely indentified by their
     names.
 
-    To support self-referential records, the `members` field is an optional. An incomplete record can be later completed once its members are known.
+    To support self-referential records, the `members` field is an optional. 
+    An incomplete record can be later completed once its members are known.
+
+    Notice that rc and reference types are not allowed as members of a record.
+    Instead, use the `shared` capability for rc managed fields; `rigid` for
+    immutable rc managed fields can escape its region; `value` for inplace
+    storage. `flex` is not allowed as a member type capability. If the capability
+    is unspecified, it is set to the type's default capability.
+
+    For variant records, the default capability is `value` if not specified.
   }];
 
   let parameters = (ins 
@@ -338,13 +347,13 @@ def ReussirNullableTokenType : Type<
 >;
 
 def ReussirCompoundType : Type<CPred<[{
-  ::llvm::isa<::reussir::RecordType>($_self) 
-    && ::llvm::cast<::reussir::RecordType>($_self).isCompound()}]>,
-                          "Reussir compound type">;
+  ::llvm::cast<::reussir::RecordType>($_self).isCompound()}]>,
+                          "Reussir compound type",
+                          "::reussir::RecordType">;
 
 def ReussirVariantType : Type<CPred<[{
-  ::llvm::isa<::reussir::RecordType>($_self) 
-    && ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
-                          "Reussir variant type">;
+  ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
+                          "Reussir variant type",
+                          "::reussir::RecordType">;
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD

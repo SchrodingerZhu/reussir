@@ -27,12 +27,16 @@
 namespace reussir {
 std::optional<std::pair<
     llvm::TypeSize,
-    uint64_t>> inline deriveCompoundSizeAndAlignment(llvm::ArrayRef<mlir::Type>
+    uint64_t>> inline deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
+                                                     llvm::ArrayRef<mlir::Type>
                                                          members,
+                                                     llvm::ArrayRef<Capability>
+                                                         memberCapabilities,
                                                      const mlir::DataLayout
                                                          &dataLayout);
 bool isNonNullPointerType(mlir::Type type);
-mlir::Type getProjectedType(mlir::Type type);
+mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
+                            Capability refCap);
 } // namespace reussir
 
 #define GET_TYPEDEF_CLASSES

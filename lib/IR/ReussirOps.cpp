@@ -181,7 +181,28 @@ mlir::LogicalResult ReussirSpillOp::verify() {
 // RecordCompoundOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRecordCompoundOp::verify() {
-  // TODO: Implement verification
+  auto compoundType = getCompound().getType();
+  if (!compoundType.getComplete())
+    return emitOpError("cannot assemble incomplete compound record");
+  if (!compoundType.isCompound())
+    return emitOpError("compound type must be a compound record");
+  if (compoundType.getMembers().size() != getFields().size())
+    return emitOpError("number of fields must match number of members");
+  bool hasFieldCapability = false;
+  for (auto [field, member, memberCapability] :
+       llvm::zip(getFields(), compoundType.getMembers(),
+                 compoundType.getMemberCapabilities())) {
+    // Since this is assemble phase, assume flex ref capability.
+    mlir::Type projectedType =
+        reussir::getProjectedType(member, memberCapability, Capability::flex);
+    if (projectedType != field.getType())
+      return emitOpError("field type must match projected member type, ")
+             << "field type: " << field.getType()
+             << ", projected member type: " << projectedType;
+    hasFieldCapability |= (memberCapability == Capability::field);
+  }
+  if (hasFieldCapability)
+    return emitOpError("TODO: check this is nested in a region operation");
   return mlir::success();
 }
 
@@ -191,7 +212,24 @@ mlir::LogicalResult ReussirRecordCompoundOp::verify() {
 // RecordVariantOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRecordVariantOp::verify() {
-  // TODO: Implement verification
+  auto variantType = getVariant().getType();
+  if (!variantType.getComplete())
+    return emitOpError("cannot assemble incomplete variant record");
+  if (!variantType.isVariant())
+    return emitOpError("variant type must be a variant record");
+  size_t tag = getTag().getZExtValue();
+  if (tag >= variantType.getMembers().size())
+    return emitOpError("tag out of bounds");
+  mlir::Type targetVariantType = variantType.getMembers()[tag];
+  Capability targetVariantCapability = variantType.getMemberCapabilities()[tag];
+  mlir::Type projectedType = reussir::getProjectedType(
+      targetVariantType, targetVariantCapability, Capability::flex);
+  if (projectedType != getValue().getType())
+    return emitOpError("value type must match projected type, ")
+           << "value type: " << getValue().getType()
+           << ", projected type: " << projectedType;
+  if (targetVariantCapability == Capability::flex)
+    return emitOpError("TODO: check this is nested in a region operation");
   return mlir::success();
 }
 

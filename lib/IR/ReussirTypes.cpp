@@ -138,15 +138,36 @@ bool isNonNullPointerType(mlir::Type type) {
 //===----------------------------------------------------------------------===//
 std::optional<std::pair<
     llvm::TypeSize,
-    uint64_t>> inline deriveCompoundSizeAndAlignment(llvm::ArrayRef<mlir::Type>
+    uint64_t>> inline deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
+                                                     llvm::ArrayRef<mlir::Type>
                                                          members,
+                                                     llvm::ArrayRef<Capability>
+                                                         memberCapabilities,
                                                      const mlir::DataLayout
                                                          &dataLayout) {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
   llvm::TypeSize resultSize = llvm::TypeSize::getFixed(0);
   uint64_t resultAlignment = 1;
-  for (mlir::Type member : members) {
-    if (!member)
+  if (memberCapabilities.size() != members.size())
+    llvm::report_fatal_error(
+        "Number of member capabilities must match number of members");
+  for (auto [rawMember, rawCapability] :
+       llvm::zip(members, memberCapabilities)) {
+    if (!rawMember)
       continue;
+    Capability capability = rawCapability;
+    if (auto recordTy = llvm::dyn_cast<RecordType>(rawMember)) {
+      if (capability == Capability::unspecified)
+        capability = recordTy.getDefaultCapability();
+      if (capability == Capability::unspecified)
+        capability = Capability::shared;
+    }
+    mlir::Type member;
+    if (capability == Capability::flex || capability == Capability::rigid ||
+        capability == Capability::shared || capability == Capability::field)
+      member = ptrTy;
+    else
+      member = rawMember;
     llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
     if (!memberSize.isFixed())
       return std::nullopt;
@@ -175,10 +196,25 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     emitError() << "Number of member capabilities must match number of members";
     return mlir::failure();
   }
-  if (std::any_of(members.begin(), members.end(),
-                  [](mlir::Type type) { return !type; })) {
-    emitError() << "Members must not be null";
-    return mlir::failure();
+  for (size_t i = 0; i < members.size(); ++i) {
+    const auto &member = members[i];
+    const auto &capability = memberCapabilities[i];
+
+    if (!member) {
+      emitError() << "Members must not be null";
+      return mlir::failure();
+    }
+
+    if (llvm::isa<RcType>(member) || llvm::isa<RefType>(member)) {
+      emitError()
+          << "Members must not be Rc or Ref types, use capability instead";
+      return mlir::failure();
+    }
+
+    if (capability == reussir::Capability::flex) {
+      emitError() << "Flex capability is not allowed in record members";
+      return mlir::failure();
+    }
   }
   if (complete && defaultCapability != reussir::Capability::shared &&
       defaultCapability != reussir::Capability::value &&
@@ -241,8 +277,9 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
     }
   }
 
-  auto parseOptionalCapability =
-      [](mlir::AsmParser &parser) -> FailureOr<Capability> {
+  auto parseOptionalCapability = [kind](mlir::AsmParser &parser,
+                                        bool forField =
+                                            true) -> FailureOr<Capability> {
     if (parser.parseOptionalLSquare().succeeded()) {
       FailureOr<std::optional<Capability>> capOrError =
           FieldParser<std::optional<Capability>>::parse(parser);
@@ -253,13 +290,16 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
       if (capOrError->has_value())
         return capOrError->value();
     }
-    return reussir::Capability::unspecified;
+    return (kind == RecordKind::variant && forField)
+               ? reussir::Capability::value
+               : reussir::Capability::unspecified;
   };
   // Start parsing member fields.
   if (parser.parseOptionalKeyword("incomplete").failed()) {
     incomplete = false;
     // First, check if default capability is specified.
-    FailureOr<Capability> defaultCapOrError = parseOptionalCapability(parser);
+    FailureOr<Capability> defaultCapOrError =
+        parseOptionalCapability(parser, false);
     if (failed(defaultCapOrError))
       return {};
 
@@ -270,7 +310,7 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
     const auto parseElementFn = [&parser, &members, &memberCapabilities,
                                  &parseOptionalCapability]() -> ParseResult {
       FailureOr<reussir::Capability> capOrError =
-          parseOptionalCapability(parser);
+          parseOptionalCapability(parser, true);
       if (failed(capOrError))
         return mlir::failure();
       else {
@@ -349,7 +389,11 @@ void RecordType::print(::mlir::AsmPrinter &printer) const {
       llvm::interleaveComma(llvm::zip(getMembers(), getMemberCapabilities()),
                             printer, [&](auto memberAndCap) {
                               auto [member, cap] = memberAndCap;
-                              if (cap != reussir::Capability::unspecified)
+                              auto dedfaultCapability =
+                                  reussir::Capability::unspecified;
+                              if (getKind() == RecordKind::variant)
+                                dedfaultCapability = reussir::Capability::value;
+                              if (cap != dedfaultCapability)
                                 printer << '[' << cap << "] ";
                               printer << member;
                             });
@@ -392,7 +436,8 @@ llvm::TypeSize
 RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
                               ::mlir::DataLayoutEntryListRef params) const {
   if (isCompound()) {
-    auto derived = deriveCompoundSizeAndAlignment(getMembers(), dataLayout);
+    auto derived = deriveCompoundSizeAndAlignment(
+        getContext(), getMembers(), getMemberCapabilities(), dataLayout);
     if (!derived)
       llvm_unreachable("RecordType must have a fixed size");
     auto [sizeInBytes, _] = *derived;
@@ -419,7 +464,8 @@ uint64_t
 RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
                             ::mlir::DataLayoutEntryListRef params) const {
   if (isCompound()) {
-    auto derived = deriveCompoundSizeAndAlignment(getMembers(), dataLayout);
+    auto derived = deriveCompoundSizeAndAlignment(
+        getContext(), getMembers(), getMemberCapabilities(), dataLayout);
     if (!derived)
       llvm_unreachable("RecordType must have a fixed alignment");
     auto [_, alignment] = *derived;
@@ -637,11 +683,15 @@ llvm::TypeSize
 RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                              mlir::DataLayoutEntryListRef params) const {
   mlir::IndexType type = mlir::IndexType::get(getContext());
-  auto derived =
-      isRegional()
-          ? deriveCompoundSizeAndAlignment({type, type, type, getEleTy()},
-                                           dataLayout)
-          : deriveCompoundSizeAndAlignment({type, getEleTy()}, dataLayout);
+  auto derived = isRegional()
+                     ? deriveCompoundSizeAndAlignment(
+                           getContext(), {type, type, type, getEleTy()},
+                           {Capability::value, Capability::value,
+                            Capability::value, Capability::value},
+                           dataLayout)
+                     : deriveCompoundSizeAndAlignment(
+                           getContext(), {type, getEleTy()},
+                           {Capability::value, Capability::value}, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed size");
   auto [sizeInBytes, _] = *derived;
@@ -651,11 +701,15 @@ RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                     mlir::DataLayoutEntryListRef params) const {
   mlir::IndexType type = mlir::IndexType::get(getContext());
-  auto derived =
-      isRegional()
-          ? deriveCompoundSizeAndAlignment({type, type, type, getEleTy()},
-                                           dataLayout)
-          : deriveCompoundSizeAndAlignment({type, getEleTy()}, dataLayout);
+  auto derived = isRegional()
+                     ? deriveCompoundSizeAndAlignment(
+                           getContext(), {type, type, type, getEleTy()},
+                           {Capability::value, Capability::value,
+                            Capability::value, Capability::value},
+                           dataLayout)
+                     : deriveCompoundSizeAndAlignment(
+                           getContext(), {type, getEleTy()},
+                           {Capability::value, Capability::value}, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed alignment");
   auto [_, alignment] = *derived;
@@ -667,16 +721,32 @@ RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
                                  mlir::DataLayoutEntryListRef params) const {
   return getABIAlignment(dataLayout, params);
 }
-
 //===----------------------------------------------------------------------===//
 // getProjectedType
 //===----------------------------------------------------------------------===//
-mlir::Type getProjectedType(mlir::Type type) {
-  if (!type)
+mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
+                            Capability refCap) {
+  fieldCap = llvm::TypeSwitch<mlir::Type, Capability>(type)
+                 .Case<RecordType>([&](RecordType type) -> Capability {
+                   if (fieldCap == Capability::unspecified)
+                     fieldCap = type.getDefaultCapability();
+                   if (fieldCap == Capability::unspecified)
+                     fieldCap = Capability::shared;
+                   return fieldCap;
+                 })
+                 .Default([](mlir::Type) { return Capability::value; });
+  if (fieldCap == Capability::field) {
+    RcType rcTy = RcType::get(type.getContext(), type, refCap);
+    NullableType nullableTy = NullableType::get(type.getContext(), rcTy);
+    return nullableTy;
+  }
+  if (fieldCap == Capability::shared)
+    return RcType::get(type.getContext(), type, Capability::shared);
+  if (fieldCap == Capability::rigid)
+    return RcType::get(type.getContext(), type, Capability::shared);
+  if (fieldCap == Capability::value)
     return type;
-  return llvm::TypeSwitch<mlir::Type, mlir::Type>(type)
-      .Case<RecordType>([](RecordType type) { return type.getMembers()[0]; })
-      .Default([](mlir::Type type) { return type; });
+  llvm_unreachable("invalid field capability");
 }
 
 } // namespace reussir
