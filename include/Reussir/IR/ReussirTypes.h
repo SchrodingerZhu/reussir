@@ -32,6 +32,7 @@ std::optional<std::pair<
                                                      const mlir::DataLayout
                                                          &dataLayout);
 bool isNonNullPointerType(mlir::Type type);
+mlir::Type getProjectedType(mlir::Type type);
 } // namespace reussir
 
 #define GET_TYPEDEF_CLASSES

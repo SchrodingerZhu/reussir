@@ -174,6 +174,27 @@ mlir::LogicalResult ReussirSpillOp::verify() {
            << stringifyCapability(refType.getCapability());
   return mlir::success();
 }
+
+//===----------------------------------------------------------------------===//
+// Reussir Record Operations
+//===----------------------------------------------------------------------===//
+// RecordCompoundOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRecordCompoundOp::verify() {
+  // TODO: Implement verification
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Record Variant Op
+//===----------------------------------------------------------------------===//
+// RecordVariantOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRecordVariantOp::verify() {
+  // TODO: Implement verification
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

@@ -315,7 +315,8 @@ def ReussirSpillOp : ReussirOp<"spill", []> {
     The result reference must have unspecified capability.
   }];
   let arguments = (ins Arg<AnyType, "value to spill">:$value);
-  let results = (outs Res<ReussirRefType, "spilled reference">:$spilled);
+  let results = (outs Res<ReussirRefType, "spilled reference", 
+    [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
   let assemblyFormat = [{
     `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
   }];
@@ -339,6 +340,8 @@ def ReussirRecordCompoundOp : ReussirRecordOp<"compound", []> {
   let assemblyFormat = [{
     `(` $fields `:` type($fields) `)` `:` qualified(type($compound)) attr-dict
   }];
+
+  let hasVerifier = 1;
 }
 
 def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
@@ -356,6 +359,8 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
    `[` $tag `]` `(` $value `:` type($value) `)` 
    `:` qualified(type($variant)) attr-dict
   }];
+
+  let hasVerifier = 1;
 }
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

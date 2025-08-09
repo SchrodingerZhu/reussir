@@ -668,4 +668,15 @@ RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
   return getABIAlignment(dataLayout, params);
 }
 
+//===----------------------------------------------------------------------===//
+// getProjectedType
+//===----------------------------------------------------------------------===//
+mlir::Type getProjectedType(mlir::Type type) {
+  if (!type)
+    return type;
+  return llvm::TypeSwitch<mlir::Type, mlir::Type>(type)
+      .Case<RecordType>([](RecordType type) { return type.getMembers()[0]; })
+      .Default([](mlir::Type type) { return type; });
+}
+
 } // namespace reussir
