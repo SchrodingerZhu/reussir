@@ -750,7 +750,7 @@ mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
   if (fieldCap == Capability::shared)
     return RcType::get(type.getContext(), type, Capability::shared);
   if (fieldCap == Capability::rigid)
-    return RcType::get(type.getContext(), type, Capability::shared);
+    return RcType::get(type.getContext(), type, Capability::rigid);
   if (fieldCap == Capability::value)
     return type;
   llvm_unreachable("invalid field capability");
