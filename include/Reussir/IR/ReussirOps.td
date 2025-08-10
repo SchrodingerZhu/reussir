@@ -422,6 +422,20 @@ def ReussirRefLoadOp : ReussirReferenceOp<"load", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
+  let summary = "Store a value to a reference";
+  let description = [{
+    `reussir.ref.store` stores a value to a reference. Target reference must have
+    field capability.
+  }];
+  let arguments = (ins Arg<ReussirRefType, "reference to store">:$ref,
+                    Arg<AnyType, "value to store">:$value);
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` `(` $value `:` type($value) `)` attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

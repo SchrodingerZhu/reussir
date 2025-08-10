@@ -305,6 +305,27 @@ mlir::LogicalResult ReussirRefLoadOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// RefStoreOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRefStoreOp::verify() {
+  RefType refType = getRef().getType();
+  mlir::Type valueType = getValue().getType();
+
+  // Check that the target reference has field capability
+  if (refType.getCapability() != reussir::Capability::field)
+    return emitOpError("target reference must have field capability, got: ")
+           << stringifyCapability(refType.getCapability());
+
+  // Check that the value type matches the reference element type
+  if (valueType != refType.getElementType())
+    return emitOpError("value type must match reference element type, ")
+           << "value type: " << valueType
+           << ", reference element type: " << refType.getElementType();
+
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//
