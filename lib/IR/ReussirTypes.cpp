@@ -734,9 +734,16 @@ mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
                      fieldCap = Capability::shared;
                    return fieldCap;
                  })
-                 .Default([](mlir::Type) { return Capability::value; });
+                 .Default([fieldCap](mlir::Type) {
+                   return fieldCap == Capability::unspecified
+                              ? Capability::value
+                              : fieldCap;
+                 });
   if (fieldCap == Capability::field) {
-    RcType rcTy = RcType::get(type.getContext(), type, refCap);
+    // Target capability is rigid unless the reference capability is flex
+    RcType rcTy = RcType::get(type.getContext(), type,
+                              refCap == Capability::flex ? Capability::flex
+                                                         : Capability::rigid);
     NullableType nullableTy = NullableType::get(type.getContext(), rcTy);
     return nullableTy;
   }

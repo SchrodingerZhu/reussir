@@ -233,6 +233,58 @@ mlir::LogicalResult ReussirRecordVariantOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Reference Operations
+//===----------------------------------------------------------------------===//
+// ReferenceProjectOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirReferenceProjectOp::verify() {
+  RefType refType = getRef().getType();
+  RefType projectedType = getProjected().getType();
+
+  // Check that the reference element type is a record type
+  mlir::Type elementType = refType.getElementType();
+  RecordType recordType = llvm::dyn_cast<RecordType>(elementType);
+  if (!recordType)
+    return emitOpError("reference element type must be a record type, got: ")
+           << elementType;
+
+  // Check that the record is complete
+  if (!recordType.getComplete())
+    return emitOpError("cannot project into incomplete record");
+
+  // Check that the index is within bounds
+  size_t index = getIndex().getZExtValue();
+  if (index >= recordType.getMembers().size())
+    return emitOpError("index out of bounds: ")
+           << index << " >= " << recordType.getMembers().size();
+
+  // Get the member type and capability at the specified index
+  mlir::Type memberType = recordType.getMembers()[index];
+  Capability memberCapability = recordType.getMemberCapabilities()[index];
+
+  // Calculate the expected projected type based on the member type, member
+  // capability, and reference capability
+  mlir::Type expectedProjectedType = reussir::getProjectedType(
+      memberType, memberCapability, refType.getCapability());
+
+  // Check that the projected type matches the expected type
+  if (expectedProjectedType != projectedType.getElementType())
+    return emitOpError("projected type mismatch: expected ")
+           << expectedProjectedType << ", got "
+           << projectedType.getElementType();
+
+  // Check that the projected reference has the same capability as the original
+  // reference
+  if (projectedType.getCapability() != refType.getCapability())
+    return emitOpError("projected reference capability must match original "
+                       "reference capability: expected ")
+           << stringifyCapability(refType.getCapability()) << ", got "
+           << stringifyCapability(projectedType.getCapability());
+
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

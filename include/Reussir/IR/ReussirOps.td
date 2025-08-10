@@ -363,4 +363,52 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir reference operations
+//===----------------------------------------------------------------------===//
+class ReussirReferenceOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"ref." # mnemonic, traits>;
+
+def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
+  let summary = "Project a reference";
+  let description = [{
+    `reussir.ref.project` projects a reference. This is effectively a GEP 
+    operation without the complication of self indexing at the first level.
+    Similar to borrowing, the projected reference will inherit the capability 
+    from the original reference.
+
+    ```mlir
+    !struct = !reussir.record<compound "foo" {i64, i64}>
+    func.func @project_func(%ref : !reussir.ref<!struct>) {
+      %field = reussir.ref.project (%ref : !reussir.ref<!struct>) [0] : !reussir.ref<i64>
+      %field2 = reussir.ref.project (%ref : !reussir.ref<!struct>) [1] : !reussir.ref<i64>
+      func.return
+    }
+    ```
+
+    Notice that the projected type must match, which may be affected by the capability.
+    For example, for field capability member under a rigid reference, the projected type
+    is a nullable rigid rc pointer.
+
+    ```mlir
+    !struct = !reussir.record<compound "foo" {i64, field i64}>
+    !nullable_rc = !reussir.nullable<!reussir.rc<i64 rigid>>
+    %rc_field = reussir.ref.project (%ref : !reussir.ref<!struct rigid>) [1] 
+      : !reussir.ref<!nullable_rc rigid>
+    ```
+  }];
+
+  let arguments = (ins Arg<ReussirRefType, "reference to project">:$ref,
+                    Arg<IndexAttr, "index">:$index);
+  let results = (outs Res<ReussirRefType, "projected reference">:$projected);
+
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` `[` $index `]` `:` qualified(type($projected)) attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+
+
 #endif // REUSSIR_IR_REUSSIROPS_TD
