@@ -256,10 +256,19 @@ mlir::LogicalResult ReussirReferenceProjectOp::verify() {
            << projectedType.getElementType();
 
   // Check that the projected reference has the same capability as the original
-  // reference
-  if (projectedType.getCapability() != refType.getCapability())
-    return emitOpError("projected reference capability must match original "
-                       "reference capability: expected ")
+  // reference. Or if the refType is flex, then the projected type can be field
+  // if target is field.
+  bool isOfSameCapability =
+      projectedType.getCapability() == refType.getCapability();
+  bool projectFieldOutOfFlex =
+      projectedType.getCapability() == Capability::field &&
+      refType.getCapability() == Capability::flex &&
+      memberCapability == Capability::field;
+  if (!isOfSameCapability && !projectFieldOutOfFlex)
+    return emitOpError(
+               "projected reference capability must match original "
+               "reference capability or be a field projection: original "
+               "capability: ")
            << stringifyCapability(refType.getCapability()) << ", got "
            << stringifyCapability(projectedType.getCapability());
 
