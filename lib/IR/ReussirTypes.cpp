@@ -389,11 +389,11 @@ void RecordType::print(::mlir::AsmPrinter &printer) const {
       llvm::interleaveComma(llvm::zip(getMembers(), getMemberCapabilities()),
                             printer, [&](auto memberAndCap) {
                               auto [member, cap] = memberAndCap;
-                              auto dedfaultCapability =
+                              auto defaultCapability =
                                   reussir::Capability::unspecified;
                               if (getKind() == RecordKind::variant)
-                                dedfaultCapability = reussir::Capability::value;
-                              if (cap != dedfaultCapability)
+                                defaultCapability = reussir::Capability::value;
+                              if (cap != defaultCapability)
                                 printer << '[' << cap << "] ";
                               printer << member;
                             });
