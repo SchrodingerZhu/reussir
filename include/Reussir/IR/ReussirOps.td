@@ -303,26 +303,6 @@ def ReussirRcBorrowOp : ReussirRcOp<"borrow", []> {
 }
 
 //===----------------------------------------------------------------------===//
-// Reussir Spill Operation
-//===----------------------------------------------------------------------===//
-def ReussirSpillOp : ReussirOp<"spill", []> {
-  let summary = "Spill a value to stack allocation";
-  let description = [{
-    `reussir.spill` spills a value to a stack allocation, which can be
-    used to pass values between regions or functions. This also gives user
-    the power to project inner fields from a compound value. 
-    
-    The result reference must have unspecified capability.
-  }];
-  let arguments = (ins Arg<AnyType, "value to spill">:$value);
-  let results = (outs Res<ReussirRefType, "spilled reference", 
-    [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
-  let assemblyFormat = [{
-    `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
-  }];
-  let hasVerifier = 1;
-}
-//===----------------------------------------------------------------------===//
 // Reussir Record Operations
 //===----------------------------------------------------------------------===//
 class ReussirRecordOp<string mnemonic, list<Trait> traits>
@@ -406,6 +386,39 @@ def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
     `(` $ref `:` qualified(type($ref)) `)` `[` $index `]` `:` qualified(type($projected)) attr-dict
   }];
 
+  let hasVerifier = 1;
+}
+
+def ReussirRefSpilledOp : ReussirReferenceOp<"spilled", []> {
+  let summary = "Spill a value to stack allocation";
+  let description = [{
+    `reussir.ref.spilled` spills a value to a stack allocation, which can be
+    used to pass values between regions or functions. This also gives user
+    the power to project inner fields from a compound value. 
+    
+    The result reference must have unspecified capability.
+  }];
+  let arguments = (ins Arg<AnyType, "value to spill">:$value);
+  let results = (outs Res<ReussirRefType, "spilled reference", 
+    [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
+  let assemblyFormat = [{
+    `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirRefLoadOp : ReussirReferenceOp<"load", []> {
+  let summary = "Load a reference";
+  let description = [{
+    `reussir.ref.load` loads a reference.
+  }];
+
+  let arguments = (ins Arg<ReussirRefType, "reference to load">:$ref);
+  let results = (outs Res<AnyType, "loaded value">:$value);
+
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` `:` type($value) attr-dict
+  }];
   let hasVerifier = 1;
 }
 

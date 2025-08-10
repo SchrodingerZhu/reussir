@@ -157,25 +157,6 @@ mlir::LogicalResult ReussirRcBorrowOp::verify() {
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
-// Reussir Stack Spilling Operation
-//===----------------------------------------------------------------------===//
-// SpillOp verification
-//===----------------------------------------------------------------------===//
-mlir::LogicalResult ReussirSpillOp::verify() {
-  mlir::Type valueType = getValue().getType();
-  RefType refType = getSpilled().getType();
-  if (valueType != refType.getElementType())
-    return emitOpError("value type must match spilled element type, ")
-           << "value type: " << valueType
-           << ", spilled element type: " << refType.getElementType();
-  if (refType.getCapability() != reussir::Capability::unspecified)
-    return emitOpError("spilled type capability must be unspecified, ")
-           << "spilled type capability: "
-           << stringifyCapability(refType.getCapability());
-  return mlir::success();
-}
-
-//===----------------------------------------------------------------------===//
 // Reussir Record Operations
 //===----------------------------------------------------------------------===//
 // RecordCompoundOp verification
@@ -282,6 +263,36 @@ mlir::LogicalResult ReussirReferenceProjectOp::verify() {
            << stringifyCapability(refType.getCapability()) << ", got "
            << stringifyCapability(projectedType.getCapability());
 
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RefSpilledOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRefSpilledOp::verify() {
+  mlir::Type valueType = getValue().getType();
+  RefType refType = getSpilled().getType();
+  if (valueType != refType.getElementType())
+    return emitOpError("value type must match spilled element type, ")
+           << "value type: " << valueType
+           << ", spilled element type: " << refType.getElementType();
+  if (refType.getCapability() != reussir::Capability::unspecified)
+    return emitOpError("spilled type capability must be unspecified, ")
+           << "spilled type capability: "
+           << stringifyCapability(refType.getCapability());
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RefLoadOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRefLoadOp::verify() {
+  RefType refType = getRef().getType();
+  mlir::Type valueType = getValue().getType();
+  if (valueType != refType.getElementType())
+    return emitOpError("value type must match reference element type, ")
+           << "value type: " << valueType
+           << ", reference element type: " << refType.getElementType();
   return mlir::success();
 }
 
