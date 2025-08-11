@@ -326,6 +326,76 @@ mlir::LogicalResult ReussirRefStoreOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Region Operations
+//===----------------------------------------------------------------------===//
+// RegionRunOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRegionRunOp::verify() {
+  // - Check that the region has exactly one argument of !reussir.region type
+  // - Check that the region can optionally yield a value
+  if (getRegion().getNumArguments() != 1)
+    return emitOpError("region must have exactly one argument");
+  mlir::Type argType = getRegion().getArgumentTypes()[0];
+  if (argType != reussir::RegionType::get(getContext()))
+    return emitOpError("region argument must be of !reussir.region type");
+  if (getResults().size() > 1)
+    return emitOpError("region must have at most one result");
+  RcType rcType = llvm::dyn_cast<RcType>(argType);
+  if (!rcType)
+    return emitOpError("region argument must be of RC type");
+  if (rcType.getCapability() != reussir::Capability::rigid &&
+      rcType.getCapability() != reussir::Capability::shared)
+    return emitOpError("region argument must be of rigid or shared RC type");
+  // Check that the region is not nested in the same function
+  if (this->getOperation()->getParentOfType<ReussirRegionRunOp>() != nullptr)
+    return emitOpError("region cannot be nested in the same function");
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RegionYieldOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRegionYieldOp::verify() {
+  // Check that it is consistent on whether yielding a value or not
+  // If yielding a value, check that the value is of RC type, and it the
+  // capability of the Rc type is flex, convert the return type to rigid
+  // counterpart. Then verify that the value is of the same type as the region
+  // argument.
+  auto parentOp = this->getParentOp();
+  if (getValue() != nullptr) {
+    if (parentOp->getNumResults() != 1)
+      return emitOpError("region must have exactly one result");
+    RcType rcType = getValue().getType();
+    if (rcType.getCapability() == reussir::Capability::flex)
+      rcType = RcType::get(getContext(), rcType.getElementType(),
+                           reussir::Capability::rigid);
+    if (rcType != parentOp->getResult(0).getType())
+      return emitOpError("value type must match region result type, ")
+             << "value type: " << rcType
+             << ", region result type: " << parentOp->getResult(0).getType();
+  } else if (parentOp->getNumResults() != 0)
+    return emitOpError("region must have no result");
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RegionRunOp RegionBranchOpInterface implementation
+//===----------------------------------------------------------------------===//
+void ReussirRegionRunOp::getSuccessorRegions(
+    mlir::RegionBranchPoint point,
+    llvm::SmallVectorImpl<mlir::RegionSuccessor> &regions) {
+
+  // If the predecessor is the ExecuteRegionOp, branch into the body.
+  if (point.isParent()) {
+    regions.emplace_back(&getRegion());
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.emplace_back(getResults());
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

@@ -14,6 +14,7 @@
 #ifndef REUSSIR_IR_REUSSIROPS_H
 #define REUSSIR_IR_REUSSIROPS_H
 
+#include <mlir/Interfaces/ControlFlowInterfaces.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 
 #include "Reussir/IR/ReussirAttrs.h"
