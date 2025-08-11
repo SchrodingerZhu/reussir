@@ -385,13 +385,11 @@ mlir::LogicalResult ReussirRegionYieldOp::verify() {
 void ReussirRegionRunOp::getSuccessorRegions(
     mlir::RegionBranchPoint point,
     llvm::SmallVectorImpl<mlir::RegionSuccessor> &regions) {
-
   // If the predecessor is the ExecuteRegionOp, branch into the body.
   if (point.isParent()) {
     regions.emplace_back(&getRegion());
     return;
   }
-
   // Otherwise, the region branches back to the parent operation.
   regions.emplace_back(getResults());
 }
