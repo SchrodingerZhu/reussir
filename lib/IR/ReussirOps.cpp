@@ -341,12 +341,14 @@ mlir::LogicalResult ReussirRegionRunOp::verify() {
     return emitOpError("region argument must be of !reussir.region type");
   if (getResults().size() > 1)
     return emitOpError("region must have at most one result");
-  RcType rcType = llvm::dyn_cast<RcType>(argType);
-  if (!rcType)
-    return emitOpError("region argument must be of RC type");
-  if (rcType.getCapability() != reussir::Capability::rigid &&
-      rcType.getCapability() != reussir::Capability::shared)
-    return emitOpError("region argument must be of rigid or shared RC type");
+  if (mlir::Value result = getResult()) {
+    RcType rcType = llvm::dyn_cast<RcType>(result.getType());
+    if (!rcType)
+      return emitOpError("region result must be of RC type (for now)");
+    if (rcType.getCapability() != reussir::Capability::rigid &&
+        rcType.getCapability() != reussir::Capability::shared)
+      return emitOpError("region result must be of rigid or shared RC type");
+  }
   // Check that the region is not nested in the same function
   if (this->getOperation()->getParentOfType<ReussirRegionRunOp>() != nullptr)
     return emitOpError("region cannot be nested in the same function");
