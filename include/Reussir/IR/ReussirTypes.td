@@ -68,7 +68,7 @@ def ReussirRecordType : ReussirType<"Record", "record", [
 
   let description = [{
     A record type that can be either a struct or an enum. It is used to represent
-    complex data structures in Reussir. Records are uniquely indentified by their
+    complex data structures in Reussir. Records are uniquely identified by their
     names.
 
     To support self-referential records, the `members` field is an optional. 
@@ -291,7 +291,7 @@ def ReussirRcBoxType : ReussirType<"RcBox", "rc_box",
         T data;
     };
     ```
-    For flex/rigid varaints, status is also of the same size but it is actually 
+    For flex/rigid variants, status is also of the same size but it is actually 
     a tagged pointer. Please refer to https://dl.acm.org/doi/abs/10.1145/3652024.3665507
     for more details:
     ```

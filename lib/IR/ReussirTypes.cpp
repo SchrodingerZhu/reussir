@@ -389,11 +389,11 @@ void RecordType::print(::mlir::AsmPrinter &printer) const {
       llvm::interleaveComma(llvm::zip(getMembers(), getMemberCapabilities()),
                             printer, [&](auto memberAndCap) {
                               auto [member, cap] = memberAndCap;
-                              auto dedfaultCapability =
+                              auto defaultCapability =
                                   reussir::Capability::unspecified;
                               if (getKind() == RecordKind::variant)
-                                dedfaultCapability = reussir::Capability::value;
-                              if (cap != dedfaultCapability)
+                                defaultCapability = reussir::Capability::value;
+                              if (cap != defaultCapability)
                                 printer << '[' << cap << "] ";
                               printer << member;
                             });
@@ -750,7 +750,7 @@ mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
   if (fieldCap == Capability::shared)
     return RcType::get(type.getContext(), type, Capability::shared);
   if (fieldCap == Capability::rigid)
-    return RcType::get(type.getContext(), type, Capability::shared);
+    return RcType::get(type.getContext(), type, Capability::rigid);
   if (fieldCap == Capability::value)
     return type;
   llvm_unreachable("invalid field capability");

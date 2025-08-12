@@ -422,6 +422,59 @@ def ReussirRefLoadOp : ReussirReferenceOp<"load", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
+  let summary = "Store a value to a reference";
+  let description = [{
+    `reussir.ref.store` stores a value to a reference. Target reference must have
+    field capability.
+  }];
+  let arguments = (ins Arg<ReussirRefType, "reference to store">:$ref,
+                    Arg<AnyType, "value to store">:$value);
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` `(` $value `:` type($value) `)` attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Region Operations
+//===----------------------------------------------------------------------===//
+class ReussirRegionOp<string mnemonic, list<Trait> traits>
+  : ReussirOp<"region." # mnemonic, traits>;
+
+def ReussirRegionRunOp : ReussirRegionOp<"run", 
+  [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Execute a region";
+  let description = [{
+    `reussir.region.run` executes a region. The inner region must accepts one 
+    argument, which is of !reussir.region type. The inner region can optionally
+    yield a flex value which will be freezed to rigid counterpart after the 
+    region execution.
+
+    `reussir.region.run` operation cannot be nested in the same function.
+  }];
+  let results = (outs Res<Optional<AnyType>, "result of the region">:$result);
+  let regions = (region MinSizedRegion<1>:$body);
+  let assemblyFormat = [{
+    (`->` type($result)^)? ($body^)? attr-dict 
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirRegionYieldOp : ReussirRegionOp<"yield", [
+  ReturnLike, Terminator, ParentOneOf<["::reussir::ReussirRegionRunOp"]>
+]> {
+  let summary = "Yield a value from a region";
+  let description = [{
+    `reussir.region.yield` yields a value from a region.
+  }];
+  let arguments = (ins Arg<Optional<ReussirRcType>, "value to yield">:$value);
+  let assemblyFormat = [{
+    ( $value^ `:` type($value) )? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 
 
 #endif // REUSSIR_IR_REUSSIROPS_TD
