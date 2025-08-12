@@ -30,6 +30,8 @@ public:
   convertRecordType(RecordType type,
                     llvm::SmallVectorImpl<mlir::Type> &results);
 
+  const mlir::DataLayout &getDataLayout() const { return dataLayout; }
+
 private:
   mlir::DataLayout dataLayout;
 };

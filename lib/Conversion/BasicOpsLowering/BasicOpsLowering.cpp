@@ -109,6 +109,75 @@ struct ReussirTokenReinterpretConversionPattern
   }
 };
 
+struct ReussirRefStoreConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefStoreOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefStoreOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // Get the converted operands (reference pointer and value)
+    mlir::Value refPtr = adaptor.getRef();
+    mlir::Value value = adaptor.getValue();
+
+    // Create LLVM store operation
+    rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, value, refPtr);
+
+    return mlir::success();
+  }
+};
+
+struct ReussirRefSpilledConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefSpilledOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefSpilledOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+
+    // Get the value to spill (already converted by the type converter)
+    mlir::Value value = adaptor.getValue();
+
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    auto valueType = converter->convertType(op.getValue().getType());
+    auto llvmPtrType = converter->convertType(op.getSpilled().getType());
+    auto alignment =
+        converter->getDataLayout().getTypePreferredAlignment(valueType);
+
+    // Allocate stack space using llvm.alloca
+    auto convertedIndexType = converter->getIndexType();
+    auto constantArraySize = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getIntegerAttr(convertedIndexType, 1));
+    auto allocaOp = rewriter.create<mlir::LLVM::AllocaOp>(
+        loc, llvmPtrType, valueType, constantArraySize, alignment);
+
+    // Store the value to the allocated space
+    rewriter.create<mlir::LLVM::StoreOp>(loc, value, allocaOp);
+
+    // Return the pointer to the allocated space
+    rewriter.replaceOp(op, allocaOp);
+
+    return mlir::success();
+  }
+};
+
+struct ReussirReferenceLoadConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefLoadOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefLoadOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Type pointeeTy = op.getResult().getType();
+    mlir::Type llvmPointeeTy = getTypeConverter()->convertType(pointeeTy);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, llvmPointeeTy,
+                                                    adaptor.getRef());
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -172,7 +241,8 @@ struct BasicOpsLoweringPass
     target.addIllegalDialect<mlir::func::FuncDialect,
                              mlir::arith::ArithDialect>();
     target.addIllegalOp<ReussirTokenAllocOp, ReussirTokenFreeOp,
-                        ReussirTokenReinterpretOp>();
+                        ReussirTokenReinterpretOp, ReussirRefLoadOp,
+                        ReussirRefStoreOp, ReussirRefSpilledOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -183,11 +253,10 @@ struct BasicOpsLoweringPass
 
 void populateBasicOpsLoweringToLLVMConversionPatterns(
     LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
-  patterns.add<ReussirTokenAllocConversionPattern>(converter,
-                                                   patterns.getContext());
-  patterns.add<ReussirTokenFreeConversionPattern>(converter,
-                                                  patterns.getContext());
-  patterns.add<ReussirTokenReinterpretConversionPattern>(converter,
-                                                         patterns.getContext());
+  patterns.add<
+      ReussirTokenAllocConversionPattern, ReussirTokenFreeConversionPattern,
+      ReussirTokenReinterpretConversionPattern,
+      ReussirReferenceLoadConversionPattern, ReussirRefStoreConversionPattern,
+      ReussirRefSpilledConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir
