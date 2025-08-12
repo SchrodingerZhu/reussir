@@ -7,10 +7,34 @@
 #include <mlir/Dialect/UB/IR/UBOps.h>
 #include <mlir/Pass/Pass.h>
 
+#include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 
 namespace reussir {
-#define GEN_PASS_DECL_REUSSIRBASICOPSLOWERINGPASS
+#define GEN_PASS_DEF_REUSSIRBASICOPSLOWERINGPASS
 #include "Reussir/Conversion/Passes.h.inc"
+
+namespace {
+struct BasicOpsLoweringPass
+    : public impl::ReussirBasicOpsLoweringPassBase<BasicOpsLoweringPass> {
+  using Base::Base;
+  void runOnOperation() override {
+    mlir::LLVMConversionTarget target(getContext());
+    mlir::RewritePatternSet patterns(&getContext());
+    LLVMTypeConverter converter(getOperation());
+    populateBasicOpsLoweringToLLVMConversionPatterns(converter, patterns);
+    target.addIllegalDialect<ReussirDialect>();
+    target.addLegalDialect<mlir::LLVM::LLVMDialect>();
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
+      signalPassFailure();
+  }
+};
+} // namespace
+
+void populateBasicOpsLoweringToLLVMConversionPatterns(
+    LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
+  llvm_unreachable("Not implemented");
+}
 } // namespace reussir

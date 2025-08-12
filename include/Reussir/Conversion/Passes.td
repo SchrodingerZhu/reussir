@@ -14,14 +14,15 @@
 
 include "mlir/Pass/PassBase.td"
 
-class ReussirLoweringPass<string mnemonic>
-  : Pass<"reussir-lowering-" # mnemonic>;
+class ReussirLoweringPass<string mnemonic, string target = "">
+  : Pass<"reussir-lowering-" # mnemonic, target>;
 
 
 //===----------------------------------------------------------------------===//
 // BasicOpsLowering
 //===----------------------------------------------------------------------===//
-def ReussirBasicOpsLoweringPass : ReussirLoweringPass<"basic-ops"> {
+def ReussirBasicOpsLoweringPass : 
+  ReussirLoweringPass<"basic-ops", "::mlir::ModuleOp"> {
   let summary = "lower straight-forward operations to MLIR basic operations";
   let description = [{
     `reussir-lowering-basic-ops` lowers straight-forward operations to MLIR basic
@@ -34,7 +35,7 @@ def ReussirBasicOpsLoweringPass : ReussirLoweringPass<"basic-ops"> {
                            "::mlir::LLVM::LLVMDialect",
                            "::mlir::func::FuncDialect",
                            "::mlir::ub::UBDialect",
-                           "::mlir::reussir::ReussirDialect"];
+                           "::reussir::ReussirDialect"];
 }
 
 #endif // REUSSIR_CONVERSION_PASSES_TD

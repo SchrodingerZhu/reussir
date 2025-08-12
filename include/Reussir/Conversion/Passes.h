@@ -16,6 +16,8 @@
 
 #include <mlir/Pass/Pass.h>
 
-namespace reussir {} // namespace reussir
+namespace reussir {
+std::unique_ptr<mlir::Pass> createReussirBasicOpsLoweringPass();
+} // namespace reussir
 
 #endif // REUSSIR_CONVERSION_PASSES_H
