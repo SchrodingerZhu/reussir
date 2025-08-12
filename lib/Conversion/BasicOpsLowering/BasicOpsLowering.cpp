@@ -1,4 +1,6 @@
 #include <llvm/ADT/ArrayRef.h>
+#include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>
+#include <mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
@@ -20,7 +22,94 @@ namespace reussir {
 // Conversion patterns
 //===----------------------------------------------------------------------===//
 
-namespace {} // namespace
+namespace {
+
+struct ReussirTokenAllocConversionPattern
+    : public mlir::OpConversionPattern<ReussirTokenAllocOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenAllocOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    mlir::MLIRContext *ctx = rewriter.getContext();
+
+    // Get the token type and extract alignment and size
+    TokenType tokenType = op.getToken().getType();
+    uint64_t alignment = tokenType.getAlign();
+    uint64_t size = tokenType.getSize();
+
+    // Create constants for alignment and size
+    auto alignConst = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(alignment));
+    auto sizeConst = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(size));
+
+    // Get the LLVM pointer type for the result
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(ctx);
+
+    // Create the runtime function call
+    auto funcOp = rewriter.create<mlir::func::CallOp>(
+        loc, "__reussir_allocate", mlir::TypeRange{llvmPtrType},
+        mlir::ValueRange{alignConst, sizeConst});
+
+    // Replace the original operation with the function call result
+    rewriter.replaceOp(op, funcOp.getResult(0));
+
+    return mlir::success();
+  }
+};
+
+struct ReussirTokenFreeConversionPattern
+    : public mlir::OpConversionPattern<ReussirTokenFreeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenFreeOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+
+    // Get the token operand (already converted to LLVM pointer)
+    mlir::Value tokenPtr = adaptor.getToken();
+
+    // Get the token type and extract alignment and size
+    TokenType tokenType = llvm::dyn_cast<TokenType>(op.getToken().getType());
+    if (!tokenType)
+      return op.emitOpError("token operand must be of TokenType");
+
+    uint64_t alignment = tokenType.getAlign();
+    uint64_t size = tokenType.getSize();
+
+    // Create constants for alignment and size
+    auto alignConst = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(alignment));
+    auto sizeConst = rewriter.create<mlir::arith::ConstantOp>(
+        loc, rewriter.getIndexAttr(size));
+
+    // Replace the original operation with the runtime function call
+    rewriter.replaceOpWithNewOp<mlir::func::CallOp>(
+        op, "__reussir_deallocate", mlir::TypeRange{}, // No return type
+        mlir::ValueRange{tokenPtr, alignConst, sizeConst});
+
+    return mlir::success();
+  }
+};
+
+struct ReussirTokenReinterpretConversionPattern
+    : public mlir::OpConversionPattern<ReussirTokenReinterpretOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenReinterpretOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // For reinterpret, we just use the input token directly since it's already
+    // converted to an LLVM pointer by the type converter
+    rewriter.replaceOp(op, adaptor.getToken());
+    return mlir::success();
+  }
+};
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Runtime Functions
@@ -43,7 +132,7 @@ void addRuntimeFunctions(mlir::ModuleOp module,
   mlir::MLIRContext *ctx = module.getContext();
   mlir::Block *body = module.getBody();
   auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(ctx);
-  auto indexType = converter.getIndexType();
+  auto indexType = mlir::IndexType::get(ctx);
   addRuntimeFunction(body, "__reussir_freeze_flex_object", {llvmPtrType},
                      {llvmPtrType});
   addRuntimeFunction(body, "__reussir_cleanup_region", {llvmPtrType},
@@ -76,8 +165,14 @@ struct BasicOpsLoweringPass
     mlir::RewritePatternSet patterns(&getContext());
     LLVMTypeConverter converter(getOperation());
     populateBasicOpsLoweringToLLVMConversionPatterns(converter, patterns);
+    mlir::populateFuncToLLVMFuncOpConversionPattern(converter, patterns);
+    mlir::populateFuncToLLVMConversionPatterns(converter, patterns);
+    mlir::arith::populateArithToLLVMConversionPatterns(converter, patterns);
     addRuntimeFunctions(getOperation(), converter);
-    target.addIllegalDialect<ReussirDialect>();
+    target.addIllegalDialect<mlir::func::FuncDialect,
+                             mlir::arith::ArithDialect>();
+    target.addIllegalOp<ReussirTokenAllocOp, ReussirTokenFreeOp,
+                        ReussirTokenReinterpretOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -87,5 +182,12 @@ struct BasicOpsLoweringPass
 } // namespace
 
 void populateBasicOpsLoweringToLLVMConversionPatterns(
-    LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {}
+    LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
+  patterns.add<ReussirTokenAllocConversionPattern>(converter,
+                                                   patterns.getContext());
+  patterns.add<ReussirTokenFreeConversionPattern>(converter,
+                                                  patterns.getContext());
+  patterns.add<ReussirTokenReinterpretConversionPattern>(converter,
+                                                         patterns.getContext());
+}
 } // namespace reussir
