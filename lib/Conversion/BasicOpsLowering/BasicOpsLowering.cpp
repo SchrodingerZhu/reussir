@@ -306,6 +306,44 @@ struct ReussirRefLoadConversionPattern
   }
 };
 
+struct ReussirReferenceProjectConversionPattern
+    : public mlir::OpConversionPattern<ReussirReferenceProjectOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirReferenceProjectOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the reference pointer (already converted by the type converter)
+    mlir::Value refPtr = adaptor.getRef();
+
+    // Get the index value
+    auto indexType = converter->getIndexType();
+    mlir::Value index = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, op.getIndex().getZExtValue()));
+
+    // Get the result type (should be a pointer type after conversion)
+    mlir::Type resultType = converter->convertType(op.getProjected().getType());
+    auto llvmPtrType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(resultType);
+    if (!llvmPtrType)
+      return op.emitOpError("projected result must be an LLVM pointer type");
+
+    // Get the element type that the reference points to
+    RefType refType = op.getRef().getType();
+    mlir::Type elementType = converter->convertType(refType.getElementType());
+
+    // Create GEP operation to get the field pointer
+    auto gepOp = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, llvmPtrType, elementType, refPtr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, index});
+
+    rewriter.replaceOp(op, gepOp);
+    return mlir::success();
+  }
+};
+
 struct ReussirNullableCheckConversionPattern
     : public mlir::OpConversionPattern<ReussirNullableCheckOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -513,7 +551,8 @@ struct BasicOpsLoweringPass
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
         ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp,
-        ReussirRecordCompoundOp, ReussirRecordVariantOp>();
+        ReussirRecordCompoundOp, ReussirRecordVariantOp,
+        ReussirReferenceProjectOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -533,6 +572,8 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
       ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern,
       ReussirRecordCompoundConversionPattern,
-      ReussirRecordVariantConversionPattern>(converter, patterns.getContext());
+      ReussirRecordVariantConversionPattern,
+      ReussirReferenceProjectConversionPattern>(converter,
+                                                patterns.getContext());
 }
 } // namespace reussir
