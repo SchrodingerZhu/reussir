@@ -276,8 +276,7 @@ struct ReussirRcIncConversionPattern
       return mlir::success();
     }
 
-    RcBoxType rcBoxType =
-        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType());
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     // GEP [0].1
     auto convertedBoxType = getTypeConverter()->convertType(rcBoxType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
@@ -317,9 +316,7 @@ struct ReussirRcCreateOpConversionPattern
   matchAndRewrite(ReussirRcCreateOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     RcType rcPtrTy = op.getRcPtr().getType();
-    RcBoxType rcBoxType =
-        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
-                       Capability::flex == rcPtrTy.getCapability());
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     if (rcBoxType.isRegional())
       return op->emitError("TODO: regional rc create");
     if (rcPtrTy.getAtomicKind() == AtomicKind::atomic)
@@ -352,15 +349,12 @@ struct ReussirRcBorrowOpConversionPattern
   matchAndRewrite(ReussirRcBorrowOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     RcType rcPtrTy = op.getRcPtr().getType();
-    RcBoxType rcBoxType =
-        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
-                       Capability::flex == rcPtrTy.getCapability() ||
-                           Capability::rigid == rcPtrTy.getCapability());
-    size_t gepIndex = rcBoxType.isRegional() ? 3 : 1;
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     rewriter.replaceOpWithNewOp<mlir::LLVM::GEPOp>(
         op, llvmPtrType, getTypeConverter()->convertType(rcBoxType),
-        adaptor.getRcPtr(), llvm::ArrayRef<mlir::LLVM::GEPArg>{0, gepIndex});
+        adaptor.getRcPtr(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, rcBoxType.getElementIndex()});
     return mlir::success();
   }
 };

@@ -588,6 +588,14 @@ RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
+// RcType getInnerBoxType
+//===----------------------------------------------------------------------===//
+RcBoxType RcType::getInnerBoxType() const {
+  bool isFlexOrRigid = getCapability() == ::reussir::Capability::flex ||
+                       getCapability() == ::reussir::Capability::rigid;
+  return RcBoxType::get(getContext(), getEleTy(), isFlexOrRigid);
+}
+//===----------------------------------------------------------------------===//
 // RcType DataLayoutInterface
 //===----------------------------------------------------------------------===//
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(RcType)
