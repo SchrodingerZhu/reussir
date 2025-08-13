@@ -136,6 +136,8 @@ def ReussirRecordType
       void complete(llvm::ArrayRef<mlir::Type> members, 
                     llvm::ArrayRef<reussir::Capability> memberCapabilities,
                     reussir::Capability defaultCapability);
+      std::pair<llvm::TypeSize, llvm::Align> 
+        getElementRegionSizeAndAlignment(const mlir::DataLayout &dataLayout) const;
     }];
 }
 

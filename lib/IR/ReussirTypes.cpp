@@ -30,6 +30,7 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/DialectImplementation.h>
 #include <mlir/IR/OpImplementation.h>
+#include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <optional>
 
@@ -429,57 +430,72 @@ void RecordType::complete(
   if (mutate(members, memberCapabilities, defaultCapability).failed())
     llvm_unreachable("failed to complete record");
 }
+
+//===----------------------------------------------------------------------===//
+// RecordType GetElementRegionSizeAndAlignment
+//===----------------------------------------------------------------------===//
+std::pair<llvm::TypeSize, llvm::Align>
+RecordType::getElementRegionSizeAndAlignment(
+    const mlir::DataLayout &dataLayout) const {
+  if (isCompound()) {
+    auto derived = deriveCompoundSizeAndAlignment(
+        getContext(), getMembers(), getMemberCapabilities(), dataLayout);
+    if (!derived)
+      llvm_unreachable("RecordType must have a fixed size");
+    auto [sizeInBytes, alignment] = *derived;
+    return std::make_pair(sizeInBytes, llvm::Align(alignment));
+  }
+  llvm::TypeSize largestSize = llvm::TypeSize::getZero();
+  llvm::Align largestAlignment = llvm::Align(1);
+  for (mlir::Type member : getMembers()) {
+    if (!member)
+      continue;
+    llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
+    if (!memberSize.isFixed())
+      llvm_unreachable("RecordType must have a fixed size");
+    largestSize = std::max(largestSize, memberSize);
+    uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
+    largestAlignment = std::max(largestAlignment, llvm::Align(memberAlignment));
+  }
+  llvm::TypeSize size = llvm::alignTo(largestSize, largestAlignment.value());
+  return std::make_pair(size, largestAlignment);
+}
+
 //===----------------------------------------------------------------------===//
 // RecordType DataLayoutInterface
 //===----------------------------------------------------------------------===//
 llvm::TypeSize
 RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
                               ::mlir::DataLayoutEntryListRef params) const {
-  if (isCompound()) {
-    auto derived = deriveCompoundSizeAndAlignment(
-        getContext(), getMembers(), getMemberCapabilities(), dataLayout);
-    if (!derived)
-      llvm_unreachable("RecordType must have a fixed size");
-    auto [sizeInBytes, _] = *derived;
-    return sizeInBytes * 8; // Convert to bits
-  } else {
-    llvm::TypeSize largestSize = llvm::TypeSize::getZero();
-    llvm::Align largestAlignment = llvm::Align(1);
-    for (mlir::Type member : getMembers()) {
-      if (!member)
-        continue;
-      llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
-      if (!memberSize.isFixed())
-        llvm_unreachable("RecordType must have a fixed size");
-      largestSize = std::max(largestSize, memberSize);
-      uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
-      largestAlignment =
-          std::max(largestAlignment, llvm::Align(memberAlignment));
-    }
-    return llvm::alignTo(largestSize, largestAlignment.value()) *
-           8; // Convert to bits
-  }
+  auto [size, align] = getElementRegionSizeAndAlignment(dataLayout);
+  if (isCompound())
+    return size * 8; // Convert to bits
+
+  mlir::IndexType tagType =
+      mlir::IndexType::get(getContext()); // Use IndexType for tag
+  llvm::TypeSize tagSize = dataLayout.getTypeSize(tagType);
+  llvm::Align tagAlign{dataLayout.getTypeABIAlignment(tagType)};
+  llvm::Align finalAlign =
+      std::max(align, tagAlign); // Use the larger of the two alignments
+  llvm::TypeSize headerSize =
+      llvm::alignTo(tagSize, align.value()); // Align the tag size
+  llvm::TypeSize totalSize =
+      llvm::alignTo(size + headerSize, finalAlign.value());
+  return totalSize * 8; // Convert to bits
 }
+
 uint64_t
 RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
                             ::mlir::DataLayoutEntryListRef params) const {
-  if (isCompound()) {
-    auto derived = deriveCompoundSizeAndAlignment(
-        getContext(), getMembers(), getMemberCapabilities(), dataLayout);
-    if (!derived)
-      llvm_unreachable("RecordType must have a fixed alignment");
-    auto [_, alignment] = *derived;
-    return alignment;
-  } else {
-    uint64_t largestAlignment = 1;
-    for (mlir::Type member : getMembers()) {
-      if (!member)
-        continue;
-      uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
-      largestAlignment = std::max(largestAlignment, memberAlignment);
-    }
-    return largestAlignment;
-  }
+  auto [size, align] = getElementRegionSizeAndAlignment(dataLayout);
+  if (isCompound())
+    return align.value();
+
+  mlir::IndexType tagType =
+      mlir::IndexType::get(getContext()); // Use IndexType for tag
+  uint64_t tagAlignment = dataLayout.getTypeABIAlignment(tagType);
+  uint64_t finalAlignment = std::max(align.value(), tagAlignment);
+  return finalAlignment;
 }
 
 uint64_t
