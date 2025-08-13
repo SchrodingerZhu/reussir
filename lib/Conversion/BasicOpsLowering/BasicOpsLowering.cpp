@@ -283,7 +283,7 @@ struct ReussirRcIncConversionPattern
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     auto refcntPtr = rewriter.create<mlir::LLVM::GEPOp>(
         op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getRcPtr(),
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
     auto indexType = static_cast<const LLVMTypeConverter *>(getTypeConverter())
                          ->getIndexType();
     auto one = rewriter.create<mlir::arith::ConstantOp>(

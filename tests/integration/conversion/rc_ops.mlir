@@ -4,7 +4,7 @@
 !nullable = !reussir.nullable<!reussir.ref<i64>>
 module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
   // CHECK-LABEL: define void @rc_inc(ptr %0) {
-  // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 1
+  // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 0
   // CHECK: %3 = load i64, ptr %2, align 8
   // CHECK: %4 = add i64 %3, 1
   // CHECK: store i64 %4, ptr %2, align 8
@@ -16,7 +16,7 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
   }
 
   // CHECK-LABEL: define void @rc_inc_atomic(ptr %0) {
-  // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 1
+  // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 0
   // CHECK: %3 = atomicrmw add ptr %2, i64 1 monotonic, align 8
   // CHECK: %4 = icmp uge i64 %3, 1
   // CHECK: call void @llvm.assume(i1 %4)
