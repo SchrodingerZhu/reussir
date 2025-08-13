@@ -5,8 +5,9 @@
 !list_incomplete = !reussir.record<variant "List" incomplete>
 !cons = !reussir.record<compound "List::Cons" { f128, [shared] !list_incomplete }>
 !nil = !reussir.record<compound "List::Nil" {}>
-!list = !reussir.record<variant "List" {!cons, !nil}>
-module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
+!padding = !reussir.record<compound "List::Padding" { i64, i64, i64, i64, i64, i64, i64, i64 }>
+!list = !reussir.record<variant "List" {!cons, !nil, !padding}>
+module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
   // CHECK-LABEL: define void @rc_inc(ptr %0) {
   // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 0
   // CHECK: %3 = load i64, ptr %2, align 8

@@ -1,6 +1,7 @@
 
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include <mlir/IR/BuiltinTypes.h>
 
 namespace reussir {
 namespace {
@@ -102,14 +103,15 @@ std::optional<llvm::LogicalResult> LLVMTypeConverter::convertRecordType(
   if (type.getKind() == reussir::RecordKind::variant) {
     // For variant records, we need to include the tag type as the first member
     members.push_back(getIndexType());
-    auto [size, alignment] =
-        type.getElementRegionSizeAndAlignment(getDataLayout());
-    // Create a vector field to full the size and alignment
-    auto vectorTy = mlir::VectorType::get(
-        alignment.value(), mlir::IntegerType::get(&getContext(), 8));
-    auto convertedVectorTy = convertType(vectorTy);
-    for (size_t i = 0; i < size.getFixedValue() / alignment.value(); ++i)
-      members.push_back(convertedVectorTy);
+    auto [size, _y, representative] =
+        type.getElementRegionLayoutInfo(getDataLayout());
+    members.push_back(convertType(representative));
+    auto representativeSize = dataLayout.getTypeSize(representative);
+    // Pad the representative type to the size of the record
+    if (representativeSize < size)
+      members.push_back(mlir::LLVM::LLVMArrayType::get(
+          mlir::IntegerType::get(&getContext(), 8),
+          size.getFixedValue() - representativeSize.getFixedValue()));
   } else {
     for (auto [member, capability] :
          llvm::zip(type.getMembers(), type.getMemberCapabilities())) {

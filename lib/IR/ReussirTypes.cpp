@@ -33,6 +33,7 @@
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <optional>
+#include <tuple>
 
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
@@ -137,18 +138,15 @@ bool isNonNullPointerType(mlir::Type type) {
 //===----------------------------------------------------------------------===//
 // deriveCompoundSizeAndAlignment
 //===----------------------------------------------------------------------===//
-std::optional<std::pair<
-    llvm::TypeSize,
-    uint64_t>> inline deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
-                                                     llvm::ArrayRef<mlir::Type>
-                                                         members,
-                                                     llvm::ArrayRef<Capability>
-                                                         memberCapabilities,
-                                                     const mlir::DataLayout
-                                                         &dataLayout) {
+std::optional<std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>>
+deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
+                               llvm::ArrayRef<mlir::Type> members,
+                               llvm::ArrayRef<Capability> memberCapabilities,
+                               const mlir::DataLayout &dataLayout) {
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
   llvm::TypeSize resultSize = llvm::TypeSize::getFixed(0);
-  uint64_t resultAlignment = 1;
+  llvm::Align resultAlignment{1};
+  mlir::Type memberWithLargestAlignment;
   if (memberCapabilities.size() != members.size())
     llvm::report_fatal_error(
         "Number of member capabilities must match number of members");
@@ -172,15 +170,20 @@ std::optional<std::pair<
     llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
     if (!memberSize.isFixed())
       return std::nullopt;
+
     uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
     llvm::Align memberAlign(memberAlignment);
     uint64_t alignedSize = llvm::alignTo(resultSize, memberAlign);
-    resultAlignment = std::max(resultAlignment, memberAlignment);
+    if (memberAlign > resultAlignment) {
+      resultAlignment = memberAlign;
+      memberWithLargestAlignment = member;
+    }
     resultSize =
         llvm::TypeSize::getFixed(alignedSize + memberSize.getFixedValue());
   }
-  resultSize = llvm::alignTo(resultSize, resultAlignment);
-  return std::make_optional(std::make_pair(resultSize, resultAlignment));
+  resultSize = llvm::alignTo(resultSize, resultAlignment.value());
+  return std::make_optional(
+      std::make_tuple(resultSize, resultAlignment, memberWithLargestAlignment));
 }
 
 //===----------------------------------------------------------------------===//
@@ -434,31 +437,36 @@ void RecordType::complete(
 //===----------------------------------------------------------------------===//
 // RecordType GetElementRegionSizeAndAlignment
 //===----------------------------------------------------------------------===//
-std::pair<llvm::TypeSize, llvm::Align>
-RecordType::getElementRegionSizeAndAlignment(
+RecordType::LayoutInfo RecordType::getElementRegionLayoutInfo(
     const mlir::DataLayout &dataLayout) const {
   if (isCompound()) {
     auto derived = deriveCompoundSizeAndAlignment(
         getContext(), getMembers(), getMemberCapabilities(), dataLayout);
     if (!derived)
       llvm_unreachable("RecordType must have a fixed size");
-    auto [sizeInBytes, alignment] = *derived;
-    return std::make_pair(sizeInBytes, llvm::Align(alignment));
+    auto [sizeInBytes, alignment, memberWithLargestAlignment] = *derived;
+    return {sizeInBytes, alignment, memberWithLargestAlignment};
   }
   llvm::TypeSize largestSize = llvm::TypeSize::getZero();
   llvm::Align largestAlignment = llvm::Align(1);
-  for (mlir::Type member : getMembers()) {
-    if (!member)
+  mlir::Type memberWithLargestAlignment;
+  for (auto [rawMember, cap] :
+       llvm::zip(getMembers(), getMemberCapabilities())) {
+    if (!rawMember)
       continue;
+    mlir::Type member = getProjectedType(rawMember, cap, Capability::value);
     llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
     if (!memberSize.isFixed())
       llvm_unreachable("RecordType must have a fixed size");
     largestSize = std::max(largestSize, memberSize);
-    uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
-    largestAlignment = std::max(largestAlignment, llvm::Align(memberAlignment));
+    llvm::Align memberAlignment{dataLayout.getTypeABIAlignment(member)};
+    if (memberAlignment > largestAlignment) {
+      largestAlignment = memberAlignment;
+      memberWithLargestAlignment = member;
+    }
   }
   llvm::TypeSize size = llvm::alignTo(largestSize, largestAlignment.value());
-  return std::make_pair(size, largestAlignment);
+  return {size, largestAlignment, memberWithLargestAlignment};
 }
 
 //===----------------------------------------------------------------------===//
@@ -467,7 +475,7 @@ RecordType::getElementRegionSizeAndAlignment(
 llvm::TypeSize
 RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
                               ::mlir::DataLayoutEntryListRef params) const {
-  auto [size, align] = getElementRegionSizeAndAlignment(dataLayout);
+  auto [size, align, _] = getElementRegionLayoutInfo(dataLayout);
   if (isCompound())
     return size * 8; // Convert to bits
 
@@ -487,7 +495,7 @@ RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
 uint64_t
 RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
                             ::mlir::DataLayoutEntryListRef params) const {
-  auto [size, align] = getElementRegionSizeAndAlignment(dataLayout);
+  auto [size, align, _] = getElementRegionLayoutInfo(dataLayout);
   if (isCompound())
     return align.value();
 
@@ -718,7 +726,7 @@ RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                            {Capability::value, Capability::value}, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed size");
-  auto [sizeInBytes, _] = *derived;
+  auto [sizeInBytes, _x, _y] = *derived;
   return sizeInBytes * 8; // Convert to bits
 }
 
@@ -736,8 +744,8 @@ uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                            {Capability::value, Capability::value}, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed alignment");
-  auto [_, alignment] = *derived;
-  return alignment;
+  auto [_x, alignment, _y] = *derived;
+  return alignment.value();
 }
 
 uint64_t
