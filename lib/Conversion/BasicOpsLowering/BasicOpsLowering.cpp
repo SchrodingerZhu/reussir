@@ -204,6 +204,93 @@ struct ReussirRefSpilledConversionPattern
   }
 };
 
+struct ReussirRecordCompoundConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordCompoundOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordCompoundOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the record type and convert it to LLVM struct type
+    RecordType recordType = op.getCompound().getType();
+    mlir::Type llvmStructType = converter->convertType(recordType);
+
+    if (!llvmStructType)
+      return op.emitOpError("failed to convert record type to LLVM type");
+
+    // Create an undef value of the struct type
+    auto undefOp = rewriter.create<mlir::LLVM::UndefOp>(loc, llvmStructType);
+
+    // Get the field values (already converted by the type converter)
+    auto fieldValues = adaptor.getFields();
+
+    // Insert each field using insertvalue
+    mlir::Value result = undefOp;
+    for (size_t i = 0; i < fieldValues.size(); ++i)
+      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result,
+                                                          fieldValues[i], i);
+
+    rewriter.replaceOp(op, result);
+    return mlir::success();
+  }
+};
+
+struct ReussirRecordVariantConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordVariantOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordVariantOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the record type and convert it to LLVM struct type
+    RecordType recordType = op.getVariant().getType();
+    mlir::Type llvmStructType = converter->convertType(recordType);
+
+    if (!llvmStructType)
+      return op.emitOpError("failed to convert record type to LLVM type");
+    auto indexType = converter->getIndexType();
+    // Get the tag and value (already converted by the type converter)
+    mlir::Value tag = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, op.getTag().getZExtValue()));
+    mlir::Value value = adaptor.getValue();
+
+    // Get the preferred alignment for the struct type
+    auto alignment =
+        converter->getDataLayout().getTypePreferredAlignment(llvmStructType);
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, 1));
+    // Allocate stack space for the struct
+    auto allocaOp = rewriter.create<mlir::LLVM::AllocaOp>(
+        loc, ptrType, llvmStructType, one, alignment);
+
+    // Get a pointer to the tag field (index 0) and store the tag
+    auto tagPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, ptrType, llvmStructType, allocaOp,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    rewriter.create<mlir::LLVM::StoreOp>(loc, tag, tagPtr);
+
+    // Get a pointer to the value field (index 1) and store the value
+    auto valuePtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, ptrType, llvmStructType, allocaOp,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+    rewriter.create<mlir::LLVM::StoreOp>(loc, value, valuePtr);
+
+    // Load the complete struct from the allocated space
+    auto result =
+        rewriter.create<mlir::LLVM::LoadOp>(loc, llvmStructType, allocaOp);
+
+    rewriter.replaceOp(op, result);
+    return mlir::success();
+  }
+};
+
 struct ReussirRefLoadConversionPattern
     : public mlir::OpConversionPattern<ReussirRefLoadOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -425,7 +512,8 @@ struct BasicOpsLoweringPass
         ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
-        ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp>();
+        ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp,
+        ReussirRecordCompoundOp, ReussirRecordVariantOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -443,7 +531,8 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
       ReussirNullableCheckConversionPattern,
       ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
-      ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern>(
-      converter, patterns.getContext());
+      ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern,
+      ReussirRecordCompoundConversionPattern,
+      ReussirRecordVariantConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir
