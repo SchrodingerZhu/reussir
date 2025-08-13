@@ -1,4 +1,5 @@
-//===-- ReussirTypes.td - Reussir dialect types -------------*- tablegen -*-===//
+//===-- ReussirTypes.td - Reussir dialect types -------------*- tablegen
+//-*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -17,9 +18,8 @@ include "Reussir/IR/ReussirDialect.td"
 include "Reussir/IR/ReussirAttrs.td"
 include "mlir/Interfaces/DataLayoutInterfaces.td"
 
-
 class ReussirType<string name, string typeMnemonic, list<Trait> traits = [],
-               string baseCppClass = "::mlir::Type">
+                  string baseCppClass = "::mlir::Type">
     : TypeDef<ReussirDialect, name, traits, baseCppClass> {
   let mnemonic = typeMnemonic;
 }
@@ -28,8 +28,9 @@ class ReussirType<string name, string typeMnemonic, list<Trait> traits = [],
 // Pointer-like Type
 //===----------------------------------------------------------------------===//
 
-def ReussirNonNullPointerType : Type<CPred<"::reussir::isNonNullPointerType($_self)">,
-                          "Reussir non-null pointer type">;
+def ReussirNonNullPointerType
+    : Type<CPred<"::reussir::isNonNullPointerType($_self)">,
+           "Reussir non-null pointer type">;
 
 //===----------------------------------------------------------------------===//
 // Reussir Raw Pointer Type
@@ -46,8 +47,8 @@ def ReussirRawPtrType : ReussirType<"RawPtr", "raw_ptr"> {
 
   let assemblyFormat = "`<` $eleTy `>`";
 
-  let builders = [
-    TypeBuilderWithInferredContext<(ins "mlir::Type":$elementType), [{
+  let builders = [TypeBuilderWithInferredContext<
+                      (ins "mlir::Type":$elementType), [{
       return Base::get(elementType.getContext(), elementType);
     }]>,
   ];
@@ -60,9 +61,10 @@ def ReussirRawPtrType : ReussirType<"RawPtr", "raw_ptr"> {
 //===----------------------------------------------------------------------===//
 // Reussir Record Type
 //===----------------------------------------------------------------------===//
-def ReussirRecordType : ReussirType<"Record", "record", [
-  DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-  MutableType,
+def ReussirRecordType
+    : ReussirType<"Record", "record",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+                   MutableType,
 ]> {
   let summary = "A record type that is either a composite type or an enum";
 
@@ -83,14 +85,10 @@ def ReussirRecordType : ReussirType<"Record", "record", [
     For variant records, the default capability is `value` if not specified.
   }];
 
-  let parameters = (ins 
-    OptionalArrayRefParameter<"mlir::Type">:$members,
-    OptionalArrayRefParameter<"reussir::Capability">:$memberCapabilities,
-    OptionalParameter<"mlir::StringAttr">:$name,
-    "bool":$complete,
-    "reussir::RecordKind":$kind,
-    "reussir::Capability":$defaultCapability
-  );
+  let parameters = (ins OptionalArrayRefParameter<"mlir::Type">:$members,
+      OptionalArrayRefParameter<"reussir::Capability">:$memberCapabilities,
+      OptionalParameter<"mlir::StringAttr">:$name, "bool":$complete,
+      "reussir::RecordKind":$kind, "reussir::Capability":$defaultCapability);
 
   let storageClass = "RecordTypeStorage";
   let genStorageClass = 0;
@@ -99,23 +97,19 @@ def ReussirRecordType : ReussirType<"Record", "record", [
   let hasCustomAssemblyFormat = 1;
 
   let builders = [
-    // Create an identified and complete record type.
-    TypeBuilder<(ins
-      "llvm::ArrayRef<mlir::Type>":$members,
-      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
-      "mlir::StringAttr":$name,
-      "reussir::RecordKind":$kind,
-      "reussir::Capability":$defaultCapability
-    ), [{
+      // Create an identified and complete record type.
+      TypeBuilder<(ins "llvm::ArrayRef<mlir::Type>":$members,
+                      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
+                      "mlir::StringAttr":$name, "reussir::RecordKind":$kind,
+                      "reussir::Capability":$defaultCapability),
+                  [{
       return $_get($_ctxt, members, memberCapabilities, name, /*complete=*/true,
                        kind, defaultCapability);
     }]>,
 
-    // Create an identified and incomplete record type.
-    TypeBuilder<(ins
-      "mlir::StringAttr":$name,
-      "reussir::RecordKind":$kind
-    ), [{
+      // Create an identified and incomplete record type.
+      TypeBuilder<(ins "mlir::StringAttr":$name, "reussir::RecordKind":$kind),
+                  [{
       return $_get($_ctxt, 
         /* members= */ llvm::ArrayRef<Type>{}, 
         /* memberCapabilities= */ llvm::ArrayRef<reussir::Capability>{},
@@ -125,18 +119,17 @@ def ReussirRecordType : ReussirType<"Record", "record", [
         /* defaultCapability= */ reussir::Capability::unspecified);
     }]>,
 
-    // Create an anonymous record type (always complete).
-    TypeBuilder<(ins
-      "llvm::ArrayRef<mlir::Type>":$members,
-      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
-      "reussir::RecordKind":$kind,
-      "reussir::Capability":$defaultCapability
-    ), [{
+      // Create an anonymous record type (always complete).
+      TypeBuilder<(ins "llvm::ArrayRef<mlir::Type>":$members,
+                      "llvm::ArrayRef<reussir::Capability>":$memberCapabilities,
+                      "reussir::RecordKind":$kind,
+                      "reussir::Capability":$defaultCapability),
+                  [{
       return $_get($_ctxt, members, memberCapabilities, mlir::StringAttr{}, /*complete=*/true,
                       kind, defaultCapability);
     }]>];
 
-    let extraClassDeclaration = [{
+  let extraClassDeclaration = [{
       using Base::verifyInvariants;
       bool isCompound() const { return getKind() == RecordKind::compound; };
       bool isVariant() const { return getKind() == RecordKind::variant; };
@@ -149,16 +142,15 @@ def ReussirRecordType : ReussirType<"Record", "record", [
 //===----------------------------------------------------------------------===//
 // Reussir Token Type
 //===----------------------------------------------------------------------===//
-def ReussirTokenType : ReussirType<"Token", "token",
-    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+def ReussirTokenType
+    : ReussirType<
+          "Token",
+          "token", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Memory Token";
   let description = [{
     `reussir.token` represents a block of raw memory.
   }];
-  let parameters = (ins
-    "size_t":$align,
-    "size_t":$size
-  );
+  let parameters = (ins "size_t":$align, "size_t":$size);
   let assemblyFormat = [{
     `<` `align` `:` $align `,`  `size` `:` $size `>`
   }];
@@ -168,8 +160,10 @@ def ReussirTokenType : ReussirType<"Token", "token",
 ///===----------------------------------------------------------------------===//
 // Reussir Region Type
 //===----------------------------------------------------------------------===//
-def ReussirRegionType : ReussirType<"Region", "region",
-    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+def ReussirRegionType
+    : ReussirType<
+          "Region",
+          "region", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Region Type";
   let description = [{
     `reussir.region` represents a arena inside which flexible references can be
@@ -185,35 +179,34 @@ def ReussirRegionType : ReussirType<"Region", "region",
 ///===----------------------------------------------------------------------===//
 // Reussir Rc Type
 //===----------------------------------------------------------------------===//
-def ReussirRcType : ReussirType<"Rc", "rc",
-    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+def ReussirRcType
+    : ReussirType<
+          "Rc", "rc", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Reference Counted Type";
   let description = [{
     `reussir.rc` represents a reference counted object. It is used to manage the
     lifetime of objects in Reussir. The type itself serves as the context that
     keeps track of all allocations.
   }];
-  let parameters = (ins
-    "mlir::Type":$eleTy,
-    "reussir::Capability":$capability,
-    "reussir::AtomicKind":$atomicKind
-  );
+  let parameters = (ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+      "reussir::AtomicKind":$atomicKind);
   let skipDefaultBuilders = 1;
   let genVerifyDecl = 1;
   let hasCustomAssemblyFormat = 1;
-  let builders = [
-    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
-                 "reussir::AtomicKind":$atomicKind), [{
+  let builders =
+      [TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+                       "reussir::AtomicKind":$atomicKind),
+                   [{
       return $_get($_ctxt, eleTy, capability, atomicKind);
     }]>,
-    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability), [{
+       TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability),
+                   [{
       return $_get($_ctxt, eleTy, capability, ::reussir::AtomicKind::normal);
     }]>,
-    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+       TypeBuilder<(ins "mlir::Type":$eleTy), [{
       return $_get($_ctxt, eleTy, ::reussir::Capability::unspecified, 
         ::reussir::AtomicKind::normal);
-    }]>
-  ];
+    }]>];
   let extraClassDeclaration = [{
     using Base::verifyInvariants;
     mlir::Type getElementType() const { return getEleTy(); }
@@ -222,8 +215,10 @@ def ReussirRcType : ReussirType<"Rc", "rc",
 //===----------------------------------------------------------------------===//
 // Reussir Nullable Type
 //===----------------------------------------------------------------------===//
-def ReussirNullableType : ReussirType<"Nullable", "nullable",
-    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+def ReussirNullableType
+    : ReussirType<
+          "Nullable",
+          "nullable", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Nullable Type";
   let description = [{
     Pointers in reussir are nonnull by default. This type is used to
@@ -235,39 +230,37 @@ def ReussirNullableType : ReussirType<"Nullable", "nullable",
 //===----------------------------------------------------------------------===//
 // Reussir Reference Type
 //===----------------------------------------------------------------------===//
-def ReussirRefType : ReussirType<"Ref", "ref", [
-  DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-  MutableType
-]> {
+def ReussirRefType
+    : ReussirType<"Ref", "ref",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+                   MutableType]> {
   let summary = "Reussir Reference Type";
   let description = [{
     A reference type that is used to represent a reference to an object in Reussir.
     It is used to manage the lifetime of objects in Reussir.
   }];
-  
-  let parameters = (ins 
-    "mlir::Type":$eleTy,
-    "reussir::Capability":$capability,
-    "reussir::AtomicKind":$atomicKind
-  );
-  
+
+  let parameters = (ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+      "reussir::AtomicKind":$atomicKind);
+
   let skipDefaultBuilders = 1;
   let genVerifyDecl = 1;
   let hasCustomAssemblyFormat = 1;
-  
-  let builders = [
-    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
-                 "reussir::AtomicKind":$atomicKind), [{
+
+  let builders =
+      [TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability,
+                       "reussir::AtomicKind":$atomicKind),
+                   [{
       return $_get($_ctxt, eleTy, capability, atomicKind);
     }]>,
-    TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability), [{
+       TypeBuilder<(ins "mlir::Type":$eleTy, "reussir::Capability":$capability),
+                   [{
       return $_get($_ctxt, eleTy, capability, ::reussir::AtomicKind::normal);
     }]>,
-    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+       TypeBuilder<(ins "mlir::Type":$eleTy), [{
       return $_get($_ctxt, eleTy, ::reussir::Capability::unspecified,
         ::reussir::AtomicKind::normal);
-    }]>
-  ];
+    }]>];
 
   let extraClassDeclaration = [{
     using Base::verifyInvariants;
@@ -278,8 +271,10 @@ def ReussirRefType : ReussirType<"Ref", "ref", [
 ///===----------------------------------------------------------------------===//
 // Reussir RcBox Type
 //===----------------------------------------------------------------------===//
-def ReussirRcBoxType : ReussirType<"RcBox", "rc_box",
-    [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+def ReussirRcBoxType
+    : ReussirType<
+          "RcBox",
+          "rc_box", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Reference Counted Box Type";
   let description = [{
     `reussir.rc_box` represents a heap-allocated box that contains a value managed
@@ -313,47 +308,41 @@ def ReussirRcBoxType : ReussirType<"RcBox", "rc_box",
     }
     ```
   ]}];
-  let parameters = (ins
-    "mlir::Type":$eleTy,
-    "bool":$regional
-  );
+  let parameters = (ins "mlir::Type":$eleTy, "bool":$regional);
   let hasCustomAssemblyFormat = 1;
   let skipDefaultBuilders = 1;
-  let builders = [
-    TypeBuilder<(ins "mlir::Type":$eleTy, "bool":$regional), [{
+  let builders = [TypeBuilder<(ins "mlir::Type":$eleTy, "bool":$regional), [{
       return $_get($_ctxt, eleTy, regional);
     }]>,
-    TypeBuilder<(ins "mlir::Type":$eleTy), [{
+                  TypeBuilder<(ins "mlir::Type":$eleTy), [{
       return $_get($_ctxt, eleTy, /*regional=*/false);
-    }]>
-  ];
+    }]>];
   let extraClassDeclaration = [{
     mlir::Type getElementType() const { return getEleTy(); }
     bool isRegional() const { return getRegional(); }
   }];
 }
-  
-  
 
 ///===----------------------------------------------------------------------===//
 // Special Type Constraints
 //===----------------------------------------------------------------------===//
-def ReussirNullableTokenType : Type<
-  /*predicate*/ Concat<"[](::mlir::Type pointer) { return ",
-         SubstLeaves<"$_self", "pointer", AnyTypeOf<[ReussirTokenType]>.predicate>,
-         "; }(::llvm::cast<::reussir::NullableType>($_self).getPtrTy())">,
-  /* descr */ "Nullable Token Type",
-  /* baseType */ "::reussir::NullableType"
->;
+def ReussirNullableTokenType
+    : Type<
+          /*predicate*/ Concat<
+              "[](::mlir::Type pointer) { return ",
+              SubstLeaves<"$_self", "pointer",
+                          AnyTypeOf<[ReussirTokenType]>.predicate>,
+              "; }(::llvm::cast<::reussir::NullableType>($_self).getPtrTy())">,
+          /* descr */ "Nullable Token Type",
+          /* baseType */ "::reussir::NullableType">;
 
-def ReussirCompoundType : Type<CPred<[{
+def ReussirCompoundType
+    : Type<CPred<[{
   ::llvm::cast<::reussir::RecordType>($_self).isCompound()}]>,
-                          "Reussir compound type",
-                          "::reussir::RecordType">;
+           "Reussir compound type", "::reussir::RecordType">;
 
 def ReussirVariantType : Type<CPred<[{
   ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
-                          "Reussir variant type",
-                          "::reussir::RecordType">;
+                              "Reussir variant type", "::reussir::RecordType">;
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
