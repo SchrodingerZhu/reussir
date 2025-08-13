@@ -309,6 +309,41 @@ struct ReussirRcIncConversionPattern
   }
 };
 
+struct ReussirRcCreateOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcCreateOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcCreateOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    RcType rcPtrTy = op.getRcPtr().getType();
+    RcBoxType rcBoxType =
+        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
+                       Capability::flex == rcPtrTy.getCapability());
+    if (rcBoxType.isRegional())
+      return op->emitError("TODO: regional rc create");
+    if (rcPtrTy.getAtomicKind() == AtomicKind::atomic)
+      return op->emitError("TODO: atomic rc create");
+    auto convertedBoxType = getTypeConverter()->convertType(rcBoxType);
+    auto indexType = static_cast<const LLVMTypeConverter *>(getTypeConverter())
+                         ->getIndexType();
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
+    auto refcntPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getToken(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    auto elementPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getToken(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+    rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), one, elementPtr);
+    rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), adaptor.getValue(),
+                                         refcntPtr);
+    rewriter.replaceOp(op, adaptor.getToken());
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -371,11 +406,11 @@ struct BasicOpsLoweringPass
     addRuntimeFunctions(getOperation(), converter);
     target.addIllegalDialect<mlir::func::FuncDialect,
                              mlir::arith::ArithDialect>();
-    target.addIllegalOp<ReussirTokenAllocOp, ReussirTokenFreeOp,
-                        ReussirTokenReinterpretOp, ReussirTokenReallocOp,
-                        ReussirRefLoadOp, ReussirRefStoreOp,
-                        ReussirRefSpilledOp, ReussirNullableCheckOp,
-                        ReussirNullableCreateOp, ReussirRcIncOp>();
+    target.addIllegalOp<
+        ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
+        ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
+        ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
+        ReussirRcIncOp, ReussirRcCreateOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -392,7 +427,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,
       ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
       ReussirNullableCheckConversionPattern,
-      ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern>(
-      converter, patterns.getContext());
+      ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
+      ReussirRcCreateOpConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir
