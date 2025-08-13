@@ -344,6 +344,27 @@ struct ReussirRcCreateOpConversionPattern
   }
 };
 
+struct ReussirRcBorrowOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcBorrowOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcBorrowOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    RcType rcPtrTy = op.getRcPtr().getType();
+    RcBoxType rcBoxType =
+        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
+                       Capability::flex == rcPtrTy.getCapability() ||
+                           Capability::rigid == rcPtrTy.getCapability());
+    size_t gepIndex = rcBoxType.isRegional() ? 3 : 1;
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    rewriter.replaceOpWithNewOp<mlir::LLVM::GEPOp>(
+        op, llvmPtrType, getTypeConverter()->convertType(rcBoxType),
+        adaptor.getRcPtr(), llvm::ArrayRef<mlir::LLVM::GEPArg>{0, gepIndex});
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -410,7 +431,7 @@ struct BasicOpsLoweringPass
         ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
-        ReussirRcIncOp, ReussirRcCreateOp>();
+        ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -428,6 +449,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
       ReussirNullableCheckConversionPattern,
       ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
-      ReussirRcCreateOpConversionPattern>(converter, patterns.getContext());
+      ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern>(
+      converter, patterns.getContext());
 }
 } // namespace reussir
