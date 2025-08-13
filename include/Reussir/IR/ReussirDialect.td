@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the Reussir dialect. This is to be used as a common 
+// This file defines the Reussir dialect. This is to be used as a common
 // tablegen header that provides common dialect references.
 //
 //===----------------------------------------------------------------------===//
@@ -28,15 +28,14 @@ def ReussirDialect : Dialect {
   let useDefaultAttributePrinterParser = 0;
   let usePropertiesForAttributes = 1;
   let dependentDialects = [
-    // arithmetic operations
-    "mlir::arith::ArithDialect",
-    // structured control flow operations
-    "mlir::scf::SCFDialect",
-    // math operations
-    "mlir::math::MathDialect",
-    // TBAA Tag types
-    "mlir::LLVM::LLVMDialect"
-  ];
+      // arithmetic operations
+      "mlir::arith::ArithDialect",
+      // structured control flow operations
+      "mlir::scf::SCFDialect",
+      // math operations
+      "mlir::math::MathDialect",
+      // TBAA Tag types
+      "mlir::LLVM::LLVMDialect"];
   let extraClassDeclaration = [{
   private:
     // Register the builtin Attributes.

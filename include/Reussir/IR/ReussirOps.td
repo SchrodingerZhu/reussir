@@ -18,16 +18,15 @@ include "Reussir/IR/ReussirDialect.td"
 include "Reussir/IR/ReussirAttrs.td"
 include "Reussir/IR/ReussirTypes.td"
 
-
 class ReussirOp<string mnemonic, list<Trait> traits>
-  : Op<ReussirDialect, mnemonic, traits>;
+    : Op<ReussirDialect, mnemonic, traits>;
 
 //===----------------------------------------------------------------------===//
 // Reussir Token Operation
 //===----------------------------------------------------------------------===//
 
 class ReussirTokenOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"token." # mnemonic, traits>;
+    : ReussirOp<"token."#mnemonic, traits>;
 
 def ReussirTokenAllocOp : ReussirTokenOp<"alloc", []> {
   let summary = "Allocate memory token";
@@ -38,9 +37,9 @@ def ReussirTokenAllocOp : ReussirTokenOp<"alloc", []> {
     ```
   }];
 
-  let results = (outs Res<
-    ReussirTokenType,
-    "Allocated Memory Token", [MemAlloc<DefaultResource>]>:$token);
+  let results =
+      (outs Res<ReussirTokenType,
+                "Allocated Memory Token", [MemAlloc<DefaultResource>]>:$token);
 
   let assemblyFormat = [{
     `:` type($token) attr-dict
@@ -56,9 +55,9 @@ def ReussirTokenFreeOp : ReussirTokenOp<"free", []> {
     ```
   }];
 
-  let arguments = (ins Res<
-    AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
-    "Free Memory Token", [MemFree<DefaultResource>]>:$token);
+  let arguments =
+      (ins Res<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+               "Free Memory Token", [MemFree<DefaultResource>]>:$token);
 
   let assemblyFormat = [{
     `(` $token `:` type($token) `)` attr-dict
@@ -76,8 +75,8 @@ def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", []> {
     The layout of the token and the referenced type must match.
   }];
 
-  let results = (outs 
-    Res<ReussirRefType, "reinterpreted reference">:$reinterpreted);
+  let results =
+      (outs Res<ReussirRefType, "reinterpreted reference">:$reinterpreted);
   let arguments = (ins Arg<ReussirTokenType, "Token to reinterpret">:$token);
   let assemblyFormat = [{
     `(` $token `:` type($token) `)` `:` qualified(type($reinterpreted)) attr-dict
@@ -96,10 +95,11 @@ def ReussirTokenEnsureOp : ReussirTokenOp<"ensure", []> {
       : !reussir.token<align: 8, size: 8>
     ```
   }];
-  let results = (outs 
-    Res<ReussirTokenType, "output token", [MemAlloc<DefaultResource>]>:$result);
-  let arguments = (ins 
-    Arg<ReussirNullableTokenType, "input token", [MemFree<DefaultResource>]>:$nullableToken);
+  let results = (outs Res<ReussirTokenType,
+                          "output token", [MemAlloc<DefaultResource>]>:$result);
+  let arguments =
+      (ins Arg<ReussirNullableTokenType,
+               "input token", [MemFree<DefaultResource>]>:$nullableToken);
   let assemblyFormat = [{
     `(` $nullableToken `:` type($nullableToken) `)` `:` type($result) attr-dict
   }];
@@ -120,14 +120,13 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
     ```
   }];
 
-  let arguments = (ins Res<
-    AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
-    "Target Token to Realloc", [MemFree<DefaultResource>]>:$token
-  );
+  let arguments =
+      (ins Res<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+               "Target Token to Realloc", [MemFree<DefaultResource>]>:$token);
 
-  let results = (outs
-    Res<ReussirTokenType, "Reallocated Memory Token", 
-      [MemAlloc<DefaultResource>]>:$realloced);
+  let results = (outs Res<
+      ReussirTokenType,
+      "Reallocated Memory Token", [MemAlloc<DefaultResource>]>:$realloced);
 
   let assemblyFormat = [{
     `(` $token `:` type($token) `)` `:` type($realloced) attr-dict
@@ -137,7 +136,7 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
 // Reussir Nullable Operations
 //===----------------------------------------------------------------------===//
 class ReussirNullableOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"nullable." # mnemonic, traits>;
+    : ReussirOp<"nullable."#mnemonic, traits>;
 
 def ReussirNullableCheckOp : ReussirNullableOp<"check", []> {
   let summary = "Check if a nullable token is null";
@@ -178,7 +177,7 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
 // Reussir RC Operations
 //===----------------------------------------------------------------------===//
 class ReussirRcOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"rc." # mnemonic, traits>;
+    : ReussirOp<"rc."#mnemonic, traits>;
 
 def ReussirRcIncOp : ReussirRcOp<"inc", []> {
   let summary = "Increment reference count";
@@ -210,7 +209,8 @@ def ReussirRcDecOp : ReussirRcOp<"dec", []> {
   }];
 
   let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr);
-  let results = (outs Res<ReussirNullableTokenType, "Nullable tokeno">:$nullableToken);
+  let results =
+      (outs Res<ReussirNullableTokenType, "Nullable tokeno">:$nullableToken);
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` type($nullableToken) attr-dict
@@ -235,21 +235,21 @@ def ReussirRcCreateOp : ReussirRcOp<"create", []> {
 
     RC with default capability:
     ```mlir
-    %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 16>
     %val = arith.constant 42 : i64
     %rc_ptr = reussir.rc.create value(%val : i64) 
-      token(%token : !reussir.token<align: 8, size: 8>)
+      token(%token : !reussir.token<align: 8, size: 16>)
       : !reussir.rc<i64>
     ```
 
     RC with flex capability:
     ```mlir
     func.func @region_funcion(%region: !reussir.region) {
-      %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+      %token = reussir.token.alloc : !reussir.token<align: 8, size: 32>
       %val = arith.constant 42 : i64
       %rc_ptr = reussir.rc.create 
         value (%val : i64) 
-        token (%token : !reussir.token<align: 8, size: 8>) 
+        token (%token : !reussir.token<align: 8, size: 32>) 
         region (%region : !reussir.region)
         : !reussir.rc<i64, flex>
       func.return
@@ -257,9 +257,8 @@ def ReussirRcCreateOp : ReussirRcOp<"create", []> {
     ```
   }];
 
-  let arguments = (ins Arg<AnyType, "value">:$value,
-                    ReussirTokenType:$token,
-                    Optional<ReussirRegionType>:$region);
+  let arguments = (ins Arg<AnyType, "value">:$value, ReussirTokenType:$token,
+      Optional<ReussirRegionType>:$region);
   let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr);
 
   let assemblyFormat = [{
@@ -306,7 +305,7 @@ def ReussirRcBorrowOp : ReussirRcOp<"borrow", []> {
 // Reussir Record Operations
 //===----------------------------------------------------------------------===//
 class ReussirRecordOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"record." # mnemonic, traits>;
+    : ReussirOp<"record."#mnemonic, traits>;
 
 def ReussirRecordCompoundOp : ReussirRecordOp<"compound", []> {
   let summary = "Create a compound record";
@@ -330,9 +329,8 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
     `reussir.record.variant` creates a variant record.
   }];
 
-  let arguments = (ins 
-     Arg<IndexAttr, "tag">:$tag, 
-     Arg<AnyType, "value">:$value);
+  let arguments = (ins Arg<IndexAttr, "tag">:$tag,
+      Arg<AnyType, "value">:$value);
   let results = (outs Res<ReussirVariantType, "Created record">:$variant);
 
   let assemblyFormat = [{
@@ -347,7 +345,7 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
 // Reussir reference operations
 //===----------------------------------------------------------------------===//
 class ReussirReferenceOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"ref." # mnemonic, traits>;
+    : ReussirOp<"ref."#mnemonic, traits>;
 
 def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
   let summary = "Project a reference";
@@ -379,7 +377,7 @@ def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
   }];
 
   let arguments = (ins Arg<ReussirRefType, "reference to project">:$ref,
-                    Arg<IndexAttr, "index">:$index);
+      Arg<IndexAttr, "index">:$index);
   let results = (outs Res<ReussirRefType, "projected reference">:$projected);
 
   let assemblyFormat = [{
@@ -399,8 +397,9 @@ def ReussirRefSpilledOp : ReussirReferenceOp<"spilled", []> {
     The result reference must have unspecified capability.
   }];
   let arguments = (ins Arg<AnyType, "value to spill">:$value);
-  let results = (outs Res<ReussirRefType, "spilled reference", 
-    [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
+  let results =
+      (outs Res<ReussirRefType, "spilled reference",
+                [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
   let assemblyFormat = [{
     `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
   }];
@@ -429,7 +428,7 @@ def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
     field capability.
   }];
   let arguments = (ins Arg<ReussirRefType, "reference to store">:$ref,
-                    Arg<AnyType, "value to store">:$value);
+      Arg<AnyType, "value to store">:$value);
   let assemblyFormat = [{
     `(` $ref `:` qualified(type($ref)) `)` `(` $value `:` type($value) `)` attr-dict
   }];
@@ -440,10 +439,11 @@ def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
 // Reussir Region Operations
 //===----------------------------------------------------------------------===//
 class ReussirRegionOp<string mnemonic, list<Trait> traits>
-  : ReussirOp<"region." # mnemonic, traits>;
+    : ReussirOp<"region."#mnemonic, traits>;
 
-def ReussirRegionRunOp : ReussirRegionOp<"run", 
-  [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+def ReussirRegionRunOp
+    : ReussirRegionOp<
+          "run", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Execute a region";
   let description = [{
     `reussir.region.run` executes a region. The inner region must accepts one 
@@ -461,9 +461,10 @@ def ReussirRegionRunOp : ReussirRegionOp<"run",
   let hasVerifier = 1;
 }
 
-def ReussirRegionYieldOp : ReussirRegionOp<"yield", [
-  ReturnLike, Terminator, ParentOneOf<["::reussir::ReussirRegionRunOp"]>
-]> {
+def ReussirRegionYieldOp
+    : ReussirRegionOp<
+          "yield", [ReturnLike, Terminator,
+                    ParentOneOf<["::reussir::ReussirRegionRunOp"]>]> {
   let summary = "Yield a value from a region";
   let description = [{
     `reussir.region.yield` yields a value from a region.
@@ -474,7 +475,5 @@ def ReussirRegionYieldOp : ReussirRegionOp<"yield", [
   }];
   let hasVerifier = 1;
 }
-
-
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

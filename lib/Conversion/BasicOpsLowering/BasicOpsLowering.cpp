@@ -1,4 +1,6 @@
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/TypeSwitch.h>
+#include <llvm/Support/Debug.h>
 #include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>
 #include <mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -12,6 +14,7 @@
 
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/IR/ReussirDialect.h"
+#include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 
 namespace reussir {
@@ -109,6 +112,44 @@ struct ReussirTokenReinterpretConversionPattern
   }
 };
 
+struct ReussirTokenReallocConversionPattern
+    : public mlir::OpConversionPattern<ReussirTokenReallocOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenReallocOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    TokenType inputTokenType =
+        llvm::TypeSwitch<mlir::Type, TokenType>(op.getToken().getType())
+            .Case<TokenType>([](TokenType type) { return type; })
+            .Case<NullableType>([](NullableType type) {
+              return llvm::cast<TokenType>(type.getPtrTy());
+            })
+            .Default([](mlir::Type type) -> TokenType {
+              llvm::report_fatal_error("Unexpected token type");
+            });
+    TokenType outputTokenType = op.getRealloced().getType();
+    size_t oldAlign = inputTokenType.getAlign();
+    size_t oldSize = inputTokenType.getSize();
+    size_t newAlign = outputTokenType.getAlign();
+    size_t newSize = outputTokenType.getSize();
+    mlir::Value oldAlignVal = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), rewriter.getIndexAttr(oldAlign));
+    mlir::Value oldSizeVal = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), rewriter.getIndexAttr(oldSize));
+    mlir::Value newAlignVal = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), rewriter.getIndexAttr(newAlign));
+    mlir::Value newSizeVal = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), rewriter.getIndexAttr(newSize));
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    rewriter.replaceOpWithNewOp<mlir::func::CallOp>(
+        op, "__reussir_reallocate", mlir::TypeRange{llvmPtrType},
+        mlir::ValueRange{adaptor.getToken(), oldAlignVal, oldSizeVal,
+                         newAlignVal, newSizeVal});
+    return mlir::success();
+  }
+};
+
 struct ReussirRefStoreConversionPattern
     : public mlir::OpConversionPattern<ReussirRefStoreOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -163,7 +204,7 @@ struct ReussirRefSpilledConversionPattern
   }
 };
 
-struct ReussirReferenceLoadConversionPattern
+struct ReussirRefLoadConversionPattern
     : public mlir::OpConversionPattern<ReussirRefLoadOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -174,6 +215,131 @@ struct ReussirReferenceLoadConversionPattern
     mlir::Type llvmPointeeTy = getTypeConverter()->convertType(pointeeTy);
     rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, llvmPointeeTy,
                                                     adaptor.getRef());
+    return mlir::success();
+  }
+};
+
+struct ReussirNullableCheckConversionPattern
+    : public mlir::OpConversionPattern<ReussirNullableCheckOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirNullableCheckOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Type llvmPtrType =
+        mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    mlir::Value nullable = adaptor.getNullable();
+    mlir::Value nullConstant =
+        rewriter.create<mlir::LLVM::ZeroOp>(op.getLoc(), llvmPtrType);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::ICmpOp>(
+        op, mlir::LLVM::ICmpPredicate::eq, nullable, nullConstant);
+    return mlir::success();
+  }
+};
+
+struct ReussirNullableCreateConversionPattern
+    : public mlir::OpConversionPattern<ReussirNullableCreateOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirNullableCreateOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // Check if the operation has input. If so, replace it directly with adaptor
+    // value. Otherwise, create a new null value.
+    if (op.getPtr())
+      rewriter.replaceOp(op, adaptor.getPtr());
+    else
+      rewriter.replaceOpWithNewOp<mlir::LLVM::ZeroOp>(
+          op, mlir::LLVM::LLVMPointerType::get(rewriter.getContext()));
+    return mlir::success();
+  }
+};
+
+struct ReussirRcIncConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcIncOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcIncOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    RcType rcPtrTy = op.getRcPtr().getType();
+    if (rcPtrTy.getCapability() == Capability::value ||
+        rcPtrTy.getCapability() == Capability::flex ||
+        rcPtrTy.getCapability() == Capability::field)
+      return op.emitOpError("unsupported capability");
+
+    // If it is rigid, we directly emit __reussir_acquire_rigid_object
+    if (rcPtrTy.getCapability() == Capability::rigid) {
+      rewriter.replaceOpWithNewOp<mlir::func::CallOp>(
+          op, "__reussir_acquire_rigid_object", mlir::TypeRange{},
+          mlir::ValueRange{adaptor.getRcPtr()});
+      return mlir::success();
+    }
+
+    RcBoxType rcBoxType =
+        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType());
+    // GEP [0].1
+    auto convertedBoxType = getTypeConverter()->convertType(rcBoxType);
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto refcntPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getRcPtr(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    auto indexType = static_cast<const LLVMTypeConverter *>(getTypeConverter())
+                         ->getIndexType();
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
+    mlir::Value oldRefCnt;
+    if (rcPtrTy.getAtomicKind() == AtomicKind::normal) {
+      oldRefCnt = rewriter.create<mlir::LLVM::LoadOp>(op.getLoc(), indexType,
+                                                      refcntPtr);
+      auto newRefCnt = rewriter.create<mlir::arith::AddIOp>(
+          op.getLoc(), indexType, oldRefCnt, one);
+      rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), newRefCnt, refcntPtr);
+    } else {
+      oldRefCnt = rewriter.create<mlir::LLVM::AtomicRMWOp>(
+          op.getLoc(), mlir::LLVM::AtomicBinOp::add, refcntPtr, one,
+          mlir::LLVM::AtomicOrdering::monotonic);
+    }
+    auto geOne = rewriter.create<mlir::LLVM::ICmpOp>(
+        op.getLoc(), mlir::LLVM::ICmpPredicate::uge, oldRefCnt, one);
+    rewriter.create<mlir::LLVM::AssumeOp>(op.getLoc(), geOne);
+
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+struct ReussirRcCreateOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcCreateOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcCreateOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    RcType rcPtrTy = op.getRcPtr().getType();
+    RcBoxType rcBoxType =
+        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
+                       Capability::flex == rcPtrTy.getCapability());
+    if (rcBoxType.isRegional())
+      return op->emitError("TODO: regional rc create");
+    if (rcPtrTy.getAtomicKind() == AtomicKind::atomic)
+      return op->emitError("TODO: atomic rc create");
+    auto convertedBoxType = getTypeConverter()->convertType(rcBoxType);
+    auto indexType = static_cast<const LLVMTypeConverter *>(getTypeConverter())
+                         ->getIndexType();
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
+    auto refcntPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getToken(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    auto elementPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        op.getLoc(), llvmPtrType, convertedBoxType, adaptor.getToken(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+    rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), one, elementPtr);
+    rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), adaptor.getValue(),
+                                         refcntPtr);
+    rewriter.replaceOp(op, adaptor.getToken());
     return mlir::success();
   }
 };
@@ -214,7 +380,7 @@ void addRuntimeFunctions(mlir::ModuleOp module,
                      {llvmPtrType, indexType, indexType}, {});
   addRuntimeFunction(body, "__reussir_reallocate",
                      {llvmPtrType, indexType, indexType, indexType, indexType},
-                     {});
+                     {llvmPtrType});
   // currently this will abort execution after printing the message and
   // stacktrace. No unwinding is attempted yet.
   addRuntimeFunction(body, "__reussir_panic", {llvmPtrType}, {});
@@ -240,9 +406,11 @@ struct BasicOpsLoweringPass
     addRuntimeFunctions(getOperation(), converter);
     target.addIllegalDialect<mlir::func::FuncDialect,
                              mlir::arith::ArithDialect>();
-    target.addIllegalOp<ReussirTokenAllocOp, ReussirTokenFreeOp,
-                        ReussirTokenReinterpretOp, ReussirRefLoadOp,
-                        ReussirRefStoreOp, ReussirRefSpilledOp>();
+    target.addIllegalOp<
+        ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
+        ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
+        ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
+        ReussirRcIncOp, ReussirRcCreateOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -256,7 +424,10 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
   patterns.add<
       ReussirTokenAllocConversionPattern, ReussirTokenFreeConversionPattern,
       ReussirTokenReinterpretConversionPattern,
-      ReussirReferenceLoadConversionPattern, ReussirRefStoreConversionPattern,
-      ReussirRefSpilledConversionPattern>(converter, patterns.getContext());
+      ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,
+      ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
+      ReussirNullableCheckConversionPattern,
+      ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
+      ReussirRcCreateOpConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir
