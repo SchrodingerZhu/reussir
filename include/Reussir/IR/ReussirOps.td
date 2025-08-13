@@ -235,21 +235,21 @@ def ReussirRcCreateOp : ReussirRcOp<"create", []> {
 
     RC with default capability:
     ```mlir
-    %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 16>
     %val = arith.constant 42 : i64
     %rc_ptr = reussir.rc.create value(%val : i64) 
-      token(%token : !reussir.token<align: 8, size: 8>)
+      token(%token : !reussir.token<align: 8, size: 16>)
       : !reussir.rc<i64>
     ```
 
     RC with flex capability:
     ```mlir
     func.func @region_funcion(%region: !reussir.region) {
-      %token = reussir.token.alloc : !reussir.token<align: 8, size: 8>
+      %token = reussir.token.alloc : !reussir.token<align: 8, size: 32>
       %val = arith.constant 42 : i64
       %rc_ptr = reussir.rc.create 
         value (%val : i64) 
-        token (%token : !reussir.token<align: 8, size: 8>) 
+        token (%token : !reussir.token<align: 8, size: 32>) 
         region (%region : !reussir.region)
         : !reussir.rc<i64, flex>
       func.return
