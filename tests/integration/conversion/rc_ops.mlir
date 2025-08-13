@@ -2,6 +2,10 @@
 // RUN: %mlir-translate --mlir-to-llvmir | %FileCheck %s
 
 !nullable = !reussir.nullable<!reussir.ref<i64>>
+!list_incomplete = !reussir.record<variant "List" incomplete>
+!cons = !reussir.record<compound "List::Cons" { f128, [shared] !list_incomplete }>
+!nil = !reussir.record<compound "List::Nil" {}>
+!list = !reussir.record<variant "List" {!cons, !nil}>
 module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
   // CHECK-LABEL: define void @rc_inc(ptr %0) {
   // CHECK: %2 = getelementptr { i64, i64 }, ptr %0, i32 0, i32 0
@@ -44,7 +48,7 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
       token(%token : !reussir.token<align: 16, size: 32>)  : !reussir.rc<f128>
     return %rc : !reussir.rc<f128>
   }
-  
+
   // CHECK-LABEL: define fp128 @rc_borrow_then_load_0(ptr %0) {
   // CHECK: %2 = getelementptr { i64, fp128 }, ptr %0, i32 0, i32 1
   // CHECK: %3 = load fp128, ptr %2, align 16
@@ -63,5 +67,12 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
     %borrowed = reussir.rc.borrow(%rc : !reussir.rc<f128 rigid>) : !reussir.ref<f128 rigid>
     %value = reussir.ref.load(%borrowed : !reussir.ref<f128 rigid>) : f128
     return %value : f128
+  }
+
+  func.func @rc_borrow_then_load_2(%rc : !reussir.rc<!list>) -> !list {
+    %borrowed = reussir.rc.borrow(%rc : !reussir.rc<!list>) : !reussir.ref<!list shared>
+    // CHECK: load %List, ptr %2, align 16
+    %value = reussir.ref.load(%borrowed : !reussir.ref<!list shared>) : !list
+    return %value : !list
   }
 }

@@ -99,11 +99,24 @@ std::optional<llvm::LogicalResult> LLVMTypeConverter::convertRecordType(
   }
 
   llvm::SmallVector<mlir::Type> members;
-  for (auto [member, capability] :
-       llvm::zip(type.getMembers(), type.getMemberCapabilities())) {
-    mlir::Type projectedType =
-        getProjectedType(member, capability, Capability::unspecified);
-    members.push_back(convertType(projectedType));
+  if (type.getKind() == reussir::RecordKind::variant) {
+    // For variant records, we need to include the tag type as the first member
+    members.push_back(getIndexType());
+    auto [size, alignment] =
+        type.getElementRegionSizeAndAlignment(getDataLayout());
+    // Create a vector field to full the size and alignment
+    auto vectorTy = mlir::VectorType::get(
+        alignment.value(), mlir::IntegerType::get(&getContext(), 8));
+    auto convertedVectorTy = convertType(vectorTy);
+    for (size_t i = 0; i < size.getFixedValue() / alignment.value(); ++i)
+      members.push_back(convertedVectorTy);
+  } else {
+    for (auto [member, capability] :
+         llvm::zip(type.getMembers(), type.getMemberCapabilities())) {
+      mlir::Type projectedType =
+          getProjectedType(member, capability, Capability::unspecified);
+      members.push_back(convertType(projectedType));
+    }
   }
   if (!name)
     structType = mlir::LLVM::LLVMStructType::getLiteral(&getContext(), members);
