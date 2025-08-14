@@ -219,7 +219,7 @@ mlir::LogicalResult ReussirRecordVariantOp::verify() {
 //===----------------------------------------------------------------------===//
 // ReferenceProjectOp verification
 //===----------------------------------------------------------------------===//
-mlir::LogicalResult ReussirReferenceProjectOp::verify() {
+mlir::LogicalResult ReussirRefProjectOp::verify() {
   RefType refType = getRef().getType();
   RefType projectedType = getProjected().getType();
 

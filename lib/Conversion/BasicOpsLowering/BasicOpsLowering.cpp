@@ -307,11 +307,11 @@ struct ReussirRefLoadConversionPattern
 };
 
 struct ReussirReferenceProjectConversionPattern
-    : public mlir::OpConversionPattern<ReussirReferenceProjectOp> {
+    : public mlir::OpConversionPattern<ReussirRefProjectOp> {
   using OpConversionPattern::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirReferenceProjectOp op, OpAdaptor adaptor,
+  matchAndRewrite(ReussirRefProjectOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
     auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
@@ -551,8 +551,7 @@ struct BasicOpsLoweringPass
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
         ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp,
-        ReussirRecordCompoundOp, ReussirRecordVariantOp,
-        ReussirReferenceProjectOp>();
+        ReussirRecordCompoundOp, ReussirRecordVariantOp, ReussirRefProjectOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))

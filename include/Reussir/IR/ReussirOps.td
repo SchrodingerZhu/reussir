@@ -347,7 +347,7 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
 class ReussirReferenceOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"ref."#mnemonic, traits>;
 
-def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
+def ReussirRefProjectOp : ReussirReferenceOp<"project", []> {
   let summary = "Project a reference";
   let description = [{
     `reussir.ref.project` projects a reference. This is effectively a GEP 
