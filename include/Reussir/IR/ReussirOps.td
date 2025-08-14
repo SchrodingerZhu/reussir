@@ -173,6 +173,47 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
     ( `(` $ptr^ `:` type($ptr) `)` )? `:` type($nullable) attr-dict
   }];
 }
+
+def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", []> {
+  let summary = "Dispatch a nullable token";
+  let description = [{
+    `reussir.nullable.dispatch` is a high-level structured control flow operation.
+    It takes a nullable pointer and two regions where the first region accepts a 
+    non-nullable pointer and second region has no region argument. Both regions
+    must be terminated by `reussir.scf.yield` operation.
+
+    ```mlir
+    %flag = reussir.nullable.dispatch 
+      (%nullable : !reussir.nullable<!reussir.rc<i64>>) -> i1 {
+      nonnull -> {
+        ^bb0(%nonnull_ptr : !reussir.rc<i64>):
+          %true = arith.constant 1 : i1
+          reussir.scf.yield %true : i1
+      }
+      null -> {
+        ^bb0:
+          %false = arith.constant 0 : i1
+          reussir.scf.yield %false : i1
+      }
+    }
+    ```
+  }];
+  
+  let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
+  let results = (outs Res<Optional<AnyType>, "dispatched value">:$value);
+  let regions = (region MinSizedRegion<1>:$nonNullRegion,
+                 MinSizedRegion<1>:$nullRegion);
+
+  let assemblyFormat = [{
+    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{`
+      `nonnull` `->` $nonNullRegion
+      `null` `->` $nullRegion 
+    `}` attr-dict
+  }];
+
+  // TODO: add verifier
+  // let hasVerifier = 1;
+}
 //===----------------------------------------------------------------------===//
 // Reussir RC Operations
 //===----------------------------------------------------------------------===//
@@ -474,6 +515,29 @@ def ReussirRegionYieldOp
     ( $value^ `:` type($value) )? attr-dict
   }];
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Scf Placeholder Operations
+//===----------------------------------------------------------------------===//
+
+class ReussirScfOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"scf."#mnemonic, traits>;
+
+def ReussirScfYieldOp : ReussirScfOp<"yield", [
+  ReturnLike, Terminator,
+  ParentOneOf<["::reussir::ReussirNullableDispatchOp"]>
+]> {
+  let summary = "Yield a value from a scf operation";
+  let description = [{
+    `reussir.scf.yield` terminates a high-level structured control flow operation.
+  }];
+  let arguments = (ins Arg<Optional<ReussirRcType>, "value to yield">:$value);
+  let assemblyFormat = [{
+    ( $value^ `:` type($value) )? attr-dict
+  }];
+  // TODO: add verifier
+  // let hasVerifier = 1;
 }
 
 #endif // REUSSIR_IR_REUSSIROPS_TD
