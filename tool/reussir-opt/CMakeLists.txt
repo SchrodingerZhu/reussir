@@ -8,6 +8,7 @@ add_mlir_tool(reussir-opt
     MLIROptLib
     MLIRReussir
     MLIRReussirBasicOpsLowering
+    MLIRReussirSCFOpsLowering
     ${dialect_libs}
     ${conversion_libs}
     ${extension_libs}
@@ -17,6 +18,7 @@ target_link_libraries(reussir-opt
   PRIVATE 
     MLIRReussir
     MLIRReussirBasicOpsLowering
+    MLIRReussirSCFOpsLowering
     ${dialect_libs} 
     ${conversion_libs} 
     ${extension_libs} 

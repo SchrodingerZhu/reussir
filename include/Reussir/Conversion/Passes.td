@@ -36,4 +36,20 @@ def ReussirBasicOpsLoweringPass
                            "::reussir::ReussirDialect"];
 }
 
+//===----------------------------------------------------------------------===//
+// SCFOpsLowering
+//===----------------------------------------------------------------------===//
+def ReussirSCFOpsLoweringPass
+    : ReussirLoweringPass<"scf-ops"> {
+  let summary = "lower Reussir SCF operations to MLIR SCF operations";
+  let description = [{
+    `reussir-lowering-scf-ops` lowers Reussir SCF operations to MLIR SCF
+    operations.
+  }];
+  let dependentDialects = ["::mlir::arith::ArithDialect",
+                           "::reussir::ReussirDialect",
+                           "::mlir::math::MathDialect",
+                           "::mlir::scf::SCFDialect",
+                           "::mlir::func::FuncDialect"];
+}
 #endif // REUSSIR_CONVERSION_PASSES_TD
