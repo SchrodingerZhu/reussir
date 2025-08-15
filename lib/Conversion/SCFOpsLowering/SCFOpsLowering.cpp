@@ -23,18 +23,22 @@ namespace reussir {
 
 namespace {
 
-// TODO: Add conversion patterns here
-// Example pattern structure:
-// struct ReussirSomeOpConversionPattern
-//     : public mlir::OpRewritePattern<ReussirSomeOp> {
-//   using OpRewritePattern::OpRewritePattern;
-//   mlir::LogicalResult
-//   matchAndRewrite(ReussirSomeOp op,
-//                   mlir::PatternRewriter &rewriter) const override {
-//     // Implementation will go here
-//     return mlir::success();
-//   }
-// };
+struct ReussirNullableDispatchOpConversionPattern
+    : public mlir::OpRewritePattern<ReussirNullableDispatchOp> {
+  using OpRewritePattern::OpRewritePattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirNullableDispatchOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    // First, create a check operation to get the null flag from the input.
+    auto nullFlag = rewriter.create<reussir::ReussirNullableCheckOp>(
+        op.getLoc(), op.getNullable());
+    auto scfIfOp = rewriter.create<mlir::scf::IfOp>(
+        op.getLoc(), op->getResultTypes(), nullFlag, /*addThenRegion=*/true,
+        /*addElseRegion=*/true);
+    (void)scfIfOp;
+    return mlir::success();
+  }
+};
 
 } // namespace
 
@@ -54,11 +58,11 @@ struct SCFOpsLoweringPass
 
     // Configure target legality
     target.addLegalDialect<mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-                           mlir::math::MathDialect, mlir::func::FuncDialect>();
-    target.addLegalDialect<ReussirDialect>();
+                           mlir::math::MathDialect, mlir::func::FuncDialect,
+                           reussir::ReussirDialect>();
 
-    // TODO: Add illegal operations here
-    // target.addIllegalOp<ReussirSomeOp>();
+    // Illegal operations
+    target.addIllegalOp<ReussirNullableDispatchOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -69,8 +73,9 @@ struct SCFOpsLoweringPass
 
 void populateSCFOpsLoweringConversionPatterns(
     mlir::RewritePatternSet &patterns) {
-  // TODO: Add patterns here
-  // patterns.add<ReussirSomeOpConversionPattern>(patterns.getContext());
+  // Add conversion patterns for Reussir SCF operations
+  patterns.add<ReussirNullableDispatchOpConversionPattern>(
+      patterns.getContext());
 }
 
 } // namespace reussir

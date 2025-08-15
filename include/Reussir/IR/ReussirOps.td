@@ -215,6 +215,31 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfac
 
   let hasVerifier = 1;
 }
+
+def ReussirNullableCoerceOp : ReussirNullableOp<"coerce", []> {
+  let summary = "Coerce a nullable token to a non-nullable token";
+  let description = [{
+    `reussir.nullable.coerce` coerces a nullable token to a non-nullable token.
+    This operation is a placeholder to make sure type is consistent during 
+    intermediate lowering steps. Higher-level IR generation should typically use
+    the `reussir.nullable.dispatch` operation to handle nullable tokens.
+
+    ```mlir
+    %nonnull = reussir.nullable.coerce 
+      (%nullable : !reussir.nullable<!reussir.token<align: 8, size: 8>>) 
+      : !reussir.token<align: 8, size: 8>
+    ```
+  }];
+
+  let results = (outs Res<ReussirNonNullPointerType, "non-null pointer">:$nonnull);
+  let arguments =
+      (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
+  let assemblyFormat = [{
+    `(` $nullable `:` type($nullable) `)` `:` type($nonnull) attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir RC Operations
 //===----------------------------------------------------------------------===//
@@ -426,6 +451,30 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
   let regions = (region VariadicRegion<MinSizedRegion<1>>:$regions);
 
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def ReussirRecordCoerceOp : ReussirRecordOp<"coerce", []> {
+  let summary = "Coerce a variant reference to a non-variant reference";
+  let description = [{
+    `reussir.record.coerce` coerces a variant reference to a non-variant reference.
+    This operation is a placeholder to make sure type is consistent during
+    intermediate lowering steps. Higher-level IR generation should typically use
+    the `reussir.record.dispatch` operation to handle variant references.
+
+    The operation itself is basically a GEP[0, 1] operation on the input pointer.
+  }];
+
+  let results = (outs Res<ReussirRefType, "coerced pointer">:$coerced);
+  let arguments =
+      (ins 
+      IndexAttr:$tag,
+      Arg<ReussirRefType, "variant reference">:$variant);
+  let assemblyFormat = [{
+    `[` $tag `]` 
+    `(` $variant `:` qualified(type($variant)) `)` 
+    `:` qualified(type($coerced)) attr-dict
+  }];
   let hasVerifier = 1;
 }
 

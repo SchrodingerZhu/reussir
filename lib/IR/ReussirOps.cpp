@@ -249,6 +249,51 @@ mlir::LogicalResult ReussirRecordTagOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// Reussir Record Coerce Op
+//===----------------------------------------------------------------------===//
+// RecordCoerceOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRecordCoerceOp::verify() {
+  RefType variantRefType = getVariant().getType();
+  RefType coercedRefType = getCoerced().getType();
+
+  // Check that the input reference is a reference to a record type
+  mlir::Type variantElementType = variantRefType.getElementType();
+  RecordType recordType = llvm::dyn_cast<RecordType>(variantElementType);
+  if (!recordType)
+    return emitOpError("input must be a reference to a record type, got: ")
+           << variantElementType;
+
+  // Check that the record is a variant record
+  if (!recordType.isVariant())
+    return emitOpError("input must be a reference to a variant record");
+
+  // Check that the record is complete
+  if (!recordType.getComplete())
+    return emitOpError("cannot coerce incomplete variant record");
+
+  // Get the tag and validate it's within bounds
+  size_t tag = getTag().getZExtValue();
+  if (tag >= recordType.getMembers().size())
+    return emitOpError("tag out of bounds: ")
+           << tag << " >= " << recordType.getMembers().size();
+
+  // Get the target variant element type at the specified tag position
+  mlir::Type targetVariantElementType = recordType.getMembers()[tag];
+
+  // Check that the output reference element type matches the target variant
+  // element type
+  mlir::Type coercedElementType = coercedRefType.getElementType();
+  if (coercedElementType != targetVariantElementType)
+    return emitOpError("output reference element type must match target "
+                       "variant element type, ")
+           << "expected: " << targetVariantElementType
+           << ", got: " << coercedElementType;
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Reference Operations
 //===----------------------------------------------------------------------===//
 // ReferenceProjectOp verification
@@ -663,6 +708,24 @@ void ReussirRecordDispatchOp::print(mlir::OpAsmPrinter &p) {
   p.printNewline();
   p << "}";
   p.printOptionalAttrDict(getOperation()->getAttrs(), {"tagSets"});
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Nullable Coerce Op
+//===----------------------------------------------------------------------===//
+// NullableCoerceOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirNullableCoerceOp::verify() {
+  NullableType nullableType = getNullable().getType();
+  mlir::Type coercedType = getNonnull().getType();
+
+  // Check that the coerced type is the same as the PtrTy of the nullable input
+  mlir::Type expectedType = nullableType.getPtrTy();
+  if (coercedType != expectedType)
+    return emitOpError("coerced type must match nullable pointer type, ")
+           << "expected: " << expectedType << ", got: " << coercedType;
+
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
