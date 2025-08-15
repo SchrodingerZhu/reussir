@@ -215,6 +215,30 @@ mlir::LogicalResult ReussirRecordVariantOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// RecordTagOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRecordTagOp::verify() {
+  RefType variantType = getVariant().getType();
+
+  // Check that the input is a reference to a record type
+  mlir::Type elementType = variantType.getElementType();
+  RecordType recordType = llvm::dyn_cast<RecordType>(elementType);
+  if (!recordType)
+    return emitOpError("input must be a reference to a record type, got: ")
+           << elementType;
+
+  // Check that the record is complete
+  if (!recordType.getComplete())
+    return emitOpError("cannot get tag of incomplete record");
+
+  // Check that the record is a variant record
+  if (!recordType.isVariant())
+    return emitOpError("can only get tag of variant records");
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Reference Operations
 //===----------------------------------------------------------------------===//
 // ReferenceProjectOp verification

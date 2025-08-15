@@ -382,6 +382,24 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
+  let summary = "Get the tag of a variant record";
+  let description = [{
+    `reussir.record.tag` gets the tag of a variant record.
+
+    The input must be a reference to a variant record.
+  }];
+  
+  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant);
+  let results = (outs Res<Index, "tag">:$tag);
+
+  let assemblyFormat = [{
+    `(` $variant `:` qualified(type($variant)) `)` `:` type($tag) attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir reference operations
 //===----------------------------------------------------------------------===//

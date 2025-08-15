@@ -6,6 +6,14 @@
 !nil = !reussir.record<compound "List::Nil" {}>
 !list = !reussir.record<variant "List" {!cons, !nil}>
 
+!option_some = !reussir.record<compound "Option::Some" {i32}>
+!option_none = !reussir.record<compound "Option::None" {}>
+!option = !reussir.record<variant "Option" {!option_some, !option_none}>
+
+!result_ok = !reussir.record<compound "Result::Ok" {i32}>
+!result_err = !reussir.record<compound "Result::Err" {i32}>
+!result = !reussir.record<variant "Result" {!result_ok, !result_err}>
+
 module {
   func.func @cons(%fst : i32, %tail : !reussir.rc<!list>) -> !reussir.rc<!list> {
     %0 = reussir.record.compound(%fst, %tail : i32, !reussir.rc<!list>) : !cons
@@ -15,6 +23,16 @@ module {
         value(%1 : !list) 
         token(%token : !reussir.token<align: 8, size: 32>) : !reussir.rc<!list>
     return %rc : !reussir.rc<!list>
+  }
+
+  func.func @test_option_tag(%opt_ref : !reussir.ref<!option>) -> index {
+    %tag = reussir.record.tag(%opt_ref : !reussir.ref<!option>) : index
+    return %tag : index
+  }
+
+  func.func @test_result_tag(%result_ref : !reussir.ref<!result>) -> index {
+    %tag = reussir.record.tag(%result_ref : !reussir.ref<!result>) : index
+    return %tag : index
   }
 }
 
@@ -33,3 +51,13 @@ module {
 // CHECK: store i64 1, ptr %[[rc_value_ptr]], align 4
 // CHECK: store %List %[[loaded]], ptr %[[rc_tag_ptr]], align 8
 // CHECK: ret ptr %[[allocated]]
+
+// CHECK-LABEL: define i64 @test_option_tag(ptr %0)
+// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Option, ptr %0, i32 0, i32 0
+// CHECK: %[[tag_value:[0-9]+]] = load i64, ptr %[[tag_ptr]], align 4
+// CHECK: ret i64 %[[tag_value]]
+
+// CHECK-LABEL: define i64 @test_result_tag(ptr %0)
+// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Result, ptr %0, i32 0, i32 0
+// CHECK: %[[tag_value:[0-9]+]] = load i64, ptr %[[tag_ptr]], align 4
+// CHECK: ret i64 %[[tag_value]]
