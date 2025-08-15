@@ -11,11 +11,14 @@
 //===----------------------------------------------------------------------===//
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/SmallVector.h>
+
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/OpImplementation.h>
+#include <mlir/IR/Operation.h>
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 
@@ -433,7 +436,96 @@ void ReussirRegionRunOp::getSuccessorRegions(
 // RecordDispatchOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRecordDispatchOp::verify() {
-  // TODO: Implement verification
+  // Get the variant reference type and extract the record type
+  RefType variantRefType = getVariant().getType();
+  RecordType recordType =
+      llvm::dyn_cast<RecordType>(variantRefType.getElementType());
+  if (!recordType)
+    return emitOpError("variant operand must be a reference to a record type");
+
+  if (!recordType.isVariant())
+    return emitOpError(
+        "variant operand must be a reference to a variant record type");
+
+  if (!recordType.getComplete())
+    return emitOpError("variant record type must be complete");
+
+  // Get the number of variant members
+  auto members = recordType.getMembers();
+  size_t numMembers = members.size();
+
+  // Check that tagSets array size matches the number of regions
+  auto tagSets = getTagSets();
+  auto regions = getRegions();
+
+  if (tagSets.size() != regions.size())
+    return emitOpError("number of tag sets must match number of regions, ")
+           << "tag sets: " << tagSets.size() << ", regions: " << regions.size();
+
+  // Track which tags are covered
+  llvm::SmallSet<int64_t, 8> coveredTags;
+
+  // Verify each tag set and corresponding region
+  for (size_t i = 0; i < tagSets.size(); ++i) {
+    auto tagSetAttr = llvm::dyn_cast<mlir::DenseI64ArrayAttr>(tagSets[i]);
+    if (!tagSetAttr)
+      return emitOpError("tag set ") << i << " must be a DenseI64ArrayAttr";
+
+    auto tagSet = tagSetAttr.asArrayRef();
+    if (tagSet.empty())
+      return emitOpError("tag set ") << i << " must have at least one value";
+
+    // Check that all tags in this set are valid and not already covered
+    for (int64_t tag : tagSet) {
+      if (tag < 0 || static_cast<size_t>(tag) >= numMembers)
+        return emitOpError("tag ")
+               << tag << " in tag set " << i << " is out of range [0, "
+               << numMembers << ")";
+      if (coveredTags.contains(tag))
+        return emitOpError("tag ")
+               << tag << " in tag set " << i
+               << " is already covered by a previous tag set";
+      coveredTags.insert(tag);
+    }
+
+    // Verify region argument types based on tag set size
+    mlir::Region &region = regions[i];
+    if (region.empty())
+      return emitOpError("region ") << i << " cannot be empty";
+
+    mlir::Block &block = region.front();
+    if (tagSet.size() == 1) {
+      // Single tag: region should accept a reference to the target variant
+      // element type
+      if (block.getNumArguments() != 1)
+        return emitOpError("region ")
+               << i << " must have exactly one argument for single tag";
+
+      int64_t tag = tagSet[0];
+      mlir::Type expectedType = members[tag];
+      mlir::Type actualType = block.getArgument(0).getType();
+
+      // The argument should be a reference to the member type
+      RefType actualRefType = llvm::dyn_cast<RefType>(actualType);
+      if (!actualRefType)
+        return emitOpError("region ")
+               << i << " argument must be a reference type";
+
+      if (actualRefType.getElementType() != expectedType)
+        return emitOpError("region ")
+               << i << " argument type must match variant member type, "
+               << "argument type: " << actualRefType.getElementType()
+               << ", expected type: " << expectedType;
+    } else if (block.getNumArguments() != 0)
+      return emitOpError("region ")
+             << i << " must have no arguments for multiple tags";
+  }
+
+  // Check that all possible tags are covered
+  for (size_t i = 0; i < numMembers; ++i)
+    if (!coveredTags.contains(i))
+      return emitOpError("tag ") << i << " is not covered by any tag set";
+
   return mlir::success();
 }
 
@@ -539,6 +631,79 @@ void ReussirRecordDispatchOp::print(mlir::OpAsmPrinter &p) {
   p.printNewline();
   p << "}";
   p.printOptionalAttrDict(getOperation()->getAttrs(), {"tagSets"});
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Nullable Dispatch Op
+//===----------------------------------------------------------------------===//
+// NullableDispatchOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirNullableDispatchOp::verify() {
+  // Get the nullable type and extract the inner pointer type
+  NullableType nullableType = getNullable().getType();
+  mlir::Type innerType = nullableType.getPtrTy();
+
+  // Verify nonNullRegion has exactly one argument matching the inner type
+  mlir::Region &nonNullRegion = getNonNullRegion();
+  if (nonNullRegion.empty())
+    return emitOpError("nonnull region cannot be empty");
+
+  mlir::Block &nonNullBlock = nonNullRegion.front();
+  if (nonNullBlock.getNumArguments() != 1)
+    return emitOpError("nonnull region must have exactly one argument");
+
+  mlir::Type nonNullArgType = nonNullBlock.getArgument(0).getType();
+  if (nonNullArgType != innerType)
+    return emitOpError(
+               "nonnull region argument type must match nullable inner type, ")
+           << "argument type: " << nonNullArgType
+           << ", expected type: " << innerType;
+
+  // Verify nullRegion has no arguments
+  mlir::Region &nullRegion = getNullRegion();
+  if (nullRegion.empty())
+    return emitOpError("null region cannot be empty");
+
+  mlir::Block &nullBlock = nullRegion.front();
+  if (nullBlock.getNumArguments() != 0)
+    return emitOpError("null region must have no arguments");
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Scf Yield Op
+//===----------------------------------------------------------------------===//
+// ScfYieldOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirScfYieldOp::verify() {
+  mlir::Type yieldedType = getValue() ? getValue().getType() : mlir::Type{};
+  mlir::Type expectedType = mlir::Type{};
+  if (auto nullableParent =
+          getOperation()->getParentOfType<ReussirNullableDispatchOp>())
+    expectedType = nullableParent.getValue()
+                       ? nullableParent.getValue().getType()
+                       : mlir::Type{};
+  else if (auto recordParent =
+               getOperation()->getParentOfType<ReussirRecordDispatchOp>())
+    expectedType = recordParent.getValue() ? recordParent.getValue().getType()
+                                           : mlir::Type{};
+  else
+    llvm_unreachable("unexpected parent operation");
+
+  if (expectedType && !yieldedType)
+    return emitOpError(
+        "parent operation expected a value, but nothing is yielded");
+  if (yieldedType && !expectedType)
+    return emitOpError(
+        "parent operation did not expect a value, but one is yielded");
+
+  if (yieldedType && expectedType && yieldedType != expectedType)
+    return emitOpError("yielded type must match parent operation result type, ")
+           << "yielded type: " << yieldedType
+           << ", expected type: " << expectedType;
+
+  return mlir::success();
 }
 
 //===-----------------------------------------------------------------------===//

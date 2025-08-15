@@ -208,14 +208,13 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", []> {
                  MinSizedRegion<1>:$nullRegion);
 
   let assemblyFormat = [{
-    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{`
-      `nonnull` `->` $nonNullRegion
-      `null` `->` $nullRegion 
+    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` 
+      `nonnull` `->` $nonNullRegion `\n`
+      `null` `->` $nullRegion `\n`
     `}` attr-dict
   }];
 
-  // TODO: add verifier
-  // let hasVerifier = 1;
+  let hasVerifier = 1;
 }
 //===----------------------------------------------------------------------===//
 // Reussir RC Operations
@@ -418,8 +417,8 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", []> {
     It can produce a optional value. If the result presents, all child regions 
     must yield a value of the same type.
 
-    Each branch takes the form `tagSets -> region`. If it is a single tag, then
-    the region should accept a reference to the variant record. 
+    Each branch takes the form `[tag0, tag1, ...] -> region`. If it is a single tag, then
+    the region should accept a reference to target variant element type. 
     If it is a set of tags, the region must not have any argument.
   }];
 
@@ -588,8 +587,7 @@ def ReussirScfYieldOp : ReussirScfOp<"yield", [
   let assemblyFormat = [{
     ( $value^ `:` type($value) )? attr-dict
   }];
-  // TODO: add verifier
-  // let hasVerifier = 1;
+  let hasVerifier = 1;
 }
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

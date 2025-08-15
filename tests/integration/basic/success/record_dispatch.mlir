@@ -14,14 +14,16 @@ module {
   func.func @test_single_tag_dispatch(%opt_ref : !reussir.ref<!option>) -> i32 {
     %result = reussir.record.dispatch(%opt_ref : !reussir.ref<!option>) -> i32 {
       [0] -> {
-        %value = reussir.ref.load(%opt_ref : !reussir.ref<!option>) : !option
-        %extracted = reussir.record.tag(%opt_ref : !reussir.ref<!option>) : index
-        %cast = arith.index_cast %extracted : index to i32
-        reussir.scf.yield %cast : i32
+        ^bb0(%arg : !reussir.ref<!option_some>):
+          %value = reussir.ref.load(%opt_ref : !reussir.ref<!option>) : !option
+          %extracted = reussir.record.tag(%opt_ref : !reussir.ref<!option>) : index
+          %cast = arith.index_cast %extracted : index to i32
+          reussir.scf.yield %cast : i32
       }
       [1] -> {
-        %c42 = arith.constant 42 : i32
-        reussir.scf.yield %c42 : i32
+        ^bb0(%arg : !reussir.ref<!option_none>):
+          %c42 = arith.constant 42 : i32
+          reussir.scf.yield %c42 : i32
       }
     }
     func.return %result : i32
@@ -42,10 +44,12 @@ module {
   func.func @test_void_dispatch(%opt_ref : !reussir.ref<!option>) {
     reussir.record.dispatch(%opt_ref : !reussir.ref<!option>) {
       [0] -> {
-        reussir.scf.yield
+        ^bb0(%arg : !reussir.ref<!option_some>):
+          reussir.scf.yield
       }
       [1] -> {
-        reussir.scf.yield
+        ^bb0(%arg : !reussir.ref<!option_none>):
+          reussir.scf.yield
       }
     }
     func.return

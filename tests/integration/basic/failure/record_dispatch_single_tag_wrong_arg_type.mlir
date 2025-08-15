@@ -1,0 +1,25 @@
+// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+
+// Define variant record types for testing dispatch
+!option_some = !reussir.record<compound "Option::Some" {i32}>
+!option_none = !reussir.record<compound "Option::None" {}>
+!option = !reussir.record<variant "Option" {!option_some, !option_none}>
+
+module {
+  func.func @test_single_tag_wrong_arg_type(%opt_ref : !reussir.ref<!option>) -> i32 {
+    %result = reussir.record.dispatch(%opt_ref : !reussir.ref<!option>) -> i32 {
+      [0] -> {
+        // CHECK: error: 'reussir.record.dispatch' op region 0 argument type must match variant member type, argument type: '!reussir.record<compound "Option::None" {}>', expected type: '!reussir.record<compound "Option::Some" {i32}>'
+        ^bb0(%wrong_arg : !reussir.ref<!option_none>):
+          %c42 = arith.constant 42 : i32
+          reussir.scf.yield %c42 : i32
+      }
+      [1] -> {
+        ^bb0(%correct_arg : !reussir.ref<!option_none>):
+          %c0 = arith.constant 0 : i32
+          reussir.scf.yield %c0 : i32
+      }
+    }
+    func.return %result : i32
+  }
+}
