@@ -174,6 +174,9 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
   }];
 }
 
+// this is a high-level scf operation, 
+// should be expanded before basic ops lowering pass
+// TODO: add region branch interface
 def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", []> {
   let summary = "Dispatch a nullable token";
   let description = [{
@@ -400,6 +403,35 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
   let hasVerifier = 1;
 }
 
+
+// This is a high-level scf operation, 
+// should be expanded before basic ops lowering pass
+// TODO: add region branch interface
+def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", []> {
+  let summary = "Dispatch a record";
+  let description = [{
+    `reussir.record.dispatch` is a high-level structured control flow operation.
+
+    It provides a way to dispatch based on the tag of a variant record.
+    The input must be a reference to a variant record.
+
+    It can produce a optional value. If the result presents, all child regions 
+    must yield a value of the same type.
+
+    Each branch takes the form `tagSets -> region`. If it is a single tag, then
+    the region should accept a reference to the variant record. 
+    If it is a set of tags, the region must not have any argument.
+  }];
+
+  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
+      ArrayAttr:$tagSets);
+  let results = (outs Res<Optional<AnyType>, "output value">:$value);
+  let regions = (region VariadicRegion<MinSizedRegion<1>>:$regions);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir reference operations
 //===----------------------------------------------------------------------===//
@@ -544,13 +576,15 @@ class ReussirScfOp<string mnemonic, list<Trait> traits>
 
 def ReussirScfYieldOp : ReussirScfOp<"yield", [
   ReturnLike, Terminator,
-  ParentOneOf<["::reussir::ReussirNullableDispatchOp"]>
-]> {
+  ParentOneOf<[
+    "::reussir::ReussirNullableDispatchOp", 
+    "::reussir::ReussirRecordDispatchOp"
+  ]>]> {
   let summary = "Yield a value from a scf operation";
   let description = [{
     `reussir.scf.yield` terminates a high-level structured control flow operation.
   }];
-  let arguments = (ins Arg<Optional<ReussirRcType>, "value to yield">:$value);
+  let arguments = (ins Arg<Optional<AnyType>, "value to yield">:$value);
   let assemblyFormat = [{
     ( $value^ `:` type($value) )? attr-dict
   }];

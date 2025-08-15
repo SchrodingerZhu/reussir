@@ -16,7 +16,10 @@
 include "Reussir/IR/ReussirDialect.td"
 include "mlir/IR/EnumAttr.td"
 
-class ReussirAttr<string name> : AttrDef<ReussirDialect, name>;
+class ReussirAttr<string name, string attrMnemonic, list<Trait> traits = []>
+    : AttrDef<ReussirDialect, name, traits> {
+  let mnemonic = attrMnemonic;
+}
 
 //===----------------------------------------------------------------------===//
 // Atomicity Attributes

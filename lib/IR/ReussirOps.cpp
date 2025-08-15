@@ -9,7 +9,14 @@
 // This file implements the operations used in the Reussir dialect.
 //
 //===----------------------------------------------------------------------===//
+#include <llvm/ADT/APInt.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/Attributes.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/OpImplementation.h>
+#include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 
 #include "Reussir/IR/ReussirDialect.h"
@@ -418,6 +425,120 @@ void ReussirRegionRunOp::getSuccessorRegions(
   }
   // Otherwise, the region branches back to the parent operation.
   regions.emplace_back(getResults());
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Record Dispatch Op
+//===----------------------------------------------------------------------===//
+// RecordDispatchOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRecordDispatchOp::verify() {
+  // TODO: Implement verification
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RecordDispatchOp custom assembly format
+//===----------------------------------------------------------------------===//
+mlir::ParseResult ReussirRecordDispatchOp::parse(mlir::OpAsmParser &parser,
+                                                 mlir::OperationState &result) {
+  mlir::OpAsmParser::UnresolvedOperand variantRefOperand;
+  llvm::SMLoc variantRefOperandsLoc;
+  RefType variantRefType;
+  mlir::Type valueType;
+  llvm::SmallVector<std::unique_ptr<mlir::Region>> regions;
+  llvm::SmallVector<mlir::Attribute> tagSets;
+  if (parser.parseLParen())
+    return mlir::failure();
+
+  variantRefOperandsLoc = parser.getCurrentLocation();
+  if (parser.parseOperand(variantRefOperand))
+    return mlir::failure();
+  if (parser.parseColon())
+    return mlir::failure();
+
+  if (parser.parseCustomTypeWithFallback(variantRefType))
+    return mlir::failure();
+
+  if (parser.parseRParen())
+    return mlir::failure();
+  if (llvm::succeeded(parser.parseOptionalArrow()))
+    if (llvm::failed(parser.parseType(valueType)))
+      return mlir::failure();
+
+  if (parser.parseLBrace())
+    return mlir::failure();
+
+  llvm::SmallVector<int64_t> tags;
+  auto parseTag = [&]() -> mlir::ParseResult {
+    llvm::APInt tag;
+    if (parser.parseInteger(tag))
+      return mlir::failure();
+    if (tag.isNegative())
+      return parser.emitError(parser.getCurrentLocation(),
+                              "tag must be positive");
+    tags.push_back(tag.getZExtValue());
+    return mlir::success();
+  };
+  while (llvm::succeeded(parser.parseOptionalLSquare())) {
+    if (llvm::failed(parser.parseCommaSeparatedList(parseTag)))
+      return llvm::failure();
+    if (llvm::failed(parser.parseRSquare()))
+      return llvm::failure();
+    if (llvm::failed(parser.parseArrow()))
+      return mlir::failure();
+    if (llvm::failed(parser.parseRegion(
+            *regions.emplace_back(std::make_unique<mlir::Region>()))))
+      return mlir::failure();
+    tagSets.push_back(mlir::DenseI64ArrayAttr::get(parser.getContext(), tags));
+    tags.clear();
+  }
+  if (parser.parseRBrace())
+    return mlir::failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return mlir::failure();
+  if (valueType)
+    result.addTypes(valueType);
+  result.addRegions(regions);
+  result.addAttribute("tagSets",
+                      mlir::ArrayAttr::get(parser.getContext(), tagSets));
+  if (llvm::failed(parser.resolveOperands({variantRefOperand}, variantRefType,
+                                          variantRefOperandsLoc,
+                                          result.operands)))
+    return mlir::failure();
+  return mlir::success();
+}
+
+void ReussirRecordDispatchOp::print(mlir::OpAsmPrinter &p) {
+  // Print the variant reference operand and type
+  p << "(";
+  p.printOperand(getVariant());
+  p << ' ' << ":";
+  p.printType(getVariant().getType());
+  p << ")";
+
+  // Print optional result type
+  if (getValue()) {
+    p << ' ' << "->" << ' ';
+    p.printType(getValue().getType());
+  }
+
+  // Print the dispatch body
+  p << "{";
+  p.increaseIndent();
+  for (auto [region, tagSetAttr] : llvm::zip(getRegions(), getTagSets())) {
+    p.printNewline();
+    auto tagSet = llvm::cast<mlir::DenseI64ArrayAttr>(tagSetAttr);
+    p << '[';
+    llvm::interleaveComma(tagSet.asArrayRef(), p,
+                          [&](int64_t tag) { p << tag; });
+    p << ']' << ' ' << "->" << ' ';
+    p.printRegion(region);
+  }
+  p.decreaseIndent();
+  p.printNewline();
+  p << "}";
+  p.printOptionalAttrDict(getOperation()->getAttrs(), {"tagSets"});
 }
 
 //===-----------------------------------------------------------------------===//
