@@ -173,6 +173,48 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
     ( `(` $ptr^ `:` type($ptr) `)` )? `:` type($nullable) attr-dict
   }];
 }
+
+// this is a high-level scf operation, 
+// should be expanded before basic ops lowering pass
+def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Dispatch a nullable token";
+  let description = [{
+    `reussir.nullable.dispatch` is a high-level structured control flow operation.
+    It takes a nullable pointer and two regions where the first region accepts a 
+    non-nullable pointer and second region has no region argument. Both regions
+    must be terminated by `reussir.scf.yield` operation.
+
+    ```mlir
+    %flag = reussir.nullable.dispatch 
+      (%nullable : !reussir.nullable<!reussir.rc<i64>>) -> i1 {
+      nonnull -> {
+        ^bb0(%nonnull_ptr : !reussir.rc<i64>):
+          %true = arith.constant 1 : i1
+          reussir.scf.yield %true : i1
+      }
+      null -> {
+        ^bb0:
+          %false = arith.constant 0 : i1
+          reussir.scf.yield %false : i1
+      }
+    }
+    ```
+  }];
+  
+  let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
+  let results = (outs Res<Optional<AnyType>, "dispatched value">:$value);
+  let regions = (region MinSizedRegion<1>:$nonNullRegion,
+                 MinSizedRegion<1>:$nullRegion);
+
+  let assemblyFormat = [{
+    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` 
+      `nonnull` `->` $nonNullRegion `\n`
+      `null` `->` $nullRegion `\n`
+    `}` attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
 //===----------------------------------------------------------------------===//
 // Reussir RC Operations
 //===----------------------------------------------------------------------===//
@@ -341,13 +383,59 @@ def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
+  let summary = "Get the tag of a variant record";
+  let description = [{
+    `reussir.record.tag` gets the tag of a variant record.
+
+    The input must be a reference to a variant record.
+  }];
+  
+  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant);
+  let results = (outs Res<Index, "tag">:$tag);
+
+  let assemblyFormat = [{
+    `(` $variant `:` qualified(type($variant)) `)` `:` type($tag) attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+
+// This is a high-level scf operation, 
+// should be expanded before basic ops lowering pass
+def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Dispatch a record";
+  let description = [{
+    `reussir.record.dispatch` is a high-level structured control flow operation.
+
+    It provides a way to dispatch based on the tag of a variant record.
+    The input must be a reference to a variant record.
+
+    It can produce a optional value. If the result presents, all child regions 
+    must yield a value of the same type.
+
+    Each branch takes the form `[tag0, tag1, ...] -> region`. If it is a single tag, then
+    the region should accept a reference to target variant element type. 
+    If it is a set of tags, the region must not have any argument.
+  }];
+
+  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
+      ArrayAttr:$tagSets);
+  let results = (outs Res<Optional<AnyType>, "output value">:$value);
+  let regions = (region VariadicRegion<MinSizedRegion<1>>:$regions);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir reference operations
 //===----------------------------------------------------------------------===//
 class ReussirReferenceOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"ref."#mnemonic, traits>;
 
-def ReussirReferenceProjectOp : ReussirReferenceOp<"project", []> {
+def ReussirRefProjectOp : ReussirReferenceOp<"project", []> {
   let summary = "Project a reference";
   let description = [{
     `reussir.ref.project` projects a reference. This is effectively a GEP 
@@ -470,6 +558,30 @@ def ReussirRegionYieldOp
     `reussir.region.yield` yields a value from a region.
   }];
   let arguments = (ins Arg<Optional<ReussirRcType>, "value to yield">:$value);
+  let assemblyFormat = [{
+    ( $value^ `:` type($value) )? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Scf Placeholder Operations
+//===----------------------------------------------------------------------===//
+
+class ReussirScfOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"scf."#mnemonic, traits>;
+
+def ReussirScfYieldOp : ReussirScfOp<"yield", [
+  ReturnLike, Terminator,
+  ParentOneOf<[
+    "::reussir::ReussirNullableDispatchOp", 
+    "::reussir::ReussirRecordDispatchOp"
+  ]>]> {
+  let summary = "Yield a value from a scf operation";
+  let description = [{
+    `reussir.scf.yield` terminates a high-level structured control flow operation.
+  }];
+  let arguments = (ins Arg<Optional<AnyType>, "value to yield">:$value);
   let assemblyFormat = [{
     ( $value^ `:` type($value) )? attr-dict
   }];

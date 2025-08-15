@@ -33,4 +33,14 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
   // CHECK: llvm.return %2 : i64
   // CHECK: }
 
+  func.func @reference_project(%struct_ref: !reussir.ref<!reussir.record<compound "TestStruct" {i64, i64}>>) -> !reussir.ref<i64> {
+      %field_ref = reussir.ref.project (%struct_ref : !reussir.ref<!reussir.record<compound "TestStruct" {i64, i64}>>) [0] : !reussir.ref<i64>
+      return %field_ref : !reussir.ref<i64>
+  }
+  // CHECK-LABEL: llvm.func @reference_project(%arg0: !llvm.ptr) -> !llvm.ptr
+  // CHECK: %[[index:[0-9]+]] = llvm.mlir.constant(0 : index) : i64
+  // CHECK: %[[result:[0-9]+]] = llvm.gep %arg0[0, %[[index]]] : (!llvm.ptr, i64) -> !llvm.ptr
+  // CHECK: llvm.return %[[result]] : !llvm.ptr
+  // CHECK: }
+
 }

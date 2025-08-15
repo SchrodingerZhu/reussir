@@ -204,6 +204,93 @@ struct ReussirRefSpilledConversionPattern
   }
 };
 
+struct ReussirRecordCompoundConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordCompoundOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordCompoundOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the record type and convert it to LLVM struct type
+    RecordType recordType = op.getCompound().getType();
+    mlir::Type llvmStructType = converter->convertType(recordType);
+
+    if (!llvmStructType)
+      return op.emitOpError("failed to convert record type to LLVM type");
+
+    // Create an undef value of the struct type
+    auto undefOp = rewriter.create<mlir::LLVM::UndefOp>(loc, llvmStructType);
+
+    // Get the field values (already converted by the type converter)
+    auto fieldValues = adaptor.getFields();
+
+    // Insert each field using insertvalue
+    mlir::Value result = undefOp;
+    for (size_t i = 0; i < fieldValues.size(); ++i)
+      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result,
+                                                          fieldValues[i], i);
+
+    rewriter.replaceOp(op, result);
+    return mlir::success();
+  }
+};
+
+struct ReussirRecordVariantConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordVariantOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordVariantOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the record type and convert it to LLVM struct type
+    RecordType recordType = op.getVariant().getType();
+    mlir::Type llvmStructType = converter->convertType(recordType);
+
+    if (!llvmStructType)
+      return op.emitOpError("failed to convert record type to LLVM type");
+    auto indexType = converter->getIndexType();
+    // Get the tag and value (already converted by the type converter)
+    mlir::Value tag = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, op.getTag().getZExtValue()));
+    mlir::Value value = adaptor.getValue();
+
+    // Get the preferred alignment for the struct type
+    auto alignment =
+        converter->getDataLayout().getTypePreferredAlignment(llvmStructType);
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, 1));
+    // Allocate stack space for the struct
+    auto allocaOp = rewriter.create<mlir::LLVM::AllocaOp>(
+        loc, ptrType, llvmStructType, one, alignment);
+
+    // Get a pointer to the tag field (index 0) and store the tag
+    auto tagPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, ptrType, llvmStructType, allocaOp,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    rewriter.create<mlir::LLVM::StoreOp>(loc, tag, tagPtr);
+
+    // Get a pointer to the value field (index 1) and store the value
+    auto valuePtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, ptrType, llvmStructType, allocaOp,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+    rewriter.create<mlir::LLVM::StoreOp>(loc, value, valuePtr);
+
+    // Load the complete struct from the allocated space
+    auto result =
+        rewriter.create<mlir::LLVM::LoadOp>(loc, llvmStructType, allocaOp);
+
+    rewriter.replaceOp(op, result);
+    return mlir::success();
+  }
+};
+
 struct ReussirRefLoadConversionPattern
     : public mlir::OpConversionPattern<ReussirRefLoadOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -215,6 +302,79 @@ struct ReussirRefLoadConversionPattern
     mlir::Type llvmPointeeTy = getTypeConverter()->convertType(pointeeTy);
     rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, llvmPointeeTy,
                                                     adaptor.getRef());
+    return mlir::success();
+  }
+};
+
+struct ReussirReferenceProjectConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefProjectOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefProjectOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the reference pointer (already converted by the type converter)
+    mlir::Value refPtr = adaptor.getRef();
+
+    // Get the index value
+    auto indexType = converter->getIndexType();
+    mlir::Value index = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, op.getIndex().getZExtValue()));
+
+    // Get the result type (should be a pointer type after conversion)
+    mlir::Type resultType = converter->convertType(op.getProjected().getType());
+    auto llvmPtrType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(resultType);
+    if (!llvmPtrType)
+      return op.emitOpError("projected result must be an LLVM pointer type");
+
+    // Get the element type that the reference points to
+    RefType refType = op.getRef().getType();
+    mlir::Type elementType = converter->convertType(refType.getElementType());
+
+    // Create GEP operation to get the field pointer
+    auto gepOp = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, llvmPtrType, elementType, refPtr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, index});
+
+    rewriter.replaceOp(op, gepOp);
+    return mlir::success();
+  }
+};
+
+struct ReussirRecordTagConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordTagOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordTagOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the reference pointer (already converted by the type converter)
+    mlir::Value refPtr = adaptor.getVariant();
+
+    // Get the element type that the reference points to
+    RefType refType = op.getVariant().getType();
+    mlir::Type elementType = converter->convertType(refType.getElementType());
+
+    // Get the index type for the result
+    auto indexType = converter->getIndexType();
+
+    // Create GEP operation to get the tag field pointer (index 0, 0)
+    // For variant records, the tag is always at the first field
+    auto tagPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto tagPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, tagPtrType, elementType, refPtr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+
+    // Load the tag value
+    auto tagValue = rewriter.create<mlir::LLVM::LoadOp>(loc, indexType, tagPtr);
+
+    rewriter.replaceOp(op, tagValue);
     return mlir::success();
   }
 };
@@ -276,8 +436,7 @@ struct ReussirRcIncConversionPattern
       return mlir::success();
     }
 
-    RcBoxType rcBoxType =
-        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType());
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     // GEP [0].1
     auto convertedBoxType = getTypeConverter()->convertType(rcBoxType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
@@ -317,9 +476,7 @@ struct ReussirRcCreateOpConversionPattern
   matchAndRewrite(ReussirRcCreateOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     RcType rcPtrTy = op.getRcPtr().getType();
-    RcBoxType rcBoxType =
-        RcBoxType::get(rcPtrTy.getContext(), rcPtrTy.getElementType(),
-                       Capability::flex == rcPtrTy.getCapability());
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     if (rcBoxType.isRegional())
       return op->emitError("TODO: regional rc create");
     if (rcPtrTy.getAtomicKind() == AtomicKind::atomic)
@@ -340,6 +497,24 @@ struct ReussirRcCreateOpConversionPattern
     rewriter.create<mlir::LLVM::StoreOp>(op.getLoc(), adaptor.getValue(),
                                          refcntPtr);
     rewriter.replaceOp(op, adaptor.getToken());
+    return mlir::success();
+  }
+};
+
+struct ReussirRcBorrowOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcBorrowOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcBorrowOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    RcType rcPtrTy = op.getRcPtr().getType();
+    RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    rewriter.replaceOpWithNewOp<mlir::LLVM::GEPOp>(
+        op, llvmPtrType, getTypeConverter()->convertType(rcBoxType),
+        adaptor.getRcPtr(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, rcBoxType.getElementIndex()});
     return mlir::success();
   }
 };
@@ -410,7 +585,9 @@ struct BasicOpsLoweringPass
         ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
-        ReussirRcIncOp, ReussirRcCreateOp>();
+        ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp,
+        ReussirRecordCompoundOp, ReussirRecordVariantOp, ReussirRefProjectOp,
+        ReussirRecordTagOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -428,6 +605,10 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
       ReussirNullableCheckConversionPattern,
       ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
-      ReussirRcCreateOpConversionPattern>(converter, patterns.getContext());
+      ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern,
+      ReussirRecordCompoundConversionPattern,
+      ReussirRecordVariantConversionPattern,
+      ReussirReferenceProjectConversionPattern,
+      ReussirRecordTagConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir

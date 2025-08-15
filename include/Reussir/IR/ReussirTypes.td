@@ -136,6 +136,12 @@ def ReussirRecordType
       void complete(llvm::ArrayRef<mlir::Type> members, 
                     llvm::ArrayRef<reussir::Capability> memberCapabilities,
                     reussir::Capability defaultCapability);
+      struct LayoutInfo {
+        llvm::TypeSize size;
+        llvm::Align alignment;
+        mlir::Type memberWithLargestAlignment;
+      };
+      LayoutInfo getElementRegionLayoutInfo(const mlir::DataLayout &dataLayout) const;
     }];
 }
 
@@ -210,6 +216,7 @@ def ReussirRcType
   let extraClassDeclaration = [{
     using Base::verifyInvariants;
     mlir::Type getElementType() const { return getEleTy(); }
+    RcBoxType getInnerBoxType() const;
   }];
 }
 //===----------------------------------------------------------------------===//
@@ -320,6 +327,9 @@ def ReussirRcBoxType
   let extraClassDeclaration = [{
     mlir::Type getElementType() const { return getEleTy(); }
     bool isRegional() const { return getRegional(); }
+    size_t getElementIndex() const {
+      return isRegional() ? 3 : 1;
+    }
   }];
 }
 

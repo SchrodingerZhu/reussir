@@ -3,6 +3,12 @@ project(Reussir LANGUAGES CXX C VERSION 0.1.0)
 
 # Options
 option(REUSSIR_ENABLE_TESTS "Build tests for Reussir" ON)
+option(REUSSIR_ENABLE_PEDANTIC "Use pedantic compiler flags" OFF)
+
+if (REUSSIR_ENABLE_PEDANTIC)
+  message(STATUS "Pedantic mode enabled")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic")
+endif()
 
 # Adjust output paths
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
