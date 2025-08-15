@@ -32,7 +32,8 @@ def ReussirBasicOpsLoweringPass
                            "::mlir::scf::SCFDialect",
                            "::mlir::math::MathDialect",
                            "::mlir::LLVM::LLVMDialect",
-                           "::mlir::func::FuncDialect", "::mlir::ub::UBDialect",
+                           "::mlir::func::FuncDialect",
+                           "::mlir::ub::UBDialect",
                            "::reussir::ReussirDialect"];
 }
 
@@ -50,6 +51,7 @@ def ReussirSCFOpsLoweringPass
                            "::reussir::ReussirDialect",
                            "::mlir::math::MathDialect",
                            "::mlir::scf::SCFDialect",
-                           "::mlir::func::FuncDialect"];
+                           "::mlir::func::FuncDialect",
+                           "::mlir::ub::UBDialect"];
 }
 #endif // REUSSIR_CONVERSION_PASSES_TD

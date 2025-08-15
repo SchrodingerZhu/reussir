@@ -203,8 +203,8 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfac
   
   let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
   let results = (outs Res<Optional<AnyType>, "dispatched value">:$value);
-  let regions = (region MinSizedRegion<1>:$nonNullRegion,
-                 MinSizedRegion<1>:$nullRegion);
+  let regions = (region SizedRegion<1>:$nonNullRegion,
+                 SizedRegion<1>:$nullRegion);
 
   let assemblyFormat = [{
     `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` 
@@ -448,7 +448,7 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
   let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
       ArrayAttr:$tagSets);
   let results = (outs Res<Optional<AnyType>, "output value">:$value);
-  let regions = (region VariadicRegion<MinSizedRegion<1>>:$regions);
+  let regions = (region VariadicRegion<SizedRegion<1>>:$regions);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
@@ -591,7 +591,7 @@ def ReussirRegionRunOp
     `reussir.region.run` operation cannot be nested in the same function.
   }];
   let results = (outs Res<Optional<AnyType>, "result of the region">:$result);
-  let regions = (region MinSizedRegion<1>:$body);
+  let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{
     (`->` type($result)^)? ($body^)? attr-dict 
   }];

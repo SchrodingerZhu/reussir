@@ -392,7 +392,7 @@ struct ReussirNullableCheckConversionPattern
     mlir::Value nullConstant =
         rewriter.create<mlir::LLVM::ZeroOp>(op.getLoc(), llvmPtrType);
     rewriter.replaceOpWithNewOp<mlir::LLVM::ICmpOp>(
-        op, mlir::LLVM::ICmpPredicate::eq, nullable, nullConstant);
+        op, mlir::LLVM::ICmpPredicate::ne, nullable, nullConstant);
     return mlir::success();
   }
 };
