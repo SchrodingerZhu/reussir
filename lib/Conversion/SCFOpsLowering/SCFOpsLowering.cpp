@@ -70,9 +70,21 @@ struct ReussirRecordDispatchOpRewritePattern
   using OpRewritePattern::OpRewritePattern;
 
 private:
-  mlir::Value buildPreDispatcher(ReussirRecordTagOp tag,
-                                 ReussirRecordDispatchOp op,
-                                 mlir::PatternRewriter &rewriter) const {
+  static mlir::DenseI64ArrayAttr
+  getAllTagsAsSingletons(ReussirRecordDispatchOp op) {
+    llvm::SmallVector<int64_t> allTags;
+    for (auto tagSet : op.getTagSets()) {
+      mlir::DenseI64ArrayAttr tagArray =
+          llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
+      if (tagArray.size() != 1)
+        return {};
+      allTags.push_back(tagArray[0]);
+    }
+    return mlir::DenseI64ArrayAttr::get(op.getContext(), allTags);
+  }
+  static mlir::Value buildPreDispatcher(ReussirRecordTagOp tag,
+                                        ReussirRecordDispatchOp op,
+                                        mlir::PatternRewriter &rewriter) {
     mlir::OpBuilder::InsertionGuard guard(rewriter);
     llvm::DenseMap<int64_t, int64_t> tagToRegionIdx;
     llvm::SmallVector<int64_t> allTags;
@@ -117,12 +129,22 @@ public:
     auto tag = rewriter.create<reussir::ReussirRecordTagOp>(op.getLoc(),
                                                             op.getVariant());
 
-    auto dispatchedIndex = buildPreDispatcher(tag, op, rewriter);
-    llvm::SmallVector<int64_t> cases =
-        llvm::to_vector(llvm::seq<int64_t>(0, op.getTagSets().size()));
+    mlir::Value outerSwitchValue;
+    mlir::DenseI64ArrayAttr outerSwitchCases;
+
+    if (auto allTags = getAllTagsAsSingletons(op)) {
+      outerSwitchValue = tag.getResult();
+      outerSwitchCases = allTags;
+    } else {
+      outerSwitchValue = buildPreDispatcher(tag, op, rewriter);
+      outerSwitchCases = mlir::DenseI64ArrayAttr::get(
+          op.getContext(),
+          llvm::to_vector(llvm::seq<int64_t>(0, op.getTagSets().size())));
+    }
+
     auto indexSwitchOp = rewriter.create<mlir::scf::IndexSwitchOp>(
-        op.getLoc(), op->getResultTypes(), dispatchedIndex, cases,
-        cases.size());
+        op.getLoc(), op->getResultTypes(), outerSwitchValue, outerSwitchCases,
+        outerSwitchCases.size());
     // mark default region as unreachable
     {
       mlir::Block *block =
