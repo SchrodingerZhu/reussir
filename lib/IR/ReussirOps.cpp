@@ -431,6 +431,38 @@ void ReussirRegionRunOp::getSuccessorRegions(
 }
 
 //===----------------------------------------------------------------------===//
+// NullableDispatchOp RegionBranchOpInterface implementation
+//===----------------------------------------------------------------------===//
+void ReussirNullableDispatchOp::getSuccessorRegions(
+    mlir::RegionBranchPoint point,
+    llvm::SmallVectorImpl<mlir::RegionSuccessor> &regions) {
+  // If the predecessor is the parent operation, branch into one of the regions.
+  if (point.isParent()) {
+    regions.emplace_back(&getNonNullRegion());
+    regions.emplace_back(&getNullRegion());
+    return;
+  }
+  // Otherwise, the region branches back to the parent operation.
+  regions.emplace_back(getResults());
+}
+
+//===----------------------------------------------------------------------===//
+// RecordDispatchOp RegionBranchOpInterface implementation
+//===----------------------------------------------------------------------===//
+void ReussirRecordDispatchOp::getSuccessorRegions(
+    mlir::RegionBranchPoint point,
+    llvm::SmallVectorImpl<mlir::RegionSuccessor> &regions) {
+  // If the predecessor is the parent operation, branch into one of the regions.
+  if (point.isParent()) {
+    for (mlir::Region &region : getRegions())
+      regions.emplace_back(&region);
+    return;
+  }
+  // Otherwise, the region branches back to the parent operation.
+  regions.emplace_back(getResults());
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Record Dispatch Op
 //===----------------------------------------------------------------------===//
 // RecordDispatchOp verification

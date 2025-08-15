@@ -176,8 +176,7 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
 
 // this is a high-level scf operation, 
 // should be expanded before basic ops lowering pass
-// TODO: add region branch interface
-def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", []> {
+def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a nullable token";
   let description = [{
     `reussir.nullable.dispatch` is a high-level structured control flow operation.
@@ -405,8 +404,7 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
 
 // This is a high-level scf operation, 
 // should be expanded before basic ops lowering pass
-// TODO: add region branch interface
-def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", []> {
+def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a record";
   let description = [{
     `reussir.record.dispatch` is a high-level structured control flow operation.
