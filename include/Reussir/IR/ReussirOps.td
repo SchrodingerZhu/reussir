@@ -643,4 +643,21 @@ def ReussirScfYieldOp : ReussirScfOp<"yield", [
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Operations
+//===----------------------------------------------------------------------===//
+
+class ReussirClosureOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"closure."#mnemonic, traits>;
+
+
+def ReussirClosureCreateOp : ReussirClosureOp<"create", []> {
+  let summary = "Create a closure";
+  let description = [{
+    `reussir.closure.create` creates a closure.
+  }];
+  
+}
+
+
 #endif // REUSSIR_IR_REUSSIROPS_TD

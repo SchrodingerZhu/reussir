@@ -753,6 +753,89 @@ RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
                                  mlir::DataLayoutEntryListRef params) const {
   return getABIAlignment(dataLayout, params);
 }
+
+//===----------------------------------------------------------------------===//
+// ClosureType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize
+ClosureType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                               mlir::DataLayoutEntryListRef params) const {
+  // Closure structure: { void* vtable, void* arg_start, void* arg_cursor }
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  llvm::TypeSize ptrSizeInBits = dataLayout.getTypeSizeInBits(ptrTy);
+  if (!ptrSizeInBits.isFixed())
+    llvm_unreachable("ClosureType must have a fixed size");
+
+  // Total size = 3 * pointer size
+  return ptrSizeInBits * 3;
+}
+
+uint64_t
+ClosureType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                             mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeABIAlignment(ptrTy);
+}
+
+uint64_t
+ClosureType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
+                                   mlir::DataLayoutEntryListRef params) const {
+  return getABIAlignment(dataLayout, params);
+}
+
+//===----------------------------------------------------------------------===//
+// ClosureType Parse/Print
+//===----------------------------------------------------------------------===//
+mlir::Type ClosureType::parse(mlir::AsmParser &parser) {
+  if (parser.parseLess().failed())
+    return {};
+
+  if (parser.parseLParen().failed())
+    return {};
+
+  llvm::SmallVector<mlir::Type> inputTypes;
+  // Try to parse empty tuple first
+  if (parser.parseOptionalRParen().failed()) {
+    // Parse comma-separated types
+    if (parser
+            .parseCommaSeparatedList([&]() {
+              mlir::Type type;
+              if (parser.parseType(type).failed())
+                return mlir::failure();
+              inputTypes.push_back(type);
+              return mlir::success();
+            })
+            .failed())
+      return {};
+
+    if (parser.parseRParen().failed())
+      return {};
+  }
+
+  mlir::Type outputType;
+  if (parser.parseOptionalArrow().succeeded()) {
+    if (parser.parseType(outputType).failed())
+      return {};
+  }
+
+  if (parser.parseGreater().failed())
+    return {};
+
+  return ClosureType::getChecked(
+      parser.getEncodedSourceLoc(parser.getNameLoc()), parser.getContext(),
+      inputTypes, outputType);
+}
+
+void ClosureType::print(mlir::AsmPrinter &printer) const {
+  printer << "<(";
+  llvm::interleaveComma(getInputTypes(), printer,
+                        [&](mlir::Type type) { printer.printType(type); });
+  printer << ")";
+  if (getOutputType())
+    printer << " -> " << getOutputType();
+  printer << ">";
+}
+
 //===----------------------------------------------------------------------===//
 // getProjectedType
 //===----------------------------------------------------------------------===//

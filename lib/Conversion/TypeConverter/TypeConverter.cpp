@@ -64,6 +64,20 @@ LLVMTypeConverter::LLVMTypeConverter(mlir::ModuleOp op)
     return mlir::LLVM::LLVMPointerType::get(&getContext());
   });
 
+  // Closure types
+  addConversion([this](ClosureType type) {
+    // Convert to LLVM struct: { void* vtable, void* arg_start, void* arg_cursor
+    // }
+    llvm::SmallVector<mlir::Type> members;
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // vtable
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // arg_start
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // arg_cursor
+    return mlir::LLVM::LLVMStructType::getLiteral(&getContext(), members);
+  });
+
   // Nullable types
   addConversion(
       [this](NullableType type) { return convertType(type.getPtrTy()); });
