@@ -1,10 +1,12 @@
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/TypeSwitch.h>
+#include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
 #include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>
 #include <mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
@@ -359,7 +361,11 @@ struct ReussirRecordTagConversionPattern
 
     // Get the element type that the reference points to
     RefType refType = op.getVariant().getType();
-    mlir::Type elementType = converter->convertType(refType.getElementType());
+    RecordType recordType =
+        llvm::dyn_cast<RecordType>(refType.getElementType());
+    if (!recordType)
+      return op.emitOpError("expected a record type");
+    mlir::Type elementType = converter->convertType(recordType);
 
     // Get the index type for the result
     auto indexType = converter->getIndexType();
@@ -372,9 +378,7 @@ struct ReussirRecordTagConversionPattern
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
 
     // Load the tag value
-    auto tagValue = rewriter.create<mlir::LLVM::LoadOp>(loc, indexType, tagPtr);
-
-    rewriter.replaceOp(op, tagValue);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, indexType, tagPtr);
     return mlir::success();
   }
 };
