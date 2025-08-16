@@ -392,7 +392,7 @@ struct ReussirNullableCheckConversionPattern
     mlir::Value nullConstant =
         rewriter.create<mlir::LLVM::ZeroOp>(op.getLoc(), llvmPtrType);
     rewriter.replaceOpWithNewOp<mlir::LLVM::ICmpOp>(
-        op, mlir::LLVM::ICmpPredicate::eq, nullable, nullConstant);
+        op, mlir::LLVM::ICmpPredicate::ne, nullable, nullConstant);
     return mlir::success();
   }
 };
@@ -519,6 +519,55 @@ struct ReussirRcBorrowOpConversionPattern
   }
 };
 
+struct ReussirNullableCoerceConversionPattern
+    : public mlir::OpConversionPattern<ReussirNullableCoerceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirNullableCoerceOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // For nullable coerce, we just use the input nullable directly since both
+    // nullable and non-nullable pointers are LLVM pointers after conversion
+    rewriter.replaceOp(op, adaptor.getNullable());
+    return mlir::success();
+  }
+};
+
+struct ReussirRecordCoerceConversionPattern
+    : public mlir::OpConversionPattern<ReussirRecordCoerceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordCoerceOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter = static_cast<const LLVMTypeConverter *>(getTypeConverter());
+
+    // Get the variant reference pointer (already converted by the type
+    // converter)
+    mlir::Value variantPtr = adaptor.getVariant();
+
+    // Get the element type that the reference points to (the variant record)
+    RefType refType = op.getVariant().getType();
+    mlir::Type elementType = converter->convertType(refType.getElementType());
+
+    // Get the result type (should be a pointer type after conversion)
+    mlir::Type resultType = converter->convertType(op.getCoerced().getType());
+    auto llvmPtrType = llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(resultType);
+    if (!llvmPtrType)
+      return op.emitOpError("coerced result must be an LLVM pointer type");
+
+    // Create GEP operation to get the value field pointer (index 0, 1)
+    // For variant records, the value is at the second field (index 1)
+    auto gepOp = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, llvmPtrType, elementType, variantPtr,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+
+    rewriter.replaceOp(op, gepOp);
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -585,9 +634,9 @@ struct BasicOpsLoweringPass
         ReussirTokenAllocOp, ReussirTokenFreeOp, ReussirTokenReinterpretOp,
         ReussirTokenReallocOp, ReussirRefLoadOp, ReussirRefStoreOp,
         ReussirRefSpilledOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
-        ReussirRcIncOp, ReussirRcCreateOp, ReussirRcBorrowOp,
-        ReussirRecordCompoundOp, ReussirRecordVariantOp, ReussirRefProjectOp,
-        ReussirRecordTagOp>();
+        ReussirNullableCoerceOp, ReussirRcIncOp, ReussirRcCreateOp,
+        ReussirRcBorrowOp, ReussirRecordCompoundOp, ReussirRecordVariantOp,
+        ReussirRefProjectOp, ReussirRecordTagOp, ReussirRecordCoerceOp>();
     target.addLegalDialect<mlir::LLVM::LLVMDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -604,11 +653,13 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,
       ReussirRefStoreConversionPattern, ReussirRefSpilledConversionPattern,
       ReussirNullableCheckConversionPattern,
-      ReussirNullableCreateConversionPattern, ReussirRcIncConversionPattern,
+      ReussirNullableCreateConversionPattern,
+      ReussirNullableCoerceConversionPattern, ReussirRcIncConversionPattern,
       ReussirRcCreateOpConversionPattern, ReussirRcBorrowOpConversionPattern,
       ReussirRecordCompoundConversionPattern,
       ReussirRecordVariantConversionPattern,
       ReussirReferenceProjectConversionPattern,
-      ReussirRecordTagConversionPattern>(converter, patterns.getContext());
+      ReussirRecordTagConversionPattern, ReussirRecordCoerceConversionPattern>(
+      converter, patterns.getContext());
 }
 } // namespace reussir

@@ -4,7 +4,7 @@
 !nullable = !reussir.nullable<!reussir.ref<i64>>
 module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
   func.func private @nullable_check(%nullable: !nullable) -> i1 {
-    // CHECK: icmp eq ptr %0, null
+    // CHECK: icmp ne ptr %0, null
     %result = reussir.nullable.check (%nullable : !nullable) : i1
     return %result : i1
   }
