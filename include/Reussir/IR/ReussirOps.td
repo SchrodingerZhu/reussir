@@ -443,6 +443,12 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
     Each branch takes the form `[tag0, tag1, ...] -> region`. If it is a single tag, then
     the region should accept a reference to target variant element type. 
     If it is a set of tags, the region must not have any argument.
+
+    If the dispatch operation has separated regions for each tag, this operation
+    will be directly lowered to a scf.index_switch operation. Otherwise, it will
+    be expanded into 2 consecutive scf.index_switch operations, where the first
+    one dispastch tags to region indices and the second one dispatches the 
+    region indices to the actual regions.
   }];
 
   let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
@@ -636,5 +642,22 @@ def ReussirScfYieldOp : ReussirScfOp<"yield", [
   }];
   let hasVerifier = 1;
 }
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Operations
+//===----------------------------------------------------------------------===//
+
+class ReussirClosureOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"closure."#mnemonic, traits>;
+
+
+def ReussirClosureCreateOp : ReussirClosureOp<"create", []> {
+  let summary = "Create a closure";
+  let description = [{
+    `reussir.closure.create` creates a closure.
+  }];
+  
+}
+
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

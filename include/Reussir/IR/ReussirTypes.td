@@ -333,6 +333,35 @@ def ReussirRcBoxType
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Type
+//===----------------------------------------------------------------------===//
+def ReussirClosureType
+    : ReussirType<"Closure", "closure", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Closure Type";
+  let description = [{
+    `reussir.closure` represents a closure. It roughly corresponds to the 
+    following C++ struct:
+    ```c++
+    struct Closure {
+      void* vtable;
+      void* arg_start;
+      void* arg_cursor;
+    };
+    struct VTable {
+      void* func;
+      void* clone;
+      void* drop;
+    }
+    ```
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"::mlir::Type">:$inputTypes,
+    OptionalParameter<"::mlir::Type">:$outputType
+  );
+  let hasCustomAssemblyFormat = 1;
+}
+
 ///===----------------------------------------------------------------------===//
 // Special Type Constraints
 //===----------------------------------------------------------------------===//
