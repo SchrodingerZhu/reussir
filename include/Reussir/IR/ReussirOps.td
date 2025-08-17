@@ -651,13 +651,55 @@ class ReussirClosureOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"closure."#mnemonic, traits>;
 
 
-def ReussirClosureCreateOp : ReussirClosureOp<"create", []> {
+def ReussirClosureCreateOp : ReussirClosureOp<"create", [
+  IsolatedFromAbove
+]> {
   let summary = "Create a closure";
   let description = [{
-    `reussir.closure.create` creates a closure.
+    `reussir.closure.create` creates a closure. 
+    A closure is always wrapped in an rc pointer.
+
+    The operation takes two form, either inlined or outlined. Token is required
+    in both cases. The token shall match the layout of the a RcBox with 
+    ClosureHeader and Payload, where the payload is the space for all arguments.
+    This allows a closure to be partially applied.
+
+    For the inlined form, the body region is required. The body region must 
+    accept a list of arguments, each of which matches one of the closure 
+    argument in order. If the closure has a return value, the body region must yield
+    a single value, which is the result of the closure. No outlinedFunc nor
+    outlinedVtable shall be supplied.
+
+    ```mlir
+    !closure = reussir.closure.create
+      token (%token : !reussir.token<...>) {
+        ^bb(%arg0 : i64, %arg1 : i64):
+          %result = arith.addi %arg0, %arg1 : i64
+          reussir.region.yield %result : i64
+      }
+    ```
+
+    For the outlined form, the outlinedFunc and outlinedVtable are required. 
+    No region is allowed.
+
+    The outlinedFunc is a flat symbol reference to a function. 
+    The function must match the signature of the closure.
   }];
-  
+  let arguments = (ins
+    OptionalAttr<FlatSymbolRefAttr>:$outlinedFunc,
+    OptionalAttr<FlatSymbolRefAttr>:$outlinedVtable,
+    ReussirTokenType:$token
+  );
+  let regions = (region MaxSizedRegion<1>:$body);
+  let results = (outs Res<ReussirRcClosureType, "created closure">:$closure);
+
+  let hasCustomAssemblyFormat = 1;
+
+  // TODO: add verifier later on
+  // let hasVerifier = 1;
 }
+
+// TODO: add closure yield op
 
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

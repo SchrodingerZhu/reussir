@@ -384,4 +384,10 @@ def ReussirVariantType : Type<CPred<[{
   ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
                               "Reussir variant type", "::reussir::RecordType">;
 
+def ReussirRcClosureType
+    : Type<CPred<[{
+    ::llvm::isa<::reussir::ClosureType>(
+      ::llvm::cast<::reussir::RcType>($_self).getElementType())
+    }]>, "Reussir rc closure type", "::reussir::RcType">;
+
 #endif // REUSSIR_IR_REUSSIRTYPES_TD
