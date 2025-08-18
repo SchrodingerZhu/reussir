@@ -40,6 +40,9 @@ jobs:
       run: |
         cmake -B build \
           -G Ninja \
+          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm-version }} \
+          -DCMAKE_C_COMPILER=clang-${{ matrix.llvm-version }} \
+          -DCMAKE_CXX_FLAGS="-fuse-ld=lld" \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DREUSSIR_ENABLE_PEDANTIC=ON \
           -DREUSSIR_ENABLE_TESTS=ON \
