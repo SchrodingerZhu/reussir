@@ -1055,6 +1055,61 @@ mlir::LogicalResult ReussirClosureYieldOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Apply Op
+//===----------------------------------------------------------------------===//
+// ClosureApplyOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureApplyOp::verify() {
+  ClosureType closureType = getClosure().getType();
+  mlir::Type argType = getArg().getType();
+  
+  // Get the input types of the closure
+  auto inputTypes = closureType.getInputTypes();
+  
+  // Check that the closure has at least one input type
+  if (inputTypes.empty())
+    return emitOpError("cannot apply to closure with no input types");
+  
+  // Check that the argument type matches the first input type
+  mlir::Type expectedArgType = inputTypes[0];
+  if (argType != expectedArgType)
+    return emitOpError("argument type must match first closure input type, ")
+           << "argument type: " << argType
+           << ", expected type: " << expectedArgType;
+  
+  // Verify the result type
+  ClosureType resultType = getApplied().getType();
+  
+  // The result closure should have one less input type
+  auto expectedInputTypes = inputTypes.drop_front(1);
+  auto resultInputTypes = resultType.getInputTypes();
+  
+  if (resultInputTypes.size() != expectedInputTypes.size())
+    return emitOpError("result closure must have one less input type, ")
+           << "expected " << expectedInputTypes.size() << " input types, "
+           << "but got " << resultInputTypes.size();
+  
+  // Check that the remaining input types match
+  for (size_t i = 0; i < expectedInputTypes.size(); ++i) {
+    if (resultInputTypes[i] != expectedInputTypes[i])
+      return emitOpError("result closure input types must match remaining input types, ")
+             << "mismatch at index " << i << ": expected " << expectedInputTypes[i]
+             << ", but got " << resultInputTypes[i];
+  }
+  
+  // Check that the output types match
+  mlir::Type closureOutputType = closureType.getOutputType();
+  mlir::Type resultOutputType = resultType.getOutputType();
+  
+  if (closureOutputType != resultOutputType)
+    return emitOpError("result closure output type must match original closure output type, ")
+           << "original output type: " << closureOutputType
+           << ", result output type: " << resultOutputType;
+  
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

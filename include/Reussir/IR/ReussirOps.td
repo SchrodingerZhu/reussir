@@ -729,7 +729,10 @@ def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
 ]> {
   let summary = "Create a vtable";
   let description = [{
-    `reussir.closure.vtable` creates a vtable.
+    `reussir.closure.vtable` creates a vtable for closures. The VTable is in charge of
+    record the function pointer and corresponding drop and clone functions.
+
+    Drop and clone functions are be null if closure payload is trivially copyable.
   }];
   let arguments = (ins
     FlatSymbolRefAttr:$name,
@@ -747,6 +750,35 @@ def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
     ( `drop` `(` $drop `)` 
     | `clone` `(` $clone `)` 
     ) attr-dict
+  }];
+}
+
+def ReussirClosureApplyOp : ReussirClosureOp<"apply", []> {
+  let summary = "Apply a closure";
+  let description = [{
+    `reussir.closure.apply` applies an argument to a closure.
+    Notice that apply operation does not evaluate the closure.
+    It is only to supply arguments to the closure.
+
+    The closure must have input arguments in its list and the supplied value type 
+    must match the type of the argument.
+
+    The output closure is a new closure with one less argument.
+
+    ```mlir
+    %closure = reussir.closure.apply (%arg : i64) to (%closure : !reussir.closure<(i64) -> i64>)
+       : !reussir.closure<() -> i64>
+    ```
+  }];
+  let hasVerifier = 1;
+  let arguments = (ins
+    Arg<AnyType, "argument to apply">:$arg,
+    Arg<ReussirClosureType, "closure to apply">:$closure
+  );
+  let results = (outs Res<ReussirClosureType, "applied closure">:$applied);
+  let assemblyFormat = [{
+    `(` $arg `:` type($arg) `)` `to` `(` $closure `:` type($closure) `)`
+    `:` type($applied) attr-dict
   }];
 }
 
