@@ -30,7 +30,9 @@ jobs:
         sudo ./llvm.sh ${{ matrix.llvm-version }} all
         sudo apt-get install -y \
           libmlir-${{ matrix.llvm-version }}-dev \
-          mlir-${{ matrix.llvm-version }}-tools
+          mlir-${{ matrix.llvm-version }}-tools \
+          llvm-${{ matrix.llvm-version }}-dev \
+          llvm-${{ matrix.llvm-version }}-tools
 
     - name: ccache
       uses: hendrikmuhs/ccache-action@v1.2
