@@ -136,6 +136,49 @@ bool isNonNullPointerType(mlir::Type type) {
       .Default([](mlir::Type) { return false; });
 }
 //===----------------------------------------------------------------------===//
+// isTriviallyCopyable
+//===----------------------------------------------------------------------===//
+bool isTriviallyCopyable(mlir::Type type) {
+  if (!type)
+    return false;
+
+  return llvm::TypeSwitch<mlir::Type, bool>(type)
+      // Built-in types that are trivially copyable
+      .Case<mlir::IntegerType, mlir::FloatType, mlir::IndexType>(
+          [](auto) { return true; })
+      .Case<RawPtrType>([](auto) { return true; })
+      // Reference counted and reference types are NOT trivially copyable
+      // as they require special handling for reference counting/lifetime
+      .Case<RcType, RefType, ClosureType>([](auto) { return false; })
+      // Nullable types depend on their inner type
+      .Case<NullableType>([](NullableType nullableType) {
+        return isTriviallyCopyable(nullableType.getPtrTy());
+      })
+      // Record types need to check all their members
+      .Case<RecordType>([](RecordType recordType) {
+        // Incomplete records are considered non-trivially copyable
+        if (!recordType.getComplete())
+          return false;
+
+        // All members must be trivially copyable
+        for (auto member : recordType.getMembers())
+          if (!isTriviallyCopyable(member))
+            return false;
+
+        return true;
+      })
+      // Region type is a runtime construct, not trivially copyable
+      .Case<RegionType>([](auto) { return false; })
+      // Box types contain metadata and managed data, not trivially copyable
+      .Case<RcBoxType, ClosureBoxType>([](auto) { return false; })
+      .Case<mlir::VectorType>([](mlir::VectorType vectorType) {
+        return isTriviallyCopyable(vectorType.getElementType());
+      })
+      // Default: check if it's a built-in MLIR type that might be trivially
+      // copyable
+      .Default([](mlir::Type type) { return false; });
+}
+//===----------------------------------------------------------------------===//
 // deriveCompoundSizeAndAlignment
 //===----------------------------------------------------------------------===//
 std::optional<std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>>
