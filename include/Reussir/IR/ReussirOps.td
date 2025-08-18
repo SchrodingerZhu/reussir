@@ -734,11 +734,19 @@ def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
   let arguments = (ins
     FlatSymbolRefAttr:$name,
     FlatSymbolRefAttr:$func,
+    OptionalAttr<FlatSymbolRefAttr>:$drop,
+    OptionalAttr<FlatSymbolRefAttr>:$clone,
     TypeAttrOf<ReussirClosureType>:$closure
   );
 
   let assemblyFormat = [{
-    `{` `name` `:` $name `,` `func` `:` $func `,` `closure` `:` $closure `}` attr-dict
+    `name` `(` $name `)`
+    `func` `(` $func `)`
+    `closure` `(` $closure `)`
+    oilist
+    ( `drop` `(` $drop `)` 
+    | `clone` `(` $clone `)` 
+    ) attr-dict
   }];
 }
 
