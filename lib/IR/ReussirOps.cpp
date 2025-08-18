@@ -885,7 +885,8 @@ mlir::ParseResult ReussirClosureCreateOp::parse(mlir::OpAsmParser &parser,
   if (!appeared[static_cast<size_t>(Keyword::token)])
     return parser.emitError(operationLoc, "token is required");
 
-  result.addAttribute("vtable", vtableAttr);
+  if (vtableAttr)
+    result.addAttribute("vtable", vtableAttr);
   result.addRegion(std::move(bodyRegion));
   result.addTypes(closureType);
   if (llvm::failed(parser.resolveOperands({tokenOperand}, tokenType,
