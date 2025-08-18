@@ -933,7 +933,10 @@ void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
 // ClosureCreateOp verification
 //===-----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirClosureCreateOp::verify() {
-  if (!isOutlined() && !isInlined())
+  bool outlinedFlag = isOutlined();
+  bool inlinedFlag = isInlined();
+  ClosureType closureType = getClosure().getType();
+  if (!outlinedFlag && !inlinedFlag)
     return emitOpError("closure must be outlined or inlined");
   ClosureBoxType closureBoxType = getClosureBoxType();
   auto dataLayout = mlir::DataLayout::closest(this->getOperation());
@@ -948,7 +951,20 @@ mlir::LogicalResult ReussirClosureCreateOp::verify() {
     return emitOpError("closure box alignment must match token alignment")
            << ", closure box alignment: " << closureBoxAlignment
            << ", token alignment: " << tokenType.getAlign();
-
+  // Check that region arguments match the closure input types
+  if (inlinedFlag) {
+    auto types = getBody().getArgumentTypes();
+    if (types.size() != closureType.getInputTypes().size())
+      return emitOpError("inlined closure body must have the same number of "
+                         "arguments as the closure input types");
+    if (llvm::any_of(llvm::zip(types, closureType.getInputTypes()),
+                     [](auto &&argAndType) {
+                       auto [argTy, type] = argAndType;
+                       return argTy != type;
+                     }))
+      return emitOpError(
+          "inlined closure body arguments must match the closure input types");
+  }
   return mlir::success();
 }
 
