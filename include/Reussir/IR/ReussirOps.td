@@ -699,6 +699,12 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
     bool isInlined();
     // get the payload box for the closure
     ::reussir::ClosureBoxType getClosureBoxType();
+
+    // Return the target function is the closure is trivially forwarding.
+    // Return null otherwise.
+    // A closure is trivially forwarding if the only operation it does is to
+    // call a function with exactly the same argument order and return the result.
+    ::mlir::FlatSymbolRefAttr getTrivialForwardingTarget();
   }];
 
   let hasVerifier = 1;
