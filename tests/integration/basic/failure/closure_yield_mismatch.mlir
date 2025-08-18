@@ -1,4 +1,4 @@
-// RUN: not %reussir-opt %s 2>&1 | FileCheck %s
+// RUN: %not %reussir-opt %s 2>&1 | %filecheck %s
 
 // Test closure yield with mismatched return type
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
