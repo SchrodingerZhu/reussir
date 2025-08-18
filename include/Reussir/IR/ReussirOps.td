@@ -652,7 +652,7 @@ class ReussirClosureOp<string mnemonic, list<Trait> traits>
 
 
 def ReussirClosureCreateOp : ReussirClosureOp<"create", [
-  IsolatedFromAbove
+  IsolatedFromAbove, DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
   let summary = "Create a closure";
   let description = [{
@@ -721,5 +721,22 @@ def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
   // let hasVerifier = 1;
 }
 
+def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
+  Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Create a vtable";
+  let description = [{
+    `reussir.closure.vtable` creates a vtable.
+  }];
+  let arguments = (ins
+    FlatSymbolRefAttr:$name,
+    FlatSymbolRefAttr:$func,
+    TypeAttrOf<ReussirClosureType>:$closure
+  );
+
+  let assemblyFormat = [{
+    `{` `name` `:` $name `,` `func` `:` $func `,` `closure` `:` $closure `}` attr-dict
+  }];
+}
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

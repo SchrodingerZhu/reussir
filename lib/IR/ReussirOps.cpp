@@ -968,6 +968,20 @@ mlir::LogicalResult ReussirClosureCreateOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// ClosureCreateOp SymbolUserOpInterface
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureCreateOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbolTable) {
+  // NYI for body
+  if (getVtableAttr()) {
+    // TODO: Verify that the vtable symbol exists and is valid
+    // This would typically check that the referenced vtable operation exists
+    // and has the correct signature matching the closure type
+  }
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // ClosureCreateOp helper methods
 //===-----------------------------------------------------------------------===//
@@ -982,6 +996,22 @@ bool ReussirClosureCreateOp::isInlined() {
 ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
   ClosureType closureType = getClosure().getType();
   return ClosureBoxType::get(getContext(), closureType.getInputTypes());
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Vtable Op
+//===----------------------------------------------------------------------===//
+// ClosureVtableOp SymbolUserOpInterface
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureVtableOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbolTable) {
+  // NYI for body
+  if (getFuncAttr()) {
+    // TODO: Verify that the func symbol exists and is valid
+    // This would typically check that the referenced function operation exists
+    // and has the correct signature matching the closure type
+  }
+  return mlir::success();
 }
 
 //===-----------------------------------------------------------------------===//
