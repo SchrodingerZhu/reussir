@@ -1183,6 +1183,46 @@ mlir::LogicalResult ReussirClosureApplyOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Eval Op
+//===----------------------------------------------------------------------===//
+// ClosureEvalOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureEvalOp::verify() {
+  ClosureType closureType = getClosure().getType();
+
+  // Check that the closure has no input types (fully applied)
+  auto inputTypes = closureType.getInputTypes();
+  if (!inputTypes.empty())
+    return emitOpError("cannot evaluate closure with remaining input types, ")
+           << "closure has " << inputTypes.size() << " input types remaining";
+
+  // Check that the result type matches the closure's output type
+  mlir::Type closureOutputType = closureType.getOutputType();
+
+  // Check if we have a result
+  if (getNumResults() > 0) {
+    mlir::Type resultType = getResult().getType();
+
+    // If the closure has no output type, the result should be empty
+    if (!closureOutputType)
+      return emitOpError("closure has no output type but result is not empty");
+
+    // If the closure has an output type, the result should match
+    if (resultType != closureOutputType)
+      return emitOpError("result type must match closure output type, ")
+             << "result type: " << resultType
+             << ", closure output type: " << closureOutputType;
+  } else {
+    // No result provided
+    if (closureOutputType)
+      return emitOpError("closure has output type ")
+             << closureOutputType << " but result is empty";
+  }
+
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

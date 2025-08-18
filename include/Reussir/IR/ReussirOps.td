@@ -788,4 +788,20 @@ def ReussirClosureApplyOp : ReussirClosureOp<"apply", []> {
   }];
 }
 
+def ReussirClosureEvalOp : ReussirClosureOp<"eval", []> {
+  let summary = "Evaluate a closure";
+  let description = [{
+    `reussir.closure.eval` evaluates a closure.
+
+    This operation takes a fully applied closure and evaluates it.
+    The output is the result of the closure if exists.
+  }];
+  let arguments = (ins Arg<ReussirClosureType, "closure to evaluate">:$closure);
+  let results = (outs Res<Optional<AnyType>, "result of the closure">:$result);
+  let assemblyFormat = [{
+    `(` $closure `:` type($closure) `)` (`:` type($result)^)? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 #endif // REUSSIR_IR_REUSSIROPS_TD
