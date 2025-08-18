@@ -27,6 +27,9 @@ jobs:
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
         sudo ./llvm.sh ${{ matrix.llvm-version }} all
+        sudo apt-get install -y \
+          libmlir-${{ matrix.llvm-version }}-dev \
+          mlir-${{ matrix.llvm-version }}-tools
 
     - name: ccache
       uses: hendrikmuhs/ccache-action@v1.2
