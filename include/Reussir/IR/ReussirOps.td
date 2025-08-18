@@ -667,8 +667,7 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
     For the inlined form, the body region is required. The body region must 
     accept a list of arguments, each of which matches one of the closure 
     argument in order. If the closure has a return value, the body region must yield
-    a single value, which is the result of the closure. No outlinedFunc nor
-    outlinedVtable shall be supplied.
+    a single value, which is the result of the closure. No outlinedVtable shall be supplied.
 
     ```mlir
     !closure = reussir.closure.create
@@ -679,27 +678,48 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
       }
     ```
 
-    For the outlined form, the outlinedFunc and outlinedVtable are required. 
-    No region is allowed.
-
-    The outlinedFunc is a flat symbol reference to a function. 
-    The function must match the signature of the closure.
+    For the outlined form, outlinedVtable is required. No region is allowed.
+    Target vtable shall present as a vtable operation within the same module and
+    the vtable shall match the signature of the closure.
+    (TODO: add vtable operation and verification).
   }];
   let arguments = (ins
-    OptionalAttr<FlatSymbolRefAttr>:$outlinedFunc,
-    OptionalAttr<FlatSymbolRefAttr>:$outlinedVtable,
-    ReussirTokenType:$token
+    ReussirTokenType:$token,
+    OptionalAttr<FlatSymbolRefAttr>:$vtable
   );
   let regions = (region MaxSizedRegion<1>:$body);
   let results = (outs Res<ReussirRcClosureType, "created closure">:$closure);
 
   let hasCustomAssemblyFormat = 1;
 
-  // TODO: add verifier later on
-  // let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    // empty region while function vtable presents
+    bool isOutlined();
+    // non-empty region while vtable does not present
+    bool isInlined();
+    // get the payload box for the closure
+    ::reussir::ClosureBoxType getClosureBoxType();
+  }];
+
+  let hasVerifier = 1;
 }
 
-// TODO: add closure yield op
+def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
+  ReturnLike, Terminator,
+  ParentOneOf<[
+    "::reussir::ReussirClosureCreateOp"
+  ]>]> {
+  let summary = "Yield a value from a closure";
+  let description = [{
+    `reussir.closure.yield` yields a value from a closure.
+  }];
+  let arguments = (ins Optional<AnyType>:$value);
+  let assemblyFormat = [{
+    ( $value^ `:` type($value) )? attr-dict
+  }];
+  // TODO: add verifier
+  // let hasVerifier = 1;
+}
 
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

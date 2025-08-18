@@ -362,6 +362,25 @@ def ReussirClosureType
   let hasCustomAssemblyFormat = 1;
 }
 
+def ReussirClosureBoxType
+    : ReussirType<"ClosureBox", "closure_box", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Closure Box Type";
+  let description = [{
+    `reussir.closure` represents a closure. It roughly corresponds to the 
+    following C++ struct:
+    ```c++
+    struct ClosureBox {
+      Closure header;
+      PayloadTypes... payload;
+    }
+    ```
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"::mlir::Type">:$payloadTypes
+  );
+  let assemblyFormat = "`<` $payloadTypes `>`";
+}
+
 ///===----------------------------------------------------------------------===//
 // Special Type Constraints
 //===----------------------------------------------------------------------===//

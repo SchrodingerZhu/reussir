@@ -871,4 +871,62 @@ mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
   llvm_unreachable("invalid field capability");
 }
 
+//===----------------------------------------------------------------------===//
+// ClosureBoxType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize
+ClosureBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                                  mlir::DataLayoutEntryListRef params) const {
+  // ClosureBox structure: { Closure header, PayloadTypes... }
+  // Closure header is 3 pointers: { void* vtable, void* arg_start, void*
+  // arg_cursor }
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  llvm::SmallVector<mlir::Type> members = {ptrTy, ptrTy, ptrTy};
+  llvm::SmallVector<Capability> memberCapabilities = {
+      Capability::value, Capability::value, Capability::value};
+
+  // Add payload types
+  for (auto payloadType : getPayloadTypes()) {
+    members.push_back(payloadType);
+    memberCapabilities.push_back(Capability::value);
+  }
+
+  auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
+                                                memberCapabilities, dataLayout);
+  if (!derived)
+    llvm_unreachable("ClosureBoxType must have a fixed size");
+  auto [sizeInBytes, _x, _y] = *derived;
+  return sizeInBytes * 8; // Convert to bits
+}
+
+uint64_t
+ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                                mlir::DataLayoutEntryListRef params) const {
+  // ClosureBox structure: { Closure header, PayloadTypes... }
+  // Closure header is 3 pointers: { void* vtable, void* arg_start, void*
+  // arg_cursor }
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  llvm::SmallVector<mlir::Type> members = {ptrTy, ptrTy, ptrTy};
+  llvm::SmallVector<Capability> memberCapabilities = {
+      Capability::value, Capability::value, Capability::value};
+  // Add payload types
+  for (auto payloadType : getPayloadTypes()) {
+    members.push_back(payloadType);
+    memberCapabilities.push_back(Capability::value);
+  }
+
+  auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
+                                                memberCapabilities, dataLayout);
+  if (!derived)
+    llvm_unreachable("ClosureBoxType must have a fixed alignment");
+  auto [_x, alignment, _y] = *derived;
+  return alignment.value();
+}
+
+uint64_t ClosureBoxType::getPreferredAlignment(
+    const mlir::DataLayout &dataLayout,
+    mlir::DataLayoutEntryListRef params) const {
+  return getABIAlignment(dataLayout, params);
+}
+
 } // namespace reussir

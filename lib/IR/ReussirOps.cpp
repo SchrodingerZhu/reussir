@@ -9,11 +9,13 @@
 // This file implements the operations used in the Reussir dialect.
 //
 //===----------------------------------------------------------------------===//
+#include <array>
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/SmallVector.h>
 
+#include <llvm/ADT/StringSwitch.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -799,6 +801,160 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
            << ", expected type: " << expectedType;
 
   return mlir::success();
+}
+
+//===-----------------------------------------------------------------------===//
+// Reussir Closure Create Op
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp custom assembly format
+//===-----------------------------------------------------------------------===//
+mlir::ParseResult ReussirClosureCreateOp::parse(mlir::OpAsmParser &parser,
+                                                mlir::OperationState &result) {
+  llvm::SMLoc operationLoc = parser.getCurrentLocation();
+  mlir::OpAsmParser::UnresolvedOperand tokenOperand;
+  mlir::FlatSymbolRefAttr vtableAttr [[maybe_unused]];
+  std::unique_ptr<mlir::Region> bodyRegion = std::make_unique<mlir::Region>();
+  TokenType tokenType;
+  RcType closureType;
+  enum class Keyword {
+    vtable,
+    body,
+    token,
+    unknown,
+  };
+  constexpr size_t NUM_KEYWORDS = static_cast<size_t>(Keyword::unknown);
+  std::array<bool, NUM_KEYWORDS> appeared{false};
+  // Parse return type
+  if (parser.parseArrow())
+    return mlir::failure();
+  if (parser.parseCustomTypeWithFallback(closureType))
+    return mlir::failure();
+  if (parser.parseLBrace())
+    return mlir::failure();
+  // Parse order insensitive fields (vtable, body, token)
+  for (;;) {
+    llvm::SMLoc keywordLoc = parser.getCurrentLocation();
+    llvm::StringRef keyword;
+    if (llvm::failed(parser.parseOptionalKeyword(&keyword)))
+      break;
+    auto dispatch = llvm::StringSwitch<Keyword>(keyword)
+                        .Case("vtable", Keyword::vtable)
+                        .Case("body", Keyword::body)
+                        .Case("token", Keyword::token)
+                        .Default(Keyword::unknown);
+    if (appeared[static_cast<size_t>(dispatch)])
+      return parser.emitError(keywordLoc,
+                              "keyword " + keyword + " appeared twice");
+    appeared[static_cast<size_t>(dispatch)] = true;
+    switch (dispatch) {
+    case Keyword::vtable: {
+      if (parser.parseLParen())
+        return mlir::failure();
+      if (parser.parseCustomAttributeWithFallback(vtableAttr))
+        return mlir::failure();
+      if (parser.parseRParen())
+        return mlir::failure();
+      break;
+    }
+    case Keyword::body: {
+      if (parser.parseRegion(*bodyRegion))
+        return mlir::failure();
+      break;
+    }
+    case Keyword::token: {
+      if (parser.parseLParen())
+        return mlir::failure();
+      if (parser.parseOperand(tokenOperand))
+        return mlir::failure();
+      if (parser.parseColon())
+        return mlir::failure();
+      if (parser.parseCustomTypeWithFallback(tokenType))
+        return mlir::failure();
+      if (parser.parseRParen())
+        return mlir::failure();
+      break;
+    }
+    case Keyword::unknown:
+      return parser.emitError(keywordLoc, "unknown keyword: " + keyword);
+    }
+  }
+
+  if (parser.parseRBrace())
+    return mlir::failure();
+
+  if (!appeared[static_cast<size_t>(Keyword::token)])
+    return parser.emitError(operationLoc, "token is required");
+
+  result.addAttribute("vtable", vtableAttr);
+  result.addRegion(std::move(bodyRegion));
+  result.addTypes(closureType);
+  if (llvm::failed(parser.resolveOperands({tokenOperand}, tokenType,
+                                          operationLoc, result.operands)))
+    return mlir::failure();
+
+  return mlir::success();
+}
+
+void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
+  // Print return type
+  p << " -> ";
+  p.printType(getClosure().getType());
+  p << " {";
+  p.increaseIndent();
+
+  // Print order insensitive fields: token, vtable, body
+  // Token is required
+  p.printNewline();
+  p << " token (";
+  p.printOperand(getToken());
+  p << " : ";
+  p.printType(getToken().getType());
+  p << ")";
+
+  // Print vtable if present
+  if (getVtableAttr()) {
+    p.printNewline();
+    p << " vtable (" << getVtableAttr() << ")";
+  }
+
+  // Print body region if present
+  if (!getBody().empty()) {
+    p.printNewline();
+    p << " body ";
+    p.printRegion(getBody());
+  }
+
+  p.decreaseIndent();
+  p.printNewline();
+  p << "}";
+}
+
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp verification
+//===-----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureCreateOp::verify() {
+  if (!isOutlined() && !isInlined())
+    return emitOpError("closure must be outlined or inlined");
+  return mlir::success();
+}
+
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp helper methods
+//===-----------------------------------------------------------------------===//
+bool ReussirClosureCreateOp::isOutlined() {
+  return getBody().empty() && getVtableAttr();
+}
+
+bool ReussirClosureCreateOp::isInlined() {
+  return !getBody().empty() && !getVtableAttr();
+}
+
+ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
+  ClosureType closureType =
+      llvm::dyn_cast<ClosureType>(getClosure().getType().getElementType());
+  if (!closureType)
+    return {};
+  return ClosureBoxType::get(getContext(), closureType.getInputTypes());
 }
 
 //===-----------------------------------------------------------------------===//
