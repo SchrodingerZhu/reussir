@@ -64,6 +64,20 @@ LLVMTypeConverter::LLVMTypeConverter(mlir::ModuleOp op)
     return mlir::LLVM::LLVMPointerType::get(&getContext());
   });
 
+  // Closure types
+  addConversion([this](ClosureType type) {
+    // Convert to LLVM struct: { void* vtable, void* arg_start, void* arg_cursor
+    // }
+    llvm::SmallVector<mlir::Type> members;
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // vtable
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // arg_start
+    members.push_back(
+        mlir::LLVM::LLVMPointerType::get(&getContext())); // arg_cursor
+    return mlir::LLVM::LLVMStructType::getLiteral(&getContext(), members);
+  });
+
   // Nullable types
   addConversion(
       [this](NullableType type) { return convertType(type.getPtrTy()); });
@@ -105,13 +119,16 @@ std::optional<llvm::LogicalResult> LLVMTypeConverter::convertRecordType(
     members.push_back(getIndexType());
     auto [size, _y, representative] =
         type.getElementRegionLayoutInfo(getDataLayout());
-    members.push_back(convertType(representative));
-    auto representativeSize = dataLayout.getTypeSize(representative);
-    // Pad the representative type to the size of the record
-    if (representativeSize < size)
-      members.push_back(mlir::LLVM::LLVMArrayType::get(
-          mlir::IntegerType::get(&getContext(), 8),
-          size.getFixedValue() - representativeSize.getFixedValue()));
+    // member can be all empty
+    if (representative) {
+      members.push_back(convertType(representative));
+      auto representativeSize = dataLayout.getTypeSize(representative);
+      // Pad the representative type to the size of the record
+      if (representativeSize < size)
+        members.push_back(mlir::LLVM::LLVMArrayType::get(
+            mlir::IntegerType::get(&getContext(), 8),
+            size.getFixedValue() - representativeSize.getFixedValue()));
+    }
   } else {
     for (auto [member, capability] :
          llvm::zip(type.getMembers(), type.getMemberCapabilities())) {

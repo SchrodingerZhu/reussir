@@ -443,6 +443,12 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
     Each branch takes the form `[tag0, tag1, ...] -> region`. If it is a single tag, then
     the region should accept a reference to target variant element type. 
     If it is a set of tags, the region must not have any argument.
+
+    If the dispatch operation has separated regions for each tag, this operation
+    will be directly lowered to a scf.index_switch operation. Otherwise, it will
+    be expanded into 2 consecutive scf.index_switch operations, where the first
+    one dispatches tags to region indices and the second one dispatches the 
+    region indices to the actual regions.
   }];
 
   let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
@@ -635,6 +641,105 @@ def ReussirScfYieldOp : ReussirScfOp<"yield", [
     ( $value^ `:` type($value) )? attr-dict
   }];
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Operations
+//===----------------------------------------------------------------------===//
+
+class ReussirClosureOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"closure."#mnemonic, traits>;
+
+
+def ReussirClosureCreateOp : ReussirClosureOp<"create", [
+  IsolatedFromAbove, DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Create a closure";
+  let description = [{
+    `reussir.closure.create` creates a closure. 
+    A closure is always wrapped in an rc pointer.
+
+    The operation takes two form, either inlined or outlined. Token is required
+    in both cases. The token shall match the layout of the a RcBox with 
+    ClosureHeader and Payload, where the payload is the space for all arguments.
+    This allows a closure to be partially applied.
+
+    For the inlined form, the body region is required. The body region must 
+    accept a list of arguments, each of which matches one of the closure 
+    argument in order. If the closure has a return value, the body region must yield
+    a single value, which is the result of the closure. No outlinedVtable shall be supplied.
+
+    ```mlir
+    !closure = reussir.closure.create
+      token (%token : !reussir.token<...>) {
+        ^bb(%arg0 : i64, %arg1 : i64):
+          %result = arith.addi %arg0, %arg1 : i64
+          reussir.region.yield %result : i64
+      }
+    ```
+
+    For the outlined form, outlinedVtable is required. No region is allowed.
+    Target vtable shall present as a vtable operation within the same module and
+    the vtable shall match the signature of the closure.
+    (TODO: add vtable operation and verification).
+  }];
+  let arguments = (ins
+    ReussirTokenType:$token,
+    OptionalAttr<FlatSymbolRefAttr>:$vtable
+  );
+  let regions = (region MaxSizedRegion<1>:$body);
+  let results = (outs Res<ReussirClosureType, "created closure">:$closure);
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    // empty region while function vtable presents
+    bool isOutlined();
+    // non-empty region while vtable does not present
+    bool isInlined();
+    // get the payload box for the closure
+    ::reussir::ClosureBoxType getClosureBoxType();
+  }];
+
+  let hasVerifier = 1;
+}
+
+def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
+  ReturnLike, Terminator,
+  ParentOneOf<[
+    "::reussir::ReussirClosureCreateOp"
+  ]>]> {
+  let summary = "Yield from a closure";
+  let description = [{
+    `reussir.closure.yield` yields from a closure.
+
+    If the closure has a return value, the body region must yield
+    a single value, which is the result of the closure. If the closure has no return
+    value, the body region must not yield any value.
+  }];
+  let arguments = (ins Optional<AnyType>:$value);
+  let assemblyFormat = [{
+    ( $value^ `:` type($value) )? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
+  Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Create a vtable";
+  let description = [{
+    `reussir.closure.vtable` creates a vtable.
+  }];
+  let arguments = (ins
+    FlatSymbolRefAttr:$name,
+    FlatSymbolRefAttr:$func,
+    TypeAttrOf<ReussirClosureType>:$closure
+  );
+
+  let assemblyFormat = [{
+    `{` `name` `:` $name `,` `func` `:` $func `,` `closure` `:` $closure `}` attr-dict
+  }];
 }
 
 #endif // REUSSIR_IR_REUSSIROPS_TD

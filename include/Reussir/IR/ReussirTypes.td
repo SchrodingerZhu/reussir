@@ -333,6 +333,47 @@ def ReussirRcBoxType
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Type
+//===----------------------------------------------------------------------===//
+def ReussirClosureType
+    : ReussirType<"Closure", "closure", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Closure Type";
+  let description = [{
+    `reussir.closure` represents a closure. 
+    It is a pointer to the underlying closure box.
+    
+    A closure is a special kind of rc type.
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"::mlir::Type">:$inputTypes,
+    OptionalParameter<"::mlir::Type">:$outputType
+  );
+  let hasCustomAssemblyFormat = 1;
+}
+
+def ReussirClosureBoxType
+    : ReussirType<"ClosureBox", "closure_box", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+  let summary = "Reussir Closure Box Type";
+  let description = [{
+    `reussir.closure` represents a closure. It roughly corresponds to the 
+    following C++ struct:
+    ```c++
+    struct ClosureBox {
+      size_t ref_count;
+      void* vtable;
+      void* arg_start;
+      void* arg_cursor;
+      PayloadTypes... payload;
+    }
+    ```
+  }];
+  let parameters = (ins
+    ArrayRefParameter<"::mlir::Type">:$payloadTypes
+  );
+  let assemblyFormat = "`<` $payloadTypes `>`";
+}
+
 ///===----------------------------------------------------------------------===//
 // Special Type Constraints
 //===----------------------------------------------------------------------===//
@@ -354,5 +395,11 @@ def ReussirCompoundType
 def ReussirVariantType : Type<CPred<[{
   ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
                               "Reussir variant type", "::reussir::RecordType">;
+
+def ReussirRcClosureType
+    : Type<CPred<[{
+    ::llvm::isa<::reussir::ClosureType>(
+      ::llvm::cast<::reussir::RcType>($_self).getElementType())
+    }]>, "Reussir rc closure type", "::reussir::RcType">;
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD

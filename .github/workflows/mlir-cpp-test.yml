@@ -1,0 +1,64 @@
+name: MLIR C++ Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        llvm-version: [20, 21]
+        
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build wget
+        sudo pip install lit --break-system-packages
+
+    - name: Install LLVM ${{ matrix.llvm-version }}
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh ${{ matrix.llvm-version }} all
+        sudo apt-get install -y \
+          libmlir-${{ matrix.llvm-version }}-dev \
+          mlir-${{ matrix.llvm-version }}-tools \
+          llvm-${{ matrix.llvm-version }}-dev \
+          llvm-${{ matrix.llvm-version }}-tools
+
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        variant: sccache
+
+    - name: Configure CMake
+      run: |
+        cmake -B build \
+          -G Ninja \
+          -DLLVM_USE_LINKER=lld \
+          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm-version }} \
+          -DCMAKE_C_COMPILER=clang-${{ matrix.llvm-version }} \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DREUSSIR_ENABLE_PEDANTIC=ON \
+          -DREUSSIR_ENABLE_TESTS=ON \
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+          -DLLVM_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/llvm \
+          -DMLIR_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/mlir
+
+    - name: Build
+      run: |
+        cmake --build build --parallel
+
+    - name: Run tests
+      run: |
+        cd build
+        cmake --build . --target check

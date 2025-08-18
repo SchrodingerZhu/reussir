@@ -39,6 +39,12 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
 
+#if LLVM_VERSION_MAJOR >= 21
+#define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...)
+#else
+#define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...) __VA_ARGS__
+#endif
+
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.cpp.inc"
 
@@ -59,12 +65,13 @@
     return dataLayout.getTypeABIAlignment(ptrTy);                              \
   }                                                                            \
                                                                                \
-  uint64_t TypeName::getPreferredAlignment(                                    \
-      const mlir::DataLayout &dataLayout,                                      \
-      [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {            \
-    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());               \
-    return dataLayout.getTypePreferredAlignment(ptrTy);                        \
-  }
+  MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(                                     \
+      uint64_t TypeName::getPreferredAlignment(                                \
+          const mlir::DataLayout &dataLayout,                                  \
+          [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {        \
+        auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());           \
+        return dataLayout.getTypePreferredAlignment(ptrTy);                    \
+      })
 
 namespace reussir {
 //===----------------------------------------------------------------------===//
@@ -131,9 +138,52 @@ bool isNonNullPointerType(mlir::Type type) {
   if (!type)
     return false;
   return llvm::TypeSwitch<mlir::Type, bool>(type)
-      .Case<TokenType, RcType, RecordType, RawPtrType, RefType>(
+      .Case<TokenType, RcType, RecordType, RawPtrType, RefType, ClosureType>(
           [](auto) { return true; })
       .Default([](mlir::Type) { return false; });
+}
+//===----------------------------------------------------------------------===//
+// isTriviallyCopyable
+//===----------------------------------------------------------------------===//
+bool isTriviallyCopyable(mlir::Type type) {
+  if (!type)
+    return false;
+
+  return llvm::TypeSwitch<mlir::Type, bool>(type)
+      // Built-in types that are trivially copyable
+      .Case<mlir::IntegerType, mlir::FloatType, mlir::IndexType>(
+          [](auto) { return true; })
+      .Case<RawPtrType>([](auto) { return true; })
+      // Reference counted and reference types are NOT trivially copyable
+      // as they require special handling for reference counting/lifetime
+      .Case<RcType, RefType, ClosureType>([](auto) { return false; })
+      // Nullable types depend on their inner type
+      .Case<NullableType>([](NullableType nullableType) {
+        return isTriviallyCopyable(nullableType.getPtrTy());
+      })
+      // Record types need to check all their members
+      .Case<RecordType>([](RecordType recordType) {
+        // Incomplete records are considered non-trivially copyable
+        if (!recordType.getComplete())
+          return false;
+
+        // All members must be trivially copyable
+        for (auto member : recordType.getMembers())
+          if (!isTriviallyCopyable(member))
+            return false;
+
+        return true;
+      })
+      // Region type is a runtime construct, not trivially copyable
+      .Case<RegionType>([](auto) { return false; })
+      // Box types contain metadata and managed data, not trivially copyable
+      .Case<RcBoxType, ClosureBoxType>([](auto) { return false; })
+      .Case<mlir::VectorType>([](mlir::VectorType vectorType) {
+        return isTriviallyCopyable(vectorType.getElementType());
+      })
+      // Default: check if it's a built-in MLIR type that might be trivially
+      // copyable
+      .Default([](mlir::Type type) { return false; });
 }
 //===----------------------------------------------------------------------===//
 // deriveCompoundSizeAndAlignment
@@ -506,11 +556,11 @@ RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
   return finalAlignment;
 }
 
-uint64_t
-RecordType::getPreferredAlignment(const ::mlir::DataLayout &dataLayout,
-                                  ::mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
-}
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t RecordType::getPreferredAlignment(
+        const ::mlir::DataLayout &dataLayout,
+        ::mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
 
 //===----------------------------------------------------------------------===//
 // Reussir Dialect
@@ -748,11 +798,69 @@ uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
   return alignment.value();
 }
 
-uint64_t
-RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
-                                 mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t RcBoxType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout, mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
+
+//===----------------------------------------------------------------------===//
+// ClosureType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(ClosureType)
+
+//===----------------------------------------------------------------------===//
+// ClosureType Parse/Print
+//===----------------------------------------------------------------------===//
+mlir::Type ClosureType::parse(mlir::AsmParser &parser) {
+  if (parser.parseLess().failed())
+    return {};
+
+  if (parser.parseLParen().failed())
+    return {};
+
+  llvm::SmallVector<mlir::Type> inputTypes;
+  // Try to parse empty tuple first
+  if (parser.parseOptionalRParen().failed()) {
+    // Parse comma-separated types
+    if (parser
+            .parseCommaSeparatedList([&]() {
+              mlir::Type type;
+              if (parser.parseType(type).failed())
+                return mlir::failure();
+              inputTypes.push_back(type);
+              return mlir::success();
+            })
+            .failed())
+      return {};
+
+    if (parser.parseRParen().failed())
+      return {};
+  }
+
+  mlir::Type outputType;
+  if (parser.parseOptionalArrow().succeeded()) {
+    if (parser.parseType(outputType).failed())
+      return {};
+  }
+
+  if (parser.parseGreater().failed())
+    return {};
+
+  return ClosureType::getChecked(
+      parser.getEncodedSourceLoc(parser.getNameLoc()), parser.getContext(),
+      inputTypes, outputType);
 }
+
+void ClosureType::print(mlir::AsmPrinter &printer) const {
+  printer << "<(";
+  llvm::interleaveComma(getInputTypes(), printer,
+                        [&](mlir::Type type) { printer.printType(type); });
+  printer << ")";
+  if (getOutputType())
+    printer << " -> " << getOutputType();
+  printer << ">";
+}
+
 //===----------------------------------------------------------------------===//
 // getProjectedType
 //===----------------------------------------------------------------------===//
@@ -787,5 +895,61 @@ mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
     return type;
   llvm_unreachable("invalid field capability");
 }
+
+//===----------------------------------------------------------------------===//
+// ClosureBoxType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize
+ClosureBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                                  mlir::DataLayoutEntryListRef params) const {
+  // ClosureBox structure: { Closure header, PayloadTypes... }
+  // Closure header is 3 pointers: { void* vtable, void* arg_start, void*
+  // arg_cursor }
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  llvm::SmallVector<mlir::Type> members = {ptrTy, ptrTy, ptrTy};
+  llvm::SmallVector<Capability> memberCapabilities = {
+      Capability::value, Capability::value, Capability::value};
+
+  // Add payload types
+  for (auto payloadType : getPayloadTypes()) {
+    members.push_back(payloadType);
+    memberCapabilities.push_back(Capability::value);
+  }
+
+  auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
+                                                memberCapabilities, dataLayout);
+  if (!derived)
+    llvm_unreachable("ClosureBoxType must have a fixed size");
+  auto [sizeInBytes, _x, _y] = *derived;
+  return sizeInBytes * 8; // Convert to bits
+}
+
+uint64_t
+ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                                mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  auto indexTy = mlir::IndexType::get(getContext());
+  llvm::SmallVector<mlir::Type> members = {indexTy, ptrTy, ptrTy, ptrTy};
+  llvm::SmallVector<Capability> memberCapabilities = {
+      Capability::value, Capability::value, Capability::value,
+      Capability::value};
+  // Add payload types
+  for (auto payloadType : getPayloadTypes()) {
+    members.push_back(payloadType);
+    memberCapabilities.push_back(Capability::value);
+  }
+
+  auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
+                                                memberCapabilities, dataLayout);
+  if (!derived)
+    llvm_unreachable("ClosureBoxType must have a fixed alignment");
+  auto [_x, alignment, _y] = *derived;
+  return alignment.value();
+}
+
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t ClosureBoxType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout, mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
 
 } // namespace reussir

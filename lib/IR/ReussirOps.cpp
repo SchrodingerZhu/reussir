@@ -9,11 +9,13 @@
 // This file implements the operations used in the Reussir dialect.
 //
 //===----------------------------------------------------------------------===//
+#include <array>
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/SmallVector.h>
 
+#include <llvm/ADT/StringSwitch.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -797,6 +799,258 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
     return emitOpError("yielded type must match parent operation result type, ")
            << "yielded type: " << yieldedType
            << ", expected type: " << expectedType;
+
+  return mlir::success();
+}
+
+//===-----------------------------------------------------------------------===//
+// Reussir Closure Create Op
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp custom assembly format
+//===-----------------------------------------------------------------------===//
+mlir::ParseResult ReussirClosureCreateOp::parse(mlir::OpAsmParser &parser,
+                                                mlir::OperationState &result) {
+  llvm::SMLoc operationLoc = parser.getCurrentLocation();
+  mlir::OpAsmParser::UnresolvedOperand tokenOperand;
+  mlir::FlatSymbolRefAttr vtableAttr [[maybe_unused]];
+  std::unique_ptr<mlir::Region> bodyRegion = std::make_unique<mlir::Region>();
+  TokenType tokenType;
+  ClosureType closureType;
+  enum class Keyword {
+    vtable,
+    body,
+    token,
+    unknown,
+  };
+  constexpr size_t NUM_KEYWORDS = static_cast<size_t>(Keyword::unknown);
+  std::array<bool, NUM_KEYWORDS> appeared{false};
+  // Parse return type
+  if (parser.parseArrow())
+    return mlir::failure();
+  if (parser.parseCustomTypeWithFallback(closureType))
+    return mlir::failure();
+  if (parser.parseLBrace())
+    return mlir::failure();
+  // Parse order insensitive fields (vtable, body, token)
+  for (;;) {
+    llvm::SMLoc keywordLoc = parser.getCurrentLocation();
+    llvm::StringRef keyword;
+    if (llvm::failed(parser.parseOptionalKeyword(&keyword)))
+      break;
+    auto dispatch = llvm::StringSwitch<Keyword>(keyword)
+                        .Case("vtable", Keyword::vtable)
+                        .Case("body", Keyword::body)
+                        .Case("token", Keyword::token)
+                        .Default(Keyword::unknown);
+    if (appeared[static_cast<size_t>(dispatch)])
+      return parser.emitError(keywordLoc,
+                              "keyword " + keyword + " appeared twice");
+    appeared[static_cast<size_t>(dispatch)] = true;
+    switch (dispatch) {
+    case Keyword::vtable: {
+      if (parser.parseLParen())
+        return mlir::failure();
+      if (parser.parseCustomAttributeWithFallback(vtableAttr))
+        return mlir::failure();
+      if (parser.parseRParen())
+        return mlir::failure();
+      break;
+    }
+    case Keyword::body: {
+      if (parser.parseRegion(*bodyRegion))
+        return mlir::failure();
+      break;
+    }
+    case Keyword::token: {
+      if (parser.parseLParen())
+        return mlir::failure();
+      if (parser.parseOperand(tokenOperand))
+        return mlir::failure();
+      if (parser.parseColon())
+        return mlir::failure();
+      if (parser.parseCustomTypeWithFallback(tokenType))
+        return mlir::failure();
+      if (parser.parseRParen())
+        return mlir::failure();
+      break;
+    }
+    case Keyword::unknown:
+      return parser.emitError(keywordLoc, "unknown keyword: " + keyword);
+    }
+  }
+
+  if (parser.parseRBrace())
+    return mlir::failure();
+
+  if (!appeared[static_cast<size_t>(Keyword::token)])
+    return parser.emitError(operationLoc, "token is required");
+
+  if (vtableAttr)
+    result.addAttribute("vtable", vtableAttr);
+  result.addRegion(std::move(bodyRegion));
+  result.addTypes(closureType);
+  if (llvm::failed(parser.resolveOperands({tokenOperand}, tokenType,
+                                          operationLoc, result.operands)))
+    return mlir::failure();
+
+  return mlir::success();
+}
+
+void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
+  // Print return type
+  p << " -> ";
+  p.printStrippedAttrOrType(getClosure().getType());
+  p << " {";
+  p.increaseIndent();
+
+  // Print order insensitive fields: token, vtable, body
+  // Token is required
+  p.printNewline();
+  p << " token (";
+  p.printOperand(getToken());
+  p << " : ";
+  p.printStrippedAttrOrType(getToken().getType());
+  p << ")";
+
+  // Print vtable if present
+  if (getVtableAttr()) {
+    p.printNewline();
+    p << " vtable (" << getVtableAttr() << ")";
+  }
+
+  // Print body region if present
+  if (!getBody().empty()) {
+    p.printNewline();
+    p << " body ";
+    p.printRegion(getBody());
+  }
+
+  p.decreaseIndent();
+  p.printNewline();
+  p << "}";
+}
+
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp verification
+//===-----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureCreateOp::verify() {
+  bool outlinedFlag = isOutlined();
+  bool inlinedFlag = isInlined();
+  ClosureType closureType = getClosure().getType();
+  if (!outlinedFlag && !inlinedFlag)
+    return emitOpError("closure must be outlined or inlined");
+  ClosureBoxType closureBoxType = getClosureBoxType();
+  auto dataLayout = mlir::DataLayout::closest(this->getOperation());
+  auto closureBoxSize = dataLayout.getTypeSize(closureBoxType);
+  auto closureBoxAlignment = dataLayout.getTypeABIAlignment(closureBoxType);
+  TokenType tokenType = getToken().getType();
+  if (closureBoxSize != tokenType.getSize())
+    return emitOpError("closure box size must match token size")
+           << ", closure box size: " << closureBoxSize.getFixedValue()
+           << ", token size: " << tokenType.getSize();
+  if (closureBoxAlignment != tokenType.getAlign())
+    return emitOpError("closure box alignment must match token alignment")
+           << ", closure box alignment: " << closureBoxAlignment
+           << ", token alignment: " << tokenType.getAlign();
+  // Check that region arguments match the closure input types
+  if (inlinedFlag) {
+    auto types = getBody().getArgumentTypes();
+    if (types.size() != closureType.getInputTypes().size())
+      return emitOpError("inlined closure body must have the same number of "
+                         "arguments as the closure input types");
+    if (llvm::any_of(llvm::zip(types, closureType.getInputTypes()),
+                     [](auto &&argAndType) {
+                       auto [argTy, type] = argAndType;
+                       return argTy != type;
+                     }))
+      return emitOpError(
+          "inlined closure body arguments must match the closure input types");
+  }
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ClosureCreateOp SymbolUserOpInterface
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureCreateOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbolTable) {
+  // NYI for body
+  if (getVtableAttr()) {
+    // TODO: Verify that the vtable symbol exists and is valid
+    // This would typically check that the referenced vtable operation exists
+    // and has the correct signature matching the closure type
+  }
+  return mlir::success();
+}
+
+//===-----------------------------------------------------------------------===//
+// ClosureCreateOp helper methods
+//===-----------------------------------------------------------------------===//
+bool ReussirClosureCreateOp::isOutlined() {
+  return getBody().empty() && getVtableAttr();
+}
+
+bool ReussirClosureCreateOp::isInlined() {
+  return !getBody().empty() && !getVtableAttr();
+}
+
+ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
+  ClosureType closureType = getClosure().getType();
+  return ClosureBoxType::get(getContext(), closureType.getInputTypes());
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Vtable Op
+//===----------------------------------------------------------------------===//
+// ClosureVtableOp SymbolUserOpInterface
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureVtableOp::verifySymbolUses(
+    mlir::SymbolTableCollection &symbolTable) {
+  // NYI for body
+  if (getFuncAttr()) {
+    // TODO: Verify that the func symbol exists and is valid
+    // This would typically check that the referenced function operation exists
+    // and has the correct signature matching the closure type
+  }
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Yield Op
+//===----------------------------------------------------------------------===//
+// ClosureYieldOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureYieldOp::verify() {
+  // Get the parent closure operation
+  auto parentOp = getOperation()->getParentOfType<ReussirClosureCreateOp>();
+  if (!parentOp)
+    return emitOpError(
+        "closure yield must be inside a closure create operation");
+
+  // Get the closure type to determine if it has a return value
+  ClosureType closureType = parentOp.getClosure().getType();
+  mlir::Type expectedReturnType = closureType.getOutputType();
+
+  // Check consistency between yield value and closure return type
+  if (expectedReturnType) {
+    // Closure has a return type, so yield must provide a value
+    if (!getValue())
+      return emitOpError("closure has return type ")
+             << expectedReturnType << " but yield provides no value";
+
+    // Check that the yielded value type matches the closure return type
+    mlir::Type yieldedType = getValue().getType();
+    if (yieldedType != expectedReturnType)
+      return emitOpError("yielded type must match closure return type, ")
+             << "yielded type: " << yieldedType
+             << ", expected type: " << expectedReturnType;
+  } else {
+    // Closure has no return type, so yield must not provide a value
+    if (getValue())
+      return emitOpError(
+                 "closure has no return type but yield provides value of type ")
+             << getValue().getType();
+  }
 
   return mlir::success();
 }

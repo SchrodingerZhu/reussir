@@ -9,6 +9,12 @@
 !result_err = !reussir.record<compound "Result::Err" {i32}>
 !result = !reussir.record<variant "Result" {!result_ok, !result_err}>
 
+!foo_a = !reussir.record<compound "Foo::A" {}>
+!foo_b = !reussir.record<compound "Foo::B" {}>
+!foo_c = !reussir.record<compound "Foo::C" {}>
+!foo_d = !reussir.record<compound "Foo::D" {}>
+!foo = !reussir.record<variant "Foo" {!foo_a, !foo_b, !foo_c, !foo_d}>
+
 module {
   // Test option-like behavior: extract value or return default
   func.func @test_option_unwrap_or_default(%opt_ref : !reussir.ref<!option>) -> i32 {
@@ -62,6 +68,23 @@ module {
       }
     }
     func.return
+  }
+
+  func.func @test_foo_is_a_or_b(%foo_ref : !reussir.ref<!foo>) -> i1 {
+    %result = reussir.record.dispatch(%foo_ref : !reussir.ref<!foo>) -> i1 {
+      [0, 1] -> {
+        ^bb0:
+          %true = arith.constant true
+          reussir.scf.yield %true : i1
+      }
+      
+      [2, 3] -> {
+        ^bb0:
+          %false = arith.constant false
+          reussir.scf.yield %false : i1
+      }
+    }
+    func.return %result : i1
   }
 }
 

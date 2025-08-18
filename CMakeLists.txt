@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.31)
 project(Reussir LANGUAGES CXX C VERSION 0.1.0)
 
 # Options
@@ -7,7 +7,11 @@ option(REUSSIR_ENABLE_PEDANTIC "Use pedantic compiler flags" OFF)
 
 if (REUSSIR_ENABLE_PEDANTIC)
   message(STATUS "Pedantic mode enabled")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic")
+  # For now, we disable broken warnings in MLIR's own code.
+  set(DISABLE_CHECKS
+    "-Wno-deprecated-declarations -Wno-ambiguous-reversed-operator -Wno-dangling-assignment-gsl"
+  )
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic ${DISABLE_CHECKS}")
 endif()
 
 # Adjust output paths

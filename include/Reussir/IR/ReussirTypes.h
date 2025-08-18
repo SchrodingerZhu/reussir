@@ -31,6 +31,7 @@ deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
                                llvm::ArrayRef<Capability> memberCapabilities,
                                const mlir::DataLayout &dataLayout);
 bool isNonNullPointerType(mlir::Type type);
+bool isTriviallyCopyable(mlir::Type type);
 mlir::Type getProjectedType(mlir::Type type, Capability fieldCap,
                             Capability refCap);
 } // namespace reussir
