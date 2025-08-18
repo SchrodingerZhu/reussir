@@ -9,9 +9,7 @@ if (REUSSIR_ENABLE_PEDANTIC)
   message(STATUS "Pedantic mode enabled")
   # For now, we disable broken warnings in MLIR's own code.
   set(DISABLE_CHECKS
-    -Wno-deprecated-declarations 
-    -Wno-ambiguous-reversed-operator
-    -Wno-dangling-assignment-gsl
+    "-Wno-deprecated-declarations -Wno-ambiguous-reversed-operator -Wno-dangling-assignment-gsl"
   )
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic ${DISABLE_CHECKS}")
 endif()
