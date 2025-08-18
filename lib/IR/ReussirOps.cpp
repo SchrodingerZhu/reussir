@@ -815,7 +815,7 @@ mlir::ParseResult ReussirClosureCreateOp::parse(mlir::OpAsmParser &parser,
   mlir::FlatSymbolRefAttr vtableAttr [[maybe_unused]];
   std::unique_ptr<mlir::Region> bodyRegion = std::make_unique<mlir::Region>();
   TokenType tokenType;
-  RcType closureType;
+  ClosureType closureType;
   enum class Keyword {
     vtable,
     body,
@@ -898,7 +898,7 @@ mlir::ParseResult ReussirClosureCreateOp::parse(mlir::OpAsmParser &parser,
 void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
   // Print return type
   p << " -> ";
-  p.printType(getClosure().getType());
+  p.printStrippedAttrOrType(getClosure().getType());
   p << " {";
   p.increaseIndent();
 
@@ -908,7 +908,7 @@ void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
   p << " token (";
   p.printOperand(getToken());
   p << " : ";
-  p.printType(getToken().getType());
+  p.printStrippedAttrOrType(getToken().getType());
   p << ")";
 
   // Print vtable if present
@@ -935,6 +935,20 @@ void ReussirClosureCreateOp::print(mlir::OpAsmPrinter &p) {
 mlir::LogicalResult ReussirClosureCreateOp::verify() {
   if (!isOutlined() && !isInlined())
     return emitOpError("closure must be outlined or inlined");
+  ClosureBoxType closureBoxType = getClosureBoxType();
+  auto dataLayout = mlir::DataLayout::closest(this->getOperation());
+  auto closureBoxSize = dataLayout.getTypeSize(closureBoxType);
+  auto closureBoxAlignment = dataLayout.getTypeABIAlignment(closureBoxType);
+  TokenType tokenType = getToken().getType();
+  if (closureBoxSize != tokenType.getSize())
+    return emitOpError("closure box size must match token size")
+           << ", closure box size: " << closureBoxSize.getFixedValue()
+           << ", token size: " << tokenType.getSize();
+  if (closureBoxAlignment != tokenType.getAlign())
+    return emitOpError("closure box alignment must match token alignment")
+           << ", closure box alignment: " << closureBoxAlignment
+           << ", token alignment: " << tokenType.getAlign();
+
   return mlir::success();
 }
 
@@ -950,10 +964,7 @@ bool ReussirClosureCreateOp::isInlined() {
 }
 
 ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
-  ClosureType closureType =
-      llvm::dyn_cast<ClosureType>(getClosure().getType().getElementType());
-  if (!closureType)
-    return {};
+  ClosureType closureType = getClosure().getType();
   return ClosureBoxType::get(getContext(), closureType.getInputTypes());
 }
 

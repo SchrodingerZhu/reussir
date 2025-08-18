@@ -340,20 +340,10 @@ def ReussirClosureType
     : ReussirType<"Closure", "closure", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Closure Type";
   let description = [{
-    `reussir.closure` represents a closure. It roughly corresponds to the 
-    following C++ struct:
-    ```c++
-    struct Closure {
-      void* vtable;
-      void* arg_start;
-      void* arg_cursor;
-    };
-    struct VTable {
-      void* func;
-      void* clone;
-      void* drop;
-    }
-    ```
+    `reussir.closure` represents a closure. 
+    It is a pointer to the underlying closure box.
+    
+    A closure is a special kind of rc type.
   }];
   let parameters = (ins
     ArrayRefParameter<"::mlir::Type">:$inputTypes,
@@ -370,7 +360,10 @@ def ReussirClosureBoxType
     following C++ struct:
     ```c++
     struct ClosureBox {
-      Closure header;
+      size_t ref_count;
+      void* vtable;
+      void* arg_start;
+      void* arg_cursor;
       PayloadTypes... payload;
     }
     ```

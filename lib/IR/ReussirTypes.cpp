@@ -131,7 +131,7 @@ bool isNonNullPointerType(mlir::Type type) {
   if (!type)
     return false;
   return llvm::TypeSwitch<mlir::Type, bool>(type)
-      .Case<TokenType, RcType, RecordType, RawPtrType, RefType>(
+      .Case<TokenType, RcType, RecordType, RawPtrType, RefType, ClosureType>(
           [](auto) { return true; })
       .Default([](mlir::Type) { return false; });
 }
@@ -757,31 +757,7 @@ RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
 //===----------------------------------------------------------------------===//
 // ClosureType DataLayoutInterface
 //===----------------------------------------------------------------------===//
-llvm::TypeSize
-ClosureType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
-                               mlir::DataLayoutEntryListRef params) const {
-  // Closure structure: { void* vtable, void* arg_start, void* arg_cursor }
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  llvm::TypeSize ptrSizeInBits = dataLayout.getTypeSizeInBits(ptrTy);
-  if (!ptrSizeInBits.isFixed())
-    llvm_unreachable("ClosureType must have a fixed size");
-
-  // Total size = 3 * pointer size
-  return ptrSizeInBits * 3;
-}
-
-uint64_t
-ClosureType::getABIAlignment(const mlir::DataLayout &dataLayout,
-                             mlir::DataLayoutEntryListRef params) const {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeABIAlignment(ptrTy);
-}
-
-uint64_t
-ClosureType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
-                                   mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
-}
+REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(ClosureType)
 
 //===----------------------------------------------------------------------===//
 // ClosureType Parse/Print
@@ -906,9 +882,11 @@ ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
   // Closure header is 3 pointers: { void* vtable, void* arg_start, void*
   // arg_cursor }
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  llvm::SmallVector<mlir::Type> members = {ptrTy, ptrTy, ptrTy};
+  auto indexTy = mlir::IndexType::get(getContext());
+  llvm::SmallVector<mlir::Type> members = {indexTy, ptrTy, ptrTy, ptrTy};
   llvm::SmallVector<Capability> memberCapabilities = {
-      Capability::value, Capability::value, Capability::value};
+      Capability::value, Capability::value, Capability::value,
+      Capability::value};
   // Add payload types
   for (auto payloadType : getPayloadTypes()) {
     members.push_back(payloadType);

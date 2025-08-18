@@ -688,7 +688,7 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
     OptionalAttr<FlatSymbolRefAttr>:$vtable
   );
   let regions = (region MaxSizedRegion<1>:$body);
-  let results = (outs Res<ReussirRcClosureType, "created closure">:$closure);
+  let results = (outs Res<ReussirClosureType, "created closure">:$closure);
 
   let hasCustomAssemblyFormat = 1;
 
