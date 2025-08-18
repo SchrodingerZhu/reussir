@@ -921,9 +921,6 @@ ClosureBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 uint64_t
 ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                 mlir::DataLayoutEntryListRef params) const {
-  // ClosureBox structure: { Closure header, PayloadTypes... }
-  // Closure header is 3 pointers: { void* vtable, void* arg_start, void*
-  // arg_cursor }
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
   auto indexTy = mlir::IndexType::get(getContext());
   llvm::SmallVector<mlir::Type> members = {indexTy, ptrTy, ptrTy, ptrTy};

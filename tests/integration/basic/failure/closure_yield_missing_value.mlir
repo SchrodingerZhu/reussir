@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %filecheck %s
+// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
 
 // Test closure yield with no value when one expected
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {

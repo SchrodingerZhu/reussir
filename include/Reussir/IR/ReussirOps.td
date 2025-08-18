@@ -447,7 +447,7 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
     If the dispatch operation has separated regions for each tag, this operation
     will be directly lowered to a scf.index_switch operation. Otherwise, it will
     be expanded into 2 consecutive scf.index_switch operations, where the first
-    one dispastch tags to region indices and the second one dispatches the 
+    one dispatches tags to region indices and the second one dispatches the 
     region indices to the actual regions.
   }];
 
