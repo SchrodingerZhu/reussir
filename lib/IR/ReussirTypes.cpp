@@ -39,6 +39,12 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
 
+#if LLVM_VERSION_MAJOR >= 21
+#define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...)
+#else
+#define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...) __VA_ARGS__
+#endif
+
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.cpp.inc"
 
@@ -59,12 +65,13 @@
     return dataLayout.getTypeABIAlignment(ptrTy);                              \
   }                                                                            \
                                                                                \
-  uint64_t TypeName::getPreferredAlignment(                                    \
-      const mlir::DataLayout &dataLayout,                                      \
-      [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {            \
-    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());               \
-    return dataLayout.getTypePreferredAlignment(ptrTy);                        \
-  }
+  MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(                                     \
+      uint64_t TypeName::getPreferredAlignment(                                \
+          const mlir::DataLayout &dataLayout,                                  \
+          [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {        \
+        auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());           \
+        return dataLayout.getTypePreferredAlignment(ptrTy);                    \
+      })
 
 namespace reussir {
 //===----------------------------------------------------------------------===//
@@ -549,11 +556,11 @@ RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
   return finalAlignment;
 }
 
-uint64_t
-RecordType::getPreferredAlignment(const ::mlir::DataLayout &dataLayout,
-                                  ::mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
-}
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t RecordType::getPreferredAlignment(
+        const ::mlir::DataLayout &dataLayout,
+        ::mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
 
 //===----------------------------------------------------------------------===//
 // Reussir Dialect
@@ -791,11 +798,10 @@ uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
   return alignment.value();
 }
 
-uint64_t
-RcBoxType::getPreferredAlignment(const mlir::DataLayout &dataLayout,
-                                 mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
-}
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t RcBoxType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout, mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
 
 //===----------------------------------------------------------------------===//
 // ClosureType DataLayoutInterface
@@ -941,10 +947,9 @@ ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
   return alignment.value();
 }
 
-uint64_t ClosureBoxType::getPreferredAlignment(
-    const mlir::DataLayout &dataLayout,
-    mlir::DataLayoutEntryListRef params) const {
-  return getABIAlignment(dataLayout, params);
-}
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t ClosureBoxType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout, mlir::DataLayoutEntryListRef params)
+        const { return getABIAlignment(dataLayout, params); })
 
 } // namespace reussir
