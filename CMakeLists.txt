@@ -8,7 +8,7 @@ option(REUSSIR_ENABLE_PEDANTIC "Use pedantic compiler flags" OFF)
 if (REUSSIR_ENABLE_PEDANTIC)
   message(STATUS "Pedantic mode enabled")
   set(DISABLE_CHECKS "-Wno-deprecated-declarations -Wno-ambiguous-reversed-operators")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra -Wall -Werror -pedantic ${DISABLE_CHECKS}")
 endif()
 
 # Adjust output paths
