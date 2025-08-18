@@ -1015,6 +1015,46 @@ mlir::LogicalResult ReussirClosureVtableOp::verifySymbolUses(
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Closure Yield Op
+//===----------------------------------------------------------------------===//
+// ClosureYieldOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureYieldOp::verify() {
+  // Get the parent closure operation
+  auto parentOp = getOperation()->getParentOfType<ReussirClosureCreateOp>();
+  if (!parentOp)
+    return emitOpError(
+        "closure yield must be inside a closure create operation");
+
+  // Get the closure type to determine if it has a return value
+  ClosureType closureType = parentOp.getClosure().getType();
+  mlir::Type expectedReturnType = closureType.getOutputType();
+
+  // Check consistency between yield value and closure return type
+  if (expectedReturnType) {
+    // Closure has a return type, so yield must provide a value
+    if (!getValue())
+      return emitOpError("closure has return type ")
+             << expectedReturnType << " but yield provides no value";
+
+    // Check that the yielded value type matches the closure return type
+    mlir::Type yieldedType = getValue().getType();
+    if (yieldedType != expectedReturnType)
+      return emitOpError("yielded type must match closure return type, ")
+             << "yielded type: " << yieldedType
+             << ", expected type: " << expectedReturnType;
+  } else {
+    // Closure has no return type, so yield must not provide a value
+    if (getValue())
+      return emitOpError(
+                 "closure has no return type but yield provides value of type ")
+             << getValue().getType();
+  }
+
+  return mlir::success();
+}
+
 //===-----------------------------------------------------------------------===//
 // Reussir Dialect Operations Registration
 //===-----------------------------------------------------------------------===//

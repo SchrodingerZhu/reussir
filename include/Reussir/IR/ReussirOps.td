@@ -709,16 +709,19 @@ def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
   ParentOneOf<[
     "::reussir::ReussirClosureCreateOp"
   ]>]> {
-  let summary = "Yield a value from a closure";
+  let summary = "Yield from a closure";
   let description = [{
-    `reussir.closure.yield` yields a value from a closure.
+    `reussir.closure.yield` yields from a closure.
+
+    If the closure has a return value, the body region must yield
+    a single value, which is the result of the closure. If the closure has no return
+    value, the body region must not yield any value.
   }];
   let arguments = (ins Optional<AnyType>:$value);
   let assemblyFormat = [{
     ( $value^ `:` type($value) )? attr-dict
   }];
-  // TODO: add verifier
-  // let hasVerifier = 1;
+  let hasVerifier = 1;
 }
 
 def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
