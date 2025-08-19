@@ -13,6 +13,7 @@
 #include "Reussir/IR/ReussirDialect.h"
 
 // MLIR
+#include <llvm/ADT/StringRef.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/DLTI/DLTI.h>
@@ -69,6 +70,7 @@ llvm::CodeGenOptLevel toLlvmOptLevel(OptOption opt) {
 } // namespace
 
 void compileForNativeMachine(std::string_view mlirTextureModule,
+                             std::string_view sourceName,
                              std::string_view outputFile,
                              CompileOptions options) {
   (void)outputFile; // not used in this scaffold stage
@@ -89,7 +91,7 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
 
   // 2) Parse the incoming MLIR module from string.
   OwningOpRef<ModuleOp> module =
-      parseSourceString<ModuleOp>(mlirTextureModule, &context);
+      parseSourceString<ModuleOp>(mlirTextureModule, &context, sourceName);
 
   if (!module) {
     logIfNeeded(options.backend_log, LogLevel::Error,

@@ -1,0 +1,16 @@
+[package]
+name = "bridge"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+cxx = "1.0.168"
+tracing = { version = "0.1.41", features = ["log"] }
+
+[build-dependencies]
+cmake = "0.1.54"
+cxx-build = { version = "1.0.168", features = ["parallel"] }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

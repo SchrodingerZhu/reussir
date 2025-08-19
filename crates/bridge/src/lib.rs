@@ -1,0 +1,157 @@
+use cxx::{ExternType, type_id};
+
+pub mod string_view;
+
+/*
+enum class OutputTarget { LLVMIR, ASM, Object, Executable };
+enum class OptOption { None, Default, Aggressive, Size };
+enum class LogLevel { Error, Warning, Info, Debug, Trace };
+struct CompileOptions {
+  OutputTarget target;
+  OptOption opt;
+  void (*backend_log)(std::string_view, LogLevel level);
+};
+
+// currently, we only support compiling for native machine target
+void compileForNativeMachine(std::string_view mlirTextureModule,
+                             std::string_view outputFile,
+                             CompileOptions options);
+*/
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub enum OutputTarget {
+    LLVMIR,
+    ASM,
+    Object,
+    Executable,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub enum OptOption {
+    None,
+    Default,
+    Aggressive,
+    Size,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub enum LogLevel {
+    Error,
+    Warning,
+    Info,
+    Debug,
+    Trace,
+}
+
+unsafe impl ExternType for OutputTarget {
+    type Id = type_id!("reussir::OutputTarget");
+    type Kind = cxx::kind::Trivial;
+}
+
+unsafe impl ExternType for OptOption {
+    type Id = type_id!("reussir::OptOption");
+    type Kind = cxx::kind::Trivial;
+}
+
+unsafe impl ExternType for LogLevel {
+    type Id = type_id!("reussir::LogLevel");
+    type Kind = cxx::kind::Trivial;
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct CompileOptions {
+    pub target: OutputTarget,
+    pub opt: OptOption,
+    backend_log: Option<extern "C" fn(string_view::StringView, LogLevel)>,
+}
+
+unsafe impl ExternType for CompileOptions {
+    type Id = type_id!("reussir::CompileOptions");
+    type Kind = cxx::kind::Trivial;
+}
+
+pub extern "C" fn log<'a>(message: string_view::StringView<'a>, level: LogLevel) {
+    let message_str = match message.to_str() {
+        Ok(s) => s,
+        Err(_) => panic!("failed to convert message to string"), // Handle error appropriately
+    };
+    match level {
+        LogLevel::Error => tracing::error!("{}", message_str),
+        LogLevel::Warning => tracing::warn!("{}", message_str),
+        LogLevel::Info => tracing::info!("{}", message_str),
+        LogLevel::Debug => tracing::debug!("{}", message_str),
+        LogLevel::Trace => tracing::trace!("{}", message_str),
+    }
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        CompileOptions {
+            target: OutputTarget::LLVMIR,
+            opt: OptOption::Default,
+            backend_log: Some(log),
+        }
+    }
+}
+
+#[cxx::bridge]
+mod ffi {
+    unsafe extern "C++" {
+        include!("Reussir/Bridge.h");
+
+        #[namespace = "reussir"]
+        type OutputTarget = super::OutputTarget;
+        #[namespace = "reussir"]
+        type OptOption = super::OptOption;
+        #[namespace = "reussir"]
+        type LogLevel = super::LogLevel;
+        #[namespace = "reussir"]
+        type CompileOptions = super::CompileOptions;
+
+        #[namespace = "std"]
+        #[cxx_name = "string_view"]
+        type StringView<'a> = super::string_view::StringView<'a>;
+
+        #[namespace = "reussir"]
+        #[cxx_name = "compileForNativeMachine"]
+        pub fn compile_for_native_machine(
+            mlirTextureModule: StringView,
+            outputFile: StringView,
+            sourceName: StringView,
+            options: CompileOptions,
+        );
+    }
+}
+
+pub use ffi::compile_for_native_machine;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_subscriber;
+    use tracing_subscriber::EnvFilter;
+
+    #[test]
+    fn test_compile_for_native_machine() {
+        // Initialize tracing subscriber for logging
+        _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+
+        let mlir_module = string_view::StringView::new("module {}");
+        let output_file = string_view::StringView::new("output.ll");
+        let source_name = string_view::StringView::new("test.mlir");
+
+        let options = CompileOptions {
+            target: OutputTarget::LLVMIR,
+            opt: OptOption::Default,
+            backend_log: Some(log),
+        };
+
+        compile_for_native_machine(mlir_module, output_file, source_name, options);
+    }
+}
