@@ -975,11 +975,13 @@ mlir::LogicalResult ReussirClosureCreateOp::verify() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirClosureCreateOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
-  // NYI for body
   if (getVtableAttr()) {
-    // TODO: Verify that the vtable symbol exists and is valid
-    // This would typically check that the referenced vtable operation exists
-    // and has the correct signature matching the closure type
+    auto vtableOp = symbolTable.lookupNearestSymbolFrom<ReussirClosureVtableOp>(
+        getOperation(), getVtableAttr());
+    if (!vtableOp)
+      return emitOpError("virtual table not found: ") << getVtableAttr();
+    if (vtableOp.getClosureAttr().getValue() != getClosure().getType())
+      return emitOpError("virtual table closure type mismatch");
   }
   return mlir::success();
 }
@@ -1078,10 +1080,45 @@ mlir::FlatSymbolRefAttr ReussirClosureCreateOp::getTrivialForwardingTarget() {
 mlir::LogicalResult ReussirClosureVtableOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
   // NYI for body
-  if (getFuncAttr()) {
-    // TODO: Verify that the func symbol exists and is valid
-    // This would typically check that the referenced function operation exists
-    // and has the correct signature matching the closure type
+  auto funcOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+      getOperation(), getFuncAttr());
+  if (!funcOp)
+    return emitOpError("function not found: ") << getFuncAttr();
+  ClosureType closureType =
+      llvm::dyn_cast<ClosureType>(getClosureAttr().getValue());
+  if (!closureType)
+    return emitOpError("closure type expected");
+  mlir::FunctionType funcType = funcOp.getFunctionType();
+  if (funcType.getNumInputs() != closureType.getInputTypes().size())
+    return emitOpError("function input types mismatch");
+  if (funcType.getNumResults() > 1)
+    return emitOpError("function must have at most one result");
+  for (size_t i = 0; i < funcType.getNumInputs(); ++i)
+    if (funcType.getInput(i) != closureType.getInputTypes()[i])
+      return emitOpError("function input type mismatch");
+  mlir::Type resultType =
+      funcType.getNumResults() == 1 ? funcType.getResult(0) : mlir::Type{};
+  if (resultType && !closureType.getOutputType())
+    return emitOpError(
+        "function has result type but closure has no output type");
+  if (!resultType && closureType.getOutputType())
+    return emitOpError(
+        "function has no result type but closure has output type");
+  if (resultType && closureType.getOutputType() &&
+      resultType != closureType.getOutputType())
+    return emitOpError("function result type mismatch");
+
+  if (getDropAttr()) {
+    auto dropOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+        getOperation(), getDropAttr());
+    if (!dropOp)
+      return emitOpError("drop function not found: ") << getDropAttr();
+  }
+  if (getCloneAttr()) {
+    auto cloneOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+        getOperation(), getCloneAttr());
+    if (!cloneOp)
+      return emitOpError("clone function not found: ") << getCloneAttr();
   }
   return mlir::success();
 }

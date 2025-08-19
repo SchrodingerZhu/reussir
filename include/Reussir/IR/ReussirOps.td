@@ -741,7 +741,7 @@ def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
     Drop and clone functions are be null if closure payload is trivially copyable.
   }];
   let arguments = (ins
-    FlatSymbolRefAttr:$name,
+    SymbolNameAttr:$sym_name,
     FlatSymbolRefAttr:$func,
     OptionalAttr<FlatSymbolRefAttr>:$drop,
     OptionalAttr<FlatSymbolRefAttr>:$clone,
@@ -749,13 +749,14 @@ def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
   );
 
   let assemblyFormat = [{
-    `name` `(` $name `)`
-    `func` `(` $func `)`
-    `closure` `(` $closure `)`
-    oilist
-    ( `drop` `(` $drop `)` 
-    | `clone` `(` $clone `)` 
-    ) attr-dict
+    $sym_name `{`
+      `func` `(` $func `)`
+      `closure` `(` $closure `)`
+      oilist
+      ( `drop` `(` $drop `)` 
+      | `clone` `(` $clone `)` 
+      ) 
+    `}` attr-dict
   }];
 }
 

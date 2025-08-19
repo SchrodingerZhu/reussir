@@ -26,6 +26,18 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
     return %0 : !reussir.closure<(i32) -> i32>
   }
 
+  func.func private @add_one(%v0 : i32) -> i32 {
+    %one = arith.constant 1 : i32
+    %add = arith.addi %v0, %one : i32
+    return %add : i32
+  }
+
+  reussir.closure.vtable @VTable {
+    func(@add_one)
+    closure(!reussir.closure<(i32) -> i32>)
+  }
+  
+
   func.func private @test_closure_create_outlined() -> !reussir.closure<(i32) -> i32> {
     %token = reussir.token.alloc : !reussir.token<align: 8, size: 32>
     %0 = reussir.closure.create -> !reussir.closure<(i32) -> i32> {
