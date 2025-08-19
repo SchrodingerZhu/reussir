@@ -1,6 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
-
-// CHECK: error: 'reussir.closure.eval' op cannot evaluate closure with remaining input types, closure has 1 input types remaining
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test failure: closure eval with remaining input types
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -15,6 +13,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       }
     }
     // This should fail because the closure still has input types
+    // expected-error @+1 {{'reussir.closure.eval' op cannot evaluate closure with remaining input types, closure has 1 input types remaining}}
     %result = reussir.closure.eval (%closure : !reussir.closure<(i32) -> i32>) : i32
     return %result : i32
   }

@@ -1,6 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
-
-// CHECK: error: 'reussir.closure.eval' op result type must match closure output type, result type: 'i64', closure output type: 'i32'
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test failure: closure eval with wrong result type
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -15,6 +13,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       }
     }
     // This should fail because result type (i64) doesn't match closure output type (i32)
+    // expected-error @+1 {{'reussir.closure.eval' op result type must match closure output type, result type: 'i64', closure output type: 'i32'}}
     %result = reussir.closure.eval (%closure : !reussir.closure<() -> i32>) : i64
     return %result : i64
   }

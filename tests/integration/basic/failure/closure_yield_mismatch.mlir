@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test closure yield with mismatched return type
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -9,7 +9,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       body {
         ^bb0(%v0 : i32):
           %one = arith.constant 1 : i64  // Wrong type - should be i32
-          // CHECK: yielded type must match closure return type, yielded type: 'i64', expected type: 'i32'
+          // expected-error @+1 {{yielded type must match closure return type, yielded type: 'i64', expected type: 'i32'}}
           reussir.closure.yield %one : i64
       }
     }

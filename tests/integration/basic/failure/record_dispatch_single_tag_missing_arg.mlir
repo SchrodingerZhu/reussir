@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Define variant record types for testing dispatch
 !option_some = !reussir.record<compound "Option::Some" {i32}>
@@ -7,9 +7,9 @@
 
 module {
   func.func @test_single_tag_missing_arg(%opt_ref : !reussir.ref<!option>) -> i32 {
+    // expected-error @+1 {{'reussir.record.dispatch' op region 0 must have exactly one argument for single tag}}
     %result = reussir.record.dispatch(%opt_ref : !reussir.ref<!option>) -> i32 {
       [0] -> {
-        // CHECK: error: 'reussir.record.dispatch' op region 0 must have exactly one argument for single tag
         ^bb0:
           %c42 = arith.constant 42 : i32
           reussir.scf.yield %c42 : i32

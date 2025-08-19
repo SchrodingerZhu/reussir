@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test closure apply with wrong argument type
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -14,7 +14,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       }
     }
     %arg = arith.constant 5 : i64  // Wrong type - should be i32
-    // CHECK: argument type must match first closure input type, argument type: 'i64', expected type: 'i32'
+    // expected-error @+1 {{argument type must match first closure input type, argument type: 'i64', expected type: 'i32'}}
     %applied = reussir.closure.apply (%arg : i64) to (%closure : !reussir.closure<(i32) -> i32>) : !reussir.closure<() -> i32>
     return %applied : !reussir.closure<() -> i32>
   }

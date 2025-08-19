@@ -1,5 +1,5 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 module @test {
-  // CHECK: Capability must be shared, flex or rigid for RcType
+  // expected-error @+1 {{Capability must be shared, flex or rigid for RcType}}
   func.func private @foo() -> !reussir.rc<index field>
 }

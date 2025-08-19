@@ -1,6 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
-
-// CHECK: error: 'reussir.closure.eval' op closure has output type 'i32' but result is empty
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test failure: closure eval with result closure but expecting void
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -15,6 +13,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       }
     }
     // This should fail because closure has output type i32 but we expect void
+    // expected-error @+1 {{'reussir.closure.eval' op closure has output type 'i32' but result is empty}}
     reussir.closure.eval (%closure : !reussir.closure<() -> i32>)
     return
   }

@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test closure yield with return value when none expected
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -9,7 +9,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       body {
         ^bb0(%v0 : i32):
           %one = arith.constant 1 : i32
-          // CHECK: closure has no return type but yield provides value of type 'i32'
+          // expected-error @+1 {{closure has no return type but yield provides value of type 'i32'}}
           reussir.closure.yield %one : i32
       }
     }

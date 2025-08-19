@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Test closure apply with closure that has no input types
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
@@ -13,7 +13,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
       }
     }
     %arg = arith.constant 5 : i32
-    // CHECK: cannot apply to closure with no input types
+    // expected-error @+1 {{cannot apply to closure with no input types}}
     %applied = reussir.closure.apply (%arg : i32) to (%closure : !reussir.closure<() -> i32>) : !reussir.closure<() -> i32>
     return %applied : !reussir.closure<() -> i32>
   }
