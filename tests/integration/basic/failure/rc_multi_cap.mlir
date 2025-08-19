@@ -1,5 +1,5 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 module @test {
-  // CHECK: error: Capability is already specified
-  func.func private @foo() -> !reussir.rc<index rigid shared normal>
+  // expected-error @+1 {{Capability is already specified}}
+  func.func private @foo() -> !reussir.rc<index shared flex>
 }

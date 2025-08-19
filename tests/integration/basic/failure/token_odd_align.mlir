@@ -1,6 +1,6 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
+// expected-error @+1 {{Token alignment must be a power of two}}
 !foo = !reussir.token<align: 7, size: 64>
 module @test {
-  // CHECK: error: Token alignment must be a power of two
-  func.func private @foo() -> !foo
+  func.func private @bar() -> !reussir.token<align: 3, size: 8>
 }

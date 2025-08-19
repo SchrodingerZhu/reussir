@@ -1,4 +1,4 @@
-// RUN: %not %reussir-opt %s 2>&1 | %FileCheck %s
+// RUN: %reussir-opt %s -verify-diagnostics
 
 // Define variant record types for testing dispatch
 !option_some = !reussir.record<compound "Option::Some" {i32}>
@@ -7,8 +7,8 @@
 
 module {
   func.func @test_incomplete_coverage(%opt_ref : !reussir.ref<!option>) -> i32 {
+    // expected-error @+1 {{'reussir.record.dispatch' op tag 1 is not covered by any tag set}}
     %result = reussir.record.dispatch(%opt_ref : !reussir.ref<!option>) -> i32 {
-      // CHECK: error: 'reussir.record.dispatch' op tag 1 is not covered by any tag set
       [0] -> {
         ^bb0(%arg : !reussir.ref<!option_some>):
           %c42 = arith.constant 42 : i32

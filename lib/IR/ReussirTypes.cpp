@@ -26,6 +26,7 @@
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/DialectImplementation.h>
@@ -74,6 +75,7 @@
       })
 
 namespace reussir {
+namespace {
 //===----------------------------------------------------------------------===//
 // Common Parser/Printer Helpers
 //===----------------------------------------------------------------------===//
@@ -131,6 +133,7 @@ void printTypeWithCapabilityAndAtomicKind(mlir::AsmPrinter &printer,
     printer << ' ' << type.getAtomicKind();
   printer << ">";
 }
+} // namespace
 //===----------------------------------------------------------------------===//
 // isNonNullPointerType
 //===----------------------------------------------------------------------===//

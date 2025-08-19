@@ -17,6 +17,7 @@
 
 #include <llvm/ADT/StringSwitch.h>
 #include <llvm/Support/LogicalResult.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/OpImplementation.h>
@@ -974,11 +975,13 @@ mlir::LogicalResult ReussirClosureCreateOp::verify() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirClosureCreateOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
-  // NYI for body
   if (getVtableAttr()) {
-    // TODO: Verify that the vtable symbol exists and is valid
-    // This would typically check that the referenced vtable operation exists
-    // and has the correct signature matching the closure type
+    auto vtableOp = symbolTable.lookupNearestSymbolFrom<ReussirClosureVtableOp>(
+        getOperation(), getVtableAttr());
+    if (!vtableOp)
+      return emitOpError("virtual table not found: ") << getVtableAttr();
+    if (vtableOp.getClosureAttr().getValue() != getClosure().getType())
+      return emitOpError("virtual table closure type mismatch");
   }
   return mlir::success();
 }
@@ -999,6 +1002,76 @@ ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
   return ClosureBoxType::get(getContext(), closureType.getInputTypes());
 }
 
+mlir::FlatSymbolRefAttr ReussirClosureCreateOp::getTrivialForwardingTarget() {
+  // Only inlined closures can be trivially forwarding
+  if (!isInlined())
+    return nullptr;
+
+  // Get the body region
+  auto &body = getBody();
+  if (body.empty())
+    return nullptr;
+
+  // Get the block in the body region
+  auto &block = body.front();
+
+  // Check if the block has exactly one operation (the terminator)
+  if (block.getOperations().size() != 2) // 1 operation + 1 terminator
+    return nullptr;
+
+  // Get the first operation (skip the terminator)
+  auto &firstOp = block.getOperations().front();
+
+  // Check if it's a function call operation
+  auto callOp = llvm::dyn_cast<mlir::func::CallOp>(firstOp);
+  if (!callOp)
+    return nullptr;
+
+  // Get the closure type to check argument types
+  ClosureType closureType = getClosure().getType();
+  auto closureInputTypes = closureType.getInputTypes();
+  auto closureOutputType = closureType.getOutputType();
+
+  // Check if the call operation has the same number of arguments as the closure
+  auto callArgs = callOp.getOperands();
+  if (callArgs.size() != closureInputTypes.size())
+    return nullptr;
+
+  // Check if all argument types match
+  for (size_t i = 0; i < callArgs.size(); ++i)
+    if (callArgs[i].getType() != closureInputTypes[i])
+      return nullptr;
+
+  // Check if the call operation has the same return type as the closure
+  auto callResults = callOp.getResults();
+  if (closureOutputType) {
+    // Closure has a return type
+    if (callResults.size() != 1)
+      return nullptr;
+    if (callResults[0].getType() != closureOutputType)
+      return nullptr;
+  } else if (!callResults.empty())
+    return nullptr;
+
+  // Check if the yield operation yields the result of the call
+  auto yieldOp = llvm::dyn_cast<ReussirClosureYieldOp>(block.getTerminator());
+  if (!yieldOp)
+    return nullptr;
+
+  if (closureOutputType) {
+    // Closure has a return type, so yield should yield the call result
+    if (!yieldOp.getValue() || yieldOp.getValue() != callResults[0])
+      return nullptr;
+  } else {
+    // Closure has no return type, so yield should not yield anything
+    if (yieldOp.getValue())
+      return nullptr;
+  }
+
+  // All checks passed, return the function name
+  return callOp.getCalleeAttr();
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir Closure Vtable Op
 //===----------------------------------------------------------------------===//
@@ -1007,10 +1080,45 @@ ClosureBoxType ReussirClosureCreateOp::getClosureBoxType() {
 mlir::LogicalResult ReussirClosureVtableOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
   // NYI for body
-  if (getFuncAttr()) {
-    // TODO: Verify that the func symbol exists and is valid
-    // This would typically check that the referenced function operation exists
-    // and has the correct signature matching the closure type
+  auto funcOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+      getOperation(), getFuncAttr());
+  if (!funcOp)
+    return emitOpError("function not found: ") << getFuncAttr();
+  ClosureType closureType =
+      llvm::dyn_cast<ClosureType>(getClosureAttr().getValue());
+  if (!closureType)
+    return emitOpError("closure type expected");
+  mlir::FunctionType funcType = funcOp.getFunctionType();
+  if (funcType.getNumInputs() != closureType.getInputTypes().size())
+    return emitOpError("function input types mismatch");
+  if (funcType.getNumResults() > 1)
+    return emitOpError("function must have at most one result");
+  for (size_t i = 0; i < funcType.getNumInputs(); ++i)
+    if (funcType.getInput(i) != closureType.getInputTypes()[i])
+      return emitOpError("function input type mismatch");
+  mlir::Type resultType =
+      funcType.getNumResults() == 1 ? funcType.getResult(0) : mlir::Type{};
+  if (resultType && !closureType.getOutputType())
+    return emitOpError(
+        "function has result type but closure has no output type");
+  if (!resultType && closureType.getOutputType())
+    return emitOpError(
+        "function has no result type but closure has output type");
+  if (resultType && closureType.getOutputType() &&
+      resultType != closureType.getOutputType())
+    return emitOpError("function result type mismatch");
+
+  if (getDropAttr()) {
+    auto dropOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+        getOperation(), getDropAttr());
+    if (!dropOp)
+      return emitOpError("drop function not found: ") << getDropAttr();
+  }
+  if (getCloneAttr()) {
+    auto cloneOp = symbolTable.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+        getOperation(), getCloneAttr());
+    if (!cloneOp)
+      return emitOpError("clone function not found: ") << getCloneAttr();
   }
   return mlir::success();
 }
@@ -1050,6 +1158,103 @@ mlir::LogicalResult ReussirClosureYieldOp::verify() {
       return emitOpError(
                  "closure has no return type but yield provides value of type ")
              << getValue().getType();
+  }
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Apply Op
+//===----------------------------------------------------------------------===//
+// ClosureApplyOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureApplyOp::verify() {
+  ClosureType closureType = getClosure().getType();
+  mlir::Type argType = getArg().getType();
+
+  // Get the input types of the closure
+  auto inputTypes = closureType.getInputTypes();
+
+  // Check that the closure has at least one input type
+  if (inputTypes.empty())
+    return emitOpError("cannot apply to closure with no input types");
+
+  // Check that the argument type matches the first input type
+  mlir::Type expectedArgType = inputTypes[0];
+  if (argType != expectedArgType)
+    return emitOpError("argument type must match first closure input type, ")
+           << "argument type: " << argType
+           << ", expected type: " << expectedArgType;
+
+  // Verify the result type
+  ClosureType resultType = getApplied().getType();
+
+  // The result closure should have one less input type
+  auto expectedInputTypes = inputTypes.drop_front(1);
+  auto resultInputTypes = resultType.getInputTypes();
+
+  if (resultInputTypes.size() != expectedInputTypes.size())
+    return emitOpError("result closure must have one less input type, ")
+           << "expected " << expectedInputTypes.size() << " input types, "
+           << "but got " << resultInputTypes.size();
+
+  // Check that the remaining input types match
+  for (size_t i = 0; i < expectedInputTypes.size(); ++i) {
+    if (resultInputTypes[i] != expectedInputTypes[i])
+      return emitOpError("result closure input types must match remaining "
+                         "input types, ")
+             << "mismatch at index " << i << ": expected "
+             << expectedInputTypes[i] << ", but got " << resultInputTypes[i];
+  }
+
+  // Check that the output types match
+  mlir::Type closureOutputType = closureType.getOutputType();
+  mlir::Type resultOutputType = resultType.getOutputType();
+
+  if (closureOutputType != resultOutputType)
+    return emitOpError("result closure output type must match original closure "
+                       "output type, ")
+           << "original output type: " << closureOutputType
+           << ", result output type: " << resultOutputType;
+
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// Reussir Closure Eval Op
+//===----------------------------------------------------------------------===//
+// ClosureEvalOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirClosureEvalOp::verify() {
+  ClosureType closureType = getClosure().getType();
+
+  // Check that the closure has no input types (fully applied)
+  auto inputTypes = closureType.getInputTypes();
+  if (!inputTypes.empty())
+    return emitOpError("cannot evaluate closure with remaining input types, ")
+           << "closure has " << inputTypes.size() << " input types remaining";
+
+  // Check that the result type matches the closure's output type
+  mlir::Type closureOutputType = closureType.getOutputType();
+
+  // Check if we have a result
+  if (getNumResults() > 0) {
+    mlir::Type resultType = getResult().getType();
+
+    // If the closure has no output type, the result should be empty
+    if (!closureOutputType)
+      return emitOpError("closure has no output type but result is not empty");
+
+    // If the closure has an output type, the result should match
+    if (resultType != closureOutputType)
+      return emitOpError("result type must match closure output type, ")
+             << "result type: " << resultType
+             << ", closure output type: " << closureOutputType;
+  } else {
+    // No result provided
+    if (closureOutputType)
+      return emitOpError("closure has output type ")
+             << closureOutputType << " but result is empty";
   }
 
   return mlir::success();
