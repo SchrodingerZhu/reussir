@@ -128,9 +128,9 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   }
 
   llvm::TargetOptions targetOptions;
-  llvm::TargetMachine *tm = target->createTargetMachine(
+  auto tm = std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(
       triple, cpu, featuresStr, targetOptions, std::nullopt, std::nullopt,
-      toLlvmOptLevel(options.opt));
+      toLlvmOptLevel(options.opt)));
 
   if (!tm) {
     logIfNeeded(options.backend_log, LogLevel::Error,
