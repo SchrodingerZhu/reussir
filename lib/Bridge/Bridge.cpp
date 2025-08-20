@@ -13,7 +13,7 @@
 #include "Reussir/IR/ReussirDialect.h"
 
 // MLIR
-#include <llvm/ADT/StringRef.h>
+#include <llvm/Support/MemoryBuffer.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/DLTI/DLTI.h>
@@ -22,10 +22,13 @@
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/UB/IR/UBOps.h>
+#include <mlir/IR/AsmState.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/DialectRegistry.h>
+#include <mlir/InitAllDialects.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <mlir/Parser/Parser.h>
 #include <mlir/Support/LLVM.h>
@@ -33,10 +36,12 @@
 #include <mlir/Target/LLVMIR/Import.h>
 
 // LLVM (native target + data layout)
+#include <llvm/ADT/StringRef.h>
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Support/CodeGen.h>
+#include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
@@ -82,16 +87,17 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
 
   // 1) Build a registry and MLIR context with required dialects.
   DialectRegistry registry;
-  registry.insert<reussir::ReussirDialect, arith::ArithDialect, ub::UBDialect,
-                  func::FuncDialect, memref::MemRefDialect, scf::SCFDialect,
-                  cf::ControlFlowDialect, LLVM::LLVMDialect>();
-
+  mlir::registerAllDialects(registry);
+  registry.insert<reussir::ReussirDialect>();
   MLIRContext context(registry);
-  context.allowUnregisteredDialects(); // keep permissive for early scaffolding
+  context.loadAllAvailableDialects();
 
   // 2) Parse the incoming MLIR module from string.
-  OwningOpRef<ModuleOp> module =
-      parseSourceString<ModuleOp>(mlirTextureModule, &context, sourceName);
+  llvm::SourceMgr sourceMgr;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBufferCopy(mlirTextureModule, sourceName);
+  sourceMgr.AddNewSourceBuffer(std::move(buffer), llvm::SMLoc());
+  OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
 
   if (!module) {
     logIfNeeded(options.backend_log, LogLevel::Error,
@@ -122,9 +128,9 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   }
 
   llvm::TargetOptions targetOptions;
-  std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
+  llvm::TargetMachine *tm = target->createTargetMachine(
       triple, cpu, featuresStr, targetOptions, std::nullopt, std::nullopt,
-      toLlvmOptLevel(options.opt)));
+      toLlvmOptLevel(options.opt));
 
   if (!tm) {
     logIfNeeded(options.backend_log, LogLevel::Error,
@@ -133,19 +139,21 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   }
 
   const llvm::DataLayout dl = tm->createDataLayout();
-  const std::string dataLayout = dl.getStringRepresentation();
-  mlir::DataLayoutSpecInterface dataLayoutSpec =
-      mlir::translateDataLayout(dl, &context);
 
-  Operation *op = module->getOperation();
-  op->setAttr("dlti.dl_spec", dataLayoutSpec);
+  module->getOperation()->setAttr(
+      mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
+      mlir::StringAttr::get(&context, dl.getStringRepresentation()));
+  mlir::DataLayoutSpecInterface dlSpec =
+      mlir::translateDataLayout(dl, &context);
+  module->getOperation()->setAttr(mlir::DLTIDialect::kDataLayoutAttrName,
+                                  dlSpec);
 
   logIfNeeded(options.backend_log, LogLevel::Debug,
               llvm::Twine("Host triple: ") + triple);
   logIfNeeded(options.backend_log, LogLevel::Debug,
               llvm::Twine("CPU: ") + cpu + ", features: " + featuresStr);
   logIfNeeded(options.backend_log, LogLevel::Debug,
-              llvm::Twine("Data layout: ") + dataLayout);
+              llvm::Twine("Data layout: ") + dl.getStringRepresentation());
 
   // Remaining lowering/codegen will be added later.
 }

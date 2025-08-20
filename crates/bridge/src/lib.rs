@@ -120,8 +120,8 @@ mod ffi {
         #[cxx_name = "compileForNativeMachine"]
         pub fn compile_for_native_machine(
             mlirTextureModule: StringView,
-            outputFile: StringView,
             sourceName: StringView,
+            outputFile: StringView,
             options: CompileOptions,
         );
     }
@@ -152,6 +152,6 @@ mod tests {
             backend_log: Some(log),
         };
 
-        compile_for_native_machine(mlir_module, output_file, source_name, options);
+        compile_for_native_machine(mlir_module, source_name, output_file, options);
     }
 }

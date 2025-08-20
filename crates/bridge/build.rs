@@ -10,4 +10,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}/build/lib", dst.display());
     println!("cargo:rustc-link-lib=dylib=MLIRReussirBridge");
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/string_view.rs");
+    println!("cargo:rerun-if-changed=../../include");
+    println!("cargo:rerun-if-changed=../../lib");
 }
