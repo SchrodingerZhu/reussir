@@ -9,11 +9,20 @@
 // This file implements the bridge between rust frontend and C++ backend.
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Bridge.h"
-#include "Reussir/IR/ReussirDialect.h"
-
-// MLIR
-#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/ADT/StringRef.h>
+#include <llvm/ADT/Twine.h>
+#include <llvm/IR/DataLayout.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/CodeGen.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/SubtargetFeature.h>
+#include <mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h>
+#include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
+#include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/DLTI/DLTI.h>
@@ -31,25 +40,19 @@
 #include <mlir/InitAllDialects.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <mlir/Parser/Parser.h>
+#include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <mlir/Target/LLVMIR/Import.h>
 
-// LLVM (native target + data layout)
-#include <llvm/ADT/StringRef.h>
-#include <llvm/ADT/Twine.h>
-#include <llvm/IR/DataLayout.h>
-#include <llvm/MC/TargetRegistry.h>
-#include <llvm/Support/CodeGen.h>
-#include <llvm/Support/SourceMgr.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/Target/TargetMachine.h>
-#include <llvm/Target/TargetOptions.h>
-#include <llvm/TargetParser/Host.h>
-#include <llvm/TargetParser/SubtargetFeature.h>
-
+#include <mlir/Transforms/Passes.h>
 #include <optional>
 #include <string>
+
+#include "Reussir/Bridge.h"
+#include "Reussir/Conversion/BasicOpsLowering.h"
+#include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/IR/ReussirDialect.h"
 
 using namespace mlir;
 
@@ -70,6 +73,15 @@ llvm::CodeGenOptLevel toLlvmOptLevel(OptOption opt) {
   case OptOption::Size:
     return llvm::CodeGenOptLevel::Less;
   }
+}
+void createLoweringPipeline(mlir::PassManager &pm) {
+  pm.addPass(reussir::createReussirSCFOpsLoweringPass());
+  pm.addPass(createConvertSCFToCFPass());
+  pm.addPass(createReussirBasicOpsLoweringPass());
+  pm.addPass(createConvertControlFlowToLLVMPass());
+  pm.addPass(createReconcileUnrealizedCastsPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createCanonicalizerPass());
 }
 } // namespace
 
@@ -154,6 +166,14 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
               llvm::Twine("Data layout: ") + dl.getStringRepresentation());
 
   // Remaining lowering/codegen will be added later.
+  mlir::PassManager pm(&context);
+  createLoweringPipeline(pm);
+  if (pm.run(module->getOperation()).failed()) {
+    logIfNeeded(options, LogLevel::Error,
+                "Failed to lower MLIR module to LLVM dialect.");
+    return;
+  }
+  module->dump();
 }
 
 } // namespace reussir
