@@ -77,7 +77,7 @@ llvm::CodeGenOptLevel toLlvmOptLevel(OptOption opt) {
 void createLoweringPipeline(mlir::PassManager &pm) {
   pm.addPass(reussir::createReussirSCFOpsLoweringPass());
 #if LLVM_VERSION_MAJOR >= 21
-  pm.addPass(createConvertSCFToControlFlowPass());
+  pm.addPass(createSCFToControlFlowPass());
 #else
   pm.addPass(createConvertSCFToCFPass());
 #endif
