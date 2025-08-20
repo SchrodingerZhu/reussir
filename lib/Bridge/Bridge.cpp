@@ -12,10 +12,13 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/DataLayout.h>
+#include <llvm/IR/LegacyPassManager.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Support/CodeGen.h>
+#include <llvm/Support/FileSystem.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
@@ -43,8 +46,10 @@
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
+#include <mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h>
+#include <mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMIRToLLVMTranslation.h>
+#include <mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h>
 #include <mlir/Target/LLVMIR/Import.h>
-
 #include <mlir/Transforms/Passes.h>
 #include <optional>
 #include <string>
@@ -73,6 +78,7 @@ llvm::CodeGenOptLevel toLlvmOptLevel(OptOption opt) {
   case OptOption::Size:
     return llvm::CodeGenOptLevel::Less;
   }
+  llvm_unreachable("unknown optimization level");
 }
 void createLoweringPipeline(mlir::PassManager &pm) {
   pm.addPass(reussir::createReussirSCFOpsLoweringPass());
@@ -87,14 +93,39 @@ void createLoweringPipeline(mlir::PassManager &pm) {
   pm.addPass(createCSEPass());
   pm.addPass(createCanonicalizerPass());
 }
+void emitModule(llvm::Module &llvmModule, llvm::TargetMachine &tm,
+                std::string_view filename, CompileOptions options) {
+  std::error_code ec;
+  llvm::raw_fd_ostream dest(filename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    logIfNeeded(options, LogLevel::Error,
+                llvm::Twine("Could not open file: ") + ec.message());
+    return;
+  }
+
+  // Ensure module has correct layout/triple
+  llvmModule.setDataLayout(tm.createDataLayout());
+  llvmModule.setTargetTriple(tm.getTargetTriple().str());
+
+  llvm::legacy::PassManager pass;
+  if (tm.addPassesToEmitFile(pass, dest, nullptr,
+                             options.target == OutputTarget::ASM
+                                 ? llvm::CodeGenFileType::AssemblyFile
+                                 : llvm::CodeGenFileType::ObjectFile)) {
+    logIfNeeded(options, LogLevel::Error,
+                "TargetMachine can't emit this file type");
+    return;
+  }
+
+  pass.run(llvmModule);
+  dest.flush();
+}
 } // namespace
 
 void compileForNativeMachine(std::string_view mlirTextureModule,
                              std::string_view sourceName,
                              std::string_view outputFile,
                              CompileOptions options) {
-  (void)outputFile; // not used in this scaffold stage
-
   // Initialize native target so we can query TargetMachine for layout/triple.
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
@@ -105,6 +136,8 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   registry.insert<reussir::ReussirDialect, DLTIDialect, LLVM::LLVMDialect,
                   arith::ArithDialect, memref::MemRefDialect, scf::SCFDialect,
                   ub::UBDialect, func::FuncDialect, cf::ControlFlowDialect>();
+  registerLLVMDialectTranslation(registry);
+  registerBuiltinDialectTranslation(registry);
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
@@ -177,7 +210,33 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
                 "Failed to lower MLIR module to LLVM dialect.");
     return;
   }
-  module->dump();
+  logIfNeeded(options, LogLevel::Info, "Successfully lowered MLIR module.");
+
+  // 4) Convert the MLIR module to LLVM IR.
+  llvm::LLVMContext llvmCtx;
+  std::unique_ptr<llvm::Module> llvmModule =
+      translateModuleToLLVMIR(module->getOperation(), llvmCtx, sourceName);
+
+  if (!llvmModule) {
+    logIfNeeded(options, LogLevel::Error,
+                "Failed to translate MLIR module to LLVM IR.");
+    return;
+  }
+  if (options.target == OutputTarget::LLVMIR) {
+    std::error_code ec;
+    llvm::raw_fd_ostream outStream(outputFile, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+      logIfNeeded(options, LogLevel::Error,
+                  llvm::Twine("Failed to open output file: ") + ec.message());
+      return;
+    }
+    llvmModule->print(outStream, nullptr);
+    outStream.flush();
+    logIfNeeded(options, LogLevel::Info,
+                "Successfully wrote LLVM IR to output file.");
+    return;
+  }
+  emitModule(*llvmModule, *tm, outputFile, options);
 }
 
 } // namespace reussir

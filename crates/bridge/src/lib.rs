@@ -24,7 +24,6 @@ pub enum OutputTarget {
     LLVMIR,
     ASM,
     Object,
-    Executable,
 }
 
 #[derive(Copy, Clone)]
@@ -135,7 +134,6 @@ pub use ffi::compile_for_native_machine;
 mod tests {
     use super::*;
     use tracing::Level;
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber;
     use tracing_subscriber::EnvFilter;
 

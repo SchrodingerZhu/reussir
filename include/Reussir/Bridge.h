@@ -17,7 +17,7 @@
 #include <string_view>
 
 namespace reussir {
-enum class OutputTarget { LLVMIR, ASM, Object, Executable };
+enum class OutputTarget { LLVMIR, ASM, Object };
 enum class OptOption { None, Default, Aggressive, Size };
 enum class LogLevel { Error, Warning, Info, Debug, Trace };
 struct CompileOptions {
