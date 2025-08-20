@@ -66,6 +66,7 @@ unsafe impl ExternType for LogLevel {
 pub struct CompileOptions {
     pub target: OutputTarget,
     pub opt: OptOption,
+    pub log_level: LogLevel,
     backend_log: Option<extern "C" fn(string_view::StringView, LogLevel)>,
 }
 
@@ -93,6 +94,7 @@ impl Default for CompileOptions {
         CompileOptions {
             target: OutputTarget::LLVMIR,
             opt: OptOption::Default,
+            log_level: LogLevel::Info,
             backend_log: Some(log),
         }
     }
@@ -132,15 +134,21 @@ pub use ffi::compile_for_native_machine;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::Level;
+    use tracing::level_filters::LevelFilter;
     use tracing_subscriber;
     use tracing_subscriber::EnvFilter;
 
     #[test]
     fn test_compile_for_native_machine() {
         // Initialize tracing subscriber for logging
-        _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .try_init();
+        let filter = EnvFilter::from_default_env();
+        let level = filter
+            .max_level_hint()
+            .and_then(|hint| hint.into_level())
+            .unwrap_or(Level::DEBUG);
+
+        _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 
         let mlir_module = string_view::StringView::new("module {}");
         let output_file = string_view::StringView::new("output.ll");
@@ -149,6 +157,13 @@ mod tests {
         let options = CompileOptions {
             target: OutputTarget::LLVMIR,
             opt: OptOption::Default,
+            log_level: match level {
+                Level::ERROR => LogLevel::Error,
+                Level::WARN => LogLevel::Warning,
+                Level::INFO => LogLevel::Info,
+                Level::DEBUG => LogLevel::Debug,
+                Level::TRACE => LogLevel::Trace,
+            },
             backend_log: Some(log),
         };
 

@@ -23,7 +23,8 @@ enum class LogLevel { Error, Warning, Info, Debug, Trace };
 struct CompileOptions {
   OutputTarget target;
   OptOption opt;
-  void (*backend_log)(std::string_view, LogLevel level);
+  LogLevel logLevel;
+  void (*backendLog)(std::string_view, LogLevel level);
 };
 
 // currently, we only support compiling for native machine target

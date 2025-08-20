@@ -55,10 +55,9 @@ using namespace mlir;
 
 namespace reussir {
 namespace {
-void logIfNeeded(void (*logger)(std::string_view, LogLevel), LogLevel lvl,
-                 llvm::Twine msg) {
-  if (logger)
-    logger(msg.str(), lvl);
+void logIfNeeded(const CompileOptions &options, LogLevel lvl, llvm::Twine msg) {
+  if (options.backendLog && lvl <= options.logLevel)
+    options.backendLog(msg.str(), lvl);
 }
 llvm::CodeGenOptLevel toLlvmOptLevel(OptOption opt) {
   switch (opt) {
@@ -101,12 +100,11 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
 
   if (!module) {
-    logIfNeeded(options.backend_log, LogLevel::Error,
+    logIfNeeded(options, LogLevel::Error,
                 "Failed to parse MLIR module from provided string.");
     return;
   }
-  logIfNeeded(options.backend_log, LogLevel::Info,
-              "Parsed MLIR module successfully.");
+  logIfNeeded(options, LogLevel::Info, "Parsed MLIR module successfully.");
 
   // 3) Query native target triple, CPU and features via LLVM C API, then
   //    create an LLVM TargetMachine to derive the data layout string.
@@ -123,7 +121,7 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   const llvm::Target *target =
       llvm::TargetRegistry::lookupTarget(triple, error);
   if (!target) {
-    logIfNeeded(options.backend_log, LogLevel::Error,
+    logIfNeeded(options, LogLevel::Error,
                 llvm::Twine("LLVM target lookup failed: ") + error);
     return;
   }
@@ -134,7 +132,7 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
       toLlvmOptLevel(options.opt)));
 
   if (!tm) {
-    logIfNeeded(options.backend_log, LogLevel::Error,
+    logIfNeeded(options, LogLevel::Error,
                 "Failed to create LLVM TargetMachine.");
     return;
   }
@@ -149,11 +147,10 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   module->getOperation()->setAttr(mlir::DLTIDialect::kDataLayoutAttrName,
                                   dlSpec);
 
-  logIfNeeded(options.backend_log, LogLevel::Debug,
-              llvm::Twine("Host triple: ") + triple);
-  logIfNeeded(options.backend_log, LogLevel::Debug,
+  logIfNeeded(options, LogLevel::Debug, llvm::Twine("Host triple: ") + triple);
+  logIfNeeded(options, LogLevel::Debug,
               llvm::Twine("CPU: ") + cpu + ", features: " + featuresStr);
-  logIfNeeded(options.backend_log, LogLevel::Debug,
+  logIfNeeded(options, LogLevel::Debug,
               llvm::Twine("Data layout: ") + dl.getStringRepresentation());
 
   // Remaining lowering/codegen will be added later.
