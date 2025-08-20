@@ -102,11 +102,6 @@ void emitModule(llvm::Module &llvmModule, llvm::TargetMachine &tm,
                 llvm::Twine("Could not open file: ") + ec.message());
     return;
   }
-
-  // Ensure module has correct layout/triple
-  llvmModule.setDataLayout(tm.createDataLayout());
-  llvmModule.setTargetTriple(tm.getTargetTriple().str());
-
   llvm::legacy::PassManager pass;
   if (tm.addPassesToEmitFile(pass, dest, nullptr,
                              options.target == OutputTarget::ASM
