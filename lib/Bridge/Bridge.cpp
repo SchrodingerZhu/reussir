@@ -13,7 +13,9 @@
 #include <llvm/ADT/Twine.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/PassManager.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CodeGen.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/SourceMgr.h>
@@ -23,6 +25,14 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Host.h>
 #include <llvm/TargetParser/SubtargetFeature.h>
+#include <llvm/Transforms/IPO.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/IPO/FunctionAttrs.h>
+#include <llvm/Transforms/IPO/Inliner.h>
+
+#include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Scalar/ADCE.h>
+#include <llvm/Transforms/Utils.h>
 #include <mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
@@ -93,8 +103,51 @@ void createLoweringPipeline(mlir::PassManager &pm) {
   pm.addPass(createCSEPass());
   pm.addPass(createCanonicalizerPass());
 }
+void runNPMOptimization(llvm::Module &llvmModule,
+                        const CompileOptions &options) {
+  if (options.opt == OptOption::None) {
+    return;
+  }
+
+  // Initialize PassBuilder without TargetMachine
+  llvm::PassBuilder pb;
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cgam;
+  llvm::ModuleAnalysisManager mam;
+
+  // Register all analysis managers
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cgam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+  // Configure optimization level
+  llvm::OptimizationLevel optLevel;
+  switch (options.opt) {
+  case OptOption::None:
+    return; // Already handled above
+  case OptOption::Default:
+    optLevel = llvm::OptimizationLevel::O2;
+    break;
+  case OptOption::Aggressive:
+    optLevel = llvm::OptimizationLevel::O3;
+    break;
+  case OptOption::Size:
+    optLevel = llvm::OptimizationLevel::Os;
+    break;
+  }
+
+  // Create the default optimization pipeline for the specified level
+  llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(optLevel);
+
+  // Run the optimization
+  mpm.run(llvmModule, mam);
+  logIfNeeded(options, LogLevel::Info, "Applied NPM optimization passes.");
+}
 void emitModule(llvm::Module &llvmModule, llvm::TargetMachine &tm,
-                std::string_view filename, CompileOptions options) {
+                std::string_view filename, const CompileOptions &options) {
   std::error_code ec;
   llvm::raw_fd_ostream dest(filename, ec, llvm::sys::fs::OF_None);
   if (ec) {
@@ -217,6 +270,10 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
                 "Failed to translate MLIR module to LLVM IR.");
     return;
   }
+
+  // Run NPM optimization passes
+  runNPMOptimization(*llvmModule, options);
+
   if (options.target == OutputTarget::LLVMIR) {
     std::error_code ec;
     llvm::raw_fd_ostream outStream(outputFile, ec, llvm::sys::fs::OF_None);
@@ -228,7 +285,8 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
     llvmModule->print(outStream, nullptr);
     outStream.flush();
     logIfNeeded(options, LogLevel::Info,
-                "Successfully wrote LLVM IR to output file.");
+                llvm::Twine("Successfully wrote LLVM IR to output file: ") +
+                    outputFile);
     return;
   }
   emitModule(*llvmModule, *tm, outputFile, options);
