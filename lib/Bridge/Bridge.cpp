@@ -87,8 +87,9 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
 
   // 1) Build a registry and MLIR context with required dialects.
   DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  registry.insert<reussir::ReussirDialect>();
+  registry.insert<reussir::ReussirDialect, DLTIDialect, LLVM::LLVMDialect,
+                  arith::ArithDialect, memref::MemRefDialect, scf::SCFDialect,
+                  ub::UBDialect, func::FuncDialect, cf::ControlFlowDialect>();
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
 
