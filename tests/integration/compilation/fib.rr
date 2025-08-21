@@ -1,0 +1,13 @@
+// RUN: %rrc -i %s -o %t.rr.o --target object --opt-level aggressive
+// RUN: %cc -c %S/fib.c -o %t.c.o
+// RUN: %cc %t.rr.o %t.c.o -o %t
+// RUN: %t | FileCheck %s
+// CHECK: 267914296
+
+pub fn fibonacci(n: u64) -> u64 { 
+    if n < 2u64 { 
+        n 
+    } else { 
+        fibonacci(n - 1u64) + fibonacci(n - 2u64) 
+    } 
+}

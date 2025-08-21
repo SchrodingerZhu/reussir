@@ -171,6 +171,7 @@ impl<'a> IRBuilder<'a> {
     }
     fn snapshot(&self) -> Snapshot<'a> {
         Snapshot {
+            next_val: self.next_val.get(),
             value_types: self.value_types.borrow().clone(),
             named_values: self.named_values.borrow().clone(),
         }
@@ -178,6 +179,7 @@ impl<'a> IRBuilder<'a> {
     fn recover_to(&self, snapshot: Snapshot<'a>) {
         self.value_types.replace(snapshot.value_types);
         self.named_values.replace(snapshot.named_values);
+        self.next_val.set(snapshot.next_val);
     }
     fn add_val(&self, ty: &'a Type, location: Option<Location>, name: Option<Ustr>) {
         let val = self.next_val();
@@ -235,6 +237,7 @@ impl<'a> IRBuilder<'a> {
     }
 }
 pub struct Snapshot<'a> {
+    next_val: ValID,
     value_types: Map<ValID, ValueDef<'a>>,
     named_values: Map<Ustr, ValID>,
 }

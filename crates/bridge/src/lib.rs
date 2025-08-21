@@ -1,31 +1,43 @@
 use cxx::{ExternType, type_id};
 
-pub mod string_view;
+mod string_view;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, EnumString)]
 #[repr(C)]
 pub enum OutputTarget {
+    #[strum(serialize = "llvmir")]
     LLVMIR,
+    #[strum(serialize = "asm")]
     ASM,
+    #[strum(serialize = "object")]
     Object,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, EnumString)]
 #[repr(C)]
 pub enum OptOption {
+    #[strum(serialize = "none")]
     None,
+    #[strum(serialize = "default")]
     Default,
+    #[strum(serialize = "aggressive")]
     Aggressive,
+    #[strum(serialize = "size")]
     Size,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, EnumString)]
 #[repr(C)]
 pub enum LogLevel {
+    #[strum(serialize = "error")]
     Error,
+    #[strum(serialize = "warning")]
     Warning,
+    #[strum(serialize = "info")]
     Info,
+    #[strum(serialize = "debug")]
     Debug,
+    #[strum(serialize = "trace")]
     Trace,
 }
 
@@ -112,7 +124,19 @@ mod ffi {
     }
 }
 
-pub use ffi::compile_for_native_machine;
+use strum::EnumString;
+
+pub fn compile_for_native_machine(
+    mlir_module: &str,
+    source_name: &str,
+    output_file: &str,
+    options: CompileOptions,
+) {
+    let mlir_module = string_view::StringView::new(mlir_module);
+    let source_name = string_view::StringView::new(source_name);
+    let output_file = string_view::StringView::new(output_file);
+    ffi::compile_for_native_machine(mlir_module, source_name, output_file, options);
+}
 
 #[cfg(test)]
 mod tests {
@@ -132,9 +156,9 @@ mod tests {
 
         _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 
-        let mlir_module = string_view::StringView::new("module {}");
-        let output_file = string_view::StringView::new("/tmp/output.ll");
-        let source_name = string_view::StringView::new("test.mlir");
+        let mlir_module = "module {}";
+        let output_file = "/tmp/output.ll";
+        let source_name = "test.mlir";
 
         let options = CompileOptions {
             target: OutputTarget::LLVMIR,

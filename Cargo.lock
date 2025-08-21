@@ -80,17 +80,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 
 [[package]]
-name = "bridge"
-version = "0.1.0"
-dependencies = [
- "cmake",
- "cxx",
- "cxx-build",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -922,6 +911,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
+name = "reussir-bridge"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+ "cxx",
+ "cxx-build",
+ "strum",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "reussir-core"
 version = "0.1.0"
 dependencies = [
@@ -994,8 +995,14 @@ dependencies = [
 name = "rrc"
 version = "0.1.0"
 dependencies = [
- "bridge",
  "palc",
+ "reussir-bridge",
+ "reussir-core",
+ "reussir-front",
+ "reussir-sema",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-ident",
 ]
 
 [[package]]
