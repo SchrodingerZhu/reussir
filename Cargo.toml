@@ -5,7 +5,7 @@ members = [
     "crates/core",
     "crates/front",
     "crates/sema",
-    "crates/utils",
+    "crates/utils", "tool/rrc",
 ]
 
 [profile.release]

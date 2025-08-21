@@ -178,6 +178,7 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
   llvm::InitializeNativeTargetAsmParser();
+  logIfNeeded(options, LogLevel::Info, "Initialized native target.");
 
   // 1) Build a registry and MLIR context with required dialects.
   DialectRegistry registry;
@@ -188,6 +189,7 @@ void compileForNativeMachine(std::string_view mlirTextureModule,
   registerBuiltinDialectTranslation(registry);
   MLIRContext context(registry);
   context.loadAllAvailableDialects();
+  logIfNeeded(options, LogLevel::Info, "Loaded all available dialects.");
 
   // 2) Parse the incoming MLIR module from string.
   llvm::SourceMgr sourceMgr;

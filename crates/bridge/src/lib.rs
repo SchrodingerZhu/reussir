@@ -149,7 +149,7 @@ mod tests {
         _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 
         let mlir_module = string_view::StringView::new("module {}");
-        let output_file = string_view::StringView::new("output.ll");
+        let output_file = string_view::StringView::new("/tmp/output.ll");
         let source_name = string_view::StringView::new("test.mlir");
 
         let options = CompileOptions {

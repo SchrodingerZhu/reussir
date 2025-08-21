@@ -1,0 +1,8 @@
+[package]
+name = "rrc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bridge = { version = "0.1.0", path = "../../crates/bridge" }
+palc = "0.0.1"
