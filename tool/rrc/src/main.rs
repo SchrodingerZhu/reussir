@@ -52,7 +52,7 @@ struct Options {
     #[arg(short, long)]
     output_file: PathBuf,
     /// The optimization level to use.
-    #[arg(short = 'O', long)]
+    #[arg(short = 'O', long, default_value = "default")]
     opt_level: OptOption,
     /// The log level to use.
     #[arg(short, long, default_value = "info")]
