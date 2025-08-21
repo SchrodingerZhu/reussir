@@ -19,6 +19,11 @@ add_custom_target(rrc-build ALL
     COMMAND ${CMAKE_COMMAND} -E env
         CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
         RUSTFLAGS="-Awarnings"
+        LLVM_DIR=${LLVM_DIR}
+        MLIR_DIR=${MLIR_DIR}
+        CMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        CMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        LLVM_USE_LINKER=${LLVM_USE_LINKER}
         cargo build --profile ${CARGO_PROFILE} --quiet
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rrc
     COMMENT "Building rrc with cargo (${CARGO_PROFILE} profile)"
