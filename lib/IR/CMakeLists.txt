@@ -2,8 +2,7 @@ get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 
 file(GLOB source_files "*.cpp")
 
-add_llvm_library(MLIRReussir
-  SHARED
+add_mlir_dialect_library(MLIRReussir
     ${source_files}
   DEPENDS
     ReussirOpsIncGen
