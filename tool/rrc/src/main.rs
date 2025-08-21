@@ -108,7 +108,11 @@ fn main() {
 
     let mut ctx = reussir_core::Context::new(module_path.clone());
     let mut parser_state = reussir_front::ParserState::new(module_path.clone(), input_file);
-    let source = std::fs::read_to_string(input_file).unwrap();
+    let source = if options.input_file.is_some() {
+        std::fs::read_to_string(input_file).unwrap()
+    } else {
+        std::io::read_to_string(std::io::stdin()).unwrap()
+    };
     let parser = reussir_front::module();
     let token_stream = Token::stream(input_file.into(), &source);
     let res = parser
