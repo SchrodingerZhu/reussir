@@ -1,4 +1,4 @@
-//===-- ReussirOps.cpp - Reussir backend bridge -----------------*- c++ -*-===//
+//===-- Bridge.cpp - Reussir backend bridge ---------------------*- c++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
