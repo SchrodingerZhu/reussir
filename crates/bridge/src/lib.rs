@@ -2,22 +2,6 @@ use cxx::{ExternType, type_id};
 
 pub mod string_view;
 
-/*
-enum class OutputTarget { LLVMIR, ASM, Object, Executable };
-enum class OptOption { None, Default, Aggressive, Size };
-enum class LogLevel { Error, Warning, Info, Debug, Trace };
-struct CompileOptions {
-  OutputTarget target;
-  OptOption opt;
-  void (*backend_log)(std::string_view, LogLevel level);
-};
-
-// currently, we only support compiling for native machine target
-void compileForNativeMachine(std::string_view mlirTextureModule,
-                             std::string_view outputFile,
-                             CompileOptions options);
-*/
-
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub enum OutputTarget {
@@ -77,7 +61,7 @@ unsafe impl ExternType for CompileOptions {
 pub extern "C" fn log<'a>(message: string_view::StringView<'a>, level: LogLevel) {
     let message_str = match message.to_str() {
         Ok(s) => s,
-        Err(_) => panic!("failed to convert message to string"), // Handle error appropriately
+        Err(_) => "<non-UTF8 log message>",
     };
     match level {
         LogLevel::Error => tracing::error!("{}", message_str),

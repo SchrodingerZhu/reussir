@@ -29,7 +29,6 @@ struct CompileOptions {
 
 // currently, we only support compiling for native machine target
 void compileForNativeMachine(std::string_view mlirTextureModule,
-                             std::string_view outputFile,
                              std::string_view sourceName,
                              std::string_view outputFile,
                              CompileOptions options);
