@@ -16,8 +16,10 @@ endif()
 
 # Custom target to build rrc with cargo
 add_custom_target(rrc-build ALL
-    COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
-        cargo build --profile ${CARGO_PROFILE}
+    COMMAND ${CMAKE_COMMAND} -E env
+        CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
+        RUSTFLAGS="-Awarnings"
+        cargo build --profile ${CARGO_PROFILE} --quiet
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rrc
     COMMENT "Building rrc with cargo (${CARGO_PROFILE} profile)"
     DEPENDS MLIRReussirBridge
@@ -28,7 +30,6 @@ add_custom_target(rrc-install ALL
     COMMAND ${CMAKE_COMMAND} -E copy
         ${CMAKE_BINARY_DIR}/target/${CARGO_PROFILE}/rrc
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc
-    COMMAND ${CMAKE_COMMAND} -E echo "Copied rrc to ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     DEPENDS rrc-build
 )
 
@@ -36,13 +37,11 @@ add_custom_target(rrc-install ALL
 if(PATCHELF_EXECUTABLE)
     add_custom_target(rrc-patch-rpath ALL
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/rrc/fix_rpath.sh ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc
-        COMMAND ${CMAKE_COMMAND} -E echo "Patched rpath for rrc"
         DEPENDS rrc-install
     )
 else()
     # Create a dummy target if patchelf is not available
     add_custom_target(rrc-patch-rpath ALL
-        COMMAND ${CMAKE_COMMAND} -E echo "Skipping rpath patching (patchelf not found)"
         DEPENDS rrc-install
     )
 endif()

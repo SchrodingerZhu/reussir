@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Script to fix rpath for rrc binary
 # Usage: ./fix_rpath.sh <binary_path>
@@ -21,12 +21,6 @@ if ! command -v patchelf &> /dev/null; then
     exit 0
 fi
 
-echo "Fixing rpath for $BINARY_PATH"
-echo "Current rpath: $(patchelf --print-rpath "$BINARY_PATH")"
-
 # Remove existing rpath and set new one
 patchelf --remove-rpath "$BINARY_PATH"
 patchelf --set-rpath '$ORIGIN:$ORIGIN/../lib' "$BINARY_PATH"
-
-echo "New rpath: $(patchelf --print-rpath "$BINARY_PATH")"
-echo "Rpath patching completed successfully"
