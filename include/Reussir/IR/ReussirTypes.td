@@ -372,6 +372,20 @@ def ReussirClosureBoxType
     ArrayRefParameter<"::mlir::Type">:$payloadTypes
   );
   let assemblyFormat = "`<` $payloadTypes `>`";
+  let extraClassDeclaration = [{
+    static constexpr size_t getRefCountIndex() {
+      return 0;
+    }
+    static constexpr size_t getVTableIndex() {
+      return 1;
+    }
+    static constexpr size_t getArgStartIndex() {
+      return 2;
+    }
+    static constexpr size_t getArgCursorIndex() {
+      return 3;
+    }
+  }];
 }
 
 ///===----------------------------------------------------------------------===//
