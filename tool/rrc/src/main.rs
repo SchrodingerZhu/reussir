@@ -53,15 +53,18 @@ struct Options {
     #[arg(short, long)]
     output_file: PathBuf,
     /// The optimization level to use.
+    /// Supported values: `none`, `default`, `agressive`, `size`.
     #[arg(short = 'O', long, default_value = "default")]
     opt_level: OptOption,
     /// The log level to use.
-    #[arg(short, long, default_value = "info")]
+    /// Supported values: `error`, `warning`, `info`, `debug`, `trace`.
+    #[arg(short, long, default_value = "warning")]
     log_level: LogLevel,
     /// module prefix
     #[arg(short, long)]
     module_prefix: Option<String>,
     /// The target to compile to.
+    /// Supported values: `object`, `asm`, `mlir`, `llvmir`.
     #[arg(short, long, default_value = "object")]
     target: AugmentedOutputTarget,
 }
