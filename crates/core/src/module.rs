@@ -44,7 +44,11 @@ impl<'a> ModuleInstance<'a> {
 impl<'a> FunctionInstance<'a> {
     pub fn codegen<W: Write>(&self, ctx: &mut CGContext<W>) -> Result<()> {
         (0..ctx.identation).try_for_each(|_| write!(ctx.output, "\t"))?;
-        write!(ctx.output, "func.func @\"{:?}\"(", self.symbol.path)?;
+        if self.proto.is_public {
+            write!(ctx.output, "func.func @\"{:?}\"(", self.symbol.path)?;
+        } else {
+            write!(ctx.output, "func.func private @\"{:?}\"(", self.symbol.path)?;
+        }
         for (i, param) in self.proto.params.iter().enumerate() {
             if i > 0 {
                 write!(ctx.output, ", ")?;
@@ -53,6 +57,12 @@ impl<'a> FunctionInstance<'a> {
         }
         write!(ctx.output, ") -> ")?;
         self.proto.return_type.codegen(ctx)?;
+        if !self.proto.is_public {
+            write!(
+                ctx.output,
+                " attributes {{ llvm.linkage = #llvm.linkage<private> }}"
+            )?;
+        }
         write!(ctx.output, " {{\n")?;
         ctx.identation += 1;
         self.body.codegen(ctx)?;
