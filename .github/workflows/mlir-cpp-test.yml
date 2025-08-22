@@ -47,7 +47,6 @@ jobs:
 
     - name: Configure CMake
       run: |
-        env CC=clang-${{ matrix.llvm-version }} CXX=clang++-${{ matrix.llvm-version }} \
           cmake -B build \
           -G Ninja \
           -DLLVM_USE_LINKER=lld \
