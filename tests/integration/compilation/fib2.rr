@@ -1,7 +1,7 @@
 // RUN: %rrc -i %s -o %t.rr.o --target object --opt-level aggressive
 // RUN: %cc -c %S/fib2.c -o %t.c.o
 // RUN: %cc %t.rr.o %t.c.o -o %t
-// RUN: %t | FileCheck %s
+// RUN: %t | %FileCheck %s
 // CHECK: 267914296
 
 pub fn fibonacci_impl(
