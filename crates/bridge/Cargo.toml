@@ -1,12 +1,14 @@
 [package]
-name = "bridge"
+name = "reussir-bridge"
 version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
 [dependencies]
 cxx = "1.0.168"
+strum = { version = "0.27.2", features = ["derive"] }
 tracing = { version = "0.1.41", features = ["log"] }
+tracing-subscriber = "0.3.19"
 
 [build-dependencies]
 cmake = "0.1.54"

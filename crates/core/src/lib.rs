@@ -14,6 +14,7 @@ pub mod ir;
 pub mod literal;
 pub mod module;
 pub mod types;
+pub use ariadne;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Path(Box<[Ustr]>);

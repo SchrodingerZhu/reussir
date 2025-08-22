@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bridge = { version = "0.1.0", path = "../../crates/bridge" }
+reussir-bridge = { version = "0.1.0", path = "../../crates/bridge" }
+reussir-core = { version = "0.1.0", path = "../../crates/core" }
+reussir-front = { version = "0.1.0", path = "../../crates/front" }
+reussir-sema = { version = "0.1.0", path = "../../crates/sema" }
 palc = "0.0.1"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+unicode-ident = "1.0"

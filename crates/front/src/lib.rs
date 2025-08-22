@@ -2,7 +2,7 @@ pub mod expr;
 pub mod lexer;
 pub mod stmt;
 pub mod types;
-
+pub use chumsky;
 use std::ops::Deref;
 
 use ariadne::{Report, sources};

@@ -5,8 +5,13 @@ members = [
     "crates/core",
     "crates/front",
     "crates/sema",
-    "crates/utils", "tool/rrc",
+    "crates/utils",
+    "tool/rrc",
 ]
 
 [profile.release]
 lto = true
+rpath = true
+
+[profile.dev]
+rpath = true
