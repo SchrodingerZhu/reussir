@@ -4,7 +4,7 @@
 // RUN: %t | %FileCheck %s
 // CHECK: 267914296
 
-pub fn fibonacci_impl(
+fn fibonacci_impl(
     n: u64,
     a00: u64,
     a01: u64,

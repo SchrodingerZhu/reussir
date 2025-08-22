@@ -32,14 +32,13 @@ pub fn populate_module<'a>(
     }
     ctx.functions_mut().build_fuzzy_indices();
     let mut builder = ModuleBuilder::new(ctx);
-    // Pass 2: instantiate public functions with type parameters
+    // Pass 2: instantiate functions with no type parameters
     // TODO: Populate their dependencies along the way.
     for i in module.statements.iter() {
         match &***i {
             reussir_front::stmt::Stmt::TypeDecl(_) => todo!(),
             reussir_front::stmt::Stmt::FunctionDecl(function) => {
-                if function.proto.is_public
-                    && function.proto.type_args.is_none()
+                if function.proto.type_args.is_none()
                     && let Some(body) = &function.body
                 {
                     builder.define_function(&function.proto, body);
