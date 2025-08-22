@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use palc::Parser as CommandParser;
 use reussir_bridge::{CompileOptions, LogLevel, OptOption, OutputTarget};
@@ -60,10 +61,27 @@ struct Options {
     /// module prefix
     #[arg(short, long)]
     module_prefix: Option<String>,
-
     /// The target to compile to.
     #[arg(short, long, default_value = "object")]
-    target: OutputTarget,
+    target: AugmentedOutputTarget,
+}
+
+#[derive(Clone, Copy)]
+enum AugmentedOutputTarget {
+    OutputTarget(OutputTarget),
+    MLIR,
+}
+
+impl FromStr for AugmentedOutputTarget {
+    type Err = <OutputTarget as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "mlir" {
+            Ok(AugmentedOutputTarget::MLIR)
+        } else {
+            OutputTarget::from_str(s).map(AugmentedOutputTarget::OutputTarget)
+        }
+    }
 }
 
 fn main() {
@@ -125,9 +143,22 @@ fn main() {
     module.codegen(&mut codegen).unwrap();
     let texture = String::from_utf8(buffer).unwrap();
     tracing::trace!("{}", texture);
-    let mut compile_options = CompileOptions::default();
-    compile_options.target = options.target;
-    compile_options.opt = options.opt_level;
-    compile_options.log_level = options.log_level;
-    reussir_bridge::compile_for_native_machine(&texture, input_file, &output_file, compile_options);
+    match options.target {
+        AugmentedOutputTarget::OutputTarget(inner) => {
+            let mut compile_options = CompileOptions::default();
+            compile_options.target = inner;
+            compile_options.opt = options.opt_level;
+            compile_options.log_level = options.log_level;
+            reussir_bridge::compile_for_native_machine(
+                &texture,
+                input_file,
+                &output_file,
+                compile_options,
+            );
+        }
+        AugmentedOutputTarget::MLIR => {
+            std::fs::write(output_file, texture).unwrap();
+            tracing::info!("MLIR output written to {}", output_file);
+        }
+    }
 }
