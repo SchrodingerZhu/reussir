@@ -207,9 +207,9 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfac
                  SizedRegion<1>:$nullRegion);
 
   let assemblyFormat = [{
-    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` 
+    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` `\n`
       `nonnull` `->` $nonNullRegion `\n`
-      `null` `->` $nullRegion `\n`
+      `null` `->` $nullRegion
     `}` attr-dict
   }];
 
@@ -590,12 +590,10 @@ def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
     of elements with field capability.
   }];
   let arguments = (
-    ins Arg<ReussirRefType, "reference to drop">:$ref,
-    UnitAttr:$outlined
+    ins Arg<ReussirRefType, "reference to drop">:$ref
   );
 
   let assemblyFormat = [{
-    (`outlined` $outlined^)?
     `(` $ref `:` qualified(type($ref)) `)` 
     attr-dict
   }];

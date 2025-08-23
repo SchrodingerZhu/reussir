@@ -379,6 +379,13 @@ struct ReussirRecordTagConversionPattern
 
     // Load the tag value
     rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, indexType, tagPtr);
+
+    // Assume that the tag is always in bounds
+    auto numberMembers = rewriter.create<mlir::arith::ConstantOp>(
+        loc, mlir::IntegerAttr::get(indexType, recordType.getMembers().size()));
+    auto geTag = rewriter.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::ult, op.getResult(), numberMembers);
+    rewriter.create<mlir::LLVM::AssumeOp>(loc, geTag);
     return mlir::success();
   }
 };

@@ -5,10 +5,10 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
       return 
   }
   func.func private @dec_rc(%rc: !reussir.rc<i64>) 
-    -> !reussir.nullable<!reussir.token<align: 8, size: 8>> {
+    -> !reussir.nullable<!reussir.token<align: 8, size: 16>> {
       %tk = reussir.rc.dec (%rc : !reussir.rc<i64>) 
-        : !reussir.nullable<!reussir.token<align: 8, size: 8>>
-      return %tk : !reussir.nullable<!reussir.token<align: 8, size: 8>>
+        : !reussir.nullable<!reussir.token<align: 8, size: 16>>
+      return %tk : !reussir.nullable<!reussir.token<align: 8, size: 16>>
   }
   func.func private @create_rc() 
     -> !reussir.rc<i64> {
