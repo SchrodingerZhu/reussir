@@ -282,7 +282,9 @@ mlir::LogicalResult ReussirRecordCoerceOp::verify() {
            << tag << " >= " << recordType.getMembers().size();
 
   // Get the target variant element type at the specified tag position
-  mlir::Type targetVariantElementType = recordType.getMembers()[tag];
+  mlir::Type targetVariantElementType = getProjectedType(
+      recordType.getMembers()[tag], recordType.getMemberCapabilities()[tag],
+      variantRefType.getCapability());
 
   // Check that the output reference element type matches the target variant
   // element type
