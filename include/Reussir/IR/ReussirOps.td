@@ -578,6 +578,29 @@ def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
+  let summary = "Drop a reference";
+  let description = [{
+    `reussir.ref.drop` destructs the element behind the reference in place.
+    
+    For outlined version, the optimizer will not attempt to inline the drop operation
+    for sub-elements.
+
+    If the reference if of flex capability, the drop operation will skip the destruction
+    of elements with field capability.
+  }];
+  let arguments = (
+    ins Arg<ReussirRefType, "reference to drop">:$ref,
+    UnitAttr:$outlined
+  );
+
+  let assemblyFormat = [{
+    (`outlined` $outlined^)?
+    `(` $ref `:` qualified(type($ref)) `)` 
+    attr-dict
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Reussir Region Operations
 //===----------------------------------------------------------------------===//

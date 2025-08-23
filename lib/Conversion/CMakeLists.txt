@@ -1,3 +1,4 @@
 add_subdirectory(TypeConverter)
 add_subdirectory(BasicOpsLowering)
 add_subdirectory(SCFOpsLowering)
+add_subdirectory(DropExpansion)

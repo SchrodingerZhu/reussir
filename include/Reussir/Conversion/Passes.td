@@ -54,4 +54,23 @@ def ReussirSCFOpsLoweringPass
                            "::mlir::func::FuncDialect",
                            "::mlir::ub::UBDialect"];
 }
+
+//===----------------------------------------------------------------------===//
+// DropExpansion
+//===----------------------------------------------------------------------===//
+def ReussirDropExpansionPass
+    : Pass<"reussir-drop-expansion"> {
+  let summary = "expand Reussir drop operations";
+  let description = [{
+    `reussir-drop-expansion` expands Reussir drop operations.
+
+    0. it elminates no-op drop operations.
+    1. for outlined drop, it creates a new function for the drop operation.
+       For type `T`, in normal version,the function name is `core::reussir::drop_in_place<T>`;
+       as for flex version, the function name is `core::reussir::drop_in_place_regional<T>`.
+    2. for normal drop, it inserts destruction operations for inner elements.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::func::FuncDialect"];
+}
 #endif // REUSSIR_CONVERSION_PASSES_TD
