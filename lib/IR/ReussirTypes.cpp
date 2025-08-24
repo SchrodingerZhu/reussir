@@ -171,8 +171,10 @@ bool isTriviallyCopyable(mlir::Type type) {
           return false;
 
         // All members must be trivially copyable
-        for (auto member : recordType.getMembers())
-          if (!isTriviallyCopyable(member))
+        for (auto [member, cap] : llvm::zip(recordType.getMembers(),
+                                            recordType.getMemberCapabilities()))
+          if (!isTriviallyCopyable(
+                  getProjectedType(member, cap, Capability::value)))
             return false;
 
         return true;

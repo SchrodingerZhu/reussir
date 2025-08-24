@@ -22,6 +22,7 @@
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
+#include "Reussir/IR/ReussirTypes.h"
 
 namespace reussir {
 
@@ -173,7 +174,10 @@ public:
         RefType variantRef = op.getVariant().getType();
         RecordType recordType =
             llvm::cast<RecordType>(variantRef.getElementType());
-        mlir::Type targetVariantType = recordType.getMembers()[tagArray[0]];
+        mlir::Type targetVariantType =
+            getProjectedType(recordType.getMembers()[tagArray[0]],
+                             recordType.getMemberCapabilities()[tagArray[0]],
+                             variantRef.getCapability());
         RefType coercedType =
             RefType::get(rewriter.getContext(), targetVariantType,
                          variantRef.getCapability());

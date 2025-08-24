@@ -80,12 +80,12 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
   TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
   if (!tokenType)
     return emitOpError("nullable token must be of TokenType");
-  mlir::Type eleTy = RcType.getElementType();
+  RcBoxType rcBoxType = RcType.getInnerBoxType();
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
   auto dataLayout = mlir::DataLayout::closest(getOperation());
-  auto alignment = dataLayout.getTypeABIAlignment(eleTy);
-  auto size = dataLayout.getTypeSize(eleTy);
+  auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
+  auto size = dataLayout.getTypeSize(rcBoxType);
   if (!size.isFixed())
     return emitOpError("managed type must have a fixed size");
 
@@ -282,7 +282,9 @@ mlir::LogicalResult ReussirRecordCoerceOp::verify() {
            << tag << " >= " << recordType.getMembers().size();
 
   // Get the target variant element type at the specified tag position
-  mlir::Type targetVariantElementType = recordType.getMembers()[tag];
+  mlir::Type targetVariantElementType = getProjectedType(
+      recordType.getMembers()[tag], recordType.getMemberCapabilities()[tag],
+      variantRefType.getCapability());
 
   // Check that the output reference element type matches the target variant
   // element type
@@ -582,7 +584,9 @@ mlir::LogicalResult ReussirRecordDispatchOp::verify() {
                << i << " must have exactly one argument for single tag";
 
       int64_t tag = tagSet[0];
-      mlir::Type expectedType = members[tag];
+      mlir::Type expectedType = getProjectedType(
+          members[tag], recordType.getMemberCapabilities()[tag],
+          variantRefType.getCapability());
       mlir::Type actualType = block.getArgument(0).getType();
 
       // The argument should be a reference to the member type

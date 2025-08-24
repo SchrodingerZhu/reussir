@@ -207,9 +207,9 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfac
                  SizedRegion<1>:$nullRegion);
 
   let assemblyFormat = [{
-    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` 
+    `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` `\n`
       `nonnull` `->` $nonNullRegion `\n`
-      `null` `->` $nullRegion `\n`
+      `null` `->` $nullRegion
     `}` attr-dict
   }];
 
@@ -576,6 +576,27 @@ def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
     `(` $ref `:` qualified(type($ref)) `)` `(` $value `:` type($value) `)` attr-dict
   }];
   let hasVerifier = 1;
+}
+
+def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
+  let summary = "Drop a reference";
+  let description = [{
+    `reussir.ref.drop` destructs the element behind the reference in place.
+    
+    For outlined version, the optimizer will not attempt to inline the drop operation
+    for sub-elements.
+
+    If the reference if of flex capability, the drop operation will skip the destruction
+    of elements with field capability.
+  }];
+  let arguments = (
+    ins Arg<ReussirRefType, "reference to drop">:$ref
+  );
+
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` 
+    attr-dict
+  }];
 }
 
 //===----------------------------------------------------------------------===//
