@@ -76,13 +76,18 @@ mlir::LogicalResult ReussirRcIncOp::verify() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcDecOp::verify() {
   RcType RcType = getRcPtr().getType();
-  NullableType nullableType = getNullableToken().getType();
-  TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
-  if (!tokenType)
-    return emitOpError("nullable token must be of TokenType");
-  RcBoxType rcBoxType = RcType.getInnerBoxType();
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
+  if (RcType.getCapability() == reussir::Capability::rigid) {
+    if (getNullableToken() != nullptr)
+      return emitOpError("rigid RC decrement cannot return a token");
+    return mlir::success();
+  }
+  NullableType nullableType = getNullableToken().getType();
+  TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
+  RcBoxType rcBoxType = RcType.getInnerBoxType();
+  if (!tokenType)
+    return emitOpError("nullable token must be of TokenType");
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
   auto size = dataLayout.getTypeSize(rcBoxType);

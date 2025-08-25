@@ -41,12 +41,15 @@ private:
   mlir::LogicalResult rewriteDropRc(RcType rcType, ReussirRefDropOp op,
                                     mlir::PatternRewriter &rewriter) const {
     // Replace drop of ref rc with load then dec
-    auto layout = mlir::DataLayout::closest(op.getOperation());
-    RcBoxType rcBoxType = rcType.getInnerBoxType();
-    size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
-    size_t align = layout.getTypeABIAlignment(rcBoxType);
-    TokenType tokenType = TokenType::get(op.getContext(), align, size);
-    NullableType nullableType = NullableType::get(op.getContext(), tokenType);
+    NullableType nullableType = nullptr;
+    if (rcType.getCapability() != Capability::rigid) {
+      auto layout = mlir::DataLayout::closest(op.getOperation());
+      RcBoxType rcBoxType = rcType.getInnerBoxType();
+      size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
+      size_t align = layout.getTypeABIAlignment(rcBoxType);
+      TokenType tokenType = TokenType::get(op.getContext(), align, size);
+      nullableType = NullableType::get(op.getContext(), tokenType);
+    }
     mlir::Value loaded =
         rewriter.create<ReussirRefLoadOp>(op.getLoc(), rcType, op.getRef());
     rewriter.create<ReussirRcDecOp>(op.getLoc(), nullableType, loaded);
@@ -128,13 +131,15 @@ private:
           &dispatcher.getNonNullRegion(), dispatcher.getNonNullRegion().begin(),
           {nullableType.getPtrTy()}, {op.getLoc()});
       rewriter.setInsertionPointToStart(nonNullBlock);
-      auto layout = mlir::DataLayout::closest(op.getOperation());
-      RcBoxType rcBoxType = rcType.getInnerBoxType();
-      size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
-      size_t align = layout.getTypeABIAlignment(rcBoxType);
-      TokenType tokenType = TokenType::get(op.getContext(), align, size);
-      NullableType retNullableTy =
-          NullableType::get(op.getContext(), tokenType);
+      NullableType retNullableTy = nullptr;
+      if (rcType.getCapability() != Capability::rigid) {
+        auto layout = mlir::DataLayout::closest(op.getOperation());
+        RcBoxType rcBoxType = rcType.getInnerBoxType();
+        size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
+        size_t align = layout.getTypeABIAlignment(rcBoxType);
+        TokenType tokenType = TokenType::get(op.getContext(), align, size);
+        retNullableTy = NullableType::get(op.getContext(), tokenType);
+      }
       rewriter.create<ReussirRcDecOp>(op.getLoc(), retNullableTy,
                                       nonNullBlock->getArgument(0));
       rewriter.create<ReussirScfYieldOp>(op.getLoc(), nullptr);
