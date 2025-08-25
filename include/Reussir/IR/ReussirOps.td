@@ -268,19 +268,23 @@ def ReussirRcDecOp : ReussirRcOp<"dec", []> {
   let summary = "Decrement reference count";
   let description = [{
     `reussir.rc.dec` decrements the reference count of a RC pointer.
-    If the reference count reaches zero, the memory will be freed.
+    If the reference count reaches zero, the memory will not be freed immediately.
+    Rather, a nullable token is returned.
     ```mlir
     %nullable = reussir.rc.dec (%rc_ptr : !reussir.rc<i64>) -> 
       !reussir.nullable<!reussir.token<align: 8, size: 8>>
     ```
+
+    For rigid RC pointer, this operation is basically a function call to
+    __reussir_release_rigid_object. There is no token shall be returned.
   }];
 
   let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr);
   let results =
-      (outs Res<ReussirNullableTokenType, "Nullable tokeno">:$nullableToken);
+      (outs Res<Optional<ReussirNullableTokenType>, "Nullable token">:$nullableToken);
 
   let assemblyFormat = [{
-    `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` type($nullableToken) attr-dict
+    `(` $rcPtr `:` qualified(type($rcPtr)) `)` (`:` type($nullableToken)^)? attr-dict
   }];
 
   let hasVerifier = 1;
