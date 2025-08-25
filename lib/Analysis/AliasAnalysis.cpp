@@ -157,11 +157,13 @@ ReussirAliasAnalysisImpl::getProducerAsNullable(Value value) {
     return coerceOp.getNullable();
   // Case 2: block argument
   auto blockArg = llvm::dyn_cast<BlockArgument>(value);
-  auto blockNullableDispatchOp =
-      llvm::dyn_cast_if_present<ReussirNullableDispatchOp>(
-          blockArg.getOwner()->getParentOp());
-  if (blockNullableDispatchOp)
-    return blockNullableDispatchOp.getNullable();
+  if (blockArg) {
+    auto blockNullableDispatchOp =
+        llvm::dyn_cast_if_present<ReussirNullableDispatchOp>(
+            blockArg.getOwner()->getParentOp());
+    if (blockNullableDispatchOp)
+      return blockNullableDispatchOp.getNullable();
+  }
   return nullptr;
 }
 
