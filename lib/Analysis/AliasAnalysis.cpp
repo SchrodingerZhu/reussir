@@ -174,11 +174,13 @@ ReussirAliasAnalysisImpl::getProducerAsRef(TypedValue<RefType> value) {
     return coerceOp.getVariant();
   // Case 2: block argument
   auto blockArg = llvm::dyn_cast<BlockArgument>(value);
-  auto blockRecordDispatchOp =
-      llvm::dyn_cast_if_present<ReussirRecordDispatchOp>(
-          blockArg.getOwner()->getParentOp());
-  if (blockRecordDispatchOp)
-    return blockRecordDispatchOp.getVariant();
+  if (blockArg) {
+    auto blockRecordDispatchOp =
+        llvm::dyn_cast_if_present<ReussirRecordDispatchOp>(
+            blockArg.getOwner()->getParentOp());
+    if (blockRecordDispatchOp)
+      return blockRecordDispatchOp.getVariant();
+  }
   return nullptr;
 }
 
