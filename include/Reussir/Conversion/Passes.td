@@ -76,4 +76,25 @@ def ReussirDropExpansionPass
   }];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }
+
+//===----------------------------------------------------------------------===//
+// RcDecrementExpansion
+//===----------------------------------------------------------------------===//
+def ReussirRcDecrementExpansionPass
+    : Pass<"reussir-rc-decrement-expansion"> {
+  let summary = "expand Reussir rc decrement operations";
+  let description = [{
+    `reussir-rc-decrement-expansion` expands Reussir rc decrement operations.
+
+    This pass has an argument `inline-all` that controls whether to inline all
+    decrement operations. If `inline-all` is false, decrement on record types rc
+    pointers will be outlined.
+  }];
+  let options = [
+    Option<"inlineAll", "inline-all", "bool", /*default=*/"false",
+        "whether to inline all decrement operations">,
+  ];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
 #endif // REUSSIR_CONVERSION_PASSES_TD
