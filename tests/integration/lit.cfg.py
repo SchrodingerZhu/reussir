@@ -45,12 +45,15 @@ config.substitutions.append((r'%reussir_rt_msan', config.reussir_rt_msan_path))
 config.substitutions.append((r'%reussir_rt_tsan', config.reussir_rt_tsan_path))
 
 # TODO: should we support macos?
-if sys.platform == 'windows':
-    config.substitutions.append((r'%reussir_rt', 'reussir_rt.dll'))
+if sys.platform == 'win32':
+    reussir_rt_name = 'reussir_rt.dll'
+    config.substitutions.append((r'-lreussir_rt',
+                                 os.path.join(config.library_path, reussir_rt_name)))
 elif sys.platform == 'darwin':
-    config.substitutions.append((r'%reussir_rt', 'libreussir_rt.dylib'))
+    reussir_rt_name = 'libreussir_rt.dylib'
 else:
-    config.substitutions.append((r'%reussir_rt', 'libreussir_rt.so'))
+    reussir_rt_name = 'libreussir_rt.so'
+config.substitutions.append((r'%reussir_rt', reussir_rt_name))
 
 if config.reussir_rt_asan_path and os.path.exists(config.reussir_rt_asan_path):
     config.available_features.add('asan')

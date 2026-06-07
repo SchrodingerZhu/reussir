@@ -163,7 +163,7 @@ test-suite reussir-parser-test
     build-depends:
         base ^>=4.20.0.0,
         tasty,
-        tasty-hspec,
+        tasty-hspec >= 0.2,
         hspec,
         hspec-megaparsec,
         directory,

@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Test.Tasty
-import Test.Tasty.Hspec
+import Test.Tasty.Hspec (testSpec)
 
 import Reussir.Parser.ExprSpec qualified as ExprSpec
 import Reussir.Parser.LexerSpec qualified as LexerSpec

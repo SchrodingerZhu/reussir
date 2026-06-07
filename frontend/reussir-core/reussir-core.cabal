@@ -163,7 +163,7 @@ test-suite reussir-core-test
         base ^>=4.20.2.0,
         reussir-core,
         tasty,
-        tasty-hspec,
+        tasty-hspec >= 0.2,
         hspec,
         tasty-hunit,
         containers,
