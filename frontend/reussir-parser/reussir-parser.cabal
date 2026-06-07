@@ -90,7 +90,6 @@ library
                       parser-combinators,
                       scientific,
                       text,
-                      unix,
                       xxhash-ffi,
                       unicode-data,
                       inline-c,
@@ -99,6 +98,9 @@ library
                       prettyprinter ^>= 1.7.1,
                       prettyprinter-ansi-terminal,
                       vector
+
+    if !os(windows)
+        build-depends: unix
 
     -- Directories containing source files.
     hs-source-dirs:   src

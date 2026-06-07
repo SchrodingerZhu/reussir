@@ -40,7 +40,6 @@ data Args = Args
     , argTargetFeatures :: Maybe String
     , argRelocationMode :: B.RelocationModel
     , argReuseTokenAcrossCall :: Bool
-    , argTokenReuseHeuristic :: String
     , argDisableInvariantAnalysis :: Bool
     , argPackageRoot :: Maybe FilePath
     , argPackageName :: Maybe String
@@ -102,12 +101,6 @@ argsParser =
         <*> switch
             ( long "reuse-across-call"
                 <> help "Allow token reuse across function calls (may increase peak heap usage)"
-            )
-        <*> strOption
-            ( long "token-reuse-heuristic"
-                <> value "default"
-                <> metavar "HEURISTIC"
-                <> help "Token reuse selection heuristic (default, nearest)"
             )
         <*> switch
             ( long "disable-invariant-analysis"
@@ -250,7 +243,6 @@ compileSingleFile args inputFile = do
                                         B.CodeModelDefault
                                         (argRelocationMode args)
                                         (argReuseTokenAcrossCall args)
-                                        (TE.encodeUtf8 . T.pack $ argTokenReuseHeuristic args)
                                         (not (argDisableInvariantAnalysis args))
 
 compilePackage :: Args -> FilePath -> String -> IO ()
@@ -305,7 +297,6 @@ compilePackage args root pkgName = do
                                 B.CodeModelDefault
                                 (argRelocationMode args)
                                 (argReuseTokenAcrossCall args)
-                                (TE.encodeUtf8 . T.pack $ argTokenReuseHeuristic args)
                                 (not (argDisableInvariantAnalysis args))
 
 toEffLogLevel :: B.LogLevel -> LogLevel

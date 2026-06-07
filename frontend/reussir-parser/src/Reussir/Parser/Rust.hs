@@ -175,7 +175,9 @@ findExisting paths = do
 candidatePaths :: [FilePath]
 candidatePaths =
     [prefix </> "build" </> "lib" </> libName | prefix <- ancestorPrefixes]
+        <> [prefix </> "build" </> "bin" </> libName | prefix <- ancestorPrefixes]
         <> [prefix </> "lib" </> libName | prefix <- ancestorPrefixes]
+        <> [prefix </> "bin" </> libName | prefix <- ancestorPrefixes]
         <> [prefix </> "target" </> "debug" </> libName | prefix <- ancestorPrefixes]
 
 ancestorPrefixes :: [FilePath]
