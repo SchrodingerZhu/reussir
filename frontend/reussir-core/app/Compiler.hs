@@ -9,13 +9,13 @@ import Effectful.Prim (runPrim)
 import Log (LogLevel (..))
 import Options.Applicative
 import Reussir.Codegen.Context (TargetSpec (..))
-import Reussir.Parser.Prog (parseProg)
+import Reussir.Parser.Rust (parseProgIO)
+import Reussir.Parser.Types.Lexer (Identifier (..))
 import System.Exit (exitFailure)
-import Text.Megaparsec (errorBundlePretty, runParser)
 
 import Data.Text qualified as T
-import Data.Text.IO qualified as TIO
 import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as TIO
 import Effectful.Log qualified as L
 import Reussir.Bridge qualified as B
 import Reussir.Codegen qualified as C
@@ -27,7 +27,6 @@ import Reussir.Core.Module (
     renderDiscoveryError,
     validatePackageInfo,
  )
-import Reussir.Parser.Types.Lexer (Identifier (..))
 
 data Args = Args
     { argInputFile :: Maybe FilePath
@@ -41,6 +40,7 @@ data Args = Args
     , argTargetFeatures :: Maybe String
     , argRelocationMode :: B.RelocationModel
     , argReuseTokenAcrossCall :: Bool
+    , argTokenReuseHeuristic :: String
     , argDisableInvariantAnalysis :: Bool
     , argPackageRoot :: Maybe FilePath
     , argPackageName :: Maybe String
@@ -75,29 +75,58 @@ argsParser =
         <*> strOption
             (long "module-name" <> short 'm' <> value "main" <> help "Module name")
         <*> optional
-            (strOption (long "target-triple" <> metavar "TRIPLE" <> help "Target triple (default: native)"))
+            ( strOption
+                ( long "target-triple"
+                    <> metavar "TRIPLE"
+                    <> help "Target triple (default: native)"
+                )
+            )
         <*> optional
-            (strOption (long "target-cpu" <> metavar "CPU" <> help "Target CPU (default: native)"))
+            ( strOption
+                (long "target-cpu" <> metavar "CPU" <> help "Target CPU (default: native)")
+            )
         <*> optional
-            (strOption (long "target-features" <> metavar "FEATURES" <> help "Target features (default: native)"))
+            ( strOption
+                ( long "target-features"
+                    <> metavar "FEATURES"
+                    <> help "Target features (default: native)"
+                )
+            )
         <*> option
             parseRelocationMode
             ( long "relocation-mode"
                 <> value B.RelocationModelDefault
-                <> help "Relocation mode (default, static, pic, dynamic-no-pic, ropi, rwpi, ropi-rwpi)"
+                <> help
+                    "Relocation mode (default, static, pic, dynamic-no-pic, ropi, rwpi, ropi-rwpi)"
             )
         <*> switch
             ( long "reuse-across-call"
                 <> help "Allow token reuse across function calls (may increase peak heap usage)"
+            )
+        <*> strOption
+            ( long "token-reuse-heuristic"
+                <> value "default"
+                <> metavar "HEURISTIC"
+                <> help "Token reuse selection heuristic (default, nearest)"
             )
         <*> switch
             ( long "disable-invariant-analysis"
                 <> help "Disable the invariant group analysis pass in backend lowering"
             )
         <*> optional
-            (strOption (long "package-root" <> metavar "DIR" <> help "Package root directory (multi-file mode)"))
+            ( strOption
+                ( long "package-root"
+                    <> metavar "DIR"
+                    <> help "Package root directory (multi-file mode)"
+                )
+            )
         <*> optional
-            (strOption (long "package-name" <> metavar "NAME" <> help "Package name (required with --package-root)"))
+            ( strOption
+                ( long "package-name"
+                    <> metavar "NAME"
+                    <> help "Package name (required with --package-root)"
+                )
+            )
 
 parseOptLevel :: ReadM B.OptOption
 parseOptLevel = eitherReader $ \s -> case s of
@@ -172,7 +201,8 @@ main = do
         (Nothing, Nothing) -> case argInputFile args of
             Just inputFile -> compileSingleFile args inputFile
             Nothing -> do
-                putStrLn "Error: either INPUT file or --package-root/--package-name must be specified"
+                putStrLn
+                    "Error: either INPUT file or --package-root/--package-name must be specified"
                 exitFailure
   where
     opts =
@@ -186,9 +216,10 @@ main = do
 compileSingleFile :: Args -> FilePath -> IO ()
 compileSingleFile args inputFile = do
     content <- TIO.readFile inputFile
-    case runParser parseProg inputFile content of
+    parsed <- parseProgIO inputFile content
+    case parsed of
         Left err -> do
-            putStrLn (errorBundlePretty err)
+            TIO.putStrLn err
             exitFailure
         Right prog -> do
             let outputTarget = argOutputTarget args
@@ -219,6 +250,7 @@ compileSingleFile args inputFile = do
                                         B.CodeModelDefault
                                         (argRelocationMode args)
                                         (argReuseTokenAcrossCall args)
+                                        (TE.encodeUtf8 . T.pack $ argTokenReuseHeuristic args)
                                         (not (argDisableInvariantAnalysis args))
 
 compilePackage :: Args -> FilePath -> String -> IO ()
@@ -236,9 +268,10 @@ compilePackage args root pkgName = do
         exitFailure
     parsedFiles <- forM discoveredFiles $ \(fp, modPath) -> do
         content <- TIO.readFile fp
-        case runParser parseProg fp content of
+        parsed <- parseProgIO fp content
+        case parsed of
             Left err -> do
-                putStrLn (errorBundlePretty err)
+                TIO.putStrLn err
                 exitFailure
             Right prog -> return (fp, modPath, prog)
     let primaryFile = case discoveredFiles of
@@ -272,6 +305,7 @@ compilePackage args root pkgName = do
                                 B.CodeModelDefault
                                 (argRelocationMode args)
                                 (argReuseTokenAcrossCall args)
+                                (TE.encodeUtf8 . T.pack $ argTokenReuseHeuristic args)
                                 (not (argDisableInvariantAnalysis args))
 
 toEffLogLevel :: B.LogLevel -> LogLevel

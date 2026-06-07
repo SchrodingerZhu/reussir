@@ -70,6 +70,9 @@ library
                       Reussir.Parser.Types.Lexer
                       Reussir.Parser.Types.Capability
                       Reussir.Parser.Pretty
+                      Reussir.Parser.Rust
+                      Reussir.Parser.Rust.JSON
+                      Reussir.Parser.Rust.FFI
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -79,10 +82,15 @@ library
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.20.0.0,
+                      aeson,
+                      bytestring,
+                      directory,
+                      filepath,
                       megaparsec,
                       parser-combinators,
                       scientific,
                       text,
+                      unix,
                       xxhash-ffi,
                       unicode-data,
                       inline-c,
@@ -145,6 +153,9 @@ test-suite reussir-parser-test
                       Reussir.Parser.TypeSpec
                       Reussir.Parser.StmtSpec
                       Reussir.Parser.ExprSpec
+                      Reussir.Parser.RustSpec
+                      Reussir.Parser.Rust.JSONSpec
+                      Reussir.Parser.Rust.FFISpec
 
     -- Test dependencies.
     build-depends:
@@ -153,6 +164,7 @@ test-suite reussir-parser-test
         tasty-hspec,
         hspec,
         hspec-megaparsec,
+        directory,
         megaparsec,
         text,
         reussir-parser,

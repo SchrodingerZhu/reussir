@@ -11,11 +11,10 @@ import Options.Applicative
 import Prettyprinter (hardline, unAnnotate)
 import Prettyprinter.Render.Terminal (putDoc)
 import Reussir.Diagnostic (createRepository, displayReport)
-import Reussir.Parser.Prog (parseProg)
+import Reussir.Parser.Rust (parseProgIO)
 import Reussir.Parser.Types.Lexer (Identifier (..), WithSpan (..))
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hIsTerminalDevice, hPutStrLn, stdout)
-import Text.Megaparsec (errorBundlePretty, runParser)
 
 import Data.HashTable.IO qualified as H
 import Data.Text qualified as T
@@ -44,11 +43,11 @@ import Reussir.Core.Semi.Context (
     withModuleFile,
  )
 import Reussir.Core.Semi.FlowAnalysis (solveAllGenerics)
+import Reussir.Core.Semi.Trampoline
 import Reussir.Core.Semi.Tyck (checkFuncType)
 
 import Reussir.Core.Full.Pretty qualified as Full
 import Reussir.Core.Semi.Pretty qualified as Semi
-import Reussir.Core.Semi.Trampoline
 
 data ElabMode = SemiMode | FullMode
     deriving (Eq, Show)
@@ -78,9 +77,19 @@ argsParser =
             )
         <*> optional (strArgument (metavar "FILE" <> help "Input file (single-file mode)"))
         <*> optional
-            (strOption (long "package-root" <> metavar "DIR" <> help "Package root directory (multi-file mode)"))
+            ( strOption
+                ( long "package-root"
+                    <> metavar "DIR"
+                    <> help "Package root directory (multi-file mode)"
+                )
+            )
         <*> optional
-            (strOption (long "package-name" <> metavar "NAME" <> help "Package name (required with --package-root)"))
+            ( strOption
+                ( long "package-name"
+                    <> metavar "NAME"
+                    <> help "Package name (required with --package-root)"
+                )
+            )
 
 tyckBridgeLogLevel :: B.LogLevel
 tyckBridgeLogLevel = B.LogWarning
@@ -125,9 +134,10 @@ main = do
 elabSingleFile :: Args -> FilePath -> IO ()
 elabSingleFile args fp = do
     content <- TIO.readFile fp
-    case runParser parseProg fp content of
+    parsed <- parseProgIO fp content
+    case parsed of
         Left err -> do
-            putStrLn (errorBundlePretty err)
+            TIO.putStrLn err
             exitFailure
         Right prog -> case elabMode args of
             SemiMode -> runSemiElab args [(fp, [], prog)]
@@ -148,9 +158,10 @@ elabPackage args root pkgName = do
         exitFailure
     parsedFiles <- forM discoveredFiles $ \(fp, modPath) -> do
         content <- TIO.readFile fp
-        case runParser parseProg fp content of
+        parsed <- parseProgIO fp content
+        case parsed of
             Left err -> do
-                putStrLn (errorBundlePretty err)
+                TIO.putStrLn err
                 exitFailure
             Right prog -> return (fp, modPath, prog)
     case elabMode args of
@@ -169,29 +180,35 @@ runSemiElab _args files = do
     repository <- runEff $ createRepository allFilePaths
     ((), finalState) <- L.withStdOutLogger $ \logger -> do
         runEff $ L.runLog (T.pack "reussir-elab") logger (toEffLogLevel tyckBridgeLogLevel) $ do
-            initState <- runPrim $ emptySemiContext tyckBridgeLogLevel primaryFilePath primaryModPath
+            initState <-
+                runPrim $ emptySemiContext tyckBridgeLogLevel primaryFilePath primaryModPath
             runPrim $ runState initState $ do
                 -- Scan all statements
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> inject $ scanStmt stmt
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $
+                                \stmt -> inject $ scanStmt stmt
 
                 -- Populate record fields
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> inject $ populateRecordFields stmt
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $
+                                \stmt -> inject $ populateRecordFields stmt
 
                 -- Elaborate all functions
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> do
-                            case unspanStmt stmt of
-                                Syn.FunctionStmt f -> do
-                                    _ <- inject $ checkFuncType f
-                                    return ()
-                                Syn.ExternTrampolineStmt name abi target args' -> do
-                                    inject $ resolveTrampoline name abi target args'
-                                _ -> return ()
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $ \stmt -> do
+                                case unspanStmt stmt of
+                                    Syn.FunctionStmt f -> do
+                                        _ <- inject $ checkFuncType f
+                                        return ()
+                                    Syn.ExternTrampolineStmt name abi target args' -> do
+                                        inject $ resolveTrampoline name abi target args'
+                                    _ -> return ()
 
                 let putDoc' doc = do
                         isTTy <- liftIO $ hIsTerminalDevice stdout
@@ -247,29 +264,35 @@ runFullElab _args files = do
     (result, finalSemiCtx) <- L.withStdOutLogger $ \logger -> do
         runEff $ L.runLog (T.pack "reussir-elab") logger (toEffLogLevel tyckBridgeLogLevel) $ do
             -- 1. Semi Elab
-            initSemiState <- runPrim $ emptySemiContext tyckBridgeLogLevel primaryFilePath primaryModPath
+            initSemiState <-
+                runPrim $ emptySemiContext tyckBridgeLogLevel primaryFilePath primaryModPath
             (slns, finalSemiState) <- runPrim $ runState initSemiState $ do
                 -- Scan all statements
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> inject $ scanStmt stmt
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $
+                                \stmt -> inject $ scanStmt stmt
 
                 -- Populate record fields
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> inject $ populateRecordFields stmt
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $
+                                \stmt -> inject $ populateRecordFields stmt
 
                 -- Elaborate all functions
                 forM_ files $ \(fp, modPath, prog) ->
-                    inject $ withModuleFile fp modPath $
-                        forM_ prog $ \stmt -> do
-                            case unspanStmt stmt of
-                                Syn.FunctionStmt f -> do
-                                    _ <- inject $ checkFuncType f
-                                    return ()
-                                Syn.ExternTrampolineStmt name abi target args' -> do
-                                    inject $ resolveTrampoline name abi target args'
-                                _ -> return ()
+                    inject $
+                        withModuleFile fp modPath $
+                            forM_ prog $ \stmt -> do
+                                case unspanStmt stmt of
+                                    Syn.FunctionStmt f -> do
+                                        _ <- inject $ checkFuncType f
+                                        return ()
+                                    Syn.ExternTrampolineStmt name abi target args' -> do
+                                        inject $ resolveTrampoline name abi target args'
+                                    _ -> return ()
 
                 -- Solve generics
                 inject solveAllGenerics

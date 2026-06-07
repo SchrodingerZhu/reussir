@@ -1,0 +1,18 @@
+[package]
+name = "reussir-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+ariadne = "0.5"
+cstree = "0.14"
+lexical-core = "1"
+logos = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = "0.27"
+strum_macros = "0.27"

@@ -33,10 +33,8 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Control.Monad.Trans.State.Strict (StateT, evalStateT, get, modify')
 import Data.Int (Int64)
 import Data.List (intercalate, sort)
-import Data.Set qualified as Set
-import Reussir.Parser.Prog (parseProg)
+import Reussir.Parser.Rust (parseProgIO)
 import Reussir.Parser.Types.Lexer (Identifier (..), WithSpan (..))
-import Reussir.Parser.Types.Stmt qualified as Syn
 import System.Directory (
     canonicalizePath,
     doesFileExist,
@@ -48,10 +46,11 @@ import System.FilePath (
     takeDirectory,
     (</>),
  )
-import Text.Megaparsec (errorBundlePretty, runParser)
 
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Reussir.Parser.Types.Stmt qualified as Syn
 
 -- | Information about a package being compiled.
 data PackageInfo = PackageInfo
@@ -132,7 +131,8 @@ recurses. Canonical file paths are tracked during discovery so duplicate
 declarations and import cycles do not recurse forever or produce duplicate
 entries.
 -}
-discoverPackageFiles :: PackageInfo -> IO (Either DiscoveryError [(FilePath, [Identifier])])
+discoverPackageFiles ::
+    PackageInfo -> IO (Either DiscoveryError [(FilePath, [Identifier])])
 discoverPackageFiles pkg = do
     root <- canonicalizePath (packageRoot pkg)
     let pkg' = pkg{packageRoot = root}
@@ -143,7 +143,7 @@ discoverPackageFiles pkg = do
             rootCanon <- canonicalizePath rootFile
             runExceptT $
                 evalStateT
-                    (do
+                    ( do
                         children <- resolveModDecls pkg' rootCanon
                         let all' = (rootCanon, computeModulePath pkg' rootCanon) : children
                         return $ sort all'
@@ -157,16 +157,18 @@ For each @mod name;@ found, tries @name.rr@ then @name\/mod.rr@ relative
 to the declaring file's directory. Successfully resolved modules are
 recursively processed for their own @mod@ declarations.
 -}
-resolveModDecls :: PackageInfo -> FilePath -> DiscoveryM [(FilePath, [Identifier])]
+resolveModDecls ::
+    PackageInfo -> FilePath -> DiscoveryM [(FilePath, [Identifier])]
 resolveModDecls pkg filePath = do
     content <- lift $ lift $ TIO.readFile filePath
-    case runParser parseProg filePath content of
+    parsed <- lift $ lift $ parseProgIO filePath content
+    case parsed of
         Left err ->
             lift $
                 throwE
                     ModuleParseError
                         { moduleParseFile = filePath
-                        , moduleParseDetails = errorBundlePretty err
+                        , moduleParseDetails = T.unpack err
                         }
         Right stmts -> do
             let modNames = collectModDecls stmts
@@ -213,7 +215,8 @@ resolveOneModule pkg declaringFile parentDir (modName@(Identifier name), declSpa
                                 , missingModuleCandidates = [fileCandidate, dirCandidate]
                                 }
 
-resolveResolvedModule :: PackageInfo -> FilePath -> DiscoveryM [(FilePath, [Identifier])]
+resolveResolvedModule ::
+    PackageInfo -> FilePath -> DiscoveryM [(FilePath, [Identifier])]
 resolveResolvedModule pkg candidate = do
     canon <- lift $ lift $ canonicalizePath candidate
     visited <- get

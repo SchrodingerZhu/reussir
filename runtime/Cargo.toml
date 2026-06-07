@@ -18,6 +18,3 @@ snmalloc = ["snmalloc-rs"]
 
 [lib]
 crate-type = ["dylib", "lib", "staticlib"]
-
-[profile.release]
-lto = "thin"

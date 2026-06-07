@@ -38,10 +38,10 @@ import Reussir.Core.REPL (
     compileExpression,
     initReplState,
  )
-import Reussir.Parser.Prog (ReplInput (..), parseReplInput)
+import Reussir.Parser.Prog (ReplInput (..))
+import Reussir.Parser.Rust (parseReplInputIO)
 import System.Console.Haskeline
 import System.Console.Haskeline.IO
-import Text.Megaparsec (errorBundlePretty, runParser)
 
 import Data.HashTable.IO qualified as H
 import Data.Text qualified as T
@@ -433,8 +433,9 @@ processAutoDetect ::
     String ->
     IO (Either String (Maybe String, ReplState))
 processAutoDetect jit state input = do
-    case runParser parseReplInput "<repl>" (T.pack input) of
-        Left err -> return $ Left $ errorBundlePretty err
+    parsed <- parseReplInputIO "<repl>" (T.pack input)
+    case parsed of
+        Left err -> return $ Left $ T.unpack err
         Right (ReplStmt stmt) -> do
             result <- addDefinition state stmt
             case result of

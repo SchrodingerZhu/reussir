@@ -9,16 +9,16 @@ import System.IO (hIsTerminalDevice, stdout)
 import Data.Text.IO qualified as T
 
 import Reussir.Parser.Pretty (PrettyColored (..))
-import Reussir.Parser.Prog
-import Reussir.Parser.Types
+import Reussir.Parser.Rust (parseProgIO)
 
 main :: IO ()
 main =
     getArgs >>= \case
         [infile] -> do
             contents <- T.readFile infile
-            case parse parseProg infile contents of
-                Left err -> putStrLn (errorBundlePretty err)
+            parsed <- parseProgIO infile contents
+            case parsed of
+                Left err -> T.putStrLn err
                 Right p -> do
                     isTTy <- hIsTerminalDevice stdout
                     let doc = vsep (map prettyColored p) <> line

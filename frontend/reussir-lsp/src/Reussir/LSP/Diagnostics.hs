@@ -22,26 +22,36 @@ module Reussir.LSP.Diagnostics (
 
 import Control.Monad (forM_)
 import Data.Int (Int64)
-import Data.Text qualified as T
-import Effectful (Eff, IOE, (:>), inject)
-import Effectful.Log qualified as L
+import Effectful (Eff, IOE, inject, liftIO, (:>))
 import Effectful.Prim (Prim)
 import Effectful.State.Static.Local (runState)
-import Language.LSP.Protocol.Types qualified as LSP
-import Reussir.Bridge qualified as B
 import Reussir.Core.Data.Semi.Context (SemiContext (..))
-import Reussir.Core.Semi.Context (emptySemiContext, populateRecordFields, scanStmt)
+import Reussir.Core.Semi.Context (
+    emptySemiContext,
+    populateRecordFields,
+    scanStmt,
+ )
 import Reussir.Core.Semi.FlowAnalysis (solveAllGenerics)
 import Reussir.Core.Semi.Tyck (checkFuncType)
-import Reussir.Diagnostic.Report (CodeReference (..), Label (..), Report (..), TextWithFormat (..))
-import Reussir.Parser.Prog (parseProg)
+import Reussir.Diagnostic.Report (
+    CodeReference (..),
+    Label (..),
+    Report (..),
+    TextWithFormat (..),
+ )
+import Reussir.Parser.Rust (parseProgIO)
 import Reussir.Parser.Types.Lexer (WithSpan (..))
-import Reussir.Parser.Types.Stmt qualified as Syn
-import Text.Megaparsec (errorBundlePretty, runParser)
 
--- | Run the parser and semi-elaboration pipeline, returning both the context
--- and diagnostic reports. This is the shared entry point used by diagnostics,
--- hover, and semantic tokens.
+import Data.Text qualified as T
+import Effectful.Log qualified as L
+import Language.LSP.Protocol.Types qualified as LSP
+import Reussir.Bridge qualified as B
+import Reussir.Parser.Types.Stmt qualified as Syn
+
+{- | Run the parser and semi-elaboration pipeline, returning both the context
+and diagnostic reports. This is the shared entry point used by diagnostics,
+hover, and semantic tokens.
+-}
 elaborateFile ::
     (IOE :> es, L.Log :> es, Prim :> es) =>
     -- | File path (URI-derived)
@@ -49,9 +59,10 @@ elaborateFile ::
     -- | File content
     T.Text ->
     Eff es (Either T.Text (SemiContext, [Syn.Stmt], [Report]))
-elaborateFile filePath content =
-    case runParser parseProg filePath content of
-        Left err -> return $ Left (T.pack $ errorBundlePretty err)
+elaborateFile filePath content = do
+    parsed <- liftIO $ parseProgIO filePath content
+    case parsed of
+        Left err -> return $ Left err
         Right prog -> do
             (_, finalState) <- do
                 initState <- emptySemiContext B.LogWarning filePath []
