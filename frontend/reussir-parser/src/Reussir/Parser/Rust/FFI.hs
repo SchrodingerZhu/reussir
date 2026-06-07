@@ -16,7 +16,7 @@ import Foreign.C.String (CString, withCString)
 
 #ifdef mingw32_HOST_OS
 import Control.Monad (when)
-import Foreign.C.Types (CInt)
+import Foreign.C.Types (CInt (..))
 import Foreign.Ptr (FunPtr, Ptr, nullFunPtr, nullPtr)
 #else
 import Foreign.Ptr (FunPtr)
