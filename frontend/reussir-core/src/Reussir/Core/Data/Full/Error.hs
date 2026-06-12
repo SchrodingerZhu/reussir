@@ -14,6 +14,7 @@ data Error = Error
     { errorSpan :: (Int64, Int64)
     , errorKind :: ErrorKind
     }
+    deriving (Show, Eq)
 
 data ErrorKind
     = InvalidRecordField
@@ -28,3 +29,4 @@ data ErrorKind
       InvalidAssignSourceCapability
     | -- | Source of assignment inner type is not a regional record
       InvalidAssignSourceNotRegional
+    deriving (Show, Eq)

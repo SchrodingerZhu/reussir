@@ -21,5 +21,6 @@ data Function = Function
     , funcBody :: Maybe Full.Expr
     , funcSpan :: Maybe (Int64, Int64)
     }
+    deriving (Show, Eq)
 
 type FunctionTable = H.CuckooHashTable Symbol Function

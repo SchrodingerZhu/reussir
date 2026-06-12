@@ -39,6 +39,10 @@ library
         Reussir.Core.Data.Operator
         Reussir.Core.Data.Generic
         Reussir.Core.Data.UniqueID
+        Reussir.Core.Serialization
+        Reussir.Core.Serialization.Orphans
+        Reussir.Core.Serialization.Semi
+        Reussir.Core.Serialization.Full
         Reussir.Core.Generic
         Reussir.Core.Class
         Reussir.Core.String
@@ -75,6 +79,8 @@ library
     other-modules:
         Reussir.Core.Uitls.HashTable
     build-depends:    base ^>=4.20.2.0,
+                      aeson,
+                      colour,
                       reussir-bridge,
                       reussir-parser,
                       reussir-diagnostic,
@@ -159,8 +165,13 @@ test-suite reussir-core-test
         Test.Reussir.Core.Semi.ModuleResolution
         Test.Reussir.Core.Semi.PatternMatch
         Test.Reussir.Core.Semi.TyckSpec
+        Test.Reussir.Core.SerializationSpec
     build-depends:
         base ^>=4.20.2.0,
+        aeson,
+        directory,
+        megaparsec,
+        xxhash-ffi,
         reussir-core,
         tasty,
         tasty-hspec,

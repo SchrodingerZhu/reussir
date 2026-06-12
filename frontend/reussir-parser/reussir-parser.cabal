@@ -70,6 +70,7 @@ library
                       Reussir.Parser.Types.Lexer
                       Reussir.Parser.Types.Capability
                       Reussir.Parser.Pretty
+                      Reussir.Parser.Serialization
 
     -- Modules included in this library but not exported.
     -- other-modules:
@@ -79,6 +80,7 @@ library
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.20.0.0,
+                      aeson,
                       megaparsec,
                       parser-combinators,
                       scientific,
@@ -145,10 +147,12 @@ test-suite reussir-parser-test
                       Reussir.Parser.TypeSpec
                       Reussir.Parser.StmtSpec
                       Reussir.Parser.ExprSpec
+                      Reussir.Parser.SerializationSpec
 
     -- Test dependencies.
     build-depends:
         base ^>=4.20.0.0,
+        aeson,
         tasty,
         tasty-hspec,
         hspec,
