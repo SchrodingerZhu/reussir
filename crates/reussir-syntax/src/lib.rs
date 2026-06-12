@@ -1,0 +1,248 @@
+//! Surface syntax parser for the Reussir language.
+//!
+//! The pipeline is:
+//!
+//! 1. [`lexer`] — a [`logos`]-generated tokenizer (XID identifiers,
+//!    Haskell-compatible string and number literals);
+//! 2. `parser` — an event-driven recursive-descent parser with Pratt
+//!    expression parsing, speculative parsing for the generic-argument
+//!    ambiguity, structural error recovery, and [`stacker`]-guarded
+//!    recursion; it accepts the same language as the Haskell frontend
+//!    (`Reussir.Parser`);
+//! 3. a lossless [`cstree`] green tree interned with [`lasso`];
+//! 4. [`ast`] — lowering of the CST to the aeson-compatible JSON encoding
+//!    consumed (and produced) by the Haskell frontend;
+//! 5. [`diagnostics`] — best-effort error reporting rendered with
+//!    [`ariadne`].
+
+pub mod ast;
+pub mod diagnostics;
+pub mod kind;
+pub mod lexer;
+pub(crate) mod parser;
+
+use diagnostics::{ParseError, SourceMap};
+use kind::{ResolvedNode, SyntaxKind};
+
+/// The result of parsing: a lossless syntax tree (always produced, even in
+/// the presence of errors) plus collected diagnostics.
+pub struct Parse {
+    pub root: ResolvedNode,
+    pub errors: Vec<ParseError>,
+}
+
+impl Parse {
+    pub fn ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Lower the tree to the aeson-compatible JSON document of the program
+    /// (`Prog = [Stmt]` on the Haskell side). Only meaningful for
+    /// error-free parses.
+    pub fn to_json(&self, map: &SourceMap) -> serde_json::Value {
+        ast::prog_to_json(&self.root, map)
+    }
+}
+
+/// Parse a whole source file.
+pub fn parse(source: &str) -> Parse {
+    let (all_tokens, lex_errors) = lexer::tokenize(source);
+    let significant: Vec<lexer::Token> = all_tokens
+        .iter()
+        .filter(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::ErrorToken)
+        .copied()
+        .collect();
+
+    let mut p = parser::Parser::new(source, significant);
+    p.source_file();
+    let (events, parse_errors) = p.finish();
+
+    let mut errors: Vec<ParseError> = lex_errors
+        .into_iter()
+        .map(|e| ParseError {
+            span: e.span,
+            message: e.message.to_owned(),
+        })
+        .collect();
+    errors.extend(parse_errors);
+    errors.sort_by_key(|e| e.span);
+    // A single unexpected token often fails several expectations in a row;
+    // the first message is the most informative one.
+    errors.dedup_by_key(|e| e.span.0);
+
+    let mut interner: lasso::Rodeo = lasso::Rodeo::new();
+    let green = parser::sink::Sink::new(source, &all_tokens, events, &mut interner).finish();
+    let root = kind::SyntaxNode::new_root_with_resolver(green, interner);
+    Parse { root, errors }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_ok(source: &str) -> Parse {
+        let parse = parse(source);
+        assert!(
+            parse.ok(),
+            "unexpected errors for {source:?}: {:#?}",
+            parse.errors,
+        );
+        // The tree is lossless: concatenating all tokens reproduces the
+        // input.
+        assert_eq!(parse.root.text(), source);
+        parse
+    }
+
+    fn json_of(source: &str) -> serde_json::Value {
+        let map = SourceMap::new(source);
+        parse_ok(source).to_json(&map)
+    }
+
+    #[test]
+    fn parses_functions_with_operators() {
+        json_of(
+            "fn f(x: i32, y: i32) -> i32 {\n    let z = x * 2 + y % 3;\n    if (z >= 0 && !(z == 4)) { z } else { -z }\n}",
+        );
+    }
+
+    #[test]
+    fn parses_generics_and_match() {
+        json_of(
+            "enum List<T> { Nil, Cons(T, List<T>) }\nfn append(a : List<i32>, b : List<i32>) -> List<i32> {\n    match a {\n        List::Nil => b,\n        List::Cons(x, xs) => List::Cons{x, append(xs, b)}\n    }\n}",
+        );
+    }
+
+    #[test]
+    fn parses_lambdas_and_calls() {
+        json_of("fn t() -> i32 { (|x: i32| x + 1)(41) }");
+        json_of("fn abstract() -> bool -> u64 { let u = 1; |x| if (x) { 0 } else { u } }");
+        // `||` lexes as one token but means an empty lambda parameter list.
+        json_of("fn z() -> i32 { let f = || 1; f() }");
+    }
+
+    #[test]
+    fn parses_regional_and_assign() {
+        json_of(
+            "struct [regional] L<T> { v: T, next: [field] L<T> }\nregional fn push<T>(c : [flex] L<T>, e : T) { c->next := Nullable::NonNull{c} }",
+        );
+    }
+
+    #[test]
+    fn parses_trampoline_and_mod() {
+        json_of(
+            "pub mod utils;\nfn fib<T>(n: T) -> T { n }\nextern \"C\" trampoline \"fib_ffi\" = fib<u64>;",
+        );
+    }
+
+    #[test]
+    fn generic_argument_ambiguity() {
+        // Comparison...
+        let s = json_of("fn f(a: i32, b: i32) -> bool { a < b }").to_string();
+        assert!(s.contains("\"Lt\""), "expected a comparison: {s}");
+        // ...vs. instantiation.
+        let s = json_of("fn g() -> i32 { id<i32>(1) }").to_string();
+        assert!(s.contains("funcCallTyArgs"), "expected a call: {s}");
+        // ...vs. a bare instantiated constructor.
+        let s = json_of("fn h() -> List<i32> { List::Nil<i32> }").to_string();
+        assert!(s.contains("ctorName"), "expected a ctor call: {s}");
+    }
+
+    #[test]
+    fn access_chains_group() {
+        let s = json_of("fn f(p: Pair<i32, i32>) -> i32 { p.first.second(1).third }").to_string();
+        assert!(s.contains("AccessChain"), "{s}");
+        // Fused float in tuple-index position: two numeric accesses.
+        let s = json_of("fn g(p: P) -> i32 { p.0.1 }").to_string();
+        assert!(
+            s.contains("\"Unnamed\"") && s.contains("\"contents\":1"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn casts_and_prefix() {
+        // The postfix cast applies on top of the prefixed atom:
+        // `-x as f64` is `Cast f64 (Negate x)`.
+        let v = json_of("fn f(x: i32) -> f64 { -x as f64 }");
+        let body = &unwrap_span(&v[0])["contents"]["funcBody"];
+        let seq = &unwrap_span(body)["contents"][0];
+        let cast = unwrap_span(seq);
+        assert_eq!(cast["tag"], "Cast", "{v}");
+        assert_eq!(
+            unwrap_span(&cast["contents"][1])["tag"],
+            "UnaryOpExpr",
+            "{v}"
+        );
+    }
+
+    /// Strip a `SpannedExpr` / `SpannedStmt` / `TypeSpanned` wrapper.
+    fn unwrap_span(v: &serde_json::Value) -> &serde_json::Value {
+        &v["contents"]["spanValue"]
+    }
+
+    #[test]
+    fn patterns_with_guards_and_ellipsis() {
+        json_of(
+            "fn classify(p: Pair<i32, i32>) -> i32 {\n    match p {\n        Pair { first: 0, .. } => 0,\n        Pair { first: x, second: y } if x > y => 1,\n        _ => 2\n    }\n}",
+        );
+    }
+
+    #[test]
+    fn comments_are_preserved() {
+        json_of(
+            "// RUN: lit directive\n/* block\n   comment */\nfn f() -> i32 { 1 } // trailing\n",
+        );
+    }
+
+    #[test]
+    fn keywords_are_contextual() {
+        // The surface language has no reserved identifiers.
+        json_of("fn f() -> i32 { let value = 1; value }");
+        json_of("fn shared(field: i32) -> i32 { field }");
+    }
+
+    #[test]
+    fn error_recovery_reports_multiple_errors() {
+        let source =
+            "fn good() -> i32 { 1 }\nfn bad( { 2 }\nstruct Also { x: }\nfn fine() -> i32 { 3 }";
+        let parse = parse(source);
+        assert!(parse.errors.len() >= 2, "errors: {:#?}", parse.errors);
+        // Losslessness holds under recovery too.
+        assert_eq!(parse.root.text(), source);
+        // All four items appear in the tree despite the errors.
+        assert!(parse.root.children().count() >= 4);
+    }
+
+    #[test]
+    fn nonassoc_comparison_is_diagnosed() {
+        let parse = parse("fn f(a: i32, b: i32, c: i32) -> bool { a < b < c }");
+        assert!(
+            parse.errors.iter().any(|e| e.message.contains("chained")),
+            "errors: {:#?}",
+            parse.errors
+        );
+    }
+
+    #[test]
+    fn deep_recursion_is_survivable() {
+        // Deeply nested parens would overflow the fixed test-thread stack
+        // (2 MiB) without the stacker guards in the parser.
+        let depth = 100_000;
+        let source = format!(
+            "fn f() -> i32 {{ {}1{} }}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        let parse = parse(&source);
+        assert!(parse.ok(), "first error: {:#?}", parse.errors.first());
+        // Tear the tree down on a spacious thread: dropping a 100k-deep
+        // syntax tree recurses in cstree itself, which is outside this
+        // crate's control.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || drop(parse))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}

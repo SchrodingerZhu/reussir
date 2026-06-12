@@ -1,15 +1,27 @@
+# Rust / Cargo (the workspace target directory lives at the repo root)
 /target
-.idea
+crates/**/target
+runtime/target
+rustc-ice-*
+*.profraw
 .cargo
+
+# Editors / IDEs
+.idea
 .vscode
+.clice
+
+# Build trees
 /build
 /build-*
 .cache
-rustc-ice-*
+dist-*
+
+# Environment
 .envrc
 .direnv
-dist-*
-.clice
+
+# Misc tooling
 _codeql_detected_source_root
 node_modules
 *.vsix

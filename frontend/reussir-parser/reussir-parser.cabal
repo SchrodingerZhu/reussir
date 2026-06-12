@@ -127,6 +127,18 @@ executable reussir-parser
     -- Base language which the package is written in.
     default-language: GHC2024
 
+executable reussir-surface-verify
+    import:           warnings
+    main-is:          SurfaceVerify.hs
+    build-depends:    base ^>=4.20.0.0,
+                      aeson,
+                      megaparsec,
+                      reussir-parser,
+                      text,
+                      vector
+    hs-source-dirs:   app
+    default-language: GHC2024
+
 test-suite reussir-parser-test
     -- Import common warning flags.
     import:           warnings

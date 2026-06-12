@@ -1,0 +1,30 @@
+// Cross-validation of the Rust surface parser against the Haskell parser:
+// the JSON AST emitted by reussir-syntax must decode to the same surface
+// syntax the Haskell frontend parses from this file.
+// RUN: %reussir-syntax %s -o %t.json
+// RUN: %reussir-surface-verify %s %t.json | %FileCheck %s
+// CHECK: OK
+
+enum List<T> {
+    Nil,
+    Cons(T, List<T>)
+}
+
+struct Pair { first: i32, second: i32 }
+
+fn append(a : List<i32>, b : List<i32>) -> List<i32> {
+    match a {
+        List::Nil => b,
+        List::Cons(x, xs) => List::Cons{x, append(xs, b)}
+    }
+}
+
+fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }
+
+fn inc(x: i32) -> i32 {
+    apply(|v: i32| v + 1, x)
+}
+
+fn choose(b: bool) -> str {
+    if (b) { "yes\n" } else { "no\t\"quoted\"" }
+}
