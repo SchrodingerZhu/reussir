@@ -1,3 +1,4 @@
+{-# LANGUAGE MultilineStrings #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Roundtrip tests for the JSON serialization of the surface syntax.
@@ -25,76 +26,90 @@ spec = do
     describe "surface syntax JSON roundtrip" $ do
         it "roundtrips functions with let/if and operators" $
             roundtrips
-                "fn f(x: i32, y: i32) -> i32 {\n\
-                \    let z = x * 2 + y % 3;\n\
-                \    if (z >= 0 && !(z == 4)) { z } else { -z }\n\
-                \}"
+                """
+                fn f(x: i32, y: i32) -> i32 {
+                    let z = x * 2 + y % 3;
+                    if (z >= 0 && !(z == 4)) { z } else { -z }
+                }
+                """
 
         it "roundtrips generic records, enums and pattern matching" $
             roundtrips
-                "enum List<T> {\n\
-                \    Nil,\n\
-                \    Cons(T, List<T>)\n\
-                \}\n\
-                \struct Pair<A, B> { first: A, second: B }\n\
-                \fn append(a : List<i32>, b : List<i32>) -> List<i32> {\n\
-                \    match a {\n\
-                \        List::Nil => b,\n\
-                \        List::Cons(x, xs) => List::Cons{x, append(xs, b)}\n\
-                \    }\n\
-                \}"
+                """
+                enum List<T> {
+                    Nil,
+                    Cons(T, List<T>)
+                }
+                struct Pair<A, B> { first: A, second: B }
+                fn append(a : List<i32>, b : List<i32>) -> List<i32> {
+                    match a {
+                        List::Nil => b,
+                        List::Cons(x, xs) => List::Cons{x, append(xs, b)}
+                    }
+                }
+                """
 
         it "roundtrips closures and closure calls" $
             roundtrips
-                "fn abstract() -> bool -> u64 {\n\
-                \    let u = 1;\n\
-                \    |x| if (x) { 0 } else { u }\n\
-                \}\n\
-                \fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }"
+                """
+                fn abstract() -> bool -> u64 {
+                    let u = 1;
+                    |x| if (x) { 0 } else { u }
+                }
+                fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }
+                """
 
         it "roundtrips regional records and assignments" $
             roundtrips
-                "struct [regional] DLLink<T> {\n\
-                \    val: T,\n\
-                \    next: [field] DLLink<T>,\n\
-                \    prev: [field] DLLink<T>\n\
-                \}\n\
-                \regional fn new<T>(val: T) -> [flex] DLLink<T> {\n\
-                \    DLLink { val: val, next: Nullable::Null {}, prev: Nullable::Null {} }\n\
-                \}\n\
-                \fn foo() -> DLLink<i32> {\n\
-                \    regional {\n\
-                \        let a = new(1);\n\
-                \        a->next := Nullable::NonNull{a};\n\
-                \        a\n\
-                \    }\n\
-                \}"
+                """
+                struct [regional] DLLink<T> {
+                    val: T,
+                    next: [field] DLLink<T>,
+                    prev: [field] DLLink<T>
+                }
+                regional fn new<T>(val: T) -> [flex] DLLink<T> {
+                    DLLink { val: val, next: Nullable::Null {}, prev: Nullable::Null {} }
+                }
+                fn foo() -> DLLink<i32> {
+                    regional {
+                        let a = new(1);
+                        a->next := Nullable::NonNull{a};
+                        a
+                    }
+                }
+                """
 
         it "roundtrips extern trampolines and module statements" $
             roundtrips
-                "pub mod utils;\n\
-                \fn fibonacci<T>(n: T) -> T { n }\n\
-                \extern \"C\" trampoline \"fibonacci_ffi\" = fibonacci<u64>;"
+                """
+                pub mod utils;
+                fn fibonacci<T>(n: T) -> T { n }
+                extern "C" trampoline "fibonacci_ffi" = fibonacci<u64>;
+                """
 
         it "roundtrips constants, casts, strings and access chains" $
             roundtrips
-                "fn g(b: bool) -> str {\n\
-                \    match b {\n\
-                \        true => \"yes\",\n\
-                \        false => \"no\"\n\
-                \    }\n\
-                \}\n\
-                \fn h(p: Pair<i32, f64>) -> f64 {\n\
-                \    let x = p.first;\n\
-                \    (x as f64) + 1.5\n\
-                \}"
+                """
+                fn g(b: bool) -> str {
+                    match b {
+                        true => "yes",
+                        false => "no"
+                    }
+                }
+                fn h(p: Pair<i32, f64>) -> f64 {
+                    let x = p.first;
+                    (x as f64) + 1.5
+                }
+                """
 
         it "roundtrips patterns with guards, wildcards and ellipsis" $
             roundtrips
-                "fn classify(p: Pair<i32, i32>) -> i32 {\n\
-                \    match p {\n\
-                \        Pair { first: 0, .. } => 0,\n\
-                \        Pair { first: x, second: y } if x > y => 1,\n\
-                \        _ => 2\n\
-                \    }\n\
-                \}"
+                """
+                fn classify(p: Pair<i32, i32>) -> i32 {
+                    match p {
+                        Pair { first: 0, .. } => 0,
+                        Pair { first: x, second: y } if x > y => 1,
+                        _ => 2
+                    }
+                }
+                """

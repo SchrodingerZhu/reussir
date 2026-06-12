@@ -1,3 +1,4 @@
+{-# LANGUAGE MultilineStrings #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- | Roundtrip tests for the JSON serialization of the semi and full syntax.
@@ -55,24 +56,26 @@ import Reussir.Core.Data.Semi.Type qualified as Semi
 
 sampleProgram :: T.Text
 sampleProgram =
-    "enum List<T> {\n\
-    \    Nil,\n\
-    \    Cons(T, List<T>)\n\
-    \}\n\
-    \struct Pair { first: i32, second: i32 }\n\
-    \fn append(a : List<i32>, b : List<i32>) -> List<i32> {\n\
-    \    match a {\n\
-    \        List::Nil => b,\n\
-    \        List::Cons(x, xs) => List::Cons{x, append(xs, b)}\n\
-    \    }\n\
-    \}\n\
-    \fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }\n\
-    \fn inc(x: i32) -> i32 {\n\
-    \    apply(|v: i32| v + 1, x)\n\
-    \}\n\
-    \fn choose(b: bool) -> str {\n\
-    \    if (b) { \"yes\" } else { \"no\" }\n\
-    \}"
+    """
+    enum List<T> {
+        Nil,
+        Cons(T, List<T>)
+    }
+    struct Pair { first: i32, second: i32 }
+    fn append(a : List<i32>, b : List<i32>) -> List<i32> {
+        match a {
+            List::Nil => b,
+            List::Cons(x, xs) => List::Cons{x, append(xs, b)}
+        }
+    }
+    fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }
+    fn inc(x: i32) -> i32 {
+        apply(|v: i32| v + 1, x)
+    }
+    fn choose(b: bool) -> str {
+        if (b) { "yes" } else { "no" }
+    }
+    """
 
 unspanStmt :: Syn.Stmt -> Syn.Stmt
 unspanStmt (Syn.SpannedStmt (WithSpan s _ _)) = unspanStmt s
