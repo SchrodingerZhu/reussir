@@ -12,6 +12,51 @@
 //! | 1     | `\|\|`                                         | left          |
 //! | 0     | `lhs -> field := rhs`                          | none          |
 //!
+//! ## The algorithm: precedence climbing
+//!
+//! Expressions are parsed by [`Parser::expr_bp`], a single loop implementing
+//! *precedence climbing* (the loop form of Pratt parsing). `expr_bp(min_bp)`
+//! parses the largest expression whose operators all bind at least as tightly
+//! as `min_bp`: it reads one term, then repeatedly
+//!
+//! 1. peeks at the next operator and looks up its [`BindingPower`];
+//! 2. if the operator's `left` power is `< min_bp`, stops — the operator is
+//!    looser than this invocation is allowed to take, so it belongs to an
+//!    enclosing call; the term parsed so far is returned;
+//! 3. otherwise consumes the operator, parses the right operand by recursing
+//!    with `min_bp = right`, folds `lhs op rhs` into the new `lhs` (via
+//!    [`CompletedMarker::precede`], so the operator node wraps the
+//!    already-parsed left side), and continues the loop.
+//!
+//! Associativity is therefore *not* special-cased; it falls out of the gap
+//! between `left` and `right` (see [`BindingPower`]). A left-associative
+//! operator parses its right side with a strictly higher minimum, so an equal
+//! operator to the right is left for the loop to fold as a sibling.
+//!
+//! Worked example — `1 + 2 * 3`, entered at `min_bp = 0`. `*` (left 10)
+//! outbinds `+` (left 8), so the recursion for `+`'s right operand swallows
+//! the whole product before control returns:
+//!
+//! ```text
+//!   expr_bp(0)
+//!   │ term ........................... 1
+//!   │ peek '+'  left 8 ≥ 0  → take; recurse for rhs at min_bp = 9
+//!   │   expr_bp(9)
+//!   │   │ term ....................... 2
+//!   │   │ peek '*'  left 10 ≥ 9 → take; recurse for rhs at min_bp = 11
+//!   │   │   expr_bp(11)
+//!   │   │   │ term ................... 3
+//!   │   │   │ peek <none>          → return 3
+//!   │   │ fold (2 * 3); peek <none> → return (2 * 3)
+//!   │ fold (1 + (2 * 3)); peek <eof> → return (1 + (2 * 3))
+//! ```
+//!
+//! For a left-associative chain `a - b - c` the second `-` (left 8) is below
+//! the right minimum (9) used to parse `b`, so `b` does not absorb it; the
+//! loop folds `(a - b)` and re-enters, giving `((a - b) - c)`. A
+//! non-associative `a < b < c` would likewise not nest, but the second `<` at
+//! the same level trips the `non_assoc` chain check and is diagnosed instead.
+//!
 //! Details worth knowing:
 //!
 //! * a lambda is only recognized at full-expression entry points, never as
@@ -31,15 +76,56 @@
 use super::{CompletedMarker, Parser, STACK_GROW, STACK_RED_ZONE};
 use crate::kind::SyntaxKind::{self, *};
 
-/// Binding powers: `(left, right, non_associative)`; left-associative
-/// operators bind their right operand one step tighter.
-fn binary_bp(kind: SyntaxKind) -> Option<(u8, u8, bool)> {
+/// The precedence and associativity of a binary operator, in the form the
+/// Pratt loop in [`Parser::expr_bp`] consumes.
+///
+/// `left` and `right` are the operator's binding powers toward its left and
+/// right operands. The loop compares an operator's `left` against the
+/// caller's `min_bp` to decide whether to take it, then recurses for the
+/// right operand using `right` as the new `min_bp`. Associativity is encoded
+/// purely in the gap between the two:
+///
+/// * **left-associative** sets `right = left + 1`, so a following operator of
+///   equal precedence fails the `left >= min_bp` test in the recursion and
+///   binds as a sibling instead of nesting (`a - b - c` → `(a - b) - c`);
+/// * **non-associative** comparisons additionally set `non_assoc`, which turns
+///   a repeat at the same level into the "cannot be chained" diagnostic rather
+///   than a (mis-grouped) tree.
+#[derive(Clone, Copy)]
+struct BindingPower {
+    left: u8,
+    right: u8,
+    non_assoc: bool,
+}
+
+impl BindingPower {
+    const fn left_assoc(left: u8) -> Self {
+        BindingPower {
+            left,
+            right: left + 1,
+            non_assoc: false,
+        }
+    }
+
+    const fn non_assoc(left: u8) -> Self {
+        BindingPower {
+            left,
+            right: left + 1,
+            non_assoc: true,
+        }
+    }
+}
+
+/// The binding power of `kind` as an infix operator, or `None` if it is not
+/// one. Levels are spaced by two so the ladder stays readable; relative
+/// order is what matters, not the absolute numbers.
+fn binary_bp(kind: SyntaxKind) -> Option<BindingPower> {
     Some(match kind {
-        PipePipe => (2, 3, false),
-        AmpAmp => (4, 5, false),
-        EqEq | BangEq | LAngle | RAngle | LtEq | GtEq => (6, 7, true),
-        Plus | Minus => (8, 9, false),
-        Star | Slash | Percent => (10, 11, false),
+        PipePipe => BindingPower::left_assoc(2),
+        AmpAmp => BindingPower::left_assoc(4),
+        EqEq | BangEq | LAngle | RAngle | LtEq | GtEq => BindingPower::non_assoc(6),
+        Plus | Minus => BindingPower::left_assoc(8),
+        Star | Slash | Percent => BindingPower::left_assoc(10),
         _ => return None,
     })
 }
@@ -100,26 +186,26 @@ impl Parser<'_> {
                 continue;
             }
 
-            let Some((lbp, rbp, nonassoc)) = binary_bp(self.current()) else {
+            let Some(bp) = binary_bp(self.current()) else {
                 break;
             };
-            if lbp < min_bp {
+            if bp.left < min_bp {
                 break;
             }
-            if nonassoc && nonassoc_at == Some(lbp) {
+            if bp.non_assoc && nonassoc_at == Some(bp.left) {
                 self.error("comparison operators cannot be chained; use parentheses");
                 break;
             }
             let m = lhs.precede(self);
             self.bump(); // the operator
-            if self.expr_bp(rbp, allow_struct).is_none() {
+            if self.expr_bp(bp.right, allow_struct).is_none() {
                 self.error(format!(
                     "expected an expression after the operator, found {}",
                     self.current().describe()
                 ));
             }
             lhs = m.complete(self, BinExpr);
-            nonassoc_at = nonassoc.then_some(lbp);
+            nonassoc_at = bp.non_assoc.then_some(bp.left);
         }
         Some(lhs)
     }

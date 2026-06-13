@@ -37,9 +37,19 @@ impl Parse {
     }
 
     /// Lower the tree to the aeson-compatible JSON document of the program
-    /// (`Prog = [Stmt]` on the Haskell side). Only meaningful for
-    /// error-free parses.
+    /// (`Prog = [Stmt]` on the Haskell side).
+    ///
+    /// This is a verification oracle for cross-checking against the Haskell
+    /// frontend, not part of the elaboration pipeline, so it requires a
+    /// clean parse: call it only when [`Parse::ok`] holds. Lowering a tree
+    /// that still contains error nodes panics (the recovery shape is not a
+    /// valid AST).
     pub fn to_json(&self, map: &SourceMap) -> serde_json::Value {
+        assert!(
+            self.ok(),
+            "to_json requires an error-free parse; got {} error(s)",
+            self.errors.len()
+        );
         ast::prog_to_json(&self.root, map)
     }
 }
