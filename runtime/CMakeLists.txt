@@ -45,7 +45,7 @@ add_custom_target(reussir-rt-install ALL
 )
 
 # Read rust-toolchain.toml to get the channel
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml" RUST_TOOLCHAIN_CONTENT)
+file(READ "${CMAKE_SOURCE_DIR}/rust-toolchain.toml" RUST_TOOLCHAIN_CONTENT)
 string(REGEX MATCH "channel = \"([^\"]+)\"" _ ${RUST_TOOLCHAIN_CONTENT})
 set(RUST_CHANNEL ${CMAKE_MATCH_1})
 

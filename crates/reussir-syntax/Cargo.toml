@@ -1,0 +1,18 @@
+[package]
+name = "reussir-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Surface syntax parser for Reussir: lossless CST, error recovery, aeson-compatible JSON AST output"
+
+[lib]
+name = "reussir_syntax"
+
+[dependencies]
+ariadne.workspace = true
+palc.workspace = true
+cstree.workspace = true
+lasso.workspace = true
+logos.workspace = true
+serde_json.workspace = true
+stacker.workspace = true

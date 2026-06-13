@@ -1,0 +1,15 @@
+// The Rust parser recovers from errors and reports each of them with
+// source context instead of stopping at the first one.
+// RUN: %not %reussir-syntax --check %s 2>&1 | %FileCheck %s
+
+fn good() -> i32 { 1 }
+
+// CHECK: expected a parameter name
+fn bad( { 2 }
+
+// CHECK: expected a type
+struct Also { x: }
+
+fn fine() -> i32 { 3 }
+
+// CHECK: error: 2 syntax error(s)

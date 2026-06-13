@@ -1,0 +1,39 @@
+// Wider syntax coverage for the Rust parser bridge: regional records and
+// assignment, capability annotations, casts, access chains, tuple structs,
+// pattern guards and ellipsis, trampolines, and module declarations.
+// RUN: %reussir-syntax %s -o %t.json
+// RUN: %reussir-surface-verify %s %t.json | %FileCheck %s
+// CHECK: OK
+
+pub mod utils;
+
+struct [regional] DLLink<T> {
+    val: T,
+    next: [field] DLLink<T>,
+    prev: [field] DLLink<T>
+}
+
+struct [value] Point(f64, f64)
+
+regional fn push_back<T>(cursor : [flex] DLLink<T>, elem : T) {
+    cursor->next := Nullable::NonNull{cursor};
+}
+
+fn area(p: Point) -> f64 {
+    regional {
+        let scaled = ((p.0) as f64) * ((p.1) as f64);
+        scaled
+    }
+}
+
+fn classify(p: Pair<i32, i32>) -> i32 {
+    match p {
+        Pair { first: 0, .. } => 0 - 1,
+        Pair { first: x, second: y } if x > y => x % y,
+        _ => 2
+    }
+}
+
+fn fibonacci<T: Numeric>(n: T) -> T { n }
+
+extern "C" trampoline "fibonacci_ffi" = fibonacci<u64>;
