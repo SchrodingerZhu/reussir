@@ -143,6 +143,7 @@ impl OrcJit {
         check_error(unsafe { LLVMOrcCreateLLJIT(&mut jit, std::ptr::null_mut()) })?;
         let engine = Self { jit };
         engine.add_process_symbols()?;
+        tracing::debug!(tpde = has_tpde(), "created ORC LLJIT engine");
         Ok(engine)
     }
 
@@ -204,6 +205,7 @@ impl OrcJit {
             )
         })?;
         self.add_generator(generator);
+        tracing::debug!(path, "loaded shared library for symbol resolution");
         Ok(())
     }
 
@@ -246,6 +248,7 @@ impl OrcJit {
     /// and added directly; otherwise the Reussir LLVM pass pipeline runs and the
     /// IR module is handed to the default `LLJIT` compiler.
     pub fn add_module(&self, module: &Module, opt: OptLevel) -> Result<(), String> {
+        let _span = tracing::debug_span!("orcjit_add_module", opt = ?opt).entered();
         unsafe {
             let context = LLVMContextCreate();
             let operation = mlir_sys::mlirModuleGetOperation(module.to_raw());
@@ -256,8 +259,10 @@ impl OrcJit {
             ) as LLVMModuleRef;
             if llvm_module.is_null() {
                 LLVMContextDispose(context);
+                tracing::error!("failed to translate MLIR module to LLVM IR");
                 return Err("failed to translate MLIR module to LLVM IR".into());
             }
+            tracing::trace!("translated MLIR module to LLVM IR");
 
             if opt == OptLevel::Tpde {
                 // TPDE compiles the IR to an object directly; the IR module and
@@ -269,8 +274,11 @@ impl OrcJit {
             }
 
             // Run the Reussir LLVM passes in place, then add the IR module.
+            tracing::trace!("running backend LLVM pass pipeline");
             reussirRunBackendLLVMPipeline(llvm_module, opt.as_c());
-            self.add_owned_module(context, llvm_module)
+            self.add_owned_module(context, llvm_module)?;
+            tracing::debug!("added LLVM-IR module to the JIT");
+            Ok(())
         }
     }
 
@@ -285,14 +293,18 @@ impl OrcJit {
             // the module before compiling.
             let data_layout = LLVMOrcLLJITGetDataLayoutStr(self.jit);
             let triple = LLVMGetDefaultTargetTriple();
+            tracing::debug!("compiling module to an object with TPDE");
             let buffer = reussirTpdeCompileToObject(module, data_layout, triple);
             LLVMDisposeMessage(triple);
             if buffer.is_null() {
+                tracing::error!("TPDE compilation failed");
                 return Err("TPDE compilation failed".into());
             }
             let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
             // Consumes `buffer`.
-            check_error(LLVMOrcLLJITAddObjectFile(self.jit, dylib, buffer))
+            check_error(LLVMOrcLLJITAddObjectFile(self.jit, dylib, buffer))?;
+            tracing::debug!("added TPDE object to the JIT");
+            Ok(())
         }
     }
 
@@ -321,7 +333,9 @@ impl OrcJit {
     pub fn lookup(&self, name: &str) -> Result<u64, String> {
         let symbol = CString::new(name).map_err(|_| "symbol name has a NUL byte")?;
         let mut address: LLVMOrcExecutorAddress = 0;
-        check_error(unsafe { LLVMOrcLLJITLookup(self.jit, &mut address, symbol.as_ptr()) })?;
+        check_error(unsafe { LLVMOrcLLJITLookup(self.jit, &mut address, symbol.as_ptr()) })
+            .inspect_err(|error| tracing::debug!(name, %error, "symbol lookup failed"))?;
+        tracing::trace!(name, address, "resolved symbol");
         Ok(address)
     }
 }

@@ -107,6 +107,14 @@ pub fn run_lowering_pipeline(
     module: &mut Module,
     options: &LoweringOptions,
 ) -> Result<(), melior::Error> {
+    let _span = tracing::debug_span!(
+        "reussir_lowering",
+        opt = ?options.opt,
+        reuse_token_across_call = options.reuse_token_across_call,
+        enable_invariant_analysis = options.enable_invariant_analysis,
+    )
+    .entered();
+
     let manager = PassManager::new(context);
 
     lowering_pipeline!(manager,
@@ -154,7 +162,13 @@ pub fn run_lowering_pipeline(
         module: sys::reussirCreateCanonicalizerPass();
     );
 
-    manager.run(module)
+    tracing::trace!("running Reussir lowering pipeline");
+    let result = manager.run(module);
+    match &result {
+        Ok(()) => tracing::debug!("lowered module to the LLVM dialect"),
+        Err(error) => tracing::error!(?error, "lowering pipeline failed"),
+    }
+    result
 }
 
 #[cfg(test)]
