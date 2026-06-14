@@ -22,9 +22,7 @@ impl SourceMap {
         let mut byte_to_char = vec![0u32; source.len() + 1];
         let mut chars = 0u32;
         for (idx, c) in source.char_indices() {
-            for b in idx..idx + c.len_utf8() {
-                byte_to_char[b] = chars;
-            }
+            byte_to_char[idx..idx + c.len_utf8()].fill(chars);
             chars += 1;
         }
         byte_to_char[source.len()] = chars;

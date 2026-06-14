@@ -18,9 +18,15 @@ endif()
 set(REUSSIR_BACKEND_CARGO_ENV
     CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
     MLIR_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
+    # melior-macro 0.20 (the `dialect!` macro that generates the Reussir op
+    # builders) still discovers llvm-config through the LLVM-21-era variable name
+    # even though it targets LLVM 22; point it at the same prefix so its baked
+    # include directory is correct.
+    MLIR_SYS_210_PREFIX=${REUSSIR_LLVM_PREFIX}
     TABLEGEN_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     LLVM_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     REUSSIR_CAPI_LIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
+    REUSSIR_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/include
     RUSTFLAGS=-Awarnings)
 
 add_custom_target(reussir-backend

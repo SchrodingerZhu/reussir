@@ -11,7 +11,53 @@ pub use mlir_sys;
 
 use core::ffi::{c_char, c_int};
 
-use mlir_sys::{MlirContext, MlirDialectHandle, MlirDialectRegistry, MlirModule, MlirPass};
+use mlir_sys::{
+    MlirAttribute, MlirContext, MlirDialectHandle, MlirDialectRegistry, MlirModule, MlirPass,
+    MlirType,
+};
+
+//==-- Reussir type enums --==//
+//
+// These mirror the dialect's `I32EnumAttr` definitions one-to-one. They are
+// passed by value to the type constructors below. `#[repr(C)]` gives them the C
+// `int` representation the C API expects.
+
+/// Reference/record capability. Mirrors `reussir::Capability`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReussirCapability {
+    Unspecified = 0,
+    Value = 1,
+    Shared = 2,
+    Flex = 3,
+    Rigid = 4,
+    Field = 5,
+    Regional = 6,
+}
+
+/// Reference-count atomicity. Mirrors `reussir::AtomicKind`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReussirAtomicKind {
+    Normal = 0,
+    Atomic = 1,
+}
+
+/// Record flavour. Mirrors `reussir::RecordKind`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReussirRecordKind {
+    Compound = 0,
+    Variant = 1,
+}
+
+/// String lifetime scope. Mirrors `reussir::LifeScope`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReussirLifeScope {
+    Global = 0,
+    Local = 1,
+}
 
 // Opaque LLVM-C handles used by the bitcode-gathering helper. The next stage of
 // the port wires in `llvm-sys`; until then these are declared as opaque pointers
@@ -95,4 +141,71 @@ unsafe extern "C" {
 
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
+
+    //==-- Reussir type constructors --==//
+    //
+    // The dialect types use custom printers/parsers, so the generic MLIR C API
+    // cannot build them; each constructor wraps the type's C++ `get` builder.
+
+    pub fn reussirRawPtrTypeGet(element_type: MlirType) -> MlirType;
+    pub fn reussirTokenTypeGet(context: MlirContext, align: usize, size: usize) -> MlirType;
+    pub fn reussirRegionTypeGet(context: MlirContext) -> MlirType;
+    pub fn reussirRcTypeGet(
+        element_type: MlirType,
+        capability: ReussirCapability,
+        atomic_kind: ReussirAtomicKind,
+    ) -> MlirType;
+    pub fn reussirNullableTypeGet(pointer_type: MlirType) -> MlirType;
+    pub fn reussirRefTypeGet(
+        element_type: MlirType,
+        capability: ReussirCapability,
+        atomic_kind: ReussirAtomicKind,
+    ) -> MlirType;
+    pub fn reussirHoleTypeGet(element_type: MlirType) -> MlirType;
+    pub fn reussirRcBoxTypeGet(element_type: MlirType, regional: bool) -> MlirType;
+    pub fn reussirClosureTypeGet(
+        context: MlirContext,
+        n_inputs: isize,
+        input_types: *const MlirType,
+        output_type: MlirType,
+    ) -> MlirType;
+    pub fn reussirClosureBoxTypeGet(
+        context: MlirContext,
+        n_payloads: isize,
+        payload_types: *const MlirType,
+    ) -> MlirType;
+    pub fn reussirArrayTypeGet(
+        n_dims: isize,
+        shape: *const i64,
+        element_type: MlirType,
+    ) -> MlirType;
+    pub fn reussirViewTypeGet(is_mutable: bool, array_type: MlirType) -> MlirType;
+    pub fn reussirFFIObjectTypeGet(
+        context: MlirContext,
+        ffi_name: MlirAttribute,
+        cleanup_hook: MlirAttribute,
+    ) -> MlirType;
+    pub fn reussirStrTypeGet(context: MlirContext, life_scope: ReussirLifeScope) -> MlirType;
+
+    pub fn reussirRecordTypeGetComplete(
+        context: MlirContext,
+        n_members: isize,
+        members: *const MlirType,
+        member_is_field: *const bool,
+        name: MlirAttribute,
+        kind: ReussirRecordKind,
+        default_capability: ReussirCapability,
+    ) -> MlirType;
+    pub fn reussirRecordTypeGetIncomplete(
+        context: MlirContext,
+        name: MlirAttribute,
+        kind: ReussirRecordKind,
+    ) -> MlirType;
+    pub fn reussirRecordTypeComplete(
+        record: MlirType,
+        n_members: isize,
+        members: *const MlirType,
+        member_is_field: *const bool,
+        default_capability: ReussirCapability,
+    );
 }

@@ -7,7 +7,7 @@
 # MLIR/LLVM that mlir-sys pulls in. Requires the distro's static MLIR/LLVM
 # development packages (including libpolly-<ver>-dev for the static Polly
 # archives llvm-config references).
-add_library(ReussirCAPI STATIC Dialects.cpp Passes.cpp)
+add_library(ReussirCAPI STATIC Dialects.cpp Passes.cpp Types.cpp)
 
 # Reussir component archives whose symbols ReussirCAPI references: per-pass
 # factories plus the standalone helpers (compilePolymorphicFFI via the

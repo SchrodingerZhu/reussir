@@ -16,6 +16,8 @@ use melior::dialect::{DialectHandle, DialectRegistry};
 
 use reussir_backend_sys as sys;
 
+pub mod dialect;
+pub mod jit;
 pub mod pipeline;
 
 /// Returns the [`DialectHandle`] for the Reussir dialect.
@@ -41,11 +43,26 @@ pub fn context() -> Context {
     // inserts dialects, extensions and translations into it.
     unsafe { sys::reussirPopulateRegistry(registry.to_raw()) };
     // Build the context from the populated registry so dialect extensions apply
-    // as dialects load. Dialects load on demand (during parsing and lowering),
-    // matching mlir-opt: eagerly loading every available dialect would pull in
-    // ones (complex, gpu, ...) whose ConvertToLLVM promise the pass would then
-    // check without the conversion ever needing them.
-    Context::new_with_registry(&registry, /* threading */ true)
+    // as dialects load. Other dialects load on demand (during parsing and
+    // lowering), matching mlir-opt: eagerly loading every available dialect
+    // would pull in ones (complex, gpu, ...) whose ConvertToLLVM promise the
+    // pass would then check without the conversion ever needing them.
+    let context = Context::new_with_registry(&registry, /* threading */ true);
+    // Load the dialects used to build IR eagerly so ops and types can be
+    // constructed directly through the API (e.g. [`dialect`] op builders and
+    // [`dialect::ty`] type constructors): building goes through each dialect's
+    // registered op/type tables, which only exist once it is loaded. Parsing
+    // loads dialects on demand, but programmatic construction does not.
+    //
+    // Loading Reussir also pulls its dependent dialects (arith, scf, math, LLVM,
+    // ub); func and cf are needed to build the enclosing functions and control
+    // flow but are not Reussir dependents. Other registered dialects still load
+    // lazily, matching mlir-opt — eagerly loading everything would have the
+    // ConvertToLLVM pass check promised interfaces the conversion never needs.
+    context.get_or_load_dialect("reussir");
+    context.get_or_load_dialect("func");
+    context.get_or_load_dialect("cf");
+    context
 }
 
 /// Registers only the Reussir dialect into `context`.
