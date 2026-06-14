@@ -33,6 +33,13 @@ MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(Reussir, reussir);
 // and lower Reussir IR.
 void reussirRegisterAllDialects(MlirContext context);
 
+// Populates the given dialect registry with the Reussir dialect, its dependent
+// dialects, and the extensions and translations the backend pipeline relies on.
+// Building a context from this registry (rather than appending afterward)
+// ensures dialect extensions (e.g. the arith/func ConvertToLLVM interfaces) are
+// applied as dialects load.
+void reussirPopulateRegistry(MlirDialectRegistry registry);
+
 #ifdef __cplusplus
 }
 #endif

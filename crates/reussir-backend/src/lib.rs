@@ -12,9 +12,11 @@
 pub use melior;
 
 use melior::Context;
-use melior::dialect::DialectHandle;
+use melior::dialect::{DialectHandle, DialectRegistry};
 
 use reussir_backend_sys as sys;
+
+pub mod pipeline;
 
 /// Returns the [`DialectHandle`] for the Reussir dialect.
 ///
@@ -24,6 +26,26 @@ pub fn reussir_dialect_handle() -> DialectHandle {
     // SAFETY: the handle returned by the C API points at a static registration
     // hook table that lives for the duration of the program.
     unsafe { DialectHandle::from_raw(sys::mlirGetDialectHandle__reussir__()) }
+}
+
+/// Creates a fresh [`Context`] ready to parse and lower Reussir IR.
+///
+/// The context is constructed with the Reussir dialect, its dependent dialects,
+/// and all required extensions and translations already registered, so dialect
+/// extensions (such as the `arith`/`func` ConvertToLLVM interfaces the lowering
+/// pipeline needs) are applied as dialects load. Prefer this over building a
+/// context by hand and calling [`register_all_dialects`].
+pub fn context() -> Context {
+    let registry = DialectRegistry::new();
+    // SAFETY: `registry` is a live melior dialect registry; the C API only
+    // inserts dialects, extensions and translations into it.
+    unsafe { sys::reussirPopulateRegistry(registry.to_raw()) };
+    // Build the context from the populated registry so dialect extensions apply
+    // as dialects load. Dialects load on demand (during parsing and lowering),
+    // matching mlir-opt: eagerly loading every available dialect would pull in
+    // ones (complex, gpu, ...) whose ConvertToLLVM promise the pass would then
+    // check without the conversion ever needing them.
+    Context::new_with_registry(&registry, /* threading */ true)
 }
 
 /// Registers only the Reussir dialect into `context`.
