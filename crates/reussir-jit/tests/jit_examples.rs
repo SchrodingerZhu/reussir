@@ -4,9 +4,10 @@
 //! through the [`OrcJit`].
 //!
 //! Each test constructs a small `func.func` out of Reussir operations, lowers it
-//! to the LLVM dialect, adds it to a persistent ORC session (with the Reussir
-//! runtime library loaded so allocator calls resolve), looks the function up and
-//! calls it directly through the C ABI.
+//! to the LLVM dialect, adds it to a persistent ORC session built with
+//! [`OrcJit::with_runtime`] (which defines the linked-in runtime's `__reussir_*`
+//! symbols in-process, so allocator calls resolve without locating a shared
+//! library), looks the function up and calls it directly through the C ABI.
 
 use reussir_backend::dialect::{self, ty};
 use reussir_backend::melior::Context;
@@ -85,27 +86,9 @@ fn rc_create_value<'c, 'a>(
     block.append_operation(operation).result(0).unwrap().into()
 }
 
-// Locates the Reussir runtime shared library for these tests.
-//
-// TODO: `CARGO_MANIFEST_DIR` only happens to sit next to the CMake `build/`
-// tree in this checkout — it is a build-time hint, not where the runtime ships
-// in a real install. A production lookup should go through an explicit
-// mechanism (e.g. `REUSSIR_RT_LIBRARY` / the install layout, as
-// `reussir_jit::runtime_library_path` does) rather than the crate manifest dir.
-fn runtime_library() -> String {
-    let ext = if cfg!(target_os = "macos") {
-        "dylib"
-    } else {
-        "so"
-    };
-    format!(
-        "{}/../../build/lib/libreussir_rt.{ext}",
-        env!("CARGO_MANIFEST_DIR")
-    )
-}
-
-// Lowers `module` to the LLVM dialect and adds it to a fresh ORC session with the
-// Reussir runtime loaded.
+// Lowers `module` to the LLVM dialect and adds it to a fresh ORC session whose
+// Reussir runtime symbols are resolved in-process (the runtime is linked into
+// this test binary through the `reussir-jit` crate).
 fn jit_module(context: &Context, module: &mut Module) -> OrcJit {
     run_lowering_pipeline(context, module, &LoweringOptions::default())
         .expect("lowering pipeline should succeed");
@@ -114,9 +97,7 @@ fn jit_module(context: &Context, module: &mut Module) -> OrcJit {
         "lowered module should verify"
     );
 
-    let jit = OrcJit::new().expect("create JIT");
-    jit.add_library(&runtime_library())
-        .expect("load the Reussir runtime");
+    let jit = OrcJit::with_runtime().expect("create JIT with the runtime");
     jit.add_module(module, OptLevel::Default)
         .expect("add module to JIT");
     jit

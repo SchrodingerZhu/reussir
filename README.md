@@ -111,7 +111,7 @@ The repository is split by responsibility:
 - `include/` and `lib/`:
   the Reussir MLIR dialect, analyses, conversions, bridge code, and backend
   support libraries.
-- `runtime/`:
+- `crates/reussir-rt/`:
   the Rust runtime for RC objects, nullable helpers, and related runtime
   support.
 - `tool/`:

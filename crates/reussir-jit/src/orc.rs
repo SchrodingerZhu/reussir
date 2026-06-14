@@ -11,7 +11,7 @@
 //! melior [`Module`] already lowered to the LLVM dialect
 //! ([`OrcJit::add_module`]), which is translated to LLVM IR via mlir-sys.
 
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CString, c_char, c_int, c_void};
 use std::sync::Once;
 
 use llvm_sys::core::{
@@ -24,22 +24,21 @@ use llvm_sys::ir_reader::LLVMParseIRInContext;
 use llvm_sys::orc2::lljit::{
     LLVMOrcCreateLLJIT, LLVMOrcDisposeLLJIT, LLVMOrcLLJITAddLLVMIRModule,
     LLVMOrcLLJITAddObjectFile, LLVMOrcLLJITGetDataLayoutStr, LLVMOrcLLJITGetGlobalPrefix,
-    LLVMOrcLLJITGetMainJITDylib, LLVMOrcLLJITLookup, LLVMOrcLLJITRef,
+    LLVMOrcLLJITGetMainJITDylib, LLVMOrcLLJITLookup, LLVMOrcLLJITMangleAndIntern, LLVMOrcLLJITRef,
 };
 use llvm_sys::orc2::{
-    LLVMOrcCreateDynamicLibrarySearchGeneratorForPath,
+    LLVMJITEvaluatedSymbol, LLVMJITSymbolFlags, LLVMJITSymbolGenericFlags, LLVMOrcAbsoluteSymbols,
+    LLVMOrcCSymbolMapPair, LLVMOrcCreateDynamicLibrarySearchGeneratorForPath,
     LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess,
     LLVMOrcCreateNewThreadSafeContextFromLLVMContext, LLVMOrcCreateNewThreadSafeModule,
     LLVMOrcDefinitionGeneratorRef, LLVMOrcDisposeThreadSafeContext, LLVMOrcExecutorAddress,
-    LLVMOrcJITDylibAddGenerator,
+    LLVMOrcJITDylibAddGenerator, LLVMOrcJITDylibDefine,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMMemoryBufferRef, LLVMModuleRef};
 use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
 use llvm_sys::target_machine::LLVMGetDefaultTargetTriple;
 
 use melior::ir::Module;
-
-use crate::runtime_library_path;
 
 // LLVM-side codegen helpers provided by libReussirCAPI (lib/CAPI/Jit.cpp): the
 // custom Reussir LLVM passes and TPDE, which cannot be reached through the
@@ -147,19 +146,13 @@ impl OrcJit {
         Ok(engine)
     }
 
-    /// Creates a JIT and, if the Reussir runtime shared library can be located
-    /// (see [`runtime_library_path`]), makes its symbols (`__reussir_allocate`,
-    /// …) resolvable. Without it, JIT'd code calling the runtime will fail to
-    /// resolve those symbols.
+    /// Creates a JIT with the Reussir runtime's `__reussir_*` symbols defined
+    /// from the linked-in `reussir-rt` (see [`OrcJit::define_runtime_symbols`]),
+    /// so JIT'd code calling the runtime resolves against the in-process runtime
+    /// — no runtime shared library to locate or load.
     pub fn with_runtime() -> Result<Self, String> {
         let engine = Self::new()?;
-        match runtime_library_path() {
-            Some(path) => engine.add_library(&path.to_string_lossy())?,
-            None => tracing::warn!(
-                "Reussir runtime library not found; JIT'd code referencing \
-                 runtime symbols will fail to resolve"
-            ),
-        }
+        engine.define_runtime_symbols()?;
         Ok(engine)
     }
 
@@ -206,6 +199,67 @@ impl OrcJit {
         })?;
         self.add_generator(generator);
         tracing::debug!(path, "loaded shared library for symbol resolution");
+        Ok(())
+    }
+
+    /// Defines each `(name, address)` pair in the main `JITDylib` as an absolute
+    /// symbol, so JIT'd code resolves those names to the given in-process
+    /// addresses. This exposes statically linked functions to JIT'd code without
+    /// routing through a shared library or the process symbol table.
+    pub fn define_symbols(&self, symbols: &[(&str, *const c_void)]) -> Result<(), String> {
+        if symbols.is_empty() {
+            return Ok(());
+        }
+        // Reject NUL bytes before interning anything, so a bad name cannot leak
+        // already-interned string-pool references.
+        let names = symbols
+            .iter()
+            .map(|(name, _)| CString::new(*name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "symbol name has a NUL byte")?;
+
+        // Exported + callable: a normal function definition visible to lookups.
+        let generic_flags = LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsExported as u8
+            | LLVMJITSymbolGenericFlags::LLVMJITSymbolGenericFlagsCallable as u8;
+
+        unsafe {
+            let mut pairs: Vec<LLVMOrcCSymbolMapPair> = names
+                .iter()
+                .zip(symbols)
+                .map(|(name, (_, address))| LLVMOrcCSymbolMapPair {
+                    // Interns the (mangled) name; `LLVMOrcAbsoluteSymbols` takes
+                    // ownership of this string-pool reference.
+                    Name: LLVMOrcLLJITMangleAndIntern(self.jit, name.as_ptr()),
+                    Sym: LLVMJITEvaluatedSymbol {
+                        Address: *address as LLVMOrcExecutorAddress,
+                        Flags: LLVMJITSymbolFlags {
+                            GenericFlags: generic_flags,
+                            TargetFlags: 0,
+                        },
+                    },
+                })
+                .collect();
+
+            // Builds a materialization unit owning the interned names, then hands
+            // it to the dylib; a successful `Define` consumes the unit.
+            let unit = LLVMOrcAbsoluteSymbols(pairs.as_mut_ptr(), pairs.len());
+            let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
+            check_error(LLVMOrcJITDylibDefine(dylib, unit))?;
+        }
+        Ok(())
+    }
+
+    /// Defines the Reussir runtime's `__reussir_*` symbols, taken from the
+    /// linked-in [`reussir_rt`], in the main `JITDylib`. JIT'd code then resolves
+    /// runtime calls against the in-process runtime, so no runtime shared library
+    /// needs to be located or loaded.
+    pub fn define_runtime_symbols(&self) -> Result<(), String> {
+        let symbols: Vec<(&str, *const c_void)> = reussir_rt::symbols::exported_symbols()
+            .iter()
+            .map(|symbol| (symbol.name, symbol.address))
+            .collect();
+        self.define_symbols(&symbols)?;
+        tracing::debug!(count = symbols.len(), "defined in-process runtime symbols");
         Ok(())
     }
 
@@ -426,5 +480,53 @@ mod tests {
             return;
         }
         assert_eq!(jit_add(OptLevel::Tpde), 42);
+    }
+
+    // A host function defined as an absolute symbol and called from JIT'd code.
+    extern "C" fn host_meaning() -> i32 {
+        42
+    }
+
+    #[test]
+    fn define_symbols_exposes_a_host_function() {
+        let jit = OrcJit::new().expect("create LLJIT");
+        jit.define_symbols(&[("host_meaning", host_meaning as *const c_void)])
+            .expect("define host symbol");
+        jit.add_ir_module(
+            "caller",
+            "declare i32 @host_meaning()\n\
+             define i32 @ask() { %r = call i32 @host_meaning() ret i32 %r }",
+        )
+        .expect("add caller");
+
+        let address = jit.lookup("ask").expect("lookup ask");
+        let ask: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address as usize) };
+        assert_eq!(ask(), 42);
+    }
+
+    #[test]
+    fn with_runtime_resolves_runtime_symbols_in_process() {
+        // The runtime is linked into this test binary via the `reussir-rt`
+        // dependency; `with_runtime` defines its `__reussir_*` symbols directly,
+        // so JIT'd code calling the allocator resolves without any shared library.
+        let jit = OrcJit::with_runtime().expect("create JIT with runtime");
+        jit.add_ir_module(
+            "alloc_roundtrip",
+            "declare ptr @__reussir_allocate(i64, i64)\n\
+             declare void @__reussir_deallocate(ptr, i64, i64)\n\
+             define i64 @roundtrip() {\n\
+               %p = call ptr @__reussir_allocate(i64 8, i64 16)\n\
+               %is_null = icmp eq ptr %p, null\n\
+               call void @__reussir_deallocate(ptr %p, i64 8, i64 16)\n\
+               %z = zext i1 %is_null to i64\n\
+               ret i64 %z\n\
+             }",
+        )
+        .expect("add module");
+
+        let address = jit.lookup("roundtrip").expect("lookup roundtrip");
+        let roundtrip: extern "C" fn() -> i64 = unsafe { std::mem::transmute(address as usize) };
+        // Returns 0 when the allocator handed back a non-null pointer.
+        assert_eq!(roundtrip(), 0);
     }
 }

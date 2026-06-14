@@ -4,11 +4,11 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'runtime/**'
+      - 'crates/reussir-rt/**'
   pull_request:
     branches: [ main ]
     paths:
-      - 'runtime/**'
+      - 'crates/reussir-rt/**'
   # schedule:
   #   # Run daily at 2 AM UTC
   #   - cron: '0 2 * * *'
@@ -36,5 +36,5 @@ jobs:
 
     - name: Run Miri tests on reussir-rt
       run: |
-        cd runtime
+        cd crates/reussir-rt
         cargo miri test -p reussir-rt

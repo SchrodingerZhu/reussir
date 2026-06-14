@@ -802,6 +802,7 @@ dependencies = [
  "mlir-sys",
  "reussir-backend",
  "reussir-backend-sys",
+ "reussir-rt",
  "tracing",
 ]
 
