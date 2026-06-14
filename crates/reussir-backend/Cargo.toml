@@ -1,0 +1,14 @@
+[package]
+name = "reussir-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust backend for Reussir: melior-based MLIR access with the Reussir dialect registered"
+
+[lib]
+name = "reussir_backend"
+
+[dependencies]
+melior.workspace = true
+reussir-backend-sys = { path = "../reussir-backend-sys" }
+tracing.workspace = true

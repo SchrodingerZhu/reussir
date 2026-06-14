@@ -42,7 +42,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2025-12-01
+          toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
 
       - name: Setup GHC
@@ -118,3 +118,6 @@ jobs:
 
       - name: Run Integration Tests
         run: cmake --build build --target check
+
+      - name: Build and Test reussir-backend
+        run: cmake --build build --target reussir-backend-test

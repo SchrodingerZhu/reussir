@@ -99,7 +99,7 @@ jobs:
           # gnullvm so the bare channel resolves to the gnu/LLVM toolchain.
           rustup set default-host x86_64-pc-windows-gnullvm
           rustup target add x86_64-pc-windows-gnullvm
-          rustup default nightly-2025-12-01-x86_64-pc-windows-gnullvm
+          rustup default nightly-2026-02-15-x86_64-pc-windows-gnullvm
           rustup component add rust-src rustfmt clippy
           rustc -vV
 
