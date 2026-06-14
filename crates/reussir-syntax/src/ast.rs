@@ -851,9 +851,9 @@ pub fn unescape_string(raw: &str) -> String {
 }
 
 fn push_code(out: &mut String, digits: &str, radix: u32) {
-    if let Ok(code) = u32::from_str_radix(digits, radix) {
-        if let Some(c) = char::from_u32(code) {
-            out.push(c);
-        }
+    if let Ok(code) = u32::from_str_radix(digits, radix)
+        && let Some(c) = char::from_u32(code)
+    {
+        out.push(c);
     }
 }

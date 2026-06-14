@@ -264,13 +264,13 @@ impl Parser<'_> {
     fn access_seg(&mut self) {
         let m = self.start();
         self.bump(); // .
-        if self.at_ident_like() || self.at(IntLit) {
-            self.bump();
-        } else if self.at(FloatLit)
-            && self
-                .current_text()
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.')
+        if self.at_ident_like()
+            || self.at(IntLit)
+            || (self.at(FloatLit)
+                && self
+                    .current_text()
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.'))
         {
             self.bump();
         } else {
