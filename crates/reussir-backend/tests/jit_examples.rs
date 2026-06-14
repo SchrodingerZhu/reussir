@@ -6,6 +6,9 @@
 //! Each test constructs a small `func.func` out of Reussir operations, lowers it
 //! to the LLVM dialect, JIT-compiles it (with the Reussir runtime library loaded
 //! so allocator calls resolve), and asserts on the value it returns.
+//!
+//! These tests preload the runtime via `dlopen`, so they only run on Unix.
+#![cfg(unix)]
 
 use reussir_backend::dialect::{self, ty};
 use reussir_backend::jit::Jit;
@@ -107,16 +110,10 @@ fn rc_create_value<'c, 'a>(
 // Loads the Reussir runtime into the global symbol namespace so the JIT's
 // process symbol generator can resolve `__reussir_allocate` and friends. (The
 // engine's `shared_library_paths` alone do not expose them on this platform.)
+// `libc` supplies the correct per-platform `RTLD_*` flags and dlopen linking.
 fn preload_runtime() {
-    use std::ffi::CString;
-    use std::os::raw::{c_char, c_int, c_void};
-    unsafe extern "C" {
-        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
-    }
-    const RTLD_NOW: c_int = 0x2;
-    const RTLD_GLOBAL: c_int = 0x100;
-    let path = CString::new(runtime_library()).unwrap();
-    let handle = unsafe { dlopen(path.as_ptr(), RTLD_NOW | RTLD_GLOBAL) };
+    let path = std::ffi::CString::new(runtime_library()).unwrap();
+    let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
     assert!(
         !handle.is_null(),
         "failed to load the Reussir runtime library"

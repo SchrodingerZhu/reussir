@@ -22,4 +22,18 @@ fn main() {
 
     println!("cargo:rustc-env=REUSSIR_INCLUDE_DIR={include_dir}");
     println!("cargo:rerun-if-env-changed=REUSSIR_INCLUDE_DIR");
+
+    // The `dialect!` macro generates the op builders from these TableGen sources
+    // at compile time, but Cargo otherwise only tracks Rust files. Rebuild when
+    // any of them changes so the generated builders never go stale.
+    let ir_dir = PathBuf::from(&include_dir).join("Reussir/IR");
+    for td in [
+        "ReussirOps.td",
+        "ReussirDialect.td",
+        "ReussirTypes.td",
+        "ReussirAttrs.td",
+        "ReussirInterfaces.td",
+    ] {
+        println!("cargo:rerun-if-changed={}", ir_dir.join(td).display());
+    }
 }
