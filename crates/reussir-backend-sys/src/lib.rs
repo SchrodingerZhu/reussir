@@ -9,9 +9,29 @@
 
 pub use mlir_sys;
 
-use mlir_sys::{MlirContext, MlirDialectHandle};
+use core::ffi::{c_char, c_int};
+
+use mlir_sys::{MlirContext, MlirDialectHandle, MlirDialectRegistry, MlirModule, MlirPass};
+
+// Opaque LLVM-C handles used by the bitcode-gathering helper. The next stage of
+// the port wires in `llvm-sys`; until then these are declared as opaque pointers
+// so the C API surface is complete and linkable, matching `llvm-c/Types.h`.
+#[repr(C)]
+pub struct LlvmOpaqueModule {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct LlvmOpaqueContext {
+    _private: [u8; 0],
+}
+/// Mirrors `LLVMModuleRef`.
+pub type LLVMModuleRef = *mut LlvmOpaqueModule;
+/// Mirrors `LLVMContextRef`.
+pub type LLVMContextRef = *mut LlvmOpaqueContext;
 
 unsafe extern "C" {
+    //==-- Dialect registration --==//
+
     /// Returns the dialect handle for the Reussir dialect. The handle can be
     /// inserted into a dialect registry or registered into a context.
     pub fn mlirGetDialectHandle__reussir__() -> MlirDialectHandle;
@@ -20,4 +40,59 @@ unsafe extern "C" {
     /// extension and LLVM/builtin translation it relies on into `context`, then
     /// loads all available dialects.
     pub fn reussirRegisterAllDialects(context: MlirContext);
+
+    /// Populates a dialect registry with the Reussir dialect and everything the
+    /// backend pipeline depends on. Build a context from the registry so dialect
+    /// extensions are applied as dialects load.
+    pub fn reussirPopulateRegistry(registry: MlirDialectRegistry);
+
+    //==-- Reussir passes --==//
+
+    pub fn reussirCreateUniqueCarryingRecursionAnalysisPass() -> MlirPass;
+    pub fn reussirCreateTokenInstantiationPass() -> MlirPass;
+    pub fn reussirCreateClosureOutliningPass() -> MlirPass;
+    pub fn reussirCreateRegionPatternsPass() -> MlirPass;
+    pub fn reussirCreateIncDecCancellationPass() -> MlirPass;
+    pub fn reussirCreateRcDecrementExpansionPass() -> MlirPass;
+    pub fn reussirCreateInferVariantTagPass() -> MlirPass;
+    pub fn reussirCreateSCFOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateRcCreateSinkPass() -> MlirPass;
+    pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
+    pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
+    pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;
+    pub fn reussirCreateInvariantGroupAnalysisPass() -> MlirPass;
+    pub fn reussirCreateBasicOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateAcquireDropExpansionPass(
+        expand_decrement: bool,
+        outline_record: bool,
+    ) -> MlirPass;
+    pub fn reussirCreateTokenReusePass(reuse_across_call: bool) -> MlirPass;
+
+    //==-- Upstream passes used by the pipeline --==//
+
+    pub fn reussirCreateDefaultInlinerPass() -> MlirPass;
+    pub fn reussirCreateCanonicalizerPass() -> MlirPass;
+    pub fn reussirCreateCSEPass() -> MlirPass;
+    pub fn reussirCreateControlFlowSinkPass() -> MlirPass;
+    pub fn reussirCreateSCFToControlFlowPass() -> MlirPass;
+    pub fn reussirCreateConvertToLLVMPass() -> MlirPass;
+    pub fn reussirCreateReconcileUnrealizedCastsPass() -> MlirPass;
+
+    //==-- Standalone helpers --==//
+
+    /// Monomorphizes and compiles polymorphic FFI operations in the module.
+    /// Returns true on success.
+    pub fn reussirCompilePolymorphicFFI(module: MlirModule, optimized: bool) -> bool;
+
+    /// Gathers the LLVM bitcode modules attached to compiled operations into a
+    /// single LLVM module owned by `context`. Returns null on failure; otherwise
+    /// the caller owns the returned module.
+    pub fn reussirGatherCompiledModules(
+        module: MlirModule,
+        context: LLVMContextRef,
+        data_layout: *const c_char,
+    ) -> LLVMModuleRef;
+
+    /// Reports whether TPDE support was compiled into the backend.
+    pub fn reussirHasTPDE() -> c_int;
 }
