@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["runtime", "crates/reussir-syntax"]
+members = [
+    "runtime",
+    "crates/reussir-syntax",
+    "crates/reussir-backend-sys",
+    "crates/reussir-backend",
+]
+# The backend crates link against MLIR and the staged Reussir C API, so they are
+# excluded from the default `cargo build`; build them explicitly with
+# `cargo build -p reussir-backend` (the CMake build wires up the needed env).
+default-members = ["runtime", "crates/reussir-syntax"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,9 +21,12 @@ ariadne = "0.5"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
 lasso = "0.7"
 logos = "0.15"
+melior = "0.27"
+mlir-sys = "220"
 palc = "0.0.2"
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 stacker = "0.1.21"
+tracing = "0.1"
 
 [profile.release]
 lto = "thin"

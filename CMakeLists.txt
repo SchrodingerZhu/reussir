@@ -89,6 +89,7 @@ add_subdirectory(lib)
 add_subdirectory(tool)
 add_subdirectory(runtime)
 add_subdirectory(crates/reussir-syntax)
+add_subdirectory(crates/reussir-backend)
 add_subdirectory(frontend)
 
 if (REUSSIR_ENABLE_TESTS)
