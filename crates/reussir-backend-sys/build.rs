@@ -40,7 +40,16 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirInvariantGroupAnalysis",
     "MLIRReussirUniqueCarryingRecursionAnalysis",
     "MLIRReussirTRMCRecursionAnalysis",
+    // The custom LLVM passes run by the JIT codegen helper (Jit.cpp).
+    "ReussirLLVMAllocationSimplicationPass",
 ];
+
+// TPDE static archives (and TPDE's own vendored dependencies: spdlog plus the
+// fadec/disarm64 instruction encoders), referenced by Jit.cpp only when TPDE
+// support is compiled in (ELF targets). They are linked when present; on
+// platforms where TPDE is unavailable the archives are absent and Jit.cpp has no
+// references to them, so they are simply skipped.
+const TPDE_ARCHIVES: &[&str] = &["tpde_llvm", "tpde", "spdlog", "fadec", "disarm64"];
 
 fn main() {
     let lib_dir = capi_lib_dir();
@@ -53,6 +62,11 @@ fn main() {
     println!("cargo:rustc-link-lib=static:+whole-archive=ReussirCAPI");
     for archive in REUSSIR_ARCHIVES {
         println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
+    }
+    for archive in TPDE_ARCHIVES {
+        if lib_dir.join(format!("lib{archive}.a")).exists() {
+            println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
+        }
     }
 
     // Cargo does not track the contents of native static libraries, so without
@@ -68,6 +82,12 @@ fn main() {
             "cargo:rerun-if-changed={}",
             lib_dir.join(format!("lib{archive}.a")).display()
         );
+    }
+    for archive in TPDE_ARCHIVES {
+        let path = lib_dir.join(format!("lib{archive}.a"));
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 
     println!("cargo:rerun-if-env-changed=REUSSIR_CAPI_LIB_DIR");

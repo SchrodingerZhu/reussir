@@ -5,6 +5,7 @@ members = [
     "crates/reussir-syntax",
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
+    "crates/reussir-jit",
 ]
 # The backend crates link against MLIR and the staged Reussir C API, so they are
 # excluded from the default `cargo build`; build them explicitly with
@@ -21,6 +22,10 @@ ariadne = "0.5"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
 lasso = "0.7"
 logos = "0.15"
+# llvm-sys provides the ORC/LLJIT and target-machine C API that mlir-sys does
+# not bind. Its version tracks LLVM major.minor (22.1 -> 221), and it discovers
+# LLVM via LLVM_SYS_221_PREFIX (set by CMake).
+llvm-sys = "221"
 melior = "0.27"
 mlir-sys = "220"
 palc = "0.0.2"
