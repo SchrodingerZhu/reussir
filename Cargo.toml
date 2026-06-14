@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "runtime",
+    "crates/reussir-rt",
     "crates/reussir-syntax",
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
@@ -10,7 +10,7 @@ members = [
 # The backend crates link against MLIR and the staged Reussir C API, so they are
 # excluded from the default `cargo build`; build them explicitly with
 # `cargo build -p reussir-backend` (the CMake build wires up the needed env).
-default-members = ["runtime", "crates/reussir-syntax"]
+default-members = ["crates/reussir-rt", "crates/reussir-syntax"]
 
 [workspace.package]
 version = "0.1.0"

@@ -40,7 +40,9 @@ impl<T> Nullable<T> {
     }
     pub fn to_option(self) -> StdOption<T> {
         let moved = ManuallyDrop::new(self);
-        moved.ptr.map(|ptr| unsafe { NonNull::from(&ptr).cast::<T>().read() })
+        moved
+            .ptr
+            .map(|ptr| unsafe { NonNull::from(&ptr).cast::<T>().read() })
     }
     pub fn take(&mut self) -> StdOption<T> {
         let result = std::mem::replace(self, Self::null());

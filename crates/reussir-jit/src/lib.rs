@@ -5,7 +5,13 @@
 //! incrementally and resolved against one another. It ingests modules already
 //! lowered to the LLVM dialect — typically the output of
 //! `reussir_backend::pipeline::run_lowering_pipeline` — translating them to LLVM
-//! IR, and resolves runtime symbols from the Reussir runtime shared library.
+//! IR.
+//!
+//! Runtime symbols (`__reussir_allocate`, …) are resolved from the `reussir-rt`
+//! runtime linked directly into the JIT: [`OrcJit::with_runtime`] defines them
+//! in-process, so there is no runtime shared library to locate or load.
+//! [`OrcJit::add_library`] and [`runtime_library_path`] remain for resolving an
+//! out-of-process shared library when that is preferred.
 //!
 //! This replaces MLIR's one-shot `ExecutionEngine`: a single `OrcJit` hosts many
 //! modules with cross-module symbol resolution, which is what REPL-style use and

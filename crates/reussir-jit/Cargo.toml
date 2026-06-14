@@ -18,6 +18,12 @@ llvm-sys.workspace = true
 # Links libReussirCAPI (the JIT codegen helper: custom LLVM passes + TPDE) and
 # its TPDE/pass archives into the final binary; see its build.rs.
 reussir-backend-sys = { path = "../reussir-backend-sys" }
+# The Reussir runtime, linked directly into the JIT so its `__reussir_*` symbols
+# are resolvable in-process (see `OrcJit::define_runtime_symbols`) without
+# locating and loading the runtime shared library from disk. `default-features =
+# false` keeps the lean system allocator and avoids overriding the global
+# allocator of anything that links the JIT.
+reussir-rt = { path = "../reussir-rt", default-features = false }
 tracing.workspace = true
 
 [dev-dependencies]
