@@ -148,13 +148,7 @@ mod tests {
     #[test]
     fn mangle_golden_vectors() {
         // Pinned to catch any endianness, word-order, or base-62 regression in
-        // the full hash -> mangle chain.
-        //
-        // These intentionally differ from the original frontend's recorded
-        // vectors: that frontend only hashed the first 64 bits of the digest (a
-        // `Storable` readback bug read words 1-3 out of bounds, where they
-        // happened to be zero). We use the full 256-bit BLAKE3 digest, so these
-        // share only the leading word-0 digits with the old output.
+        // the full 256-bit hash -> mangle chain.
         assert_eq!(
             StringToken::from_text("hello world").mangle(),
             "_RNvC22REUSSIR_STRING_LITERAL43wgb3YCIRgEGO74ZP4LIXuJT1KMGLHopSegm5ygtxszP"
