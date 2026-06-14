@@ -1,10 +1,10 @@
 use std::env;
 use std::path::PathBuf;
 
-// Locates the directory holding the staged Reussir C API shared libraries
-// (libReussirCAPI.so and the fabricated libMLIR-C.so). CMake sets
-// REUSSIR_CAPI_LIB_DIR when it drives the build; a direct `cargo` invocation
-// falls back to the in-tree `build/lib` next to the workspace root.
+// Locates the directory holding the staged Reussir static archives
+// (libReussirCAPI.a and libMLIRReussir.a). CMake sets REUSSIR_CAPI_LIB_DIR when
+// it drives the build; a direct `cargo` invocation falls back to the in-tree
+// `build/lib` next to the workspace root.
 fn capi_lib_dir() -> PathBuf {
     if let Ok(dir) = env::var("REUSSIR_CAPI_LIB_DIR") {
         return PathBuf::from(dir);
@@ -15,12 +15,15 @@ fn capi_lib_dir() -> PathBuf {
 
 fn main() {
     let lib_dir = capi_lib_dir();
-    // Link directives propagate to dependent crates, so the link search path and
-    // the libReussirCAPI dependency are declared here. Runtime search paths
-    // (rpath) cannot propagate and are emitted by each final-artifact crate's
-    // own build script (see reussir-backend/build.rs).
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=ReussirCAPI");
+
+    // The Reussir dialect is linked statically into the same binary as mlir-sys'
+    // static MLIR. ReussirCAPI carries the dialect handle; MLIRReussir is whole-
+    // archived so the dialect's op/type/attr registrations are retained even
+    // though only the handle symbol is referenced directly. Both are emitted
+    // before mlir-sys' MLIR archives so their MLIR references resolve.
+    println!("cargo:rustc-link-lib=static=ReussirCAPI");
+    println!("cargo:rustc-link-lib=static:+whole-archive=MLIRReussir");
 
     println!("cargo:rerun-if-env-changed=REUSSIR_CAPI_LIB_DIR");
 }
