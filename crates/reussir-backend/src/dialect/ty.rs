@@ -30,12 +30,12 @@ pub fn raw_ptr(element: Type) -> Type {
 }
 
 /// Creates a `!reussir.token<align: …, size: …>` type.
-pub fn token(context: &Context, align: usize, size: usize) -> Type {
+pub fn token(context: &Context, align: usize, size: usize) -> Type<'_> {
     unsafe { Type::from_raw(sys::reussirTokenTypeGet(context.to_raw(), align, size)) }
 }
 
 /// Creates a `!reussir.region` type.
-pub fn region(context: &Context) -> Type {
+pub fn region(context: &Context) -> Type<'_> {
     unsafe { Type::from_raw(sys::reussirRegionTypeGet(context.to_raw())) }
 }
 
@@ -142,7 +142,7 @@ pub fn ffi_object<'c>(
 }
 
 /// Creates a `!reussir.str<lifeScope>` type.
-pub fn str(context: &Context, life_scope: ReussirLifeScope) -> Type {
+pub fn str(context: &Context, life_scope: ReussirLifeScope) -> Type<'_> {
     unsafe { Type::from_raw(sys::reussirStrTypeGet(context.to_raw(), life_scope)) }
 }
 
