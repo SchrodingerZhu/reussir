@@ -3,15 +3,14 @@
 //! The pipeline is:
 //!
 //! 1. [`lexer`] — a [`logos`]-generated tokenizer (XID identifiers,
-//!    Haskell-compatible string and number literals);
+//!    string and number literals);
 //! 2. `parser` — an event-driven recursive-descent parser with Pratt
 //!    expression parsing, speculative parsing for the generic-argument
 //!    ambiguity, structural error recovery, and [`stacker`]-guarded
-//!    recursion; it accepts the same language as the Haskell frontend
-//!    (`Reussir.Parser`);
+//!    recursion;
 //! 3. a lossless [`cstree`] green tree interned with [`lasso`];
-//! 4. [`ast`] — lowering of the CST to the aeson-compatible JSON encoding
-//!    consumed (and produced) by the Haskell frontend;
+//! 4. [`ast`] — lowering of the CST to the JSON encoding consumed (and
+//!    produced) by the frontend;
 //! 5. [`diagnostics`] — best-effort error reporting rendered with
 //!    [`ariadne`].
 
@@ -36,12 +35,12 @@ impl Parse {
         self.errors.is_empty()
     }
 
-    /// Lower the tree to the aeson-compatible JSON document of the program
-    /// (`Prog = [Stmt]` on the Haskell side).
+    /// Lower the tree to the JSON document of the program (a list of
+    /// statements).
     ///
-    /// This is a verification oracle for cross-checking against the Haskell
-    /// frontend, not part of the elaboration pipeline, so it requires a
-    /// clean parse: call it only when [`Parse::ok`] holds. Lowering a tree
+    /// This is a verification oracle for cross-checking against the frontend,
+    /// not part of the elaboration pipeline, so it requires a clean parse:
+    /// call it only when [`Parse::ok`] holds. Lowering a tree
     /// that still contains error nodes panics (the recovery shape is not a
     /// valid AST).
     pub fn to_json(&self, map: &SourceMap) -> serde_json::Value {

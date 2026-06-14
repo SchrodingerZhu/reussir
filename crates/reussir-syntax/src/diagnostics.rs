@@ -9,9 +9,9 @@ pub struct ParseError {
     pub message: String,
 }
 
-/// Maps byte offsets to character (Unicode scalar) offsets. The Haskell
-/// frontend records megaparsec offsets, which count characters, so all
-/// externally visible spans go through this table.
+/// Maps byte offsets to character (Unicode scalar) offsets. The frontend
+/// records character offsets, so all externally visible spans go through this
+/// table.
 pub struct SourceMap {
     /// `byte_to_char[b]` is the number of chars strictly before byte `b`.
     byte_to_char: Vec<u32>,

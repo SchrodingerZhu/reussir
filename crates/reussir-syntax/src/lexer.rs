@@ -6,7 +6,7 @@
 //! * `//` line comments and (non-nesting) `/* ... */` block comments,
 //! * integers are plain digit runs; floats are digit runs with a fraction
 //!   and/or exponent (`1.5`, `1e3`, `2.5e-7`),
-//! * strings are double-quoted with Haskell-style escapes (validated here,
+//! * strings are double-quoted with backslash escapes (validated here,
 //!   decoded in [`crate::ast`]).
 //!
 //! Keyword policy: only the words that introduce syntactic forms become

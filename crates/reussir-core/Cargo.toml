@@ -1,0 +1,13 @@
+[package]
+name = "reussir-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core language representation for Reussir"
+
+[lib]
+name = "reussir_core"
+
+[dependencies]
+blake3.workspace = true
+rapidhash.workspace = true
