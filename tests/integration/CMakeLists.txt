@@ -43,6 +43,7 @@ set(reussir_compiler_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-compiler${CM
 set(reussir_repl_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-repl${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_parser_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-parser${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
+set(reussir_bytecode_demo_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-bytecode-demo${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_surface_verify_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-surface-verify${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rt_asan_path ${REUSSIR_RT_ASAN_LIBRARY})
 set(reussir_rt_lsan_path ${REUSSIR_RT_LSAN_LIBRARY})
@@ -88,7 +89,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
-  DEPENDS reussir-opt reussir-rt reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser reussir-syntax reussir-surface-verify)
+  DEPENDS reussir-opt reussir-rt reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser reussir-syntax reussir-bytecode-demo reussir-surface-verify)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer

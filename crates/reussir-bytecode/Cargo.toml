@@ -1,0 +1,18 @@
+[package]
+name = "reussir-bytecode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Direct MLIR bytecode (.mlirbc) emitter for Reussir: a bump-allocated MLIR IR builder that writes the binary bytecode container without linking against MLIR"
+
+[lib]
+name = "reussir_bytecode"
+
+[dependencies]
+stumpalo.workspace = true
+rustc-hash.workspace = true
+palc.workspace = true
+
+[[bin]]
+name = "reussir-bytecode-demo"
+path = "src/bin/reussir-bytecode-demo/main.rs"

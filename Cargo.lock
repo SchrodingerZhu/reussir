@@ -437,6 +437,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "readme-rustdocifier"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ad765b21a08b1a8e5cdce052719188a23772bcbefb3c439f0baaf62c56ceac"
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,6 +476,15 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "reussir-bytecode"
+version = "0.1.0"
+dependencies = [
+ "palc",
+ "rustc-hash",
+ "stumpalo",
+]
 
 [[package]]
 name = "reussir-rt"
@@ -625,6 +640,16 @@ dependencies = [
  "libc",
  "psm",
  "windows-sys",
+]
+
+[[package]]
+name = "stumpalo"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71a9e0a78a61853dbfaf5c7662d91a1b4ef87aa0ac7aa576485bf67c47fc9774"
+dependencies = [
+ "readme-rustdocifier",
+ "rustc_version",
 ]
 
 [[package]]
