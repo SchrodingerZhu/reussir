@@ -64,6 +64,42 @@ fn pass(raw: sys::mlir_sys::MlirPass) -> Pass {
     unsafe { Pass::from_raw(raw) }
 }
 
+/// A small DSL describing the lowering pipeline as a declarative list of steps,
+/// so the layout reads top-to-bottom instead of being buried in builder calls.
+///
+/// Each step is one of:
+/// * `module: <factory>;` — a module-level pass;
+/// * `func: <factory>;` — a pass nested under `func.func`;
+/// * `if <cond> => { <steps> }` — a group run only when `<cond>` holds.
+///
+/// `<factory>` is a Reussir C API pass factory (an `unsafe` call); the macro
+/// wraps each one and hands the resulting [`Pass`] to the pass manager. The
+/// first argument names the [`PassManager`] to build into.
+macro_rules! lowering_pipeline {
+    // Done.
+    ($pm:ident) => {};
+    ($pm:ident,) => {};
+    // Module-level pass.
+    ($pm:ident, module: $factory:expr; $($rest:tt)*) => {{
+        // SAFETY: each factory returns a freshly created, owned MlirPass.
+        $pm.add_pass(pass(unsafe { $factory }));
+        lowering_pipeline!($pm, $($rest)*);
+    }};
+    // Pass nested under `func.func`.
+    ($pm:ident, func: $factory:expr; $($rest:tt)*) => {{
+        // SAFETY: each factory returns a freshly created, owned MlirPass.
+        $pm.nested_under("func.func").add_pass(pass(unsafe { $factory }));
+        lowering_pipeline!($pm, $($rest)*);
+    }};
+    // Group of steps gated on a condition.
+    ($pm:ident, if $cond:expr => { $($body:tt)* } $($rest:tt)*) => {{
+        if $cond {
+            lowering_pipeline!($pm, $($body)*);
+        }
+        lowering_pipeline!($pm, $($rest)*);
+    }};
+}
+
 /// Runs the full Reussir lowering pipeline on `module`, leaving it in the LLVM
 /// dialect ready for translation to LLVM IR.
 pub fn run_lowering_pipeline(
@@ -73,69 +109,50 @@ pub fn run_lowering_pipeline(
 ) -> Result<(), melior::Error> {
     let manager = PassManager::new(context);
 
-    // SAFETY: every factory returns an owned MlirPass handed to the manager.
-    unsafe {
-        if options.opt.runs_optimization() {
-            if options.opt == OptLevel::Aggressive {
-                manager.add_pass(pass(sys::reussirCreateUniqueCarryingRecursionAnalysisPass()));
+    lowering_pipeline!(manager,
+        // Optimization-only prologue.
+        if options.opt.runs_optimization() => {
+            if options.opt == OptLevel::Aggressive => {
+                module: sys::reussirCreateUniqueCarryingRecursionAnalysisPass();
             }
-            manager.add_pass(pass(sys::reussirCreateDefaultInlinerPass()));
+            module: sys::reussirCreateDefaultInlinerPass();
         }
 
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateTokenInstantiationPass()));
-        manager.add_pass(pass(sys::reussirCreateClosureOutliningPass()));
-        manager.add_pass(pass(sys::reussirCreateRegionPatternsPass()));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateIncDecCancellationPass()));
-        manager.add_pass(pass(sys::reussirCreateRcDecrementExpansionPass()));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateInferVariantTagPass()));
-        manager.add_pass(pass(sys::reussirCreateAcquireDropExpansionPass(
-            false, false,
-        )));
-        manager.add_pass(pass(sys::reussirCreateSCFOpsLoweringPass()));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateIncDecCancellationPass()));
+        // Reussir-level transformation and analysis.
+        func:   sys::reussirCreateTokenInstantiationPass();
+        module: sys::reussirCreateClosureOutliningPass();
+        module: sys::reussirCreateRegionPatternsPass();
+        func:   sys::reussirCreateIncDecCancellationPass();
+        module: sys::reussirCreateRcDecrementExpansionPass();
+        func:   sys::reussirCreateInferVariantTagPass();
+        module: sys::reussirCreateAcquireDropExpansionPass(false, false);
+        module: sys::reussirCreateSCFOpsLoweringPass();
+        func:   sys::reussirCreateIncDecCancellationPass();
 
         // Second acquire/drop expansion phase: expand decrements and outline
         // record drops.
-        manager.add_pass(pass(sys::reussirCreateAcquireDropExpansionPass(true, true)));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateTokenReusePass(
-                options.reuse_token_across_call,
-            )));
-        manager.add_pass(pass(sys::reussirCreateSCFOpsLoweringPass()));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateRcCreateSinkPass()));
-        manager
-            .nested_under("func.func")
-            .add_pass(pass(sys::reussirCreateRcCreateFusionPass()));
-        manager.add_pass(pass(sys::reussirCreateTRMCRecursionAnalysisPass()));
-        manager.add_pass(pass(sys::reussirCreateCompilePolymorphicFFIPass(false)));
+        module: sys::reussirCreateAcquireDropExpansionPass(true, true);
+        func:   sys::reussirCreateTokenReusePass(options.reuse_token_across_call);
+        module: sys::reussirCreateSCFOpsLoweringPass();
+        func:   sys::reussirCreateRcCreateSinkPass();
+        func:   sys::reussirCreateRcCreateFusionPass();
+        module: sys::reussirCreateTRMCRecursionAnalysisPass();
+        module: sys::reussirCreateCompilePolymorphicFFIPass(false);
 
-        if options.enable_invariant_analysis {
-            manager
-                .nested_under("func.func")
-                .add_pass(pass(sys::reussirCreateInvariantGroupAnalysisPass()));
+        if options.enable_invariant_analysis => {
+            func: sys::reussirCreateInvariantGroupAnalysisPass();
         }
 
         // Lower to the LLVM dialect.
-        manager.add_pass(pass(sys::reussirCreateCanonicalizerPass()));
-        manager.add_pass(pass(sys::reussirCreateControlFlowSinkPass()));
-        manager.add_pass(pass(sys::reussirCreateSCFToControlFlowPass()));
-        manager.add_pass(pass(sys::reussirCreateBasicOpsLoweringPass()));
-        manager.add_pass(pass(sys::reussirCreateConvertToLLVMPass()));
-        manager.add_pass(pass(sys::reussirCreateReconcileUnrealizedCastsPass()));
-        manager.add_pass(pass(sys::reussirCreateCSEPass()));
-        manager.add_pass(pass(sys::reussirCreateCanonicalizerPass()));
-    }
+        module: sys::reussirCreateCanonicalizerPass();
+        module: sys::reussirCreateControlFlowSinkPass();
+        module: sys::reussirCreateSCFToControlFlowPass();
+        module: sys::reussirCreateBasicOpsLoweringPass();
+        module: sys::reussirCreateConvertToLLVMPass();
+        module: sys::reussirCreateReconcileUnrealizedCastsPass();
+        module: sys::reussirCreateCSEPass();
+        module: sys::reussirCreateCanonicalizerPass();
+    );
 
     manager.run(module)
 }
