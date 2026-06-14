@@ -20,8 +20,3 @@ doctest = false
 melior = { workspace = true, features = ["ods-dialects", "helpers"] }
 reussir-backend-sys = { path = "../reussir-backend-sys" }
 tracing.workspace = true
-
-[target.'cfg(unix)'.dev-dependencies]
-# Used by the JIT example tests to load the Reussir runtime into the global
-# symbol namespace (correct per-platform RTLD flags + dlopen linking).
-libc = "0.2"

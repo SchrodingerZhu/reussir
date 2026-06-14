@@ -1,17 +1,14 @@
 //! End-to-end examples: build Reussir IR with the high-level wrappers
 //! ([`reussir_backend::dialect`] op builders + [`reussir_backend::dialect::ty`]
 //! type constructors), lower it with the Reussir pipeline, and execute it
-//! through the [`Jit`].
+//! through the [`OrcJit`].
 //!
 //! Each test constructs a small `func.func` out of Reussir operations, lowers it
-//! to the LLVM dialect, JIT-compiles it (with the Reussir runtime library loaded
-//! so allocator calls resolve), and asserts on the value it returns.
-//!
-//! These tests preload the runtime via `dlopen`, so they only run on Unix.
-#![cfg(unix)]
+//! to the LLVM dialect, adds it to a persistent ORC session (with the Reussir
+//! runtime library loaded so allocator calls resolve), looks the function up and
+//! calls it directly through the C ABI.
 
 use reussir_backend::dialect::{self, ty};
-use reussir_backend::jit::Jit;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::{arith, func};
 use reussir_backend::melior::ir::attribute::{
@@ -21,27 +18,13 @@ use reussir_backend::melior::ir::block::BlockLike;
 use reussir_backend::melior::ir::operation::{OperationBuilder, OperationLike};
 use reussir_backend::melior::ir::r#type::FunctionType;
 use reussir_backend::melior::ir::{
-    Attribute, Block, Identifier, Location, Module, Operation, Region, RegionLike, Type, Value,
+    Block, Identifier, Location, Module, Operation, Region, RegionLike, Type, Value,
 };
 use reussir_backend::pipeline::{LoweringOptions, run_lowering_pipeline};
+use reussir_jit::{OptLevel, OrcJit};
 
-// Absolute path to the Reussir runtime shared library, resolved relative to the
-// crate at build time so it is found regardless of the test's working directory.
-fn runtime_library() -> String {
-    let ext = if cfg!(target_os = "macos") {
-        "dylib"
-    } else {
-        "so"
-    };
-    format!(
-        "{}/../../build/lib/libreussir_rt.{ext}",
-        env!("CARGO_MANIFEST_DIR")
-    )
-}
-
-// Adds a nullary, C-interface `func.func @name() -> result_type` whose body is
-// produced by `body` (which must terminate the block, e.g. with `func.return`)
-// to `module`.
+// Adds a nullary `func.func @name() -> result_type` whose body is produced by
+// `body` (which must terminate the block, e.g. with `func.return`) to `module`.
 fn add_function<'c>(
     context: &'c Context,
     module: &Module<'c>,
@@ -61,12 +44,7 @@ fn add_function<'c>(
         StringAttribute::new(context, name),
         TypeAttribute::new(FunctionType::new(context, &[], &[result_type]).into()),
         region,
-        // `llvm.emit_c_interface` lets the engine invoke it by the packed ABI
-        // used by `Jit::invoke_packed`.
-        &[(
-            Identifier::new(context, "llvm.emit_c_interface"),
-            Attribute::parse(context, "unit").unwrap(),
-        )],
+        &[],
         location,
     );
     module.body().append_operation(function);
@@ -83,11 +61,11 @@ fn result_of<'c, 'a>(block: &'a Block<'c>, operation: impl Into<Operation<'c>>) 
         .into()
 }
 
-// Builds a `reussir.rc.create` that takes only a value (no token/region). The
-// op carries `AttrSizedOperandSegments`, and melior's generated builder does not
-// populate `operandSegmentSizes`, so we construct it directly and set the
-// segment sizes ([value, token, region] = [1, 0, 0]). The pipeline's
-// token-instantiation pass supplies the missing allocation token.
+// Builds a `reussir.rc.create` that takes only a value (no token/region). The op
+// carries `AttrSizedOperandSegments`, and melior's generated builder does not
+// populate `operandSegmentSizes`, so we construct it directly and set the segment
+// sizes ([value, token, region] = [1, 0, 0]). The pipeline's token-instantiation
+// pass supplies the missing allocation token.
 fn rc_create_value<'c, 'a>(
     context: &'c Context,
     block: &'a Block<'c>,
@@ -107,46 +85,48 @@ fn rc_create_value<'c, 'a>(
     block.append_operation(operation).result(0).unwrap().into()
 }
 
-// Loads the Reussir runtime into the global symbol namespace so the JIT's
-// process symbol generator can resolve `__reussir_allocate` and friends. (The
-// engine's `shared_library_paths` alone do not expose them on this platform.)
-// `libc` supplies the correct per-platform `RTLD_*` flags and dlopen linking.
-fn preload_runtime() {
-    let path = std::ffi::CString::new(runtime_library()).unwrap();
-    let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
-    assert!(
-        !handle.is_null(),
-        "failed to load the Reussir runtime library"
-    );
+// Locates the Reussir runtime shared library for these tests.
+//
+// TODO: `CARGO_MANIFEST_DIR` only happens to sit next to the CMake `build/`
+// tree in this checkout — it is a build-time hint, not where the runtime ships
+// in a real install. A production lookup should go through an explicit
+// mechanism (e.g. `REUSSIR_RT_LIBRARY` / the install layout, as
+// `reussir_jit::runtime_library_path` does) rather than the crate manifest dir.
+fn runtime_library() -> String {
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    format!(
+        "{}/../../build/lib/libreussir_rt.{ext}",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
-// Lowers `module` to the LLVM dialect and returns a JIT with the Reussir runtime
-// loaded.
-fn lower_and_jit(context: &Context, module: &mut Module) -> Jit {
-    assert!(
-        module.as_operation().verify(),
-        "constructed module should verify before lowering"
-    );
+// Lowers `module` to the LLVM dialect and adds it to a fresh ORC session with the
+// Reussir runtime loaded.
+fn jit_module(context: &Context, module: &mut Module) -> OrcJit {
     run_lowering_pipeline(context, module, &LoweringOptions::default())
         .expect("lowering pipeline should succeed");
     assert!(
         module.as_operation().verify(),
         "lowered module should verify"
     );
-    // The runtime is loaded into the global namespace (see `preload_runtime`),
-    // so no per-engine shared libraries are needed for symbol resolution.
-    preload_runtime();
-    Jit::new(module, 2, &[])
+
+    let jit = OrcJit::new().expect("create JIT");
+    jit.add_library(&runtime_library())
+        .expect("load the Reussir runtime");
+    jit.add_module(module, OptLevel::Default)
+        .expect("add module to JIT");
+    jit
 }
 
-// Invokes a nullary function returning a 64-bit-sized scalar and reads it back.
-fn call_returning_i64(jit: &Jit, name: &str) -> i64 {
-    let mut result: i64 = 0;
-    unsafe {
-        jit.invoke_packed(name, &mut [&mut result as *mut i64 as *mut ()])
-            .expect("invocation should succeed");
-    }
-    result
+// Looks up a nullary function returning a 64-bit-sized scalar and calls it.
+fn call_returning_i64(jit: &OrcJit, name: &str) -> i64 {
+    let address = jit.lookup(name).expect("symbol should be found");
+    let function: extern "C" fn() -> i64 = unsafe { std::mem::transmute(address as usize) };
+    function()
 }
 
 /// Example 1: allocate and free a memory token through the runtime allocator.
@@ -176,13 +156,13 @@ fn token_alloc_free_round_trip() {
         block.append_operation(func::r#return(&[zero], location));
     });
 
-    let jit = lower_and_jit(&context, &mut module);
+    let jit = jit_module(&context, &mut module);
     assert_eq!(call_returning_i64(&jit, "tok"), 0);
 }
 
 /// Example 2: a manual heap round-trip with no reference counting. Allocate a
-/// token, reinterpret it as a typed reference, store 42 through it, load the
-/// value back, then free the token. Exercises `reussir.token.alloc`,
+/// token, reinterpret it as a typed reference, store 42 through it, load the value
+/// back, then free the token. Exercises `reussir.token.alloc`,
 /// `reussir.token.reinterpret`, `reussir.ref.store`, `reussir.ref.load` and
 /// `reussir.token.free`.
 #[test]
@@ -224,7 +204,7 @@ fn token_reinterpret_store_load() {
         block.append_operation(func::r#return(&[loaded], location));
     });
 
-    let jit = lower_and_jit(&context, &mut module);
+    let jit = jit_module(&context, &mut module);
     assert_eq!(call_returning_i64(&jit, "store_load"), 42);
 }
 
@@ -258,7 +238,7 @@ fn rc_create_fetch_refcount() {
         block.append_operation(func::r#return(&[count], location));
     });
 
-    let jit = lower_and_jit(&context, &mut module);
+    let jit = jit_module(&context, &mut module);
     // `index` is pointer-sized; on a 64-bit host it reads back as an i64.
     assert_eq!(call_returning_i64(&jit, "rc_refcount"), 1);
 }
