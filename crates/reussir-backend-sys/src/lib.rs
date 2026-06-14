@@ -9,9 +9,25 @@
 
 pub use mlir_sys;
 
-use core::ffi::c_int;
+use core::ffi::{c_char, c_int};
 
 use mlir_sys::{MlirContext, MlirDialectHandle, MlirDialectRegistry, MlirModule, MlirPass};
+
+// Opaque LLVM-C handles used by the bitcode-gathering helper. The next stage of
+// the port wires in `llvm-sys`; until then these are declared as opaque pointers
+// so the C API surface is complete and linkable, matching `llvm-c/Types.h`.
+#[repr(C)]
+pub struct LlvmOpaqueModule {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct LlvmOpaqueContext {
+    _private: [u8; 0],
+}
+/// Mirrors `LLVMModuleRef`.
+pub type LLVMModuleRef = *mut LlvmOpaqueModule;
+/// Mirrors `LLVMContextRef`.
+pub type LLVMContextRef = *mut LlvmOpaqueContext;
 
 unsafe extern "C" {
     //==-- Dialect registration --==//
@@ -67,6 +83,15 @@ unsafe extern "C" {
     /// Monomorphizes and compiles polymorphic FFI operations in the module.
     /// Returns true on success.
     pub fn reussirCompilePolymorphicFFI(module: MlirModule, optimized: bool) -> bool;
+
+    /// Gathers the LLVM bitcode modules attached to compiled operations into a
+    /// single LLVM module owned by `context`. Returns null on failure; otherwise
+    /// the caller owns the returned module.
+    pub fn reussirGatherCompiledModules(
+        module: MlirModule,
+        context: LLVMContextRef,
+        data_layout: *const c_char,
+    ) -> LLVMModuleRef;
 
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;

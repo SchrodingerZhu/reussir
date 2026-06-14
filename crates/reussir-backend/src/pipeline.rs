@@ -51,7 +51,9 @@ impl Default for LoweringOptions {
         Self {
             opt: OptLevel::Default,
             reuse_token_across_call: false,
-            enable_invariant_analysis: true,
+            // Off by default, mirroring the C++ `createLoweringPipeline`
+            // (`enableInvariantAnalysis = false`).
+            enable_invariant_analysis: false,
         }
     }
 }
