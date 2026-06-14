@@ -18,9 +18,9 @@ pub struct Encoded {
 }
 
 impl Encoded {
-    /// The number of digits.
+    /// The number of digits. The alphabet is ASCII, so this is the byte length.
     pub fn len(&self) -> usize {
-        self.digits.chars().count()
+        self.digits.len()
     }
 
     /// Whether the encoding is empty. It never is — every number encodes to at
