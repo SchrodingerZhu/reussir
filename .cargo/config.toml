@@ -1,0 +1,14 @@
+# snmalloc-sys vendors a copy of snmalloc whose CMake build compiles with
+# `/WX` (warnings-as-errors) under MSVC. Recent MSVC toolchains (VS 2022 17.x /
+# VS 18, 14.5x) emit C4864 ("expected 'template' keyword before dependent
+# template name") inside snmalloc's `corealloc.h`, which `/WX` promotes to a
+# hard error and breaks the Windows (MSVC) build of `reussir-rt`.
+#
+# Disable just that warning for the MSVC target. `/wd<n>` removes the warning
+# entirely, so `/WX` cannot promote it regardless of flag order. The cc/cmake
+# build crates fold these target-prefixed vars into `CMAKE_CXX_FLAGS`, and the
+# target suffix scopes them to MSVC only — the gnu/gnullvm (clang) Windows
+# builds and all other platforms are unaffected.
+[env]
+CFLAGS_x86_64_pc_windows_msvc = "/wd4864"
+CXXFLAGS_x86_64_pc_windows_msvc = "/wd4864"
