@@ -1,17 +1,15 @@
-//! Lowering of the lossless CST to the aeson-compatible JSON encoding of
-//! the Haskell surface AST (`Reussir.Parser.Types.*` with the instances in
-//! `Reussir.Parser.Serialization`).
+//! Lowering of the lossless CST to the JSON encoding of the surface AST.
 //!
-//! Encoding conventions (verified empirically against aeson):
+//! Encoding conventions:
 //!
 //! * sum types: `{"tag": "Ctor", "contents": ...}` with a bare value for a
 //!   single field, an array for several, and no `contents` key for nullary
 //!   constructors in mixed sums;
 //! * all-nullary sums are plain strings (`"Public"`, `"Add"`);
 //! * single-constructor records are plain objects keyed by field name;
-//! * tuples are arrays, `Maybe` is `null` or the value;
-//! * spans (`WithSpan`) are `{"spanValue": v, "spanStartOffset": n,
-//!   "spanEndOffset": n}` with *character* offsets, matching megaparsec.
+//! * tuples are arrays, an optional value is `null` or the value;
+//! * spans are `{"spanValue": v, "spanStartOffset": n, "spanEndOffset": n}`
+//!   with *character* offsets.
 
 use serde_json::{Number, Value, json};
 
@@ -426,7 +424,7 @@ impl Emitter<'_> {
         let kind_json = match kind {
             Some(k) => self.pattern_kind(k),
             // `{ x }` shorthand binds the field to a variable of the same
-            // name (see `parseArg` in the Haskell grammar).
+            // name.
             None => tagged(
                 "BindPat",
                 Value::String(field.expect("shorthand field name").into()),
@@ -443,7 +441,7 @@ impl Emitter<'_> {
     fn expr(&self, node: &ResolvedNode) -> Value {
         let inner = match node.kind() {
             ParenExpr => {
-                // Parentheses are transparent in the Haskell AST.
+                // Parentheses are transparent in the AST.
                 return self.expr(expr_children(node).next().expect("inner expression"));
             }
             LiteralExpr => {
@@ -630,7 +628,7 @@ impl Emitter<'_> {
     }
 
     /// `<T, _, U>` arguments on a path-based expression; `_` becomes `null`
-    /// (the Haskell type is `[Maybe Type]`).
+    /// (the type is a list of optional types).
     fn type_args(&self, node: &ResolvedNode) -> Value {
         let Some(list) = child_node(node, TypeArgList) else {
             return json!([]);
@@ -649,7 +647,7 @@ impl Emitter<'_> {
         )
     }
 
-    /// Flatten the `AccessSeg` children into the Haskell `[Access]` list.
+    /// Flatten the `AccessSeg` children into the list of accesses.
     /// A fused float token like `0.1` contributes two numeric accesses.
     fn access_segs(&self, node: &ResolvedNode) -> Vec<Value> {
         let mut out = Vec::new();
@@ -742,10 +740,10 @@ fn prim_type(text: &str) -> Value {
     }
 }
 
-/// Decode a string literal (including the surrounding quotes) using
-/// Haskell `charLiteral` escape rules: single-character escapes, `\&`
-/// (empty), ASCII mnemonics (`\NUL`, `\SOH`, ..., `\DEL`), and numeric
-/// escapes (`\65`, `\x41`, `\o101`).
+/// Decode a string literal (including the surrounding quotes) using the
+/// surface escape rules: single-character escapes, `\&` (empty), ASCII
+/// mnemonics (`\NUL`, `\SOH`, ..., `\DEL`), and numeric escapes (`\65`,
+/// `\x41`, `\o101`).
 pub fn unescape_string(raw: &str) -> String {
     const MNEMONICS: &[(&str, char)] = &[
         // Longest first so that e.g. `SOH` wins over `SO`.
@@ -839,8 +837,8 @@ pub fn unescape_string(raw: &str) -> String {
                         continue 'outer;
                     }
                 }
-                // Unknown escape: keep the character (the Haskell parser
-                // would have rejected it; lex-level validation flags it).
+                // Unknown escape: keep the character (an invalid escape is
+                // already flagged by lex-level validation).
                 out.push(c);
             }
         }

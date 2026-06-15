@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/reussir-rt",
     "crates/reussir-syntax",
+    "crates/reussir-core",
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
     "crates/reussir-jit",
@@ -10,7 +11,7 @@ members = [
 # The backend crates link against MLIR and the staged Reussir C API, so they are
 # excluded from the default `cargo build`; build them explicitly with
 # `cargo build -p reussir-backend` (the CMake build wires up the needed env).
-default-members = ["crates/reussir-rt", "crates/reussir-syntax"]
+default-members = ["crates/reussir-rt", "crates/reussir-syntax", "crates/reussir-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +20,8 @@ license = "(Apache-2.0 OR MIT)"
 
 [workspace.dependencies]
 ariadne = "0.5"
+blake3 = "1"
+rapidhash = "4.4.1"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
 lasso = "0.7"
 logos = "0.15"

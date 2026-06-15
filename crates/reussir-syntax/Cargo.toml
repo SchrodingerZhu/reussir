@@ -3,7 +3,7 @@ name = "reussir-syntax"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Surface syntax parser for Reussir: lossless CST, error recovery, aeson-compatible JSON AST output"
+description = "Surface syntax parser for Reussir: lossless CST, error recovery, JSON AST output"
 
 [lib]
 name = "reussir_syntax"
