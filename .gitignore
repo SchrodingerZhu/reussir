@@ -4,7 +4,9 @@ crates/**/target
 runtime/target
 rustc-ice-*
 *.profraw
-.cargo
+.cargo/*
+# but keep the checked-in cargo config (build flags for snmalloc on MSVC, etc.)
+!.cargo/config.toml
 
 # Editors / IDEs
 .idea
