@@ -97,6 +97,14 @@ pub struct Instantiation<'tcx> {
 }
 
 impl<'tcx> Instantiation<'tcx> {
+    /// Build an instantiation from explicit `generic ↦ type` pairs (the types
+    /// may be concrete or holes).
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (GenericId, Ty<'tcx>)>) -> Self {
+        Instantiation {
+            map: pairs.into_iter().collect(),
+        }
+    }
+
     pub fn get(&self, generic: GenericId) -> Option<Ty<'tcx>> {
         self.map.get(&generic).copied()
     }
@@ -204,18 +212,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             (TyKind::Hole(h), _) => self.solve(*h, b),
             (_, TyKind::Hole(h)) => self.solve(*h, a),
 
+            // Flexivity is a coloring overlaid on the structural type; it is not
+            // part of unification identity (it is resolved separately).
             (
                 TyKind::Record {
-                    path: p1,
-                    args: a1,
-                    flex: f1,
+                    path: p1, args: a1, ..
                 },
                 TyKind::Record {
-                    path: p2,
-                    args: a2,
-                    flex: f2,
+                    path: p2, args: a2, ..
                 },
-            ) if p1 == p2 && f1 == f2 && a1.len() == a2.len() => {
+            ) if p1 == p2 && a1.len() == a2.len() => {
                 for (x, y) in a1.iter().zip(a2.iter()) {
                     self.unify(*x, *y)?;
                 }
@@ -350,16 +356,12 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
             (
                 TyKind::Record {
-                    path: p1,
-                    args: a1,
-                    flex: f1,
+                    path: p1, args: a1, ..
                 },
                 TyKind::Record {
-                    path: p2,
-                    args: a2,
-                    flex: f2,
+                    path: p2, args: a2, ..
                 },
-            ) if p1 == p2 && f1 == f2 && a1.len() == a2.len() => {
+            ) if p1 == p2 && a1.len() == a2.len() => {
                 for (x, y) in a1.iter().zip(a2.iter()) {
                     self.unify_instantiated(*x, inst, *y)?;
                 }
@@ -398,9 +400,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         }
     }
 
-    /// Rebuild `template` into the arena, replacing its generics by the holes in
-    /// `inst`. This is the *only* substitution, and only happens at instantiation
-    /// boundaries (assigning a generic-bearing template into a hole).
+    /// Instantiate a `template` type under `inst`: rebuild it replacing each
+    /// generic by its binding. The bounded substitution that happens at a use
+    /// site (a call/ctor/field access); never used for ordinary checking.
+    pub fn instantiate_ty(&self, template: Ty<'tcx>, inst: &Instantiation<'tcx>) -> Ty<'tcx> {
+        self.materialize(template, inst)
+    }
+
+    /// Rebuild `template` into the arena, replacing its generics by the bindings
+    /// in `inst`. This is the *only* substitution, and only happens at
+    /// instantiation boundaries.
     fn materialize(&self, template: Ty<'tcx>, inst: &Instantiation<'tcx>) -> Ty<'tcx> {
         match template.kind() {
             TyKind::Generic(g) => inst.get(*g).unwrap_or(template),

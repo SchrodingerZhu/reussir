@@ -59,6 +59,19 @@ impl<'tcx> TraitDb<'tcx> {
         &self.traits[id.0 as usize]
     }
 
+    /// Does holding `have` imply holding `want`? True when they are equal or
+    /// `want` is in `have`'s super-trait closure.
+    pub fn implies(&self, have: TraitId, want: TraitId) -> bool {
+        have == want || self.reaches(self.trait_def(have), want)
+    }
+
+    /// Is `target` in `def`'s transitive super-trait closure?
+    fn reaches(&self, def: &TraitDef<'tcx>, target: TraitId) -> bool {
+        def.supertraits
+            .iter()
+            .any(|s| s.trait_id == target || self.reaches(self.trait_def(s.trait_id), target))
+    }
+
     /// Discharge an obligation, producing evidence.
     pub fn select(
         &self,

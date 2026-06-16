@@ -15,6 +15,8 @@
 // TODO(semi/full): scope `ty`/`infer`/`traits` under `semi::`; add `full::ty`.
 
 pub mod infer;
+pub mod semi;
+pub mod surface;
 pub mod traits;
 pub mod ty;
 pub mod utils;

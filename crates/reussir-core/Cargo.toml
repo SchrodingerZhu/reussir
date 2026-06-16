@@ -13,4 +13,8 @@ blake3.workspace = true
 ena.workspace = true
 rapidhash.workspace = true
 rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 stumpalo.workspace = true
+# The surface AST can be lowered directly from the parser's lossless CST.
+reussir-syntax = { path = "../reussir-syntax" }
