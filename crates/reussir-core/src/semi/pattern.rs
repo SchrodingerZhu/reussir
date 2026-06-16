@@ -45,7 +45,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let mark = self.vars.mark();
             let mut bindings = Vec::new();
             let test = self.check_pattern(pat, scrut_ty, PatVarRef::default(), &mut bindings);
-            if pat.guard.is_some() {
+            if pat.guard().is_some() {
                 self.error(span, "match guards are not yet supported");
             }
             let body = self.check_expr(body, result);
@@ -87,10 +87,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         base: PatVarRef,
         bindings: &mut Vec<(VarId, PatVarRef)>,
     ) -> Test {
-        match &pat.kind {
+        self.check_pattern_kind(&pat.kind(), ty, base, bindings)
+    }
+
+    fn check_pattern_kind(
+        &mut self,
+        kind: &PatternKind,
+        ty: Ty<'tcx>,
+        base: PatVarRef,
+        bindings: &mut Vec<(VarId, PatVarRef)>,
+    ) -> Test {
+        match kind {
             PatternKind::Wildcard => Test::Irrefutable,
             PatternKind::Bind(name) => {
-                let var = self.vars.fresh(name, ty, None);
+                let var = self.vars.fresh(self.sym(*name), ty, None);
                 bindings.push((var, base));
                 Test::Irrefutable
             }
@@ -137,11 +147,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         // The enum is named by the path's qualifier (`Enum::Variant`); fall back
         // to the scrutinee's record name.
+        let want = self.sym(ctor.path.basename);
         let enum_name = ctor
             .path
             .segments
             .last()
-            .map(String::as_str)
+            .map(|s| self.sym(*s))
             .unwrap_or(path);
         let Some(record) = self.records.get(enum_name).cloned() else {
             self.error(None, format!("unknown enum `{enum_name}`"));
@@ -151,8 +162,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(None, format!("`{enum_name}` is not an enum"));
             return Test::Irrefutable;
         };
-        let Some(vidx) = variants.iter().position(|v| v.name == ctor.path.basename) else {
-            self.error(None, format!("no variant `{}`", ctor.path.basename));
+        let Some(vidx) = variants.iter().position(|v| v.name == want) else {
+            self.error(None, format!("no variant `{want}`"));
             return Test::Irrefutable;
         };
         let payload = variants[vidx].fields.clone();
@@ -169,11 +180,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let field_ty = self.infer.instantiate_ty(*decl, &inst);
             let mut sub_base = base.0.clone();
             sub_base.push(i as u32);
-            let sub = surface::Pattern {
-                kind: arg.kind.clone(),
-                guard: None,
-            };
-            let sub_test = self.check_pattern(&sub, field_ty, PatVarRef(sub_base), bindings);
+            let sub_test =
+                self.check_pattern_kind(&arg.kind, field_ty, PatVarRef(sub_base), bindings);
             // Nested refutable sub-patterns are not switched on in Phase 1.
             if !matches!(sub_test, Test::Irrefutable) {
                 self.error(None, "nested refutable patterns are not yet supported");

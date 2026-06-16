@@ -10,7 +10,7 @@ use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub(super) fn check_function(&mut self, func: &surface::Function, span: Option<Span>) {
-        let Some(proto) = self.functions.get(&func.name).cloned() else {
+        let Some(proto) = self.functions.get(self.sym(func.name)).cloned() else {
             return;
         };
         self.enter_function(&proto.generics);
@@ -72,7 +72,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Infer the type of an expression, producing typed HIR.
     pub(super) fn infer_expr(&mut self, e: &surface::Expr) -> Expr<'tcx> {
         let span = Some(e.span());
-        match e.kind() {
+        let kind = e.kind();
+        match &kind {
             surface::ExprKind::ConstExpr(c) => self.infer_const(c, span),
             surface::ExprKind::Var(path) => self.infer_var(path, span),
             surface::ExprKind::ExprSeq(exprs) => self.infer_seq(exprs, span),
@@ -132,10 +133,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_var(&mut self, path: &surface::Path, span: Option<Span>) -> Expr<'tcx> {
         if path.segments.is_empty() {
-            if let Some((id, ty)) = self.vars.lookup(&path.basename) {
+            let name = self.sym(path.basename);
+            if let Some((id, ty)) = self.vars.lookup(name) {
                 return self.mk_expr(ExprKind::Var(id), ty, span);
             }
-            self.error(span, format!("unknown variable `{}`", path.basename));
+            self.error(span, format!("unknown variable `{name}`"));
             return self.poison(span);
         }
         // A qualified path with no arguments: a nullary constructor.
@@ -176,7 +178,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_let(
         &mut self,
-        name: &surface::Spanned<String>,
+        name: &surface::Spanned<reussir_syntax::kind::TokenKey>,
         ty: Option<&(surface::Type, bool)>,
         value: &surface::Expr,
         span: Option<Span>,
@@ -193,12 +195,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         };
         let name_span = Some(name.span());
-        let var = self.vars.fresh(&name.value, var_ty, name_span);
+        let bound = self.sym(name.value).to_owned();
+        let var = self.vars.fresh(&bound, var_ty, name_span);
         let unit = self.tcx.mk_unit();
         self.mk_expr(
             ExprKind::Let {
                 var,
-                name: name.value.clone(),
+                name: bound,
                 span: name_span,
                 value: Box::new(value),
             },
@@ -275,8 +278,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
-        let Some(proto) = self.functions.get(&fc.name.basename).cloned() else {
-            self.error(span, format!("unknown function `{}`", fc.name.basename));
+        let fname = self.sym(fc.name.basename);
+        let Some(proto) = self.functions.get(fname).cloned() else {
+            self.error(span, format!("unknown function `{fname}`"));
             return self.poison(span);
         };
         if proto.is_regional && !self.inside_region {
@@ -288,8 +292,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(
                 span,
                 format!(
-                    "`{}` expects {} argument(s), got {}",
-                    fc.name.basename,
+                    "`{fname}` expects {} argument(s), got {}",
                     proto.params.len(),
                     fc.args.len()
                 ),
@@ -362,6 +365,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(t) => self.eval_type(t),
                 None => self.infer.new_hole_ty(),
             };
+            let name = self.sym(*name);
             let var = self.vars.fresh(name, pty, None);
             params.push((var, pty));
         }
@@ -471,6 +475,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Instantiation::from_pairs(ty_params.iter().map(|(_, g)| *g).zip(args.iter().copied()));
         let (idx, decl_ty, mutable) = match (&fields, acc) {
             (RecordFields::Named(fs), surface::Access::Named(name)) => {
+                let name = self.sym(*name);
                 let i = fs.iter().position(|(n, _, _)| n == name)?;
                 (i, fs[i].1, fs[i].2)
             }
@@ -500,25 +505,27 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         path: &surface::Path,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<String>, surface::Expr)],
+        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
+        let qualifier = path.segments.last().map(|s| self.sym(*s));
+        let basename = self.sym(path.basename);
         // The built-in nullable constructors.
-        if path.segments.last().map(String::as_str) == Some("Nullable") {
-            return self.infer_nullable(&path.basename, args, span);
+        if qualifier == Some("Nullable") {
+            return self.infer_nullable(basename, args, span);
         }
         // An enum variant: `Enum::Variant`.
-        if let Some(enum_name) = path.segments.last() {
-            return self.infer_variant(enum_name, &path.basename, ty_args, args, span);
+        if let Some(enum_name) = qualifier {
+            return self.infer_variant(enum_name, basename, ty_args, args, span);
         }
         // A struct constructor.
-        self.infer_struct(&path.basename, ty_args, args, span)
+        self.infer_struct(basename, ty_args, args, span)
     }
 
     fn infer_nullable(
         &mut self,
         variant: &str,
-        args: &[(Option<String>, surface::Expr)],
+        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
         match variant {
@@ -549,7 +556,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         name: &str,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<String>, surface::Expr)],
+        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(record) = self.records.get(name).cloned() else {
@@ -582,7 +589,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         enum_name: &str,
         variant: &str,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<String>, surface::Expr)],
+        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(record) = self.records.get(enum_name).cloned() else {
@@ -625,7 +632,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn check_ctor_args(
         &mut self,
         name: &str,
-        args: &[(Option<String>, surface::Expr)],
+        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
         field_tys: &[(Option<String>, Ty<'tcx>)],
         span: Option<Span>,
     ) -> Vec<Expr<'tcx>> {
@@ -641,12 +648,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         // Named arguments are matched by field name; positional by order.
         let named = args.iter().any(|(f, _)| f.is_some());
+        let arg_fields: Vec<Option<&str>> = args.iter().map(|(f, _)| f.map(|k| self.sym(k))).collect();
         let mut out = Vec::new();
         if named {
             for (fname, fty) in field_tys {
                 let Some(fname) = fname else { continue };
-                match args.iter().find(|(f, _)| f.as_deref() == Some(fname)) {
-                    Some((_, e)) => out.push(self.check_expr(e, *fty)),
+                match arg_fields.iter().position(|af| *af == Some(fname.as_str())) {
+                    Some(i) => out.push(self.check_expr(&args[i].1, *fty)),
                     None => {
                         self.error(span, format!("missing field `{fname}`"));
                         out.push(self.poison(span));

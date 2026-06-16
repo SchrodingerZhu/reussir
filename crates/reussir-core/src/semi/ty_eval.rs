@@ -17,7 +17,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Evaluate a surface type, coloring concrete regional records as
     /// `Regional` (later refined by [`Elaborator::eval_type_flex`]).
     pub fn eval_type(&mut self, ty: &surface::Type) -> Ty<'tcx> {
-        match ty.kind() {
+        let kind = ty.kind();
+        match &kind {
             TypeKind::TypeIntegral(it) => self.tcx.mk_int(match it {
                 IntegralType::Signed(w) => IntTy::Signed(*w),
                 IntegralType::Unsigned(w) => IntTy::Unsigned(*w),
@@ -45,7 +46,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[surface::Type],
         span: surface::Span,
     ) -> Ty<'tcx> {
-        let name = path.basename.as_str();
+        let name = self.sym(path.basename);
 
         // A bare generic parameter in scope.
         if path.segments.is_empty()

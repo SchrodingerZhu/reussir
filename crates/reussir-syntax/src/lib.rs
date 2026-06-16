@@ -35,6 +35,12 @@ impl Parse {
         self.errors.is_empty()
     }
 
+    /// The interner that resolves token keys (e.g. [`kind::TokenKey`]s stored in
+    /// the typed AST) back into source text.
+    pub fn resolver(&self) -> &dyn kind::Resolver<kind::TokenKey> {
+        &**self.root.resolver()
+    }
+
     /// Lower the tree to the JSON document of the program (a list of
     /// statements).
     ///

@@ -30,16 +30,20 @@ pub mod ty_eval;
 
 pub use ctxt::{DefaultCap, Elaborator, Report, Severity};
 
+use reussir_syntax::kind::{Resolver, TokenKey};
+
 use crate::surface;
 use ty::TyCtxt;
 
 /// Elaborate a whole surface program. Returns the elaborator holding the
-/// collected, type-checked items and any diagnostics.
+/// collected, type-checked items and any diagnostics. `resolver` turns the
+/// surface AST's interned token keys back into source text.
 pub fn elaborate<'a, 'tcx>(
     tcx: &'a TyCtxt<'tcx>,
     program: &surface::Program,
+    resolver: &'a dyn Resolver<TokenKey>,
 ) -> Elaborator<'a, 'tcx> {
-    let mut elab = Elaborator::new(tcx);
+    let mut elab = Elaborator::new(tcx, resolver);
     elab.run(program);
     elab
 }
@@ -56,9 +60,8 @@ mod tests {
         with_tcx(|tcx| {
             let parse = reussir_syntax::parse(source);
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
-            let map = reussir_syntax::diagnostics::SourceMap::new(source);
-            let prog = surface::lower(&parse.root, &map);
-            let elab = elaborate(tcx, &prog);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -145,9 +148,8 @@ mod tests {
         with_tcx(|tcx| {
             let source = "fn bad() -> bool { 1 }";
             let parse = reussir_syntax::parse(source);
-            let map = reussir_syntax::diagnostics::SourceMap::new(source);
-            let prog = surface::lower(&parse.root, &map);
-            let elab = elaborate(tcx, &prog);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(elab.has_errors(), "expected a type mismatch error");
         });
     }
@@ -157,9 +159,8 @@ mod tests {
         with_tcx(|tcx| {
             let source = "regional fn r() -> i32 { 0 }\nfn caller() -> i32 { r() }";
             let parse = reussir_syntax::parse(source);
-            let map = reussir_syntax::diagnostics::SourceMap::new(source);
-            let prog = surface::lower(&parse.root, &map);
-            let elab = elaborate(tcx, &prog);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(
                 elab.reports.iter().any(|r| r.message.contains("regional")),
                 "expected a regional-call error: {:#?}",

@@ -1,6 +1,7 @@
 //! The elaboration context: collected items, global + per-function state, and
 //! the scan/collect driver.
 
+use reussir_syntax::kind::{Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
 use crate::semi::infer::InferCtxt;
@@ -141,6 +142,8 @@ impl<'tcx> VarEnv<'tcx> {
 /// The whole elaborator: global collected state plus per-function working state.
 pub struct Elaborator<'a, 'tcx> {
     pub tcx: &'a TyCtxt<'tcx>,
+    /// Resolves the surface AST's interned token keys back into source text.
+    pub resolver: &'a dyn Resolver<TokenKey>,
     pub traits: TraitDb<'tcx>,
     pub builtins: Builtins,
     pub trait_names: FxHashMap<&'static str, TraitId>,
@@ -161,7 +164,7 @@ pub struct Elaborator<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
-    pub fn new(tcx: &'a TyCtxt<'tcx>) -> Self {
+    pub fn new(tcx: &'a TyCtxt<'tcx>, resolver: &'a dyn Resolver<TokenKey>) -> Self {
         let mut traits = TraitDb::new();
         let builtins = Builtins::register(&mut traits, tcx);
         let trait_names = [
@@ -176,6 +179,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         .collect();
         Elaborator {
             tcx,
+            resolver,
             traits,
             builtins,
             trait_names,
@@ -208,6 +212,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.reports.iter().any(|r| r.severity == Severity::Error)
     }
 
+    /// Resolve a surface token key into its source text. The returned slice is
+    /// tied to the parse, not to `self`, so it composes with `&mut self` calls.
+    pub fn sym(&self, key: TokenKey) -> &'a str {
+        self.resolver.resolve(key)
+    }
+
     // ----- id / generic allocation -----
 
     pub fn fresh_expr_id(&mut self) -> ExprId {
@@ -232,10 +242,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Resolve a bound path (by basename) to a built-in trait.
     pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
-        match self.trait_names.get(path.basename.as_str()) {
+        let name = self.sym(path.basename);
+        match self.trait_names.get(name) {
             Some(&id) => Some(id),
             None => {
-                self.error(span, format!("unknown trait bound `{}`", path.basename));
+                self.error(span, format!("unknown trait bound `{name}`"));
                 None
             }
         }
@@ -267,22 +278,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub fn run(&mut self, program: &surface::Program) {
         for stmt in program {
             if let surface::StmtKind::Record(rec) = stmt.kind() {
-                self.scan_record(rec, span_of(stmt));
+                self.scan_record(&rec, span_of(stmt));
             }
         }
         for stmt in program {
             if let surface::StmtKind::Function(func) = stmt.kind() {
-                self.scan_function(func, span_of(stmt));
+                self.scan_function(&func, span_of(stmt));
             }
         }
         for stmt in program {
             if let surface::StmtKind::Record(rec) = stmt.kind() {
-                self.populate_record(rec);
+                self.populate_record(&rec);
             }
         }
         for stmt in program {
             if let surface::StmtKind::Function(func) = stmt.kind() {
-                self.check_function(func, span_of(stmt));
+                self.check_function(&func, span_of(stmt));
             }
         }
     }
@@ -301,19 +312,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 DefaultCap::Shared
             }
         };
+        let name = self.sym(rec.name).to_owned();
         let record = Record {
-            name: rec.name.clone(),
+            name: name.clone(),
             ty_params,
             kind: rec.kind,
             default_cap,
             fields: None,
             span,
         };
-        if self.records.insert(rec.name.clone(), record).is_some() {
-            self.error(
-                span,
-                format!("record `{}` is defined more than once", rec.name),
-            );
+        if self.records.insert(name.clone(), record).is_some() {
+            self.error(span, format!("record `{name}` is defined more than once"));
         }
     }
 
@@ -324,7 +333,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let params = func
             .params
             .iter()
-            .map(|(name, ty, flex)| (name.clone(), self.eval_type_flex(ty, *flex)))
+            .map(|(name, ty, flex)| (self.sym(*name).to_owned(), self.eval_type_flex(ty, *flex)))
             .collect();
         let return_ty = match &func.return_type {
             Some((ty, flex)) => self.eval_type_flex(ty, *flex),
@@ -332,39 +341,40 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         self.generic_names.clear();
 
+        let name = self.sym(func.name).to_owned();
         let proto = FuncProto {
-            name: func.name.clone(),
+            name: name.clone(),
             generics,
             params,
             return_ty,
             is_regional: func.is_regional,
             span,
         };
-        if self.functions.insert(func.name.clone(), proto).is_some() {
-            self.error(
-                span,
-                format!("function `{}` is defined more than once", func.name),
-            );
+        if self.functions.insert(name.clone(), proto).is_some() {
+            self.error(span, format!("function `{name}` is defined more than once"));
         }
     }
 
     /// Allocate generics for a list of `(name, bounds)` declarations.
     fn collect_generics(
         &mut self,
-        decls: &[(String, Vec<surface::Path>)],
+        decls: &[(TokenKey, Vec<surface::Path>)],
         span: Option<Span>,
     ) -> Vec<(String, GenericId)> {
         decls
             .iter()
             .map(|(name, bounds)| {
+                let name = self.sym(*name).to_owned();
                 let bounds = self.resolve_bounds(bounds, span);
-                (name.clone(), self.fresh_generic(name, bounds))
+                let id = self.fresh_generic(&name, bounds);
+                (name, id)
             })
             .collect()
     }
 
     fn populate_record(&mut self, rec: &surface::Record) {
-        let Some(record) = self.records.get(&rec.name) else {
+        let name = self.sym(rec.name).to_owned();
+        let Some(record) = self.records.get(&name) else {
             return;
         };
         let ty_params = record.ty_params.clone();
@@ -377,7 +387,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 fs.iter()
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
-                        (name.clone(), self.field_ty(ty, *mutable), *mutable)
+                        (self.sym(*name).to_owned(), self.field_ty(ty, *mutable), *mutable)
                     })
                     .collect(),
             ),
@@ -394,7 +404,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|v| {
                         let (name, tys) = &v.value;
                         Variant {
-                            name: name.clone(),
+                            name: self.sym(*name).to_owned(),
                             fields: tys.iter().map(|t| self.eval_type(t)).collect(),
                         }
                     })
@@ -418,7 +428,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         }
 
-        if let Some(r) = self.records.get_mut(&rec.name) {
+        if let Some(r) = self.records.get_mut(&name) {
             r.fields = Some(fields);
         }
     }
