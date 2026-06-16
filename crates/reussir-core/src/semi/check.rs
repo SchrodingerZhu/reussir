@@ -648,7 +648,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         // Named arguments are matched by field name; positional by order.
         let named = args.iter().any(|(f, _)| f.is_some());
-        let arg_fields: Vec<Option<&str>> = args.iter().map(|(f, _)| f.map(|k| self.sym(k))).collect();
+        let arg_fields: Vec<Option<&str>> =
+            args.iter().map(|(f, _)| f.map(|k| self.sym(k))).collect();
         let mut out = Vec::new();
         if named {
             for (fname, fty) in field_tys {

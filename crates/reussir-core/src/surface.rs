@@ -24,8 +24,8 @@ use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind, TokenKey};
 // A handful of variant names collide with surface AST *types* defined in this
 // module; for those the local type wins for the bare name (a glob import has
 // lower priority), and the kind is written as `SyntaxKind::Foo` (or `PathKind`).
-use SyntaxKind::*;
 use SyntaxKind::Path as PathKind;
+use SyntaxKind::*;
 
 // ===== spans =====
 
@@ -409,7 +409,12 @@ impl Type {
             PathType => {
                 let path = child_node(node, PathKind).expect("type path");
                 let args = child_node(node, TypeArgList)
-                    .map(|l| nodes(l).filter(|n| is_type_kind(n.kind())).map(Type::new).collect())
+                    .map(|l| {
+                        nodes(l)
+                            .filter(|n| is_type_kind(n.kind()))
+                            .map(Type::new)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 TypeKind::TypeExpr(path_of(path), args)
             }
@@ -420,7 +425,10 @@ impl Type {
                 // The left-hand side may be a parenthesized argument *list*
                 // (multiple types), which we must not collapse via `Type::new`.
                 let args = if lhs.kind() == ParenTypeList {
-                    nodes(lhs).filter(|n| is_type_kind(n.kind())).map(Type::new).collect()
+                    nodes(lhs)
+                        .filter(|n| is_type_kind(n.kind()))
+                        .map(Type::new)
+                        .collect()
                 } else {
                     vec![Type::new(lhs)]
                 };
@@ -469,7 +477,12 @@ impl Pattern {
 
     pub fn kind(&self) -> PatternKind {
         let k = nodes(&self.node)
-            .find(|n| matches!(n.kind(), WildcardPat | BindPat | SyntaxKind::CtorPat | ConstPat))
+            .find(|n| {
+                matches!(
+                    n.kind(),
+                    WildcardPat | BindPat | SyntaxKind::CtorPat | ConstPat
+                )
+            })
             .expect("pattern kind");
         pattern_kind_of(k)
     }
@@ -515,7 +528,12 @@ fn pattern_kind_of(node: &ResolvedNode) -> PatternKind {
 
 fn pat_arg_of(node: &ResolvedNode) -> PatArg {
     let field = tokens(node).find(|t| t.kind().is_ident_like()).map(key);
-    let kind = nodes(node).find(|n| matches!(n.kind(), WildcardPat | BindPat | SyntaxKind::CtorPat | ConstPat));
+    let kind = nodes(node).find(|n| {
+        matches!(
+            n.kind(),
+            WildcardPat | BindPat | SyntaxKind::CtorPat | ConstPat
+        )
+    });
     let kind = match kind {
         Some(k) => pattern_kind_of(k),
         // `{ x }` shorthand binds the field to a variable of the same name.
@@ -596,7 +614,9 @@ impl Expr {
     pub fn kind(&self) -> ExprKind {
         let node = &self.node;
         match node.kind() {
-            LiteralExpr => ExprKind::ConstExpr(constant(tokens(node).next().expect("literal token"))),
+            LiteralExpr => {
+                ExprKind::ConstExpr(constant(tokens(node).next().expect("literal token")))
+            }
             BlockExpr => ExprKind::ExprSeq(expr_children(node).map(Expr::new).collect()),
             IfExpr => {
                 let mut parts = expr_children(node);
@@ -635,9 +655,9 @@ impl Expr {
                     .collect();
                 ExprKind::Match(scrutinee, arms)
             }
-            RegionalExpr => {
-                ExprKind::RegionalExpr(Expr::new(expr_children(node).next().expect("regional body")))
-            }
+            RegionalExpr => ExprKind::RegionalExpr(Expr::new(
+                expr_children(node).next().expect("regional body"),
+            )),
             LambdaExpr => {
                 let args = child_node(node, LambdaParamList)
                     .map(|list| {
@@ -647,9 +667,8 @@ impl Expr {
                                 let name = tokens(param)
                                     .find(|t| t.kind().is_ident_like())
                                     .expect("lambda parameter name");
-                                let ty = nodes(param)
-                                    .find(|n| is_type_kind(n.kind()))
-                                    .map(Type::new);
+                                let ty =
+                                    nodes(param).find(|n| is_type_kind(n.kind())).map(Type::new);
                                 (key(name), ty)
                             })
                             .collect()
@@ -732,7 +751,8 @@ impl Expr {
                                 } else {
                                     None
                                 };
-                                let value = Expr::new(expr_children(arg).next().expect("arg value"));
+                                let value =
+                                    Expr::new(expr_children(arg).next().expect("arg value"));
                                 (field, value)
                             })
                             .collect()
@@ -965,7 +985,12 @@ fn extern_of(node: &ResolvedNode) -> ExternTrampoline {
     let sym = unescape_string(strings.next().expect("symbol string").text());
     let func = child_node(node, PathKind).expect("trampoline target path");
     let ty_args = child_node(node, TypeArgList)
-        .map(|l| nodes(l).filter(|n| is_type_kind(n.kind())).map(Type::new).collect())
+        .map(|l| {
+            nodes(l)
+                .filter(|n| is_type_kind(n.kind()))
+                .map(Type::new)
+                .collect()
+        })
         .unwrap_or_default();
     ExternTrampoline {
         name: sym,

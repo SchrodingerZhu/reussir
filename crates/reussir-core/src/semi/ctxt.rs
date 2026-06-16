@@ -208,6 +208,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         });
     }
 
+    pub fn warn(&mut self, span: Option<Span>, message: impl Into<String>) {
+        self.reports.push(Report {
+            severity: Severity::Warning,
+            message: message.into(),
+            span,
+        });
+    }
+
     pub fn has_errors(&self) -> bool {
         self.reports.iter().any(|r| r.severity == Severity::Error)
     }
@@ -387,7 +395,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 fs.iter()
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
-                        (self.sym(*name).to_owned(), self.field_ty(ty, *mutable), *mutable)
+                        (
+                            self.sym(*name).to_owned(),
+                            self.field_ty(ty, *mutable),
+                            *mutable,
+                        )
                     })
                     .collect(),
             ),

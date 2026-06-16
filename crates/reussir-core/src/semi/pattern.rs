@@ -1,9 +1,48 @@
 //! Pattern-match elaboration into decision trees.
 //!
-//! Phase 1 compiles a single scrutinee column: it type-checks every arm's
-//! pattern and body, then switches on the top-level pattern (enum variant or
-//! constant), binding nested sub-patterns by projection paths. Match guards and
-//! deeply-nested refutable sub-patterns are simplified — see the notes inline.
+//! This compiles a `match` into a [`DecisionTree`] using the clause-matrix
+//! algorithm of Maranget, *"Compiling Pattern Matching to Good Decision Trees"*
+//! (ML'08). We are free to choose the algorithm here: the decision tree is the
+//! frontend's own IR (it drives later code generation), so it need not mirror
+//! anything in the backend. A real matrix compiler buys us nested patterns,
+//! guards, and exhaustiveness/redundancy checking essentially for free.
+//!
+//! ## The shape of the algorithm
+//!
+//! We work over a *clause matrix*. Each **column** is an *occurrence* — a path
+//! ([`PatVarRef`]) into the scrutinee value (the root is the empty path, a
+//! constructor field `i` extends its parent's path with `i`) together with the
+//! type of the value found there. Each **row** is one match arm: a vector of
+//! patterns (one per column), the bindings accumulated so far (variable →
+//! occurrence), an optional guard, the (already type-checked) body, and the
+//! original arm index (for redundancy reporting).
+//!
+//! [`Elaborator::compile_match`] then repeats:
+//!
+//! 1. **Empty matrix** ⇒ nothing matches here: emit [`DecisionTree::Uncovered`]
+//!    and flag the match as non-exhaustive.
+//! 2. **First row has no constructor tests left** ⇒ it matches unconditionally
+//!    (modulo its guard). Emit a [`DecisionTree::Leaf`]; if it has a guard, emit
+//!    a [`DecisionTree::Guard`] whose failure branch retries the *remaining*
+//!    rows on the same value.
+//! 3. **Otherwise** pick a column that still has a constructor and emit a
+//!    [`DecisionTree::Switch`] on its occurrence. For each head constructor `c`
+//!    we recurse on the *specialized* matrix `S(c, P)` (which expands `c`'s
+//!    fields into fresh columns); for open families (ints, strings) we also
+//!    recurse on the *default* matrix `D(P)` (the rows that ignore the column).
+//!
+//! Column choice only affects the *size* of the tree, never correctness; we use
+//! the simple "leftmost column that has a constructor" heuristic and leave
+//! Maranget's necessity-based heuristics as a future refinement.
+//!
+//! ## Bindings
+//!
+//! A variable pattern matches anything but records `(var, occurrence)`. When a
+//! column is consumed (specialized or dropped), any binder sitting in it
+//! contributes its `(var, occurrence)` to the row; when a row finally becomes a
+//! leaf, the remaining binders in its columns are added too. The leaf's
+//! `bindings` therefore tell code generation where in the scrutinee to read each
+//! bound variable.
 
 use crate::semi::infer::Instantiation;
 use crate::semi::ty::{Ty, TyKind};
@@ -13,20 +52,104 @@ use crate::utils::string::StringToken;
 use super::ctxt::{Elaborator, RecordFields};
 use super::hir::{DecisionTree, Expr, ExprKind, PatVarRef, SwitchCases, VarId};
 
-/// The top-level discriminant an arm tests.
-#[derive(Clone, Debug)]
-enum Test {
-    Irrefutable,
+/// A head constructor: what a (refutable) pattern tests for at an occurrence.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Ctor {
+    /// An enum variant, by index into the enum's variant list.
     Variant(usize),
     Int(i128),
     Bool(bool),
     Str(StringToken),
 }
 
-struct Arm<'tcx> {
-    test: Test,
+impl Ctor {
+    fn family(&self) -> Family {
+        match self {
+            Ctor::Variant(_) => Family::Variant,
+            Ctor::Int(_) => Family::Int,
+            Ctor::Bool(_) => Family::Bool,
+            Ctor::Str(_) => Family::Str,
+        }
+    }
+}
+
+/// The "signature" a column's constructors belong to. A column is well-typed, so
+/// every constructor in it shares one family; the family decides how the
+/// [`SwitchCases`] are shaped and whether a default branch is needed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Family {
+    /// A closed family with one case per enum variant — exhaustive on its own.
+    Variant,
+    /// A closed two-case family (`true` / `false`).
+    Bool,
+    /// Open families: there are always more values than literals, so they need a
+    /// default branch.
+    Int,
+    Str,
+}
+
+/// A type-checked pattern. Variable bindings carry the [`VarId`] allocated for
+/// them during checking; their occurrence is filled in while compiling.
+#[derive(Clone, Debug)]
+enum Pat {
+    /// Matches anything, binds nothing (`_`).
+    Wild,
+    /// Matches anything, binds the value at this occurrence to `VarId`.
+    Bind(VarId),
+    /// Matches `ctor` and recurses into its fields.
+    Ctor { ctor: Ctor, fields: Vec<Pat> },
+}
+
+impl Pat {
+    fn is_ctor(&self) -> bool {
+        matches!(self, Pat::Ctor { .. })
+    }
+}
+
+/// One column of the clause matrix: where the value lives and what its type is.
+#[derive(Clone)]
+struct Column<'tcx> {
+    occ: PatVarRef,
+    ty: Ty<'tcx>,
+}
+
+/// One row of the clause matrix: an arm in its current, partially-specialized
+/// form.
+#[derive(Clone)]
+struct Row<'tcx> {
+    /// One pattern per column, in column order.
+    pats: Vec<Pat>,
+    /// Bindings discovered in columns already consumed by specialization.
     bindings: Vec<(VarId, PatVarRef)>,
+    guard: Option<Expr<'tcx>>,
     body: Expr<'tcx>,
+    /// Index of the originating match arm, for redundancy reporting.
+    arm: usize,
+}
+
+impl<'tcx> Row<'tcx> {
+    /// Drop column `j` from the row, recording the binder (if any) that lived
+    /// there. Used by scalar specialization and the default matrix, where the
+    /// column carries no sub-fields.
+    fn without_col(&self, j: usize, bind: Option<(VarId, PatVarRef)>) -> Row<'tcx> {
+        let mut pats = self.pats.clone();
+        pats.remove(j);
+        let mut bindings = self.bindings.clone();
+        bindings.extend(bind);
+        Row {
+            pats,
+            bindings,
+            guard: self.guard.clone(),
+            body: self.body.clone(),
+            arm: self.arm,
+        }
+    }
+}
+
+/// The clause matrix.
+struct Matrix<'tcx> {
+    cols: Vec<Column<'tcx>>,
+    rows: Vec<Row<'tcx>>,
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -40,24 +163,52 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let scrut_ty = self.infer.shallow_resolve(scrut.ty);
         let result = self.infer.new_hole_ty();
 
-        let mut compiled = Vec::new();
-        for (pat, body) in arms {
+        // Type-check every arm, turning each surface pattern into a `Pat` (with
+        // binders allocated and in scope for the guard and body).
+        let mut rows = Vec::with_capacity(arms.len());
+        let mut arm_spans = Vec::with_capacity(arms.len());
+        for (i, (pat, body)) in arms.iter().enumerate() {
             let mark = self.vars.mark();
-            let mut bindings = Vec::new();
-            let test = self.check_pattern(pat, scrut_ty, PatVarRef::default(), &mut bindings);
-            if pat.guard().is_some() {
-                self.error(span, "match guards are not yet supported");
-            }
-            let body = self.check_expr(body, result);
+            let p = self.check_pat(&pat.kind(), scrut_ty);
+            let guard = pat.guard().map(|g| {
+                let bool_ty = self.tcx.mk_bool();
+                self.check_expr(&g, bool_ty)
+            });
+            let checked_body = self.check_expr(body, result);
             self.vars.restore(mark);
-            compiled.push(Arm {
-                test,
-                bindings,
-                body,
+
+            arm_spans.push(Some(body.span()));
+            rows.push(Row {
+                pats: vec![p],
+                bindings: Vec::new(),
+                guard,
+                body: checked_body,
+                arm: i,
             });
         }
 
-        let tree = self.build_tree(&compiled, scrut_ty);
+        // Compile the single-column matrix rooted at the scrutinee itself.
+        let matrix = Matrix {
+            cols: vec![Column {
+                occ: PatVarRef::default(),
+                ty: scrut_ty,
+            }],
+            rows,
+        };
+        let mut reached = vec![false; arms.len()];
+        let mut exhaustive = true;
+        let tree = self.compile_match(matrix, &mut reached, &mut exhaustive);
+
+        // Report arms that can never match, and a non-exhaustive match.
+        for (i, hit) in reached.iter().enumerate() {
+            if !hit {
+                self.warn(arm_spans[i], "unreachable match arm");
+            }
+        }
+        if !exhaustive {
+            self.error(span, "non-exhaustive patterns in `match`");
+        }
+
         self.mk_match(Box::new(scrut), tree, result, span)
     }
 
@@ -77,76 +228,59 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// Type-check a pattern against `ty`, binding variables and returning the
-    /// top-level discriminant. `base` is the projection path to the value the
-    /// pattern matches.
-    fn check_pattern(
-        &mut self,
-        pat: &surface::Pattern,
-        ty: Ty<'tcx>,
-        base: PatVarRef,
-        bindings: &mut Vec<(VarId, PatVarRef)>,
-    ) -> Test {
-        self.check_pattern_kind(&pat.kind(), ty, base, bindings)
-    }
+    // ----- pattern type-checking -----
 
-    fn check_pattern_kind(
-        &mut self,
-        kind: &PatternKind,
-        ty: Ty<'tcx>,
-        base: PatVarRef,
-        bindings: &mut Vec<(VarId, PatVarRef)>,
-    ) -> Test {
+    /// Type-check a surface pattern against `ty`, allocating binders into the
+    /// current scope, and return the typed [`Pat`].
+    fn check_pat(&mut self, kind: &PatternKind, ty: Ty<'tcx>) -> Pat {
+        let ty = self.infer.shallow_resolve(ty);
         match kind {
-            PatternKind::Wildcard => Test::Irrefutable,
+            PatternKind::Wildcard => Pat::Wild,
             PatternKind::Bind(name) => {
                 let var = self.vars.fresh(self.sym(*name), ty, None);
-                bindings.push((var, base));
-                Test::Irrefutable
+                Pat::Bind(var)
             }
-            PatternKind::Const(c) => self.check_const_pattern(c, ty),
-            PatternKind::Ctor(ctor) => self.check_ctor_pattern(ctor, ty, base, bindings),
+            PatternKind::Const(c) => self.check_const_pat(c, ty),
+            PatternKind::Ctor(ctor) => self.check_ctor_pat(ctor, ty),
         }
     }
 
-    fn check_const_pattern(&mut self, c: &Const, ty: Ty<'tcx>) -> Test {
-        match c {
+    fn check_const_pat(&mut self, c: &Const, ty: Ty<'tcx>) -> Pat {
+        let ctor = match c {
             Const::ConstInt(i) => {
-                let hole_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(32));
-                let _ = self.infer.unify(ty, hole_ty);
-                Test::Int(*i as i128)
+                let want = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(32));
+                let _ = self.infer.unify(ty, want);
+                Ctor::Int(*i as i128)
             }
             Const::ConstBool(b) => {
-                let bool_ty = self.tcx.mk_bool();
-                let _ = self.infer.unify(ty, bool_ty);
-                Test::Bool(*b)
+                let want = self.tcx.mk_bool();
+                let _ = self.infer.unify(ty, want);
+                Ctor::Bool(*b)
             }
             Const::ConstString(s) => {
-                let str_ty = self.tcx.mk_str();
-                let _ = self.infer.unify(ty, str_ty);
-                Test::Str(self.strings.allocate(s))
+                let want = self.tcx.mk_str();
+                let _ = self.infer.unify(ty, want);
+                Ctor::Str(self.strings.allocate(s))
             }
             Const::ConstDouble(_) => {
                 self.error(None, "floating-point patterns are not supported");
-                Test::Irrefutable
+                return Pat::Wild;
             }
+        };
+        Pat::Ctor {
+            ctor,
+            fields: Vec::new(),
         }
     }
 
-    fn check_ctor_pattern(
-        &mut self,
-        ctor: &surface::CtorPat,
-        ty: Ty<'tcx>,
-        base: PatVarRef,
-        bindings: &mut Vec<(VarId, PatVarRef)>,
-    ) -> Test {
+    fn check_ctor_pat(&mut self, ctor: &surface::CtorPat, ty: Ty<'tcx>) -> Pat {
         let ty = self.infer.shallow_resolve(ty);
         let TyKind::Record { path, args, .. } = ty.kind() else {
             self.error(None, format!("cannot match constructor against `{ty:?}`"));
-            return Test::Irrefutable;
+            return Pat::Wild;
         };
-        // The enum is named by the path's qualifier (`Enum::Variant`); fall back
-        // to the scrutinee's record name.
+        // The enum is named by the path qualifier (`Enum::Variant`), falling
+        // back to the scrutinee's own record name for a bare `Variant`.
         let want = self.sym(ctor.path.basename);
         let enum_name = ctor
             .path
@@ -156,17 +290,30 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .unwrap_or(path);
         let Some(record) = self.records.get(enum_name).cloned() else {
             self.error(None, format!("unknown enum `{enum_name}`"));
-            return Test::Irrefutable;
+            return Pat::Wild;
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
             self.error(None, format!("`{enum_name}` is not an enum"));
-            return Test::Irrefutable;
+            return Pat::Wild;
         };
         let Some(vidx) = variants.iter().position(|v| v.name == want) else {
             self.error(None, format!("no variant `{want}`"));
-            return Test::Irrefutable;
+            return Pat::Wild;
         };
+
         let payload = variants[vidx].fields.clone();
+        if ctor.args.len() > payload.len()
+            || (!ctor.has_ellipsis && ctor.args.len() != payload.len())
+        {
+            self.error(
+                None,
+                format!(
+                    "variant `{want}` has {} field(s), but the pattern binds {}",
+                    payload.len(),
+                    ctor.args.len()
+                ),
+            );
+        }
         let inst = Instantiation::from_pairs(
             record
                 .ty_params
@@ -174,109 +321,287 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 .map(|(_, g)| *g)
                 .zip(args.iter().copied()),
         );
-        // Bind sub-patterns by projecting into the variant's fields.
-        for (i, arg) in ctor.args.iter().enumerate() {
-            let Some(decl) = payload.get(i) else { break };
-            let field_ty = self.infer.instantiate_ty(*decl, &inst);
-            let mut sub_base = base.0.clone();
-            sub_base.push(i as u32);
-            let sub_test =
-                self.check_pattern_kind(&arg.kind, field_ty, PatVarRef(sub_base), bindings);
-            // Nested refutable sub-patterns are not switched on in Phase 1.
-            if !matches!(sub_test, Test::Irrefutable) {
-                self.error(None, "nested refutable patterns are not yet supported");
-            }
+        // Recurse into each declared field. Missing trailing fields (e.g. behind
+        // a `..` ellipsis or an arity error) are treated as wildcards.
+        let fields = payload
+            .iter()
+            .enumerate()
+            .map(|(i, decl)| {
+                let field_ty = self.infer.instantiate_ty(*decl, &inst);
+                match ctor.args.get(i) {
+                    Some(arg) => self.check_pat(&arg.kind, field_ty),
+                    None => Pat::Wild,
+                }
+            })
+            .collect();
+        Pat::Ctor {
+            ctor: Ctor::Variant(vidx),
+            fields,
         }
-        Test::Variant(vidx)
     }
 
-    /// Build a decision tree from the checked arms (first-match order).
-    fn build_tree(&mut self, arms: &[Arm<'tcx>], scrut_ty: Ty<'tcx>) -> DecisionTree<'tcx> {
-        let Some(first) = arms.first() else {
+    // ----- the matrix compiler -----
+
+    fn compile_match(
+        &mut self,
+        m: Matrix<'tcx>,
+        reached: &mut [bool],
+        exhaustive: &mut bool,
+    ) -> DecisionTree<'tcx> {
+        // (1) No rows can match here: a gap in coverage.
+        let Some(first) = m.rows.first() else {
+            *exhaustive = false;
             return DecisionTree::Uncovered;
         };
-        let leaf = |arm: &Arm<'tcx>| DecisionTree::Leaf {
-            body: Box::new(arm.body.clone()),
-            bindings: arm.bindings.clone(),
-        };
 
-        // A leading irrefutable arm matches everything; the rest are unreachable.
-        if matches!(first.test, Test::Irrefutable) {
-            return leaf(first);
+        // (2) The first row tests no constructors: it matches (up to its guard).
+        if !first.pats.iter().any(Pat::is_ctor) {
+            reached[first.arm] = true;
+            // Binders accumulated earlier, plus any still sitting in columns.
+            let mut bindings = first.bindings.clone();
+            for (col, pat) in m.cols.iter().zip(&first.pats) {
+                if let Pat::Bind(v) = pat {
+                    bindings.push((*v, col.occ.clone()));
+                }
+            }
+            let body = Box::new(first.body.clone());
+            return match &first.guard {
+                None => DecisionTree::Leaf { body, bindings },
+                Some(guard) => {
+                    let guard = Box::new(guard.clone());
+                    // If the guard fails, retry the remaining arms on the same
+                    // value (their patterns are unchanged: we never specialized).
+                    let rest = Matrix {
+                        cols: m.cols.clone(),
+                        rows: m.rows[1..].to_vec(),
+                    };
+                    let failure = Box::new(self.compile_match(rest, reached, exhaustive));
+                    DecisionTree::Guard {
+                        bindings,
+                        guard,
+                        success: Box::new(DecisionTree::Leaf {
+                            body,
+                            bindings: Vec::new(),
+                        }),
+                        failure,
+                    }
+                }
+            };
         }
 
-        let default = arms
+        // (3) Switch on the leftmost column that still has a constructor.
+        let j = m
+            .cols
             .iter()
-            .find(|a| matches!(a.test, Test::Irrefutable))
-            .map_or(DecisionTree::Uncovered, leaf);
-        let scrutinee = PatVarRef::default();
+            .enumerate()
+            .position(|(c, _)| m.rows.iter().any(|r| r.pats[c].is_ctor()))
+            .expect("a constructor column exists when some row tests one");
+        let occ = m.cols[j].occ.clone();
+        let col_ty = self.infer.shallow_resolve(m.cols[j].ty);
+        let family = m
+            .rows
+            .iter()
+            .find_map(|r| match &r.pats[j] {
+                Pat::Ctor { ctor, .. } => Some(ctor.family()),
+                _ => None,
+            })
+            .expect("the chosen column has a constructor");
 
-        match &first.test {
-            Test::Variant(_) => {
-                let n_variants = self.variant_count(scrut_ty);
-                let mut subtrees: Vec<DecisionTree<'tcx>> =
-                    (0..n_variants).map(|_| default.clone()).collect();
-                for arm in arms {
-                    if let Test::Variant(v) = arm.test
-                        && v < subtrees.len()
-                        && matches!(subtrees[v], DecisionTree::Uncovered)
-                    {
-                        subtrees[v] = leaf(arm);
-                    }
+        let cases = match family {
+            // Closed: one subtree per variant; an empty variant subtree is an
+            // uncovered case (caught by the recursive call returning `Uncovered`).
+            Family::Variant => {
+                let n = self.variant_count(col_ty);
+                let mut subtrees = Vec::with_capacity(n);
+                for v in 0..n {
+                    let child_tys = self.variant_field_tys(col_ty, v);
+                    let sub = self.specialize_variant(&m, j, v, &occ, &child_tys);
+                    subtrees.push(self.compile_match(sub, reached, exhaustive));
                 }
-                DecisionTree::Switch {
-                    scrutinee,
-                    cases: SwitchCases::Ctor(subtrees),
-                }
+                SwitchCases::Ctor(subtrees)
             }
-            Test::Int(_) => {
+            // Closed two-case family.
+            Family::Bool => {
+                let t = self.specialize_scalar(&m, j, &Ctor::Bool(true), &occ);
+                let if_true = Box::new(self.compile_match(t, reached, exhaustive));
+                let f = self.specialize_scalar(&m, j, &Ctor::Bool(false), &occ);
+                let if_false = Box::new(self.compile_match(f, reached, exhaustive));
+                SwitchCases::Bool { if_true, if_false }
+            }
+            // Open: one case per literal, plus a default for everything else.
+            Family::Int => {
                 let mut cases = Vec::new();
-                for arm in arms {
-                    if let Test::Int(i) = arm.test
-                        && !cases.iter().any(|(k, _)| *k == i)
-                    {
-                        cases.push((i, leaf(arm)));
-                    }
+                for k in self.column_ints(&m, j) {
+                    let sub = self.specialize_scalar(&m, j, &Ctor::Int(k), &occ);
+                    cases.push((k, self.compile_match(sub, reached, exhaustive)));
                 }
-                DecisionTree::Switch {
-                    scrutinee,
-                    cases: SwitchCases::Int {
-                        cases,
-                        default: Box::new(default),
-                    },
-                }
+                let def = self.default_matrix(&m, j, &occ);
+                let default = Box::new(self.compile_match(def, reached, exhaustive));
+                SwitchCases::Int { cases, default }
             }
-            Test::Bool(_) => {
-                let arm_for = |b: bool| {
-                    arms.iter()
-                        .find(|a| matches!(a.test, Test::Bool(x) if x == b))
-                        .map_or(default.clone(), leaf)
-                };
-                DecisionTree::Switch {
-                    scrutinee,
-                    cases: SwitchCases::Bool {
-                        if_true: Box::new(arm_for(true)),
-                        if_false: Box::new(arm_for(false)),
-                    },
-                }
-            }
-            Test::Str(_) => {
+            Family::Str => {
                 let mut cases = Vec::new();
-                for arm in arms {
-                    if let Test::Str(s) = arm.test {
-                        cases.push((s, leaf(arm)));
-                    }
+                for s in self.column_strs(&m, j) {
+                    let sub = self.specialize_scalar(&m, j, &Ctor::Str(s), &occ);
+                    cases.push((s, self.compile_match(sub, reached, exhaustive)));
                 }
-                DecisionTree::Switch {
-                    scrutinee,
-                    cases: SwitchCases::String {
-                        cases,
-                        default: Box::new(default),
-                    },
-                }
+                let def = self.default_matrix(&m, j, &occ);
+                let default = Box::new(self.compile_match(def, reached, exhaustive));
+                SwitchCases::String { cases, default }
             }
-            Test::Irrefutable => unreachable!("handled above"),
+        };
+        DecisionTree::Switch {
+            scrutinee: occ,
+            cases,
         }
+    }
+
+    /// `S(Variant(v), P)`: keep the rows that can match variant `v`, expanding
+    /// the matched constructor's fields into fresh columns at `occ ++ [i]`.
+    fn specialize_variant(
+        &self,
+        m: &Matrix<'tcx>,
+        j: usize,
+        v: usize,
+        occ: &PatVarRef,
+        child_tys: &[Ty<'tcx>],
+    ) -> Matrix<'tcx> {
+        let k = child_tys.len();
+        let mut cols = m.cols[..j].to_vec();
+        for (i, &ty) in child_tys.iter().enumerate() {
+            let mut path = occ.0.clone();
+            path.push(i as u32);
+            cols.push(Column {
+                occ: PatVarRef(path),
+                ty,
+            });
+        }
+        cols.extend_from_slice(&m.cols[j + 1..]);
+
+        let mut rows = Vec::new();
+        for row in &m.rows {
+            // What the field columns become, and whether this row's column-`j`
+            // pattern bound the whole value.
+            let (sub, bind): (Vec<Pat>, Option<(VarId, PatVarRef)>) = match &row.pats[j] {
+                Pat::Ctor {
+                    ctor: Ctor::Variant(w),
+                    fields,
+                } if *w == v => (fields.clone(), None),
+                // A different variant cannot match this case.
+                Pat::Ctor { .. } => continue,
+                Pat::Wild => (vec![Pat::Wild; k], None),
+                Pat::Bind(var) => (vec![Pat::Wild; k], Some((*var, occ.clone()))),
+            };
+            let mut pats = row.pats[..j].to_vec();
+            pats.extend(sub);
+            pats.extend_from_slice(&row.pats[j + 1..]);
+            let mut bindings = row.bindings.clone();
+            bindings.extend(bind);
+            rows.push(Row {
+                pats,
+                bindings,
+                guard: row.guard.clone(),
+                body: row.body.clone(),
+                arm: row.arm,
+            });
+        }
+        Matrix { cols, rows }
+    }
+
+    /// `S(c, P)` for a field-less constructor (int/bool/string): keep the rows
+    /// matching `c` plus the wildcard rows, dropping the tested column.
+    fn specialize_scalar(
+        &self,
+        m: &Matrix<'tcx>,
+        j: usize,
+        c: &Ctor,
+        occ: &PatVarRef,
+    ) -> Matrix<'tcx> {
+        let cols = cols_without(&m.cols, j);
+        let mut rows = Vec::new();
+        for row in &m.rows {
+            match &row.pats[j] {
+                Pat::Ctor { ctor, .. } if ctor == c => rows.push(row.without_col(j, None)),
+                Pat::Ctor { .. } => {}
+                Pat::Wild => rows.push(row.without_col(j, None)),
+                Pat::Bind(var) => rows.push(row.without_col(j, Some((*var, occ.clone())))),
+            }
+        }
+        Matrix { cols, rows }
+    }
+
+    /// `D(P)`: the rows that ignore column `j` (wildcards/binders), dropping it.
+    /// This is the body of the default branch for an open family.
+    fn default_matrix(&self, m: &Matrix<'tcx>, j: usize, occ: &PatVarRef) -> Matrix<'tcx> {
+        let cols = cols_without(&m.cols, j);
+        let mut rows = Vec::new();
+        for row in &m.rows {
+            match &row.pats[j] {
+                Pat::Ctor { .. } => {}
+                Pat::Wild => rows.push(row.without_col(j, None)),
+                Pat::Bind(var) => rows.push(row.without_col(j, Some((*var, occ.clone())))),
+            }
+        }
+        Matrix { cols, rows }
+    }
+
+    /// The distinct integer literals tested in column `j`, in first-seen order.
+    fn column_ints(&self, m: &Matrix<'tcx>, j: usize) -> Vec<i128> {
+        let mut seen = Vec::new();
+        for row in &m.rows {
+            if let Pat::Ctor {
+                ctor: Ctor::Int(k), ..
+            } = &row.pats[j]
+                && !seen.contains(k)
+            {
+                seen.push(*k);
+            }
+        }
+        seen
+    }
+
+    /// The distinct string literals tested in column `j`, in first-seen order.
+    fn column_strs(&self, m: &Matrix<'tcx>, j: usize) -> Vec<StringToken> {
+        let mut seen = Vec::new();
+        for row in &m.rows {
+            if let Pat::Ctor {
+                ctor: Ctor::Str(s), ..
+            } = &row.pats[j]
+                && !seen.contains(s)
+            {
+                seen.push(*s);
+            }
+        }
+        seen
+    }
+
+    /// The field types of variant `v` of the enum at `ty`, instantiated with the
+    /// enum's type arguments.
+    fn variant_field_tys(&mut self, ty: Ty<'tcx>, v: usize) -> Vec<Ty<'tcx>> {
+        let TyKind::Record { path, args, .. } = ty.kind() else {
+            return Vec::new();
+        };
+        let Some(record) = self.records.get(*path).cloned() else {
+            return Vec::new();
+        };
+        let Some(RecordFields::Variants(variants)) = &record.fields else {
+            return Vec::new();
+        };
+        let Some(var) = variants.get(v) else {
+            return Vec::new();
+        };
+        let payload = var.fields.clone();
+        let inst = Instantiation::from_pairs(
+            record
+                .ty_params
+                .iter()
+                .map(|(_, g)| *g)
+                .zip(args.iter().copied()),
+        );
+        payload
+            .iter()
+            .map(|t| self.infer.instantiate_ty(*t, &inst))
+            .collect()
     }
 
     fn variant_count(&mut self, ty: Ty<'tcx>) -> usize {
@@ -346,5 +671,118 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 null: Box::new(self.zonk_tree(*null)),
             },
         }
+    }
+}
+
+/// `cols` with index `j` removed.
+fn cols_without<'tcx>(cols: &[Column<'tcx>], j: usize) -> Vec<Column<'tcx>> {
+    let mut out = cols[..j].to_vec();
+    out.extend_from_slice(&cols[j + 1..]);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::semi::elaborate;
+    use crate::surface;
+    use crate::with_tcx;
+
+    /// Elaborate a source string and return its diagnostics.
+    fn reports_of(source: &str) -> Vec<crate::semi::Report> {
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            elab.reports.clone()
+        })
+    }
+
+    fn has_message(source: &str, needle: &str) -> bool {
+        reports_of(source)
+            .iter()
+            .any(|r| r.message.contains(needle))
+    }
+
+    const COLOR: &str = "enum Color { Red, Green }\nenum Opt { None, Some(Color) }\n";
+
+    #[test]
+    fn nested_refutable_patterns_compile() {
+        // `Opt::Some(Color::Red)` nests a refutable pattern inside a variant —
+        // rejected by the old single-column compiler, exhaustive here.
+        let src = format!(
+            "{COLOR}fn f(x: Opt) -> i32 {{ match x {{\n\
+             Opt::None => 0,\n\
+             Opt::Some(Color::Red) => 1,\n\
+             Opt::Some(Color::Green) => 2\n\
+             }} }}"
+        );
+        assert!(reports_of(&src).is_empty(), "{:#?}", reports_of(&src));
+    }
+
+    #[test]
+    fn missing_nested_case_is_non_exhaustive() {
+        // `Opt::Some(Color::Green)` and `Opt::None` are uncovered.
+        let src = format!(
+            "{COLOR}fn f(x: Opt) -> i32 {{ match x {{\n\
+             Opt::Some(Color::Red) => 1\n\
+             }} }}"
+        );
+        assert!(
+            has_message(&src, "non-exhaustive"),
+            "{:#?}",
+            reports_of(&src)
+        );
+    }
+
+    #[test]
+    fn full_variant_coverage_is_exhaustive() {
+        let src = format!(
+            "{COLOR}fn f(c: Color) -> i32 {{ match c {{\n\
+             Color::Red => 1,\n\
+             Color::Green => 2\n\
+             }} }}"
+        );
+        assert!(reports_of(&src).is_empty(), "{:#?}", reports_of(&src));
+    }
+
+    #[test]
+    fn arm_after_wildcard_is_unreachable() {
+        let src = format!(
+            "{COLOR}fn f(c: Color) -> i32 {{ match c {{\n\
+             x => 1,\n\
+             Color::Red => 2\n\
+             }} }}"
+        );
+        assert!(has_message(&src, "unreachable"), "{:#?}", reports_of(&src));
+    }
+
+    #[test]
+    fn guards_are_supported() {
+        // A guarded arm plus a wildcard fallback: exhaustive, no warnings.
+        let src = "fn f(b: bool) -> i32 { match b {\n\
+                   x if x => 1,\n\
+                   _ => 2\n\
+                   } }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn a_lone_guarded_arm_is_non_exhaustive() {
+        // The guard may fail, so the match is not exhaustive.
+        let src = "fn f(b: bool) -> i32 { match b { x if x => 1 } }";
+        assert!(has_message(src, "non-exhaustive"), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn integer_match_needs_a_default() {
+        let src = "fn f(n: i32) -> i32 { match n { 0 => 10, 1 => 11 } }";
+        assert!(has_message(src, "non-exhaustive"), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn integer_match_with_wildcard_is_exhaustive() {
+        let src = "fn f(n: i32) -> i32 { match n { 0 => 10, _ => 11 } }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
     }
 }
