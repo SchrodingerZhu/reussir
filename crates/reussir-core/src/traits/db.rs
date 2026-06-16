@@ -8,8 +8,6 @@
 //! type is still a hole all arrive in Phase 1 — slotting into this same
 //! [`TraitDb::select`] entry point.
 
-use crate::ty::{Capability, Ty};
-
 use super::def::{ImplDef, TraitDef};
 use super::{Evidence, ImplId, Obligation, TraitId, TraitRef};
 
@@ -25,8 +23,6 @@ pub struct TraitDb<'tcx> {
 pub enum SelectError<'tcx> {
     /// No impl makes `τ : Trait` hold.
     NoImpl(TraitRef<'tcx>),
-    /// A capability bound the self type does not meet.
-    CapNotSatisfied(Ty<'tcx>, Capability),
 }
 
 impl<'tcx> TraitDb<'tcx> {
@@ -68,21 +64,8 @@ impl<'tcx> TraitDb<'tcx> {
         &self,
         obligation: &Obligation<'tcx>,
     ) -> Result<Evidence<'tcx>, SelectError<'tcx>> {
-        match obligation {
-            Obligation::Cap(ty, need) => self.discharge_cap(*ty, *need),
-            Obligation::Trait(goal) => self.select_trait(goal),
-        }
-    }
-
-    fn discharge_cap(
-        &self,
-        ty: Ty<'tcx>,
-        need: Capability,
-    ) -> Result<Evidence<'tcx>, SelectError<'tcx>> {
-        match ty.capability() {
-            Some(have) if have.satisfies(need) => Ok(Evidence::Cap),
-            _ => Err(SelectError::CapNotSatisfied(ty, need)),
-        }
+        let Obligation::Trait(goal) = obligation;
+        self.select_trait(goal)
     }
 
     fn select_trait(&self, goal: &TraitRef<'tcx>) -> Result<Evidence<'tcx>, SelectError<'tcx>> {
@@ -152,7 +135,7 @@ impl<'tcx> TraitDb<'tcx> {
 mod tests {
     use super::*;
     use crate::traits::builtins::Builtins;
-    use crate::ty::{Capability, FpTy, IntTy, TyCtxt};
+    use crate::ty::{FpTy, IntTy, Ty, TyCtxt};
     use crate::with_tcx;
 
     fn needs(trait_id: TraitId, self_ty: Ty<'_>) -> Obligation<'_> {
@@ -251,21 +234,6 @@ mod tests {
                 },
                 other => panic!("expected a two-hop Super chain, got {other:?}"),
             }
-        });
-    }
-
-    #[test]
-    fn capability_bound_uses_the_lattice() {
-        with_tcx(|tcx: &TyCtxt| {
-            let db = TraitDb::new();
-            let rigid = tcx.mk_record("R", &[], Capability::Rigid);
-            let regional = tcx.mk_record("R", &[], Capability::Regional);
-            // Rigid ⊒ Flex, Regional ⋣ Flex.
-            assert!(db.select(&Obligation::Cap(rigid, Capability::Flex)).is_ok());
-            assert!(
-                db.select(&Obligation::Cap(regional, Capability::Flex))
-                    .is_err()
-            );
         });
     }
 }

@@ -9,6 +9,10 @@
 //! unification variable (see [`crate::infer`]). The arena lifetime `'tcx` brands
 //! every handle, so no type can escape the [`stumpalo::Arena::with_scope`] that
 //! created it.
+//!
+//! Sketch: this is specifically the *Semi*-phase type (it carries generics and
+//! holes). The monomorphized *Full* type is a different representation; see the
+//! crate-root note about the eventual `semi::`/`full::` split.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -26,23 +30,21 @@ pub struct GenericId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct HoleId(pub u32);
 
-/// The memory-capability lattice, ordered weakest to strongest. A value whose
-/// capability sits higher in this order satisfies any bound requiring a lower
-/// one — see [`Capability::satisfies`]. The order *is* the lattice, so the
-/// derived `Ord` is load-bearing; do not reorder the variants.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+/// The per-use memory capability ("flexivity") a value carries: `Flex` is
+/// mutable but cannot be materialized out of its region, `Rigid` is immutable
+/// but materializable (the frozen form that escapes a region), `Regional` is
+/// the unrefined regional form, and `Irrelevant` is the non-regional default.
+///
+/// These do **not** form a total order — `Flex` and `Rigid` are incomparable
+/// (different axes: mutability vs materializability) — so there is no
+/// subsumption helper. Capability-as-a-bound is deferred until its semantics are
+/// settled; for now this is purely the coloring stored on [`TyKind::Record`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Capability {
     Irrelevant,
     Regional,
     Flex,
     Rigid,
-}
-
-impl Capability {
-    /// Does a value with `self` capability satisfy a bound requiring `need`?
-    pub fn satisfies(self, need: Capability) -> bool {
-        self >= need
-    }
 }
 
 /// A width-tagged integer type.

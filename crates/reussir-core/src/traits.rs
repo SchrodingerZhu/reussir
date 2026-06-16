@@ -14,7 +14,7 @@ pub mod def;
 pub use db::{SelectError, TraitDb};
 pub use def::{AssocTyDef, ImplDef, MethodSig, TraitDef};
 
-use crate::ty::{Capability, Ty};
+use crate::ty::Ty;
 
 /// Identifies a trait declaration.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -43,13 +43,12 @@ impl<'tcx> TraitRef<'tcx> {
     }
 }
 
-/// A predicate the solver must discharge.
+/// A predicate the solver must discharge. (Capability-as-a-bound will join this
+/// once its semantics are settled — see [`crate::ty::Capability`].)
 #[derive(Clone, Debug)]
 pub enum Obligation<'tcx> {
     /// `τ : Trait<…>`, discharged by impl search.
     Trait(TraitRef<'tcx>),
-    /// `τ : c`, discharged by capability-lattice subsumption.
-    Cap(Ty<'tcx>, Capability),
 }
 
 /// A proof that an obligation holds.
@@ -70,6 +69,4 @@ pub enum Evidence<'tcx> {
         of: Box<Evidence<'tcx>>,
         index: usize,
     },
-    /// A capability bound discharged by the lattice.
-    Cap,
 }

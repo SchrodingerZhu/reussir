@@ -311,6 +311,17 @@ not its per-variable flow encoding.
 
 ### 5.6 Capability obligations
 
+> **Status (revised): deferred.** This section assumed a *total* capability
+> lattice with a `⊒` subsumption. That is wrong: `Flex` (mutable, but cannot be
+> materialized out of its region) and `Rigid` (immutable, but materializable)
+> are **incomparable** — different axes, not a chain. Because the subsumption
+> semantics are unsettled, the capability-as-a-bound machinery (`Obligation::Cap`
+> / `Evidence::Cap` / the `satisfies` lattice) has been **removed** from the
+> code for now; `Capability` is just the coloring stored on `Ty::Record`. The
+> design below is retained as a sketch and will be reworked (likely as a partial
+> order, or folded into coloring/region checking) before capability bounds
+> return.
+
 `Obligation::Cap(τ, c)` is discharged separately from impl search:
 
 - If `τ` is concrete, read its capability off the type (`Ty::Record { flex }`,
