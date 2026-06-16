@@ -3,17 +3,17 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::infer::InferCtxt;
+use crate::semi::infer::InferCtxt;
+use crate::semi::traits::builtins::Builtins;
+use crate::semi::traits::{TraitDb, TraitId};
+use crate::semi::ty::{GenericId, Ty, TyCtxt};
 use crate::surface::{self, Span};
-use crate::traits::builtins::Builtins;
-use crate::traits::{TraitDb, TraitId};
-use crate::ty::{GenericId, Ty, TyCtxt};
 use crate::utils::string::StringUniqifier;
 
 use super::fulfill::FulfillCtxt;
 use super::hir::{ExprId, Function, VarId};
 
-/// The capability a record declares by default. (Per-use [`crate::ty::Capability`]
+/// The capability a record declares by default. (Per-use [`crate::semi::ty::Capability`]
 /// flexivity is derived from this during coloring.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DefaultCap {

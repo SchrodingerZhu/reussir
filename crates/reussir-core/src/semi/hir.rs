@@ -3,8 +3,8 @@
 //! Every [`Expr`] carries its [`Ty`], which may contain generics or holes.
 //! Pattern matches are compiled to a [`DecisionTree`].
 
+use crate::semi::ty::{GenericId, Ty};
 use crate::surface::Span;
-use crate::ty::{GenericId, Ty};
 use crate::utils::string::StringToken;
 
 /// A local variable, unique within a function body.

@@ -3,14 +3,24 @@
 //!
 //! "Semi" is the intermediate form between the surface syntax and the
 //! monomorphized "Full" form. A Semi program keeps generics open
-//! ([`crate::ty::TyKind::Generic`]) and may still carry inference holes that the
-//! later flow/monomorphization phase resolves; crucially, the *modality*
-//! (capability) of a generic is not yet known here, so nothing is mangled. What
-//! Semi *does* fix is the bidirectional types of every expression, the resolved
-//! call targets with their (possibly hole) type arguments, the capability
-//! "coloring" of concrete regional types, and the compiled pattern-match
-//! decision trees.
+//! ([`ty::TyKind::Generic`]) and may still carry inference holes that the later
+//! flow/monomorphization phase resolves; crucially, the *modality* (capability)
+//! of a generic is not yet known here, so nothing is mangled. What Semi *does*
+//! fix is the bidirectional types of every expression, the resolved call
+//! targets with their (possibly hole) type arguments, the capability "coloring"
+//! of concrete regional types, and the compiled pattern-match decision trees.
+//!
+//! This module owns the whole Semi-phase representation: [`ty`] (the interned
+//! Semi type), [`infer`] (its unification solver), and [`traits`] (the trait
+//! system) all sit here, alongside the elaboration passes. The monomorphized
+//! `full::*` representation is a separate, future thing.
 
+// The Semi-phase type machinery.
+pub mod infer;
+pub mod traits;
+pub mod ty;
+
+// The elaboration passes.
 pub mod check;
 pub mod ctxt;
 pub mod fulfill;
@@ -21,7 +31,7 @@ pub mod ty_eval;
 pub use ctxt::{DefaultCap, Elaborator, Report, Severity};
 
 use crate::surface;
-use crate::ty::TyCtxt;
+use ty::TyCtxt;
 
 /// Elaborate a whole surface program. Returns the elaborator holding the
 /// collected, type-checked items and any diagnostics.
@@ -37,7 +47,7 @@ pub fn elaborate<'a, 'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ty::{Capability, IntTy};
+    use crate::semi::ty::{Capability, IntTy};
     use crate::with_tcx;
 
     /// Parse + lower + elaborate, asserting there are no errors, then run `f`
@@ -122,7 +132,7 @@ mod tests {
             |elab, _tcx| {
                 let f = function(elab, "make");
                 // The return type was colored Flex by the `[flex]` annotation.
-                let crate::ty::TyKind::Record { flex, .. } = f.return_ty.kind() else {
+                let crate::semi::ty::TyKind::Record { flex, .. } = f.return_ty.kind() else {
                     panic!("expected a record return type, got {:?}", f.return_ty);
                 };
                 assert_eq!(*flex, Capability::Flex);

@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
 use rustc_hash::FxHashMap;
 
-use crate::ty::{GenericId, HoleId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{GenericId, HoleId, Ty, TyCtxt, TyKind};
 
 /// A generalization level (Rémy/OCaml-style rank). Entering a binder bumps the
 /// level; generalization keeps only variables born at the current level, so
@@ -443,7 +443,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ty::IntTy;
+    use crate::semi::ty::IntTy;
     use crate::with_tcx;
 
     #[test]
@@ -463,12 +463,12 @@ mod tests {
             let a = tcx.mk_record(
                 "List",
                 &[tcx.mk_int(IntTy::Signed(32))],
-                crate::ty::Capability::Rigid,
+                crate::semi::ty::Capability::Rigid,
             );
             let b = tcx.mk_record(
                 "List",
                 &[tcx.mk_int(IntTy::Signed(32))],
-                crate::ty::Capability::Rigid,
+                crate::semi::ty::Capability::Rigid,
             );
             // Structurally equal -> the very same handle.
             assert_eq!(a, b);

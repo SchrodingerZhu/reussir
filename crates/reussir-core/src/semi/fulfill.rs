@@ -1,16 +1,15 @@
-//! The fulfillment context: trait/capability obligations that are collected
-//! during checking and discharged once enough holes are solved.
+//! The fulfillment context: trait obligations that are collected during
+//! checking and discharged once enough holes are solved.
 //!
 //! This replaces the inherited "bounded hole" mechanism. A numeric literal or a
 //! generic instantiation registers an [`Obligation`]; after a function body is
 //! checked, [`Elaborator::resolve_obligations`] runs a fixpoint that discharges
 //! each obligation against the (now solved) self type — via impl search for
-//! concrete types, super-trait subsumption for in-scope generics, or the
-//! lattice for capabilities.
+//! concrete types and super-trait subsumption for in-scope generics.
 
+use crate::semi::traits::{Obligation, TraitRef};
+use crate::semi::ty::TyKind;
 use crate::surface::Span;
-use crate::traits::{Obligation, TraitRef};
-use crate::ty::TyKind;
 
 use super::ctxt::Elaborator;
 

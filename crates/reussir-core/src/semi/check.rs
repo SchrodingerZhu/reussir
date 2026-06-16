@@ -1,9 +1,9 @@
 //! The bidirectional type checker: surface expressions → typed Semi HIR.
 
-use crate::infer::Instantiation;
+use crate::semi::infer::Instantiation;
+use crate::semi::traits::{Obligation, TraitId, TraitRef};
+use crate::semi::ty::{GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
-use crate::traits::{Obligation, TraitId, TraitRef};
-use crate::ty::{GenericId, Ty, TyKind};
 
 use super::ctxt::{Elaborator, RecordFields};
 use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
@@ -409,7 +409,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let TyKind::Record {
             path,
             args,
-            flex: crate::ty::Capability::Flex,
+            flex: crate::semi::ty::Capability::Flex,
         } = dty.kind()
         else {
             self.error(span, "assignment target must be a flex record");
@@ -691,8 +691,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .map(|(_, g)| inst.get(*g).unwrap_or_else(|| self.tcx.mk_generic(*g)))
             .collect();
         let flex = match record.default_cap {
-            super::ctxt::DefaultCap::Regional => crate::ty::Capability::Regional,
-            _ => crate::ty::Capability::Irrelevant,
+            super::ctxt::DefaultCap::Regional => crate::semi::ty::Capability::Regional,
+            _ => crate::semi::ty::Capability::Irrelevant,
         };
         self.tcx.mk_record(name, &args, flex)
     }

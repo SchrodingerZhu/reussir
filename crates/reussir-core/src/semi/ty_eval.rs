@@ -8,8 +8,8 @@
 //! [`Capability::Irrelevant`]. Generics are left uncolored — their modality is
 //! resolved only at monomorphization.
 
+use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
-use crate::ty::{Capability, FpTy, IntTy, Ty, TyKind};
 
 use super::ctxt::{DefaultCap, Elaborator};
 

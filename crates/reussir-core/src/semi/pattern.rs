@@ -5,9 +5,9 @@
 //! constant), binding nested sub-patterns by projection paths. Match guards and
 //! deeply-nested refutable sub-patterns are simplified — see the notes inline.
 
-use crate::infer::Instantiation;
+use crate::semi::infer::Instantiation;
+use crate::semi::ty::{Ty, TyKind};
 use crate::surface::{self, Const, PatternKind, Span};
-use crate::ty::{Ty, TyKind};
 use crate::utils::string::StringToken;
 
 use super::ctxt::{Elaborator, RecordFields};
@@ -102,7 +102,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn check_const_pattern(&mut self, c: &Const, ty: Ty<'tcx>) -> Test {
         match c {
             Const::ConstInt(i) => {
-                let hole_ty = self.tcx.mk_int(crate::ty::IntTy::Signed(32));
+                let hole_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(32));
                 let _ = self.infer.unify(ty, hole_ty);
                 Test::Int(*i as i128)
             }

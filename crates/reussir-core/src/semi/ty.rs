@@ -6,7 +6,7 @@
 //! the instance database's self-type matching pointer comparisons.
 //!
 //! [`TyKind::Generic`] is a rigid type parameter in scope; [`TyKind::Hole`] is a
-//! unification variable (see [`crate::infer`]). The arena lifetime `'tcx` brands
+//! unification variable (see [`crate::semi::infer`]). The arena lifetime `'tcx` brands
 //! every handle, so no type can escape the [`stumpalo::Arena::with_scope`] that
 //! created it.
 //!

@@ -147,8 +147,8 @@ impl<'tcx> TraitDb<'tcx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::builtins::Builtins;
-    use crate::ty::{FpTy, IntTy, Ty, TyCtxt};
+    use crate::semi::traits::builtins::Builtins;
+    use crate::semi::ty::{FpTy, IntTy, Ty, TyCtxt};
     use crate::with_tcx;
 
     fn needs(trait_id: TraitId, self_ty: Ty<'_>) -> Obligation<'_> {
@@ -195,13 +195,13 @@ mod tests {
 
     #[test]
     fn transitive_super_traits_build_a_full_evidence_chain() {
-        use crate::traits::def::{ImplDef, TraitDef};
-        use crate::traits::{Evidence, ImplId, TraitRef};
+        use crate::semi::traits::def::{ImplDef, TraitDef};
+        use crate::semi::traits::{Evidence, ImplId, TraitRef};
 
         with_tcx(|tcx: &TyCtxt| {
             // A 3-level chain: Sub : Mid : Top.
             let mut db = TraitDb::new();
-            let self_g = crate::ty::GenericId(0);
+            let self_g = crate::semi::ty::GenericId(0);
             let self_ref = |t: TraitId| TraitRef {
                 trait_id: t,
                 args: vec![tcx.mk_generic(self_g)],

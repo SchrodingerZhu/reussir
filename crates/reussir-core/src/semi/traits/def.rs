@@ -3,7 +3,7 @@
 //! These are the program's trait items after name resolution. Method bodies are
 //! deliberately absent in Phase 0 — only the shapes the resolver needs.
 
-use crate::ty::{GenericId, Ty};
+use crate::semi::ty::{GenericId, Ty};
 
 use super::{ImplId, Obligation, TraitId, TraitRef};
 

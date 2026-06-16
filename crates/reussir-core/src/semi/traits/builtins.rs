@@ -14,7 +14,7 @@
 //! the leaves (primitive scalars) `Send`/`Sync` impls; structural auto-trait
 //! propagation (a record is `Send` iff its fields are) lands in Phase 1+.
 
-use crate::ty::{FpTy, GenericId, IntTy, Ty, TyCtxt};
+use crate::semi::ty::{FpTy, GenericId, IntTy, Ty, TyCtxt};
 
 use super::def::{ImplDef, TraitDef};
 use super::{ImplId, TraitDb, TraitId, TraitRef};

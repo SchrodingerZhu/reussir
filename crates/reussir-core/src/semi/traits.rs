@@ -14,7 +14,7 @@ pub mod def;
 pub use db::{SelectError, TraitDb};
 pub use def::{AssocTyDef, ImplDef, MethodSig, TraitDef};
 
-use crate::ty::Ty;
+use crate::semi::ty::Ty;
 
 /// Identifies a trait declaration.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -44,7 +44,7 @@ impl<'tcx> TraitRef<'tcx> {
 }
 
 /// A predicate the solver must discharge. (Capability-as-a-bound will join this
-/// once its semantics are settled — see [`crate::ty::Capability`].)
+/// once its semantics are settled — see [`crate::semi::ty::Capability`].)
 #[derive(Clone, Debug)]
 pub enum Obligation<'tcx> {
     /// `τ : Trait<…>`, discharged by impl search.

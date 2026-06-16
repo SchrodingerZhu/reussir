@@ -342,30 +342,38 @@ comparison riding the same fulfillment worklist as trait obligations.
 
 ## 6. Code overview (module layout in `reussir-core`)
 
+Everything for the Semi phase lives under `semi::`; `full::*` (the
+monomorphized, mangled representation) is its future sibling. As built:
+
 ```
 crates/reussir-core/src/
-  ty/
-    mod.rs        Ty, IntTy, FpTy, Flexivity, GenericId, HoleId
-    subst.rs      substitution, fold/visit, occurs-check, collect_generics
-  items/          the collected program (post-resolution HIR)
-    trait_def.rs  TraitDef, MethodSig, AssocTyDef
-    impl_def.rs   ImplDef, MethodImpl
-    fn_def.rs     FnDef, RecordDef, FunctionTable, record table
-  traits/
-    mod.rs        TraitRef, Obligation, Evidence
-    db.rs         instance database (indexing + candidate lookup)
-    select.rs     select(): candidate gather, one-way match, recurse, memo
-    coherence.rs  orphan + overlap checks
-    builtins.rs   lang-item traits + impls (Num/Integral/FloatingPoint/PtrLike)
-  infer/
-    unify.rs      union-find holes (port Unification.hs)
-    fulfill.rs    fulfillment context: pending obligations, wake-on-progress
-    tyck.rs       bidirectional infer/check (port Tyck.hs), method resolution
-  mono/
-    collect.rs    instantiation worklist over whole substitutions (§5.5);
-                  strict-subterm growth check for polymorphic recursion
-    specialize.rs emit monomorphic IR with statically-resolved calls
+  surface.rs          typed surface AST + direct CST lowering / aeson serde
+  semi/               the whole Semi phase
+    ty.rs             Ty, TyKind, TyCtxt (interned), IntTy, FpTy, Capability, ids
+    infer.rs          ena union-find holes, unify/occurs/zonk, lazy instantiation
+    traits.rs         TraitRef, Obligation, Evidence
+    traits/db.rs      instance database, select(), super-trait evidence chains
+    traits/def.rs     TraitDef, ImplDef, MethodSig, AssocTyDef
+    traits/builtins.rs  lang-item traits + impls (Num/Integral/FP/PtrLike/Send/Sync)
+    hir.rs            Semi HIR: Expr/ExprKind, DecisionTree, Function
+    ctxt.rs           collected items + Elaborator state + scan/collect driver
+    ty_eval.rs        surface-type → Ty + the regional capability coloring
+    fulfill.rs        fulfillment context (deferred obligations, fixpoint discharge)
+    check.rs          bidirectional infer/check over all expression forms
+    pattern.rs        decision-tree pattern compilation
 ```
+
+Future (not yet built):
+
+```
+  full/               monomorphized, mangled representation
+    ty.rs             Full type (mangled Symbol, resolved capability, no generics)
+    collect.rs        instantiation worklist over whole substitutions (§5.5)
+    specialize.rs     emit monomorphic IR with statically-resolved calls
+```
+
+Still pending inside `semi`: coherence (orphan/overlap), generic-impl one-way
+matching, associated types, and surface `trait`/`impl` syntax.
 
 Haskell → Rust mapping:
 
