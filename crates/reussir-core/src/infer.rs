@@ -12,10 +12,10 @@
 //! generics are resolved through the instantiation on the fly, and a template is
 //! materialized into the arena only when it must be assigned into a hole.
 
-use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use ena::unify::{InPlaceUnificationTable, NoError, UnifyKey, UnifyValue};
+use rustc_hash::FxHashMap;
 
 use crate::ty::{GenericId, HoleId, Ty, TyCtxt, TyKind};
 
@@ -93,7 +93,7 @@ pub struct Mismatch<'tcx> {
 /// A use-site instantiation: a definition's generics mapped to fresh holes.
 /// Consulted lazily by [`InferCtxt::unify_instantiated`]; never eagerly applied.
 pub struct Instantiation<'tcx> {
-    map: HashMap<GenericId, Ty<'tcx>>,
+    map: FxHashMap<GenericId, Ty<'tcx>>,
 }
 
 impl<'tcx> Instantiation<'tcx> {
@@ -128,6 +128,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     }
 
     pub fn exit_level(&mut self) {
+        debug_assert!(
+            self.level.0 > 0,
+            "exit_level underflow: not inside a binder"
+        );
         self.level.0 -= 1;
     }
 
@@ -303,7 +307,8 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
     /// Instantiate a definition's generics to fresh holes for one use site.
     pub fn instantiate(&mut self, generics: &[GenericId]) -> Instantiation<'tcx> {
-        let mut map = HashMap::with_capacity(generics.len());
+        let mut map = FxHashMap::default();
+        map.reserve(generics.len());
         for &g in generics {
             let hole = self.new_hole_ty();
             map.insert(g, hole);

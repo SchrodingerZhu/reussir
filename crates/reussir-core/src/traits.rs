@@ -32,8 +32,13 @@ pub struct TraitRef<'tcx> {
 }
 
 impl<'tcx> TraitRef<'tcx> {
-    /// The `Self` type this reference is about.
+    /// The `Self` type this reference is about. By convention `args[0]` always
+    /// exists for a well-formed reference.
     pub fn self_ty(&self) -> Ty<'tcx> {
+        debug_assert!(
+            !self.args.is_empty(),
+            "a TraitRef must have a Self argument"
+        );
         self.args[0]
     }
 }

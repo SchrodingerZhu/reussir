@@ -35,12 +35,25 @@ impl<'tcx> TraitDb<'tcx> {
     }
 
     pub fn add_trait(&mut self, def: TraitDef<'tcx>) -> TraitId {
+        // `trait_def` indexes `traits` by `TraitId`, so ids must be dense and
+        // inserted in order.
+        debug_assert_eq!(
+            def.id.0 as usize,
+            self.traits.len(),
+            "trait ids must be dense"
+        );
         let id = def.id;
         self.traits.push(def);
         id
     }
 
     pub fn add_impl(&mut self, def: ImplDef<'tcx>) -> ImplId {
+        // Keep `ImplId`s dense and in storage order so they can index `impls`.
+        debug_assert_eq!(
+            def.id.0 as usize,
+            self.impls.len(),
+            "impl ids must be dense"
+        );
         let id = def.id;
         self.impls.push(def);
         id
@@ -89,36 +102,46 @@ impl<'tcx> TraitDb<'tcx> {
             }
         }
 
-        // Otherwise, reach the goal through a super-trait edge: some impl for
-        // this self type implements a sub-trait whose super-trait closure
-        // contains the goal. (This is what the old class DAG did by hand.)
+        // Otherwise, reach the goal through one or more super-trait hops: some
+        // impl for this self type implements a sub-trait whose super-trait
+        // closure contains the goal. (This is what the old class DAG did by
+        // hand.) The evidence projects the impl up the full hop chain.
         for imp in &self.impls {
-            if imp.self_ty != goal.self_ty() {
+            if imp.self_ty != goal.self_ty() || imp.trait_ref.trait_id == goal.trait_id {
                 continue;
             }
+            let Ok(base) = self.select_trait(&imp.trait_ref) else {
+                continue;
+            };
             let sub_def = self.trait_def(imp.trait_ref.trait_id);
-            if let Some(index) = self.super_index(sub_def, goal.trait_id) {
-                let of = self.select_trait(&imp.trait_ref)?;
-                return Ok(Evidence::Super {
-                    of: Box::new(of),
-                    index,
-                });
+            if let Some(ev) = self.project_super(sub_def, base, goal.trait_id) {
+                return Ok(ev);
             }
         }
 
         Err(SelectError::NoImpl(goal.clone()))
     }
 
-    /// The position of `target` in `def`'s super-trait list, searching the
-    /// transitive closure. `None` if `target` is not a super-trait of `def`.
-    fn super_index(&self, def: &TraitDef<'tcx>, target: TraitId) -> Option<usize> {
+    /// Project `of` — evidence that the self type implements `def` — up to
+    /// `target` through super-traits, building one [`Evidence::Super`] hop per
+    /// edge on the path. `None` if `target` is not in `def`'s super-trait
+    /// closure.
+    fn project_super(
+        &self,
+        def: &TraitDef<'tcx>,
+        of: Evidence<'tcx>,
+        target: TraitId,
+    ) -> Option<Evidence<'tcx>> {
         for (i, sup) in def.supertraits.iter().enumerate() {
-            if sup.trait_id == target
-                || self
-                    .super_index(self.trait_def(sup.trait_id), target)
-                    .is_some()
-            {
-                return Some(i);
+            let step = Evidence::Super {
+                of: Box::new(of.clone()),
+                index: i,
+            };
+            if sup.trait_id == target {
+                return Some(step);
+            }
+            if let Some(ev) = self.project_super(self.trait_def(sup.trait_id), step, target) {
+                return Some(ev);
             }
         }
         None
@@ -170,6 +193,63 @@ mod tests {
             for ty in [tcx.mk_int(IntTy::Unsigned(64)), tcx.mk_bool(), tcx.mk_str()] {
                 assert!(db.select(&needs(b.send, ty)).is_ok());
                 assert!(db.select(&needs(b.sync, ty)).is_ok());
+            }
+        });
+    }
+
+    #[test]
+    fn transitive_super_traits_build_a_full_evidence_chain() {
+        use crate::traits::def::{ImplDef, TraitDef};
+        use crate::traits::{Evidence, ImplId, TraitRef};
+
+        with_tcx(|tcx: &TyCtxt| {
+            // A 3-level chain: Sub : Mid : Top.
+            let mut db = TraitDb::new();
+            let self_g = crate::ty::GenericId(0);
+            let self_ref = |t: TraitId| TraitRef {
+                trait_id: t,
+                args: vec![tcx.mk_generic(self_g)],
+            };
+            let (top, mid, sub) = (TraitId(0), TraitId(1), TraitId(2));
+            let def = |id: TraitId, name: &str, supers| TraitDef {
+                id,
+                name: name.to_owned(),
+                params: vec![self_g],
+                supertraits: supers,
+                methods: vec![],
+                assoc_tys: vec![],
+            };
+            db.add_trait(def(top, "Top", vec![]));
+            db.add_trait(def(mid, "Mid", vec![self_ref(top)]));
+            db.add_trait(def(sub, "Sub", vec![self_ref(mid)]));
+
+            let unit = tcx.mk_unit();
+            db.add_impl(ImplDef {
+                id: ImplId(0),
+                generics: vec![],
+                trait_ref: TraitRef {
+                    trait_id: sub,
+                    args: vec![unit],
+                },
+                self_ty: unit,
+                where_clauses: vec![],
+            });
+
+            // `unit: Top` is two hops away (Sub -> Mid -> Top): the evidence must
+            // nest two `Super` projections over the `Sub` impl.
+            let ev = db.select(&needs(top, unit)).expect("unit: Top should hold");
+            match ev {
+                Evidence::Super {
+                    of: outer,
+                    index: 0,
+                } => match *outer {
+                    Evidence::Super {
+                        of: inner,
+                        index: 0,
+                    } => assert!(matches!(*inner, Evidence::Impl { .. })),
+                    other => panic!("expected a nested Super, got {other:?}"),
+                },
+                other => panic!("expected a two-hop Super chain, got {other:?}"),
             }
         });
     }
