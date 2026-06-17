@@ -2,10 +2,13 @@
 //! produces.
 //!
 //! Resolution is nominal and coherent: an [`Obligation::Trait`] is discharged by
-//! finding the unique impl (Phase 0 handles only ground self types), and an
-//! [`Obligation::Cap`] by the capability lattice. The [`Evidence`] returned is a
-//! proof tree consumed statically at monomorphization; its shape is also what a
-//! future `dyn` vtable would carry.
+//! finding the unique impl (Phase 0 handles only ground self types). The
+//! [`Evidence`] returned is a proof tree consumed statically at monomorphization;
+//! its shape is also what a future `dyn` vtable would carry.
+//!
+//! Capability-as-a-bound is deferred (see [`crate::semi::ty::Capability`]); if it
+//! lands it becomes a second [`Obligation`] variant discharged through the same
+//! [`TraitDb::select`] entry point.
 
 pub mod builtins;
 pub mod db;

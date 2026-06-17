@@ -17,7 +17,7 @@
 //! occurrence), an optional guard, the (already type-checked) body, and the
 //! original arm index (for redundancy reporting).
 //!
-//! [`Elaborator::compile_match`] then repeats:
+//! `Elaborator::compile_match` then repeats:
 //!
 //! 1. **Empty matrix** ⇒ nothing matches here: emit [`DecisionTree::Uncovered`]
 //!    and flag the match as non-exhaustive.

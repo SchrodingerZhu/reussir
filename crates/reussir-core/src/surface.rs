@@ -14,7 +14,7 @@
 //! needs the parse's [`reussir_syntax::kind::Resolver`]. Because keys carry no
 //! lifetime, the whole surface AST is lifetime-free.
 //!
-//! Spans are byte offsets into the source ([`ResolvedNode::text_range`]);
+//! Spans are byte offsets into the source (`ResolvedNode::text_range`);
 //! conversion to character or line/column positions is a diagnostics-rendering
 //! concern handled elsewhere.
 
