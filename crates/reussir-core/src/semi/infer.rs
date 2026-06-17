@@ -169,6 +169,23 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
     /// Deeply substitute every solved hole; unknown holes stay as their
     /// representative. (Reads the union-find — this is zonking, not `subst`.)
+    ///
+    /// Operational semantics. Let σ be the hole substitution (the `ena`
+    /// union-find) and ⟦τ⟧ = `shallow_resolve` τ (follow solved holes one layer,
+    /// map an unknown hole to its class representative). `resolve` realizes the
+    /// judgment σ ⊢ τ ⇓ τ′ ("τ zonks to τ′"), a read-only pass that leaves σ
+    /// unchanged. K ranges over the structural constructors with children —
+    /// Record, Closure, Nullable — and the rebuilt node is re-interned:
+    ///
+    /// ```text
+    ///   ⟦τ⟧ = K(τ₁ … τₙ)      σ ⊢ τᵢ ⇓ τ′ᵢ   (1 ≤ i ≤ n)
+    /// ─────────────────────────────────────────────────── (ζ-congr)
+    ///                σ ⊢ τ ⇓ K(τ′₁ … τ′ₙ)
+    ///
+    ///   ⟦τ⟧ = κ      (scalar, Generic, or unknown hole: no children)
+    /// ───────────────────────────────────────────────────────────── (ζ-atom)
+    ///                        σ ⊢ τ ⇓ κ
+    /// ```
     pub fn resolve(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
         let ty = self.shallow_resolve(ty);
         match ty.kind() {
@@ -197,6 +214,41 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     }
 
     /// Unify two types, solving holes as needed.
+    ///
+    /// Operational semantics. With σ the hole substitution (the `ena`
+    /// union-find) and ⟦τ⟧ = `shallow_resolve` τ, `unify` realizes the
+    /// state-threading judgment `σ ⊢ a ≡ b ⊣ σ′` ("under σ, a and b unify,
+    /// yielding σ′").
+    ///
+    /// Both sides are shallow-resolved first. α, β range over holes; κ over the
+    /// by-value atoms (Int, Fp, Bool, Str, Unit, Generic); ⊥ over Bottom. We
+    /// write `σ, α↦τ` for solving a hole and `σ, α~β` for unioning two hole
+    /// classes; ✗ is failure (a `Mismatch`). K (in `congr`) must agree on head
+    /// and arity: Record (path + args — the flexivity coloring is *not* part of
+    /// identity, so it is ignored here), Closure (params + ret), Nullable.
+    ///
+    /// ```text
+    ///    ⟦a⟧ = ⟦b⟧                    ⟦a⟧ = α    ⟦b⟧ = β    α ≠ β
+    /// ───────────────── (refl)     ───────────────────────────── (union)
+    ///   σ ⊢ a ≡ b ⊣ σ                   σ ⊢ a ≡ b ⊣ σ, α~β
+    ///
+    ///   ⟦a⟧ = α    ⟦b⟧ = τ    τ ≠ hole    α ∉ τ
+    /// ────────────────────────────────────────── (solve)   (+ symmetric)
+    ///            σ ⊢ a ≡ b ⊣ σ, α↦τ
+    ///
+    ///   ⟦a⟧ = K(a₁ … aₙ)    ⟦b⟧ = K(b₁ … bₙ)    σ₀ = σ
+    ///   σᵢ₋₁ ⊢ aᵢ ≡ bᵢ ⊣ σᵢ    (1 ≤ i ≤ n)
+    /// ──────────────────────────────────────────────── (congr)
+    ///                σ ⊢ a ≡ b ⊣ σₙ
+    ///
+    ///   ⟦a⟧ = ⊥  or  ⟦b⟧ = ⊥           ⟦a⟧, ⟦b⟧ otherwise distinct
+    /// ────────────────────── (bottom)  ───────────────────────────── (clash)
+    ///    σ ⊢ a ≡ b ⊣ σ                       σ ⊢ a ≡ b ⊣ ✗
+    /// ```
+    ///
+    /// The (solve) side condition α ∉ τ is the occurs-check; its failure is
+    /// itself a ✗. Rule precedence follows the match order: (refl), (union),
+    /// (solve), (congr), (bottom), then (clash) as the catch-all.
     pub fn unify(&mut self, a: Ty<'tcx>, b: Ty<'tcx>) -> Result<(), Mismatch<'tcx>> {
         let a = self.shallow_resolve(a);
         let b = self.shallow_resolve(b);
@@ -322,10 +374,67 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         Instantiation { map }
     }
 
-    /// Unify an `ambient` type against a `template` read under `inst`. The
-    /// template's generics are resolved lazily through `inst`; nothing is
-    /// rebuilt except when a template must be assigned into a hole, where it is
-    /// materialized via [`InferCtxt::materialize`].
+    /// Unify a definition's type — the **template** — read through an
+    /// instantiation, against an **ambient** type from the surrounding inference
+    /// state, solving holes as needed.
+    ///
+    /// Terminology:
+    /// * **template** `t`: a type taken from a *definition's* signature — a
+    ///   parameter, a return, a constructor field — still written in that
+    ///   definition's own generic parameters (`TyKind::Generic`). It is the
+    ///   polymorphic schema being used at one site.
+    /// * **`inst`** (θ): the *use-site instantiation* mapping each of the
+    ///   definition's generics to a fresh hole (or an explicit type argument)
+    ///   for this use. The template's generics are read *through* θ.
+    /// * **ambient** `a`: the type the surrounding context demands — the actual
+    ///   argument's type, the expected type — already expressed in the caller's
+    ///   own inference state (its holes and its *own* rigid generics).
+    ///
+    /// The point is **laziness**: instead of substituting θ through the whole
+    /// template up front (allocating an instantiated copy) and then unifying, we
+    /// thread θ down as we descend, mapping a generic to its hole only at the
+    /// node under inspection. The template is fully rebuilt (`materialize`) in
+    /// exactly one case — when it must be *stored* as a hole's solution — because
+    /// a value recorded in the table is read later with no θ in hand, so it must
+    /// be self-contained (every `Generic` already replaced).
+    ///
+    /// Operational semantics. With σ the hole substitution, θ = `inst`,
+    /// ⟦τ⟧ = `shallow_resolve` τ, θ▸τ the one-step head mapping of a generic
+    /// (θ▸(Generic g) = θ(g) when g ∈ θ, else τ unchanged), and ⌈τ⌉θ =
+    /// `materialize` τ under θ (the full eager substitution), write the
+    /// normalized sides t̂ = ⟦θ▸t⟧ and â = ⟦a⟧. `unify_instantiated` realizes
+    /// `σ; θ ⊢ t ⋈ a ⊣ σ′`:
+    ///
+    /// ```text
+    ///    t̂ = â                      t̂ = α    â = β    α ≠ β
+    /// ───────────────── (refl)    ───────────────────────────── (union)
+    ///  σ;θ ⊢ t ⋈ a ⊣ σ               σ;θ ⊢ t ⋈ a ⊣ σ, α~β
+    ///
+    ///   â = β    t̂ ≠ hole    β ∉ ⌈t̂⌉θ
+    /// ──────────────────────────────────── (materialize)
+    ///        σ;θ ⊢ t ⋈ a ⊣ σ, β ↦ ⌈t̂⌉θ
+    ///
+    ///   t̂ = α    â ≠ hole    α ∉ â
+    /// ──────────────────────────────── (solve)
+    ///        σ;θ ⊢ t ⋈ a ⊣ σ, α↦â
+    ///
+    ///   t̂ = K(t₁ … tₙ)    â = K(a₁ … aₙ)    σ₀ = σ
+    ///   σᵢ₋₁;θ ⊢ tᵢ ⋈ aᵢ ⊣ σᵢ    (1 ≤ i ≤ n)
+    /// ──────────────────────────────────────────────── (congr)
+    ///                σ;θ ⊢ t ⋈ a ⊣ σₙ
+    ///
+    ///   t̂ = ⊥  or  â = ⊥           t̂, â otherwise distinct
+    /// ────────────────────── (bottom)  ───────────────────────── (clash)
+    ///   σ;θ ⊢ t ⋈ a ⊣ σ                 σ;θ ⊢ t ⋈ a ⊣ ✗
+    /// ```
+    ///
+    /// The asymmetry is the whole idea: θ rides only the template side (the
+    /// (congr) premises keep θ on the left), and the sole full substitution ⌈·⌉θ
+    /// is in (materialize), when the template crosses into a hole. Precedence
+    /// follows the match order — (refl), (union), (materialize), (solve),
+    /// (congr), (bottom), (clash) — so the two hole cases are disjoint: both
+    /// holes ⇒ (union); only `â` a hole ⇒ (materialize); only `t̂` a hole ⇒
+    /// (solve). `unify` is exactly this judgment with θ empty.
     pub fn unify_instantiated(
         &mut self,
         template: Ty<'tcx>,
@@ -549,6 +658,80 @@ mod tests {
             let hole = ic.new_hole_ty();
             ic.unify_instantiated(template, &inst, hole).unwrap();
             assert_eq!(ic.resolve(hole), tcx.mk_nullable(i32));
+        });
+    }
+
+    // ----- mismatches (the `clash` rule) -----
+
+    #[test]
+    fn scalar_clash_reports_both_sides() {
+        with_tcx(|tcx| {
+            let mut ic = InferCtxt::new(tcx);
+            let i32 = tcx.mk_int(IntTy::Signed(32));
+            let boolean = tcx.mk_bool();
+            let err = ic.unify(i32, boolean).unwrap_err();
+            assert_eq!(err.left, i32);
+            assert_eq!(err.right, boolean);
+        });
+    }
+
+    #[test]
+    fn record_head_and_arity_clash() {
+        with_tcx(|tcx| {
+            use crate::semi::ty::Capability::Irrelevant;
+            let mut ic = InferCtxt::new(tcx);
+            let i32 = tcx.mk_int(IntTy::Signed(32));
+            // Different head constructor.
+            let list = tcx.mk_record("List", &[i32], Irrelevant);
+            let option = tcx.mk_record("Option", &[i32], Irrelevant);
+            assert!(ic.unify(list, option).is_err());
+            // Same head, different arity.
+            let pair1 = tcx.mk_record("Pair", &[i32], Irrelevant);
+            let pair2 = tcx.mk_record("Pair", &[i32, i32], Irrelevant);
+            assert!(ic.unify(pair1, pair2).is_err());
+        });
+    }
+
+    #[test]
+    fn nested_clash_reports_the_innermost_pair() {
+        with_tcx(|tcx| {
+            let mut ic = InferCtxt::new(tcx);
+            let i32 = tcx.mk_int(IntTy::Signed(32));
+            let boolean = tcx.mk_bool();
+            let f1 = tcx.mk_closure(&[i32], i32);
+            let f2 = tcx.mk_closure(&[boolean], i32);
+            // The congruence walk surfaces the innermost clash (the parameter
+            // types), not the enclosing closures.
+            let err = ic.unify(f1, f2).unwrap_err();
+            assert_eq!(err.left, i32);
+            assert_eq!(err.right, boolean);
+        });
+    }
+
+    #[test]
+    fn clash_resolves_through_a_solved_hole() {
+        with_tcx(|tcx| {
+            let mut ic = InferCtxt::new(tcx);
+            let h = ic.new_hole_ty();
+            let i32 = tcx.mk_int(IntTy::Signed(32));
+            ic.unify(h, i32).unwrap();
+            // `h` is now i32; clashing with bool reports the *resolved* left
+            // side, not the hole.
+            let err = ic.unify(h, tcx.mk_bool()).unwrap_err();
+            assert_eq!(err.left, i32);
+            assert_eq!(err.right, tcx.mk_bool());
+        });
+    }
+
+    #[test]
+    fn bottom_absorbs_without_clash() {
+        with_tcx(|tcx| {
+            let mut ic = InferCtxt::new(tcx);
+            let bottom = tcx.mk(TyKind::Bottom);
+            let i32 = tcx.mk_int(IntTy::Signed(32));
+            // Error recovery: Bottom unifies with anything, either orientation.
+            assert!(ic.unify(bottom, i32).is_ok());
+            assert!(ic.unify(i32, bottom).is_ok());
         });
     }
 }
