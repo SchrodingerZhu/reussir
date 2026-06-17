@@ -19,6 +19,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr;
 
+use reussir_syntax::kind::TokenKey;
 use rustc_hash::FxHashMap;
 use stumpalo::ArenaRef;
 
@@ -68,9 +69,11 @@ pub enum FpTy {
 /// `Eq`/`Hash` bottom out in pointer comparison — exactly the hash-cons key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TyKind<'tcx> {
-    /// A user-defined nominal type applied to arguments, at a capability.
+    /// A user-defined nominal type applied to arguments, at a capability. The
+    /// `path` is the record's interned name key (a real path/`DefId` lands with
+    /// name resolution; until then equal keys mean the same nominal type).
     Record {
-        path: &'tcx str,
+        path: TokenKey,
         args: &'tcx [Ty<'tcx>],
         flex: Capability,
     },
@@ -159,11 +162,6 @@ impl<'tcx> TyCtxt<'tcx> {
         ty
     }
 
-    /// Intern a string into the arena (for record paths).
-    pub fn intern_str(&self, s: &str) -> &'tcx str {
-        self.arena.alloc_str(s)
-    }
-
     /// Intern a slice of (already-interned) types into the arena.
     pub fn intern_tys(&self, tys: &[Ty<'tcx>]) -> &'tcx [Ty<'tcx>] {
         if tys.is_empty() {
@@ -204,8 +202,7 @@ impl<'tcx> TyCtxt<'tcx> {
         self.mk(TyKind::Nullable(inner))
     }
 
-    pub fn mk_record(&self, path: &str, args: &[Ty<'tcx>], flex: Capability) -> Ty<'tcx> {
-        let path = self.intern_str(path);
+    pub fn mk_record(&self, path: TokenKey, args: &[Ty<'tcx>], flex: Capability) -> Ty<'tcx> {
         let args = self.intern_tys(args);
         self.mk(TyKind::Record { path, args, flex })
     }

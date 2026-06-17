@@ -74,7 +74,7 @@ mod tests {
     fn function<'a, 'tcx>(elab: &'a Elaborator<'_, 'tcx>, name: &str) -> &'a hir::Function<'tcx> {
         elab.elaborated
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| elab.sym(f.name) == name)
             .expect("function not found")
     }
 

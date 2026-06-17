@@ -40,7 +40,7 @@ pub struct Report {
 /// Per-generic metadata: its name and the trait bounds declared on it.
 #[derive(Clone, Debug)]
 pub struct GenericInfo {
-    pub name: String,
+    pub name: TokenKey,
     pub bounds: Vec<TraitId>,
 }
 
@@ -48,7 +48,7 @@ pub struct GenericInfo {
 #[derive(Clone, Debug)]
 pub enum RecordFields<'tcx> {
     /// `(name, type, is_mutable)`.
-    Named(Vec<(String, Ty<'tcx>, bool)>),
+    Named(Vec<(TokenKey, Ty<'tcx>, bool)>),
     /// `(type, is_mutable)`.
     Unnamed(Vec<(Ty<'tcx>, bool)>),
     Variants(Vec<Variant<'tcx>>),
@@ -56,15 +56,15 @@ pub enum RecordFields<'tcx> {
 
 #[derive(Clone, Debug)]
 pub struct Variant<'tcx> {
-    pub name: String,
+    pub name: TokenKey,
     pub fields: Vec<Ty<'tcx>>,
 }
 
 /// A collected record (struct or enum). Fields are populated in a second pass.
 #[derive(Clone, Debug)]
 pub struct Record<'tcx> {
-    pub name: String,
-    pub ty_params: Vec<(String, GenericId)>,
+    pub name: TokenKey,
+    pub ty_params: Vec<(TokenKey, GenericId)>,
     pub kind: surface::RecordKind,
     pub default_cap: DefaultCap,
     pub fields: Option<RecordFields<'tcx>>,
@@ -74,10 +74,10 @@ pub struct Record<'tcx> {
 /// A collected function prototype (signature only).
 #[derive(Clone, Debug)]
 pub struct FuncProto<'tcx> {
-    pub name: String,
-    pub generics: Vec<(String, GenericId)>,
+    pub name: TokenKey,
+    pub generics: Vec<(TokenKey, GenericId)>,
     /// `(name, colored type)`.
-    pub params: Vec<(String, Ty<'tcx>)>,
+    pub params: Vec<(TokenKey, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,
     pub is_regional: bool,
     pub span: Option<Span>,
@@ -86,7 +86,7 @@ pub struct FuncProto<'tcx> {
 /// A local variable binding.
 #[derive(Clone, Debug)]
 pub struct VarDef<'tcx> {
-    pub name: String,
+    pub name: TokenKey,
     pub ty: Ty<'tcx>,
     pub span: Option<Span>,
 }
@@ -96,26 +96,22 @@ pub struct VarDef<'tcx> {
 #[derive(Default)]
 pub struct VarEnv<'tcx> {
     defs: Vec<VarDef<'tcx>>,
-    scope: Vec<(String, VarId)>,
+    scope: Vec<(TokenKey, VarId)>,
 }
 
 impl<'tcx> VarEnv<'tcx> {
-    pub fn fresh(&mut self, name: &str, ty: Ty<'tcx>, span: Option<Span>) -> VarId {
+    pub fn fresh(&mut self, name: TokenKey, ty: Ty<'tcx>, span: Option<Span>) -> VarId {
         let id = VarId(self.defs.len() as u32);
-        self.defs.push(VarDef {
-            name: name.to_owned(),
-            ty,
-            span,
-        });
-        self.scope.push((name.to_owned(), id));
+        self.defs.push(VarDef { name, ty, span });
+        self.scope.push((name, id));
         id
     }
 
-    pub fn lookup(&self, name: &str) -> Option<(VarId, Ty<'tcx>)> {
+    pub fn lookup(&self, name: TokenKey) -> Option<(VarId, Ty<'tcx>)> {
         self.scope
             .iter()
             .rev()
-            .find(|(n, _)| n == name)
+            .find(|(n, _)| *n == name)
             .map(|(_, id)| (*id, self.defs[id.0 as usize].ty))
     }
 
@@ -147,8 +143,8 @@ pub struct Elaborator<'a, 'tcx> {
     pub traits: TraitDb<'tcx>,
     pub builtins: Builtins,
     pub trait_names: FxHashMap<&'static str, TraitId>,
-    pub records: FxHashMap<String, Record<'tcx>>,
-    pub functions: FxHashMap<String, FuncProto<'tcx>>,
+    pub records: FxHashMap<TokenKey, Record<'tcx>>,
+    pub functions: FxHashMap<TokenKey, FuncProto<'tcx>>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
@@ -157,7 +153,7 @@ pub struct Elaborator<'a, 'tcx> {
     // ----- per-function working state (reset by `enter_function`) -----
     pub infer: InferCtxt<'a, 'tcx>,
     pub vars: VarEnv<'tcx>,
-    pub generic_names: FxHashMap<String, GenericId>,
+    pub generic_names: FxHashMap<TokenKey, GenericId>,
     pub inside_region: bool,
     pub fulfill: FulfillCtxt<'tcx>,
     expr_counter: u32,
@@ -235,12 +231,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// Allocate a fresh generic parameter with the given bounds.
-    pub fn fresh_generic(&mut self, name: &str, bounds: Vec<TraitId>) -> GenericId {
+    pub fn fresh_generic(&mut self, name: TokenKey, bounds: Vec<TraitId>) -> GenericId {
         let id = GenericId(self.generics.len() as u32);
-        self.generics.push(GenericInfo {
-            name: name.to_owned(),
-            bounds,
-        });
+        self.generics.push(GenericInfo { name, bounds });
         id
     }
 
@@ -268,14 +261,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// Reset per-function state and install the function's generics in scope.
-    pub(super) fn enter_function(&mut self, generics: &[(String, GenericId)]) {
+    pub(super) fn enter_function(&mut self, generics: &[(TokenKey, GenericId)]) {
         self.infer = InferCtxt::new(self.tcx);
         self.vars.reset();
         self.generic_names.clear();
         self.inside_region = false;
         self.fulfill = FulfillCtxt::default();
         for (name, id) in generics {
-            self.generic_names.insert(name.clone(), *id);
+            self.generic_names.insert(*name, *id);
         }
     }
 
@@ -326,28 +319,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 DefaultCap::Shared
             }
         };
-        let name = self.sym(rec.name).to_owned();
+        let name = rec.name;
         let record = Record {
-            name: name.clone(),
+            name,
             ty_params,
             kind: rec.kind,
             default_cap,
             fields: None,
             span,
         };
-        if self.records.insert(name.clone(), record).is_some() {
-            self.error(span, format!("record `{name}` is defined more than once"));
+        if self.records.insert(name, record).is_some() {
+            self.error(
+                span,
+                format!("record `{}` is defined more than once", self.sym(name)),
+            );
         }
     }
 
     fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) {
         let generics = self.collect_generics(&func.generics, span);
-        self.generic_names = generics.iter().map(|(n, id)| (n.clone(), *id)).collect();
+        self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
         let params = func
             .params
             .iter()
-            .map(|(name, ty, flex)| (self.sym(*name).to_owned(), self.eval_type_flex(ty, *flex)))
+            .map(|(name, ty, flex)| (*name, self.eval_type_flex(ty, *flex)))
             .collect();
         let return_ty = match &func.return_type {
             Some((ty, flex)) => self.eval_type_flex(ty, *flex),
@@ -355,17 +351,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         self.generic_names.clear();
 
-        let name = self.sym(func.name).to_owned();
+        let name = func.name;
         let proto = FuncProto {
-            name: name.clone(),
+            name,
             generics,
             params,
             return_ty,
             is_regional: func.is_regional,
             span,
         };
-        if self.functions.insert(name.clone(), proto).is_some() {
-            self.error(span, format!("function `{name}` is defined more than once"));
+        if self.functions.insert(name, proto).is_some() {
+            self.error(
+                span,
+                format!("function `{}` is defined more than once", self.sym(name)),
+            );
         }
     }
 
@@ -374,38 +373,33 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         decls: &[(TokenKey, Vec<surface::Path>)],
         span: Option<Span>,
-    ) -> Vec<(String, GenericId)> {
+    ) -> Vec<(TokenKey, GenericId)> {
         decls
             .iter()
             .map(|(name, bounds)| {
-                let name = self.sym(*name).to_owned();
                 let bounds = self.resolve_bounds(bounds, span);
-                let id = self.fresh_generic(&name, bounds);
-                (name, id)
+                let id = self.fresh_generic(*name, bounds);
+                (*name, id)
             })
             .collect()
     }
 
     fn populate_record(&mut self, rec: &surface::Record) {
-        let name = self.sym(rec.name).to_owned();
+        let name = rec.name;
         let Some(record) = self.records.get(&name) else {
             return;
         };
         let ty_params = record.ty_params.clone();
         let span = record.span;
         let default_cap = record.default_cap;
-        self.generic_names = ty_params.iter().map(|(n, id)| (n.clone(), *id)).collect();
+        self.generic_names = ty_params.iter().map(|(n, id)| (*n, *id)).collect();
 
         let fields = match &rec.fields {
             surface::RecordFields::Named(fs) => RecordFields::Named(
                 fs.iter()
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
-                        (
-                            self.sym(*name).to_owned(),
-                            self.field_ty(ty, *mutable),
-                            *mutable,
-                        )
+                        (*name, self.field_ty(ty, *mutable), *mutable)
                     })
                     .collect(),
             ),
@@ -422,7 +416,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|v| {
                         let (name, tys) = &v.value;
                         Variant {
-                            name: self.sym(*name).to_owned(),
+                            name: *name,
                             fields: tys.iter().map(|t| self.eval_type(t)).collect(),
                         }
                     })

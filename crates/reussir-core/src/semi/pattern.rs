@@ -237,7 +237,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match kind {
             PatternKind::Wildcard => Pat::Wild,
             PatternKind::Bind(name) => {
-                let var = self.vars.fresh(self.sym(*name), ty, None);
+                let var = self.vars.fresh(*name, ty, None);
                 Pat::Bind(var)
             }
             PatternKind::Const(c) => self.check_const_pat(c, ty),
@@ -281,23 +281,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         // The enum is named by the path qualifier (`Enum::Variant`), falling
         // back to the scrutinee's own record name for a bare `Variant`.
-        let want = self.sym(ctor.path.basename);
-        let enum_name = ctor
-            .path
-            .segments
-            .last()
-            .map(|s| self.sym(*s))
-            .unwrap_or(path);
-        let Some(record) = self.records.get(enum_name).cloned() else {
-            self.error(None, format!("unknown enum `{enum_name}`"));
+        let want = ctor.path.basename;
+        let enum_key = ctor.path.segments.last().copied().unwrap_or(*path);
+        let Some(record) = self.records.get(&enum_key).cloned() else {
+            self.error(None, format!("unknown enum `{}`", self.sym(enum_key)));
             return Pat::Wild;
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
-            self.error(None, format!("`{enum_name}` is not an enum"));
+            self.error(None, format!("`{}` is not an enum", self.sym(enum_key)));
             return Pat::Wild;
         };
         let Some(vidx) = variants.iter().position(|v| v.name == want) else {
-            self.error(None, format!("no variant `{want}`"));
+            self.error(None, format!("no variant `{}`", self.sym(want)));
             return Pat::Wild;
         };
 
@@ -308,7 +303,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(
                 None,
                 format!(
-                    "variant `{want}` has {} field(s), but the pattern binds {}",
+                    "variant `{}` has {} field(s), but the pattern binds {}",
+                    self.sym(want),
                     payload.len(),
                     ctor.args.len()
                 ),
@@ -581,7 +577,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let TyKind::Record { path, args, .. } = ty.kind() else {
             return Vec::new();
         };
-        let Some(record) = self.records.get(*path).cloned() else {
+        let Some(record) = self.records.get(path).cloned() else {
             return Vec::new();
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
@@ -607,7 +603,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn variant_count(&mut self, ty: Ty<'tcx>) -> usize {
         let ty = self.infer.shallow_resolve(ty);
         if let TyKind::Record { path, .. } = ty.kind()
-            && let Some(record) = self.records.get(*path)
+            && let Some(record) = self.records.get(path)
             && let Some(RecordFields::Variants(vs)) = &record.fields
         {
             return vs.len();

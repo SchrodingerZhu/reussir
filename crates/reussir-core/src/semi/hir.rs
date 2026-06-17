@@ -3,6 +3,8 @@
 //! Every [`Expr`] carries its [`Ty`], which may contain generics or holes.
 //! Pattern matches are compiled to a [`DecisionTree`].
 
+use reussir_syntax::kind::TokenKey;
+
 use crate::semi::ty::{GenericId, Ty};
 use crate::surface::Span;
 use crate::utils::string::StringToken;
@@ -80,27 +82,27 @@ pub enum ExprKind<'tcx> {
     Assign(Box<Expr<'tcx>>, u32, Box<Expr<'tcx>>),
     Let {
         var: VarId,
-        name: String,
+        name: TokenKey,
         span: Option<Span>,
         value: Box<Expr<'tcx>>,
     },
     Seq(Vec<Expr<'tcx>>),
     /// A direct function call with (possibly hole) type arguments.
     FuncCall {
-        target: String,
+        target: TokenKey,
         ty_args: Vec<Ty<'tcx>>,
         args: Vec<Expr<'tcx>>,
         regional: bool,
     },
     /// A struct (compound) constructor call.
     CompoundCall {
-        target: String,
+        target: TokenKey,
         ty_args: Vec<Ty<'tcx>>,
         args: Vec<Expr<'tcx>>,
     },
     /// An enum variant constructor call.
     VariantCall {
-        target: String,
+        target: TokenKey,
         ty_args: Vec<Ty<'tcx>>,
         variant: usize,
         args: Vec<Expr<'tcx>>,
@@ -173,9 +175,9 @@ pub enum SwitchCases<'tcx> {
 /// A type-checked function, the unit of Semi output.
 #[derive(Clone, Debug)]
 pub struct Function<'tcx> {
-    pub name: String,
-    pub generics: Vec<(String, GenericId)>,
-    pub params: Vec<(String, VarId, Ty<'tcx>)>,
+    pub name: TokenKey,
+    pub generics: Vec<(TokenKey, GenericId)>,
+    pub params: Vec<(TokenKey, VarId, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,
     pub is_regional: bool,
     pub body: Option<Expr<'tcx>>,

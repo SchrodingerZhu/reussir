@@ -73,23 +73,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[surface::Type],
         span: surface::Span,
     ) -> Ty<'tcx> {
-        let name = self.sym(path.basename);
+        let key = path.basename;
 
         // A bare generic parameter in scope.
         if path.segments.is_empty()
-            && let Some(&generic) = self.generic_names.get(name)
+            && let Some(&generic) = self.generic_names.get(&key)
         {
             if !args.is_empty() {
                 self.error(
                     Some(span),
-                    format!("generic `{name}` cannot take type arguments"),
+                    format!("generic `{}` cannot take type arguments", self.sym(key)),
                 );
             }
             return self.tcx.mk_generic(generic);
         }
 
         // The built-in nullable type.
-        if name == "Nullable" {
+        if self.sym(key) == "Nullable" {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
@@ -103,8 +103,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
 
         // A user record.
-        let Some(default_cap) = self.records.get(name).map(|r| r.default_cap) else {
-            self.error(Some(span), format!("unknown type `{name}`"));
+        let Some(default_cap) = self.records.get(&key).map(|r| r.default_cap) else {
+            self.error(Some(span), format!("unknown type `{}`", self.sym(key)));
             return self.tcx.mk(TyKind::Bottom);
         };
         let args: Vec<Ty> = args.iter().map(|a| self.eval_type(a)).collect();
@@ -112,7 +112,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             DefaultCap::Value | DefaultCap::Shared => Capability::Irrelevant,
             DefaultCap::Regional => Capability::Regional,
         };
-        self.tcx.mk_record(name, &args, flex)
+        self.tcx.mk_record(key, &args, flex)
     }
 
     /// Evaluate a type that carries a `[flex]` flag (a parameter, return type,
@@ -134,7 +134,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 path,
                 args,
                 flex: Capability::Regional,
-            } => self.tcx.mk_record(path, args, refined),
+            } => self.tcx.mk_record(*path, args, refined),
             TyKind::Nullable(inner) => {
                 if let TyKind::Record {
                     path,
@@ -142,7 +142,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     flex: Capability::Regional,
                 } = inner.kind()
                 {
-                    let inner = self.tcx.mk_record(path, args, refined);
+                    let inner = self.tcx.mk_record(*path, args, refined);
                     self.tcx.mk_nullable(inner)
                 } else {
                     t
@@ -168,7 +168,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 path,
                 args,
                 flex: Capability::Regional | Capability::Flex,
-            } => self.tcx.mk_record(path, args, Capability::Rigid),
+            } => self.tcx.mk_record(*path, args, Capability::Rigid),
             TyKind::Nullable(inner) => {
                 let inner = self.freeze_region(*inner);
                 self.tcx.mk_nullable(inner)

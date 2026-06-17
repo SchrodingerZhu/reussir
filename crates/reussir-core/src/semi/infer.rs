@@ -192,7 +192,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Record { path, args, flex } => {
                 let resolved: Vec<Ty<'tcx>> = args.iter().map(|a| self.resolve(*a)).collect();
                 self.tcx.mk(TyKind::Record {
-                    path,
+                    path: *path,
                     args: self.tcx.intern_tys(&resolved),
                     flex: *flex,
                 })
@@ -526,7 +526,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let built: Vec<Ty<'tcx>> =
                     args.iter().map(|a| self.materialize(*a, inst)).collect();
                 self.tcx.mk(TyKind::Record {
-                    path,
+                    path: *path,
                     args: self.tcx.intern_tys(&built),
                     flex: *flex,
                 })
@@ -551,9 +551,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
 #[cfg(test)]
 mod tests {
+    use reussir_syntax::kind::{InternKey, TokenKey};
+
     use super::*;
     use crate::semi::ty::IntTy;
     use crate::with_tcx;
+
+    /// Mint a distinct interned key for a record name in tests (no parser).
+    fn tk(n: u32) -> TokenKey {
+        TokenKey::try_from_u32(n).expect("nonzero key")
+    }
 
     #[test]
     fn solve_var_then_resolve() {
@@ -570,12 +577,12 @@ mod tests {
     fn interned_types_are_pointer_equal() {
         with_tcx(|tcx| {
             let a = tcx.mk_record(
-                "List",
+                tk(1),
                 &[tcx.mk_int(IntTy::Signed(32))],
                 crate::semi::ty::Capability::Rigid,
             );
             let b = tcx.mk_record(
-                "List",
+                tk(1),
                 &[tcx.mk_int(IntTy::Signed(32))],
                 crate::semi::ty::Capability::Rigid,
             );
@@ -682,12 +689,12 @@ mod tests {
             let mut ic = InferCtxt::new(tcx);
             let i32 = tcx.mk_int(IntTy::Signed(32));
             // Different head constructor.
-            let list = tcx.mk_record("List", &[i32], Irrelevant);
-            let option = tcx.mk_record("Option", &[i32], Irrelevant);
+            let list = tcx.mk_record(tk(1), &[i32], Irrelevant);
+            let option = tcx.mk_record(tk(2), &[i32], Irrelevant);
             assert!(ic.unify(list, option).is_err());
             // Same head, different arity.
-            let pair1 = tcx.mk_record("Pair", &[i32], Irrelevant);
-            let pair2 = tcx.mk_record("Pair", &[i32, i32], Irrelevant);
+            let pair1 = tcx.mk_record(tk(3), &[i32], Irrelevant);
+            let pair2 = tcx.mk_record(tk(3), &[i32, i32], Irrelevant);
             assert!(ic.unify(pair1, pair2).is_err());
         });
     }

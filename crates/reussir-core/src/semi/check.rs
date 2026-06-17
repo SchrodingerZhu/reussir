@@ -1,5 +1,7 @@
 //! The bidirectional type checker: surface expressions → typed Semi HIR.
 
+use reussir_syntax::kind::TokenKey;
+
 use crate::semi::infer::Instantiation;
 use crate::semi::traits::{Obligation, TraitId, TraitRef};
 use crate::semi::ty::{GenericId, Ty, TyKind};
@@ -10,15 +12,15 @@ use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub(super) fn check_function(&mut self, func: &surface::Function, span: Option<Span>) {
-        let Some(proto) = self.functions.get(self.sym(func.name)).cloned() else {
+        let Some(proto) = self.functions.get(&func.name).cloned() else {
             return;
         };
         self.enter_function(&proto.generics);
 
         let mut params = Vec::new();
         for (name, ty) in &proto.params {
-            let var = self.vars.fresh(name, *ty, None);
-            params.push((name.clone(), var, *ty));
+            let var = self.vars.fresh(*name, *ty, None);
+            params.push((*name, var, *ty));
         }
 
         let body = func
@@ -133,11 +135,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_var(&mut self, path: &surface::Path, span: Option<Span>) -> Expr<'tcx> {
         if path.segments.is_empty() {
-            let name = self.sym(path.basename);
-            if let Some((id, ty)) = self.vars.lookup(name) {
+            if let Some((id, ty)) = self.vars.lookup(path.basename) {
                 return self.mk_expr(ExprKind::Var(id), ty, span);
             }
-            self.error(span, format!("unknown variable `{name}`"));
+            self.error(
+                span,
+                format!("unknown variable `{}`", self.sym(path.basename)),
+            );
             return self.poison(span);
         }
         // A qualified path with no arguments: a nullary constructor.
@@ -195,13 +199,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         };
         let name_span = Some(name.span());
-        let bound = self.sym(name.value).to_owned();
-        let var = self.vars.fresh(&bound, var_ty, name_span);
+        let var = self.vars.fresh(name.value, var_ty, name_span);
         let unit = self.tcx.mk_unit();
         self.mk_expr(
             ExprKind::Let {
                 var,
-                name: bound,
+                name: name.value,
                 span: name_span,
                 value: Box::new(value),
             },
@@ -279,7 +282,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
-        let Some(proto) = self.functions.get(fname).cloned() else {
+        let Some(proto) = self.functions.get(&fc.name.basename).cloned() else {
             self.error(span, format!("unknown function `{fname}`"));
             return self.poison(span);
         };
@@ -378,8 +381,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(t) => self.eval_type(t),
                 None => self.infer.new_hole_ty(),
             };
-            let name = self.sym(*name);
-            let var = self.vars.fresh(name, pty, None);
+            let var = self.vars.fresh(*name, pty, None);
             params.push((var, pty));
         }
         let body = match &lam.ret_ty {
@@ -405,7 +407,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // being captured in a closure (the closure may outlive the region).
         for &(v, ty) in &captures {
             if self.is_flex(ty) {
-                let name = self.vars.def(v).name.clone();
+                let name = self.sym(self.vars.def(v).name);
                 self.error(
                     span,
                     format!(
@@ -446,7 +448,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(span, "assignment target must be a flex record");
             return self.poison(span);
         };
-        let Some((idx, field_ty, mutable)) = self.resolve_field(path, args, acc) else {
+        let Some((idx, field_ty, mutable)) = self.resolve_field(*path, args, acc) else {
             self.error(span, "no such field on assignment target");
             return self.poison(span);
         };
@@ -477,7 +479,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.error(span, format!("cannot access a field of `{cur:?}`"));
                 return self.poison(span);
             };
-            let Some((idx, field_ty, _)) = self.resolve_field(path, args, acc) else {
+            let Some((idx, field_ty, _)) = self.resolve_field(*path, args, acc) else {
                 self.error(span, "no such field");
                 return self.poison(span);
             };
@@ -491,18 +493,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// The field type is instantiated with the record's type arguments.
     fn resolve_field(
         &mut self,
-        record_path: &str,
+        record_path: TokenKey,
         args: &[Ty<'tcx>],
         acc: &surface::Access,
     ) -> Option<(u32, Ty<'tcx>, bool)> {
-        let record = self.records.get(record_path)?;
+        let record = self.records.get(&record_path)?;
         let ty_params = record.ty_params.clone();
         let fields = record.fields.clone()?;
         let inst =
             Instantiation::from_pairs(ty_params.iter().map(|(_, g)| *g).zip(args.iter().copied()));
         let (idx, decl_ty, mutable) = match (&fields, acc) {
             (RecordFields::Named(fs), surface::Access::Named(name)) => {
-                let name = self.sym(*name);
                 let i = fs.iter().position(|(n, _, _)| n == name)?;
                 (i, fs[i].1, fs[i].2)
             }
@@ -532,27 +533,26 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         path: &surface::Path,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
+        args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let qualifier = path.segments.last().map(|s| self.sym(*s));
-        let basename = self.sym(path.basename);
+        let qualifier = path.segments.last().copied();
         // The built-in nullable constructors.
-        if qualifier == Some("Nullable") {
-            return self.infer_nullable(basename, args, span);
+        if qualifier.map(|k| self.sym(k)) == Some("Nullable") {
+            return self.infer_nullable(self.sym(path.basename), args, span);
         }
         // An enum variant: `Enum::Variant`.
-        if let Some(enum_name) = qualifier {
-            return self.infer_variant(enum_name, basename, ty_args, args, span);
+        if let Some(enum_key) = qualifier {
+            return self.infer_variant(enum_key, path.basename, ty_args, args, span);
         }
         // A struct constructor.
-        self.infer_struct(basename, ty_args, args, span)
+        self.infer_struct(path.basename, ty_args, args, span)
     }
 
     fn infer_nullable(
         &mut self,
         variant: &str,
-        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
+        args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
         match variant {
@@ -581,17 +581,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_struct(
         &mut self,
-        name: &str,
+        name: TokenKey,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
+        args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(record) = self.records.get(name).cloned() else {
-            self.error(span, format!("unknown type `{name}`"));
+        let Some(record) = self.records.get(&name).cloned() else {
+            self.error(span, format!("unknown type `{}`", self.sym(name)));
             return self.poison(span);
         };
         if matches!(record.fields, Some(RecordFields::Variants(_))) {
-            self.error(span, format!("`{name}` is an enum, not a struct"));
+            self.error(
+                span,
+                format!("`{}` is an enum, not a struct", self.sym(name)),
+            );
             return self.poison(span);
         }
         let inst = self.instantiate(&record.generics_as_decls(), ty_args, span);
@@ -602,7 +605,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let result = self.record_ty(name, &record, &inst);
         self.mk_expr(
             ExprKind::CompoundCall {
-                target: name.to_owned(),
+                target: name,
                 ty_args,
                 args: checked,
             },
@@ -613,22 +616,29 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_variant(
         &mut self,
-        enum_name: &str,
-        variant: &str,
+        enum_name: TokenKey,
+        variant: TokenKey,
         ty_args: &[Option<surface::Type>],
-        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
+        args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(record) = self.records.get(enum_name).cloned() else {
-            self.error(span, format!("unknown enum `{enum_name}`"));
+        let Some(record) = self.records.get(&enum_name).cloned() else {
+            self.error(span, format!("unknown enum `{}`", self.sym(enum_name)));
             return self.poison(span);
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
-            self.error(span, format!("`{enum_name}` is not an enum"));
+            self.error(span, format!("`{}` is not an enum", self.sym(enum_name)));
             return self.poison(span);
         };
         let Some(vidx) = variants.iter().position(|v| v.name == variant) else {
-            self.error(span, format!("`{enum_name}` has no variant `{variant}`"));
+            self.error(
+                span,
+                format!(
+                    "`{}` has no variant `{}`",
+                    self.sym(enum_name),
+                    self.sym(variant)
+                ),
+            );
             return self.poison(span);
         };
         let payload = variants[vidx].fields.clone();
@@ -646,7 +656,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let result = self.record_ty(enum_name, &record, &inst);
         self.mk_expr(
             ExprKind::VariantCall {
-                target: enum_name.to_owned(),
+                target: enum_name,
                 ty_args,
                 variant: vidx,
                 args: checked,
@@ -658,33 +668,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn check_ctor_args(
         &mut self,
-        name: &str,
-        args: &[(Option<reussir_syntax::kind::TokenKey>, surface::Expr)],
-        field_tys: &[(Option<String>, Ty<'tcx>)],
+        name: TokenKey,
+        args: &[(Option<TokenKey>, surface::Expr)],
+        field_tys: &[(Option<TokenKey>, Ty<'tcx>)],
         span: Option<Span>,
     ) -> Vec<Expr<'tcx>> {
         if args.len() != field_tys.len() {
             self.error(
                 span,
                 format!(
-                    "`{name}` expects {} field(s), got {}",
+                    "`{}` expects {} field(s), got {}",
+                    self.sym(name),
                     field_tys.len(),
                     args.len()
                 ),
             );
         }
-        // Named arguments are matched by field name; positional by order.
+        // Named arguments are matched by field name (an interned key compare);
+        // positional by order.
         let named = args.iter().any(|(f, _)| f.is_some());
-        let arg_fields: Vec<Option<&str>> =
-            args.iter().map(|(f, _)| f.map(|k| self.sym(k))).collect();
+        let arg_fields: Vec<Option<TokenKey>> = args.iter().map(|(f, _)| *f).collect();
         let mut out = Vec::new();
         if named {
             for (fname, fty) in field_tys {
                 let Some(fname) = fname else { continue };
-                match arg_fields.iter().position(|af| *af == Some(fname.as_str())) {
+                match arg_fields.iter().position(|af| *af == Some(*fname)) {
                     Some(i) => out.push(self.check_expr(&args[i].1, *fty)),
                     None => {
-                        self.error(span, format!("missing field `{fname}`"));
+                        self.error(span, format!("missing field `{}`", self.sym(*fname)));
                         out.push(self.poison(span));
                     }
                 }
@@ -701,11 +712,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         fields: &Option<RecordFields<'tcx>>,
         inst: &Instantiation<'tcx>,
-    ) -> Vec<(Option<String>, Ty<'tcx>)> {
+    ) -> Vec<(Option<TokenKey>, Ty<'tcx>)> {
         match fields {
             Some(RecordFields::Named(fs)) => fs
                 .iter()
-                .map(|(n, t, _)| (Some(n.clone()), self.infer.instantiate_ty(*t, inst)))
+                .map(|(n, t, _)| (Some(*n), self.infer.instantiate_ty(*t, inst)))
                 .collect(),
             Some(RecordFields::Unnamed(fs)) => fs
                 .iter()
@@ -717,7 +728,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn record_ty(
         &mut self,
-        name: &str,
+        name: TokenKey,
         record: &super::ctxt::Record<'tcx>,
         inst: &Instantiation<'tcx>,
     ) -> Ty<'tcx> {
@@ -740,7 +751,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// generic's bounds as obligations on the chosen type.
     pub(super) fn instantiate(
         &mut self,
-        generics: &[(String, GenericId)],
+        generics: &[(TokenKey, GenericId)],
         ty_args: &[Option<surface::Type>],
         span: Option<Span>,
     ) -> Instantiation<'tcx> {
@@ -765,7 +776,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn inst_args(
         &mut self,
-        generics: &[(String, GenericId)],
+        generics: &[(TokenKey, GenericId)],
         inst: &Instantiation<'tcx>,
     ) -> Vec<Ty<'tcx>> {
         generics
@@ -937,7 +948,7 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
 
 impl<'tcx> super::ctxt::Record<'tcx> {
     /// The record's generics as `(name, id)` declaration pairs.
-    fn generics_as_decls(&self) -> Vec<(String, GenericId)> {
+    fn generics_as_decls(&self) -> Vec<(TokenKey, GenericId)> {
         self.ty_params.clone()
     }
 }
