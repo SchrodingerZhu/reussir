@@ -168,4 +168,24 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn rejects_capturing_a_flex_value() {
+        with_tcx(|tcx| {
+            // `c` is a flex regional value; a closure cannot capture it (a flex
+            // value cannot be materialized, so it cannot escape its region).
+            let source = "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
+                          regional fn f(c: [flex] Cell<i32>) -> i32 { let g = || c; 0 }";
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("flex value cannot escape")),
+                "expected a flex-capture error: {:#?}",
+                elab.reports
+            );
+        });
+    }
 }

@@ -1,12 +1,39 @@
 //! Evaluating surface types into interned [`Ty`]s, including the capability
-//! "coloring" of regional records.
+//! ("flexivity") coloring of regional records.
 //!
-//! The coloring is deterministic and local: a record declared `[regional]`
-//! starts at [`Capability::Regional`]; a `[flex]` annotation on a parameter,
-//! return, or binding refines it to [`Capability::Flex`] (mutable) and its
-//! absence to [`Capability::Rigid`] (read-only). Non-regional records are
-//! [`Capability::Irrelevant`]. Generics are left uncolored — their modality is
-//! resolved only at monomorphization.
+//! A `[regional]` record is a type that can be *created locally* inside a region.
+//! Flexivity is the per-use color such a value carries; the four [`Capability`]
+//! states mean:
+//!
+//! * **Flex** — a live, freshly created regional object. Its `[field]` links can
+//!   be mutated while inside the region, and it can be passed to a `regional`
+//!   function, but it *cannot be materialized*: it cannot escape the region —
+//!   neither returned/frozen-out without first freezing, nor **captured by a
+//!   closure** (a capture would let it outlive the region).
+//! * **Rigid** — the frozen form: immutable, and *materializable* (it may escape
+//!   the region). Freezing on region exit turns Flex into Rigid.
+//! * **Regional** — not a value's birth state, but the "inherit my container's
+//!   flexivity" color of a `[field]` mutable link: read through a Flex container
+//!   it is mutable, through a Rigid one it is frozen. Because nested links
+//!   *inherit* rather than store their own flexivity, freezing only the *head*
+//!   re-interprets them all at once — so [`Elaborator::freeze_region`] is O(1),
+//!   with no recursion.
+//! * **Irrelevant** — a non-regional (value/shared) record; primitives carry no
+//!   flexivity.
+//!
+//! Lifecycle: create ⟶ Flex ──(freeze on escape)──▶ Rigid (materializable).
+//!
+//! Representation note: `eval_type` leaves a regional record's type *unpinned*
+//! at [`Capability::Regional`]; [`Elaborator::eval_type_flex`] pins a binding's
+//! head to Flex (`[flex]`) or Rigid; [`Elaborator::freeze_region`] freezes an
+//! escaping value. Because `unify` ignores flexivity, a constructor's unpinned
+//! `Regional` result flows into a `[flex]` binding/return and is read as Flex
+//! there. A `[field]` mutable link is wrapped in `Nullable` (nullable, and
+//! reassignable in-region), so *assembling* (assigning) and *projecting*
+//! (reading) those fields ride the `Nullable` machinery — and so
+//! [`Elaborator::refine_flex`] looks through a `Nullable` head when pinning a
+//! binding. Generics are left uncolored — their modality is resolved at
+//! monomorphization.
 
 use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
@@ -125,7 +152,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// Freeze a value escaping a region: any regional record becomes `Rigid`.
+    /// Freeze a value escaping a region: peel any `Nullable` wrapper and turn a
+    /// `Flex` (or still-unpinned `Regional`) record *head* into `Rigid`, the
+    /// materializable frozen form.
+    ///
+    /// It re-colors only the head (through `Nullable` wrappers); it does *not*
+    /// descend into a record's fields or type arguments. That is sound, not a
+    /// shortcut: a `[field]` link is colored `Regional` (= inherit the
+    /// container's flexivity), never independently `Flex`, so once the head is
+    /// `Rigid` every link reads as frozen. The other field kinds — primitive,
+    /// shared/value rc (`Irrelevant`), already-rigid rc — are flex-invariant.
     pub fn freeze_region(&self, t: Ty<'tcx>) -> Ty<'tcx> {
         match t.kind() {
             TyKind::Record {
@@ -133,6 +169,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 args,
                 flex: Capability::Regional | Capability::Flex,
             } => self.tcx.mk_record(path, args, Capability::Rigid),
+            TyKind::Nullable(inner) => {
+                let inner = self.freeze_region(*inner);
+                self.tcx.mk_nullable(inner)
+            }
             _ => t,
         }
     }

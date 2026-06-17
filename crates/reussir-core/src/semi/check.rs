@@ -357,6 +357,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.mk_expr(ExprKind::RegionRun(Box::new(body)), frozen, span)
     }
 
+    /// Whether `ty`'s head (peeling `Nullable`) is a flex regional record — a
+    /// value that cannot be materialized, hence cannot escape its region.
+    fn is_flex(&mut self, ty: Ty<'tcx>) -> bool {
+        match self.infer.shallow_resolve(ty).kind() {
+            TyKind::Record {
+                flex: crate::semi::ty::Capability::Flex,
+                ..
+            } => true,
+            TyKind::Nullable(inner) => self.is_flex(*inner),
+            _ => false,
+        }
+    }
+
     fn infer_lambda(&mut self, lam: &surface::Lambda, span: Option<Span>) -> Expr<'tcx> {
         let mark = self.vars.mark();
         let mut params = Vec::new();
@@ -387,6 +400,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .filter(|v| !param_ids.contains(v))
             .map(|v| (v, self.vars.def(v).ty))
             .collect();
+
+        // A flex value cannot be materialized, so it cannot escape its region by
+        // being captured in a closure (the closure may outlive the region).
+        for &(v, ty) in &captures {
+            if self.is_flex(ty) {
+                let name = self.vars.def(v).name.clone();
+                self.error(
+                    span,
+                    format!(
+                        "closure cannot capture `{name}`: a flex value cannot escape its region"
+                    ),
+                );
+            }
+        }
 
         let param_tys: Vec<Ty<'tcx>> = params.iter().map(|(_, t)| *t).collect();
         let ty = self.tcx.mk_closure(&param_tys, body.ty);
