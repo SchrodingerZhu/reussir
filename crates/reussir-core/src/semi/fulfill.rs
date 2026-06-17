@@ -72,12 +72,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// ```
     ///
     /// Termination: a productive (round) strictly shrinks P and an unproductive
-    /// one ends the loop, so it runs at most |P| rounds. In fact σ (the inference
-    /// substitution) is *read-only* during discharge — it reads the table but
-    /// never solves a hole — so the deferred set is already stable after the
-    /// first round. The loop is effectively single-pass today; the iteration is
-    /// scaffolding for a future discharge that can itself solve holes (e.g. a
-    /// sole-candidate impl driving its self type).
+    /// one ends the loop, so it runs at most |P| rounds.
+    ///
+    /// Today σ (the inference substitution) is *read-only* during discharge — it
+    /// reads the table but never solves a hole — so the deferred set is already
+    /// stable after the first round and the loop is effectively single-pass. That
+    /// holds only because every obligation is single-argument (`Self` is the only
+    /// argument). With type-carrying traits — multi-parameter (`T: Add<Rhs>`) or
+    /// an associated-type output — selecting an impl must *unify* the trait's
+    /// non-`Self` arguments against the obligation, and those may be holes. Then
+    /// discharge writes σ, and the fixpoint becomes load-bearing: solving one
+    /// obligation's output can unblock another whose deferred self type was that
+    /// hole, so discharge and unification interleave (rustc's model). The
+    /// iteration is scaffolding for exactly that.
     pub fn resolve_obligations(&mut self) {
         let mut pending = std::mem::take(&mut self.fulfill).into_pending();
         loop {
@@ -145,6 +152,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// fire spuriously instead of deferring — latent until parameterized impls
     /// exist; the fix is to defer when the *deeply* resolved self type still
     /// holds any hole.
+    ///
+    /// The (impl) rule rebuilds the goal with only the resolved `self` argument;
+    /// a trait's other arguments — a multi-parameter `Rhs`, an associated-type
+    /// output — are dropped here. Supporting them means matching *all* arguments
+    /// in `select` and unifying the chosen impl's against the obligation's, which
+    /// is where discharge starts solving holes (see `resolve_obligations`).
     fn discharge_trait(&mut self, tref: &TraitRef<'tcx>) -> Discharge {
         let self_ty = self.infer.shallow_resolve(tref.self_ty());
         match self_ty.kind() {
