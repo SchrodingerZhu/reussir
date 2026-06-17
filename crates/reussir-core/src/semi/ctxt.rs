@@ -284,25 +284,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Run the three collection passes over a program: scan record stubs and
     /// function prototypes, populate record fields, then check function bodies.
     pub fn run(&mut self, program: &surface::Program) {
+        // Project each item once — `kind()` re-walks the node and is not
+        // memoized — then run the passes over the typed collections. Record
+        // stubs and function prototypes must all exist before field types and
+        // bodies are resolved (mutual recursion / forward references).
+        let mut records = Vec::new();
+        let mut functions = Vec::new();
         for stmt in program {
-            if let surface::StmtKind::Record(rec) = stmt.kind() {
-                self.scan_record(&rec, span_of(stmt));
+            let span = span_of(stmt);
+            match stmt.kind() {
+                surface::StmtKind::Record(rec) => records.push((rec, span)),
+                surface::StmtKind::Function(func) => functions.push((func, span)),
+                surface::StmtKind::Mod(..) | surface::StmtKind::ExternTrampoline(..) => {}
             }
         }
-        for stmt in program {
-            if let surface::StmtKind::Function(func) = stmt.kind() {
-                self.scan_function(&func, span_of(stmt));
-            }
+        for (rec, span) in &records {
+            self.scan_record(rec, *span);
         }
-        for stmt in program {
-            if let surface::StmtKind::Record(rec) = stmt.kind() {
-                self.populate_record(&rec);
-            }
+        for (func, span) in &functions {
+            self.scan_function(func, *span);
         }
-        for stmt in program {
-            if let surface::StmtKind::Function(func) = stmt.kind() {
-                self.check_function(&func, span_of(stmt));
-            }
+        for (rec, _) in &records {
+            self.populate_record(rec);
+        }
+        for (func, span) in &functions {
+            self.check_function(func, *span);
         }
     }
 
