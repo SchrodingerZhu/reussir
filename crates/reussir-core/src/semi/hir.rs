@@ -5,7 +5,7 @@
 
 use reussir_syntax::kind::TokenKey;
 
-use crate::semi::ty::{GenericId, Ty};
+use crate::semi::ty::{DefId, GenericId, Ty};
 use crate::surface::Span;
 use crate::utils::string::StringToken;
 
@@ -89,20 +89,20 @@ pub enum ExprKind<'tcx> {
     Seq(Vec<Expr<'tcx>>),
     /// A direct function call with (possibly hole) type arguments.
     FuncCall {
-        target: TokenKey,
+        target: DefId,
         ty_args: Vec<Ty<'tcx>>,
         args: Vec<Expr<'tcx>>,
         regional: bool,
     },
     /// A struct (compound) constructor call.
     CompoundCall {
-        target: TokenKey,
+        target: DefId,
         ty_args: Vec<Ty<'tcx>>,
         args: Vec<Expr<'tcx>>,
     },
     /// An enum variant constructor call.
     VariantCall {
-        target: TokenKey,
+        target: DefId,
         ty_args: Vec<Ty<'tcx>>,
         variant: usize,
         args: Vec<Expr<'tcx>>,
@@ -175,6 +175,7 @@ pub enum SwitchCases<'tcx> {
 /// A type-checked function, the unit of Semi output.
 #[derive(Clone, Debug)]
 pub struct Function<'tcx> {
+    pub def: DefId,
     pub name: TokenKey,
     pub generics: Vec<(TokenKey, GenericId)>,
     pub params: Vec<(TokenKey, VarId, Ty<'tcx>)>,

@@ -275,20 +275,29 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn check_ctor_pat(&mut self, ctor: &surface::CtorPat, ty: Ty<'tcx>) -> Pat {
         let ty = self.infer.shallow_resolve(ty);
-        let TyKind::Record { path, args, .. } = ty.kind() else {
+        let TyKind::Record { def, args, .. } = ty.kind() else {
             self.error(None, format!("cannot match constructor against `{ty:?}`"));
             return Pat::Wild;
         };
-        // The enum is named by the path qualifier (`Enum::Variant`), falling
-        // back to the scrutinee's own record name for a bare `Variant`.
+        // The enum is named by the path qualifier (`Enum::Variant`), resolved to
+        // its def; bare `Variant` falls back to the scrutinee's own record def.
         let want = ctor.path.basename;
-        let enum_key = ctor.path.segments.last().copied().unwrap_or(*path);
-        let Some(record) = self.records.get(&enum_key).cloned() else {
-            self.error(None, format!("unknown enum `{}`", self.sym(enum_key)));
+        let enum_def = match ctor.path.segments.last() {
+            Some(&seg) => match self.defs.resolve_record(seg) {
+                Some(d) => d,
+                None => {
+                    self.error(None, format!("unknown enum `{}`", self.sym(seg)));
+                    return Pat::Wild;
+                }
+            },
+            None => *def,
+        };
+        let Some(record) = self.records.get(&enum_def).cloned() else {
+            self.error(None, "unknown enum".to_string());
             return Pat::Wild;
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
-            self.error(None, format!("`{}` is not an enum", self.sym(enum_key)));
+            self.error(None, "not an enum".to_string());
             return Pat::Wild;
         };
         let Some(vidx) = variants.iter().position(|v| v.name == want) else {
@@ -574,10 +583,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// The field types of variant `v` of the enum at `ty`, instantiated with the
     /// enum's type arguments.
     fn variant_field_tys(&mut self, ty: Ty<'tcx>, v: usize) -> Vec<Ty<'tcx>> {
-        let TyKind::Record { path, args, .. } = ty.kind() else {
+        let TyKind::Record { def, args, .. } = ty.kind() else {
             return Vec::new();
         };
-        let Some(record) = self.records.get(path).cloned() else {
+        let Some(record) = self.records.get(def).cloned() else {
             return Vec::new();
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
@@ -602,8 +611,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn variant_count(&mut self, ty: Ty<'tcx>) -> usize {
         let ty = self.infer.shallow_resolve(ty);
-        if let TyKind::Record { path, .. } = ty.kind()
-            && let Some(record) = self.records.get(path)
+        if let TyKind::Record { def, .. } = ty.kind()
+            && let Some(record) = self.records.get(def)
             && let Some(RecordFields::Variants(vs)) = &record.fields
         {
             return vs.len();

@@ -4,7 +4,7 @@ use reussir_syntax::kind::TokenKey;
 
 use crate::semi::infer::Instantiation;
 use crate::semi::traits::{Obligation, TraitId, TraitRef};
-use crate::semi::ty::{GenericId, Ty, TyKind};
+use crate::semi::ty::{DefId, GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
 
 use super::ctxt::{Elaborator, RecordFields};
@@ -12,7 +12,10 @@ use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub(super) fn check_function(&mut self, func: &surface::Function, span: Option<Span>) {
-        let Some(proto) = self.functions.get(&func.name).cloned() else {
+        let Some(def) = self.defs.resolve_function(func.name) else {
+            return;
+        };
+        let Some(proto) = self.functions.get(&def).cloned() else {
             return;
         };
         self.enter_function(&proto.generics);
@@ -32,6 +35,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let return_ty = self.infer.resolve(proto.return_ty);
 
         self.elaborated.push(Function {
+            def: proto.def,
             name: proto.name,
             generics: proto.generics,
             params,
@@ -282,10 +286,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
-        let Some(proto) = self.functions.get(&fc.name.basename).cloned() else {
+        let Some(def) = self.defs.resolve_function(fc.name.basename) else {
             self.error(span, format!("unknown function `{fname}`"));
             return self.poison(span);
         };
+        let proto = self.functions[&def].clone();
         if proto.is_regional && !self.inside_region {
             self.error(span, "cannot call a regional function outside of a region");
         }
@@ -310,7 +315,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let result = self.infer.instantiate_ty(proto.return_ty, &inst);
         self.mk_expr(
             ExprKind::FuncCall {
-                target: proto.name,
+                target: def,
                 ty_args,
                 args,
                 regional: proto.is_regional,
@@ -440,7 +445,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let dst = self.infer_expr(dst);
         let dty = self.infer.shallow_resolve(dst.ty);
         let TyKind::Record {
-            path,
+            def,
             args,
             flex: crate::semi::ty::Capability::Flex,
         } = dty.kind()
@@ -448,7 +453,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(span, "assignment target must be a flex record");
             return self.poison(span);
         };
-        let Some((idx, field_ty, mutable)) = self.resolve_field(*path, args, acc) else {
+        let Some((idx, field_ty, mutable)) = self.resolve_field(*def, args, acc) else {
             self.error(span, "no such field on assignment target");
             return self.poison(span);
         };
@@ -475,11 +480,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut cur = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
-            let TyKind::Record { path, args, .. } = cur.kind() else {
+            let TyKind::Record { def, args, .. } = cur.kind() else {
                 self.error(span, format!("cannot access a field of `{cur:?}`"));
                 return self.poison(span);
             };
-            let Some((idx, field_ty, _)) = self.resolve_field(*path, args, acc) else {
+            let Some((idx, field_ty, _)) = self.resolve_field(*def, args, acc) else {
                 self.error(span, "no such field");
                 return self.poison(span);
             };
@@ -493,11 +498,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// The field type is instantiated with the record's type arguments.
     fn resolve_field(
         &mut self,
-        record_path: TokenKey,
+        record_def: DefId,
         args: &[Ty<'tcx>],
         acc: &surface::Access,
     ) -> Option<(u32, Ty<'tcx>, bool)> {
-        let record = self.records.get(&record_path)?;
+        let record = self.records.get(&record_def)?;
         let ty_params = record.ty_params.clone();
         let fields = record.fields.clone()?;
         let inst =
@@ -586,10 +591,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(record) = self.records.get(&name).cloned() else {
+        let Some(def) = self.defs.resolve_record(name) else {
             self.error(span, format!("unknown type `{}`", self.sym(name)));
             return self.poison(span);
         };
+        let record = self.records[&def].clone();
         if matches!(record.fields, Some(RecordFields::Variants(_))) {
             self.error(
                 span,
@@ -602,10 +608,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         let checked = self.check_ctor_args(name, args, &field_tys, span);
         let ty_args = self.inst_args(&record.generics_as_decls(), &inst);
-        let result = self.record_ty(name, &record, &inst);
+        let result = self.record_ty(&record, &inst);
         self.mk_expr(
             ExprKind::CompoundCall {
-                target: name,
+                target: def,
                 ty_args,
                 args: checked,
             },
@@ -622,10 +628,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(record) = self.records.get(&enum_name).cloned() else {
+        let Some(def) = self.defs.resolve_record(enum_name) else {
             self.error(span, format!("unknown enum `{}`", self.sym(enum_name)));
             return self.poison(span);
         };
+        let record = self.records[&def].clone();
         let Some(RecordFields::Variants(variants)) = &record.fields else {
             self.error(span, format!("`{}` is not an enum", self.sym(enum_name)));
             return self.poison(span);
@@ -653,10 +660,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             checked.push(self.check_expr(arg, *pty));
         }
         let ty_args = self.inst_args(&record.generics_as_decls(), &inst);
-        let result = self.record_ty(enum_name, &record, &inst);
+        let result = self.record_ty(&record, &inst);
         self.mk_expr(
             ExprKind::VariantCall {
-                target: enum_name,
+                target: def,
                 ty_args,
                 variant: vidx,
                 args: checked,
@@ -728,7 +735,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     fn record_ty(
         &mut self,
-        name: TokenKey,
         record: &super::ctxt::Record<'tcx>,
         inst: &Instantiation<'tcx>,
     ) -> Ty<'tcx> {
@@ -741,7 +747,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             super::ctxt::DefaultCap::Regional => crate::semi::ty::Capability::Regional,
             _ => crate::semi::ty::Capability::Irrelevant,
         };
-        self.tcx.mk_record(name, &args, flex)
+        self.tcx.mk_record(record.def, &args, flex)
     }
 
     // ----- instantiation helpers -----

@@ -102,17 +102,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
-        // A user record.
-        let Some(default_cap) = self.records.get(&key).map(|r| r.default_cap) else {
+        // A user record, resolved to its def.
+        let Some(def) = self.defs.resolve_record(key) else {
             self.error(Some(span), format!("unknown type `{}`", self.sym(key)));
             return self.tcx.mk(TyKind::Bottom);
         };
+        let default_cap = self.records[&def].default_cap;
         let args: Vec<Ty> = args.iter().map(|a| self.eval_type(a)).collect();
         let flex = match default_cap {
             DefaultCap::Value | DefaultCap::Shared => Capability::Irrelevant,
             DefaultCap::Regional => Capability::Regional,
         };
-        self.tcx.mk_record(key, &args, flex)
+        self.tcx.mk_record(def, &args, flex)
     }
 
     /// Evaluate a type that carries a `[flex]` flag (a parameter, return type,
@@ -131,18 +132,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         match t.kind() {
             TyKind::Record {
-                path,
+                def,
                 args,
                 flex: Capability::Regional,
-            } => self.tcx.mk_record(*path, args, refined),
+            } => self.tcx.mk_record(*def, args, refined),
             TyKind::Nullable(inner) => {
                 if let TyKind::Record {
-                    path,
+                    def,
                     args,
                     flex: Capability::Regional,
                 } = inner.kind()
                 {
-                    let inner = self.tcx.mk_record(*path, args, refined);
+                    let inner = self.tcx.mk_record(*def, args, refined);
                     self.tcx.mk_nullable(inner)
                 } else {
                     t
@@ -165,10 +166,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub fn freeze_region(&self, t: Ty<'tcx>) -> Ty<'tcx> {
         match t.kind() {
             TyKind::Record {
-                path,
+                def,
                 args,
                 flex: Capability::Regional | Capability::Flex,
-            } => self.tcx.mk_record(*path, args, Capability::Rigid),
+            } => self.tcx.mk_record(*def, args, Capability::Rigid),
             TyKind::Nullable(inner) => {
                 let inner = self.freeze_region(*inner);
                 self.tcx.mk_nullable(inner)

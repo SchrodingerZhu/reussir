@@ -19,9 +19,14 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr;
 
-use reussir_syntax::kind::TokenKey;
 use rustc_hash::FxHashMap;
 use stumpalo::ArenaRef;
+
+/// Identifies a resolved top-level item (a record or function). Globally unique
+/// and path-aware (see [`crate::semi::resolve`]); two same-named records in
+/// different modules get distinct `DefId`s, hence distinct nominal types.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct DefId(pub u32);
 
 /// Identifies a rigid type parameter (`<T>`) in scope.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -69,11 +74,11 @@ pub enum FpTy {
 /// `Eq`/`Hash` bottom out in pointer comparison — exactly the hash-cons key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TyKind<'tcx> {
-    /// A user-defined nominal type applied to arguments, at a capability. The
-    /// `path` is the record's interned name key (a real path/`DefId` lands with
-    /// name resolution; until then equal keys mean the same nominal type).
+    /// A user-defined nominal type applied to arguments, at a capability. `def`
+    /// is the record's resolved [`DefId`], so the nominal identity is path-aware
+    /// (distinct modules ⇒ distinct types) rather than by-name.
     Record {
-        path: TokenKey,
+        def: DefId,
         args: &'tcx [Ty<'tcx>],
         flex: Capability,
     },
@@ -202,9 +207,9 @@ impl<'tcx> TyCtxt<'tcx> {
         self.mk(TyKind::Nullable(inner))
     }
 
-    pub fn mk_record(&self, path: TokenKey, args: &[Ty<'tcx>], flex: Capability) -> Ty<'tcx> {
+    pub fn mk_record(&self, def: DefId, args: &[Ty<'tcx>], flex: Capability) -> Ty<'tcx> {
         let args = self.intern_tys(args);
-        self.mk(TyKind::Record { path, args, flex })
+        self.mk(TyKind::Record { def, args, flex })
     }
 
     pub fn mk_closure(&self, params: &[Ty<'tcx>], ret: Ty<'tcx>) -> Ty<'tcx> {

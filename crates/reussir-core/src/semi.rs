@@ -26,6 +26,7 @@ pub mod ctxt;
 pub mod fulfill;
 pub mod hir;
 pub mod pattern;
+pub mod resolve;
 pub mod ty_eval;
 
 pub use ctxt::{DefaultCap, Elaborator, Report, Severity};

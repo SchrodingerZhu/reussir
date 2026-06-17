@@ -5,9 +5,10 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
 use crate::semi::infer::InferCtxt;
+use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{GenericId, Ty, TyCtxt};
+use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt};
 use crate::surface::{self, Span};
 use crate::utils::string::StringUniqifier;
 
@@ -63,6 +64,7 @@ pub struct Variant<'tcx> {
 /// A collected record (struct or enum). Fields are populated in a second pass.
 #[derive(Clone, Debug)]
 pub struct Record<'tcx> {
+    pub def: DefId,
     pub name: TokenKey,
     pub ty_params: Vec<(TokenKey, GenericId)>,
     pub kind: surface::RecordKind,
@@ -74,6 +76,7 @@ pub struct Record<'tcx> {
 /// A collected function prototype (signature only).
 #[derive(Clone, Debug)]
 pub struct FuncProto<'tcx> {
+    pub def: DefId,
     pub name: TokenKey,
     pub generics: Vec<(TokenKey, GenericId)>,
     /// `(name, colored type)`.
@@ -143,8 +146,10 @@ pub struct Elaborator<'a, 'tcx> {
     pub traits: TraitDb<'tcx>,
     pub builtins: Builtins,
     pub trait_names: FxHashMap<&'static str, TraitId>,
-    pub records: FxHashMap<TokenKey, Record<'tcx>>,
-    pub functions: FxHashMap<TokenKey, FuncProto<'tcx>>,
+    /// Resolution registry: item `DefId`s and their fully-qualified paths.
+    pub defs: DefTable,
+    pub records: FxHashMap<DefId, Record<'tcx>>,
+    pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
@@ -176,6 +181,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Elaborator {
             tcx,
             resolver,
+            defs: DefTable::new(),
             traits,
             builtins,
             trait_names,
@@ -320,7 +326,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         };
         let name = rec.name;
+        let Some(def) = self.defs.declare_record(name) else {
+            self.error(
+                span,
+                format!("record `{}` is defined more than once", self.sym(name)),
+            );
+            return;
+        };
         let record = Record {
+            def,
             name,
             ty_params,
             kind: rec.kind,
@@ -328,12 +342,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             fields: None,
             span,
         };
-        if self.records.insert(name, record).is_some() {
-            self.error(
-                span,
-                format!("record `{}` is defined more than once", self.sym(name)),
-            );
-        }
+        self.records.insert(def, record);
     }
 
     fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) {
@@ -352,7 +361,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.generic_names.clear();
 
         let name = func.name;
+        let Some(def) = self.defs.declare_function(name) else {
+            self.error(
+                span,
+                format!("function `{}` is defined more than once", self.sym(name)),
+            );
+            return;
+        };
         let proto = FuncProto {
+            def,
             name,
             generics,
             params,
@@ -360,12 +377,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             is_regional: func.is_regional,
             span,
         };
-        if self.functions.insert(name, proto).is_some() {
-            self.error(
-                span,
-                format!("function `{}` is defined more than once", self.sym(name)),
-            );
-        }
+        self.functions.insert(def, proto);
     }
 
     /// Allocate generics for a list of `(name, bounds)` declarations.
@@ -385,8 +397,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     fn populate_record(&mut self, rec: &surface::Record) {
-        let name = rec.name;
-        let Some(record) = self.records.get(&name) else {
+        let Some(def) = self.defs.resolve_record(rec.name) else {
+            return;
+        };
+        let Some(record) = self.records.get(&def) else {
             return;
         };
         let ty_params = record.ty_params.clone();
@@ -440,7 +454,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         }
 
-        if let Some(r) = self.records.get_mut(&name) {
+        if let Some(r) = self.records.get_mut(&def) {
             r.fields = Some(fields);
         }
     }
