@@ -13,6 +13,7 @@ blake3.workspace = true
 ena.workspace = true
 rapidhash.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
 stumpalo.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }

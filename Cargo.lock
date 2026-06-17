@@ -867,6 +867,7 @@ dependencies = [
  "rapidhash",
  "reussir-syntax",
  "rustc-hash",
+ "smallvec",
  "stumpalo",
 ]
 

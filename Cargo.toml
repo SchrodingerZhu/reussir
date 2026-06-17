@@ -24,6 +24,9 @@ blake3 = "1"
 rapidhash = "4.4.1"
 # Fast non-DoS-resistant hasher for interner/compiler-internal maps.
 rustc-hash = "2.1"
+# Small-size-optimized vectors: arity-bounded surface-AST lists (path segments,
+# argument/type-parameter lists) stay inline and skip heap allocation.
+smallvec = "1.15"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
 # rustc's extracted union-find: keyed unification with value merging and
 # snapshot/rollback (the logged path-compression makes speculation correct).

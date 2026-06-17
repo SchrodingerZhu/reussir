@@ -20,6 +20,7 @@
 
 use reussir_syntax::ast::unescape_string;
 use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind, TokenKey};
+use smallvec::{SmallVec, smallvec};
 // Bare names resolve to `SyntaxKind` variants (used pervasively in matches).
 // A handful of variant names collide with surface AST *types* defined in this
 // module; for those the local type wins for the bare name (a glob import has
@@ -53,11 +54,12 @@ impl<T> Spanned<T> {
     }
 }
 
-/// A dotted name, e.g. `std::collections::List`, as interned token keys.
+/// A dotted name, e.g. `std::collections::List`, as interned token keys. The
+/// qualifier `segments` are usually empty or one deep, so they stay inline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path {
     pub basename: TokenKey,
-    pub segments: Vec<TokenKey>,
+    pub segments: SmallVec<[TokenKey; 2]>,
 }
 
 // ===== plain enums =====
@@ -231,7 +233,7 @@ fn name_after(node: &ResolvedNode, kw: SyntaxKind) -> &ResolvedToken {
 }
 
 fn path_of(node: &ResolvedNode) -> Path {
-    let mut segments: Vec<TokenKey> = tokens(node)
+    let mut segments: SmallVec<[TokenKey; 2]> = tokens(node)
         .filter(|t| t.kind().is_ident_like())
         .map(key)
         .collect();
@@ -240,9 +242,9 @@ fn path_of(node: &ResolvedNode) -> Path {
 }
 
 /// `(name, bounds)` declarations from a `GenericParamList` child.
-fn generics_of(node: &ResolvedNode) -> Vec<(TokenKey, Vec<Path>)> {
+fn generics_of(node: &ResolvedNode) -> SmallVec<[(TokenKey, Vec<Path>); 2]> {
     let Some(list) = child_node(node, GenericParamList) else {
-        return Vec::new();
+        return SmallVec::new();
     };
     nodes(list)
         .filter(|n| n.kind() == GenericParam)
@@ -260,9 +262,9 @@ fn generics_of(node: &ResolvedNode) -> Vec<(TokenKey, Vec<Path>)> {
 }
 
 /// `<T, _, U>` arguments on a path-based expression; `_` is `None`.
-fn type_args_of(node: &ResolvedNode) -> Vec<Option<Type>> {
+fn type_args_of(node: &ResolvedNode) -> SmallVec<[Option<Type>; 2]> {
     let Some(list) = child_node(node, TypeArgList) else {
-        return Vec::new();
+        return SmallVec::new();
     };
     nodes(list)
         .filter(|n| is_type_kind(n.kind()) || n.kind() == InferType)
@@ -278,8 +280,8 @@ fn type_args_of(node: &ResolvedNode) -> Vec<Option<Type>> {
 
 /// Flatten `AccessSeg` children into accesses. A fused float token like `0.1`
 /// contributes two numeric accesses.
-fn access_segs_of(node: &ResolvedNode) -> Vec<Access> {
-    let mut out = Vec::new();
+fn access_segs_of(node: &ResolvedNode) -> SmallVec<[Access; 2]> {
+    let mut out = SmallVec::new();
     for seg in nodes(node).filter(|n| n.kind() == AccessSeg) {
         for t in tokens(seg) {
             match t.kind() {
@@ -373,9 +375,9 @@ pub enum TypeKind {
     TypeStr,
     TypeUnit,
     /// A named type applied to arguments.
-    TypeExpr(Path, Vec<Type>),
+    TypeExpr(Path, SmallVec<[Type; 2]>),
     /// A closure type: argument types and a result.
-    TypeArrow(Vec<Type>, Type),
+    TypeArrow(SmallVec<[Type; 2]>, Type),
 }
 
 /// A type expression (a view over a `PrimType` / `PathType` / `ArrowType` node).
@@ -430,7 +432,7 @@ impl Type {
                         .map(Type::new)
                         .collect()
                 } else {
-                    vec![Type::new(lhs)]
+                    smallvec![Type::new(lhs)]
                 };
                 TypeKind::TypeArrow(args, Type::new(rhs))
             }
@@ -453,6 +455,8 @@ pub enum PatternKind {
 #[derive(Clone, Debug)]
 pub struct CtorPat {
     pub path: Path,
+    // `Vec`, not `SmallVec`: `PatArg` is recursive (`PatArg -> PatternKind ->
+    // CtorPat`), so the heap indirection is needed to give it a finite size.
     pub args: Vec<PatArg>,
     pub has_ellipsis: bool,
     pub is_named: bool,
@@ -547,7 +551,7 @@ fn pat_arg_of(node: &ResolvedNode) -> PatArg {
 /// A lambda's payload.
 #[derive(Clone, Debug)]
 pub struct Lambda {
-    pub args: Vec<(TokenKey, Option<Type>)>,
+    pub args: SmallVec<[(TokenKey, Option<Type>); 4]>,
     pub body: Expr,
     pub ret_ty: Option<Type>,
 }
@@ -557,17 +561,17 @@ pub struct Lambda {
 pub struct FuncCall {
     pub name: Path,
     /// Explicit type arguments; `None` means "infer".
-    pub ty_args: Vec<Option<Type>>,
-    pub args: Vec<Expr>,
+    pub ty_args: SmallVec<[Option<Type>; 2]>,
+    pub args: SmallVec<[Expr; 4]>,
 }
 
 /// A constructor call.
 #[derive(Clone, Debug)]
 pub struct CtorCall {
     pub name: Path,
-    pub ty_args: Vec<Option<Type>>,
+    pub ty_args: SmallVec<[Option<Type>; 2]>,
     /// Each argument carries an optional field name (for named ctor syntax).
-    pub args: Vec<(Option<TokenKey>, Expr)>,
+    pub args: SmallVec<[(Option<TokenKey>, Expr); 4]>,
 }
 
 #[derive(Clone, Debug)]
@@ -578,16 +582,37 @@ pub enum ExprKind {
     Let(Spanned<TokenKey>, Option<(Type, bool)>, Expr),
     Match(Expr, Vec<(Pattern, Expr)>),
     RegionalExpr(Expr),
-    Lambda(Lambda),
+    Lambda(Box<Lambda>),
     BinOpExpr(BinOp, Expr, Expr),
     UnaryOpExpr(UnaryOp, Expr),
     Cast(Type, Expr),
-    CallExpr(Expr, Vec<Expr>),
-    AccessChain(Expr, Vec<Access>),
+    /// An *indirect* call: apply a computed callee value to arguments, e.g.
+    /// `(|x| x)(1)` or `make_adder(1)(2)`. The callee is an arbitrary [`Expr`]
+    /// that must evaluate to a closure; there is no name and no type arguments
+    /// (a closure value has nothing to instantiate). Checked by
+    /// `infer_closure_call`. Contrast with [`ExprKind::FuncCallExpr`].
+    CallExpr(Expr, SmallVec<[Expr; 4]>),
+    AccessChain(Expr, SmallVec<[Access; 2]>),
     Assign(Expr, Access, Expr),
     Var(Path),
-    FuncCallExpr(FuncCall),
-    CtorCallExpr(CtorCall),
+    /// A *direct* call to a named function: a path applied to arguments, with
+    /// optional explicit type arguments, e.g. `f(1)` or `id<i32>(x)`. The callee
+    /// is a [`Path`] (usually) resolved to a top-level function prototype (static
+    /// dispatch), so it carries `ty_args` for instantiating that function's
+    /// generics. Checked by `infer_func_call`. Contrast with
+    /// [`ExprKind::CallExpr`], whose callee is a first-class value.
+    ///
+    /// This form is *syntactic*: the parser emits it for any `name(args)`, so a
+    /// local variable bound to a closure — `let var = |x| x; var(0)` — also lands
+    /// here, since whether `var` is a function or a binding is a scope question
+    /// the parser cannot answer. Resolving function-vs-local-closure is therefore
+    /// deferred to `infer_func_call` at callee-resolution time, where a local
+    /// binding should shadow a same-named function and be dispatched indirectly
+    /// (as an [`ExprKind::CallExpr`] on a `Var` callee).
+    /// TODO: not yet wired up — `infer_func_call` currently only consults the
+    /// function table, so calling a local closure by name is rejected.
+    FuncCallExpr(Box<FuncCall>),
+    CtorCallExpr(Box<CtorCall>),
 }
 
 /// An expression (a view over the red tree). Parentheses are transparent.
@@ -611,6 +636,15 @@ impl Expr {
         node_span(&self.node)
     }
 
+    /// Project the node's immediate children into a typed [`ExprKind`]. This
+    /// re-walks the direct children on every call (no memoization).
+    ///
+    /// Ideally we could cache the projection keyed by the resolved node, so a
+    /// repeated `kind()` on the same `Expr` is free. We don't do that yet: it is
+    /// unclear whether the elaborator actually re-reads the same node's fields
+    /// (today each is visited about once), and whether the re-walk — a handful
+    /// of bounds-checked child scans, no subtree traversal — is ever a real
+    /// bottleneck. Add a cache only once a profile says it matters.
     pub fn kind(&self) -> ExprKind {
         let node = &self.node;
         match node.kind() {
@@ -677,7 +711,7 @@ impl Expr {
                 let ret_ty = child_node(node, RetType)
                     .map(|r| Type::new(nodes(r).find(|n| is_type_kind(n.kind())).expect("ret")));
                 let body = Expr::new(expr_children(node).last().expect("lambda body"));
-                ExprKind::Lambda(Lambda { args, body, ret_ty })
+                ExprKind::Lambda(Box::new(Lambda { args, body, ret_ty }))
             }
             BinExpr => {
                 let op = tokens(node)
@@ -732,11 +766,11 @@ impl Expr {
                 let args = child_node(node, ArgList)
                     .map(|l| expr_children(l).map(Expr::new).collect())
                     .unwrap_or_default();
-                ExprKind::FuncCallExpr(FuncCall {
+                ExprKind::FuncCallExpr(Box::new(FuncCall {
                     name: path_of(path),
                     ty_args: type_args_of(node),
                     args,
-                })
+                }))
             }
             CtorCallExpr => {
                 let path = child_node(node, PathKind).expect("constructor path");
@@ -758,11 +792,11 @@ impl Expr {
                             .collect()
                     })
                     .unwrap_or_default();
-                ExprKind::CtorCallExpr(CtorCall {
+                ExprKind::CtorCallExpr(Box::new(CtorCall {
                     name: path_of(path),
                     ty_args: type_args_of(node),
                     args,
-                })
+                }))
             }
             k => unreachable!("unexpected expression node {k:?}"),
         }
@@ -791,8 +825,8 @@ pub struct Function {
     pub visibility: Visibility,
     pub name: TokenKey,
     /// Each generic is `(name, bounds)`.
-    pub generics: Vec<(TokenKey, Vec<Path>)>,
-    pub params: Vec<(TokenKey, Type, bool)>,
+    pub generics: SmallVec<[(TokenKey, Vec<Path>); 2]>,
+    pub params: SmallVec<[(TokenKey, Type, bool); 4]>,
     pub return_type: Option<(Type, bool)>,
     pub is_regional: bool,
     pub body: Option<Expr>,
@@ -802,13 +836,13 @@ pub struct Function {
 pub enum RecordFields {
     Named(Vec<Spanned<(TokenKey, Type, bool)>>),
     Unnamed(Vec<Spanned<(Type, bool)>>),
-    Variants(Vec<Spanned<(TokenKey, Vec<Type>)>>),
+    Variants(Vec<Spanned<(TokenKey, SmallVec<[Type; 2]>)>>),
 }
 
 #[derive(Clone, Debug)]
 pub struct Record {
     pub name: TokenKey,
-    pub ty_params: Vec<(TokenKey, Vec<Path>)>,
+    pub ty_params: SmallVec<[(TokenKey, Vec<Path>); 2]>,
     pub fields: RecordFields,
     pub kind: RecordKind,
     pub visibility: Visibility,
@@ -822,7 +856,7 @@ pub struct ExternTrampoline {
     pub name: String,
     pub abi: String,
     pub func: Path,
-    pub ty_args: Vec<Type>,
+    pub ty_args: SmallVec<[Type; 2]>,
 }
 
 #[derive(Clone, Debug)]
@@ -879,7 +913,7 @@ fn function_of(node: &ResolvedNode) -> Function {
             .expect("return type");
         (Type::new(ty), flex)
     });
-    let params = child_node(node, ParamList).map_or_else(Vec::new, |list| {
+    let params = child_node(node, ParamList).map_or_else(SmallVec::new, |list| {
         nodes(list)
             .filter(|n| n.kind() == Param)
             .map(|param| {
