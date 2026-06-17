@@ -1,6 +1,15 @@
 //! The fulfillment context: trait obligations that are collected during
 //! checking and discharged once enough holes are solved.
 //!
+//! *Discharge* is the proof-theory term we borrow: to **discharge** an
+//! obligation is to remove it from the pending set by *deciding* it — either
+//! proving it holds (finding the impl, or the super-trait subsumption, that
+//! satisfies it) or rejecting it as unsatisfiable. An obligation that cannot yet
+//! be decided — its self type is still an inference hole — is neither proved nor
+//! rejected but **deferred**, and retried once more of the substitution is
+//! known. (The dual of `register`: checking *registers* obligations, the
+//! fulfillment pass *discharges* them.)
+//!
 //! This replaces the inherited "bounded hole" mechanism. A numeric literal or a
 //! generic instantiation registers an [`Obligation`]; after a function body is
 //! checked, [`Elaborator::resolve_obligations`] runs a fixpoint that discharges
@@ -41,6 +50,34 @@ enum Discharge {
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Discharge all pending obligations to a fixpoint, reporting any that fail
     /// or remain ambiguous.
+    ///
+    /// Operational semantics. A configuration is ⟨P, E⟩ — P the pending
+    /// obligation set, E the accumulated diagnostics. Each obligation decides to
+    /// ✓ (solved), ✗ (failed) or ? (deferred) per the rules on `discharge_trait`.
+    /// One round drops the decided obligations and blames the failures:
+    ///
+    /// ```text
+    ///   P? = { o ∈ P | o ⇝ ? }       P✗ = { o ∈ P | o ⇝ ✗ }
+    /// ──────────────────────────────────────────────────────── (round)
+    ///            ⟨P, E⟩ ⟶ ⟨P?, E ∪ errors(P✗)⟩
+    /// ```
+    ///
+    /// The loop applies (round) while it makes progress (P? ⊊ P) and P? ≠ ∅, then
+    /// reports every obligation still pending at the fixpoint as ambiguous:
+    ///
+    /// ```text
+    ///   ⟨P, E⟩ is a fixpoint (no progress)      o ∈ P
+    /// ───────────────────────────────────────────────────── (ambiguous)
+    ///       E ∪= ("type annotations needed" @ span(o))
+    /// ```
+    ///
+    /// Termination: a productive (round) strictly shrinks P and an unproductive
+    /// one ends the loop, so it runs at most |P| rounds. In fact σ (the inference
+    /// substitution) is *read-only* during discharge — it reads the table but
+    /// never solves a hole — so the deferred set is already stable after the
+    /// first round. The loop is effectively single-pass today; the iteration is
+    /// scaffolding for a future discharge that can itself solve holes (e.g. a
+    /// sole-candidate impl driving its self type).
     pub fn resolve_obligations(&mut self) {
         let mut pending = std::mem::take(&mut self.fulfill).into_pending();
         loop {
@@ -73,6 +110,41 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.discharge_trait(tref)
     }
 
+    /// Decide one obligation `o = (trait(o) : self(o))` against the current
+    /// state.
+    ///
+    /// Operational semantics. With ⟦·⟧σ = `shallow_resolve`, Γ(g) the declared
+    /// bounds of generic `g`, `D ⊢ b ⊵ t` for `TraitDb::implies` (t lies in b's
+    /// super-trait closure), and select_D for impl search, the outcome
+    /// ρ ∈ {✓, ✗, ?} is:
+    ///
+    /// ```text
+    ///   ⟦self(o)⟧σ = α               (an inference hole)
+    /// ──────────────────────────────────────────────────── (defer)
+    ///                  o ⇝ ?
+    ///
+    ///   ⟦self(o)⟧σ = g    ∃ b ∈ Γ(g). D ⊢ b ⊵ trait(o)
+    /// ──────────────────────────────────────────────────── (param)
+    ///                  o ⇝ ✓
+    ///
+    ///   ⟦self(o)⟧σ = g    ∀ b ∈ Γ(g). ¬(D ⊢ b ⊵ trait(o))
+    /// ──────────────────────────────────────────────────── (param-fail)
+    ///                  o ⇝ ✗
+    ///
+    ///   ⟦self(o)⟧σ = τ (concrete)    select_D(trait(o), τ) = Ok
+    /// ────────────────────────────────────────────────────────── (impl)
+    ///                  o ⇝ ✓
+    ///
+    ///   ⟦self(o)⟧σ = τ (concrete)    select_D(trait(o), τ) = Err
+    /// ────────────────────────────────────────────────────────── (no-impl)
+    ///                  o ⇝ ✗
+    /// ```
+    ///
+    /// Caveat: (defer) fires only on a *head* hole. A self type with holes nested
+    /// under a constructor (`List<?h>`) is read as concrete, so (no-impl) can
+    /// fire spuriously instead of deferring — latent until parameterized impls
+    /// exist; the fix is to defer when the *deeply* resolved self type still
+    /// holds any hole.
     fn discharge_trait(&mut self, tref: &TraitRef<'tcx>) -> Discharge {
         let self_ty = self.infer.shallow_resolve(tref.self_ty());
         match self_ty.kind() {
