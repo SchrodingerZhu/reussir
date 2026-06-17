@@ -51,40 +51,45 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Discharge all pending obligations to a fixpoint, reporting any that fail
     /// or remain ambiguous.
     ///
-    /// Operational semantics. A configuration is ⟨P, E⟩ — P the pending
-    /// obligation set, E the accumulated diagnostics. Each obligation decides to
-    /// ✓ (solved), ✗ (failed) or ? (deferred) per the rules on `discharge_trait`.
-    /// One round drops the decided obligations and blames the failures:
+    /// Operational semantics (substructural). Read the pending obligations as a
+    /// *linear* context Δ — a multiset of resources, each to be discharged
+    /// *exactly once*. The machine state is ⟨Δ | σ | E⟩ with σ the inference
+    /// substitution and E the diagnostics. A decidable obligation is *consumed*
+    /// (`o ⇝ ρ` is the per-obligation judgment on `discharge_trait`; `Δ, o` is
+    /// multiset extension; `m @ span(o)` blames message `m` at `o`'s span). A
+    /// deferred obligation matches no rule and stays in Δ:
     ///
     /// ```text
-    ///   P? = { o ∈ P | o ⇝ ? }       P✗ = { o ∈ P | o ⇝ ✗ }
-    /// ──────────────────────────────────────────────────────── (round)
-    ///            ⟨P, E⟩ ⟶ ⟨P?, E ∪ errors(P✗)⟩
+    ///         o ⇝ ✓                            o ⇝ ✗(m)
+    /// ────────────────────────────    ────────────────────────────────────
+    ///   ⟨Δ, o | σ | E⟩ ⟶ ⟨Δ | σ | E⟩    ⟨Δ, o | σ | E⟩ ⟶ ⟨Δ | σ | E, m@span(o)⟩
     /// ```
     ///
-    /// The loop applies (round) while it makes progress (P? ⊊ P) and P? ≠ ∅, then
-    /// reports every obligation still pending at the fixpoint as ambiguous:
+    /// Reduce to a normal form ⟨Δ | σ | E⟩ in which every remaining `o` is
+    /// deferred. Those are *leaked* resources — obligations that could not be
+    /// consumed — and each is reported:
     ///
     /// ```text
-    ///   ⟨P, E⟩ is a fixpoint (no progress)      o ∈ P
-    /// ───────────────────────────────────────────────────── (ambiguous)
-    ///       E ∪= ("type annotations needed" @ span(o))
+    ///   ⟨Δ | σ | E⟩ normal      o ∈ Δ
+    /// ────────────────────────────────────── (leak)
+    ///   E ∪= ("type annotations needed" @ span(o))
     /// ```
     ///
-    /// Termination: a productive (round) strictly shrinks P and an unproductive
-    /// one ends the loop, so it runs at most |P| rounds.
+    /// Linearity is the content: an obligation is discharged exactly once — no
+    /// contraction (a bound is not proved twice), no weakening (it cannot be
+    /// silently dropped) — so a leftover resource is *precisely* an ambiguity.
+    /// Termination is immediate: every ⟶ removes one obligation from Δ.
     ///
-    /// Today σ (the inference substitution) is *read-only* during discharge — it
-    /// reads the table but never solves a hole — so the deferred set is already
-    /// stable after the first round and the loop is effectively single-pass. That
-    /// holds only because every obligation is single-argument (`Self` is the only
-    /// argument). With type-carrying traits — multi-parameter (`T: Add<Rhs>`) or
-    /// an associated-type output — selecting an impl must *unify* the trait's
-    /// non-`Self` arguments against the obligation, and those may be holes. Then
-    /// discharge writes σ, and the fixpoint becomes load-bearing: solving one
-    /// obligation's output can unblock another whose deferred self type was that
-    /// hole, so discharge and unification interleave (rustc's model). The
-    /// iteration is scaffolding for exactly that.
+    /// Today no step advances σ — discharge only reads the table — so a deferred
+    /// obligation is permanently stuck and the normal form is one sweep away.
+    /// That holds only because every obligation is single-argument (`Self`). With
+    /// type-carrying traits — multi-parameter (`T: Add<Rhs>`) or an associated-
+    /// type output — the (✓) step would also step σ ⟶ σ′ (unifying the trait's
+    /// non-`Self` arguments, which may be holes), which can make a previously
+    /// stuck obligation reducible: the cascade, where discharge and unification
+    /// interleave (rustc's model). The code realizes this rewrite with a batched
+    /// schedule (`std::mem::take` the bag, sweep, keep the deferred) — one fair
+    /// ordering of the steps above.
     pub fn resolve_obligations(&mut self) {
         let mut pending = std::mem::take(&mut self.fulfill).into_pending();
         loop {
