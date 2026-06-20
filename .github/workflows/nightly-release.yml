@@ -384,6 +384,14 @@ jobs:
         shell: msys2 {0}
         run: |
           pip install lit
+          # The repo-root rust-toolchain.toml pins only a bare `channel`, which
+          # rustup resolves against the default host triple. On this clang64
+          # image that default is the MSVC host, so the runtime would build as
+          # x86_64-pc-windows-msvc and emit /DEFAULTLIB:oldnames directives that
+          # the gnu clang linker used by the integration tests cannot satisfy
+          # (ld.lld: could not open 'libOLDNAMES.a'). Pin the default host to
+          # gnullvm so the bare channel resolves to the gnu/LLVM toolchain.
+          rustup set default-host x86_64-pc-windows-gnullvm
           rustup target add x86_64-pc-windows-gnullvm
           rustup default nightly-2026-02-15-x86_64-pc-windows-gnullvm
           rustup component add rust-src rustfmt clippy
