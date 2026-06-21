@@ -8,6 +8,10 @@ description = "Core language representation for Reussir"
 [lib]
 name = "reussir_core"
 
+[[bin]]
+name = "reussir-elab"
+path = "src/bin/reussir-elab.rs"
+
 [dependencies]
 blake3.workspace = true
 ena.workspace = true
@@ -17,5 +21,7 @@ rapidhash.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true
+# CLI argument parsing for the `reussir-elab` driver.
+palc.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }

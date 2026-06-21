@@ -18,9 +18,14 @@ pub mod utils;
 ///
 /// The arena's `with_scope` brands every handle with a generative lifetime, so
 /// no `Ty` can escape `f` — exactly the property that makes pointer interning
-/// sound. Real entry points (the elaborator) wrap their work the same way.
-#[cfg(test)]
-pub(crate) fn with_tcx<R>(f: impl for<'tcx> FnOnce(&semi::ty::TyCtxt<'tcx>) -> R) -> R {
+/// sound. Every entry point (the elaborator, the CLI drivers) wraps its work
+/// this way; the result `R` must therefore not borrow from the arena.
+pub fn in_arena<R>(f: impl for<'tcx> FnOnce(&semi::ty::TyCtxt<'tcx>) -> R) -> R {
     let mut arena = stumpalo::Arena::new();
     arena.with_scope(|arena_ref| f(&semi::ty::TyCtxt::new(arena_ref)))
+}
+
+#[cfg(test)]
+pub(crate) fn with_tcx<R>(f: impl for<'tcx> FnOnce(&semi::ty::TyCtxt<'tcx>) -> R) -> R {
+    in_arena(f)
 }
