@@ -160,7 +160,9 @@ impl<'a> Mangler<'a> {
 /// non-ASCII names are Punycode-encoded (with `-`→`_`) behind a `u` tag.
 fn ident(out: &mut String, name: &str) {
     if name.is_ascii() {
-        push_ident_body(out, name, name.chars().count());
+        // ASCII ⇒ one byte per char, so the byte length is the character count
+        // without a second O(n) scan.
+        push_ident_body(out, name, name.len());
     } else {
         let punycode = punycode::encode(name).replace('-', "_");
         out.push('u');
