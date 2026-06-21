@@ -11,6 +11,10 @@ use super::ctxt::{Elaborator, RecordFields};
 use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
+    /// Check a function definition: bind its parameters into Γ, check the body
+    /// against the declared return type (`Γ ⊢ body ⇐ return_ty`), discharge the
+    /// collected trait obligations, then zonk. Drives the checking judgment over a
+    /// whole function body.
     pub(super) fn check_function(&mut self, func: &surface::Function, span: Option<Span>) {
         let Some(def) = self.defs.resolve_function(func.name) else {
             return;
@@ -55,12 +59,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Expr { kind, ty, span, id }
     }
 
+    /// (POISON) error recovery: `Γ ⊢ e ⇒ (poison : ⊥)`. `⊥` (Bottom) unifies with
+    /// anything and is never stored into a hole, so a poisoned subterm does not
+    /// cascade into spurious follow-on diagnostics.
     fn poison(&mut self, span: Option<Span>) -> Expr<'tcx> {
         let ty = self.tcx.mk(TyKind::Bottom);
         self.mk_expr(ExprKind::Poison, ty, span)
     }
 
-    /// Unify `found` with `expected`, reporting a mismatch.
+    /// (CHECK) the unification-coercion that backs the checking judgment: unify the
+    /// synthesized type `found` with `expected`. On failure emit a mismatch
+    /// (CHECK-FAIL) but do not abort — checking always yields a node.
     fn expect(&mut self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Option<Span>) {
         if self.infer.unify(expected, found).is_err() {
             let e = self.infer.resolve(expected);
@@ -72,14 +81,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// Check an expression against an expected type.
+    /// The **checking** judgment `Γ ⊢ e ⇐ T ⇒ h`: synthesize `e`, then [`Self::expect`]
+    /// its type against `T` (the CHECK rule). Always produces a node.
     pub(super) fn check_expr(&mut self, e: &surface::Expr, expected: Ty<'tcx>) -> Expr<'tcx> {
         let h = self.infer_expr(e);
         self.expect(h.ty, expected, h.span);
         h
     }
 
-    /// Infer the type of an expression, producing typed HIR.
+    /// The **synthesis** judgment `Γ ⊢ e ⇒ (h : T)`: dispatch each surface form to
+    /// its typing rule, producing typed HIR whose `ty` field is the synthesized `T`.
+    /// Notation used by the per-form rules below: `⇒` synthesizes a type, `⇐` checks
+    /// against one, and `Trait ⊳ T` is a registered trait obligation on `T`.
     pub(super) fn infer_expr(&mut self, e: &surface::Expr) -> Expr<'tcx> {
         let span = Some(e.span());
         let kind = e.kind();
@@ -107,6 +120,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// (LIT) literals synthesize: an integer literal is a fresh hole `α` with
+    /// `Integral ⊳ α`, a float literal a fresh `α` with `FloatingPoint ⊳ α`; `s ⇒ Str`
+    /// and `b ⇒ Bool`. The literal's concrete width is left to inference.
     fn infer_const(&mut self, c: &Const, span: Option<Span>) -> Expr<'tcx> {
         match c {
             Const::ConstInt(i) => {
@@ -131,6 +147,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// Register the obligation `ty : Trait<trait_id>` — a single-parameter bound,
+    /// written `Trait ⊳ ty` in the rules — for the fulfillment pass to discharge.
     pub(super) fn register_bound(&mut self, trait_id: TraitId, ty: Ty<'tcx>, span: Option<Span>) {
         self.fulfill.register(
             Obligation::Trait(TraitRef {
@@ -141,6 +159,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         );
     }
 
+    /// (VAR) `Γ ⊢ x ⇒ (Var v : T)` when `x:T` is in scope; an unknown bare name is
+    /// (VAR-ERR) → poison. A qualified path with no arguments is a nullary constructor.
     fn infer_var(&mut self, path: &surface::Path, span: Option<Span>) -> Expr<'tcx> {
         if path.segments.is_empty() {
             if let Some((id, ty)) = self.vars.lookup(path.basename) {
@@ -156,6 +176,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.infer_ctor(path, &[], &[], span)
     }
 
+    /// (SEQ) `Γ ⊢ {e₁;…;eₙ} ⇒ (Seq[hᵢ] : Tₙ)`: synthesize each element in a scope
+    /// marked on entry and restored on exit; an empty sequence has type `Unit`.
     fn infer_seq(&mut self, exprs: &[surface::Expr], span: Option<Span>) -> Expr<'tcx> {
         let mark = self.vars.mark();
         let mut out = Vec::with_capacity(exprs.len());
@@ -169,6 +191,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.mk_expr(ExprKind::Seq(out), ty, span)
     }
 
+    /// (IF) `Γ ⊢ if c t f ⇒ (If(hc,ht,hf) : T)`: `c ⇐ Bool`, `t ⇒ T`, then `f ⇐ T`
+    /// (the then-branch's synthesized type drives the else-branch).
     fn infer_if(
         &mut self,
         c: &surface::Expr,
@@ -188,6 +212,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (LET) `Γ ⊢ let name:ann = v ⇒ (Let{…} : Unit)`: with an annotation `(A, flex)`,
+    /// `v ⇐ eval_flex(A)` and `Tv = eval_flex(A)`; without one, `v ⇒ Tv`. Binds
+    /// `name : Tv` into Γ for the rest of the enclosing sequence.
     fn infer_let(
         &mut self,
         name: &surface::Spanned<reussir_syntax::kind::TokenKey>,
@@ -221,6 +248,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// Binary operators synthesize:
+    /// (ARITH) `op∈{+,-,*,/,%}`: `l ⇒ T`, `Num ⊳ T`, `r ⇐ T`, result `T`.
+    /// (LOGIC) `op∈{&&,||}`: `l ⇐ Bool`, `r ⇐ Bool`, result `Bool`.
+    /// (CMP) comparisons: `l ⇒ T`, `r ⇐ T`, result `Bool`; ordering comparisons also
+    /// require `Num ⊳ T` (equality/inequality do not).
     fn infer_binop(
         &mut self,
         op: BinOp,
@@ -261,6 +293,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// Unary operators synthesize: (NEG) `-e ⇒ (Negate he : T)` with `e ⇒ T` and
+    /// `Num ⊳ T`; (NOT) `!e ⇒ (Not he : Bool)` with `e ⇐ Bool`.
     fn infer_unop(&mut self, op: UnaryOp, e: &surface::Expr, span: Option<Span>) -> Expr<'tcx> {
         match op {
             UnaryOp::Negate => {
@@ -277,6 +311,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// (CAST) `Γ ⊢ (e as A) ⇒ (Cast(he, Ttgt) : Ttgt)` where `Ttgt = eval(A)`: `e ⇒ _`
+    /// and both source and `Ttgt` carry `Num`; an unconstrained source hole is pinned
+    /// to `Ttgt` (the cast doubles as an annotation).
     fn infer_cast(
         &mut self,
         ty: &surface::Type,
@@ -307,6 +344,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.mk_expr(ExprKind::Cast(Box::new(e), target), target, span)
     }
 
+    /// (CALL) `Γ ⊢ name⟨ty_args⟩(args) ⇒ (FuncCall{…} : R)`: resolve `name` to a
+    /// function, instantiate its generics to a substitution θ, check `argᵢ ⇐
+    /// ⌈paramᵢ⌉θ`, and return `R = ⌈return_ty⌉θ`. A regional callee outside a region,
+    /// an unknown name, or an arity mismatch is a diagnostic (unknown name ⇒ poison).
+    /// Note: this resolves *functions* only — a closure-valued variable is not callable
+    /// here (see `infer_closure_call`).
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
         let Some(def) = self.defs.resolve_function(fc.name.basename) else {
@@ -348,6 +391,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (APP) `Γ ⊢ callee(args) ⇒ (ClosureCall{hc,[hᵢ]} : R)`: synthesize the callee to
+    /// a `Closure{⟨Pᵢ⟩, R}` and check `argᵢ ⇐ Pᵢ`. Fewer args than params yields a
+    /// residual `Closure` over the remaining params (partial application); more args is
+    /// a diagnostic; a non-closure callee is (APP-ERR) → poison.
     fn infer_closure_call(
         &mut self,
         callee: &surface::Expr,
@@ -401,6 +448,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (REGION) `Γ ⊢ region { body } ⇒ (RegionRun(hb) : freeze(T))`: set
+    /// `inside_region` for the body (`body ⇒ T`), restore it, and stamp the node with
+    /// the head-only `freeze_region(T)` (Regional|Flex → Rigid). A nested region is a
+    /// diagnostic. This is the only rule that rewrites the synthesized type.
     fn infer_region(&mut self, body: &surface::Expr, span: Option<Span>) -> Expr<'tcx> {
         if self.inside_region {
             self.error(span, "cannot create a nested region");
@@ -426,6 +477,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// (LAM) `Γ ⊢ |params…| body ⇒ (Closure{captures,params,hb} : Closure{⟨Pₖ⟩, hb.ty})`:
+    /// each param type is its annotation or a fresh hole; the body is checked against an
+    /// annotated return type or synthesized; captures are the body's free variables
+    /// minus the params. Capturing or returning a flex value is a diagnostic (a flex
+    /// value cannot escape its region).
     fn infer_lambda(&mut self, lam: &surface::Lambda, span: Option<Span>) -> Expr<'tcx> {
         let mark = self.vars.mark();
         let mut params = Vec::new();
@@ -494,6 +550,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (ASSIGN) `Γ ⊢ dst.acc = src ⇒ (Assign(hd,idx,hs) : Unit)`: `dst ⇒ T` must be a
+    /// `Flex` record with a *mutable* field `acc` of type `Tf`; `src ⇐ Tf`. A non-flex
+    /// target, missing field, or immutable field is a diagnostic.
     fn infer_assign(
         &mut self,
         dst: &surface::Expr,
@@ -529,6 +588,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (PROJ) `Γ ⊢ base.acc₁.….accₙ ⇒ (Proj(hb,[idxᵢ]) : Tₙ)`: `base ⇒ T₀`, then at each
+    /// step the (shallow-resolved) record type's field `accᵢ` gives the next type `Tᵢ`
+    /// and its numeric index. A non-record head or missing field poisons.
     fn infer_access(
         &mut self,
         base: &surface::Expr,
@@ -589,10 +651,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     // ----- constructors -----
 
+    /// A constructor-call expression; see [`Self::infer_ctor`] for the dispatch rules.
     fn infer_ctor_call(&mut self, cc: &surface::CtorCall, span: Option<Span>) -> Expr<'tcx> {
         self.infer_ctor(&cc.name, &cc.ty_args, &cc.args, span)
     }
 
+    /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`], a
+    /// qualified `Enum::Variant` → [`Self::infer_variant`], otherwise a struct name →
+    /// [`Self::infer_struct`].
     fn infer_ctor(
         &mut self,
         path: &surface::Path,
@@ -613,6 +679,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.infer_struct(path.basename, ty_args, args, span)
     }
 
+    /// (NULL) the built-in nullable constructors: `Nullable::NonNull(e)` with `e ⇒ T`
+    /// synthesizes `NullableCall(Some) : Nullable T`; `Nullable::Null` synthesizes
+    /// `NullableCall(None) : Nullable α` for a fresh hole `α`.
     fn infer_nullable(
         &mut self,
         variant: &str,
@@ -643,6 +712,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// (STRUCT) `Γ ⊢ name⟨ty_args⟩{args} ⇒ (CompoundCall{…} : R)`: resolve the struct,
+    /// instantiate its generics to θ, check each field argument against its instantiated
+    /// field type, and return the record type `R`. Constructing a regional struct
+    /// outside a region is a diagnostic.
     fn infer_struct(
         &mut self,
         name: TokenKey,
@@ -689,6 +762,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (VARIANT) `Γ ⊢ Enum::Variant⟨ty_args⟩(args) ⇒ (VariantCall{…} : R)`: resolve the
+    /// enum and variant index, instantiate generics to θ, check each payload argument
+    /// against its instantiated type, and return the enum type `R`. Constructing a
+    /// regional enum outside a region is a diagnostic.
     fn infer_variant(
         &mut self,
         enum_name: TokenKey,

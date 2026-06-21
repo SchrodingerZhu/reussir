@@ -153,6 +153,11 @@ struct Matrix<'tcx> {
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
+    /// (MATCH) `Γ ⊢ match scrut { arms } ⇒ (Match(hs, tree) : α)`: synthesize `scrut ⇒ S`
+    /// and pick a fresh result hole `α`; for each arm bind its pattern against `⟦S⟧` in a
+    /// marked scope, check the optional guard `⇐ Bool`, and check the body `⇐ α` (so all
+    /// arms unify to one type). The arms are compiled to a [`DecisionTree`] by the
+    /// clause-matrix algorithm, with exhaustiveness and reachability checked here.
     pub(super) fn infer_match(
         &mut self,
         scrut: &surface::Expr,
