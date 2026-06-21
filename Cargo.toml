@@ -22,7 +22,19 @@ license = "(Apache-2.0 OR MIT)"
 ariadne = "0.5"
 blake3 = "1"
 rapidhash = "4.4.1"
+# Fast non-DoS-resistant hasher for interner/compiler-internal maps.
+rustc-hash = "2.1"
+# Small-size-optimized vectors: arity-bounded surface-AST lists (path segments,
+# argument/type-parameter lists) stay inline and skip heap allocation.
+smallvec = "1.15"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
+# rustc's extracted union-find: keyed unification with value merging and
+# snapshot/rollback (the logged path-compression makes speculation correct).
+ena = "0.14"
+# Bump arena backing the type interner: with_scope yields a generative
+# ArenaRef whose `alloc(&self) -> &'scope mut T` hands out arena-lifetimed
+# references, so interned `Ty<'tcx>` handles compare by pointer.
+stumpalo = { version = "0.4", features = ["std"] }
 lasso = "0.7"
 logos = "0.15"
 # llvm-sys provides the ORC/LLJIT and target-machine C API that mlir-sys does
@@ -32,6 +44,7 @@ llvm-sys = "221"
 melior = "0.27"
 mlir-sys = "220"
 palc = "0.0.2"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 stacker = "0.1.21"
 tracing = "0.1"

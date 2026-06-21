@@ -299,3 +299,9 @@ pub type SyntaxNode = cstree::syntax::SyntaxNode<SyntaxKind>;
 pub type SyntaxToken = cstree::syntax::SyntaxToken<SyntaxKind>;
 pub type ResolvedNode = cstree::syntax::ResolvedNode<SyntaxKind>;
 pub type ResolvedToken = cstree::syntax::ResolvedToken<SyntaxKind>;
+
+/// The interned-string key for a token's text, and the resolver that turns a key
+/// back into source text. Equal keys mean equal text within a single parse, so
+/// identifiers can be stored and compared as cheap `Copy` keys. [`InternKey`]
+/// exposes `into_u32`/`try_from_u32` (used to mint keys in tests).
+pub use cstree::interning::{InternKey, Resolver, TokenKey};
