@@ -1,0 +1,29 @@
+[package]
+name = "reussir-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ahead-of-time Reussir compiler: source → native object / assembly / LLVM IR"
+
+[lib]
+name = "reussir_compiler"
+
+[dependencies]
+# `melior` for the lowered `Module` type; `mlir-sys` for the MLIR→LLVM-IR
+# translation; `llvm-sys` for the host `TargetMachine` emission. llvm-sys
+# discovers LLVM via LLVM_SYS_221_PREFIX (set by CMake).
+melior.workspace = true
+mlir-sys.workspace = true
+llvm-sys.workspace = true
+# The MLIR foundation: the lowering `pipeline` and its `OptLevel`, plus `context()`.
+reussir-backend = { path = "../reussir-backend" }
+# Links libReussirCAPI (the custom Reussir LLVM passes) and the staged archives
+# into the final binary, and supplies `reussirRunBackendLLVMPipeline`; see its
+# build.rs. No JIT engine and no runtime are linked into the AOT compiler.
+reussir-backend-sys = { path = "../reussir-backend-sys" }
+# Full MIR → MLIR lowering.
+reussir-codegen = { path = "../reussir-codegen" }
+# The frontend: parse → elaborate → monomorphize.
+reussir-core = { path = "../reussir-core" }
+reussir-syntax = { path = "../reussir-syntax" }
+palc.workspace = true

@@ -1087,6 +1087,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "reussir-compiler"
+version = "0.1.0"
+dependencies = [
+ "llvm-sys",
+ "melior",
+ "mlir-sys",
+ "palc",
+ "reussir-backend",
+ "reussir-backend-sys",
+ "reussir-codegen",
+ "reussir-core",
+ "reussir-syntax",
+]
+
+[[package]]
 name = "reussir-core"
 version = "0.1.0"
 dependencies = [

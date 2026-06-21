@@ -33,6 +33,20 @@ impl OptLevel {
     fn runs_optimization(self) -> bool {
         !matches!(self, OptLevel::None)
     }
+
+    /// This level as its matching `ReussirOptOption` C enum value — the contract
+    /// the LLVM-IR-level backend pipeline (`reussirRunBackendLLVMPipeline`)
+    /// expects. Owned here so callers (the JIT, the AOT compiler) need not
+    /// re-encode it.
+    pub fn as_reussir_opt_option(self) -> core::ffi::c_int {
+        match self {
+            OptLevel::None => 0,
+            OptLevel::Default => 1,
+            OptLevel::Aggressive => 2,
+            OptLevel::Size => 3,
+            OptLevel::Tpde => 4,
+        }
+    }
 }
 
 /// Knobs for [`run_lowering_pipeline`].
