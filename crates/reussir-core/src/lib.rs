@@ -4,9 +4,11 @@
 //! the interned type IR ([`semi::ty`]), its unification solver ([`semi::infer`]),
 //! the trait system ([`semi::traits`]), and the bidirectional elaboration of the
 //! surface AST into a typed, still-polymorphic HIR. [`surface`] is the typed,
-//! parser-facing syntax tree. The monomorphized, mangled *Full* representation
-//! (`full::*`) is a separate, future phase.
+//! parser-facing syntax tree. [`full`] is the monomorphized, mangled *Full*
+//! representation that downstream lowering targets; it reuses the Semi type
+//! interner and adds the ground-only invariant and v0 symbol mangling.
 
+pub mod full;
 pub mod semi;
 pub mod surface;
 pub mod utils;
