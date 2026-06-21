@@ -78,6 +78,7 @@ pub struct Record<'tcx> {
 pub struct FuncProto<'tcx> {
     pub def: DefId,
     pub name: TokenKey,
+    pub visibility: surface::Visibility,
     pub generics: Vec<(TokenKey, GenericId)>,
     /// `(name, colored type)`.
     pub params: Vec<(TokenKey, Ty<'tcx>)>,
@@ -398,6 +399,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let proto = FuncProto {
             def,
             name,
+            visibility: func.visibility,
             generics,
             params,
             return_ty,

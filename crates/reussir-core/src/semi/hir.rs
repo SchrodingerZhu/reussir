@@ -186,6 +186,9 @@ pub enum SwitchCases<'tcx> {
 pub struct Function<'tcx> {
     pub def: DefId,
     pub name: TokenKey,
+    /// Source visibility; carried so the Full phase can give exported (`pub`)
+    /// instances external linkage and keep internal ones private.
+    pub visibility: crate::surface::Visibility,
     pub generics: Vec<(TokenKey, GenericId)>,
     pub params: Vec<(TokenKey, VarId, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,

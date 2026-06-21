@@ -45,6 +45,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.elaborated.push(Function {
             def: proto.def,
             name: proto.name,
+            visibility: proto.visibility,
             generics: proto.generics,
             params,
             return_ty,
