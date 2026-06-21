@@ -10,17 +10,25 @@
 //! responsible for the `-`→`_` rewrite the symbol grammar wants.
 
 // Bootstring parameters for Punycode (RFC 3492 §5).
-const BASE: u32 = 36;
-const TMIN: u32 = 1;
-const TMAX: u32 = 26;
-const SKEW: u32 = 38;
-const DAMP: u32 = 700;
-const INITIAL_BIAS: u32 = 72;
-const INITIAL_N: u32 = 128;
+//
+// The Bootstring arithmetic is done in `u64`. RFC 3492 specifies that an encoder
+// must *signal* overflow rather than wrap; the accumulator `delta` can in
+// principle exceed `u32` for a pathologically long non-ASCII string (the term
+// `(m - n) * (handled + 1)` grows with the code-point gap times the length).
+// Widening to `u64` makes overflow unreachable for any valid Unicode input —
+// code points are ≤ 0x10FFFF and lengths are bounded by `usize`, so `delta`
+// stays far below `2^64` — so no explicit overflow check is needed.
+const BASE: u64 = 36;
+const TMIN: u64 = 1;
+const TMAX: u64 = 26;
+const SKEW: u64 = 38;
+const DAMP: u64 = 700;
+const INITIAL_BIAS: u64 = 72;
+const INITIAL_N: u64 = 128;
 
 /// Maps a Bootstring digit (`0..36`) to its ASCII character: `0-25` → `a-z`,
 /// `26-35` → `0-9`.
-fn digit_to_char(d: u32) -> char {
+fn digit_to_char(d: u64) -> char {
     debug_assert!(d < BASE);
     if d < 26 {
         (b'a' + d as u8) as char
@@ -30,7 +38,7 @@ fn digit_to_char(d: u32) -> char {
 }
 
 /// The bias adaptation of RFC 3492 §6.1.
-fn adapt(mut delta: u32, num_points: u32, first_time: bool) -> u32 {
+fn adapt(mut delta: u64, num_points: u64, first_time: bool) -> u64 {
     delta = if first_time { delta / DAMP } else { delta / 2 };
     delta += delta / num_points;
     let mut k = 0;
@@ -51,9 +59,9 @@ pub fn encode(input: &str) -> String {
     let mut output = String::new();
 
     // Emit all basic (ASCII) code points up front, in order.
-    let mut basic_count: u32 = 0;
+    let mut basic_count: u64 = 0;
     for &c in &code_points {
-        if c < INITIAL_N {
+        if u64::from(c) < INITIAL_N {
             output.push(c as u8 as char);
             basic_count += 1;
         }
@@ -66,26 +74,27 @@ pub fn encode(input: &str) -> String {
     }
 
     let mut n = INITIAL_N;
-    let mut delta: u32 = 0;
+    let mut delta: u64 = 0;
     let mut bias = INITIAL_BIAS;
     let mut handled = basic_count;
-    let total = code_points.len() as u32;
+    let total = code_points.len() as u64;
 
     while handled < total {
         // The smallest non-basic code point not yet handled becomes the next `n`.
         let m = code_points
             .iter()
-            .copied()
+            .map(|&c| u64::from(c))
             .filter(|&c| c >= n)
             .min()
             .expect("handled < total implies an unhandled code point remains");
 
-        // Advancing `n` to `m` costs `(m - n) * (handled + 1)` in delta. The
-        // inputs are bounded by valid Unicode, so u32 cannot overflow here.
+        // Advancing `n` to `m` costs `(m - n) * (handled + 1)` in delta (u64, so
+        // it cannot overflow for any valid Unicode input).
         delta += (m - n) * (handled + 1);
         n = m;
 
         for &c in &code_points {
+            let c = u64::from(c);
             if c < n {
                 delta += 1;
             }
