@@ -248,8 +248,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn check_const_pat(&mut self, c: &Const, ty: Ty<'tcx>) -> Pat {
         let ctor = match c {
             Const::ConstInt(i) => {
-                let want = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(32));
-                let _ = self.infer.unify(ty, want);
+                // The literal must be *some* integer, but its width/signedness
+                // is whatever the scrutinee column already is — do not pin it to
+                // `i32`, or matching an `i64`/`u8`/… scrutinee against an integer
+                // arm would force `i64 = i32` and mis-type the match. Register
+                // the `Integral` bound on the column type, exactly as an integer
+                // literal *expression* does; the eventual int-switch lowering
+                // reads the column's real type to pick the signed/unsigned cast.
+                self.register_bound(self.builtins.integral, ty, None);
                 Ctor::Int(*i as i128)
             }
             Const::ConstBool(b) => {
@@ -788,6 +794,15 @@ mod tests {
     #[test]
     fn integer_match_with_wildcard_is_exhaustive() {
         let src = "fn f(n: i32) -> i32 { match n { 0 => 10, _ => 11 } }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn non_i32_integer_match_typechecks() {
+        // An `i64` scrutinee matched against integer-literal arms must not be
+        // forced to `i32`. Before the fix, `check_const_pat` unified the column
+        // type with `i32`, so this reported a spurious type mismatch.
+        let src = "fn f(n: i64) -> i64 { match n { 0 => 10, _ => 11 } }";
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
     }
 }

@@ -185,6 +185,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
             }
             _ => {
+                // Deeply resolve before deciding: a self type whose *head* is a
+                // constructor may still hold holes under it (`List<?h>`). Reading
+                // such a type as ground would let (no-impl) fire spuriously
+                // instead of deferring. Defer while any hole remains so the
+                // obligation is retried once more of the substitution is known.
+                let self_ty = self.infer.resolve(self_ty);
+                if ty_has_hole(self_ty) {
+                    return Discharge::Defer;
+                }
                 let goal = Obligation::Trait(TraitRef {
                     trait_id: tref.trait_id,
                     args: vec![self_ty],
@@ -201,8 +210,58 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 }
 
+/// Does `ty` contain an unsolved inference hole anywhere in its structure?
+/// `ty` is expected to be deeply resolved (`InferCtxt::resolve`), so a remaining
+/// `Hole` is an unsolved variable, not an indirection.
+fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
+    match ty.kind() {
+        TyKind::Hole(_) => true,
+        TyKind::Record { args, .. } => args.iter().any(|a| ty_has_hole(*a)),
+        TyKind::Closure { params, ret } => {
+            params.iter().any(|p| ty_has_hole(*p)) || ty_has_hole(*ret)
+        }
+        TyKind::Nullable(inner) => ty_has_hole(*inner),
+        _ => false,
+    }
+}
+
 impl<'tcx> FulfillCtxt<'tcx> {
     fn into_pending(self) -> Vec<PendingObligation<'tcx>> {
         self.pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ty_has_hole;
+    use crate::semi::infer::InferCtxt;
+    use crate::semi::ty::{Capability, DefId, IntTy};
+    use crate::with_tcx;
+
+    #[test]
+    fn ty_has_hole_sees_holes_under_constructors() {
+        with_tcx(|tcx| {
+            let mut infer = InferCtxt::new(tcx);
+            let hole = infer.new_hole_ty();
+            let ground = tcx.mk_int(IntTy::Signed(32));
+
+            // A bare hole and a hole nested under a constructor both count; a
+            // ground type and a ground constructor do not. This is the invariant
+            // the concrete-arm deep resolve in `discharge_trait` relies on: a
+            // `Record<?h>` must defer, not be read as ground.
+            assert!(ty_has_hole(hole));
+            assert!(!ty_has_hole(ground));
+            assert!(ty_has_hole(tcx.mk_record(
+                DefId(0),
+                &[hole],
+                Capability::Irrelevant
+            )));
+            assert!(!ty_has_hole(tcx.mk_record(
+                DefId(0),
+                &[ground],
+                Capability::Irrelevant
+            )));
+            assert!(ty_has_hole(tcx.mk_nullable(hole)));
+        });
     }
 }

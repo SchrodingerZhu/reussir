@@ -86,6 +86,24 @@ pub struct FuncProto<'tcx> {
     pub span: Option<Span>,
 }
 
+/// A resolved `extern "<abi>" trampoline "<name>" = target::func<TyArgs>;`.
+///
+/// A trampoline exports a stable C-ABI symbol aliasing a concrete (ground)
+/// instantiation of an internal function. It is a **monomorphization root**: the
+/// future mono worklist must seed `(target, ty_args)` so the aliased function is
+/// emitted. Recorded here so Semi output can carry the seed list.
+#[derive(Clone, Debug)]
+pub struct TrampolineRoot<'tcx> {
+    /// The exported C symbol name.
+    pub name: String,
+    /// The C ABI string (e.g. `"C"`).
+    pub abi: String,
+    /// The resolved internal target function.
+    pub target: DefId,
+    /// The concrete (ground) type arguments to instantiate the target at.
+    pub ty_args: Vec<Ty<'tcx>>,
+}
+
 /// A local variable binding.
 #[derive(Clone, Debug)]
 pub struct VarDef<'tcx> {
@@ -150,6 +168,8 @@ pub struct Elaborator<'a, 'tcx> {
     pub defs: DefTable,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
+    /// Resolved extern-trampoline roots (mono seeds). See [`TrampolineRoot`].
+    pub trampolines: Vec<TrampolineRoot<'tcx>>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
@@ -185,6 +205,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             traits,
             builtins,
             trait_names,
+            trampolines: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
             generics: Vec::new(),
@@ -289,12 +310,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // bodies are resolved (mutual recursion / forward references).
         let mut records = Vec::new();
         let mut functions = Vec::new();
+        let mut trampolines = Vec::new();
         for stmt in program {
             let span = span_of(stmt);
             match stmt.kind() {
                 surface::StmtKind::Record(rec) => records.push((rec, span)),
                 surface::StmtKind::Function(func) => functions.push((func, span)),
-                surface::StmtKind::Mod(..) | surface::StmtKind::ExternTrampoline(..) => {}
+                surface::StmtKind::ExternTrampoline(t) => trampolines.push((t, span)),
+                // `mod` is a no-op while every program is one flat module.
+                surface::StmtKind::Mod(..) => {}
             }
         }
         for (rec, span) in &records {
@@ -308,6 +332,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         for (func, span) in &functions {
             self.check_function(func, *span);
+        }
+        for (tramp, span) in &trampolines {
+            self.collect_trampoline(tramp, *span);
         }
     }
 
@@ -457,6 +484,59 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if let Some(r) = self.records.get_mut(&def) {
             r.fields = Some(fields);
         }
+    }
+
+    /// Resolve and register an extern-trampoline root: look up the target
+    /// function, evaluate its concrete type arguments, arity-check them against
+    /// the target's generics, and record a [`TrampolineRoot`]. Exported
+    /// trampolines are the entry points that seed monomorphization, so they must
+    /// be collected rather than dropped.
+    fn collect_trampoline(&mut self, tramp: &surface::ExternTrampoline, span: Option<Span>) {
+        // The target's type arguments are concrete here (no generics in scope).
+        let ty_args: Vec<Ty<'tcx>> = tramp.ty_args.iter().map(|t| self.eval_type(t)).collect();
+
+        let Some(target) = self.defs.resolve_function(tramp.func.basename) else {
+            self.error(
+                span,
+                format!(
+                    "trampoline target function `{}` not found",
+                    self.sym(tramp.func.basename)
+                ),
+            );
+            return;
+        };
+
+        // `resolve_function` only yields a function `DefId`, so the prototype is
+        // present; `get` rather than indexing keeps this total if that invariant
+        // ever loosens (e.g. a name resolving to a non-function item).
+        let Some(proto) = self.functions.get(&target) else {
+            self.error(
+                span,
+                format!(
+                    "trampoline target `{}` is not a function",
+                    self.sym(tramp.func.basename)
+                ),
+            );
+            return;
+        };
+        let expected = proto.generics.len();
+        if ty_args.len() != expected {
+            self.error(
+                span,
+                format!(
+                    "trampoline type argument count mismatch: expected {expected}, got {}",
+                    ty_args.len()
+                ),
+            );
+            return;
+        }
+
+        self.trampolines.push(TrampolineRoot {
+            name: tramp.name.clone(),
+            abi: tramp.abi.clone(),
+            target,
+            ty_args,
+        });
     }
 }
 

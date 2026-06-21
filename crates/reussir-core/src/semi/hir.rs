@@ -50,6 +50,15 @@ pub struct Expr<'tcx> {
 }
 
 /// The closure form: captured variables, parameters, and the body.
+///
+/// Lowering convention (load-bearing): the runtime closure has no separate
+/// capture environment. Captures and parameters share a single input list with
+/// the captures as the *leading* inputs, so a closure lowers to a value of
+/// closure type over `(captures ++ params) -> ret`. Each captured value is then
+/// supplied with one `closure.apply` at construction time, leaving a
+/// user-visible closure of type `(params) -> ret`. The order of `captures` is
+/// therefore significant and must be preserved through monomorphization and
+/// lowering.
 #[derive(Clone, Debug)]
 pub struct ClosureExpr<'tcx> {
     pub captures: Vec<(VarId, Ty<'tcx>)>,

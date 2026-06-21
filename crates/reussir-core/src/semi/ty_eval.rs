@@ -93,6 +93,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
+                    // A nullable only accepts a non-null pointer-like inner
+                    // (rc/record/closure/…): it encodes the null case in the
+                    // pointer's own representation, so a scalar or a nested
+                    // nullable has no place to store the discriminant. Reject a
+                    // *concretely* non-pointer inner now; generics/holes are left
+                    // for the later groundness check, and records are the
+                    // intended case.
+                    if is_concretely_non_pointer(inner) {
+                        self.error(
+                            Some(span),
+                            format!("`Nullable` inner type `{inner:?}` is not a pointer-like type"),
+                        );
+                    }
                     self.tcx.mk_nullable(inner)
                 }
                 _ => {
@@ -177,4 +190,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             _ => t,
         }
     }
+}
+
+/// Is `t` *concretely* a non-pointer-like type — i.e. one that cannot be the
+/// inner of a `Nullable` (which needs a pointer-like inner to encode the null
+/// case)? Conservative: only the by-value scalars and a nested `Nullable` are
+/// rejected; `Record`/`Closure` are valid inners, and `Generic`/`Hole`/`Bottom`
+/// are deferred (resolved/checked later) so this never reports a false positive
+/// on a not-yet-ground type.
+fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
+    matches!(
+        t.kind(),
+        TyKind::Int(_)
+            | TyKind::Fp(_)
+            | TyKind::Bool
+            | TyKind::Str
+            | TyKind::Unit
+            | TyKind::Nullable(_)
+    )
 }

@@ -19,6 +19,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return;
         };
         self.enter_function(&proto.generics);
+        // A `[regional]` function body runs inside an implicit region: its
+        // parameters may already be flex and it may construct regional records
+        // directly, so the body is checked with the region context active.
+        self.inside_region = proto.is_regional;
 
         let mut params = Vec::new();
         for (name, ty) in &proto.params {
@@ -127,7 +131,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    fn register_bound(&mut self, trait_id: TraitId, ty: Ty<'tcx>, span: Option<Span>) {
+    pub(super) fn register_bound(&mut self, trait_id: TraitId, ty: Ty<'tcx>, span: Option<Span>) {
         self.fulfill.register(
             Obligation::Trait(TraitRef {
                 trait_id,
@@ -281,6 +285,25 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     ) -> Expr<'tcx> {
         let e = self.infer_expr(e);
         let target = self.eval_type(ty);
+
+        // A cast is only legal between numerics: both the source and the target
+        // must satisfy `Num`. Registering a `Num` obligation on each means a
+        // concrete non-numeric operand fails in the fulfillment loop with a
+        // clear diagnostic, instead of surviving to a lowering-time crash.
+        let src_ty = self.infer.shallow_resolve(e.ty);
+        self.register_bound(self.builtins.num, target, span);
+        self.register_bound(self.builtins.num, src_ty, span);
+
+        // When the source is still an unconstrained hole and the target is a
+        // concrete numeric type, treat the cast as a type annotation and pin the
+        // source to the target. This both resolves the literal's type and avoids
+        // emitting a degenerate same-type conversion.
+        if matches!(src_ty.kind(), TyKind::Hole(_)) && !matches!(target.kind(), TyKind::Hole(_)) {
+            // Unification of a head hole with a concrete numeric type cannot
+            // fail here; ignore the (impossible) mismatch rather than panic.
+            let _ = self.infer.unify(src_ty, target);
+        }
+
         self.mk_expr(ExprKind::Cast(Box::new(e), target), target, span)
     }
 
@@ -339,16 +362,41 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return self.poison(span);
             }
         };
+        // A closure may be applied to fewer arguments than it has parameters:
+        // that is a *partial* application, which lowers to one `closure.apply`
+        // per supplied argument (no `closure.eval`) and yields a residual closure
+        // over the remaining parameters. A *full* application — one argument per
+        // parameter — appends the final `closure.eval` and has the return type.
+        // Supplying more arguments than parameters is an error: the result of a
+        // full application is not itself a closure to apply the extras to.
+        let n = args.len();
+        if n > params.len() {
+            self.error(
+                span,
+                format!(
+                    "closure applied to {} argument(s) but takes at most {}",
+                    n,
+                    params.len()
+                ),
+            );
+        }
         let mut out = Vec::new();
         for (arg, pty) in args.iter().zip(&params) {
             out.push(self.check_expr(arg, *pty));
         }
+        // Full (or over-) application is typed as the return type; a partial
+        // application is typed as a closure over the not-yet-supplied parameters.
+        let result = if n >= params.len() {
+            ret
+        } else {
+            self.tcx.mk_closure(&params[n..], ret)
+        };
         self.mk_expr(
             ExprKind::ClosureCall {
                 target: Box::new(callee),
                 args: out,
             },
-            ret,
+            result,
             span,
         )
     }
@@ -420,6 +468,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     ),
                 );
             }
+        }
+
+        // A flex value cannot be materialized, so it cannot escape the region by
+        // being *returned* from a closure either: the closure is a shared,
+        // possibly region-outliving object, so a flex result would hand a
+        // non-materializable value out of its region.
+        if self.is_flex(body.ty) {
+            self.error(
+                span,
+                "closure cannot return a flex value: a flex value cannot escape its region",
+            );
         }
 
         let param_tys: Vec<Ty<'tcx>> = params.iter().map(|(_, t)| *t).collect();
@@ -603,6 +662,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return self.poison(span);
         }
+        // A regional record holds region-owned (`[field]`) links, so it can only
+        // be created where a region owns it. Constructing one outside a region
+        // would force lowering to emit a region-less flex rc (rejected by the
+        // backend) or let the value escape with no owner.
+        if matches!(record.default_cap, super::ctxt::DefaultCap::Regional) && !self.inside_region {
+            self.error(
+                span,
+                "cannot construct a regional record outside of a region",
+            );
+        }
         let inst = self.instantiate(&record.generics_as_decls(), ty_args, span);
         let field_tys = self.field_types(&record.fields, &inst);
 
@@ -637,6 +706,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(span, format!("`{}` is not an enum", self.sym(enum_name)));
             return self.poison(span);
         };
+        // As for structs: a regional enum can only be constructed inside a
+        // region that owns it.
+        if matches!(record.default_cap, super::ctxt::DefaultCap::Regional) && !self.inside_region {
+            self.error(span, "cannot construct a regional enum outside of a region");
+        }
         let Some(vidx) = variants.iter().position(|v| v.name == variant) else {
             self.error(
                 span,

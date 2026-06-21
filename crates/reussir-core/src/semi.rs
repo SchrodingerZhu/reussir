@@ -189,4 +189,148 @@ mod tests {
             );
         });
     }
+
+    /// Elaborate a source string and return its diagnostics (for negative tests).
+    fn reports_of(source: &str) -> Vec<crate::semi::Report> {
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            elaborate(tcx, &prog, parse.resolver()).reports.clone()
+        })
+    }
+
+    fn has_error(source: &str, needle: &str) -> bool {
+        reports_of(source)
+            .iter()
+            .any(|r| r.message.contains(needle))
+    }
+
+    // ----- nullable-pointer-inner -----
+
+    #[test]
+    fn rejects_nullable_of_scalar() {
+        let src = "fn f(x: Nullable<i32>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "not a pointer-like"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_nullable_of_nullable() {
+        let src = "struct Pair { a: i32 }\nfn f(x: Nullable<Nullable<Pair>>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "not a pointer-like"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn accepts_nullable_of_record() {
+        // A record inner is the intended case and must not be rejected.
+        let src = "struct Pair { a: i32 }\nfn f(x: Nullable<Pair>) -> i32 { 0 }";
+        assert!(
+            !has_error(src, "not a pointer-like"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    // ----- region-flex-checks -----
+
+    #[test]
+    fn rejects_regional_construction_outside_region() {
+        let src = "struct [regional] C { v: i32, next: [field] C }\n\
+                   fn f() -> i32 { C { v: 1, next: Nullable::Null }; 0 }";
+        assert!(
+            has_error(
+                src,
+                "cannot construct a regional record outside of a region"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_closure_returning_flex() {
+        // The closure body is a captured flex value; returning it would let a
+        // non-materializable value escape the region.
+        let src = "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
+                   regional fn f(c: [flex] Cell<i32>) -> i32 { let g = || c; 0 }";
+        assert!(
+            has_error(src, "closure cannot return a flex value"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    // ----- cast-legality-and-pin -----
+
+    #[test]
+    fn rejects_non_numeric_cast() {
+        // `bool` does not satisfy `Num`, so casting it is rejected rather than
+        // crashing at lowering.
+        let src = "fn f(b: bool) -> i32 { b as i32 }";
+        assert!(
+            has_error(src, "does not implement"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    // ----- closure-arity-and-convention -----
+
+    #[test]
+    fn rejects_closure_over_application() {
+        // Immediately-invoked closure: a non-path callee is the only form the
+        // parser emits as a closure application (a bare `g(..)` is a func call).
+        let src = "fn f() -> i32 { (|x: i32, y: i32| x)(1, 2, 3) }";
+        assert!(has_error(src, "takes at most 2"), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn partial_application_typechecks() {
+        // The inner application supplies one of two arguments, yielding a residual
+        // closure; the outer application completes it.
+        let src = "fn f() -> i32 { ((|x: i32, y: i32| x)(1))(2) }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    // ----- collect-trampoline-roots -----
+
+    #[test]
+    fn collects_trampoline_root() {
+        check(
+            "fn target<T>(x: T) -> T { x }\n\
+             extern \"C\" trampoline \"t_ffi\" = target<i32>;",
+            |elab, tcx| {
+                assert_eq!(elab.trampolines.len(), 1);
+                let root = &elab.trampolines[0];
+                assert_eq!(root.name, "t_ffi");
+                assert_eq!(root.abi, "C");
+                assert_eq!(root.ty_args, vec![tcx.mk_int(IntTy::Signed(32))]);
+            },
+        );
+    }
+
+    #[test]
+    fn trampoline_arity_mismatch_errors() {
+        let src = "fn target<T>(x: T) -> T { x }\n\
+                   extern \"C\" trampoline \"t_ffi\" = target;";
+        assert!(
+            has_error(src, "type argument count mismatch"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn trampoline_unknown_target_errors() {
+        let src = "extern \"C\" trampoline \"t_ffi\" = nope<i32>;";
+        assert!(has_error(src, "not found"), "{:#?}", reports_of(src));
+    }
 }
