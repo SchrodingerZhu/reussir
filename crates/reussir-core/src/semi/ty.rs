@@ -216,4 +216,19 @@ impl<'tcx> TyCtxt<'tcx> {
         let params = self.intern_tys(params);
         self.mk(TyKind::Closure { params, ret })
     }
+
+    /// Allocate a value into the arena, returning a shared arena reference. Used
+    /// by the Full MIR to keep its (arena-allocated, `Copy`) node tree alongside
+    /// the types it references — these are *not* interned, just arena-owned.
+    pub fn alloc<T>(&self, value: T) -> &'tcx T {
+        self.arena.alloc(value)
+    }
+
+    /// Allocate a slice of `Copy` values into the arena.
+    pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &'tcx [T] {
+        if slice.is_empty() {
+            return &[];
+        }
+        self.arena.alloc_slice_copy(slice)
+    }
 }

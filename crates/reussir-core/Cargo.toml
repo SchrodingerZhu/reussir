@@ -12,6 +12,7 @@ name = "reussir_core"
 blake3.workspace = true
 ena.workspace = true
 ftree.workspace = true
+lasso.workspace = true
 rapidhash.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true

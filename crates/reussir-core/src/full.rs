@@ -14,3 +14,6 @@
 //! [`semi`]: crate::semi
 
 pub mod mangle;
+pub mod mir;
+pub mod mono;
+pub mod subst;
