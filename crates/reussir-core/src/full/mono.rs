@@ -1,40 +1,50 @@
-//! Monomorphization: the Semi → Full driver.
+//! Monomorphization: the Semi → Full lowering driver.
 //!
-//! Elaboration leaves functions polymorphic. Monomorphization specializes them:
-//! starting from a set of **roots**, it instantiates each reachable function at
-//! every concrete type-argument tuple it is used with, substitutes the generics
-//! away (see [`crate::full::subst`]), and assigns each instance its v0 symbol
-//! (see [`crate::full::mangle`]). The result is a flat list of ground functions
-//! plus the set of ground record instances their layouts require.
+//! Elaboration leaves functions polymorphic. Monomorphization specializes them
+//! and **lowers** them into the [`crate::full::mir`]: starting from a set of
+//! **roots**, it instantiates each reachable function at every concrete
+//! type-argument tuple it is used with, grounds its types (see
+//! [`crate::full::subst`]), resolves every callee to its v0 [`mir::Symbol`] (see
+//! [`crate::full::mangle`]), and **erases the generic apparatus** — the MIR has
+//! no type arguments on any node and dispatches purely by interned symbol.
 //!
 //! # Roots
 //!
-//! The roots are **every non-generic function** plus **every trampoline target**
-//! (an exported C-ABI alias instantiated at concrete arguments). A non-generic
-//! function is emitted even if nothing calls it — whole-program dead-code
-//! elimination is the backend's job, not the frontend's — which matches the
-//! observable behavior of the existing frontend. Generic functions are emitted
-//! once per distinct instantiation discovered from a reachable body.
+//! Every non-generic function (emitted even if uncalled — whole-program DCE is
+//! the backend's job) plus every trampoline target. Generic functions are
+//! emitted once per distinct instantiation discovered from a reachable body.
 //!
 //! # Worklist
 //!
 //! An [`Instance`] is `(DefId, &[Ty])`; its interned type-argument slice compares
 //! by element pointer-identity, so structurally-equal instantiations collapse to
-//! one worklist entry. We pop an instance, substitute its body to ground form,
-//! then scan that ground body (and signature) for further instances — function
-//! calls seed new function instances; every record type seeds a record instance.
+//! one entry. Popping an instance lowers its body to MIR; each `FuncCall` found
+//! there resolves to a callee symbol *and* enqueues that callee instance, so
+//! discovery and symbol resolution happen in the same pass.
+//!
+//! # Capability re-validation
+//!
+//! Semi leaves generics *uncolored* — a value of generic type has no flex/rigid
+//! capability, so the flex-escape rules are vacuously skipped for it. Once an
+//! instance is ground those capabilities are known, so lowering re-checks them
+//! (flex capture / flex return) and reports any instantiation that lets a flex
+//! value escape its region. This is a **latent** hook today: the elaborator drops
+//! flexivity through generic inference and there is no surface syntax for a flex
+//! type argument, so no instance currently reaches it with a flex generic — it
+//! becomes live once capability-as-a-bound lets flexivity flow into instances.
 
 use std::collections::VecDeque;
 
-use reussir_syntax::kind::TokenKey;
+use lasso::Rodeo;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::full::mangle::Mangler;
-use crate::full::subst::{Subst, subst_expr, subst_ty};
-use crate::semi::ctxt::Elaborator;
-use crate::semi::hir::{DecisionTree, Expr, ExprKind, Function, SwitchCases, VarId};
-use crate::semi::ty::{DefId, Ty, TyCtxt, TyKind};
-use crate::surface::Visibility;
+use crate::full::mir;
+use crate::full::subst::{Subst, subst_ty};
+use crate::semi::ctxt::{Elaborator, Report, Severity};
+use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
+use crate::semi::ty::{Capability, DefId, Ty, TyCtxt, TyKind};
+use crate::surface::Span;
 
 /// A ground instantiation of a top-level item: its [`DefId`] applied to an
 /// interned tuple of concrete type arguments (empty for a non-generic item).
@@ -44,54 +54,21 @@ pub struct Instance<'tcx> {
     pub ty_args: &'tcx [Ty<'tcx>],
 }
 
-/// A monomorphized function: a ground signature and body with its v0 symbol.
-#[derive(Clone, Debug)]
-pub struct FullFunction<'tcx> {
-    pub instance: Instance<'tcx>,
-    /// The v0 linker symbol for this instance.
-    pub symbol: String,
-    pub visibility: Visibility,
-    pub is_regional: bool,
-    /// `(source name, variable, ground type)` in declaration order.
-    pub params: Vec<(TokenKey, VarId, Ty<'tcx>)>,
-    pub return_ty: Ty<'tcx>,
-    /// `None` for a declared-but-undefined function.
-    pub body: Option<Expr<'tcx>>,
-}
-
-/// An exported C-ABI trampoline aliasing a concrete function instance.
-#[derive(Clone, Debug)]
-pub struct Trampoline {
-    /// The exported C symbol.
-    pub export: String,
-    /// The C ABI string (e.g. `"C"`).
-    pub abi: String,
-    /// The v0 symbol of the aliased function instance.
-    pub target_symbol: String,
-}
-
-/// The whole monomorphized program: ground functions, the ground record
-/// instances their layouts need, and the exported trampolines. Functions and
-/// record instances are sorted by symbol for deterministic output.
-#[derive(Debug)]
-pub struct FullProgram<'tcx> {
-    pub functions: Vec<FullFunction<'tcx>>,
-    pub records: Vec<Instance<'tcx>>,
-    pub trampolines: Vec<Trampoline>,
-}
-
-/// Monomorphize an elaborated program into its ground Full form.
-pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> FullProgram<'tcx> {
+/// Monomorphize an elaborated program into its ground Full MIR, alongside any
+/// diagnostics raised by capability re-validation.
+pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
     let tcx: &'a TyCtxt<'tcx> = elab.tcx;
     let by_def: FxHashMap<DefId, &Function<'tcx>> =
         elab.elaborated.iter().map(|f| (f.def, f)).collect();
-    let mangler = Mangler::new(&elab.defs, elab.resolver);
 
     let mut driver = Driver {
         tcx,
+        mangler: Mangler::new(&elab.defs, elab.resolver),
+        symbols: Rodeo::default(),
         queue: VecDeque::new(),
         seen: FxHashSet::default(),
         records: FxHashSet::default(),
+        reports: Vec::new(),
     };
 
     // Seed roots: every non-generic function, then every trampoline target.
@@ -107,36 +84,36 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> FullProgram<'tcx> 
     let mut functions = Vec::new();
     while let Some(inst) = driver.queue.pop_front() {
         let Some(func) = by_def.get(&inst.def) else {
-            // No body/prototype recorded (e.g. an item that failed to elaborate);
-            // nothing to instantiate.
+            // No body/prototype recorded (e.g. an item that failed to elaborate).
             continue;
         };
 
-        // Bind this instance's generics, then specialize the signature and body.
+        // Bind this instance's generics, then ground the signature and lower the
+        // body into the MIR.
         let mut subst = Subst::default();
         for ((_, gid), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
             subst.insert(*gid, ty);
         }
-        let params: Vec<(TokenKey, VarId, Ty<'tcx>)> = func
+        let params: Vec<mir::Param<'tcx>> = func
             .params
             .iter()
-            .map(|(name, var, ty)| (*name, *var, subst_ty(tcx, *ty, &subst)))
+            .map(|(name, var, ty)| {
+                let ty = subst_ty(tcx, *ty, &subst);
+                driver.note_records(ty);
+                mir::Param {
+                    name: *name,
+                    var: *var,
+                    ty,
+                }
+            })
             .collect();
         let return_ty = subst_ty(tcx, func.return_ty, &subst);
-        let body = func.body.as_ref().map(|b| subst_expr(tcx, b, &subst));
+        driver.note_records(return_ty);
+        let body = func.body.as_ref().map(|b| driver.lower_ref(b, &subst));
 
-        // Discover further instances from the ground signature and body.
-        for (_, _, ty) in &params {
-            driver.scan_ty(*ty);
-        }
-        driver.scan_ty(return_ty);
-        if let Some(body) = &body {
-            driver.scan_expr(body);
-        }
-
-        functions.push(FullFunction {
-            instance: inst,
-            symbol: mangler.mangle_instance(inst.def, inst.ty_args),
+        let symbol = driver.symbol_of(inst.def, inst.ty_args);
+        functions.push(mir::Function {
+            symbol,
             visibility: func.visibility,
             is_regional: func.is_regional,
             params,
@@ -145,35 +122,50 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> FullProgram<'tcx> 
         });
     }
 
-    functions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-
-    let mut records: Vec<Instance<'tcx>> = driver.records.into_iter().collect();
-    records.sort_by_cached_key(|r| mangler.mangle_instance(r.def, r.ty_args));
-
-    let trampolines = elab
-        .trampolines
-        .iter()
-        .map(|t| Trampoline {
-            export: t.name.clone(),
-            abi: t.abi.clone(),
-            target_symbol: mangler.mangle_instance(t.target, tcx.intern_tys(&t.ty_args)),
+    // Resolve the discovered record instances to symbols. Collect the keys first
+    // so the interner can be borrowed mutably while we map them.
+    let record_keys: Vec<(DefId, &'tcx [Ty<'tcx>])> = driver.records.iter().copied().collect();
+    let mut records: Vec<mir::RecordInstance<'tcx>> = record_keys
+        .into_iter()
+        .map(|(def, args)| mir::RecordInstance {
+            symbol: driver.symbol_of(def, args),
+            // Layout is capability-independent, so canonicalize the coloring.
+            ty: tcx.mk_record(def, args, Capability::Irrelevant),
         })
         .collect();
 
-    FullProgram {
-        functions,
-        records,
-        trampolines,
-    }
+    let trampolines: Vec<mir::Trampoline> = elab
+        .trampolines
+        .iter()
+        .map(|t| mir::Trampoline {
+            export: mir::Symbol(driver.symbols.get_or_intern(&t.name)),
+            abi: t.abi.clone(),
+            target: driver.symbol_of(t.target, tcx.intern_tys(&t.ty_args)),
+        })
+        .collect();
+
+    // Deterministic output: sort by mangled text.
+    functions.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0).to_string());
+    records.sort_by_cached_key(|r| driver.symbols.resolve(&r.symbol.0).to_string());
+
+    let Driver {
+        symbols, reports, ..
+    } = driver;
+    (
+        mir::Program {
+            functions,
+            records,
+            trampolines,
+            symbols,
+        },
+        reports,
+    )
 }
 
 /// The maximum type-argument nesting depth monomorphization will instantiate
 /// before treating the chain as non-terminating — in the spirit of rustc's
 /// `recursion_limit`. Deep but finite generic nesting stays well under it; the
 /// unbounded type growth of polymorphic recursion blows straight past it.
-///
-/// TODO: surface as a proper diagnostic (naming the offending instance) once
-/// mono gains a report sink, instead of panicking.
 const RECURSION_LIMIT: usize = 128;
 
 /// The structural nesting depth of a ground type: `1` for a scalar, one more
@@ -204,17 +196,60 @@ fn ty_depth(ty: Ty<'_>) -> usize {
     }
 }
 
-/// Mutable worklist state shared across the instantiation walk.
+/// Whether `ty`'s head (peeling `Nullable`) is a flex regional record — a value
+/// that cannot be materialized, hence cannot escape its region. Mirrors the Semi
+/// checker's `is_flex`, but on ground types, so it fires for the generic
+/// instantiations the checker could not colour.
+fn is_flex(ty: Ty<'_>) -> bool {
+    match *ty.kind() {
+        TyKind::Record {
+            flex: Capability::Flex,
+            ..
+        } => true,
+        TyKind::Nullable(inner) => is_flex(inner),
+        _ => false,
+    }
+}
+
+/// Mutable worklist + lowering state.
 struct Driver<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
+    mangler: Mangler<'a>,
+    /// Interner for every mangled symbol; moved into the final `mir::Program`.
+    symbols: Rodeo,
     queue: VecDeque<Instance<'tcx>>,
     /// Function instances already enqueued (so each is emitted once).
     seen: FxHashSet<Instance<'tcx>>,
-    /// Record instances whose layout is needed.
-    records: FxHashSet<Instance<'tcx>>,
+    /// Ground record instances whose layout is needed (keyed flex-independently).
+    records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
+    reports: Vec<Report>,
 }
 
 impl<'a, 'tcx> Driver<'a, 'tcx> {
+    /// Intern a mangled instance symbol (deduping so a callee and its definition
+    /// share one [`mir::Symbol`]).
+    fn symbol_of(&mut self, def: DefId, ty_args: &'tcx [Ty<'tcx>]) -> mir::Symbol {
+        mir::Symbol(
+            self.symbols
+                .get_or_intern(self.mangler.mangle_instance(def, ty_args)),
+        )
+    }
+
+    /// Record a ground record instance (for layout) and return its symbol.
+    fn record_symbol(&mut self, def: DefId, args: &'tcx [Ty<'tcx>]) -> mir::Symbol {
+        self.records.insert((def, args));
+        self.symbol_of(def, args)
+    }
+
+    /// Push an `Error` diagnostic.
+    fn error(&mut self, span: Option<Span>, message: impl Into<String>) {
+        self.reports.push(Report {
+            severity: Severity::Error,
+            message: message.into(),
+            span,
+        });
+    }
+
     /// Enqueue a function instance if it has not been seen.
     fn enqueue(&mut self, def: DefId, ty_args: &'tcx [Ty<'tcx>]) {
         let inst = Instance { def, ty_args };
@@ -235,124 +270,319 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         }
     }
 
-    /// Record a ground record instance and recurse into its arguments.
-    fn record(&mut self, def: DefId, args: &'tcx [Ty<'tcx>]) {
-        self.records.insert(Instance { def, ty_args: args });
-        for &arg in args {
-            self.scan_ty(arg);
-        }
-    }
-
     /// Collect every record instance reachable from a ground type.
-    fn scan_ty(&mut self, ty: Ty<'tcx>) {
+    fn note_records(&mut self, ty: Ty<'tcx>) {
         match *ty.kind() {
-            TyKind::Record { def, args, .. } => self.record(def, args),
+            TyKind::Record { def, args, .. } => {
+                self.records.insert((def, args));
+                for &arg in args {
+                    self.note_records(arg);
+                }
+            }
             TyKind::Closure { params, ret } => {
                 for &p in params {
-                    self.scan_ty(p);
+                    self.note_records(p);
                 }
-                self.scan_ty(ret);
+                self.note_records(ret);
             }
-            TyKind::Nullable(inner) => self.scan_ty(inner),
-            TyKind::Int(_)
-            | TyKind::Fp(_)
-            | TyKind::Bool
-            | TyKind::Str
-            | TyKind::Unit
-            | TyKind::Bottom => {}
-            TyKind::Generic(_) | TyKind::Hole(_) => {
-                panic!("monomorphize: non-ground type {ty:?} reached instance scan")
+            TyKind::Nullable(inner) => self.note_records(inner),
+            _ => {}
+        }
+    }
+
+    /// Ground a slice of type arguments and re-intern it.
+    fn ground_args(&self, ty_args: &[Ty<'tcx>], subst: &Subst<'tcx>) -> &'tcx [Ty<'tcx>] {
+        let grounded: Vec<Ty<'tcx>> = ty_args
+            .iter()
+            .map(|&t| subst_ty(self.tcx, t, subst))
+            .collect();
+        self.tcx.intern_tys(&grounded)
+    }
+
+    /// Lower an expression and arena-allocate it, returning a shared reference.
+    fn lower_ref(&mut self, e: &Expr<'tcx>, subst: &Subst<'tcx>) -> &'tcx mir::Expr<'tcx> {
+        let lowered = self.lower_expr(e, subst);
+        self.tcx.alloc(lowered)
+    }
+
+    /// Lower a list of expressions into an arena slice.
+    fn lower_slice(&mut self, es: &[Expr<'tcx>], subst: &Subst<'tcx>) -> &'tcx [mir::Expr<'tcx>] {
+        let lowered: Vec<mir::Expr<'tcx>> = es.iter().map(|e| self.lower_expr(e, subst)).collect();
+        self.tcx.alloc_slice(&lowered)
+    }
+
+    /// Lower one Semi expression into a ground MIR expression.
+    fn lower_expr(&mut self, e: &Expr<'tcx>, subst: &Subst<'tcx>) -> mir::Expr<'tcx> {
+        let ty = subst_ty(self.tcx, e.ty, subst);
+        self.note_records(ty);
+        let kind = self.lower_kind(&e.kind, subst, e.span);
+        mir::Expr {
+            kind,
+            ty,
+            span: e.span,
+        }
+    }
+
+    fn lower_kind(
+        &mut self,
+        kind: &ExprKind<'tcx>,
+        subst: &Subst<'tcx>,
+        span: Option<Span>,
+    ) -> mir::ExprKind<'tcx> {
+        use mir::ExprKind as M;
+        match kind {
+            ExprKind::GlobalStr(s) => M::GlobalStr(*s),
+            ExprKind::ConstInt(n) => M::ConstInt(*n),
+            ExprKind::ConstFloat(f) => M::ConstFloat(*f),
+            ExprKind::ConstBool(b) => M::ConstBool(*b),
+            ExprKind::Var(v) => M::Var(*v),
+            ExprKind::Poison => M::Poison,
+            ExprKind::Negate(e) => M::Negate(self.lower_ref(e, subst)),
+            ExprKind::Not(e) => M::Not(self.lower_ref(e, subst)),
+            ExprKind::Arith(l, op, r) => {
+                M::Arith(self.lower_ref(l, subst), *op, self.lower_ref(r, subst))
+            }
+            ExprKind::Cmp(l, op, r) => {
+                M::Cmp(self.lower_ref(l, subst), *op, self.lower_ref(r, subst))
+            }
+            ExprKind::Cast(e, t) => {
+                let t = subst_ty(self.tcx, *t, subst);
+                self.note_records(t);
+                M::Cast(self.lower_ref(e, subst), t)
+            }
+            ExprKind::If(c, t, f) => M::If(
+                self.lower_ref(c, subst),
+                self.lower_ref(t, subst),
+                self.lower_ref(f, subst),
+            ),
+            ExprKind::RegionRun(e) => M::RegionRun(self.lower_ref(e, subst)),
+            ExprKind::Proj(e, idx) => {
+                let base = self.lower_ref(e, subst);
+                M::Proj(base, self.tcx.alloc_slice(idx))
+            }
+            ExprKind::Assign(d, i, s) => {
+                M::Assign(self.lower_ref(d, subst), *i, self.lower_ref(s, subst))
+            }
+            ExprKind::Let {
+                var, name, value, ..
+            } => M::Let {
+                var: *var,
+                name: *name,
+                value: self.lower_ref(value, subst),
+            },
+            ExprKind::Seq(es) => M::Seq(self.lower_slice(es, subst)),
+            ExprKind::FuncCall {
+                target,
+                ty_args,
+                args,
+                regional,
+            } => {
+                let ty_args = self.ground_args(ty_args, subst);
+                self.enqueue(*target, ty_args);
+                let callee = self.symbol_of(*target, ty_args);
+                M::Call {
+                    callee,
+                    args: self.lower_slice(args, subst),
+                    regional: *regional,
+                }
+            }
+            ExprKind::CompoundCall {
+                target,
+                ty_args,
+                args,
+            } => {
+                let ty_args = self.ground_args(ty_args, subst);
+                let record = self.record_symbol(*target, ty_args);
+                M::Ctor {
+                    record,
+                    args: self.lower_slice(args, subst),
+                }
+            }
+            ExprKind::VariantCall {
+                target,
+                ty_args,
+                variant,
+                args,
+            } => {
+                let ty_args = self.ground_args(ty_args, subst);
+                let record = self.record_symbol(*target, ty_args);
+                M::Variant {
+                    record,
+                    variant: *variant,
+                    args: self.lower_slice(args, subst),
+                }
+            }
+            ExprKind::NullableCall(opt) => {
+                M::NullableCall(opt.as_ref().map(|e| self.lower_ref(e, subst)))
+            }
+            ExprKind::ClosureCall { target, args } => M::ClosureCall {
+                target: self.lower_ref(target, subst),
+                args: self.lower_slice(args, subst),
+            },
+            ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst, span)),
+            ExprKind::Match(scrut, tree) => {
+                M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
             }
         }
     }
 
-    /// Collect instances from a ground expression: the node's type, any callee
-    /// instance, and recursively all children (including decision-tree arms).
-    fn scan_expr(&mut self, e: &Expr<'tcx>) {
-        use ExprKind::*;
-        self.scan_ty(e.ty);
-        if let FuncCall {
-            target, ty_args, ..
-        } = &e.kind
-        {
-            self.enqueue(*target, self.tcx.intern_tys(ty_args));
-            for &t in ty_args {
-                self.scan_ty(t);
+    fn lower_closure(
+        &mut self,
+        c: &hir::ClosureExpr<'tcx>,
+        subst: &Subst<'tcx>,
+        span: Option<Span>,
+    ) -> mir::ClosureExpr<'tcx> {
+        let captures = self.lower_var_tys(&c.captures, subst);
+        let params = self.lower_var_tys(&c.params, subst);
+        let body = self.lower_ref(&c.body, subst);
+
+        // Capability re-validation: at Semi these values had generic (uncolored)
+        // types, so the flex-escape rules were skipped. Now they are ground, so we
+        // re-run them on the concrete capabilities. NOTE: this is currently a
+        // *latent* hook — the elaborator drops flexivity through generic inference
+        // (`unify` ignores it) and there is no way to spell a flex type argument,
+        // so no instance reaches here with a flex generic *yet*. It fires once
+        // capability-as-a-bound lands and flexivity flows into instantiations.
+        for &(_, ty) in captures {
+            if is_flex(ty) {
+                self.error(
+                    span,
+                    "closure cannot capture a flex value: a flex value cannot escape its region",
+                );
             }
         }
-        for child in children(e) {
-            self.scan_expr(child);
+        if is_flex(body.ty) {
+            self.error(
+                span,
+                "closure cannot return a flex value: a flex value cannot escape its region",
+            );
         }
-        if let Match(_, tree) = &e.kind {
-            self.scan_tree(tree);
+
+        mir::ClosureExpr {
+            captures,
+            params,
+            body,
         }
     }
 
-    /// Collect instances from a decision tree's arm bodies, guards, and subtrees.
-    fn scan_tree(&mut self, tree: &DecisionTree<'tcx>) {
-        use DecisionTree::*;
+    /// Ground a `(var, type)` list (closure captures/params) into an arena slice.
+    fn lower_var_tys(
+        &mut self,
+        vars: &[(hir::VarId, Ty<'tcx>)],
+        subst: &Subst<'tcx>,
+    ) -> &'tcx [(hir::VarId, Ty<'tcx>)] {
+        let grounded: Vec<(hir::VarId, Ty<'tcx>)> = vars
+            .iter()
+            .map(|(v, t)| {
+                let t = subst_ty(self.tcx, *t, subst);
+                self.note_records(t);
+                (*v, t)
+            })
+            .collect();
+        self.tcx.alloc_slice(&grounded)
+    }
+
+    /// Lower a decision tree and arena-allocate it.
+    fn lower_tree_ref(
+        &mut self,
+        tree: &DecisionTree<'tcx>,
+        subst: &Subst<'tcx>,
+    ) -> &'tcx mir::DecisionTree<'tcx> {
+        let lowered = self.lower_tree(tree, subst);
+        self.tcx.alloc(lowered)
+    }
+
+    /// Copy pattern bindings into the arena (each scrutinee path is its own slice).
+    fn lower_bindings(
+        &self,
+        bindings: &[(hir::VarId, hir::PatVarRef)],
+    ) -> &'tcx [mir::Binding<'tcx>] {
+        let copied: Vec<mir::Binding<'tcx>> = bindings
+            .iter()
+            .map(|(var, path)| (*var, self.tcx.alloc_slice(&path.0)))
+            .collect();
+        self.tcx.alloc_slice(&copied)
+    }
+
+    fn lower_tree(
+        &mut self,
+        tree: &DecisionTree<'tcx>,
+        subst: &Subst<'tcx>,
+    ) -> mir::DecisionTree<'tcx> {
+        use mir::DecisionTree as M;
         match tree {
-            Uncovered | Unreachable => {}
-            Leaf { body, .. } => self.scan_expr(body),
-            Guard {
+            DecisionTree::Uncovered => M::Uncovered,
+            DecisionTree::Unreachable => M::Unreachable,
+            DecisionTree::Leaf { body, bindings } => M::Leaf {
+                body: self.lower_ref(body, subst),
+                bindings: self.lower_bindings(bindings),
+            },
+            DecisionTree::Guard {
+                bindings,
                 guard,
                 success,
                 failure,
-                ..
             } => {
-                self.scan_expr(guard);
-                self.scan_tree(success);
-                self.scan_tree(failure);
+                let bindings = self.lower_bindings(bindings);
+                M::Guard {
+                    bindings,
+                    guard: self.lower_ref(guard, subst),
+                    success: self.lower_tree_ref(success, subst),
+                    failure: self.lower_tree_ref(failure, subst),
+                }
             }
-            Switch { cases, .. } => match cases {
-                SwitchCases::Int { cases, default } => {
-                    for (_, t) in cases {
-                        self.scan_tree(t);
-                    }
-                    self.scan_tree(default);
+            DecisionTree::Switch { scrutinee, cases } => {
+                let scrutinee = self.tcx.alloc_slice(&scrutinee.0);
+                M::Switch {
+                    scrutinee,
+                    cases: self.lower_cases(cases, subst),
                 }
-                SwitchCases::Bool { if_true, if_false } => {
-                    self.scan_tree(if_true);
-                    self.scan_tree(if_false);
-                }
-                SwitchCases::Ctor(arms) => {
-                    for t in arms {
-                        self.scan_tree(t);
-                    }
-                }
-                SwitchCases::String { cases, default } => {
-                    for (_, t) in cases {
-                        self.scan_tree(t);
-                    }
-                    self.scan_tree(default);
-                }
-                SwitchCases::Nullable { non_null, null } => {
-                    self.scan_tree(non_null);
-                    self.scan_tree(null);
-                }
-            },
+            }
         }
     }
-}
 
-/// The immediate sub-expressions of `e` (its scrutinee/operands/arguments), used
-/// to drive the instance scan. Decision-tree arms are walked separately.
-fn children<'a, 'tcx>(e: &'a Expr<'tcx>) -> Vec<&'a Expr<'tcx>> {
-    use ExprKind::*;
-    match &e.kind {
-        GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => Vec::new(),
-        Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => vec![e],
-        Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => vec![l, r],
-        If(c, t, f) => vec![c, t, f],
-        Let { value, .. } => vec![value],
-        Seq(es) => es.iter().collect(),
-        FuncCall { args, .. } | CompoundCall { args, .. } | VariantCall { args, .. } => {
-            args.iter().collect()
+    /// Lower a list of `(key, sub-tree)` arms into an arena slice.
+    fn lower_keyed<K: Copy>(
+        &mut self,
+        arms: &[(K, DecisionTree<'tcx>)],
+        subst: &Subst<'tcx>,
+    ) -> &'tcx [(K, mir::DecisionTree<'tcx>)] {
+        let lowered: Vec<(K, mir::DecisionTree<'tcx>)> = arms
+            .iter()
+            .map(|(k, t)| (*k, self.lower_tree(t, subst)))
+            .collect();
+        self.tcx.alloc_slice(&lowered)
+    }
+
+    fn lower_cases(
+        &mut self,
+        cases: &SwitchCases<'tcx>,
+        subst: &Subst<'tcx>,
+    ) -> mir::SwitchCases<'tcx> {
+        use mir::SwitchCases as M;
+        match cases {
+            SwitchCases::Int { cases, default } => M::Int {
+                cases: self.lower_keyed(cases, subst),
+                default: self.lower_tree_ref(default, subst),
+            },
+            SwitchCases::Bool { if_true, if_false } => M::Bool {
+                if_true: self.lower_tree_ref(if_true, subst),
+                if_false: self.lower_tree_ref(if_false, subst),
+            },
+            SwitchCases::Ctor(arms) => {
+                let lowered: Vec<mir::DecisionTree<'tcx>> =
+                    arms.iter().map(|t| self.lower_tree(t, subst)).collect();
+                M::Ctor(self.tcx.alloc_slice(&lowered))
+            }
+            SwitchCases::String { cases, default } => M::String {
+                cases: self.lower_keyed(cases, subst),
+                default: self.lower_tree_ref(default, subst),
+            },
+            SwitchCases::Nullable { non_null, null } => M::Nullable {
+                non_null: self.lower_tree_ref(non_null, subst),
+                null: self.lower_tree_ref(null, subst),
+            },
         }
-        NullableCall(e) => e.iter().map(|e| &**e).collect(),
-        ClosureCall { target, args } => std::iter::once(&**target).chain(args.iter()).collect(),
-        Closure(c) => vec![&c.body],
-        Match(scrut, _) => vec![scrut],
     }
 }
 
@@ -362,8 +592,9 @@ mod tests {
     use crate::semi::elaborate;
     use crate::{surface, with_tcx};
 
-    /// Elaborate `source`, monomorphize it, and hand the program to `f`.
-    fn with_full<R>(source: &str, f: impl FnOnce(&FullProgram<'_>) -> R) -> R {
+    /// Elaborate `source`, monomorphize it (asserting no diagnostics), and hand
+    /// the program to `f`.
+    fn with_full<R>(source: &str, f: impl FnOnce(&mir::Program<'_>) -> R) -> R {
         with_tcx(|tcx| {
             let parse = reussir_syntax::parse(source);
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
@@ -374,13 +605,57 @@ mod tests {
                 "elaboration errors: {:#?}",
                 elab.reports
             );
-            let full = monomorphize(&elab);
+            let (full, reports) = monomorphize(&elab);
+            assert!(
+                reports.is_empty(),
+                "unexpected mono diagnostics: {reports:#?}"
+            );
             f(&full)
         })
     }
 
-    fn symbols(full: &FullProgram<'_>) -> Vec<String> {
-        full.functions.iter().map(|f| f.symbol.clone()).collect()
+    fn symbols(full: &mir::Program<'_>) -> Vec<String> {
+        full.functions
+            .iter()
+            .map(|f| full.symbol(f.symbol).to_string())
+            .collect()
+    }
+
+    fn is_ground(ty: Ty<'_>) -> bool {
+        match *ty.kind() {
+            TyKind::Generic(_) | TyKind::Hole(_) => false,
+            TyKind::Record { args, .. } => args.iter().all(|&a| is_ground(a)),
+            TyKind::Closure { params, ret } => {
+                params.iter().all(|&p| is_ground(p)) && is_ground(ret)
+            }
+            TyKind::Nullable(inner) => is_ground(inner),
+            _ => true,
+        }
+    }
+
+    /// The immediate sub-expressions of a MIR node (decision-tree arms aside).
+    fn children<'tcx>(e: &mir::Expr<'tcx>) -> Vec<&'tcx mir::Expr<'tcx>> {
+        use mir::ExprKind::*;
+        match e.kind {
+            GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => vec![],
+            Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],
+            Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => vec![l, r],
+            If(c, t, f) => vec![c, t, f],
+            Let { value, .. } => vec![value],
+            Seq(es) => es.iter().collect(),
+            Call { args, .. } | Ctor { args, .. } | Variant { args, .. } => args.iter().collect(),
+            NullableCall(opt) => opt.into_iter().collect(),
+            ClosureCall { target, args } => std::iter::once(target).chain(args.iter()).collect(),
+            Closure(c) => vec![c.body],
+            Match(scrut, _) => vec![scrut],
+        }
+    }
+
+    fn assert_ground(e: &mir::Expr<'_>) {
+        assert!(is_ground(e.ty), "non-ground expr type: {:?}", e.ty);
+        for child in children(e) {
+            assert_ground(child);
+        }
     }
 
     #[test]
@@ -399,8 +674,7 @@ mod tests {
 
     #[test]
     fn instantiates_a_generic_at_each_use() {
-        // `id<T>` is generic, so it is emitted once per distinct instantiation
-        // discovered from the (non-generic, hence root) callers.
+        // `id<T>` is emitted once per distinct instantiation; calls are by symbol.
         let src = r#"
             fn id<T>(x: T) -> T { x }
             pub fn use_i32(n: i32) -> i32 { id(n) }
@@ -408,12 +682,10 @@ mod tests {
         "#;
         with_full(src, |full| {
             let syms = symbols(full);
-            // The generic instances mangle with their type argument.
             assert!(syms.contains(&"_RIC2idlE".to_string()), "{syms:?}");
             assert!(syms.contains(&"_RIC2idbE".to_string()), "{syms:?}");
             assert!(syms.contains(&"_RC7use_i32".to_string()), "{syms:?}");
             assert!(syms.contains(&"_RC8use_bool".to_string()), "{syms:?}");
-            // No leftover polymorphic `id` and no duplicate instances.
             let mut sorted = syms.clone();
             sorted.dedup();
             assert_eq!(sorted.len(), syms.len(), "duplicate instances: {syms:?}");
@@ -428,39 +700,94 @@ mod tests {
         "#;
         with_full(src, |full| {
             for func in &full.functions {
-                if let Some(body) = &func.body {
+                if let Some(body) = func.body {
                     assert_ground(body);
                 }
-                for (_, _, ty) in &func.params {
-                    assert!(is_ground(*ty), "non-ground param in {}", func.symbol);
+                for p in &func.params {
+                    assert!(
+                        is_ground(p.ty),
+                        "non-ground param in {}",
+                        full.symbol(func.symbol)
+                    );
                 }
             }
         });
     }
 
-    fn is_ground(ty: Ty<'_>) -> bool {
-        match *ty.kind() {
-            TyKind::Generic(_) | TyKind::Hole(_) => false,
-            TyKind::Record { args, .. } => args.iter().all(|&a| is_ground(a)),
-            TyKind::Closure { params, ret } => {
-                params.iter().all(|&p| is_ground(p)) && is_ground(ret)
-            }
-            TyKind::Nullable(inner) => is_ground(inner),
-            _ => true,
-        }
+    #[test]
+    fn calls_are_resolved_to_callee_symbols() {
+        // The MIR dispatches by interned symbol: the body of `use_i32` calls the
+        // ground `id<i32>` instance directly by its mangled name.
+        let src = r#"
+            fn id<T>(x: T) -> T { x }
+            pub fn use_i32(n: i32) -> i32 { id(n) }
+        "#;
+        with_full(src, |full| {
+            let user = full
+                .functions
+                .iter()
+                .find(|f| full.symbol(f.symbol) == "_RC7use_i32")
+                .expect("use_i32 emitted");
+            let body = user.body.expect("use_i32 has a body");
+            // The body is a `Seq` whose tail expression is the `id(n)` call.
+            let mir::ExprKind::Seq(stmts) = body.kind else {
+                panic!("expected a Seq body, got {:?}", body.kind);
+            };
+            let mir::ExprKind::Call { callee, .. } = stmts.last().expect("non-empty seq").kind
+            else {
+                panic!("expected a Call, got {:?}", stmts.last().unwrap().kind);
+            };
+            assert_eq!(full.symbol(callee), "_RIC2idlE");
+        });
     }
 
-    fn assert_ground(e: &Expr<'_>) {
-        assert!(is_ground(e.ty), "non-ground expr type: {:?}", e.ty);
-        for child in children(e) {
-            assert_ground(child);
-        }
+    #[test]
+    fn multiple_type_params_instantiate_per_ordering() {
+        let src = r#"
+            fn pick<A, B>(a: A, b: B) -> A { a }
+            fn use_ib(n: i32, b: bool) -> i32 { pick(n, b) }
+            fn use_bi(b: bool, n: i32) -> bool { pick(b, n) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4picklbE".to_string()), "{syms:?}");
+            assert!(syms.contains(&"_RIC4pickblE".to_string()), "{syms:?}");
+            let picks = syms.iter().filter(|s| s.contains("pick")).count();
+            assert_eq!(picks, 2, "{syms:?}");
+        });
+    }
+
+    #[test]
+    fn permuting_type_params_terminates() {
+        let src = r#"
+            fn swap<A, B>(a: A, b: B) -> i32 { swap(b, a) }
+            fn main(n: i32, b: bool) -> i32 { swap(n, b) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4swaplbE".to_string()), "{syms:?}");
+            assert!(syms.contains(&"_RIC4swapblE".to_string()), "{syms:?}");
+            let swaps = syms.iter().filter(|s| s.contains("swap")).count();
+            assert_eq!(swaps, 2, "{syms:?}");
+        });
+    }
+
+    #[test]
+    fn mutual_recursion_at_fixed_type_terminates() {
+        let src = r#"
+            fn ping<T>(x: T) -> i32 { pong(x) }
+            fn pong<T>(x: T) -> i32 { ping(x) }
+            fn main(n: i32) -> i32 { ping(n) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4pinglE".to_string()), "{syms:?}");
+            assert!(syms.contains(&"_RIC4ponglE".to_string()), "{syms:?}");
+        });
     }
 
     #[test]
     fn monomorphic_recursion_terminates() {
-        // Self-recursion at a *fixed* type is a single instance — the depth guard
-        // must not mistake ordinary recursion for a runaway.
         let src = r#"
             fn rec(n: i32) -> i32 { rec(n) }
             fn main(n: i32) -> i32 { rec(n) }
@@ -474,10 +801,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "recursion limit")]
     fn detects_polymorphic_recursion() {
-        // `rec<T>` calls itself at `Wrap<T>`, so each instance is one level deeper
-        // than the last: `rec<i32>`, `rec<Wrap<i32>>`, `rec<Wrap<Wrap<i32>>>`, …
-        // This never converges, so mono must abort at the recursion limit instead
-        // of looping forever.
         let src = r#"
             struct Wrap<T> { value: T }
             fn rec<T>(x: T) -> i32 { rec(Wrap { value: x }) }
@@ -487,68 +810,8 @@ mod tests {
     }
 
     #[test]
-    fn multiple_type_params_instantiate_per_ordering() {
-        // `pick<A, B>` is generic in two parameters; the type arguments mangle in
-        // declaration order, so distinct orderings are distinct instances.
-        let src = r#"
-            fn pick<A, B>(a: A, b: B) -> A { a }
-            fn use_ib(n: i32, b: bool) -> i32 { pick(n, b) }
-            fn use_bi(b: bool, n: i32) -> bool { pick(b, n) }
-        "#;
-        with_full(src, |full| {
-            let syms = symbols(full);
-            assert!(syms.contains(&"_RIC4picklbE".to_string()), "{syms:?}"); // pick<i32, bool>
-            assert!(syms.contains(&"_RIC4pickblE".to_string()), "{syms:?}"); // pick<bool, i32>
-            // Exactly two `pick` instances — the two orderings, no duplicates.
-            let picks = syms.iter().filter(|s| s.contains("pick")).count();
-            assert_eq!(picks, 2, "{syms:?}");
-            for func in &full.functions {
-                if let Some(body) = &func.body {
-                    assert_ground(body);
-                }
-            }
-        });
-    }
-
-    #[test]
-    fn permuting_type_params_terminates() {
-        // `swap<A, B>` recurses as `swap<B, A>`: the arguments permute but the
-        // reachable set is finite ({<i32, bool>, <bool, i32>}), so mono converges
-        // without tripping the depth guard.
-        let src = r#"
-            fn swap<A, B>(a: A, b: B) -> i32 { swap(b, a) }
-            fn main(n: i32, b: bool) -> i32 { swap(n, b) }
-        "#;
-        with_full(src, |full| {
-            let syms = symbols(full);
-            assert!(syms.contains(&"_RIC4swaplbE".to_string()), "{syms:?}"); // swap<i32, bool>
-            assert!(syms.contains(&"_RIC4swapblE".to_string()), "{syms:?}"); // swap<bool, i32>
-            let swaps = syms.iter().filter(|s| s.contains("swap")).count();
-            assert_eq!(swaps, 2, "{syms:?}");
-        });
-    }
-
-    #[test]
-    fn mutual_recursion_at_fixed_type_terminates() {
-        // `ping`/`pong` call each other at the *same* type argument, so the cycle
-        // closes after one instance of each.
-        let src = r#"
-            fn ping<T>(x: T) -> i32 { pong(x) }
-            fn pong<T>(x: T) -> i32 { ping(x) }
-            fn main(n: i32) -> i32 { ping(n) }
-        "#;
-        with_full(src, |full| {
-            let syms = symbols(full);
-            assert!(syms.contains(&"_RIC4pinglE".to_string()), "{syms:?}"); // ping<i32>
-            assert!(syms.contains(&"_RIC4ponglE".to_string()), "{syms:?}"); // pong<i32>
-        });
-    }
-
-    #[test]
     #[should_panic(expected = "recursion limit")]
     fn detects_polymorphic_recursion_in_one_of_several_params() {
-        // Only `A` grows; `B` stays fixed. The depth guard takes the max over all
-        // type arguments, so a runaway in any single parameter is still caught.
         let src = r#"
             struct Wrap<T> { value: T }
             fn rec2<A, B>(a: A, b: B) -> i32 { rec2(Wrap { value: a }, b) }
@@ -560,8 +823,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "recursion limit")]
     fn detects_mutual_polymorphic_recursion() {
-        // The growth is split across the cycle: each hop wraps the argument once,
-        // so `ping`/`pong` together drive unbounded instantiation.
         let src = r#"
             struct Wrap<T> { value: T }
             fn ping<T>(x: T) -> i32 { pong(Wrap { value: x }) }

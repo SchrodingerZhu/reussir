@@ -871,6 +871,7 @@ dependencies = [
  "blake3",
  "ena",
  "ftree",
+ "lasso",
  "rapidhash",
  "reussir-syntax",
  "rustc-hash",
