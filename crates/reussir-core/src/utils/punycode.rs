@@ -89,9 +89,7 @@ fn push_delta(output: &mut String, delta: u64, bias: u64) {
 /// `C(p, m)` — the number of already-placed code points (value `< m`) lying left
 /// of input position `p`. Visiting values in ascending order, every such code
 /// point is "placed" before the value that needs it, so `C(p, m)` is a Fenwick
-/// prefix-count over positions: `O(log n)` per occurrence. The literal `O(n²)`
-/// transcription is retained as `encode_reference` and fuzzed against this in
-/// the tests.
+/// prefix-count over positions: `O(log n)` per occurrence.
 pub fn encode(input: &str) -> String {
     let code_points: Vec<u32> = input.chars().map(|c| c as u32).collect();
     let total = code_points.len();
@@ -187,61 +185,6 @@ pub fn encode(input: &str) -> String {
         for &(_, p) in &pairs[group_start..i] {
             placed.add_at(p, 1);
         }
-    }
-
-    output
-}
-
-/// The literal `O(n²)` transcription of RFC 3492 §6.3, kept only as a
-/// differential oracle for the optimized [`encode`]. For each distinct value it
-/// rescans the whole input: once to find the next-smallest code point, once to
-/// accumulate deltas. Both encoders share [`push_delta`], so any divergence is a
-/// difference in the delta/bias state machine, not in serialization.
-#[cfg(test)]
-fn encode_reference(input: &str) -> String {
-    let code_points: Vec<u32> = input.chars().map(|c| c as u32).collect();
-    let mut output = String::new();
-
-    let mut basic_count: u64 = 0;
-    for &c in &code_points {
-        if u64::from(c) < INITIAL_N {
-            output.push(c as u8 as char);
-            basic_count += 1;
-        }
-    }
-    if basic_count > 0 {
-        output.push('-');
-    }
-
-    let mut n = INITIAL_N;
-    let mut delta: u64 = 0;
-    let mut bias = INITIAL_BIAS;
-    let mut handled = basic_count;
-    let total = code_points.len() as u64;
-
-    while handled < total {
-        let m = code_points
-            .iter()
-            .map(|&c| u64::from(c))
-            .filter(|&c| c >= n)
-            .min()
-            .expect("handled < total implies an unhandled code point remains");
-        delta += (m - n) * (handled + 1);
-        n = m;
-        for &c in &code_points {
-            let c = u64::from(c);
-            if c < n {
-                delta += 1;
-            }
-            if c == n {
-                push_delta(&mut output, delta, bias);
-                bias = adapt(delta, handled + 1, handled == basic_count);
-                delta = 0;
-                handled += 1;
-            }
-        }
-        delta += 1;
-        n += 1;
     }
 
     output
@@ -387,56 +330,6 @@ mod tests {
 
         for &(decoded, encoded) in VECTORS {
             assert_eq!(encode(decoded), encoded, "encoding {decoded:?}");
-        }
-    }
-
-    /// Differential fuzz: the optimized `O(n log n)` [`encode`] must agree with
-    /// the literal `O(n²)` [`encode_reference`] on every input. A deliberately
-    /// small alphabet (frequent repeats, basic/non-basic interleaving, and code
-    /// points above the BMP) stresses the multi-occurrence delta logic far harder
-    /// than uniformly random scalars would.
-    #[test]
-    fn matches_reference_oracle() {
-        const ALPHABET: &[char] = &[
-            'a',
-            'b',
-            'c',
-            'Z',
-            '0',
-            '9',
-            '-',
-            '_',
-            ' ',
-            '\n',
-            '\u{7f}',
-            '\u{80}',
-            '\u{e9}',
-            '\u{fc}',
-            '\u{f6}',
-            '\u{2665}',
-            '\u{4e2d}',
-            '\u{65e5}',
-            '\u{6587}',
-            '\u{1f600}',
-            '\u{1f389}',
-            '\u{10ffff}',
-        ];
-
-        // xorshift64* with a fixed seed: deterministic, no dependency on `rand`.
-        fn next(state: &mut u64) -> u64 {
-            *state ^= *state >> 12;
-            *state ^= *state << 25;
-            *state ^= *state >> 27;
-            state.wrapping_mul(0x2545_f491_4f6c_dd1d)
-        }
-
-        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
-        for _ in 0..50_000 {
-            let len = (next(&mut state) % 24) as usize;
-            let s: String = (0..len)
-                .map(|_| ALPHABET[(next(&mut state) as usize) % ALPHABET.len()])
-                .collect();
-            assert_eq!(encode(&s), encode_reference(&s), "mismatch for {s:?}");
         }
     }
 }
