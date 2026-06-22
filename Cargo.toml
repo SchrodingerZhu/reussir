@@ -27,6 +27,10 @@ rustc-hash = "2.1"
 # Small-size-optimized vectors: arity-bounded surface-AST lists (path segments,
 # argument/type-parameter lists) stay inline and skip heap allocation.
 smallvec = "1.15"
+# Fenwick (binary-indexed) tree: O(log n) point-update + prefix-count, used to
+# keep the v0 Punycode encoder's per-occurrence "code points placed to the left"
+# query sub-linear, so Bootstring encoding is O(n log n) rather than O(n²).
+ftree = "1.3.0"
 cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
 # rustc's extracted union-find: keyed unification with value merging and
 # snapshot/rollback (the logged path-compression makes speculation correct).
