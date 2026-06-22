@@ -167,6 +167,43 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> FullProgram<'tcx> 
     }
 }
 
+/// The maximum type-argument nesting depth monomorphization will instantiate
+/// before treating the chain as non-terminating — in the spirit of rustc's
+/// `recursion_limit`. Deep but finite generic nesting stays well under it; the
+/// unbounded type growth of polymorphic recursion blows straight past it.
+///
+/// TODO: surface as a proper diagnostic (naming the offending instance) once
+/// mono gains a report sink, instead of panicking.
+const RECURSION_LIMIT: usize = 128;
+
+/// The structural nesting depth of a ground type: `1` for a scalar, one more
+/// than its deepest argument for a constructor. Polymorphic recursion grows this
+/// without bound (each `f<T>` → `f<Wrap<T>>` step adds a level), which is what
+/// the recursion-limit guard in [`Driver::enqueue`] watches.
+fn ty_depth(ty: Ty<'_>) -> usize {
+    match *ty.kind() {
+        TyKind::Nullable(inner) => 1 + ty_depth(inner),
+        TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
+        TyKind::Closure { params, ret } => {
+            1 + params
+                .iter()
+                .copied()
+                .chain(std::iter::once(ret))
+                .map(ty_depth)
+                .max()
+                .unwrap_or(0)
+        }
+        TyKind::Int(_)
+        | TyKind::Fp(_)
+        | TyKind::Bool
+        | TyKind::Str
+        | TyKind::Unit
+        | TyKind::Bottom
+        | TyKind::Generic(_)
+        | TyKind::Hole(_) => 1,
+    }
+}
+
 /// Mutable worklist state shared across the instantiation walk.
 struct Driver<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
@@ -182,6 +219,18 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     fn enqueue(&mut self, def: DefId, ty_args: &'tcx [Ty<'tcx>]) {
         let inst = Instance { def, ty_args };
         if self.seen.insert(inst) {
+            // Bound the queue by type-argument depth. The queue is the only thing
+            // that grows, and polymorphic recursion makes each instance one level
+            // deeper than the last, so an unbounded chain trips this rather than
+            // looping forever. Ground types of depth <= the limit over a finite
+            // set of `DefId`s are a finite set, so this guarantees termination.
+            let depth = ty_args.iter().map(|&t| ty_depth(t)).max().unwrap_or(0);
+            assert!(
+                depth <= RECURSION_LIMIT,
+                "monomorphize: type-argument nesting depth {depth} exceeds the \
+                 recursion limit ({RECURSION_LIMIT}); this is almost certainly \
+                 unbounded instantiation from polymorphic recursion"
+            );
             self.queue.push_back(inst);
         }
     }
@@ -406,5 +455,34 @@ mod tests {
         for child in children(e) {
             assert_ground(child);
         }
+    }
+
+    #[test]
+    fn monomorphic_recursion_terminates() {
+        // Self-recursion at a *fixed* type is a single instance — the depth guard
+        // must not mistake ordinary recursion for a runaway.
+        let src = r#"
+            fn rec(n: i32) -> i32 { rec(n) }
+            fn main(n: i32) -> i32 { rec(n) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RC3rec".to_string()), "{syms:?}");
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "recursion limit")]
+    fn detects_polymorphic_recursion() {
+        // `rec<T>` calls itself at `Wrap<T>`, so each instance is one level deeper
+        // than the last: `rec<i32>`, `rec<Wrap<i32>>`, `rec<Wrap<Wrap<i32>>>`, …
+        // This never converges, so mono must abort at the recursion limit instead
+        // of looping forever.
+        let src = r#"
+            struct Wrap<T> { value: T }
+            fn rec<T>(x: T) -> i32 { rec(Wrap { value: x }) }
+            fn main(n: i32) -> i32 { rec(n) }
+        "#;
+        with_full(src, |_| {});
     }
 }
