@@ -190,6 +190,10 @@ pub struct Function<'tcx> {
     /// instances external linkage and keep internal ones private.
     pub visibility: crate::surface::Visibility,
     pub generics: Vec<(TokenKey, GenericId)>,
+    /// Generics used at a `[flex]` position; their instantiations must be
+    /// regional records (checked at monomorphization). See
+    /// [`crate::semi::ctxt::FuncProto::regional_generics`].
+    pub regional_generics: Vec<GenericId>,
     pub params: Vec<(TokenKey, VarId, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,
     pub is_regional: bool,

@@ -47,6 +47,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             name: proto.name,
             visibility: proto.visibility,
             generics: proto.generics,
+            regional_generics: proto.regional_generics,
             params,
             return_ty,
             is_regional: proto.is_regional,

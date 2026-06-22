@@ -22,16 +22,16 @@
 //! there resolves to a callee symbol *and* enqueues that callee instance, so
 //! discovery and symbol resolution happen in the same pass.
 //!
-//! # Capability re-validation
+//! # Regional check at the call boundary
 //!
-//! Semi leaves generics *uncolored* — a value of generic type has no flex/rigid
-//! capability, so the flex-escape rules are vacuously skipped for it. Once an
-//! instance is ground those capabilities are known, so lowering re-checks them
-//! (flex capture / flex return) and reports any instantiation that lets a flex
-//! value escape its region. This is a **latent** hook today: the elaborator drops
-//! flexivity through generic inference and there is no surface syntax for a flex
-//! type argument, so no instance currently reaches it with a flex generic — it
-//! becomes live once capability-as-a-bound lets flexivity flow into instances.
+//! A generic used at a `[flex]` position (e.g. `bar: [flex] T`) requires its
+//! instantiating type to be a *regional* record — only regional records can be
+//! flex. The `[flex]` coloring itself is dropped on a bare generic (as in the
+//! reference); the elaborator records the implied requirement in
+//! `Function::regional_generics`, and mono verifies it here when an instance is
+//! popped, reporting any non-regional (value/shared) instantiation. The
+//! *flexivity* rules (flex capture/return/assign) are a separate concern enforced
+//! at the Semi stage on concrete records, not here.
 
 use std::collections::VecDeque;
 
@@ -55,7 +55,7 @@ pub struct Instance<'tcx> {
 }
 
 /// Monomorphize an elaborated program into its ground Full MIR, alongside any
-/// diagnostics raised by capability re-validation.
+/// diagnostics raised by the call-boundary regional check.
 pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
     let tcx: &'a TyCtxt<'tcx> = elab.tcx;
     let by_def: FxHashMap<DefId, &Function<'tcx>> =
@@ -93,6 +93,17 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
         let mut subst = Subst::default();
         for ((_, gid), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
             subst.insert(*gid, ty);
+            // Call-boundary check: a generic used at a `[flex]` position must be
+            // instantiated with a regional record (only regional records can be
+            // flex). Value/shared records and scalars are rejected.
+            if func.regional_generics.contains(gid) && !is_regional_arg(ty) {
+                driver.error(
+                    func.span,
+                    "a `[flex]` type parameter requires a regional record, but this \
+                     instantiation supplied a non-regional (value/shared) type"
+                        .to_string(),
+                );
+            }
         }
         let params: Vec<mir::Param<'tcx>> = func
             .params
@@ -196,19 +207,14 @@ fn ty_depth(ty: Ty<'_>) -> usize {
     }
 }
 
-/// Whether `ty`'s head (peeling `Nullable`) is a flex regional record — a value
-/// that cannot be materialized, hence cannot escape its region. Mirrors the Semi
-/// checker's `is_flex`, but on ground types, so it fires for the generic
-/// instantiations the checker could not colour.
-fn is_flex(ty: Ty<'_>) -> bool {
-    match *ty.kind() {
-        TyKind::Record {
-            flex: Capability::Flex,
-            ..
-        } => true,
-        TyKind::Nullable(inner) => is_flex(inner),
-        _ => false,
-    }
+/// Whether a ground type argument is a regional record. Only regional records
+/// carry a `Regional`/`Flex`/`Rigid` capability; value/shared records are
+/// `Irrelevant` and scalars carry none.
+fn is_regional_arg(ty: Ty<'_>) -> bool {
+    matches!(
+        ty.capability(),
+        Some(Capability::Regional | Capability::Flex | Capability::Rigid)
+    )
 }
 
 /// Mutable worklist + lowering state.
@@ -315,7 +321,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     fn lower_expr(&mut self, e: &Expr<'tcx>, subst: &Subst<'tcx>) -> mir::Expr<'tcx> {
         let ty = subst_ty(self.tcx, e.ty, subst);
         self.note_records(ty);
-        let kind = self.lower_kind(&e.kind, subst, e.span);
+        let kind = self.lower_kind(&e.kind, subst);
         mir::Expr {
             kind,
             ty,
@@ -323,12 +329,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         }
     }
 
-    fn lower_kind(
-        &mut self,
-        kind: &ExprKind<'tcx>,
-        subst: &Subst<'tcx>,
-        span: Option<Span>,
-    ) -> mir::ExprKind<'tcx> {
+    fn lower_kind(&mut self, kind: &ExprKind<'tcx>, subst: &Subst<'tcx>) -> mir::ExprKind<'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
@@ -419,7 +420,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 target: self.lower_ref(target, subst),
                 args: self.lower_slice(args, subst),
             },
-            ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst, span)),
+            ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst)),
             ExprKind::Match(scrut, tree) => {
                 M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
             }
@@ -430,34 +431,14 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         &mut self,
         c: &hir::ClosureExpr<'tcx>,
         subst: &Subst<'tcx>,
-        span: Option<Span>,
     ) -> mir::ClosureExpr<'tcx> {
+        // Flex-escape rules (a flex value may not be captured/returned) are a
+        // *flexivity* concern and are enforced at the Semi stage on concrete
+        // records; monomorphization only verifies the regional requirement at the
+        // call boundary (see the worklist loop).
         let captures = self.lower_var_tys(&c.captures, subst);
         let params = self.lower_var_tys(&c.params, subst);
         let body = self.lower_ref(&c.body, subst);
-
-        // Capability re-validation: at Semi these values had generic (uncolored)
-        // types, so the flex-escape rules were skipped. Now they are ground, so we
-        // re-run them on the concrete capabilities. NOTE: this is currently a
-        // *latent* hook — the elaborator drops flexivity through generic inference
-        // (`unify` ignores it) and there is no way to spell a flex type argument,
-        // so no instance reaches here with a flex generic *yet*. It fires once
-        // capability-as-a-bound lands and flexivity flows into instantiations.
-        for &(_, ty) in captures {
-            if is_flex(ty) {
-                self.error(
-                    span,
-                    "closure cannot capture a flex value: a flex value cannot escape its region",
-                );
-            }
-        }
-        if is_flex(body.ty) {
-            self.error(
-                span,
-                "closure cannot return a flex value: a flex value cannot escape its region",
-            );
-        }
-
         mir::ClosureExpr {
             captures,
             params,
@@ -830,5 +811,50 @@ mod tests {
             fn main(n: i32) -> i32 { ping(n) }
         "#;
         with_full(src, |_| {});
+    }
+
+    #[test]
+    fn flex_generic_accepts_regional_instantiation() {
+        // `foo<T>(bar: [flex] T)` requires T to be regional; instantiating it at a
+        // regional record is accepted (no diagnostic).
+        let src = r#"
+            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
+            regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.iter().any(|s| s.contains("foo")), "{syms:?}");
+        });
+    }
+
+    #[test]
+    fn flex_generic_rejects_non_regional_instantiation() {
+        // The same `[flex] T` parameter instantiated at a value record is rejected
+        // at the call boundary — only regional records may be flex.
+        let src = r#"
+            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct Pair { a: i32 }
+            regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
+            regional fn use_bad(p: Pair) -> i32 { foo(p) }
+        "#;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (_full, reports) = monomorphize(&elab);
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message.contains("regional record")),
+                "expected a regionality diagnostic, got {reports:#?}"
+            );
+        });
     }
 }

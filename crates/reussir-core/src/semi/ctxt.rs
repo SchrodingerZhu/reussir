@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt};
+use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::string::StringUniqifier;
 
@@ -80,11 +80,32 @@ pub struct FuncProto<'tcx> {
     pub name: TokenKey,
     pub visibility: surface::Visibility,
     pub generics: Vec<(TokenKey, GenericId)>,
+    /// Generics used at a `[flex]` position (e.g. `bar: [flex] T`). A `[flex]`
+    /// use of a bare generic requires the instantiating type to be a regional
+    /// record — checked at the monomorphization call boundary. (The `[flex]`
+    /// coloring itself is dropped on a generic, exactly as in the reference; this
+    /// records the *requirement* it implies.)
+    pub regional_generics: Vec<GenericId>,
     /// `(name, colored type)`.
     pub params: Vec<(TokenKey, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,
     pub is_regional: bool,
     pub span: Option<Span>,
+}
+
+/// Records the generic at the head of a `[flex]`-annotated type (peeling
+/// `Nullable`): a `[flex]` use of a bare generic means that generic must be
+/// instantiated with a regional record.
+fn collect_regional_generic(t: Ty<'_>, out: &mut Vec<GenericId>) {
+    match *t.kind() {
+        TyKind::Generic(id) => {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        TyKind::Nullable(inner) => collect_regional_generic(inner, out),
+        _ => {}
+    }
 }
 
 /// A resolved `extern "<abi>" trampoline "<name>" = target::func<TyArgs>;`.
@@ -377,13 +398,25 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let generics = self.collect_generics(&func.generics, span);
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
-        let params = func
-            .params
-            .iter()
-            .map(|(name, ty, flex)| (*name, self.eval_type_flex(ty, *flex)))
-            .collect();
+        // A `[flex]` annotation on a bare generic (its coloring is dropped, as in
+        // the reference) records that the generic must be instantiated regional.
+        let mut regional_generics: Vec<GenericId> = Vec::new();
+        let mut params = Vec::new();
+        for (name, ty, flex) in &func.params {
+            let t = self.eval_type_flex(ty, *flex);
+            if *flex {
+                collect_regional_generic(t, &mut regional_generics);
+            }
+            params.push((*name, t));
+        }
         let return_ty = match &func.return_type {
-            Some((ty, flex)) => self.eval_type_flex(ty, *flex),
+            Some((ty, flex)) => {
+                let t = self.eval_type_flex(ty, *flex);
+                if *flex {
+                    collect_regional_generic(t, &mut regional_generics);
+                }
+                t
+            }
             None => self.tcx.mk_unit(),
         };
         self.generic_names.clear();
@@ -401,6 +434,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             name,
             visibility: func.visibility,
             generics,
+            regional_generics,
             params,
             return_ty,
             is_regional: func.is_regional,
