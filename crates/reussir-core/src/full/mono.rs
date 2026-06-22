@@ -156,8 +156,8 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
         .collect();
 
     // Deterministic output: sort by mangled text.
-    functions.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0).to_string());
-    records.sort_by_cached_key(|r| driver.symbols.resolve(&r.symbol.0).to_string());
+    functions.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0));
+    records.sort_by_cached_key(|r| driver.symbols.resolve(&r.symbol.0));
 
     let Driver {
         symbols, reports, ..
