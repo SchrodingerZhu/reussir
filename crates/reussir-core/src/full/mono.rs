@@ -485,4 +485,89 @@ mod tests {
         "#;
         with_full(src, |_| {});
     }
+
+    #[test]
+    fn multiple_type_params_instantiate_per_ordering() {
+        // `pick<A, B>` is generic in two parameters; the type arguments mangle in
+        // declaration order, so distinct orderings are distinct instances.
+        let src = r#"
+            fn pick<A, B>(a: A, b: B) -> A { a }
+            fn use_ib(n: i32, b: bool) -> i32 { pick(n, b) }
+            fn use_bi(b: bool, n: i32) -> bool { pick(b, n) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4picklbE".to_string()), "{syms:?}"); // pick<i32, bool>
+            assert!(syms.contains(&"_RIC4pickblE".to_string()), "{syms:?}"); // pick<bool, i32>
+            // Exactly two `pick` instances — the two orderings, no duplicates.
+            let picks = syms.iter().filter(|s| s.contains("pick")).count();
+            assert_eq!(picks, 2, "{syms:?}");
+            for func in &full.functions {
+                if let Some(body) = &func.body {
+                    assert_ground(body);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn permuting_type_params_terminates() {
+        // `swap<A, B>` recurses as `swap<B, A>`: the arguments permute but the
+        // reachable set is finite ({<i32, bool>, <bool, i32>}), so mono converges
+        // without tripping the depth guard.
+        let src = r#"
+            fn swap<A, B>(a: A, b: B) -> i32 { swap(b, a) }
+            fn main(n: i32, b: bool) -> i32 { swap(n, b) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4swaplbE".to_string()), "{syms:?}"); // swap<i32, bool>
+            assert!(syms.contains(&"_RIC4swapblE".to_string()), "{syms:?}"); // swap<bool, i32>
+            let swaps = syms.iter().filter(|s| s.contains("swap")).count();
+            assert_eq!(swaps, 2, "{syms:?}");
+        });
+    }
+
+    #[test]
+    fn mutual_recursion_at_fixed_type_terminates() {
+        // `ping`/`pong` call each other at the *same* type argument, so the cycle
+        // closes after one instance of each.
+        let src = r#"
+            fn ping<T>(x: T) -> i32 { pong(x) }
+            fn pong<T>(x: T) -> i32 { ping(x) }
+            fn main(n: i32) -> i32 { ping(n) }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.contains(&"_RIC4pinglE".to_string()), "{syms:?}"); // ping<i32>
+            assert!(syms.contains(&"_RIC4ponglE".to_string()), "{syms:?}"); // pong<i32>
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "recursion limit")]
+    fn detects_polymorphic_recursion_in_one_of_several_params() {
+        // Only `A` grows; `B` stays fixed. The depth guard takes the max over all
+        // type arguments, so a runaway in any single parameter is still caught.
+        let src = r#"
+            struct Wrap<T> { value: T }
+            fn rec2<A, B>(a: A, b: B) -> i32 { rec2(Wrap { value: a }, b) }
+            fn main(n: i32, b: bool) -> i32 { rec2(n, b) }
+        "#;
+        with_full(src, |_| {});
+    }
+
+    #[test]
+    #[should_panic(expected = "recursion limit")]
+    fn detects_mutual_polymorphic_recursion() {
+        // The growth is split across the cycle: each hop wraps the argument once,
+        // so `ping`/`pong` together drive unbounded instantiation.
+        let src = r#"
+            struct Wrap<T> { value: T }
+            fn ping<T>(x: T) -> i32 { pong(Wrap { value: x }) }
+            fn pong<T>(x: T) -> i32 { ping(Wrap { value: x }) }
+            fn main(n: i32) -> i32 { ping(n) }
+        "#;
+        with_full(src, |_| {});
+    }
 }
