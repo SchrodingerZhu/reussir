@@ -23,12 +23,16 @@
 //!
 //! Lifecycle: create ⟶ Flex ──(freeze on escape)──▶ Rigid (materializable).
 //!
-//! Representation note: `eval_type` leaves a regional record's type *unpinned*
-//! at [`Capability::Regional`]; [`Elaborator::eval_type_flex`] pins a binding's
-//! head to Flex (`[flex]`) or Rigid; [`Elaborator::freeze_region`] freezes an
-//! escaping value. Because `unify` ignores flexivity, a constructor's unpinned
-//! `Regional` result flows into a `[flex]` binding/return and is read as Flex
-//! there. A `[field]` mutable link is wrapped in `Nullable` (nullable, and
+//! Representation note: a regional record's *type annotation* is evaluated by
+//! `eval_type` to an unpinned [`Capability::Regional`], which
+//! [`Elaborator::eval_type_flex`] then pins to Flex (`[flex]`) or Rigid. A
+//! freshly *constructed* regional record is different: it is born Flex directly
+//! (the checker's `record_ty`) — the live, region-local form, so it is
+//! immediately assignable and freezes to Rigid on region exit
+//! ([`Elaborator::freeze_region`] maps Flex/Regional → Rigid). Because `unify`
+//! ignores flexivity, that Flex value still flows into a binding/return annotated
+//! otherwise (e.g. `[rigid]`), where the annotation's coloring is what is read. A
+//! `[field]` mutable link is wrapped in `Nullable` (nullable, and
 //! reassignable in-region), so *assembling* (assigning) and *projecting*
 //! (reading) those fields ride the `Nullable` machinery — and so
 //! [`Elaborator::refine_flex`] looks through a `Nullable` head when pinning a

@@ -145,6 +145,58 @@ mod tests {
     }
 
     #[test]
+    fn fresh_regional_construction_is_flex_and_assignable() {
+        // A regional record constructed inside a region is born `Flex`, so it can
+        // be assigned into directly — no `[flex]` binding annotation required.
+        // Before the fix the construction was `Regional`, and the assignment was
+        // rejected with "assignment target must be a flex record".
+        check(
+            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
+             regional fn build(seed: i32) -> i32 {\n\
+                 let c = Cell { v: seed, next: Nullable::Null };\n\
+                 c->next := Nullable::NonNull{c};\n\
+                 0\n\
+             }",
+            |elab, _tcx| {
+                let f = function(elab, "build");
+                let body = f.body.as_ref().expect("build has a body");
+                let crate::semi::hir::ExprKind::Seq(stmts) = &body.kind else {
+                    panic!("expected a Seq body, got {:?}", body.kind);
+                };
+                let crate::semi::hir::ExprKind::Let { value, .. } = &stmts[0].kind else {
+                    panic!("expected a `let` binding first, got {:?}", stmts[0].kind);
+                };
+                assert_eq!(
+                    value.ty.capability(),
+                    Some(Capability::Flex),
+                    "a fresh regional construction should be flex"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn value_record_construction_is_not_flex() {
+        // The fix is scoped to regional records: a value/shared record is never
+        // flex (it carries no regional capability).
+        check(
+            "struct Pair { a: i32 }\n\
+             fn build(n: i32) -> i32 { let p = Pair { a: n }; 0 }",
+            |elab, _tcx| {
+                let f = function(elab, "build");
+                let body = f.body.as_ref().expect("build has a body");
+                let crate::semi::hir::ExprKind::Seq(stmts) = &body.kind else {
+                    panic!("expected a Seq body, got {:?}", body.kind);
+                };
+                let crate::semi::hir::ExprKind::Let { value, .. } = &stmts[0].kind else {
+                    panic!("expected a `let` binding first, got {:?}", stmts[0].kind);
+                };
+                assert_eq!(value.ty.capability(), Some(Capability::Irrelevant));
+            },
+        );
+    }
+
+    #[test]
     fn reports_type_mismatch() {
         with_tcx(|tcx| {
             let source = "fn bad() -> bool { 1 }";
@@ -165,6 +217,26 @@ mod tests {
             assert!(
                 elab.reports.iter().any(|r| r.message.contains("regional")),
                 "expected a regional-call error: {:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_field_link_to_non_regional_record() {
+        with_tcx(|tcx| {
+            // A `[field]` link's element must be a regional record; a concrete
+            // value record is rejected right at the declaration.
+            let source = "struct Pair { a: i32 }\n\
+                          struct [regional] Holder { item: [field] Pair }";
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("`[field]` link element")),
+                "expected a `[field]` element error: {:#?}",
                 elab.reports
             );
         });

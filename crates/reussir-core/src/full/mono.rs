@@ -24,14 +24,20 @@
 //!
 //! # Regional check at the call boundary
 //!
-//! A generic used at a `[flex]` position (e.g. `bar: [flex] T`) requires its
-//! instantiating type to be a *regional* record — only regional records can be
-//! flex. The `[flex]` coloring itself is dropped on a bare generic (as in the
-//! reference); the elaborator records the implied requirement in
-//! `Function::regional_generics`, and mono verifies it here when an instance is
-//! popped, reporting any non-regional (value/shared) instantiation. The
-//! *flexivity* rules (flex capture/return/assign) are a separate concern enforced
-//! at the Semi stage on concrete records, not here.
+//! Some generics must be instantiated *regional* — only regional records can be
+//! flex or occupy a `[field]` link. The elaborator records these requirements
+//! (the `[flex]`/`[field]` colorings are dropped on a bare generic, as in the
+//! reference, but the implied requirement is kept):
+//!
+//! * `Function::regional_generics` — a generic used at a `[flex]` position
+//!   (`bar: [flex] T`) or assigned into a flex link in the body;
+//! * `Record::regional_generics` — a generic at the head of a `[field]` link
+//!   (`inner: [field] T`).
+//!
+//! Mono verifies them here — when a function instance is popped, and when a
+//! record instance is finalized — reporting any non-regional (value/shared)
+//! instantiation. The *flexivity* rules (flex capture/return/assign) are a
+//! separate concern enforced at the Semi stage on concrete records, not here.
 
 use std::collections::VecDeque;
 
@@ -136,6 +142,27 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
     // Resolve the discovered record instances to symbols. Collect the keys first
     // so the interner can be borrowed mutably while we map them.
     let record_keys: Vec<(DefId, &'tcx [Ty<'tcx>])> = driver.records.iter().copied().collect();
+    // Call-boundary regional check for records: a `[field] T` link requires `T`
+    // regional, so a record instance must supply a regional type for each such
+    // generic parameter.
+    for &(def, args) in &record_keys {
+        let Some(record) = elab.records.get(&def) else {
+            continue;
+        };
+        for &gid in &record.regional_generics {
+            let Some(pos) = record.ty_params.iter().position(|(_, g)| *g == gid) else {
+                continue;
+            };
+            if matches!(args.get(pos), Some(&ty) if !is_regional_arg(ty)) {
+                driver.error(
+                    record.span,
+                    "a `[field]` link requires a regional record, but this record was \
+                     instantiated at a non-regional (value/shared) type"
+                        .to_string(),
+                );
+            }
+        }
+    }
     let mut records: Vec<mir::RecordInstance<'tcx>> = record_keys
         .into_iter()
         .map(|(def, args)| mir::RecordInstance {
@@ -837,6 +864,79 @@ mod tests {
             struct Pair { a: i32 }
             regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
             regional fn use_bad(p: Pair) -> i32 { foo(p) }
+        "#;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (_full, reports) = monomorphize(&elab);
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message.contains("regional record")),
+                "expected a regionality diagnostic, got {reports:#?}"
+            );
+        });
+    }
+
+    #[test]
+    fn field_link_generic_accepts_regional() {
+        // `Wrapper<T>` with `[field] T` instantiated at a regional record is fine.
+        let src = r#"
+            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] Wrapper<T> { inner: [field] T }
+            regional fn use_ok(w: [flex] Wrapper<Cell<i32>>) -> i32 { 0 }
+        "#;
+        with_full(src, |full| {
+            let syms = symbols(full);
+            assert!(syms.iter().any(|s| s.contains("use_ok")), "{syms:?}");
+        });
+    }
+
+    #[test]
+    fn field_link_generic_must_be_regional() {
+        // `struct [regional] Wrapper<T> { inner: [field] T }` requires `T` to be
+        // regional. Instantiating `Wrapper` at a value record is rejected at the
+        // call boundary, even with no function-body assignment.
+        let src = r#"
+            struct Pair { a: i32 }
+            struct [regional] Wrapper<T> { inner: [field] T }
+            regional fn use_bad(w: [flex] Wrapper<Pair>) -> i32 { 0 }
+        "#;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (_full, reports) = monomorphize(&elab);
+            assert!(
+                reports.iter().any(|r| r.message.contains("`[field]` link")),
+                "expected a `[field]` regionality diagnostic, got {reports:#?}"
+            );
+        });
+    }
+
+    #[test]
+    fn generic_assigned_into_link_must_be_regional() {
+        // Assigning a `Nullable<T>` into a flex link records that `T` must be
+        // regional (a body-discovered requirement, not just `[flex] T` params).
+        // Instantiating at a non-regional type is rejected at the call boundary.
+        let src = r#"
+            struct Pair { a: i32 }
+            struct [regional] Box<T> { item: [field] T }
+            regional fn store<T>(b: [flex] Box<T>, z: Nullable<T>) -> i32 { b->item := z; 0 }
+            regional fn use_bad(b: [flex] Box<Pair>, z: Nullable<Pair>) -> i32 { store(b, z) }
         "#;
         with_tcx(|tcx| {
             let parse = reussir_syntax::parse(src);

@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Capability, DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::string::StringUniqifier;
 
@@ -70,6 +70,10 @@ pub struct Record<'tcx> {
     pub kind: surface::RecordKind,
     pub default_cap: DefaultCap,
     pub fields: Option<RecordFields<'tcx>>,
+    /// Generics that must be instantiated regional because they appear as the
+    /// element of a `[field]` link (e.g. `inner: [field] T`). Checked at the
+    /// monomorphization call boundary, like a function's `regional_generics`.
+    pub regional_generics: Vec<GenericId>,
     pub span: Option<Span>,
 }
 
@@ -202,6 +206,11 @@ pub struct Elaborator<'a, 'tcx> {
     pub vars: VarEnv<'tcx>,
     pub generic_names: FxHashMap<TokenKey, GenericId>,
     pub inside_region: bool,
+    /// Generics required to be regional, accumulated while checking the current
+    /// function body (e.g. a generic assigned into a flex link). Seeded from the
+    /// prototype's `[flex]`-position generics and folded into the elaborated
+    /// [`Function`]. See [`FuncProto::regional_generics`].
+    pub regional_generics: Vec<GenericId>,
     pub fulfill: FulfillCtxt<'tcx>,
     expr_counter: u32,
 }
@@ -238,6 +247,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
             inside_region: false,
+            regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
             expr_counter: 0,
         }
@@ -389,6 +399,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             kind: rec.kind,
             default_cap,
             fields: None,
+            regional_generics: Vec::new(),
             span,
         };
         self.records.insert(def, record);
@@ -471,12 +482,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let default_cap = record.default_cap;
         self.generic_names = ty_params.iter().map(|(n, id)| (*n, *id)).collect();
 
+        // A generic at the head of a `[field]` link (`inner: [field] T`) must be
+        // instantiated regional; record the requirement for the mono check.
+        let mut regional_generics: Vec<GenericId> = Vec::new();
         let fields = match &rec.fields {
             surface::RecordFields::Named(fs) => RecordFields::Named(
                 fs.iter()
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
-                        (*name, self.field_ty(ty, *mutable), *mutable)
+                        let fty = self.field_ty(ty, *mutable);
+                        if *mutable {
+                            self.note_link_element(fty, &mut regional_generics, span);
+                        }
+                        (*name, fty, *mutable)
                     })
                     .collect(),
             ),
@@ -484,7 +502,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 fs.iter()
                     .map(|f| {
                         let (ty, mutable) = &f.value;
-                        (self.field_ty(ty, *mutable), *mutable)
+                        let fty = self.field_ty(ty, *mutable);
+                        if *mutable {
+                            self.note_link_element(fty, &mut regional_generics, span);
+                        }
+                        (fty, *mutable)
                     })
                     .collect(),
             ),
@@ -519,6 +541,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         if let Some(r) = self.records.get_mut(&def) {
             r.fields = Some(fields);
+            r.regional_generics = regional_generics;
         }
     }
 
@@ -582,6 +605,36 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn field_ty(&mut self, ty: &surface::Type, mutable: bool) -> Ty<'tcx> {
         let t = self.eval_type(ty);
         if mutable { self.tcx.mk_nullable(t) } else { t }
+    }
+
+    /// Enforce that a `[field]` link's element is regional. The element (peeled
+    /// from the `Nullable` link) must be a regional record: a concrete
+    /// value/shared element is rejected here; a generic element records a
+    /// requirement checked at the monomorphization call boundary.
+    fn note_link_element(
+        &mut self,
+        field_ty: Ty<'tcx>,
+        regional: &mut Vec<GenericId>,
+        span: Option<Span>,
+    ) {
+        let elem = match field_ty.kind() {
+            TyKind::Nullable(inner) => *inner,
+            _ => field_ty,
+        };
+        match elem.kind() {
+            TyKind::Generic(g) => {
+                if !regional.contains(g) {
+                    regional.push(*g);
+                }
+            }
+            TyKind::Record {
+                flex: Capability::Irrelevant,
+                ..
+            } => self.error(span, "a `[field]` link element must be a regional record"),
+            // Regional records are fine; non-record elements are already rejected
+            // by the `Nullable` pointer-like check.
+            _ => {}
+        }
     }
 }
 
