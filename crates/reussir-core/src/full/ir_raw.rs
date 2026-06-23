@@ -5,10 +5,12 @@
 //! arena-allocated MIR from it. Decoupling keeps the grammar actions trivial and
 //! the interning logic in ordinary, testable Rust.
 //!
-//! Type annotations are carried where the printer emits them (`5 : i32`,
-//! `(a + b) : t`, `call(..) : t`); nodes the printer leaves unannotated (vars,
-//! blocks) get a placeholder type at re-intern time, which is sound for the
-//! text-faithful round trip (those positions are never re-printed).
+//! Every node is `{ kind, ty }`: the grammar reads an explicit `: ty` for every
+//! value node, so the re-intern pass takes each type straight from the text and
+//! never invents one. The two structural exceptions — `let` (always `unit`) and
+//! a `Seq` (its last item's type) — are filled by the grammar actions and are
+//! correct by construction. This makes the round trip value-sound, not merely
+//! text-faithful.
 
 /// A whole program: record instances (with their ground type), functions,
 /// exported trampolines.
