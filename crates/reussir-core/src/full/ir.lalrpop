@@ -1,7 +1,8 @@
 //! Grammar for the textual Full (MIR) IR — the deserializer, dual to
 //! `full::print`. Tokens come from the `full::ir_lex` logos lexer; productions
 //! build the owned `full::ir_raw` AST, which `full::ir_build` re-interns into the
-//! arena MIR. (Decision trees / `match` are added in a follow-up commit.)
+//! arena MIR. Covers every MIR form: functions, types, expressions, and
+//! `match` decision trees.
 
 use crate::full::ir_raw as raw;
 use crate::full::ir_lex::{Token, LexError};
@@ -109,10 +110,42 @@ Expr: raw::Expr = {
         => raw::Expr::Closure { captures, params, body: Box::new(body) },
     "if" <c:Expr> "then" "{" <t:Block> "}" "else" "{" <f:Block> "}"
         => raw::Expr::If(Box::new(c), Box::new(t), Box::new(f)),
+    "match" <s:Expr> "{" <t:Tree> "}" => raw::Expr::Match(Box::new(s), Box::new(t)),
     "{" <b:Block> "}" => b,
 };
 
 ClosureParam: (u32, raw::Ty) = <v:"var"> ":" <t:Ty> => (v, t);
+
+// ----- decision trees -----
+
+Tree: raw::Tree = {
+    "uncovered" => raw::Tree::Uncovered,
+    "unreachable" => raw::Tree::Unreachable,
+    "switch" <p:PatRef> "{" <arms:Arm*> "}" => raw::build_switch(p, arms),
+    <b:Bindings> "=>" <body:Block> => raw::Tree::Leaf { bindings: b, body },
+    <b:Bindings> "if" <g:Expr> "{" <s:Tree> "}" "else" "{" <f:Tree> "}"
+        => raw::Tree::Guard { bindings: b, guard: g, success: Box::new(s), failure: Box::new(f) },
+};
+
+Arm: (raw::Label, raw::Tree) = <l:Label> "=>" "{" <t:Tree> "}" => (l, t);
+
+Label: raw::Label = {
+    "#" <n:"int"> => raw::Label::Ctor(n as usize),
+    <n:"int"> => raw::Label::Int(n),
+    "_" => raw::Label::Wildcard,
+    "true" => raw::Label::Bool(true),
+    "false" => raw::Label::Bool(false),
+    "str" "#" <n:"int"> => raw::Label::Str(n as u64),
+    "NonNull" => raw::Label::NonNull,
+    "Null" => raw::Label::Null,
+};
+
+PatRef: raw::Path = "scrut" <idxs:("." <"int">)*>
+    => idxs.into_iter().map(|n| n as u32).collect();
+
+Bindings: Vec<raw::Binding> = <Binding*>;
+
+Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
 
 ArithOp: raw::ArithOp = {
     "+" => raw::ArithOp::Add,
@@ -170,6 +203,11 @@ extern {
         "if" => Token::If,
         "then" => Token::Then,
         "else" => Token::Else,
+        "match" => Token::Match,
+        "switch" => Token::Switch,
+        "scrut" => Token::Scrut,
+        "uncovered" => Token::Uncovered,
+        "unreachable" => Token::Unreachable,
         "region" => Token::Region,
         "as" => Token::As,
         "closure" => Token::Closure,
@@ -200,7 +238,10 @@ extern {
         "::" => Token::ColonColon,
         ";" => Token::Semi,
         "," => Token::Comma,
+        "." => Token::Dot,
         "=" => Token::Eq,
+        "=>" => Token::FatArrow,
+        "_" => Token::Underscore,
         "->" => Token::Arrow,
         "@" => Token::At,
         "#" => Token::Hash,

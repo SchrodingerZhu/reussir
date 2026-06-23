@@ -406,7 +406,9 @@ impl Render<'_> {
     }
 
     fn arm(&self, label: Doc<'static>, tree: &mir::DecisionTree<'_>) -> Doc<'static> {
-        label + text(" =>") + indent(hardline() + self.tree(tree))
+        // Braced so the sub-tree (whose leaf body is an expression) is bounded —
+        // an int case label can't be mistaken for the start of the next body.
+        label + text(" => {") + indent(hardline() + self.tree(tree)) + hardline() + text("}")
     }
 
     fn bindings(&self, bindings: &[mir::Binding<'_>]) -> Doc<'static> {

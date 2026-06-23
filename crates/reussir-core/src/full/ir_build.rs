@@ -193,6 +193,83 @@ impl<'tcx> Builder<'_, 'tcx> {
         self.tcx.alloc_slice(&v)
     }
 
+    // ----- decision trees -----
+
+    fn tree_ref(&mut self, t: &raw::Tree) -> &'tcx mir::DecisionTree<'tcx> {
+        let lowered = self.tree(t);
+        self.tcx.alloc(lowered)
+    }
+
+    fn tree(&mut self, t: &raw::Tree) -> mir::DecisionTree<'tcx> {
+        use mir::DecisionTree as D;
+        match t {
+            raw::Tree::Uncovered => D::Uncovered,
+            raw::Tree::Unreachable => D::Unreachable,
+            raw::Tree::Leaf { bindings, body } => D::Leaf {
+                body: self.expr_ref(body),
+                bindings: self.bindings(bindings),
+            },
+            raw::Tree::Guard {
+                bindings,
+                guard,
+                success,
+                failure,
+            } => D::Guard {
+                bindings: self.bindings(bindings),
+                guard: self.expr_ref(guard),
+                success: self.tree_ref(success),
+                failure: self.tree_ref(failure),
+            },
+            raw::Tree::Switch { scrutinee, cases } => D::Switch {
+                scrutinee: self.tcx.alloc_slice(scrutinee),
+                cases: self.cases(cases),
+            },
+        }
+    }
+
+    fn bindings(&mut self, bs: &[raw::Binding]) -> &'tcx [mir::Binding<'tcx>] {
+        let v: Vec<mir::Binding<'tcx>> = bs
+            .iter()
+            .map(|(var, path)| (VarId(*var), self.tcx.alloc_slice(path)))
+            .collect();
+        self.tcx.alloc_slice(&v)
+    }
+
+    fn cases(&mut self, c: &raw::Cases) -> mir::SwitchCases<'tcx> {
+        use mir::SwitchCases as S;
+        match c {
+            raw::Cases::Int { cases, default } => {
+                let mut cs = Vec::with_capacity(cases.len());
+                for (n, t) in cases {
+                    cs.push((*n, self.tree(t)));
+                }
+                let default = self.tree_ref(default);
+                S::Int {
+                    cases: self.tcx.alloc_slice(&cs),
+                    default,
+                }
+            }
+            raw::Cases::Bool { if_true, if_false } => S::Bool {
+                if_true: self.tree_ref(if_true),
+                if_false: self.tree_ref(if_false),
+            },
+            raw::Cases::Ctor(arms) => {
+                let mut v = Vec::with_capacity(arms.len());
+                for t in arms {
+                    v.push(self.tree(t));
+                }
+                S::Ctor(self.tcx.alloc_slice(&v))
+            }
+            raw::Cases::Str { .. } => {
+                unimplemented!("string switches are not yet round-tripped")
+            }
+            raw::Cases::Nullable { non_null, null } => S::Nullable {
+                non_null: self.tree_ref(non_null),
+                null: self.tree_ref(null),
+            },
+        }
+    }
+
     fn expr(&mut self, e: &raw::Expr) -> mir::Expr<'tcx> {
         use mir::ExprKind as M;
         let (kind, ty): (M<'tcx>, Ty<'tcx>) = match e {
@@ -334,8 +411,9 @@ impl<'tcx> Builder<'_, 'tcx> {
                     self.placeholder(),
                 )
             }
-            raw::Expr::Match(..) => {
-                unreachable!("decision trees are not yet parsed")
+            raw::Expr::Match(scrut, tree) => {
+                let scrut = self.expr_ref(scrut);
+                (M::Match(scrut, self.tree(tree)), self.placeholder())
             }
         };
         mir::Expr {
@@ -414,6 +492,47 @@ mod tests {
             "pub fn fib(n: u64) -> u64 { \
              let m = n + 1; \
              if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_records_and_projection() {
+        // Exercises `@Pair{..}` constructors, the `Pair` record type, and
+        // `proj(.., 0)`.
+        roundtrip(
+            "struct Pair { a: i32, b: i32 } \
+             pub fn mk(x: i32, y: i32) -> Pair { Pair { a: x, b: y } } \
+             pub fn fst(p: Pair) -> i32 { p.a }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_regional_flex_signature() {
+        // Exercises a turbofished, capability-prefixed record type:
+        // `[flex] Cell::<i32>`.
+        roundtrip(
+            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+             regional fn id(c: [flex] Cell<i32>) -> i32 { 0 }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_a_match() {
+        // Exercises `match`, a ctor `switch scrut { #0 => {..} #1 => {..} }`,
+        // a pattern binding (`v1=scrut.0`), and a leaf body.
+        roundtrip(
+            "enum Opt { None, Some(i32) } \
+             pub fn unwrap(o: Opt) -> i32 { \
+             match o { Opt::None => 0, Opt::Some(x) => x } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_an_int_match() {
+        // Exercises an int `switch` with a `_` default arm.
+        roundtrip(
+            "pub fn classify(n: i32) -> i32 { \
+             match n { 0 => 10, 1 => 20, _ => 30 } }",
         );
     }
 }

@@ -221,3 +221,98 @@ pub enum Cases {
         null: Box<Tree>,
     },
 }
+
+/// A switch-arm label, as the grammar reads it before partitioning into a typed
+/// [`Cases`]. The printer emits homogeneous labels per switch (all `#i`, all int,
+/// …), with a `_` wildcard standing for the default arm.
+#[derive(Clone, Copy, Debug)]
+pub enum Label {
+    Int(i128),
+    Ctor(usize),
+    Str(u64),
+    Bool(bool),
+    NonNull,
+    Null,
+    Wildcard,
+}
+
+/// Reassemble a `switch`'s arms into the typed [`Cases`], keyed off the first
+/// non-wildcard label. (`unwrap`s assume printer-shaped input, as the textual IR
+/// is machine-emitted.)
+pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
+    let kind = arms
+        .iter()
+        .map(|(l, _)| *l)
+        .find(|l| !matches!(l, Label::Wildcard));
+    let cases = match kind {
+        Some(Label::Bool(_)) => {
+            let (mut if_true, mut if_false) = (None, None);
+            for (l, t) in arms {
+                match l {
+                    Label::Bool(true) => if_true = Some(Box::new(t)),
+                    Label::Bool(false) => if_false = Some(Box::new(t)),
+                    _ => {}
+                }
+            }
+            Cases::Bool {
+                if_true: if_true.unwrap(),
+                if_false: if_false.unwrap(),
+            }
+        }
+        Some(Label::Ctor(_)) => {
+            let mut v: Vec<(usize, Tree)> = arms
+                .into_iter()
+                .filter_map(|(l, t)| match l {
+                    Label::Ctor(i) => Some((i, t)),
+                    _ => None,
+                })
+                .collect();
+            v.sort_by_key(|(i, _)| *i);
+            Cases::Ctor(v.into_iter().map(|(_, t)| t).collect())
+        }
+        Some(Label::NonNull | Label::Null) => {
+            let (mut non_null, mut null) = (None, None);
+            for (l, t) in arms {
+                match l {
+                    Label::NonNull => non_null = Some(Box::new(t)),
+                    Label::Null => null = Some(Box::new(t)),
+                    _ => {}
+                }
+            }
+            Cases::Nullable {
+                non_null: non_null.unwrap(),
+                null: null.unwrap(),
+            }
+        }
+        Some(Label::Str(_)) => {
+            let (mut cases, mut default) = (Vec::new(), None);
+            for (l, t) in arms {
+                match l {
+                    Label::Str(s) => cases.push((s, t)),
+                    Label::Wildcard => default = Some(Box::new(t)),
+                    _ => {}
+                }
+            }
+            Cases::Str {
+                cases,
+                default: default.unwrap(),
+            }
+        }
+        // Int, or a lone wildcard.
+        _ => {
+            let (mut cases, mut default) = (Vec::new(), None);
+            for (l, t) in arms {
+                match l {
+                    Label::Int(n) => cases.push((n, t)),
+                    Label::Wildcard => default = Some(Box::new(t)),
+                    _ => {}
+                }
+            }
+            Cases::Int {
+                cases,
+                default: default.unwrap(),
+            }
+        }
+    };
+    Tree::Switch { scrutinee, cases }
+}
