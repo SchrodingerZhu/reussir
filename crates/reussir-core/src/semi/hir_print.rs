@@ -1,0 +1,471 @@
+//! A readable, **round-trippable** textual rendering of the Semi (HIR) program.
+//!
+//! The HIR is the *polymorphic* phase: functions still carry generic parameters
+//! (`$n`), calls reference items by [`DefId`] path (`#path`) with explicit type
+//! arguments, and types may mention [`TyKind::Generic`]/[`TyKind::Hole`]. This is
+//! the serialize half; the lalrpop grammar (`semi/hir_ir.lalrpop`) is the dual,
+//! gated by round-trip tests.
+//!
+//! Built with [`pprint`], sharing the spelling conventions of the MIR printer
+//! ([`crate::full::print`]) — `;`-separated blocks, braced `if`, functional
+//! `proj`/`assign`/`apply`, turbofish type args — but keyed by `#path`/`$n`
+//! rather than `@symbol`.
+
+use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
+use reussir_syntax::kind::{Resolver, TokenKey};
+
+use crate::semi::hir::{
+    ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
+};
+use crate::semi::resolve::DefTable;
+use crate::semi::ty::{Capability, DefId, FpTy, IntTy, Ty, TyKind};
+use crate::surface::Visibility;
+
+const IR_PRINTER: PpPrinter = PpPrinter {
+    max_width: 100,
+    indent: 4,
+    use_tabs: false,
+};
+
+/// Renders Semi (HIR) functions to text.
+pub struct Printer<'a> {
+    defs: &'a DefTable,
+    resolver: &'a dyn Resolver<TokenKey>,
+}
+
+impl<'a> Printer<'a> {
+    pub fn new(defs: &'a DefTable, resolver: &'a dyn Resolver<TokenKey>) -> Self {
+        Printer { defs, resolver }
+    }
+
+    /// Render a slice of elaborated functions (the Semi output).
+    pub fn program(&self, funcs: &[Function<'_>]) -> String {
+        let mut doc = Doc::Null;
+        for (i, f) in funcs.iter().enumerate() {
+            if i > 0 {
+                doc = doc + hardline() + hardline();
+            }
+            doc = doc + self.function(f);
+        }
+        let mut out = pprint(doc, IR_PRINTER);
+        out.push('\n');
+        out
+    }
+
+    fn path(&self, def: DefId) -> String {
+        self.defs.path(def).display(self.resolver)
+    }
+
+    fn function(&self, f: &Function<'_>) -> Doc<'static> {
+        let mut head = String::new();
+        if f.visibility == Visibility::Public {
+            head.push_str("pub ");
+        }
+        if f.is_regional {
+            head.push_str("regional ");
+        }
+        head.push_str("fn #");
+        head.push_str(&self.path(f.def));
+
+        let mut sig = text(head);
+        if !f.generics.is_empty() {
+            let parts: Vec<Doc<'static>> = f
+                .generics
+                .iter()
+                .map(|(_, g)| {
+                    let regional = f.regional_generics.contains(g);
+                    text(format!(
+                        "{}${}",
+                        if regional { "regional " } else { "" },
+                        g.0
+                    ))
+                })
+                .collect();
+            sig = sig + text("<") + comma_sep(parts) + text(">");
+        }
+        let params: Vec<Doc<'static>> = f
+            .params
+            .iter()
+            .map(|(name, var, ty)| {
+                text(format!("v{} ({}): ", var.0, self.resolver.resolve(*name))) + self.ty(*ty)
+            })
+            .collect();
+        sig = sig + text("(") + comma_sep(params) + text(") -> ") + self.ty(f.return_ty);
+
+        match &f.body {
+            Some(body) => {
+                sig + text(" {") + indent(hardline() + self.expr(body)) + hardline() + text("}")
+            }
+            None => sig + text(";"),
+        }
+    }
+
+    // ----- types -----
+
+    fn ty(&self, ty: Ty<'_>) -> Doc<'static> {
+        match *ty.kind() {
+            TyKind::Int(IntTy::Signed(w)) => text(format!("i{w}")),
+            TyKind::Int(IntTy::Unsigned(w)) => text(format!("u{w}")),
+            TyKind::Fp(FpTy::Ieee(w)) => text(format!("f{w}")),
+            TyKind::Fp(FpTy::BFloat16) => text("bf16"),
+            TyKind::Fp(FpTy::Float8) => text("f8"),
+            TyKind::Bool => text("bool"),
+            TyKind::Str => text("str"),
+            TyKind::Unit => text("()"),
+            TyKind::Bottom => text("!"),
+            TyKind::Generic(g) => text(format!("${}", g.0)),
+            TyKind::Hole(h) => text(format!("?{}", h.0)),
+            TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
+            TyKind::Record { def, args, flex } => {
+                let mut d = match flex {
+                    Capability::Flex | Capability::Rigid | Capability::Regional => {
+                        text(format!("[{}] ", cap_name(flex)))
+                    }
+                    Capability::Irrelevant => Doc::Null,
+                };
+                d = d + text(format!("#{}", self.path(def)));
+                if !args.is_empty() {
+                    let parts: Vec<Doc<'static>> = args.iter().map(|&a| self.ty(a)).collect();
+                    d = d + text("::<") + comma_sep(parts) + text(">");
+                }
+                d
+            }
+            TyKind::Closure { params, ret } => {
+                let parts: Vec<Doc<'static>> = params.iter().map(|&p| self.ty(p)).collect();
+                text("(") + comma_sep(parts) + text(") -> ") + self.ty(ret)
+            }
+        }
+    }
+
+    /// Optional `::<args>` type-argument list.
+    fn ty_args(&self, args: &[Ty<'_>]) -> Doc<'static> {
+        if args.is_empty() {
+            Doc::Null
+        } else {
+            let parts: Vec<Doc<'static>> = args.iter().map(|&a| self.ty(a)).collect();
+            text("::<") + comma_sep(parts) + text(">")
+        }
+    }
+
+    // ----- expressions -----
+
+    fn expr(&self, e: &Expr<'_>) -> Doc<'static> {
+        match &e.kind {
+            ExprKind::Seq(items) => {
+                let n = items.len();
+                let mut d = Doc::Null;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        d = d + hardline();
+                    }
+                    d = d + self.expr(item);
+                    if i + 1 < n {
+                        d = d + text(";");
+                    }
+                }
+                d
+            }
+            ExprKind::If(c, t, f) => self.render_if(c, t, f),
+            ExprKind::Match(scrut, tree) => self.render_match(scrut, tree),
+            _ => self.inline(e),
+        }
+    }
+
+    fn render_if(&self, c: &Expr<'_>, t: &Expr<'_>, f: &Expr<'_>) -> Doc<'static> {
+        text("if ")
+            + self.inline(c)
+            + text(" then {")
+            + indent(hardline() + self.expr(t))
+            + hardline()
+            + text("} else {")
+            + indent(hardline() + self.expr(f))
+            + hardline()
+            + text("}")
+    }
+
+    fn render_match(&self, scrut: &Expr<'_>, tree: &DecisionTree<'_>) -> Doc<'static> {
+        text("match ")
+            + self.inline(scrut)
+            + text(" {")
+            + indent(hardline() + self.tree(tree))
+            + hardline()
+            + text("}")
+    }
+
+    fn inline(&self, e: &Expr<'_>) -> Doc<'static> {
+        match &e.kind {
+            ExprKind::GlobalStr(s) => text(format!("str#{}", s.words()[0])),
+            ExprKind::ConstInt(n) => text(format!("{n} : ")) + self.ty(e.ty),
+            ExprKind::ConstFloat(f) => text(format!("{f} : ")) + self.ty(e.ty),
+            ExprKind::ConstBool(b) => text(format!("{b}")),
+            ExprKind::Var(v) => var(*v),
+            ExprKind::Poison => text("poison"),
+            ExprKind::Negate(x) => text("-(") + self.inline(x) + text(")"),
+            ExprKind::Not(x) => text("!(") + self.inline(x) + text(")"),
+            ExprKind::Arith(l, op, r) => self.binop(l, arith_sym(*op), r, e.ty),
+            ExprKind::Cmp(l, op, r) => self.binop(l, cmp_sym(*op), r, e.ty),
+            ExprKind::Cast(x, t) => {
+                text("(") + self.inline(x) + text(" as ") + self.ty(*t) + text(")")
+            }
+            ExprKind::RegionRun(x) => text("region { ") + self.inline(x) + text(" }"),
+            ExprKind::Proj(base, path) => {
+                let mut d = text("proj(") + self.inline(base);
+                for idx in path {
+                    d = d + text(format!(", {idx}"));
+                }
+                d + text(")")
+            }
+            ExprKind::Assign(dst, field, src) => {
+                text("assign(")
+                    + self.inline(dst)
+                    + text(format!(", {field}, "))
+                    + self.inline(src)
+                    + text(")")
+            }
+            ExprKind::Let {
+                var: v,
+                name,
+                value,
+                ..
+            } => {
+                text("let ")
+                    + var(*v)
+                    + text(format!(" ({}): ", self.resolver.resolve(*name)))
+                    + self.ty(value.ty)
+                    + text(" = ")
+                    + self.inline(value)
+            }
+            ExprKind::FuncCall {
+                target,
+                ty_args,
+                args,
+                regional,
+            } => {
+                let pre = if *regional { "regional " } else { "" };
+                text(format!("{pre}#{}", self.path(*target)))
+                    + self.ty_args(ty_args)
+                    + text("(")
+                    + self.arg_list(args)
+                    + text(") : ")
+                    + self.ty(e.ty)
+            }
+            ExprKind::CompoundCall {
+                target,
+                ty_args,
+                args,
+            } => {
+                text(format!("#{}", self.path(*target)))
+                    + self.ty_args(ty_args)
+                    + text("{")
+                    + self.arg_list(args)
+                    + text("} : ")
+                    + self.ty(e.ty)
+            }
+            ExprKind::VariantCall {
+                target,
+                ty_args,
+                variant,
+                args,
+            } => {
+                text(format!("#{}", self.path(*target)))
+                    + self.ty_args(ty_args)
+                    + text(format!("::#{variant}("))
+                    + self.arg_list(args)
+                    + text(") : ")
+                    + self.ty(e.ty)
+            }
+            ExprKind::NullableCall(inner) => match inner {
+                Some(x) => text("NonNull(") + self.inline(x) + text(")"),
+                None => text("Null"),
+            },
+            ExprKind::ClosureCall { target, args } => {
+                let mut d = text("apply(") + self.inline(target);
+                if !args.is_empty() {
+                    d = d + text(", ") + self.arg_list(args);
+                }
+                d + text(")")
+            }
+            ExprKind::Closure(c) => {
+                let caps: Vec<Doc<'static>> = c.captures.iter().map(|(v, _)| var(*v)).collect();
+                let params: Vec<Doc<'static>> = c
+                    .params
+                    .iter()
+                    .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
+                    .collect();
+                text("closure[")
+                    + comma_sep(caps)
+                    + text("](")
+                    + comma_sep(params)
+                    + text(") { ")
+                    + self.inline(&c.body)
+                    + text(" }")
+            }
+            ExprKind::If(c, t, f) => self.render_if(c, t, f),
+            ExprKind::Match(scrut, tree) => self.render_match(scrut, tree),
+            ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
+        }
+    }
+
+    fn binop(&self, l: &Expr<'_>, sym: &str, r: &Expr<'_>, ty: Ty<'_>) -> Doc<'static> {
+        text("(")
+            + self.inline(l)
+            + text(format!(" {sym} "))
+            + self.inline(r)
+            + text(") : ")
+            + self.ty(ty)
+    }
+
+    fn arg_list(&self, args: &[Expr<'_>]) -> Doc<'static> {
+        comma_sep(args.iter().map(|a| self.inline(a)).collect())
+    }
+
+    // ----- decision trees -----
+
+    fn tree(&self, tree: &DecisionTree<'_>) -> Doc<'static> {
+        match tree {
+            DecisionTree::Uncovered => text("uncovered"),
+            DecisionTree::Unreachable => text("unreachable"),
+            DecisionTree::Leaf { body, bindings } => {
+                self.bindings(bindings) + text("=> ") + self.expr(body)
+            }
+            DecisionTree::Guard {
+                bindings,
+                guard,
+                success,
+                failure,
+            } => {
+                self.bindings(bindings)
+                    + text("if ")
+                    + self.inline(guard)
+                    + text(" {")
+                    + indent(hardline() + self.tree(success))
+                    + hardline()
+                    + text("} else {")
+                    + indent(hardline() + self.tree(failure))
+                    + hardline()
+                    + text("}")
+            }
+            DecisionTree::Switch { scrutinee, cases } => {
+                text("switch ")
+                    + pat_ref(scrutinee)
+                    + text(" {")
+                    + indent(hardline() + self.cases(cases))
+                    + hardline()
+                    + text("}")
+            }
+        }
+    }
+
+    fn cases(&self, cases: &SwitchCases<'_>) -> Doc<'static> {
+        let arms: Vec<Doc<'static>> = match cases {
+            SwitchCases::Int { cases, default } => {
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(n, t)| self.arm(text(format!("{n}")), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
+            }
+            SwitchCases::Bool { if_true, if_false } => vec![
+                self.arm(text("true"), if_true),
+                self.arm(text("false"), if_false),
+            ],
+            SwitchCases::Ctor(arms) => arms
+                .iter()
+                .enumerate()
+                .map(|(i, t)| self.arm(text(format!("#{i}")), t))
+                .collect(),
+            SwitchCases::String { cases, default } => {
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(s, t)| self.arm(text(format!("str#{}", s.words()[0])), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
+            }
+            SwitchCases::Nullable { non_null, null } => vec![
+                self.arm(text("NonNull"), non_null),
+                self.arm(text("Null"), null),
+            ],
+        };
+        let mut d = Doc::Null;
+        for (i, a) in arms.into_iter().enumerate() {
+            if i > 0 {
+                d = d + hardline();
+            }
+            d = d + a;
+        }
+        d
+    }
+
+    fn arm(&self, label: Doc<'static>, tree: &DecisionTree<'_>) -> Doc<'static> {
+        label + text(" => {") + indent(hardline() + self.tree(tree)) + hardline() + text("}")
+    }
+
+    fn bindings(&self, bindings: &[(VarId, PatVarRef)]) -> Doc<'static> {
+        let mut d = Doc::Null;
+        for (v, path) in bindings {
+            d = d + var(*v) + text("=") + pat_ref(path) + text(" ");
+        }
+        d
+    }
+}
+
+fn text(s: impl Into<String>) -> Doc<'static> {
+    Doc::from(s.into())
+}
+
+fn var(v: VarId) -> Doc<'static> {
+    text(format!("v{}", v.0))
+}
+
+fn pat_ref(path: &PatVarRef) -> Doc<'static> {
+    let mut s = String::from("scrut");
+    for idx in &path.0 {
+        s.push_str(&format!(".{idx}"));
+    }
+    text(s)
+}
+
+fn comma_sep(docs: Vec<Doc<'static>>) -> Doc<'static> {
+    let mut d = Doc::Null;
+    for (i, item) in docs.into_iter().enumerate() {
+        if i > 0 {
+            d = d + text(", ");
+        }
+        d = d + item;
+    }
+    d
+}
+
+fn cap_name(c: Capability) -> &'static str {
+    match c {
+        Capability::Flex => "flex",
+        Capability::Rigid => "rigid",
+        Capability::Regional => "regional",
+        Capability::Irrelevant => "",
+    }
+}
+
+fn arith_sym(op: ArithOp) -> &'static str {
+    match op {
+        ArithOp::Add => "+",
+        ArithOp::Sub => "-",
+        ArithOp::Mul => "*",
+        ArithOp::Div => "/",
+        ArithOp::Mod => "%",
+        ArithOp::And => "&&",
+        ArithOp::Or => "||",
+    }
+}
+
+fn cmp_sym(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "<",
+        CmpOp::Gt => ">",
+        CmpOp::Le => "<=",
+        CmpOp::Ge => ">=",
+        CmpOp::Eq => "==",
+        CmpOp::Ne => "!=",
+    }
+}

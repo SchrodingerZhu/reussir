@@ -120,7 +120,8 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
 
         let text = match mode {
-            Mode::Semi => String::new(),
+            Mode::Semi => reussir_core::semi::hir_print::Printer::new(&elab.defs, elab.resolver)
+                .program(&elab.elaborated),
             Mode::Full => {
                 let (full, mono_reports) = monomorphize(&elab);
                 for report in &mono_reports {
@@ -145,9 +146,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     if !ok {
         return Ok(false);
     }
-    if mode == Mode::Full {
-        print!("{rendered}");
-    }
+    print!("{rendered}");
     Ok(true)
 }
 

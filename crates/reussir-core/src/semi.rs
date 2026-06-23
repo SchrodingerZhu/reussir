@@ -25,6 +25,7 @@ pub mod check;
 pub mod ctxt;
 pub mod fulfill;
 pub mod hir;
+pub mod hir_print;
 pub mod pattern;
 pub mod resolve;
 pub mod ty_eval;

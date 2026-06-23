@@ -162,6 +162,12 @@ pub enum Token<'a> {
     /// `v<id>` — a local variable.
     #[regex(r"v[0-9]+", |l| l.slice()[1..].parse().ok(), priority = 3)]
     Var(u32),
+    /// `$<id>` — a generic parameter (HIR only).
+    #[regex(r"\$[0-9]+", |l| l.slice()[1..].parse().ok())]
+    Generic(u32),
+    /// `?<id>` — an unsolved inference hole (HIR only).
+    #[regex(r"\?[0-9]+", |l| l.slice()[1..].parse().ok())]
+    Hole(u32),
     /// A non-negative integer literal.
     #[regex(r"[0-9]+", |l| l.slice().parse().ok())]
     Int(i128),
