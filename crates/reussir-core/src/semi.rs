@@ -223,6 +223,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_field_link_to_non_regional_record() {
+        with_tcx(|tcx| {
+            // A `[field]` link's element must be a regional record; a concrete
+            // value record is rejected right at the declaration.
+            let source = "struct Pair { a: i32 }\n\
+                          struct [regional] Holder { item: [field] Pair }";
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("`[field]` link element")),
+                "expected a `[field]` element error: {:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
     fn rejects_capturing_a_flex_value() {
         with_tcx(|tcx| {
             // `c` is a flex regional value; a closure cannot capture it (a flex

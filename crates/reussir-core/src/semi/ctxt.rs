@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Capability, DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::string::StringUniqifier;
 
@@ -492,7 +492,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (name, ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         if *mutable {
-                            collect_regional_generic(fty, &mut regional_generics);
+                            self.note_link_element(fty, &mut regional_generics, span);
                         }
                         (*name, fty, *mutable)
                     })
@@ -504,7 +504,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         if *mutable {
-                            collect_regional_generic(fty, &mut regional_generics);
+                            self.note_link_element(fty, &mut regional_generics, span);
                         }
                         (fty, *mutable)
                     })
@@ -605,6 +605,36 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn field_ty(&mut self, ty: &surface::Type, mutable: bool) -> Ty<'tcx> {
         let t = self.eval_type(ty);
         if mutable { self.tcx.mk_nullable(t) } else { t }
+    }
+
+    /// Enforce that a `[field]` link's element is regional. The element (peeled
+    /// from the `Nullable` link) must be a regional record: a concrete
+    /// value/shared element is rejected here; a generic element records a
+    /// requirement checked at the monomorphization call boundary.
+    fn note_link_element(
+        &mut self,
+        field_ty: Ty<'tcx>,
+        regional: &mut Vec<GenericId>,
+        span: Option<Span>,
+    ) {
+        let elem = match field_ty.kind() {
+            TyKind::Nullable(inner) => *inner,
+            _ => field_ty,
+        };
+        match elem.kind() {
+            TyKind::Generic(g) => {
+                if !regional.contains(g) {
+                    regional.push(*g);
+                }
+            }
+            TyKind::Record {
+                flex: Capability::Irrelevant,
+                ..
+            } => self.error(span, "a `[field]` link element must be a regional record"),
+            // Regional records are fine; non-record elements are already rejected
+            // by the `Nullable` pointer-like check.
+            _ => {}
+        }
     }
 }
 
