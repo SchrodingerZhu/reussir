@@ -2,16 +2,19 @@
 //!
 //! This is the `reussir-elab --mode full` output and the *serialization*
 //! direction of the textual IR: a Rust-ish dump of each ground function keyed by
-//! its v0 symbol. Unlike the old pretty-printer, this spelling is a contract —
-//! the lalrpop grammar (the deserializer) mirrors it, and round-trip tests gate
-//! the two against each other.
+//! its v0 symbol. The spelling is a contract — the lalrpop grammar (the
+//! deserializer) mirrors it, and round-trip tests gate the two against each
+//! other.
 //!
-//! Calls, constructors and record instances reference interned [`mir::Symbol`]s
-//! as `@symbol`; locals are `v<id>` ([`VarId`]); types print structurally.
+//! Built with [`pprint`] (algebraic, Wadler-style): each node renders to a
+//! [`Doc`], composed with explicit `hardline`/`indent` for deterministic block
+//! layout (a stable contract the parser can round-trip). Calls, constructors and
+//! record instances reference interned [`mir::Symbol`]s as `@symbol`; locals are
+//! `v<id>` ([`VarId`]); types print structurally.
 
 use std::fmt::Write;
 
-use lasso::Rodeo;
+use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 
 use crate::full::mir;
@@ -19,6 +22,14 @@ use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyKind};
 use crate::surface::Visibility;
+
+/// Four-space indentation, 100-column target. Block structure is forced
+/// (`hardline`), so width only affects how wide inline argument lists may run.
+const IR_PRINTER: PpPrinter = PpPrinter {
+    max_width: 100,
+    indent: 4,
+    use_tabs: false,
+};
 
 /// Renders a Full MIR program to text.
 pub struct Printer<'a> {
@@ -31,44 +42,49 @@ impl<'a> Printer<'a> {
         Printer { defs, resolver }
     }
 
-    /// Render `program`. The program owns the symbol interner, so it is borrowed
-    /// here to resolve `@symbol` references.
+    /// Render `program`. The program owns the symbol interner, borrowed here to
+    /// resolve `@symbol` references.
     pub fn program(&self, program: &mir::Program<'_>) -> String {
         let r = Render {
             symbols: &program.symbols,
             defs: self.defs,
             resolver: self.resolver,
         };
-        let mut out = String::new();
+
+        let mut items: Vec<Doc<'static>> = Vec::new();
         for rec in &program.records {
-            let _ = writeln!(out, "record @{};", r.sym(rec.symbol));
+            items.push(text(format!("record @{};", r.sym(rec.symbol))));
         }
-        if !program.records.is_empty() {
-            out.push('\n');
-        }
-        for (i, func) in program.functions.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            r.function(&mut out, func);
+        for func in &program.functions {
+            items.push(r.function(func));
         }
         for t in &program.trampolines {
-            let _ = writeln!(
-                out,
-                "\nextern \"{}\" trampoline \"{}\" = @{};",
+            items.push(text(format!(
+                "extern \"{}\" trampoline \"{}\" = @{};",
                 t.abi,
                 r.sym(t.export),
                 r.sym(t.target),
-            );
+            )));
         }
+
+        // One blank line between top-level items.
+        let mut doc = Doc::Null;
+        for (i, item) in items.into_iter().enumerate() {
+            if i > 0 {
+                doc = doc + hardline() + hardline();
+            }
+            doc = doc + item;
+        }
+        let mut out = pprint(doc, IR_PRINTER);
+        out.push('\n');
         out
     }
 }
 
-/// Borrows everything needed to render one program: the symbol interner, the def
-/// table (for record-type paths), and the source identifier resolver.
+/// Borrows the symbol interner, the def table (record-type paths), and the
+/// source identifier resolver for one render.
 struct Render<'a> {
-    symbols: &'a Rodeo,
+    symbols: &'a lasso::Rodeo,
     defs: &'a DefTable,
     resolver: &'a dyn Resolver<TokenKey>,
 }
@@ -78,316 +94,221 @@ impl Render<'_> {
         self.symbols.resolve(&s.0)
     }
 
-    fn function(&self, out: &mut String, func: &mir::Function<'_>) {
+    fn function(&self, func: &mir::Function<'_>) -> Doc<'static> {
+        let mut head = String::new();
         if func.visibility == Visibility::Public {
-            out.push_str("pub ");
+            head.push_str("pub ");
         }
         if func.is_regional {
-            out.push_str("regional ");
+            head.push_str("regional ");
         }
-        let _ = write!(out, "fn @{}(", self.sym(func.symbol));
-        for (i, p) in func.params.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            var(out, p.var);
-            let _ = write!(out, " ({}): ", self.resolver.resolve(p.name));
-            self.ty(out, p.ty);
-        }
-        out.push_str(") -> ");
-        self.ty(out, func.return_ty);
+        let _ = write!(head, "fn @{}(", self.sym(func.symbol));
+        let params: Vec<Doc<'static>> = func
+            .params
+            .iter()
+            .map(|p| {
+                text(format!(
+                    "v{} ({}): ",
+                    p.var.0,
+                    self.resolver.resolve(p.name)
+                )) + self.ty(p.ty)
+            })
+            .collect();
+        let sig = text(head) + comma_sep(params) + text(") -> ") + self.ty(func.return_ty);
+
         match func.body {
             Some(body) => {
-                out.push_str(" {\n");
-                self.expr(out, body, 1);
-                out.push('\n');
-                out.push_str("}\n");
+                sig + text(" {") + indent(hardline() + self.expr(body)) + hardline() + text("}")
             }
-            None => out.push_str(";\n"),
+            None => sig + text(";"),
         }
     }
 
     // ----- types -----
 
-    fn ty(&self, out: &mut String, ty: Ty<'_>) {
+    fn ty(&self, ty: Ty<'_>) -> Doc<'static> {
         match *ty.kind() {
-            TyKind::Int(IntTy::Signed(w)) => {
-                let _ = write!(out, "i{w}");
-            }
-            TyKind::Int(IntTy::Unsigned(w)) => {
-                let _ = write!(out, "u{w}");
-            }
-            TyKind::Fp(FpTy::Ieee(w)) => {
-                let _ = write!(out, "f{w}");
-            }
-            TyKind::Fp(FpTy::BFloat16) => out.push_str("bf16"),
-            TyKind::Fp(FpTy::Float8) => out.push_str("f8"),
-            TyKind::Bool => out.push_str("bool"),
-            TyKind::Str => out.push_str("str"),
-            TyKind::Unit => out.push_str("()"),
-            TyKind::Bottom => out.push('!'),
-            TyKind::Nullable(inner) => {
-                out.push_str("Nullable<");
-                self.ty(out, inner);
-                out.push('>');
-            }
+            TyKind::Int(IntTy::Signed(w)) => text(format!("i{w}")),
+            TyKind::Int(IntTy::Unsigned(w)) => text(format!("u{w}")),
+            TyKind::Fp(FpTy::Ieee(w)) => text(format!("f{w}")),
+            TyKind::Fp(FpTy::BFloat16) => text("bf16"),
+            TyKind::Fp(FpTy::Float8) => text("f8"),
+            TyKind::Bool => text("bool"),
+            TyKind::Str => text("str"),
+            TyKind::Unit => text("()"),
+            TyKind::Bottom => text("!"),
+            TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
             TyKind::Record { def, args, flex } => {
-                if let Capability::Flex | Capability::Rigid | Capability::Regional = flex {
-                    let _ = write!(out, "[{}] ", cap_name(flex));
-                }
-                out.push_str(&self.defs.path(def).display(self.resolver));
-                if !args.is_empty() {
-                    out.push('<');
-                    for (i, &a) in args.iter().enumerate() {
-                        if i > 0 {
-                            out.push_str(", ");
-                        }
-                        self.ty(out, a);
+                let mut d = match flex {
+                    Capability::Flex | Capability::Rigid | Capability::Regional => {
+                        text(format!("[{}] ", cap_name(flex)))
                     }
-                    out.push('>');
+                    Capability::Irrelevant => Doc::Null,
+                };
+                d = d + text(self.defs.path(def).display(self.resolver));
+                if !args.is_empty() {
+                    let parts: Vec<Doc<'static>> = args.iter().map(|&a| self.ty(a)).collect();
+                    d = d + text("<") + comma_sep(parts) + text(">");
                 }
+                d
             }
             TyKind::Closure { params, ret } => {
-                out.push('(');
-                for (i, &p) in params.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    self.ty(out, p);
-                }
-                out.push_str(") -> ");
-                self.ty(out, ret);
+                let parts: Vec<Doc<'static>> = params.iter().map(|&p| self.ty(p)).collect();
+                text("(") + comma_sep(parts) + text(") -> ") + self.ty(ret)
             }
             // A ground MIR carries no generics or holes; render defensively.
-            TyKind::Generic(g) => {
-                let _ = write!(out, "<generic {}>", g.0);
-            }
-            TyKind::Hole(h) => {
-                let _ = write!(out, "<hole {}>", h.0);
-            }
+            TyKind::Generic(g) => text(format!("<generic {}>", g.0)),
+            TyKind::Hole(h) => text(format!("<hole {}>", h.0)),
         }
     }
 
     // ----- expressions -----
 
-    /// Print an expression at the given indentation. Blocks (sequences,
-    /// `if`/`else`, `match`) span multiple lines; everything else is inline.
-    fn expr(&self, out: &mut String, e: &mir::Expr<'_>, depth: usize) {
+    /// Block-level rendering: sequences, `if`/`else`, `match` span lines;
+    /// everything else is inline.
+    fn expr(&self, e: &mir::Expr<'_>) -> Doc<'static> {
         match e.kind {
-            mir::ExprKind::Seq(items) => self.seq(out, items, depth),
+            mir::ExprKind::Seq(items) => {
+                let mut d = Doc::Null;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        d = d + hardline();
+                    }
+                    d = d + self.expr(item);
+                }
+                d
+            }
             mir::ExprKind::If(c, t, f) => {
-                out.push_str("if ");
-                self.inline(out, c);
-                out.push_str(" then\n");
-                indent(out, depth + 1);
-                self.expr(out, t, depth + 1);
-                out.push('\n');
-                indent(out, depth);
-                out.push_str("else\n");
-                indent(out, depth + 1);
-                self.expr(out, f, depth + 1);
+                text("if ")
+                    + self.inline(c)
+                    + text(" then")
+                    + indent(hardline() + self.expr(t))
+                    + hardline()
+                    + text("else")
+                    + indent(hardline() + self.expr(f))
             }
             mir::ExprKind::Match(scrut, tree) => {
-                out.push_str("match ");
-                self.inline(out, scrut);
-                out.push_str(" {\n");
-                self.tree(out, &tree, depth + 1);
-                indent(out, depth);
-                out.push('}');
+                text("match ")
+                    + self.inline(scrut)
+                    + text(" {")
+                    + indent(hardline() + self.tree(&tree))
+                    + hardline()
+                    + text("}")
             }
-            _ => self.inline(out, e),
+            _ => self.inline(e),
         }
     }
 
-    fn seq(&self, out: &mut String, items: &[mir::Expr<'_>], depth: usize) {
-        for (i, item) in items.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-                indent(out, depth);
-            }
-            self.expr(out, item, depth);
-        }
-    }
-
-    /// Print an expression inline (with parenthesized, type-annotated subterms).
-    fn inline(&self, out: &mut String, e: &mir::Expr<'_>) {
+    /// Inline rendering (parenthesized, type-annotated subterms).
+    fn inline(&self, e: &mir::Expr<'_>) -> Doc<'static> {
         use mir::ExprKind::*;
         match e.kind {
-            GlobalStr(s) => {
-                let _ = write!(out, "str#{:x}", s.words()[0]);
-            }
-            ConstInt(n) => {
-                let _ = write!(out, "{n} : ");
-                self.ty(out, e.ty);
-            }
-            ConstFloat(f) => {
-                let _ = write!(out, "{f} : ");
-                self.ty(out, e.ty);
-            }
-            ConstBool(b) => {
-                let _ = write!(out, "{b}");
-            }
-            Var(v) => var(out, v),
-            Poison => out.push_str("<poison>"),
-            Negate(x) => {
-                out.push_str("-(");
-                self.inline(out, x);
-                out.push(')');
-            }
-            Not(x) => {
-                out.push_str("!(");
-                self.inline(out, x);
-                out.push(')');
-            }
-            Arith(l, op, r) => self.binop(out, l, arith_sym(op), r, e.ty),
-            Cmp(l, op, r) => self.binop(out, l, cmp_sym(op), r, e.ty),
-            Cast(x, t) => {
-                out.push('(');
-                self.inline(out, x);
-                out.push_str(" as ");
-                self.ty(out, t);
-                out.push(')');
-            }
-            RegionRun(x) => {
-                out.push_str("region { ");
-                self.inline(out, x);
-                out.push_str(" }");
-            }
+            GlobalStr(s) => text(format!("str#{}", s.words()[0])),
+            ConstInt(n) => text(format!("{n} : ")) + self.ty(e.ty),
+            ConstFloat(f) => text(format!("{f} : ")) + self.ty(e.ty),
+            ConstBool(b) => text(format!("{b}")),
+            Var(v) => var(v),
+            Poison => text("poison"),
+            Negate(x) => text("-(") + self.inline(x) + text(")"),
+            Not(x) => text("!(") + self.inline(x) + text(")"),
+            Arith(l, op, r) => self.binop(l, arith_sym(op), r, e.ty),
+            Cmp(l, op, r) => self.binop(l, cmp_sym(op), r, e.ty),
+            Cast(x, t) => text("(") + self.inline(x) + text(" as ") + self.ty(t) + text(")"),
+            RegionRun(x) => text("region { ") + self.inline(x) + text(" }"),
             Proj(base, path) => {
-                self.inline(out, base);
+                let mut d = self.inline(base);
                 for idx in path {
-                    let _ = write!(out, ".{idx}");
+                    d = d + text(format!(".{idx}"));
                 }
+                d
             }
             Assign(dst, field, src) => {
-                self.inline(out, dst);
-                let _ = write!(out, ".{field} = ");
-                self.inline(out, src);
+                self.inline(dst) + text(format!(".{field} = ")) + self.inline(src)
             }
             Let {
                 var: v,
                 name,
                 value,
             } => {
-                out.push_str("let ");
-                var(out, v);
-                let _ = write!(out, " ({}): ", self.resolver.resolve(name));
-                self.ty(out, value.ty);
-                out.push_str(" = ");
-                self.inline(out, value);
-                out.push_str(" in");
+                text("let ")
+                    + var(v)
+                    + text(format!(" ({}): ", self.resolver.resolve(name)))
+                    + self.ty(value.ty)
+                    + text(" = ")
+                    + self.inline(value)
+                    + text(" in")
             }
             Call {
                 callee,
                 args,
                 regional,
             } => {
-                if regional {
-                    out.push_str("regional ");
-                }
-                let _ = write!(out, "@{}", self.sym(callee));
-                self.args(out, args);
-                out.push_str(" : ");
-                self.ty(out, e.ty);
+                let pre = if regional { "regional " } else { "" };
+                text(format!("{pre}@{}(", self.sym(callee)))
+                    + self.arg_list(args)
+                    + text(") : ")
+                    + self.ty(e.ty)
             }
             Ctor { record, args } => {
-                let _ = write!(out, "@{}{{", self.sym(record));
-                self.arg_list(out, args);
-                out.push('}');
+                text(format!("@{}{{", self.sym(record))) + self.arg_list(args) + text("}")
             }
             Variant {
                 record,
                 variant,
                 args,
             } => {
-                let _ = write!(out, "@{}::#{variant}", self.sym(record));
-                self.args(out, args);
+                text(format!("@{}::#{variant}(", self.sym(record)))
+                    + self.arg_list(args)
+                    + text(")")
             }
             NullableCall(inner) => match inner {
-                Some(x) => {
-                    out.push_str("NonNull(");
-                    self.inline(out, x);
-                    out.push(')');
-                }
-                None => out.push_str("Null"),
+                Some(x) => text("NonNull(") + self.inline(x) + text(")"),
+                None => text("Null"),
             },
             ClosureCall { target, args } => {
-                self.inline(out, target);
-                self.args(out, args);
+                self.inline(target) + text("(") + self.arg_list(args) + text(")")
             }
             Closure(c) => {
-                out.push_str("closure[");
-                for (i, (v, _)) in c.captures.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    var(out, *v);
-                }
-                out.push_str("](");
-                for (i, (v, t)) in c.params.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    var(out, *v);
-                    out.push_str(": ");
-                    self.ty(out, *t);
-                }
-                out.push_str(") { ");
-                self.inline(out, c.body);
-                out.push_str(" }");
+                let caps: Vec<Doc<'static>> = c.captures.iter().map(|(v, _)| var(*v)).collect();
+                let params: Vec<Doc<'static>> = c
+                    .params
+                    .iter()
+                    .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
+                    .collect();
+                text("closure[")
+                    + comma_sep(caps)
+                    + text("](")
+                    + comma_sep(params)
+                    + text(") { ")
+                    + self.inline(c.body)
+                    + text(" }")
             }
-            // Block forms shouldn't normally appear inline, but a nested
-            // `if`/`match`/`Seq` is still renderable on one logical line.
-            Seq(_) | If(..) | Match(..) => {
-                out.push('(');
-                self.expr(out, e, 0);
-                out.push(')');
-            }
+            // Block forms nested inline: parenthesize.
+            Seq(_) | If(..) | Match(..) => text("(") + self.expr(e) + text(")"),
         }
     }
 
-    fn binop(&self, out: &mut String, l: &mir::Expr<'_>, sym: &str, r: &mir::Expr<'_>, ty: Ty<'_>) {
-        out.push('(');
-        self.inline(out, l);
-        let _ = write!(out, " {sym} ");
-        self.inline(out, r);
-        out.push_str(") : ");
-        self.ty(out, ty);
+    fn binop(&self, l: &mir::Expr<'_>, sym: &str, r: &mir::Expr<'_>, ty: Ty<'_>) -> Doc<'static> {
+        text("(")
+            + self.inline(l)
+            + text(format!(" {sym} "))
+            + self.inline(r)
+            + text(") : ")
+            + self.ty(ty)
     }
 
-    fn args(&self, out: &mut String, args: &[mir::Expr<'_>]) {
-        out.push('(');
-        self.arg_list(out, args);
-        out.push(')');
-    }
-
-    fn arg_list(&self, out: &mut String, args: &[mir::Expr<'_>]) {
-        for (i, a) in args.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            self.inline(out, a);
-        }
+    fn arg_list(&self, args: &[mir::Expr<'_>]) -> Doc<'static> {
+        comma_sep(args.iter().map(|a| self.inline(a)).collect())
     }
 
     // ----- decision trees -----
 
-    fn tree(&self, out: &mut String, tree: &mir::DecisionTree<'_>, depth: usize) {
+    fn tree(&self, tree: &mir::DecisionTree<'_>) -> Doc<'static> {
         match *tree {
-            mir::DecisionTree::Uncovered => {
-                indent(out, depth);
-                out.push_str("<uncovered>\n");
-            }
-            mir::DecisionTree::Unreachable => {
-                indent(out, depth);
-                out.push_str("<unreachable>\n");
-            }
+            mir::DecisionTree::Uncovered => text("uncovered"),
+            mir::DecisionTree::Unreachable => text("unreachable"),
             mir::DecisionTree::Leaf { body, bindings } => {
-                indent(out, depth);
-                self.bindings(out, bindings);
-                out.push_str("=> ");
-                self.expr(out, body, depth);
-                out.push('\n');
+                self.bindings(bindings) + text("=> ") + self.expr(body)
             }
             mir::DecisionTree::Guard {
                 bindings,
@@ -395,103 +316,109 @@ impl Render<'_> {
                 success,
                 failure,
             } => {
-                indent(out, depth);
-                self.bindings(out, bindings);
-                out.push_str("if ");
-                self.inline(out, guard);
-                out.push_str(" {\n");
-                self.tree(out, success, depth + 1);
-                indent(out, depth);
-                out.push_str("} else {\n");
-                self.tree(out, failure, depth + 1);
-                indent(out, depth);
-                out.push_str("}\n");
+                self.bindings(bindings)
+                    + text("if ")
+                    + self.inline(guard)
+                    + text(" {")
+                    + indent(hardline() + self.tree(success))
+                    + hardline()
+                    + text("} else {")
+                    + indent(hardline() + self.tree(failure))
+                    + hardline()
+                    + text("}")
             }
             mir::DecisionTree::Switch { scrutinee, cases } => {
-                indent(out, depth);
-                out.push_str("switch ");
-                pat_ref(out, scrutinee);
-                out.push_str(" {\n");
-                self.cases(out, &cases, depth + 1);
-                indent(out, depth);
-                out.push_str("}\n");
+                text("switch ")
+                    + pat_ref(scrutinee)
+                    + text(" {")
+                    + indent(hardline() + self.cases(&cases))
+                    + hardline()
+                    + text("}")
             }
         }
     }
 
-    fn cases(&self, out: &mut String, cases: &mir::SwitchCases<'_>, depth: usize) {
-        match *cases {
+    fn cases(&self, cases: &mir::SwitchCases<'_>) -> Doc<'static> {
+        let arms: Vec<Doc<'static>> = match *cases {
             mir::SwitchCases::Int { cases, default } => {
-                for (n, t) in cases {
-                    indent(out, depth);
-                    let _ = writeln!(out, "{n} =>");
-                    self.tree(out, t, depth + 1);
-                }
-                indent(out, depth);
-                out.push_str("_ =>\n");
-                self.tree(out, default, depth + 1);
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(n, t)| self.arm(text(format!("{n}")), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
             }
-            mir::SwitchCases::Bool { if_true, if_false } => {
-                indent(out, depth);
-                out.push_str("true =>\n");
-                self.tree(out, if_true, depth + 1);
-                indent(out, depth);
-                out.push_str("false =>\n");
-                self.tree(out, if_false, depth + 1);
-            }
-            mir::SwitchCases::Ctor(arms) => {
-                for (i, t) in arms.iter().enumerate() {
-                    indent(out, depth);
-                    let _ = writeln!(out, "#{i} =>");
-                    self.tree(out, t, depth + 1);
-                }
-            }
+            mir::SwitchCases::Bool { if_true, if_false } => vec![
+                self.arm(text("true"), if_true),
+                self.arm(text("false"), if_false),
+            ],
+            mir::SwitchCases::Ctor(arms) => arms
+                .iter()
+                .enumerate()
+                .map(|(i, t)| self.arm(text(format!("#{i}")), t))
+                .collect(),
             mir::SwitchCases::String { cases, default } => {
-                for (s, t) in cases {
-                    indent(out, depth);
-                    let _ = writeln!(out, "str#{:x} =>", s.words()[0]);
-                    self.tree(out, t, depth + 1);
-                }
-                indent(out, depth);
-                out.push_str("_ =>\n");
-                self.tree(out, default, depth + 1);
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(s, t)| self.arm(text(format!("str#{}", s.words()[0])), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
             }
-            mir::SwitchCases::Nullable { non_null, null } => {
-                indent(out, depth);
-                out.push_str("NonNull =>\n");
-                self.tree(out, non_null, depth + 1);
-                indent(out, depth);
-                out.push_str("Null =>\n");
-                self.tree(out, null, depth + 1);
+            mir::SwitchCases::Nullable { non_null, null } => vec![
+                self.arm(text("NonNull"), non_null),
+                self.arm(text("Null"), null),
+            ],
+        };
+        let mut d = Doc::Null;
+        for (i, a) in arms.into_iter().enumerate() {
+            if i > 0 {
+                d = d + hardline();
             }
+            d = d + a;
         }
+        d
     }
 
-    fn bindings(&self, out: &mut String, bindings: &[mir::Binding<'_>]) {
+    fn arm(&self, label: Doc<'static>, tree: &mir::DecisionTree<'_>) -> Doc<'static> {
+        label + text(" =>") + indent(hardline() + self.tree(tree))
+    }
+
+    fn bindings(&self, bindings: &[mir::Binding<'_>]) -> Doc<'static> {
+        let mut d = Doc::Null;
         for (v, path) in bindings {
-            var(out, *v);
-            out.push('=');
-            pat_ref(out, path);
-            out.push(' ');
+            d = d + var(*v) + text("=") + pat_ref(path) + text(" ");
         }
+        d
     }
 }
 
-fn indent(out: &mut String, depth: usize) {
-    for _ in 0..depth {
-        out.push_str("    ");
-    }
+/// Owned text node, so the [`Doc`] never borrows the render context.
+fn text(s: impl Into<String>) -> Doc<'static> {
+    Doc::from(s.into())
 }
 
-fn var(out: &mut String, v: VarId) {
-    let _ = write!(out, "v{}", v.0);
+fn var(v: VarId) -> Doc<'static> {
+    text(format!("v{}", v.0))
 }
 
-fn pat_ref(out: &mut String, path: &[u32]) {
-    out.push_str("scrut");
+fn pat_ref(path: &[u32]) -> Doc<'static> {
+    let mut s = String::from("scrut");
     for idx in path {
-        let _ = write!(out, ".{idx}");
+        let _ = write!(s, ".{idx}");
     }
+    text(s)
+}
+
+fn comma_sep(docs: Vec<Doc<'static>>) -> Doc<'static> {
+    let mut d = Doc::Null;
+    for (i, item) in docs.into_iter().enumerate() {
+        if i > 0 {
+            d = d + text(", ");
+        }
+        d = d + item;
+    }
+    d
 }
 
 fn cap_name(c: Capability) -> &'static str {

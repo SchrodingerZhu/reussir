@@ -327,6 +327,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dragonbox"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "248d9043590d93ae0dd689fc184893cf1f99501a15765f153e3eb88d88336e98"
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -483,6 +489,12 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "itoap"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9028f49264629065d057f340a86acb84867925865f73bbf8d47b4d149a7e88b8"
 
 [[package]]
 name = "jetscii"
@@ -882,6 +894,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pprint"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b48c2f578c2f63009423f2a727e68ef6f3dd77bd61c504709a6523463d336a71"
+dependencies = [
+ "dragonbox",
+ "itoap",
+ "pprint_derive",
+ "regex",
+ "rustc-hash",
+]
+
+[[package]]
+name = "pprint_derive"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a290a85f683171b6b98234cf2cba01b333c784035405a6a554484d83f69e506"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,6 +1077,7 @@ dependencies = [
  "lasso",
  "logos",
  "palc",
+ "pprint",
  "rapidhash",
  "reussir-syntax",
  "rustc-hash",
