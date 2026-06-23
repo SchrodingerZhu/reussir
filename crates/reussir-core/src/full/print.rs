@@ -264,7 +264,11 @@ impl Render<'_> {
                 let _ = write!(out, ".{field} = ");
                 self.inline(out, src);
             }
-            Let { var: v, name, value } => {
+            Let {
+                var: v,
+                name,
+                value,
+            } => {
                 out.push_str("let ");
                 var(out, v);
                 let _ = write!(out, " ({}): ", self.resolver.resolve(name));

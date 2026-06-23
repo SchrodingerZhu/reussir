@@ -12,6 +12,10 @@ name = "reussir_core"
 name = "reussir-elab"
 path = "src/bin/reussir-elab.rs"
 
+[build-dependencies]
+# Generates the textual-IR parser from `src/full/ir.lalrpop` at build time.
+lalrpop.workspace = true
+
 [dependencies]
 blake3.workspace = true
 ena.workspace = true
@@ -23,5 +27,7 @@ smallvec.workspace = true
 stumpalo.workspace = true
 # CLI argument parsing for the `reussir-elab` driver.
 palc.workspace = true
+# Runtime support for the textual-IR parser generated from `full/ir.lalrpop`.
+lalrpop-util.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }

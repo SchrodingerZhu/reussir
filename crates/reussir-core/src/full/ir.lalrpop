@@ -1,0 +1,11 @@
+//! Grammar for the textual Full (MIR) IR. Pairs with `full::print` (the
+//! serializer); round-trip tests gate the two against each other.
+//!
+//! Scaffolding only for now — a single `Num` production to validate the build
+//! pipeline. The real productions (functions, types, expressions, decision
+//! trees) land incrementally, threading the `TyCtxt`/interners to rebuild the
+//! arena-allocated MIR.
+
+grammar;
+
+pub Num: i64 = <s:r"[0-9]+"> => s.parse().unwrap();

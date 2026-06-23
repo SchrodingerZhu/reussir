@@ -41,6 +41,12 @@ ena = "0.14"
 stumpalo = { version = "0.4", features = ["std"] }
 lasso = "0.7"
 logos = "0.15"
+# Textual-IR round trip: lalrpop (LR parser generator, build-time) + its runtime
+# support deserialize the printed Full/Semi IR; pprint is the algebraic
+# (Wadler-style) pretty-printer that emits it.
+lalrpop = "0.22"
+lalrpop-util = { version = "0.22", features = ["lexer"] }
+pprint = "0.3"
 # llvm-sys provides the ORC/LLJIT and target-machine C API that mlir-sys does
 # not bind. Its version tracks LLVM major.minor (22.1 -> 221), and it discovers
 # LLVM via LLVM_SYS_221_PREFIX (set by CMake).
