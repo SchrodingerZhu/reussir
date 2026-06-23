@@ -44,12 +44,30 @@ pub enum Token<'a> {
     As,
     #[token("closure")]
     Closure,
+    #[token("apply")]
+    Apply,
+    #[token("flex")]
+    Flex,
+    #[token("rigid")]
+    Rigid,
+    #[token("proj")]
+    Proj,
+    #[token("assign")]
+    Assign,
+    #[token("scrut")]
+    Scrut,
+    #[token("uncovered")]
+    Uncovered,
+    #[token("unreachable")]
+    Unreachable,
     #[token("Nullable")]
     Nullable,
     #[token("NonNull")]
     NonNull,
     #[token("Null")]
     Null,
+    #[token("poison")]
+    Poison,
     #[token("true")]
     True,
     #[token("false")]

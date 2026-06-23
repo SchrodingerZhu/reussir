@@ -13,7 +13,9 @@
 //!
 //! [`semi`]: crate::semi
 
+pub mod ir_build;
 pub mod ir_lex;
+pub mod ir_raw;
 pub mod mangle;
 pub mod mir;
 pub mod mono;
@@ -32,10 +34,11 @@ lalrpop_util::lalrpop_mod!(
 mod ir_pipeline_tests {
     use super::ir_lex::lex;
 
-    /// Smoke test: the logos lexer feeds the lalrpop-generated parser end to
-    /// end. The real IR productions replace this scaffolding.
+    /// Smoke test: the logos lexer feeds the lalrpop-generated parser end to end
+    /// (an empty program parses).
     #[test]
     fn lalrpop_pipeline_is_wired() {
-        assert_eq!(super::ir::NumParser::new().parse(lex("42")), Ok(42));
+        let prog = super::ir::ProgramParser::new().parse(lex("")).unwrap();
+        assert!(prog.funcs.is_empty());
     }
 }

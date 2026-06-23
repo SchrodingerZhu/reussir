@@ -147,8 +147,9 @@ impl Render<'_> {
                 };
                 d = d + text(self.defs.path(def).display(self.resolver));
                 if !args.is_empty() {
+                    // Turbofish so record type args don't clash with cmp `<`.
                     let parts: Vec<Doc<'static>> = args.iter().map(|&a| self.ty(a)).collect();
-                    d = d + text("<") + comma_sep(parts) + text(">");
+                    d = d + text("::<") + comma_sep(parts) + text(">");
                 }
                 d
             }
@@ -169,34 +170,48 @@ impl Render<'_> {
     fn expr(&self, e: &mir::Expr<'_>) -> Doc<'static> {
         match e.kind {
             mir::ExprKind::Seq(items) => {
+                // `;`-separated statements (the last is the block's value), so the
+                // whitespace-insensitive grammar can find the boundaries.
+                let n = items.len();
                 let mut d = Doc::Null;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
                         d = d + hardline();
                     }
                     d = d + self.expr(item);
+                    if i + 1 < n {
+                        d = d + text(";");
+                    }
                 }
                 d
             }
-            mir::ExprKind::If(c, t, f) => {
-                text("if ")
-                    + self.inline(c)
-                    + text(" then")
-                    + indent(hardline() + self.expr(t))
-                    + hardline()
-                    + text("else")
-                    + indent(hardline() + self.expr(f))
-            }
-            mir::ExprKind::Match(scrut, tree) => {
-                text("match ")
-                    + self.inline(scrut)
-                    + text(" {")
-                    + indent(hardline() + self.tree(&tree))
-                    + hardline()
-                    + text("}")
-            }
+            mir::ExprKind::If(c, t, f) => self.render_if(c, t, f),
+            mir::ExprKind::Match(scrut, tree) => self.render_match(scrut, &tree),
             _ => self.inline(e),
         }
+    }
+
+    /// `if C then { T } else { F }` — braces delimit the branches (self-contained,
+    /// no dangling-else), so it round-trips both at block and inline position.
+    fn render_if(&self, c: &mir::Expr<'_>, t: &mir::Expr<'_>, f: &mir::Expr<'_>) -> Doc<'static> {
+        text("if ")
+            + self.inline(c)
+            + text(" then {")
+            + indent(hardline() + self.expr(t))
+            + hardline()
+            + text("} else {")
+            + indent(hardline() + self.expr(f))
+            + hardline()
+            + text("}")
+    }
+
+    fn render_match(&self, scrut: &mir::Expr<'_>, tree: &mir::DecisionTree<'_>) -> Doc<'static> {
+        text("match ")
+            + self.inline(scrut)
+            + text(" {")
+            + indent(hardline() + self.tree(tree))
+            + hardline()
+            + text("}")
     }
 
     /// Inline rendering (parenthesized, type-annotated subterms).
@@ -216,14 +231,18 @@ impl Render<'_> {
             Cast(x, t) => text("(") + self.inline(x) + text(" as ") + self.ty(t) + text(")"),
             RegionRun(x) => text("region { ") + self.inline(x) + text(" }"),
             Proj(base, path) => {
-                let mut d = self.inline(base);
+                let mut d = text("proj(") + self.inline(base);
                 for idx in path {
-                    d = d + text(format!(".{idx}"));
+                    d = d + text(format!(", {idx}"));
                 }
-                d
+                d + text(")")
             }
             Assign(dst, field, src) => {
-                self.inline(dst) + text(format!(".{field} = ")) + self.inline(src)
+                text("assign(")
+                    + self.inline(dst)
+                    + text(format!(", {field}, "))
+                    + self.inline(src)
+                    + text(")")
             }
             Let {
                 var: v,
@@ -236,7 +255,6 @@ impl Render<'_> {
                     + self.ty(value.ty)
                     + text(" = ")
                     + self.inline(value)
-                    + text(" in")
             }
             Call {
                 callee,
@@ -266,7 +284,11 @@ impl Render<'_> {
                 None => text("Null"),
             },
             ClosureCall { target, args } => {
-                self.inline(target) + text("(") + self.arg_list(args) + text(")")
+                let mut d = text("apply(") + self.inline(target);
+                if !args.is_empty() {
+                    d = d + text(", ") + self.arg_list(args);
+                }
+                d + text(")")
             }
             Closure(c) => {
                 let caps: Vec<Doc<'static>> = c.captures.iter().map(|(v, _)| var(*v)).collect();
@@ -283,8 +305,11 @@ impl Render<'_> {
                     + self.inline(c.body)
                     + text(" }")
             }
-            // Block forms nested inline: parenthesize.
-            Seq(_) | If(..) | Match(..) => text("(") + self.expr(e) + text(")"),
+            // Block forms nested inline. `if`/`match` are already self-delimiting;
+            // a `Seq` is wrapped in braces so its `;`-separated items are bounded.
+            If(c, t, f) => self.render_if(c, t, f),
+            Match(scrut, tree) => self.render_match(scrut, &tree),
+            Seq(_) => text("{ ") + self.expr(e) + text(" }"),
         }
     }
 

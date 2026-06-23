@@ -1,21 +1,151 @@
-//! Grammar for the textual Full (MIR) IR. Pairs with `full::print` (the
-//! serializer); round-trip tests gate the two against each other.
-//!
-//! Tokens come from the `full::ir_lex` logos lexer (declared in the `extern`
-//! block below). Scaffolding only for now — a single `Num` production validates
-//! the logos + lalrpop pipeline. The real productions (functions, types,
-//! expressions, decision trees) and the re-intern actions that rebuild the
-//! arena-allocated MIR land incrementally.
+//! Grammar for the textual Full (MIR) IR — the deserializer, dual to
+//! `full::print`. Tokens come from the `full::ir_lex` logos lexer; productions
+//! build the owned `full::ir_raw` AST, which `full::ir_build` re-interns into the
+//! arena MIR. (Decision trees / `match` are added in a follow-up commit.)
 
+use crate::full::ir_raw as raw;
 use crate::full::ir_lex::{Token, LexError};
 
 grammar<'input>;
 
-pub Num: i128 = <n:"int"> => n;
+pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
 
-// Exercises the borrowed `'input` token so the generated parser's lifetime is
-// actually used; replaced by real identifier/symbol productions next.
-pub Name: String = <s:"ident"> => s.to_string();
+Item: raw::Item = {
+    "record" "@" <s:Sym> ";" => raw::Item::Record(s),
+    <f:Func> => raw::Item::Func(f),
+    "extern" <abi:"quoted"> "trampoline" <export:"quoted"> "=" "@" <target:Sym> ";"
+        => raw::Item::Tramp(raw::Tramp { abi: abi.to_string(), export: export.to_string(), target }),
+};
+
+/// A symbol body (after `@`).
+Sym: String = <s:"ident"> => s.to_string();
+
+Func: raw::Func =
+    <p:"pub"?> <r:"regional"?> "fn" "@" <symbol:Sym>
+    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <body:Body>
+    => raw::Func { is_pub: p.is_some(), regional: r.is_some(), symbol, params, ret, body };
+
+Body: Option<raw::Expr> = {
+    "{" <b:Block> "}" => Some(b),
+    ";" => None,
+};
+
+Param: raw::Param =
+    <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
+    => raw::Param { var, name: name.to_string(), ty };
+
+// ----- types -----
+
+Ty: raw::Ty = {
+    <w:"ints"> => raw::Ty::Signed(w),
+    <w:"intu"> => raw::Ty::Unsigned(w),
+    <w:"fp"> => raw::Ty::Ieee(w),
+    "bf16" => raw::Ty::BFloat16,
+    "f8" => raw::Ty::Float8,
+    "bool" => raw::Ty::Bool,
+    "str" => raw::Ty::Str,
+    "(" ")" => raw::Ty::Unit,
+    "!" => raw::Ty::Bottom,
+    "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
+    <cap:Cap> <path:"ident"> <args:TyArgs?>
+        => raw::Ty::Record { cap, path: path.to_string(), args: args.unwrap_or_default() },
+    "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
+};
+
+TyArgs: Vec<raw::Ty> = "::" "<" <CommaPlus<Ty>> ">";
+
+Cap: raw::Cap = {
+    => raw::Cap::None,
+    "[" "flex" "]" => raw::Cap::Flex,
+    "[" "rigid" "]" => raw::Cap::Rigid,
+    "[" "regional" "]" => raw::Cap::Regional,
+};
+
+// ----- expressions -----
+
+/// A block body: `;`-separated statements; a single expression is not wrapped.
+Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
+    if rest.is_empty() {
+        first
+    } else {
+        let mut v = vec![first];
+        v.extend(rest);
+        raw::Expr::Seq(v)
+    }
+};
+
+Expr: raw::Expr = {
+    <n:"int"> ":" <t:Ty> => raw::Expr::ConstInt(n, t),
+    <f:"float"> ":" <t:Ty> => raw::Expr::ConstFloat(f, t),
+    "true" => raw::Expr::ConstBool(true),
+    "false" => raw::Expr::ConstBool(false),
+    "str" "#" <n:"int"> => raw::Expr::GlobalStr(n as u64),
+    <v:"var"> => raw::Expr::Var(v),
+    "poison" => raw::Expr::Poison,
+    "-" "(" <e:Expr> ")" => raw::Expr::Negate(Box::new(e)),
+    "!" "(" <e:Expr> ")" => raw::Expr::Not(Box::new(e)),
+    "(" <l:Expr> <op:ArithOp> <r:Expr> ")" ":" <t:Ty>
+        => raw::Expr::Arith(Box::new(l), op, Box::new(r), t),
+    "(" <l:Expr> <op:CmpOp> <r:Expr> ")" ":" <t:Ty>
+        => raw::Expr::Cmp(Box::new(l), op, Box::new(r), t),
+    "(" <e:Expr> "as" <t:Ty> ")" => raw::Expr::Cast(Box::new(e), t),
+    "region" "{" <e:Expr> "}" => raw::Expr::RegionRun(Box::new(e)),
+    "proj" "(" <base:Expr> <idxs:("," <"int">)*> ")"
+        => raw::Expr::Proj(Box::new(base), idxs.into_iter().map(|n| n as u32).collect()),
+    "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
+        => raw::Expr::Assign(Box::new(dst), field as u32, Box::new(src)),
+    "let" <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty> "=" <value:Expr>
+        => raw::Expr::Let { var, name: name.to_string(), ty, value: Box::new(value) },
+    <r:"regional"?> "@" <symbol:Sym> "(" <args:Comma<Expr>> ")" ":" <t:Ty>
+        => raw::Expr::Call { regional: r.is_some(), symbol, args, ty: t },
+    "@" <symbol:Sym> "{" <args:Comma<Expr>> "}" => raw::Expr::Ctor { symbol, args },
+    "@" <symbol:Sym> "::" "#" <v:"int"> "(" <args:Comma<Expr>> ")"
+        => raw::Expr::Variant { symbol, variant: v as usize, args },
+    "NonNull" "(" <e:Expr> ")" => raw::Expr::NullableCall(Some(Box::new(e))),
+    "Null" => raw::Expr::NullableCall(None),
+    "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
+        => raw::Expr::ClosureCall { target: Box::new(target), args },
+    "closure" "[" <captures:Comma<"var">> "]" "(" <params:Comma<ClosureParam>> ")" "{" <body:Expr> "}"
+        => raw::Expr::Closure { captures, params, body: Box::new(body) },
+    "if" <c:Expr> "then" "{" <t:Block> "}" "else" "{" <f:Block> "}"
+        => raw::Expr::If(Box::new(c), Box::new(t), Box::new(f)),
+    "{" <b:Block> "}" => b,
+};
+
+ClosureParam: (u32, raw::Ty) = <v:"var"> ":" <t:Ty> => (v, t);
+
+ArithOp: raw::ArithOp = {
+    "+" => raw::ArithOp::Add,
+    "-" => raw::ArithOp::Sub,
+    "*" => raw::ArithOp::Mul,
+    "/" => raw::ArithOp::Div,
+    "%" => raw::ArithOp::Mod,
+    "&&" => raw::ArithOp::And,
+    "||" => raw::ArithOp::Or,
+};
+
+CmpOp: raw::CmpOp = {
+    "<" => raw::CmpOp::Lt,
+    ">" => raw::CmpOp::Gt,
+    "<=" => raw::CmpOp::Le,
+    ">=" => raw::CmpOp::Ge,
+    "==" => raw::CmpOp::Eq,
+    "!=" => raw::CmpOp::Ne,
+};
+
+// ----- shared helpers -----
+
+/// Comma-separated, possibly empty, no trailing comma.
+Comma<T>: Vec<T> = <mut v:(<T> ",")*> <last:T?> => {
+    if let Some(l) = last { v.push(l); }
+    v
+};
+
+/// Comma-separated, at least one element.
+CommaPlus<T>: Vec<T> = <mut v:(<T> ",")*> <last:T> => {
+    v.push(last);
+    v
+};
 
 extern {
     type Location = usize;
@@ -23,6 +153,68 @@ extern {
 
     enum Token<'input> {
         "int" => Token::Int(<i128>),
+        "float" => Token::Float(<f64>),
+        "var" => Token::Var(<u32>),
+        "ints" => Token::IntS(<u16>),
+        "intu" => Token::IntU(<u16>),
+        "fp" => Token::Fp(<u16>),
         "ident" => Token::Ident(<&'input str>),
+        "quoted" => Token::Quoted(<&'input str>),
+        "pub" => Token::Pub,
+        "regional" => Token::Regional,
+        "fn" => Token::Fn,
+        "record" => Token::Record,
+        "extern" => Token::Extern,
+        "trampoline" => Token::Trampoline,
+        "let" => Token::Let,
+        "if" => Token::If,
+        "then" => Token::Then,
+        "else" => Token::Else,
+        "region" => Token::Region,
+        "as" => Token::As,
+        "closure" => Token::Closure,
+        "apply" => Token::Apply,
+        "flex" => Token::Flex,
+        "rigid" => Token::Rigid,
+        "proj" => Token::Proj,
+        "assign" => Token::Assign,
+        "Nullable" => Token::Nullable,
+        "NonNull" => Token::NonNull,
+        "Null" => Token::Null,
+        "poison" => Token::Poison,
+        "true" => Token::True,
+        "false" => Token::False,
+        "bool" => Token::Bool,
+        "str" => Token::Str,
+        "bf16" => Token::BF16,
+        "f8" => Token::F8,
+        "(" => Token::LParen,
+        ")" => Token::RParen,
+        "{" => Token::LBrace,
+        "}" => Token::RBrace,
+        "[" => Token::LBracket,
+        "]" => Token::RBracket,
+        "<" => Token::Lt,
+        ">" => Token::Gt,
+        ":" => Token::Colon,
+        "::" => Token::ColonColon,
+        ";" => Token::Semi,
+        "," => Token::Comma,
+        "=" => Token::Eq,
+        "->" => Token::Arrow,
+        "@" => Token::At,
+        "#" => Token::Hash,
+        "+" => Token::Plus,
+        "-" => Token::Minus,
+        "*" => Token::Star,
+        "/" => Token::Slash,
+        "%" => Token::Percent,
+        "&&" => Token::AndAnd,
+        "||" => Token::OrOr,
+        "<=" => Token::Le,
+        ">=" => Token::Ge,
+        "==" => Token::EqEq,
+        "!=" => Token::Ne,
+        "!" => Token::Bang,
     }
 }
