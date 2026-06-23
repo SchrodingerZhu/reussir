@@ -1,11 +1,28 @@
 //! Grammar for the textual Full (MIR) IR. Pairs with `full::print` (the
 //! serializer); round-trip tests gate the two against each other.
 //!
-//! Scaffolding only for now — a single `Num` production to validate the build
-//! pipeline. The real productions (functions, types, expressions, decision
-//! trees) land incrementally, threading the `TyCtxt`/interners to rebuild the
-//! arena-allocated MIR.
+//! Tokens come from the `full::ir_lex` logos lexer (declared in the `extern`
+//! block below). Scaffolding only for now — a single `Num` production validates
+//! the logos + lalrpop pipeline. The real productions (functions, types,
+//! expressions, decision trees) and the re-intern actions that rebuild the
+//! arena-allocated MIR land incrementally.
 
-grammar;
+use crate::full::ir_lex::{Token, LexError};
 
-pub Num: i64 = <s:r"[0-9]+"> => s.parse().unwrap();
+grammar<'input>;
+
+pub Num: i128 = <n:"int"> => n;
+
+// Exercises the borrowed `'input` token so the generated parser's lifetime is
+// actually used; replaced by real identifier/symbol productions next.
+pub Name: String = <s:"ident"> => s.to_string();
+
+extern {
+    type Location = usize;
+    type Error = LexError;
+
+    enum Token<'input> {
+        "int" => Token::Int(<i128>),
+        "ident" => Token::Ident(<&'input str>),
+    }
+}

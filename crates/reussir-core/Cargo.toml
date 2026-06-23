@@ -27,7 +27,8 @@ smallvec.workspace = true
 stumpalo.workspace = true
 # CLI argument parsing for the `reussir-elab` driver.
 palc.workspace = true
-# Runtime support for the textual-IR parser generated from `full/ir.lalrpop`.
+# Textual-IR round trip: the logos lexer feeds the lalrpop-generated parser.
+logos.workspace = true
 lalrpop-util.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }

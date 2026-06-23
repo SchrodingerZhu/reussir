@@ -13,13 +13,15 @@
 //!
 //! [`semi`]: crate::semi
 
+pub mod ir_lex;
 pub mod mangle;
 pub mod mir;
 pub mod mono;
 pub mod print;
 pub mod subst;
 
-// The textual-IR parser, generated from `full/ir.lalrpop` at build time.
+// The textual-IR parser, generated from `full/ir.lalrpop` at build time. It
+// consumes the `ir_lex` logos token stream via the grammar's `extern` block.
 lalrpop_util::lalrpop_mod!(
     #[allow(clippy::all, dead_code, unused_imports)]
     pub ir,
@@ -28,10 +30,12 @@ lalrpop_util::lalrpop_mod!(
 
 #[cfg(test)]
 mod ir_pipeline_tests {
-    /// Smoke test: the lalrpop-generated parser is wired up and callable. The
-    /// real IR productions replace this scaffolding.
+    use super::ir_lex::lex;
+
+    /// Smoke test: the logos lexer feeds the lalrpop-generated parser end to
+    /// end. The real IR productions replace this scaffolding.
     #[test]
     fn lalrpop_pipeline_is_wired() {
-        assert_eq!(super::ir::NumParser::new().parse("42"), Ok(42));
+        assert_eq!(super::ir::NumParser::new().parse(lex("42")), Ok(42));
     }
 }
