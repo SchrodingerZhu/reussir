@@ -1,8 +1,15 @@
 //! Re-intern pass: rebuild the (owned) HIR from the `hir_raw` AST the grammar
 //! produces. The MIR twin is [`crate::full::ir_build`]; the HIR differs in that
 //! expressions are owned (`Box`/`Vec`, no arena), calls resolve a `#path` to a
-//! fresh [`DefId`], and functions/types carry generics. Text-faithful, as on the
-//! MIR side: `print(parse(t)) == t`.
+//! fresh [`DefId`], and functions/types carry generics (`$n`) but no inference
+//! holes (a fully elaborated HIR has none).
+//!
+//! Value-sound modulo arena re-interning, exactly as on the MIR side: every
+//! node's type is read from the printed annotation. Crucially the IR's cross
+//! references live in the text as **qualified `#path`s**, not `DefId`s — a
+//! `DefId` is only a session-local handle reconstructed here (resolve-or-declare,
+//! so a definition and its forward call sites agree), which is what keeps the
+//! representation stable as multi-file resolution arrives.
 
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
@@ -15,7 +22,7 @@ use crate::semi::hir::{
 use crate::semi::hir_ir;
 use crate::semi::hir_raw as raw;
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, FpTy, GenericId, HoleId, IntTy, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
 use crate::utils::string::StringToken;
 
 /// A parsed HIR program plus the fresh tables needed to re-print it.
@@ -93,10 +100,6 @@ impl<'tcx> Builder<'_, 'tcx> {
             .unwrap_or_else(|| self.defs.declare_record(key).expect("fresh record decl"))
     }
 
-    fn placeholder(&self) -> Ty<'tcx> {
-        self.tcx.mk_unit()
-    }
-
     fn func(&mut self, f: &raw::Func) -> Function<'tcx> {
         let def = self.function_def(&f.path);
         let name = self.names.intern(&f.path);
@@ -151,7 +154,6 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Ty::Unit => self.tcx.mk_unit(),
             raw::Ty::Bottom => self.tcx.mk(TyKind::Bottom),
             raw::Ty::Generic(g) => self.tcx.mk_generic(GenericId(*g)),
-            raw::Ty::Hole(h) => self.tcx.mk_hole(HoleId(*h)),
             raw::Ty::Nullable(inner) => {
                 let inner = self.ty(inner);
                 self.tcx.mk_nullable(inner)
@@ -181,152 +183,114 @@ impl<'tcx> Builder<'_, 'tcx> {
         es.iter().map(|e| self.expr(e)).collect()
     }
 
+    /// Lower a typed raw node, always reading its type from `e.ty` (never
+    /// invented), so the rebuilt HIR is value-sound modulo type re-interning.
     fn expr(&mut self, e: &raw::Expr) -> Expr<'tcx> {
-        let (kind, ty): (ExprKind<'tcx>, Ty<'tcx>) = match e {
-            raw::Expr::ConstInt(n, t) => (ExprKind::ConstInt(*n), self.ty(t)),
-            raw::Expr::ConstFloat(f, t) => (ExprKind::ConstFloat(*f), self.ty(t)),
-            raw::Expr::ConstBool(b) => (ExprKind::ConstBool(*b), self.tcx.mk_bool()),
-            raw::Expr::GlobalStr(words) => (
-                ExprKind::GlobalStr(StringToken::from_words(*words)),
-                self.tcx.mk_str(),
-            ),
-            raw::Expr::Var(v) => (ExprKind::Var(VarId(*v)), self.placeholder()),
-            raw::Expr::Poison => (ExprKind::Poison, self.placeholder()),
-            raw::Expr::Negate(x) => (ExprKind::Negate(self.boxed(x)), self.placeholder()),
-            raw::Expr::Not(x) => (ExprKind::Not(self.boxed(x)), self.placeholder()),
-            raw::Expr::Arith(l, op, r, t) => {
-                let kind = ExprKind::Arith(self.boxed(l), arith(*op), self.boxed(r));
-                (kind, self.ty(t))
+        let ty = self.ty(&e.ty);
+        let kind: ExprKind<'tcx> = match &*e.kind {
+            raw::Kind::ConstInt(n) => ExprKind::ConstInt(*n),
+            raw::Kind::ConstFloat(f) => ExprKind::ConstFloat(*f),
+            raw::Kind::ConstBool(b) => ExprKind::ConstBool(*b),
+            raw::Kind::GlobalStr(words) => ExprKind::GlobalStr(StringToken::from_words(*words)),
+            raw::Kind::Var(v) => ExprKind::Var(VarId(*v)),
+            raw::Kind::Poison => ExprKind::Poison,
+            raw::Kind::Negate(x) => ExprKind::Negate(self.boxed(x)),
+            raw::Kind::Not(x) => ExprKind::Not(self.boxed(x)),
+            raw::Kind::Arith(l, op, r) => ExprKind::Arith(self.boxed(l), arith(*op), self.boxed(r)),
+            raw::Kind::Cmp(l, op, r) => ExprKind::Cmp(self.boxed(l), cmp(*op), self.boxed(r)),
+            raw::Kind::Cast(x, t) => {
+                let t = self.ty(t);
+                ExprKind::Cast(self.boxed(x), t)
             }
-            raw::Expr::Cmp(l, op, r, t) => {
-                let kind = ExprKind::Cmp(self.boxed(l), cmp(*op), self.boxed(r));
-                (kind, self.ty(t))
+            raw::Kind::If(c, t, f) => ExprKind::If(self.boxed(c), self.boxed(t), self.boxed(f)),
+            raw::Kind::RegionRun(x) => ExprKind::RegionRun(self.boxed(x)),
+            raw::Kind::Proj(base, path) => ExprKind::Proj(self.boxed(base), path.clone()),
+            raw::Kind::Assign(dst, field, src) => {
+                ExprKind::Assign(self.boxed(dst), *field, self.boxed(src))
             }
-            raw::Expr::Cast(x, t) => {
-                let ty = self.ty(t);
-                (ExprKind::Cast(self.boxed(x), ty), ty)
-            }
-            raw::Expr::If(c, t, f) => (
-                ExprKind::If(self.boxed(c), self.boxed(t), self.boxed(f)),
-                self.placeholder(),
-            ),
-            raw::Expr::RegionRun(x) => (ExprKind::RegionRun(self.boxed(x)), self.placeholder()),
-            raw::Expr::Proj(base, path) => (
-                ExprKind::Proj(self.boxed(base), path.clone()),
-                self.placeholder(),
-            ),
-            raw::Expr::Assign(dst, field, src) => (
-                ExprKind::Assign(self.boxed(dst), *field, self.boxed(src)),
-                self.tcx.mk_unit(),
-            ),
-            raw::Expr::Let {
-                var, name, value, ..
-            } => {
+            raw::Kind::Let { var, name, value } => {
                 let name = self.names.intern(name);
-                (
-                    ExprKind::Let {
-                        var: VarId(*var),
-                        name,
-                        span: None,
-                        value: self.boxed(value),
-                    },
-                    self.tcx.mk_unit(),
-                )
+                ExprKind::Let {
+                    var: VarId(*var),
+                    name,
+                    span: None,
+                    value: self.boxed(value),
+                }
             }
-            raw::Expr::Seq(items) => (ExprKind::Seq(self.exprs(items)), self.placeholder()),
-            raw::Expr::FuncCall {
+            raw::Kind::Seq(items) => ExprKind::Seq(self.exprs(items)),
+            raw::Kind::FuncCall {
                 regional,
                 path,
                 ty_args,
                 args,
-                ty,
             } => {
                 let target = self.function_def(path);
-                let ty_args = self.tys(ty_args);
-                let args = self.exprs(args);
-                (
-                    ExprKind::FuncCall {
-                        target,
-                        ty_args,
-                        args,
-                        regional: *regional,
-                    },
-                    self.ty(ty),
-                )
+                ExprKind::FuncCall {
+                    target,
+                    ty_args: self.tys(ty_args),
+                    args: self.exprs(args),
+                    regional: *regional,
+                }
             }
-            raw::Expr::CompoundCall {
+            raw::Kind::CompoundCall {
                 path,
                 ty_args,
                 args,
-                ty,
             } => {
                 let target = self.record_def(path);
-                let ty_args = self.tys(ty_args);
-                let args = self.exprs(args);
-                (
-                    ExprKind::CompoundCall {
-                        target,
-                        ty_args,
-                        args,
-                    },
-                    self.ty(ty),
-                )
+                ExprKind::CompoundCall {
+                    target,
+                    ty_args: self.tys(ty_args),
+                    args: self.exprs(args),
+                }
             }
-            raw::Expr::VariantCall {
+            raw::Kind::VariantCall {
                 path,
                 ty_args,
                 variant,
                 args,
-                ty,
             } => {
                 let target = self.record_def(path);
-                let ty_args = self.tys(ty_args);
-                let args = self.exprs(args);
-                (
-                    ExprKind::VariantCall {
-                        target,
-                        ty_args,
-                        variant: *variant,
-                        args,
-                    },
-                    self.ty(ty),
-                )
+                ExprKind::VariantCall {
+                    target,
+                    ty_args: self.tys(ty_args),
+                    variant: *variant,
+                    args: self.exprs(args),
+                }
             }
-            raw::Expr::NullableCall(inner) => (
-                ExprKind::NullableCall(inner.as_ref().map(|x| self.boxed(x))),
-                self.placeholder(),
-            ),
-            raw::Expr::ClosureCall { target, args } => {
+            raw::Kind::NullableCall(inner) => {
+                ExprKind::NullableCall(inner.as_ref().map(|x| self.boxed(x)))
+            }
+            raw::Kind::ClosureCall { target, args } => {
                 let target = self.boxed(target);
-                let args = self.exprs(args);
-                (ExprKind::ClosureCall { target, args }, self.placeholder())
+                ExprKind::ClosureCall {
+                    target,
+                    args: self.exprs(args),
+                }
             }
-            raw::Expr::Closure {
+            raw::Kind::Closure {
                 captures,
                 params,
                 body,
             } => {
                 let captures = captures
                     .iter()
-                    .map(|v| (VarId(*v), self.placeholder()))
+                    .map(|(v, t)| (VarId(*v), self.ty(t)))
                     .collect();
                 let params = params
                     .iter()
                     .map(|(v, t)| (VarId(*v), self.ty(t)))
                     .collect();
                 let body = self.boxed(body);
-                (
-                    ExprKind::Closure(ClosureExpr {
-                        captures,
-                        params,
-                        body,
-                    }),
-                    self.placeholder(),
-                )
+                ExprKind::Closure(ClosureExpr {
+                    captures,
+                    params,
+                    body,
+                })
             }
-            raw::Expr::Match(scrut, tree) => {
+            raw::Kind::Match(scrut, tree) => {
                 let scrut = self.boxed(scrut);
-                (ExprKind::Match(scrut, self.tree(tree)), self.placeholder())
+                ExprKind::Match(scrut, self.tree(tree))
             }
         };
         Expr {
@@ -488,6 +452,17 @@ mod tests {
         roundtrip(
             "enum Opt { None, Some(i32) } \
              pub fn unwrap(o: Opt) -> i32 { match o { Opt::None => 0, Opt::Some(x) => x } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_regional_generics() {
+        // A generic `[flex]`-bound function (so `regional_generics` is non-empty)
+        // and a turbofished regional call.
+        roundtrip(
+            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+             regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
+             regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
         );
     }
 }

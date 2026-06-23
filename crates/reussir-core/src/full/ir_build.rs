@@ -1,8 +1,14 @@
 //! Re-intern pass: rebuild the arena-allocated MIR from the owned [`ir_raw`] AST
-//! the grammar produces. Identifiers/symbols are interned into *fresh* tables
-//! (the original session ids are not recoverable from text), so the round trip
-//! is text-faithful (`print(parse(t)) == t`) rather than value-identical, and
-//! the result re-prints through the [`crate::full::print`] serializer.
+//! the grammar produces.
+//!
+//! The rebuilt MIR is **value-sound modulo arena re-interning**: every node's
+//! type is read from the printed `: ty` annotation (never invented — there is no
+//! placeholder), so the result equals the original up to (a) fresh type-arena
+//! pointers, which interning makes value-equal anyway, and (b) a consistent
+//! relabeling of the session-local symbol/`DefId` tables. The textual form is
+//! keyed by stable `@symbol` strings, not those ids, so it stays portable across
+//! sessions and (eventually) files. `print(parse(t)) == t` therefore witnesses
+//! type soundness, since every type is in the text.
 
 use lasso::Rodeo;
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
@@ -90,19 +96,13 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
-    /// A placeholder for a node whose type the printer never emits (vars,
-    /// blocks); sound for the text-faithful round trip.
-    fn placeholder(&self) -> Ty<'tcx> {
-        self.tcx.mk_unit()
-    }
-
     fn program(&mut self, raw: raw::Program) -> mir::Program<'tcx> {
         let records: Vec<mir::RecordInstance<'tcx>> = raw
             .records
             .iter()
-            .map(|s| mir::RecordInstance {
+            .map(|(s, t)| mir::RecordInstance {
                 symbol: self.sym(s),
-                ty: self.placeholder(),
+                ty: self.ty(t),
             })
             .collect();
         let trampolines: Vec<mir::Trampoline> = raw
@@ -279,129 +279,94 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
+    /// Lower a typed raw node. The type is **always** read from `e.ty` (printed
+    /// by the serializer for every node) — never invented — so the result is
+    /// value-sound modulo type re-interning.
     fn expr(&mut self, e: &raw::Expr) -> mir::Expr<'tcx> {
         use mir::ExprKind as M;
-        let (kind, ty): (M<'tcx>, Ty<'tcx>) = match e {
-            raw::Expr::ConstInt(n, t) => (M::ConstInt(*n), self.ty(t)),
-            raw::Expr::ConstFloat(f, t) => (M::ConstFloat(*f), self.ty(t)),
-            raw::Expr::ConstBool(b) => (M::ConstBool(*b), self.tcx.mk_bool()),
-            raw::Expr::GlobalStr(words) => (
-                M::GlobalStr(StringToken::from_words(*words)),
-                self.tcx.mk_str(),
-            ),
-            raw::Expr::Var(v) => (M::Var(VarId(*v)), self.placeholder()),
-            raw::Expr::Poison => (M::Poison, self.placeholder()),
-            raw::Expr::Negate(x) => (M::Negate(self.expr_ref(x)), self.placeholder()),
-            raw::Expr::Not(x) => (M::Not(self.expr_ref(x)), self.placeholder()),
-            raw::Expr::Arith(l, op, r, t) => {
-                let kind = M::Arith(self.expr_ref(l), arith(*op), self.expr_ref(r));
-                (kind, self.ty(t))
+        let ty = self.ty(&e.ty);
+        let kind: M<'tcx> = match &*e.kind {
+            raw::Kind::ConstInt(n) => M::ConstInt(*n),
+            raw::Kind::ConstFloat(f) => M::ConstFloat(*f),
+            raw::Kind::ConstBool(b) => M::ConstBool(*b),
+            raw::Kind::GlobalStr(words) => M::GlobalStr(StringToken::from_words(*words)),
+            raw::Kind::Var(v) => M::Var(VarId(*v)),
+            raw::Kind::Poison => M::Poison,
+            raw::Kind::Negate(x) => M::Negate(self.expr_ref(x)),
+            raw::Kind::Not(x) => M::Not(self.expr_ref(x)),
+            raw::Kind::Arith(l, op, r) => M::Arith(self.expr_ref(l), arith(*op), self.expr_ref(r)),
+            raw::Kind::Cmp(l, op, r) => M::Cmp(self.expr_ref(l), cmp(*op), self.expr_ref(r)),
+            raw::Kind::Cast(x, t) => {
+                let t = self.ty(t);
+                M::Cast(self.expr_ref(x), t)
             }
-            raw::Expr::Cmp(l, op, r, t) => {
-                let kind = M::Cmp(self.expr_ref(l), cmp(*op), self.expr_ref(r));
-                (kind, self.ty(t))
-            }
-            raw::Expr::Cast(x, t) => {
-                let ty = self.ty(t);
-                (M::Cast(self.expr_ref(x), ty), ty)
-            }
-            raw::Expr::If(c, t, f) => {
-                let kind = M::If(self.expr_ref(c), self.expr_ref(t), self.expr_ref(f));
-                (kind, self.placeholder())
-            }
-            raw::Expr::RegionRun(x) => (M::RegionRun(self.expr_ref(x)), self.placeholder()),
-            raw::Expr::Proj(base, path) => {
+            raw::Kind::If(c, t, f) => M::If(self.expr_ref(c), self.expr_ref(t), self.expr_ref(f)),
+            raw::Kind::RegionRun(x) => M::RegionRun(self.expr_ref(x)),
+            raw::Kind::Proj(base, path) => {
                 let base = self.expr_ref(base);
-                let path = self.tcx.alloc_slice(path);
-                (M::Proj(base, path), self.placeholder())
+                M::Proj(base, self.tcx.alloc_slice(path))
             }
-            raw::Expr::Assign(dst, field, src) => {
-                let kind = M::Assign(self.expr_ref(dst), *field, self.expr_ref(src));
-                (kind, self.tcx.mk_unit())
+            raw::Kind::Assign(dst, field, src) => {
+                M::Assign(self.expr_ref(dst), *field, self.expr_ref(src))
             }
-            raw::Expr::Let {
-                var,
-                name,
-                ty,
-                value,
-            } => {
+            raw::Kind::Let { var, name, value } => {
                 let name = self.names.intern(name);
-                let _ = self.ty(ty); // the printer reads the value's type, set below
-                let value = self.expr_ref(value);
-                (
-                    M::Let {
-                        var: VarId(*var),
-                        name,
-                        value,
-                    },
-                    self.tcx.mk_unit(),
-                )
+                M::Let {
+                    var: VarId(*var),
+                    name,
+                    value: self.expr_ref(value),
+                }
             }
-            raw::Expr::Seq(items) => (M::Seq(self.expr_slice(items)), self.placeholder()),
-            raw::Expr::Call {
+            raw::Kind::Seq(items) => M::Seq(self.expr_slice(items)),
+            raw::Kind::Call {
                 regional,
                 symbol,
                 args,
-                ty,
             } => {
                 let callee = self.sym(symbol);
-                let args = self.expr_slice(args);
-                (
-                    M::Call {
-                        callee,
-                        args,
-                        regional: *regional,
-                    },
-                    self.ty(ty),
-                )
+                M::Call {
+                    callee,
+                    args: self.expr_slice(args),
+                    regional: *regional,
+                }
             }
-            raw::Expr::Ctor { symbol, args } => {
+            raw::Kind::Ctor { symbol, args } => {
                 let record = self.sym(symbol);
-                (
-                    M::Ctor {
-                        record,
-                        args: self.expr_slice(args),
-                    },
-                    self.placeholder(),
-                )
+                M::Ctor {
+                    record,
+                    args: self.expr_slice(args),
+                }
             }
-            raw::Expr::Variant {
+            raw::Kind::Variant {
                 symbol,
                 variant,
                 args,
             } => {
                 let record = self.sym(symbol);
-                (
-                    M::Variant {
-                        record,
-                        variant: *variant,
-                        args: self.expr_slice(args),
-                    },
-                    self.placeholder(),
-                )
+                M::Variant {
+                    record,
+                    variant: *variant,
+                    args: self.expr_slice(args),
+                }
             }
-            raw::Expr::NullableCall(inner) => (
-                M::NullableCall(inner.as_ref().map(|x| self.expr_ref(x))),
-                self.placeholder(),
-            ),
-            raw::Expr::ClosureCall { target, args } => {
+            raw::Kind::NullableCall(inner) => {
+                M::NullableCall(inner.as_ref().map(|x| self.expr_ref(x)))
+            }
+            raw::Kind::ClosureCall { target, args } => {
                 let target = self.expr_ref(target);
-                (
-                    M::ClosureCall {
-                        target,
-                        args: self.expr_slice(args),
-                    },
-                    self.placeholder(),
-                )
+                M::ClosureCall {
+                    target,
+                    args: self.expr_slice(args),
+                }
             }
-            raw::Expr::Closure {
+            raw::Kind::Closure {
                 captures,
                 params,
                 body,
             } => {
                 let caps: Vec<(VarId, Ty<'tcx>)> = captures
                     .iter()
-                    .map(|v| (VarId(*v), self.placeholder()))
+                    .map(|(v, t)| (VarId(*v), self.ty(t)))
                     .collect();
                 let captures = self.tcx.alloc_slice(&caps);
                 let ps: Vec<(VarId, Ty<'tcx>)> = params
@@ -410,18 +375,15 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .collect();
                 let mir_params = self.tcx.alloc_slice(&ps);
                 let body = self.expr_ref(body);
-                (
-                    M::Closure(mir::ClosureExpr {
-                        captures,
-                        params: mir_params,
-                        body,
-                    }),
-                    self.placeholder(),
-                )
+                M::Closure(mir::ClosureExpr {
+                    captures,
+                    params: mir_params,
+                    body,
+                })
             }
-            raw::Expr::Match(scrut, tree) => {
+            raw::Kind::Match(scrut, tree) => {
                 let scrut = self.expr_ref(scrut);
-                (M::Match(scrut, self.tree(tree)), self.placeholder())
+                M::Match(scrut, self.tree(tree))
             }
         };
         mir::Expr {
@@ -546,6 +508,16 @@ mod tests {
         roundtrip(
             "pub fn classify(n: i32) -> i32 { \
              match n { 0 => 10, 1 => 20, _ => 30 } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_regional_generics() {
+        // Mono'd regional record type + flex capability in a signature.
+        roundtrip(
+            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+             regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
+             regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
         );
     }
 }

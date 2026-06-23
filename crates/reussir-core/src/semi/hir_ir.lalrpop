@@ -50,7 +50,6 @@ Ty: raw::Ty = {
     "(" ")" => raw::Ty::Unit,
     "!" => raw::Ty::Bottom,
     <g:"generic"> => raw::Ty::Generic(g),
-    <h:"hole"> => raw::Ty::Hole(h),
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     <cap:Cap> "#" <path:"ident"> <args:TyArgs?>
         => raw::Ty::Record { cap, path: path.to_string(), args: args.unwrap_or_default() },
@@ -74,65 +73,53 @@ Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
     } else {
         let mut v = vec![first];
         v.extend(rest);
-        raw::Expr::Seq(v)
+        let ty = v.last().unwrap().ty.clone();
+        raw::Expr::new(raw::Kind::Seq(v), ty)
     }
 };
 
+/// Every value expression is `Atom : Ty`; `let` (always `unit`) and a braced
+/// block (a `Seq`) are the structural exceptions whose type is not printed.
 Expr: raw::Expr = {
-    <n:"int"> ":" <t:Ty> => raw::Expr::ConstInt(n, t),
-    <f:"float"> ":" <t:Ty> => raw::Expr::ConstFloat(f, t),
-    "true" => raw::Expr::ConstBool(true),
-    "false" => raw::Expr::ConstBool(false),
-    <w:StrWords> => raw::Expr::GlobalStr(w),
-    <v:"var"> => raw::Expr::Var(v),
-    "poison" => raw::Expr::Poison,
-    "-" "(" <e:Expr> ")" => raw::Expr::Negate(Box::new(e)),
-    "!" "(" <e:Expr> ")" => raw::Expr::Not(Box::new(e)),
-    "(" <l:Expr> <op:ArithOp> <r:Expr> ")" ":" <t:Ty>
-        => raw::Expr::Arith(Box::new(l), op, Box::new(r), t),
-    "(" <l:Expr> <op:CmpOp> <r:Expr> ")" ":" <t:Ty>
-        => raw::Expr::Cmp(Box::new(l), op, Box::new(r), t),
-    "(" <e:Expr> "as" <t:Ty> ")" => raw::Expr::Cast(Box::new(e), t),
-    "region" "{" <e:Expr> "}" => raw::Expr::RegionRun(Box::new(e)),
-    "proj" "(" <base:Expr> <idxs:("," <"int">)*> ")"
-        => raw::Expr::Proj(Box::new(base), idxs.into_iter().map(|n| n as u32).collect()),
-    "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
-        => raw::Expr::Assign(Box::new(dst), field as u32, Box::new(src)),
-    "let" <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty> "=" <value:Expr>
-        => raw::Expr::Let { var, name: name.to_string(), ty, value: Box::new(value) },
-    <r:"regional"?> "#" <path:"ident"> <ta:TyArgs?> "(" <args:Comma<Expr>> ")" ":" <t:Ty>
-        => raw::Expr::FuncCall {
-            regional: r.is_some(),
-            path: path.to_string(),
-            ty_args: ta.unwrap_or_default(),
-            args,
-            ty: t,
-        },
-    "#" <path:"ident"> <ta:TyArgs?> "{" <args:Comma<Expr>> "}" ":" <t:Ty>
-        => raw::Expr::CompoundCall {
-            path: path.to_string(),
-            ty_args: ta.unwrap_or_default(),
-            args,
-            ty: t,
-        },
-    "#" <path:"ident"> <ta:TyArgs?> "#" <v:"int"> "(" <args:Comma<Expr>> ")" ":" <t:Ty>
-        => raw::Expr::VariantCall {
-            path: path.to_string(),
-            ty_args: ta.unwrap_or_default(),
-            variant: v as usize,
-            args,
-            ty: t,
-        },
-    "NonNull" "(" <e:Expr> ")" => raw::Expr::NullableCall(Some(Box::new(e))),
-    "Null" => raw::Expr::NullableCall(None),
-    "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
-        => raw::Expr::ClosureCall { target: Box::new(target), args },
-    "closure" "[" <captures:Comma<"var">> "]" "(" <params:Comma<ClosureParam>> ")" "{" <body:Expr> "}"
-        => raw::Expr::Closure { captures, params, body: Box::new(body) },
-    "if" <c:Expr> "then" "{" <t:Block> "}" "else" "{" <f:Block> "}"
-        => raw::Expr::If(Box::new(c), Box::new(t), Box::new(f)),
-    "match" <s:Expr> "{" <t:Tree> "}" => raw::Expr::Match(Box::new(s), Box::new(t)),
+    <a:Atom> ":" <t:Ty> => raw::Expr::new(a, t),
+    "let" <var:"var"> "(" <name:"ident"> ")" "=" <value:Expr>
+        => raw::Expr::new(raw::Kind::Let { var, name: name.to_string(), value }, raw::Ty::Unit),
     "{" <b:Block> "}" => b,
+};
+
+Atom: raw::Kind = {
+    <n:"int"> => raw::Kind::ConstInt(n),
+    <f:"float"> => raw::Kind::ConstFloat(f),
+    "true" => raw::Kind::ConstBool(true),
+    "false" => raw::Kind::ConstBool(false),
+    <w:StrWords> => raw::Kind::GlobalStr(w),
+    <v:"var"> => raw::Kind::Var(v),
+    "poison" => raw::Kind::Poison,
+    "-" "(" <e:Expr> ")" => raw::Kind::Negate(e),
+    "!" "(" <e:Expr> ")" => raw::Kind::Not(e),
+    "(" <l:Expr> <op:ArithOp> <r:Expr> ")" => raw::Kind::Arith(l, op, r),
+    "(" <l:Expr> <op:CmpOp> <r:Expr> ")" => raw::Kind::Cmp(l, op, r),
+    "(" <e:Expr> "as" <t:Ty> ")" => raw::Kind::Cast(e, t),
+    "region" "{" <e:Expr> "}" => raw::Kind::RegionRun(e),
+    "proj" "(" <base:Expr> <idxs:("," <"int">)*> ")"
+        => raw::Kind::Proj(base, idxs.into_iter().map(|n| n as u32).collect()),
+    "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
+        => raw::Kind::Assign(dst, field as u32, src),
+    <r:"regional"?> "#" <path:"ident"> <ta:TyArgs?> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::FuncCall { regional: r.is_some(), path: path.to_string(), ty_args: ta.unwrap_or_default(), args },
+    "#" <path:"ident"> <ta:TyArgs?> "{" <args:Comma<Expr>> "}"
+        => raw::Kind::CompoundCall { path: path.to_string(), ty_args: ta.unwrap_or_default(), args },
+    "#" <path:"ident"> <ta:TyArgs?> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::VariantCall { path: path.to_string(), ty_args: ta.unwrap_or_default(), variant: v as usize, args },
+    "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
+    "Null" => raw::Kind::NullableCall(None),
+    "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
+        => raw::Kind::ClosureCall { target, args },
+    "closure" "[" <captures:Comma<ClosureParam>> "]" "(" <params:Comma<ClosureParam>> ")" "{" <body:Expr> "}"
+        => raw::Kind::Closure { captures, params, body },
+    "if" <c:Expr> "then" "{" <t:Block> "}" "else" "{" <f:Block> "}"
+        => raw::Kind::If(c, t, f),
+    "match" <s:Expr> "{" <t:Tree> "}" => raw::Kind::Match(s, Box::new(t)),
 };
 
 ClosureParam: (u32, raw::Ty) = <v:"var"> ":" <t:Ty> => (v, t);
@@ -210,7 +197,6 @@ extern {
         "float" => Token::Float(<f64>),
         "var" => Token::Var(<u32>),
         "generic" => Token::Generic(<u32>),
-        "hole" => Token::Hole(<u32>),
         "ints" => Token::IntS(<u16>),
         "intu" => Token::IntU(<u16>),
         "fp" => Token::Fp(<u16>),

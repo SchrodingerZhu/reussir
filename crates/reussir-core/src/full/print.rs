@@ -53,7 +53,8 @@ impl<'a> Printer<'a> {
 
         let mut items: Vec<Doc<'static>> = Vec::new();
         for rec in &program.records {
-            items.push(text(format!("record @{};", r.sym(rec.symbol))));
+            items
+                .push(text(format!("record @{} : ", r.sym(rec.symbol))) + r.ty(rec.ty) + text(";"));
         }
         for func in &program.functions {
             items.push(r.function(func));
@@ -165,37 +166,60 @@ impl Render<'_> {
 
     // ----- expressions -----
 
-    /// Block-level rendering: sequences, `if`/`else`, `match` span lines;
-    /// everything else is inline.
+    /// Block/statement context: a `Seq` lays its items out `;`-separated (the
+    /// enclosing braces bound it); anything else renders as a single value.
     fn expr(&self, e: &mir::Expr<'_>) -> Doc<'static> {
         match e.kind {
             mir::ExprKind::Seq(items) => {
-                // `;`-separated statements (the last is the block's value), so the
-                // whitespace-insensitive grammar can find the boundaries.
                 let n = items.len();
                 let mut d = Doc::Null;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
                         d = d + hardline();
                     }
-                    d = d + self.expr(item);
+                    d = d + self.value(item);
                     if i + 1 < n {
                         d = d + text(";");
                     }
                 }
                 d
             }
-            mir::ExprKind::If(c, t, f) => self.render_if(c, t, f),
-            mir::ExprKind::Match(scrut, tree) => self.render_match(scrut, &tree),
-            _ => self.inline(e),
+            _ => self.value(e),
         }
     }
 
-    /// `if C then { T } else { F }` — braces delimit the branches (self-contained,
-    /// no dangling-else), so it round-trips both at block and inline position.
+    /// A single expression, **fully typed**: every value node prints `atom : ty`,
+    /// so the parser reads the type back rather than re-deriving it. `let` (always
+    /// `unit`) and a sub-expression `Seq` (braced, typed by its last item) are the
+    /// two forms whose type is structural and so left unprinted.
+    fn value(&self, e: &mir::Expr<'_>) -> Doc<'static> {
+        match e.kind {
+            mir::ExprKind::Let {
+                var: v,
+                name,
+                value,
+            } => {
+                text("let ")
+                    + var(v)
+                    + text(format!(" ({}) = ", self.resolver.resolve(name)))
+                    + self.value(value)
+            }
+            mir::ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
+            mir::ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e.ty),
+            mir::ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, &tree), e.ty),
+            _ => self.typed(self.atom(e), e.ty),
+        }
+    }
+
+    fn typed(&self, atom: Doc<'static>, ty: Ty<'_>) -> Doc<'static> {
+        atom + text(" : ") + self.ty(ty)
+    }
+
+    /// `if C then { T } else { F }` — braces delimit the branches (no
+    /// dangling-else); self-delimiting, so it round-trips at any position.
     fn render_if(&self, c: &mir::Expr<'_>, t: &mir::Expr<'_>, f: &mir::Expr<'_>) -> Doc<'static> {
         text("if ")
-            + self.inline(c)
+            + self.value(c)
             + text(" then {")
             + indent(hardline() + self.expr(t))
             + hardline()
@@ -207,31 +231,32 @@ impl Render<'_> {
 
     fn render_match(&self, scrut: &mir::Expr<'_>, tree: &mir::DecisionTree<'_>) -> Doc<'static> {
         text("match ")
-            + self.inline(scrut)
+            + self.value(scrut)
             + text(" {")
             + indent(hardline() + self.tree(tree))
             + hardline()
             + text("}")
     }
 
-    /// Inline rendering (parenthesized, type-annotated subterms).
-    fn inline(&self, e: &mir::Expr<'_>) -> Doc<'static> {
+    /// The bare form of a value node, without its `: ty` suffix (added by
+    /// [`Self::value`]). `Let`/`Seq`/`If`/`Match` are handled there.
+    fn atom(&self, e: &mir::Expr<'_>) -> Doc<'static> {
         use mir::ExprKind::*;
         match e.kind {
             GlobalStr(s) => text(str_lit(s.words())),
-            ConstInt(n) => text(format!("{n} : ")) + self.ty(e.ty),
-            ConstFloat(f) => text(format!("{f} : ")) + self.ty(e.ty),
+            ConstInt(n) => text(format!("{n}")),
+            ConstFloat(f) => text(format!("{f}")),
             ConstBool(b) => text(format!("{b}")),
             Var(v) => var(v),
             Poison => text("poison"),
-            Negate(x) => text("-(") + self.inline(x) + text(")"),
-            Not(x) => text("!(") + self.inline(x) + text(")"),
-            Arith(l, op, r) => self.binop(l, arith_sym(op), r, e.ty),
-            Cmp(l, op, r) => self.binop(l, cmp_sym(op), r, e.ty),
-            Cast(x, t) => text("(") + self.inline(x) + text(" as ") + self.ty(t) + text(")"),
-            RegionRun(x) => text("region { ") + self.inline(x) + text(" }"),
+            Negate(x) => text("-(") + self.value(x) + text(")"),
+            Not(x) => text("!(") + self.value(x) + text(")"),
+            Arith(l, op, r) => self.binop(l, arith_sym(op), r),
+            Cmp(l, op, r) => self.binop(l, cmp_sym(op), r),
+            Cast(x, t) => text("(") + self.value(x) + text(" as ") + self.ty(t) + text(")"),
+            RegionRun(x) => text("region { ") + self.value(x) + text(" }"),
             Proj(base, path) => {
-                let mut d = text("proj(") + self.inline(base);
+                let mut d = text("proj(") + self.value(base);
                 for idx in path {
                     d = d + text(format!(", {idx}"));
                 }
@@ -239,22 +264,10 @@ impl Render<'_> {
             }
             Assign(dst, field, src) => {
                 text("assign(")
-                    + self.inline(dst)
+                    + self.value(dst)
                     + text(format!(", {field}, "))
-                    + self.inline(src)
+                    + self.value(src)
                     + text(")")
-            }
-            Let {
-                var: v,
-                name,
-                value,
-            } => {
-                text("let ")
-                    + var(v)
-                    + text(format!(" ({}): ", self.resolver.resolve(name)))
-                    + self.ty(value.ty)
-                    + text(" = ")
-                    + self.inline(value)
             }
             Call {
                 callee,
@@ -262,10 +275,7 @@ impl Render<'_> {
                 regional,
             } => {
                 let pre = if regional { "regional " } else { "" };
-                text(format!("{pre}@{}(", self.sym(callee)))
-                    + self.arg_list(args)
-                    + text(") : ")
-                    + self.ty(e.ty)
+                text(format!("{pre}@{}(", self.sym(callee))) + self.arg_list(args) + text(")")
             }
             Ctor { record, args } => {
                 text(format!("@{}{{", self.sym(record))) + self.arg_list(args) + text("}")
@@ -280,18 +290,22 @@ impl Render<'_> {
                     + text(")")
             }
             NullableCall(inner) => match inner {
-                Some(x) => text("NonNull(") + self.inline(x) + text(")"),
+                Some(x) => text("NonNull(") + self.value(x) + text(")"),
                 None => text("Null"),
             },
             ClosureCall { target, args } => {
-                let mut d = text("apply(") + self.inline(target);
+                let mut d = text("apply(") + self.value(target);
                 if !args.is_empty() {
                     d = d + text(", ") + self.arg_list(args);
                 }
                 d + text(")")
             }
             Closure(c) => {
-                let caps: Vec<Doc<'static>> = c.captures.iter().map(|(v, _)| var(*v)).collect();
+                let caps: Vec<Doc<'static>> = c
+                    .captures
+                    .iter()
+                    .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
+                    .collect();
                 let params: Vec<Doc<'static>> = c
                     .params
                     .iter()
@@ -302,28 +316,21 @@ impl Render<'_> {
                     + text("](")
                     + comma_sep(params)
                     + text(") { ")
-                    + self.inline(c.body)
+                    + self.value(c.body)
                     + text(" }")
             }
-            // Block forms nested inline. `if`/`match` are already self-delimiting;
-            // a `Seq` is wrapped in braces so its `;`-separated items are bounded.
-            If(c, t, f) => self.render_if(c, t, f),
-            Match(scrut, tree) => self.render_match(scrut, &tree),
-            Seq(_) => text("{ ") + self.expr(e) + text(" }"),
+            Let { .. } | Seq(_) | If(..) | Match(..) => {
+                unreachable!("structural forms are rendered by `value`")
+            }
         }
     }
 
-    fn binop(&self, l: &mir::Expr<'_>, sym: &str, r: &mir::Expr<'_>, ty: Ty<'_>) -> Doc<'static> {
-        text("(")
-            + self.inline(l)
-            + text(format!(" {sym} "))
-            + self.inline(r)
-            + text(") : ")
-            + self.ty(ty)
+    fn binop(&self, l: &mir::Expr<'_>, sym: &str, r: &mir::Expr<'_>) -> Doc<'static> {
+        text("(") + self.value(l) + text(format!(" {sym} ")) + self.value(r) + text(")")
     }
 
     fn arg_list(&self, args: &[mir::Expr<'_>]) -> Doc<'static> {
-        comma_sep(args.iter().map(|a| self.inline(a)).collect())
+        comma_sep(args.iter().map(|a| self.value(a)).collect())
     }
 
     // ----- decision trees -----
@@ -343,7 +350,7 @@ impl Render<'_> {
             } => {
                 self.bindings(bindings)
                     + text("if ")
-                    + self.inline(guard)
+                    + self.value(guard)
                     + text(" {")
                     + indent(hardline() + self.tree(success))
                     + hardline()

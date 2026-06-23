@@ -10,10 +10,11 @@
 //! blocks) get a placeholder type at re-intern time, which is sound for the
 //! text-faithful round trip (those positions are never re-printed).
 
-/// A whole program: record instances, functions, exported trampolines.
+/// A whole program: record instances (with their ground type), functions,
+/// exported trampolines.
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub records: Vec<String>,
+    pub records: Vec<(String, Ty)>,
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
 }
@@ -21,7 +22,7 @@ pub struct Program {
 /// One top-level item, as the grammar yields them before partitioning.
 #[derive(Clone, Debug)]
 pub enum Item {
-    Record(String),
+    Record(String, Ty),
     Func(Func),
     Tramp(Tramp),
 }
@@ -36,7 +37,7 @@ impl Program {
         };
         for item in items {
             match item {
-                Item::Record(s) => p.records.push(s),
+                Item::Record(s, ty) => p.records.push((s, ty)),
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
             }
@@ -105,36 +106,54 @@ pub enum Cap {
 /// The four raw words of an interned `StringToken`.
 pub type StrTag = [u64; 4];
 
+/// A typed expression node: every node carries its [`Ty`], so the re-intern pass
+/// never invents a type — the printed `kind : ty` annotation is read back
+/// verbatim, making the text round trip a soundness proof. The two exceptions
+/// (`Let`/`Assign` are `unit`, `Seq` is its last item's type) are filled by the
+/// grammar actions, not printed, and are correct by construction.
 #[derive(Clone, Debug)]
-pub enum Expr {
-    ConstInt(i128, Ty),
-    ConstFloat(f64, Ty),
+pub struct Expr {
+    pub kind: Box<Kind>,
+    pub ty: Ty,
+}
+
+impl Expr {
+    pub fn new(kind: Kind, ty: Ty) -> Expr {
+        Expr {
+            kind: Box::new(kind),
+            ty,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Kind {
+    ConstInt(i128),
+    ConstFloat(f64),
     ConstBool(bool),
     /// An interned string literal, as its four raw `StringToken` words.
     GlobalStr([u64; 4]),
     Var(u32),
     Poison,
-    Negate(Box<Expr>),
-    Not(Box<Expr>),
-    Arith(Box<Expr>, ArithOp, Box<Expr>, Ty),
-    Cmp(Box<Expr>, CmpOp, Box<Expr>, Ty),
-    Cast(Box<Expr>, Ty),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
-    RegionRun(Box<Expr>),
-    Proj(Box<Expr>, Vec<u32>),
-    Assign(Box<Expr>, u32, Box<Expr>),
+    Negate(Expr),
+    Not(Expr),
+    Arith(Expr, ArithOp, Expr),
+    Cmp(Expr, CmpOp, Expr),
+    Cast(Expr, Ty),
+    If(Expr, Expr, Expr),
+    RegionRun(Expr),
+    Proj(Expr, Vec<u32>),
+    Assign(Expr, u32, Expr),
     Let {
         var: u32,
         name: String,
-        ty: Ty,
-        value: Box<Expr>,
+        value: Expr,
     },
     Seq(Vec<Expr>),
     Call {
         regional: bool,
         symbol: String,
         args: Vec<Expr>,
-        ty: Ty,
     },
     Ctor {
         symbol: String,
@@ -145,17 +164,17 @@ pub enum Expr {
         variant: usize,
         args: Vec<Expr>,
     },
-    NullableCall(Option<Box<Expr>>),
+    NullableCall(Option<Expr>),
     ClosureCall {
-        target: Box<Expr>,
+        target: Expr,
         args: Vec<Expr>,
     },
     Closure {
-        captures: Vec<u32>,
+        captures: Vec<(u32, Ty)>,
         params: Vec<(u32, Ty)>,
-        body: Box<Expr>,
+        body: Expr,
     },
-    Match(Box<Expr>, Box<Tree>),
+    Match(Expr, Box<Tree>),
 }
 
 #[derive(Clone, Copy, Debug)]

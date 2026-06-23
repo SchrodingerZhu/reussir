@@ -114,7 +114,7 @@ impl<'a> Printer<'a> {
             TyKind::Unit => text("()"),
             TyKind::Bottom => text("!"),
             TyKind::Generic(g) => text(format!("${}", g.0)),
-            TyKind::Hole(h) => text(format!("?{}", h.0)),
+            TyKind::Hole(_) => unreachable!("a fully elaborated HIR carries no inference holes"),
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
             TyKind::Record { def, args, flex } => {
                 let mut d = match flex {
@@ -149,6 +149,7 @@ impl<'a> Printer<'a> {
 
     // ----- expressions -----
 
+    /// Block/statement context: a `Seq` lays out `;`-separated; else a value.
     fn expr(&self, e: &Expr<'_>) -> Doc<'static> {
         match &e.kind {
             ExprKind::Seq(items) => {
@@ -158,22 +159,46 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         d = d + hardline();
                     }
-                    d = d + self.expr(item);
+                    d = d + self.value(item);
                     if i + 1 < n {
                         d = d + text(";");
                     }
                 }
                 d
             }
-            ExprKind::If(c, t, f) => self.render_if(c, t, f),
-            ExprKind::Match(scrut, tree) => self.render_match(scrut, tree),
-            _ => self.inline(e),
+            _ => self.value(e),
         }
+    }
+
+    /// A single expression, **fully typed**: every value node prints `atom : ty`.
+    /// `let` (always `unit`) and a sub-expression `Seq` (braced) are unprinted.
+    fn value(&self, e: &Expr<'_>) -> Doc<'static> {
+        match &e.kind {
+            ExprKind::Let {
+                var: v,
+                name,
+                value,
+                ..
+            } => {
+                text("let ")
+                    + var(*v)
+                    + text(format!(" ({}) = ", self.resolver.resolve(*name)))
+                    + self.value(value)
+            }
+            ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
+            ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e.ty),
+            ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, tree), e.ty),
+            _ => self.typed(self.atom(e), e.ty),
+        }
+    }
+
+    fn typed(&self, atom: Doc<'static>, ty: Ty<'_>) -> Doc<'static> {
+        atom + text(" : ") + self.ty(ty)
     }
 
     fn render_if(&self, c: &Expr<'_>, t: &Expr<'_>, f: &Expr<'_>) -> Doc<'static> {
         text("if ")
-            + self.inline(c)
+            + self.value(c)
             + text(" then {")
             + indent(hardline() + self.expr(t))
             + hardline()
@@ -185,31 +210,32 @@ impl<'a> Printer<'a> {
 
     fn render_match(&self, scrut: &Expr<'_>, tree: &DecisionTree<'_>) -> Doc<'static> {
         text("match ")
-            + self.inline(scrut)
+            + self.value(scrut)
             + text(" {")
             + indent(hardline() + self.tree(tree))
             + hardline()
             + text("}")
     }
 
-    fn inline(&self, e: &Expr<'_>) -> Doc<'static> {
+    /// The bare form of a value node, without its `: ty` suffix.
+    fn atom(&self, e: &Expr<'_>) -> Doc<'static> {
         match &e.kind {
             ExprKind::GlobalStr(s) => text(str_lit(s.words())),
-            ExprKind::ConstInt(n) => text(format!("{n} : ")) + self.ty(e.ty),
-            ExprKind::ConstFloat(f) => text(format!("{f} : ")) + self.ty(e.ty),
+            ExprKind::ConstInt(n) => text(format!("{n}")),
+            ExprKind::ConstFloat(f) => text(format!("{f}")),
             ExprKind::ConstBool(b) => text(format!("{b}")),
             ExprKind::Var(v) => var(*v),
             ExprKind::Poison => text("poison"),
-            ExprKind::Negate(x) => text("-(") + self.inline(x) + text(")"),
-            ExprKind::Not(x) => text("!(") + self.inline(x) + text(")"),
-            ExprKind::Arith(l, op, r) => self.binop(l, arith_sym(*op), r, e.ty),
-            ExprKind::Cmp(l, op, r) => self.binop(l, cmp_sym(*op), r, e.ty),
+            ExprKind::Negate(x) => text("-(") + self.value(x) + text(")"),
+            ExprKind::Not(x) => text("!(") + self.value(x) + text(")"),
+            ExprKind::Arith(l, op, r) => self.binop(l, arith_sym(*op), r),
+            ExprKind::Cmp(l, op, r) => self.binop(l, cmp_sym(*op), r),
             ExprKind::Cast(x, t) => {
-                text("(") + self.inline(x) + text(" as ") + self.ty(*t) + text(")")
+                text("(") + self.value(x) + text(" as ") + self.ty(*t) + text(")")
             }
-            ExprKind::RegionRun(x) => text("region { ") + self.inline(x) + text(" }"),
+            ExprKind::RegionRun(x) => text("region { ") + self.value(x) + text(" }"),
             ExprKind::Proj(base, path) => {
-                let mut d = text("proj(") + self.inline(base);
+                let mut d = text("proj(") + self.value(base);
                 for idx in path {
                     d = d + text(format!(", {idx}"));
                 }
@@ -217,23 +243,10 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Assign(dst, field, src) => {
                 text("assign(")
-                    + self.inline(dst)
+                    + self.value(dst)
                     + text(format!(", {field}, "))
-                    + self.inline(src)
+                    + self.value(src)
                     + text(")")
-            }
-            ExprKind::Let {
-                var: v,
-                name,
-                value,
-                ..
-            } => {
-                text("let ")
-                    + var(*v)
-                    + text(format!(" ({}): ", self.resolver.resolve(*name)))
-                    + self.ty(value.ty)
-                    + text(" = ")
-                    + self.inline(value)
             }
             ExprKind::FuncCall {
                 target,
@@ -246,8 +259,7 @@ impl<'a> Printer<'a> {
                     + self.ty_args(ty_args)
                     + text("(")
                     + self.arg_list(args)
-                    + text(") : ")
-                    + self.ty(e.ty)
+                    + text(")")
             }
             ExprKind::CompoundCall {
                 target,
@@ -258,8 +270,7 @@ impl<'a> Printer<'a> {
                     + self.ty_args(ty_args)
                     + text("{")
                     + self.arg_list(args)
-                    + text("} : ")
-                    + self.ty(e.ty)
+                    + text("}")
             }
             ExprKind::VariantCall {
                 target,
@@ -271,22 +282,25 @@ impl<'a> Printer<'a> {
                     + self.ty_args(ty_args)
                     + text(format!("#{variant}("))
                     + self.arg_list(args)
-                    + text(") : ")
-                    + self.ty(e.ty)
+                    + text(")")
             }
             ExprKind::NullableCall(inner) => match inner {
-                Some(x) => text("NonNull(") + self.inline(x) + text(")"),
+                Some(x) => text("NonNull(") + self.value(x) + text(")"),
                 None => text("Null"),
             },
             ExprKind::ClosureCall { target, args } => {
-                let mut d = text("apply(") + self.inline(target);
+                let mut d = text("apply(") + self.value(target);
                 if !args.is_empty() {
                     d = d + text(", ") + self.arg_list(args);
                 }
                 d + text(")")
             }
             ExprKind::Closure(c) => {
-                let caps: Vec<Doc<'static>> = c.captures.iter().map(|(v, _)| var(*v)).collect();
+                let caps: Vec<Doc<'static>> = c
+                    .captures
+                    .iter()
+                    .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
+                    .collect();
                 let params: Vec<Doc<'static>> = c
                     .params
                     .iter()
@@ -297,26 +311,21 @@ impl<'a> Printer<'a> {
                     + text("](")
                     + comma_sep(params)
                     + text(") { ")
-                    + self.inline(&c.body)
+                    + self.value(&c.body)
                     + text(" }")
             }
-            ExprKind::If(c, t, f) => self.render_if(c, t, f),
-            ExprKind::Match(scrut, tree) => self.render_match(scrut, tree),
-            ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
+            ExprKind::Let { .. } | ExprKind::Seq(_) | ExprKind::If(..) | ExprKind::Match(..) => {
+                unreachable!("structural forms are rendered by `value`")
+            }
         }
     }
 
-    fn binop(&self, l: &Expr<'_>, sym: &str, r: &Expr<'_>, ty: Ty<'_>) -> Doc<'static> {
-        text("(")
-            + self.inline(l)
-            + text(format!(" {sym} "))
-            + self.inline(r)
-            + text(") : ")
-            + self.ty(ty)
+    fn binop(&self, l: &Expr<'_>, sym: &str, r: &Expr<'_>) -> Doc<'static> {
+        text("(") + self.value(l) + text(format!(" {sym} ")) + self.value(r) + text(")")
     }
 
     fn arg_list(&self, args: &[Expr<'_>]) -> Doc<'static> {
-        comma_sep(args.iter().map(|a| self.inline(a)).collect())
+        comma_sep(args.iter().map(|a| self.value(a)).collect())
     }
 
     // ----- decision trees -----
@@ -336,7 +345,7 @@ impl<'a> Printer<'a> {
             } => {
                 self.bindings(bindings)
                     + text("if ")
-                    + self.inline(guard)
+                    + self.value(guard)
                     + text(" {")
                     + indent(hardline() + self.tree(success))
                     + hardline()

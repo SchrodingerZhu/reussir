@@ -51,7 +51,6 @@ pub enum Ty {
     Unit,
     Bottom,
     Generic(u32),
-    Hole(u32),
     Nullable(Box<Ty>),
     Record {
         cap: Cap,
@@ -67,29 +66,46 @@ pub enum Ty {
 /// The four raw words of an interned `StringToken`.
 pub type StrTag = [u64; 4];
 
+/// A typed HIR node — every node carries its [`Ty`] (see the MIR twin
+/// [`crate::full::ir_raw::Expr`]); the re-intern pass reads it rather than
+/// inventing one. `Let` is the lone structural exception (always `unit`).
 #[derive(Clone, Debug)]
-pub enum Expr {
-    ConstInt(i128, Ty),
-    ConstFloat(f64, Ty),
+pub struct Expr {
+    pub kind: Box<Kind>,
+    pub ty: Ty,
+}
+
+impl Expr {
+    pub fn new(kind: Kind, ty: Ty) -> Expr {
+        Expr {
+            kind: Box::new(kind),
+            ty,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Kind {
+    ConstInt(i128),
+    ConstFloat(f64),
     ConstBool(bool),
     /// An interned string literal, as its four raw `StringToken` words.
     GlobalStr([u64; 4]),
     Var(u32),
     Poison,
-    Negate(Box<Expr>),
-    Not(Box<Expr>),
-    Arith(Box<Expr>, ArithOp, Box<Expr>, Ty),
-    Cmp(Box<Expr>, CmpOp, Box<Expr>, Ty),
-    Cast(Box<Expr>, Ty),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
-    RegionRun(Box<Expr>),
-    Proj(Box<Expr>, Vec<u32>),
-    Assign(Box<Expr>, u32, Box<Expr>),
+    Negate(Expr),
+    Not(Expr),
+    Arith(Expr, ArithOp, Expr),
+    Cmp(Expr, CmpOp, Expr),
+    Cast(Expr, Ty),
+    If(Expr, Expr, Expr),
+    RegionRun(Expr),
+    Proj(Expr, Vec<u32>),
+    Assign(Expr, u32, Expr),
     Let {
         var: u32,
         name: String,
-        ty: Ty,
-        value: Box<Expr>,
+        value: Expr,
     },
     Seq(Vec<Expr>),
     FuncCall {
@@ -97,32 +113,29 @@ pub enum Expr {
         path: String,
         ty_args: Vec<Ty>,
         args: Vec<Expr>,
-        ty: Ty,
     },
     CompoundCall {
         path: String,
         ty_args: Vec<Ty>,
         args: Vec<Expr>,
-        ty: Ty,
     },
     VariantCall {
         path: String,
         ty_args: Vec<Ty>,
         variant: usize,
         args: Vec<Expr>,
-        ty: Ty,
     },
-    NullableCall(Option<Box<Expr>>),
+    NullableCall(Option<Expr>),
     ClosureCall {
-        target: Box<Expr>,
+        target: Expr,
         args: Vec<Expr>,
     },
     Closure {
-        captures: Vec<u32>,
+        captures: Vec<(u32, Ty)>,
         params: Vec<(u32, Ty)>,
-        body: Box<Expr>,
+        body: Expr,
     },
-    Match(Box<Expr>, Box<Tree>),
+    Match(Expr, Box<Tree>),
 }
 
 /// A scrutinee path (the field indices after `scrut`).
