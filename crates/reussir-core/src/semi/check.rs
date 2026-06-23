@@ -896,8 +896,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .iter()
             .map(|(_, g)| inst.get(*g).unwrap_or_else(|| self.tcx.mk_generic(*g)))
             .collect();
+        // A freshly-constructed regional record is a live, region-local value, so
+        // it is born `Flex` (mutable, not yet frozen) — matching the reference
+        // (`Tyck.hs`). This is what lets the result be assigned into or frozen on
+        // region exit; binding it under a `[rigid]`/`[flex]` annotation just
+        // re-reads the head (`unify` ignores flexivity). Construction outside a
+        // region is reported separately by the caller.
         let flex = match record.default_cap {
-            super::ctxt::DefaultCap::Regional => crate::semi::ty::Capability::Regional,
+            super::ctxt::DefaultCap::Regional => crate::semi::ty::Capability::Flex,
             _ => crate::semi::ty::Capability::Irrelevant,
         };
         self.tcx.mk_record(record.def, &args, flex)
