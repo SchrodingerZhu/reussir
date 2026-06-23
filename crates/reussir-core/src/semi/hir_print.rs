@@ -269,7 +269,7 @@ impl<'a> Printer<'a> {
             } => {
                 text(format!("#{}", self.path(*target)))
                     + self.ty_args(ty_args)
-                    + text(format!("::#{variant}("))
+                    + text(format!("#{variant}("))
                     + self.arg_list(args)
                     + text(") : ")
                     + self.ty(e.ty)

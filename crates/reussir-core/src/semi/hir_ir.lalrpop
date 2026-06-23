@@ -1,0 +1,275 @@
+//! Grammar for the textual Semi (HIR) IR — the deserializer, dual to
+//! `semi::hir_print`. Shares the `full::ir_lex` logos lexer with the MIR grammar
+//! but the call forms are `#path` + type arguments and types/functions carry
+//! generics (`$n`) and holes (`?n`). Builds the owned `semi::hir_raw` AST, which
+//! `semi::hir_build` re-interns into the HIR.
+
+use crate::semi::hir_raw as raw;
+use crate::full::ir_lex::{Token, LexError};
+
+grammar<'input>;
+
+pub Program: raw::Program = <funcs:Func*> => raw::Program { funcs };
+
+Func: raw::Func =
+    <p:"pub"?> <r:"regional"?> "fn" "#" <path:"ident"> <generics:Generics?>
+    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <body:Body>
+    => raw::Func {
+        is_pub: p.is_some(),
+        regional: r.is_some(),
+        path: path.to_string(),
+        generics: generics.unwrap_or_default(),
+        params,
+        ret,
+        body,
+    };
+
+Generics: Vec<raw::Generic> = "<" <CommaPlus<Generic>> ">";
+
+Generic: raw::Generic = <r:"regional"?> <g:"generic">
+    => raw::Generic { id: g, regional: r.is_some() };
+
+Body: Option<raw::Expr> = {
+    "{" <b:Block> "}" => Some(b),
+    ";" => None,
+};
+
+Param: raw::Param = <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
+    => raw::Param { var, name: name.to_string(), ty };
+
+// ----- types -----
+
+Ty: raw::Ty = {
+    <w:"ints"> => raw::Ty::Signed(w),
+    <w:"intu"> => raw::Ty::Unsigned(w),
+    <w:"fp"> => raw::Ty::Ieee(w),
+    "bf16" => raw::Ty::BFloat16,
+    "f8" => raw::Ty::Float8,
+    "bool" => raw::Ty::Bool,
+    "str" => raw::Ty::Str,
+    "(" ")" => raw::Ty::Unit,
+    "!" => raw::Ty::Bottom,
+    <g:"generic"> => raw::Ty::Generic(g),
+    <h:"hole"> => raw::Ty::Hole(h),
+    "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
+    <cap:Cap> "#" <path:"ident"> <args:TyArgs?>
+        => raw::Ty::Record { cap, path: path.to_string(), args: args.unwrap_or_default() },
+    "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
+};
+
+TyArgs: Vec<raw::Ty> = "::" "<" <CommaPlus<Ty>> ">";
+
+Cap: raw::Cap = {
+    => raw::Cap::None,
+    "[" "flex" "]" => raw::Cap::Flex,
+    "[" "rigid" "]" => raw::Cap::Rigid,
+    "[" "regional" "]" => raw::Cap::Regional,
+};
+
+// ----- expressions -----
+
+Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
+    if rest.is_empty() {
+        first
+    } else {
+        let mut v = vec![first];
+        v.extend(rest);
+        raw::Expr::Seq(v)
+    }
+};
+
+Expr: raw::Expr = {
+    <n:"int"> ":" <t:Ty> => raw::Expr::ConstInt(n, t),
+    <f:"float"> ":" <t:Ty> => raw::Expr::ConstFloat(f, t),
+    "true" => raw::Expr::ConstBool(true),
+    "false" => raw::Expr::ConstBool(false),
+    "str" "#" <n:"int"> => raw::Expr::GlobalStr(n as u64),
+    <v:"var"> => raw::Expr::Var(v),
+    "poison" => raw::Expr::Poison,
+    "-" "(" <e:Expr> ")" => raw::Expr::Negate(Box::new(e)),
+    "!" "(" <e:Expr> ")" => raw::Expr::Not(Box::new(e)),
+    "(" <l:Expr> <op:ArithOp> <r:Expr> ")" ":" <t:Ty>
+        => raw::Expr::Arith(Box::new(l), op, Box::new(r), t),
+    "(" <l:Expr> <op:CmpOp> <r:Expr> ")" ":" <t:Ty>
+        => raw::Expr::Cmp(Box::new(l), op, Box::new(r), t),
+    "(" <e:Expr> "as" <t:Ty> ")" => raw::Expr::Cast(Box::new(e), t),
+    "region" "{" <e:Expr> "}" => raw::Expr::RegionRun(Box::new(e)),
+    "proj" "(" <base:Expr> <idxs:("," <"int">)*> ")"
+        => raw::Expr::Proj(Box::new(base), idxs.into_iter().map(|n| n as u32).collect()),
+    "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
+        => raw::Expr::Assign(Box::new(dst), field as u32, Box::new(src)),
+    "let" <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty> "=" <value:Expr>
+        => raw::Expr::Let { var, name: name.to_string(), ty, value: Box::new(value) },
+    <r:"regional"?> "#" <path:"ident"> <ta:TyArgs?> "(" <args:Comma<Expr>> ")" ":" <t:Ty>
+        => raw::Expr::FuncCall {
+            regional: r.is_some(),
+            path: path.to_string(),
+            ty_args: ta.unwrap_or_default(),
+            args,
+            ty: t,
+        },
+    "#" <path:"ident"> <ta:TyArgs?> "{" <args:Comma<Expr>> "}" ":" <t:Ty>
+        => raw::Expr::CompoundCall {
+            path: path.to_string(),
+            ty_args: ta.unwrap_or_default(),
+            args,
+            ty: t,
+        },
+    "#" <path:"ident"> <ta:TyArgs?> "#" <v:"int"> "(" <args:Comma<Expr>> ")" ":" <t:Ty>
+        => raw::Expr::VariantCall {
+            path: path.to_string(),
+            ty_args: ta.unwrap_or_default(),
+            variant: v as usize,
+            args,
+            ty: t,
+        },
+    "NonNull" "(" <e:Expr> ")" => raw::Expr::NullableCall(Some(Box::new(e))),
+    "Null" => raw::Expr::NullableCall(None),
+    "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
+        => raw::Expr::ClosureCall { target: Box::new(target), args },
+    "closure" "[" <captures:Comma<"var">> "]" "(" <params:Comma<ClosureParam>> ")" "{" <body:Expr> "}"
+        => raw::Expr::Closure { captures, params, body: Box::new(body) },
+    "if" <c:Expr> "then" "{" <t:Block> "}" "else" "{" <f:Block> "}"
+        => raw::Expr::If(Box::new(c), Box::new(t), Box::new(f)),
+    "match" <s:Expr> "{" <t:Tree> "}" => raw::Expr::Match(Box::new(s), Box::new(t)),
+    "{" <b:Block> "}" => b,
+};
+
+ClosureParam: (u32, raw::Ty) = <v:"var"> ":" <t:Ty> => (v, t);
+
+// ----- decision trees -----
+
+Tree: raw::Tree = {
+    "uncovered" => raw::Tree::Uncovered,
+    "unreachable" => raw::Tree::Unreachable,
+    "switch" <p:PatRef> "{" <arms:Arm*> "}" => raw::build_switch(p, arms),
+    <b:Bindings> "=>" <body:Block> => raw::Tree::Leaf { bindings: b, body },
+    <b:Bindings> "if" <g:Expr> "{" <s:Tree> "}" "else" "{" <f:Tree> "}"
+        => raw::Tree::Guard { bindings: b, guard: g, success: Box::new(s), failure: Box::new(f) },
+};
+
+Arm: (raw::Label, raw::Tree) = <l:Label> "=>" "{" <t:Tree> "}" => (l, t);
+
+Label: raw::Label = {
+    "#" <n:"int"> => raw::Label::Ctor(n as usize),
+    <n:"int"> => raw::Label::Int(n),
+    "_" => raw::Label::Wildcard,
+    "true" => raw::Label::Bool(true),
+    "false" => raw::Label::Bool(false),
+    "str" "#" <n:"int"> => raw::Label::Str(n as u64),
+    "NonNull" => raw::Label::NonNull,
+    "Null" => raw::Label::Null,
+};
+
+PatRef: raw::Path = "scrut" <idxs:("." <"int">)*>
+    => idxs.into_iter().map(|n| n as u32).collect();
+
+Bindings: Vec<raw::Binding> = <Binding*>;
+
+Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
+
+ArithOp: raw::ArithOp = {
+    "+" => raw::ArithOp::Add,
+    "-" => raw::ArithOp::Sub,
+    "*" => raw::ArithOp::Mul,
+    "/" => raw::ArithOp::Div,
+    "%" => raw::ArithOp::Mod,
+    "&&" => raw::ArithOp::And,
+    "||" => raw::ArithOp::Or,
+};
+
+CmpOp: raw::CmpOp = {
+    "<" => raw::CmpOp::Lt,
+    ">" => raw::CmpOp::Gt,
+    "<=" => raw::CmpOp::Le,
+    ">=" => raw::CmpOp::Ge,
+    "==" => raw::CmpOp::Eq,
+    "!=" => raw::CmpOp::Ne,
+};
+
+Comma<T>: Vec<T> = <mut v:(<T> ",")*> <last:T?> => {
+    if let Some(l) = last { v.push(l); }
+    v
+};
+
+CommaPlus<T>: Vec<T> = <mut v:(<T> ",")*> <last:T> => {
+    v.push(last);
+    v
+};
+
+extern {
+    type Location = usize;
+    type Error = LexError;
+
+    enum Token<'input> {
+        "int" => Token::Int(<i128>),
+        "float" => Token::Float(<f64>),
+        "var" => Token::Var(<u32>),
+        "generic" => Token::Generic(<u32>),
+        "hole" => Token::Hole(<u32>),
+        "ints" => Token::IntS(<u16>),
+        "intu" => Token::IntU(<u16>),
+        "fp" => Token::Fp(<u16>),
+        "ident" => Token::Ident(<&'input str>),
+        "pub" => Token::Pub,
+        "regional" => Token::Regional,
+        "fn" => Token::Fn,
+        "let" => Token::Let,
+        "if" => Token::If,
+        "then" => Token::Then,
+        "else" => Token::Else,
+        "match" => Token::Match,
+        "switch" => Token::Switch,
+        "scrut" => Token::Scrut,
+        "uncovered" => Token::Uncovered,
+        "unreachable" => Token::Unreachable,
+        "region" => Token::Region,
+        "as" => Token::As,
+        "closure" => Token::Closure,
+        "apply" => Token::Apply,
+        "flex" => Token::Flex,
+        "rigid" => Token::Rigid,
+        "proj" => Token::Proj,
+        "assign" => Token::Assign,
+        "Nullable" => Token::Nullable,
+        "NonNull" => Token::NonNull,
+        "Null" => Token::Null,
+        "poison" => Token::Poison,
+        "true" => Token::True,
+        "false" => Token::False,
+        "bool" => Token::Bool,
+        "str" => Token::Str,
+        "bf16" => Token::BF16,
+        "f8" => Token::F8,
+        "(" => Token::LParen,
+        ")" => Token::RParen,
+        "{" => Token::LBrace,
+        "}" => Token::RBrace,
+        "[" => Token::LBracket,
+        "]" => Token::RBracket,
+        "<" => Token::Lt,
+        ">" => Token::Gt,
+        ":" => Token::Colon,
+        "::" => Token::ColonColon,
+        ";" => Token::Semi,
+        "," => Token::Comma,
+        "." => Token::Dot,
+        "=" => Token::Eq,
+        "=>" => Token::FatArrow,
+        "_" => Token::Underscore,
+        "->" => Token::Arrow,
+        "#" => Token::Hash,
+        "+" => Token::Plus,
+        "-" => Token::Minus,
+        "*" => Token::Star,
+        "/" => Token::Slash,
+        "%" => Token::Percent,
+        "&&" => Token::AndAnd,
+        "||" => Token::OrOr,
+        "<=" => Token::Le,
+        ">=" => Token::Ge,
+        "==" => Token::EqEq,
+        "!=" => Token::Ne,
+        "!" => Token::Bang,
+    }
+}
