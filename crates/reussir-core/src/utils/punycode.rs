@@ -137,7 +137,7 @@ pub fn encode(input: &str) -> String {
     let mut placed = FenwickTree::from_iter(
         code_points
             .iter()
-            .map(|&c| u64::from(u64::from(c) < INITIAL_N)),
+            .map(|&c| (u64::from(c) < INITIAL_N) as u64),
     );
 
     let mut n = INITIAL_N;
