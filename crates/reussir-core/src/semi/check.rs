@@ -27,6 +27,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // parameters may already be flex and it may construct regional records
         // directly, so the body is checked with the region context active.
         self.inside_region = proto.is_regional;
+        // Seed the regional-requirement set from the prototype's `[flex]`-position
+        // generics; the body may add more (e.g. a generic assigned into a link).
+        self.regional_generics = proto.regional_generics.clone();
 
         let mut params = Vec::new();
         for (name, ty) in &proto.params {
@@ -47,7 +50,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             name: proto.name,
             visibility: proto.visibility,
             generics: proto.generics,
-            regional_generics: proto.regional_generics,
+            regional_generics: std::mem::take(&mut self.regional_generics),
             params,
             return_ty,
             is_regional: proto.is_regional,
@@ -582,6 +585,39 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         // A mutable field's type is already the nullable link type.
         let src = self.check_expr(src, field_ty);
+        // The assigned value must be a `Nullable<R>` whose element `R` is a
+        // regional record — only a regional value belongs in a flex record's
+        // mutable link. If `R` is concrete it must be regional here; if `R` is a
+        // generic, record the requirement for the monomorphization call-boundary
+        // check (the same `regional_generics` channel as a `[flex] T` parameter).
+        let resolved = self.infer.shallow_resolve(src.ty);
+        if let TyKind::Nullable(inner) = resolved.kind() {
+            let inner = self.infer.shallow_resolve(*inner);
+            match inner.kind() {
+                TyKind::Generic(g) => {
+                    if !self.regional_generics.contains(g) {
+                        self.regional_generics.push(*g);
+                    }
+                }
+                _ if matches!(
+                    inner.capability(),
+                    Some(
+                        crate::semi::ty::Capability::Regional
+                            | crate::semi::ty::Capability::Flex
+                            | crate::semi::ty::Capability::Rigid
+                    )
+                ) => {}
+                _ => self.error(
+                    span,
+                    "assignment source must be a `Nullable` of a regional record",
+                ),
+            }
+        } else {
+            self.error(
+                span,
+                "assignment source must be a `Nullable` of a regional record",
+            );
+        }
         let unit = self.tcx.mk_unit();
         self.mk_expr(
             ExprKind::Assign(Box::new(dst), idx, Box::new(src)),

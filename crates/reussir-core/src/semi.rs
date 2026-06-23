@@ -176,6 +176,27 @@ mod tests {
     }
 
     #[test]
+    fn value_record_construction_is_not_flex() {
+        // The fix is scoped to regional records: a value/shared record is never
+        // flex (it carries no regional capability).
+        check(
+            "struct Pair { a: i32 }\n\
+             fn build(n: i32) -> i32 { let p = Pair { a: n }; 0 }",
+            |elab, _tcx| {
+                let f = function(elab, "build");
+                let body = f.body.as_ref().expect("build has a body");
+                let crate::semi::hir::ExprKind::Seq(stmts) = &body.kind else {
+                    panic!("expected a Seq body, got {:?}", body.kind);
+                };
+                let crate::semi::hir::ExprKind::Let { value, .. } = &stmts[0].kind else {
+                    panic!("expected a `let` binding first, got {:?}", stmts[0].kind);
+                };
+                assert_eq!(value.ty.capability(), Some(Capability::Irrelevant));
+            },
+        );
+    }
+
+    #[test]
     fn reports_type_mismatch() {
         with_tcx(|tcx| {
             let source = "fn bad() -> bool { 1 }";

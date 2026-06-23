@@ -857,4 +857,35 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn generic_assigned_into_link_must_be_regional() {
+        // Assigning a `Nullable<T>` into a flex link records that `T` must be
+        // regional (a body-discovered requirement, not just `[flex] T` params).
+        // Instantiating at a non-regional type is rejected at the call boundary.
+        let src = r#"
+            struct Pair { a: i32 }
+            struct [regional] Box<T> { item: [field] T }
+            regional fn store<T>(b: [flex] Box<T>, z: Nullable<T>) -> i32 { b->item := z; 0 }
+            regional fn use_bad(b: [flex] Box<Pair>, z: Nullable<Pair>) -> i32 { store(b, z) }
+        "#;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (_full, reports) = monomorphize(&elab);
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message.contains("regional record")),
+                "expected a regionality diagnostic, got {reports:#?}"
+            );
+        });
+    }
 }

@@ -202,6 +202,11 @@ pub struct Elaborator<'a, 'tcx> {
     pub vars: VarEnv<'tcx>,
     pub generic_names: FxHashMap<TokenKey, GenericId>,
     pub inside_region: bool,
+    /// Generics required to be regional, accumulated while checking the current
+    /// function body (e.g. a generic assigned into a flex link). Seeded from the
+    /// prototype's `[flex]`-position generics and folded into the elaborated
+    /// [`Function`]. See [`FuncProto::regional_generics`].
+    pub regional_generics: Vec<GenericId>,
     pub fulfill: FulfillCtxt<'tcx>,
     expr_counter: u32,
 }
@@ -238,6 +243,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
             inside_region: false,
+            regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
             expr_counter: 0,
         }
