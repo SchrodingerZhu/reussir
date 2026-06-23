@@ -92,7 +92,6 @@ fn push_delta(output: &mut String, delta: u64, bias: u64) {
 /// prefix-count over positions: `O(log n)` per occurrence.
 pub fn encode(input: &str) -> String {
     let code_points: Vec<u32> = input.chars().map(|c| c as u32).collect();
-    let total = code_points.len();
     let mut output = String::new();
 
     // Basic (ASCII) code points are emitted verbatim, in input order.
@@ -130,13 +129,16 @@ pub fn encode(input: &str) -> String {
     // Fenwick tree over input positions: position `p` holds 1 once its code point
     // has been "placed" (its value is below the value now being encoded), so
     // `prefix_sum(p, 0)` counts placed code points strictly left of `p`. Every
-    // basic code point sits below any non-basic value, so all are placed up front.
-    let mut placed = FenwickTree::from_iter(std::iter::repeat_n(0u64, total));
-    for (i, &c) in code_points.iter().enumerate() {
-        if u64::from(c) < INITIAL_N {
-            placed.add_at(i, 1);
-        }
-    }
+    // basic code point sits below any non-basic value, so all are placed up front
+    // — seed the tree with a 1 at each basic position. Building straight from the
+    // indicator iterator does this in one `O(n)` pass (`FromIterator` folds each
+    // slot into its Fenwick parent in place), rather than a zero-fill followed by
+    // an `O(log n)` `add_at` for every basic code point.
+    let mut placed = FenwickTree::from_iter(
+        code_points
+            .iter()
+            .map(|&c| (u64::from(c) < INITIAL_N) as u64),
+    );
 
     let mut n = INITIAL_N;
     let mut delta: u64 = 0;
