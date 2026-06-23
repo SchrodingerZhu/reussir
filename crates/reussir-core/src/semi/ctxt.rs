@@ -70,6 +70,10 @@ pub struct Record<'tcx> {
     pub kind: surface::RecordKind,
     pub default_cap: DefaultCap,
     pub fields: Option<RecordFields<'tcx>>,
+    /// Generics that must be instantiated regional because they appear as the
+    /// element of a `[field]` link (e.g. `inner: [field] T`). Checked at the
+    /// monomorphization call boundary, like a function's `regional_generics`.
+    pub regional_generics: Vec<GenericId>,
     pub span: Option<Span>,
 }
 
@@ -395,6 +399,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             kind: rec.kind,
             default_cap,
             fields: None,
+            regional_generics: Vec::new(),
             span,
         };
         self.records.insert(def, record);
@@ -477,12 +482,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let default_cap = record.default_cap;
         self.generic_names = ty_params.iter().map(|(n, id)| (*n, *id)).collect();
 
+        // A generic at the head of a `[field]` link (`inner: [field] T`) must be
+        // instantiated regional; record the requirement for the mono check.
+        let mut regional_generics: Vec<GenericId> = Vec::new();
         let fields = match &rec.fields {
             surface::RecordFields::Named(fs) => RecordFields::Named(
                 fs.iter()
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
-                        (*name, self.field_ty(ty, *mutable), *mutable)
+                        let fty = self.field_ty(ty, *mutable);
+                        if *mutable {
+                            collect_regional_generic(fty, &mut regional_generics);
+                        }
+                        (*name, fty, *mutable)
                     })
                     .collect(),
             ),
@@ -490,7 +502,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 fs.iter()
                     .map(|f| {
                         let (ty, mutable) = &f.value;
-                        (self.field_ty(ty, *mutable), *mutable)
+                        let fty = self.field_ty(ty, *mutable);
+                        if *mutable {
+                            collect_regional_generic(fty, &mut regional_generics);
+                        }
+                        (fty, *mutable)
                     })
                     .collect(),
             ),
@@ -525,6 +541,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         if let Some(r) = self.records.get_mut(&def) {
             r.fields = Some(fields);
+            r.regional_generics = regional_generics;
         }
     }
 
