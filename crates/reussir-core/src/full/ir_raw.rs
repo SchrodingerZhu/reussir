@@ -102,12 +102,16 @@ pub enum Cap {
     Regional,
 }
 
+/// The four raw words of an interned `StringToken`.
+pub type StrTag = [u64; 4];
+
 #[derive(Clone, Debug)]
 pub enum Expr {
     ConstInt(i128, Ty),
     ConstFloat(f64, Ty),
     ConstBool(bool),
-    GlobalStr(u64),
+    /// An interned string literal, as its four raw `StringToken` words.
+    GlobalStr([u64; 4]),
     Var(u32),
     Poison,
     Negate(Box<Expr>),
@@ -213,7 +217,7 @@ pub enum Cases {
     },
     Ctor(Vec<Tree>),
     Str {
-        cases: Vec<(u64, Tree)>,
+        cases: Vec<([u64; 4], Tree)>,
         default: Box<Tree>,
     },
     Nullable {
@@ -229,7 +233,7 @@ pub enum Cases {
 pub enum Label {
     Int(i128),
     Ctor(usize),
-    Str(u64),
+    Str([u64; 4]),
     Bool(bool),
     NonNull,
     Null,

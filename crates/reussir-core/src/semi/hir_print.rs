@@ -194,7 +194,7 @@ impl<'a> Printer<'a> {
 
     fn inline(&self, e: &Expr<'_>) -> Doc<'static> {
         match &e.kind {
-            ExprKind::GlobalStr(s) => text(format!("str#{}", s.words()[0])),
+            ExprKind::GlobalStr(s) => text(str_lit(s.words())),
             ExprKind::ConstInt(n) => text(format!("{n} : ")) + self.ty(e.ty),
             ExprKind::ConstFloat(f) => text(format!("{f} : ")) + self.ty(e.ty),
             ExprKind::ConstBool(b) => text(format!("{b}")),
@@ -378,7 +378,7 @@ impl<'a> Printer<'a> {
             SwitchCases::String { cases, default } => {
                 let mut v: Vec<Doc<'static>> = cases
                     .iter()
-                    .map(|(s, t)| self.arm(text(format!("str#{}", s.words()[0])), t))
+                    .map(|(s, t)| self.arm(text(str_lit(s.words())), t))
                     .collect();
                 v.push(self.arm(text("_"), default));
                 v
@@ -445,6 +445,12 @@ fn cap_name(c: Capability) -> &'static str {
         Capability::Regional => "regional",
         Capability::Irrelevant => "",
     }
+}
+
+/// `str#w0_w1_w2_w3` — all four `StringToken` words, so the literal
+/// round-trips faithfully.
+fn str_lit(w: [u64; 4]) -> String {
+    format!("str#{}#{}#{}#{}", w[0], w[1], w[2], w[3])
 }
 
 fn arith_sym(op: ArithOp) -> &'static str {

@@ -13,6 +13,7 @@ use crate::full::{ir, ir_raw as raw, mir};
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyCtxt, TyKind};
+use crate::utils::string::StringToken;
 
 /// A parsed program plus the fresh tables needed to re-print it.
 pub struct Parsed<'tcx> {
@@ -260,8 +261,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                 }
                 S::Ctor(self.tcx.alloc_slice(&v))
             }
-            raw::Cases::Str { .. } => {
-                unimplemented!("string switches are not yet round-tripped")
+            raw::Cases::Str { cases, default } => {
+                let mut cs = Vec::with_capacity(cases.len());
+                for (w, t) in cases {
+                    cs.push((StringToken::from_words(*w), self.tree(t)));
+                }
+                let default = self.tree_ref(default);
+                S::String {
+                    cases: self.tcx.alloc_slice(&cs),
+                    default,
+                }
             }
             raw::Cases::Nullable { non_null, null } => S::Nullable {
                 non_null: self.tree_ref(non_null),
@@ -276,11 +285,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Expr::ConstInt(n, t) => (M::ConstInt(*n), self.ty(t)),
             raw::Expr::ConstFloat(f, t) => (M::ConstFloat(*f), self.ty(t)),
             raw::Expr::ConstBool(b) => (M::ConstBool(*b), self.tcx.mk_bool()),
-            raw::Expr::GlobalStr(_) => {
-                // String-table refs print only their tag; reconstructing the
-                // `StringToken` needs the table, so defer until that lands.
-                unimplemented!("string literals are not yet round-tripped")
-            }
+            raw::Expr::GlobalStr(words) => (
+                M::GlobalStr(StringToken::from_words(*words)),
+                self.tcx.mk_str(),
+            ),
             raw::Expr::Var(v) => (M::Var(VarId(*v)), self.placeholder()),
             raw::Expr::Poison => (M::Poison, self.placeholder()),
             raw::Expr::Negate(x) => (M::Negate(self.expr_ref(x)), self.placeholder()),
@@ -525,6 +533,11 @@ mod tests {
              pub fn unwrap(o: Opt) -> i32 { \
              match o { Opt::None => 0, Opt::Some(x) => x } }",
         );
+    }
+
+    #[test]
+    fn roundtrips_a_string_literal() {
+        roundtrip("pub fn greet() -> str { \"hi\" }");
     }
 
     #[test]

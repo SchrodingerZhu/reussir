@@ -16,6 +16,7 @@ use crate::semi::hir_ir;
 use crate::semi::hir_raw as raw;
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, DefId, FpTy, GenericId, HoleId, IntTy, Ty, TyCtxt, TyKind};
+use crate::utils::string::StringToken;
 
 /// A parsed HIR program plus the fresh tables needed to re-print it.
 pub struct Parsed<'tcx> {
@@ -185,9 +186,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Expr::ConstInt(n, t) => (ExprKind::ConstInt(*n), self.ty(t)),
             raw::Expr::ConstFloat(f, t) => (ExprKind::ConstFloat(*f), self.ty(t)),
             raw::Expr::ConstBool(b) => (ExprKind::ConstBool(*b), self.tcx.mk_bool()),
-            raw::Expr::GlobalStr(_) => {
-                unimplemented!("string literals are not yet round-tripped")
-            }
+            raw::Expr::GlobalStr(words) => (
+                ExprKind::GlobalStr(StringToken::from_words(*words)),
+                self.tcx.mk_str(),
+            ),
             raw::Expr::Var(v) => (ExprKind::Var(VarId(*v)), self.placeholder()),
             raw::Expr::Poison => (ExprKind::Poison, self.placeholder()),
             raw::Expr::Negate(x) => (ExprKind::Negate(self.boxed(x)), self.placeholder()),
@@ -385,8 +387,15 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Cases::Ctor(arms) => {
                 SwitchCases::Ctor(arms.iter().map(|t| self.tree(t)).collect())
             }
-            raw::Cases::Str { .. } => {
-                unimplemented!("string switches are not yet round-tripped")
+            raw::Cases::Str { cases, default } => {
+                let cases = cases
+                    .iter()
+                    .map(|(w, t)| (StringToken::from_words(*w), self.tree(t)))
+                    .collect();
+                SwitchCases::String {
+                    cases,
+                    default: Box::new(self.tree(default)),
+                }
             }
             raw::Cases::Nullable { non_null, null } => SwitchCases::Nullable {
                 non_null: Box::new(self.tree(non_null)),
@@ -467,6 +476,11 @@ mod tests {
              let m = n + 1; \
              if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
         );
+    }
+
+    #[test]
+    fn roundtrips_a_string_literal() {
+        roundtrip("pub fn greet() -> str { \"hi\" }");
     }
 
     #[test]

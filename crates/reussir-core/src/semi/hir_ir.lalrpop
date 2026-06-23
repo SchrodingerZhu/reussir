@@ -83,7 +83,7 @@ Expr: raw::Expr = {
     <f:"float"> ":" <t:Ty> => raw::Expr::ConstFloat(f, t),
     "true" => raw::Expr::ConstBool(true),
     "false" => raw::Expr::ConstBool(false),
-    "str" "#" <n:"int"> => raw::Expr::GlobalStr(n as u64),
+    <w:StrWords> => raw::Expr::GlobalStr(w),
     <v:"var"> => raw::Expr::Var(v),
     "poison" => raw::Expr::Poison,
     "-" "(" <e:Expr> ")" => raw::Expr::Negate(Box::new(e)),
@@ -156,7 +156,7 @@ Label: raw::Label = {
     "_" => raw::Label::Wildcard,
     "true" => raw::Label::Bool(true),
     "false" => raw::Label::Bool(false),
-    "str" "#" <n:"int"> => raw::Label::Str(n as u64),
+    <w:StrWords> => raw::Label::Str(w),
     "NonNull" => raw::Label::NonNull,
     "Null" => raw::Label::Null,
 };
@@ -167,6 +167,10 @@ PatRef: raw::Path = "scrut" <idxs:("." <"int">)*>
 Bindings: Vec<raw::Binding> = <Binding*>;
 
 Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
+
+// A string-literal tag: all four `StringToken` words, `_`-separated.
+StrWords: raw::StrTag = "str" "#" <w0:"int"> "#" <w1:"int"> "#" <w2:"int"> "#" <w3:"int">
+    => [w0 as u64, w1 as u64, w2 as u64, w3 as u64];
 
 ArithOp: raw::ArithOp = {
     "+" => raw::ArithOp::Add,
