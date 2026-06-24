@@ -3,7 +3,7 @@
 //! The HIR is the *polymorphic* phase: functions still carry generic parameters
 //! (`$n`), calls reference items by [`DefId`] path (`#path`) with explicit type
 //! arguments, and types may mention [`TyKind::Generic`]/[`TyKind::Hole`]. This is
-//! the serialize half; the lalrpop grammar (`semi/hir_ir.lalrpop`) is the dual,
+//! the serialize half; the lalrpop grammar (`semi/hir/grammar.lalrpop`) is the dual,
 //! gated by round-trip tests.
 //!
 //! Built with [`pprint`], sharing the spelling conventions of the MIR printer
@@ -14,12 +14,13 @@
 use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 
+use crate::semi::ctxt::{DefaultCap, Record, TrampolineRoot};
 use crate::semi::hir::{
     ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
 };
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, FpTy, IntTy, Ty, TyKind};
-use crate::surface::Visibility;
+use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyKind};
+use crate::surface::{RecordKind, Visibility};
 
 const IR_PRINTER: PpPrinter = PpPrinter {
     max_width: 100,
@@ -38,14 +39,34 @@ impl<'a> Printer<'a> {
         Printer { defs, resolver }
     }
 
-    /// Render a slice of elaborated functions (the Semi output).
-    pub fn program(&self, funcs: &[Function<'_>]) -> String {
+    /// Render the resumable Semi output: record declarations, trampoline roots,
+    /// then the elaborated functions. Records are emitted in `DefId` order for
+    /// determinism.
+    pub fn program(
+        &self,
+        funcs: &[Function<'_>],
+        records: &rustc_hash::FxHashMap<DefId, Record<'_>>,
+        trampolines: &[TrampolineRoot<'_>],
+    ) -> String {
+        let mut items: Vec<Doc<'static>> = Vec::new();
+        let mut recs: Vec<&Record<'_>> = records.values().collect();
+        recs.sort_by_key(|r| r.def.0);
+        for r in recs {
+            items.push(self.record(r));
+        }
+        for t in trampolines {
+            items.push(self.trampoline(t));
+        }
+        for f in funcs {
+            items.push(self.function(f));
+        }
+
         let mut doc = Doc::Null;
-        for (i, f) in funcs.iter().enumerate() {
+        for (i, item) in items.into_iter().enumerate() {
             if i > 0 {
                 doc = doc + hardline() + hardline();
             }
-            doc = doc + self.function(f);
+            doc = doc + item;
         }
         let mut out = pprint(doc, IR_PRINTER);
         out.push('\n');
@@ -54,6 +75,55 @@ impl<'a> Printer<'a> {
 
     fn path(&self, def: DefId) -> String {
         self.defs.path(def).display(self.resolver)
+    }
+
+    /// `<$0, regional $1>` — a generic binder list, shared by records and
+    /// functions; `regional` marks a generic in `regional_generics`.
+    fn generics_binder(
+        &self,
+        params: &[(TokenKey, GenericId)],
+        regional: &[GenericId],
+    ) -> Doc<'static> {
+        if params.is_empty() {
+            return Doc::Null;
+        }
+        let parts: Vec<Doc<'static>> = params
+            .iter()
+            .map(|(_, g)| {
+                let r = if regional.contains(g) {
+                    "regional "
+                } else {
+                    ""
+                };
+                text(format!("{r}${}", g.0))
+            })
+            .collect();
+        text("<") + comma_sep(parts) + text(">")
+    }
+
+    fn record(&self, r: &Record<'_>) -> Doc<'static> {
+        let cap = match r.default_cap {
+            DefaultCap::Value => "[value] ",
+            DefaultCap::Shared => "[shared] ",
+            DefaultCap::Regional => "[regional] ",
+        };
+        let kind = match r.kind {
+            RecordKind::StructKind => "struct #",
+            RecordKind::EnumKind => "enum #",
+        };
+        text(format!("{cap}{kind}{}", self.path(r.def)))
+            + self.generics_binder(&r.ty_params, &r.regional_generics)
+            + text(";")
+    }
+
+    fn trampoline(&self, t: &TrampolineRoot<'_>) -> Doc<'static> {
+        text(format!(
+            "extern \"{}\" trampoline \"{}\" = #{}",
+            t.abi,
+            t.name,
+            self.path(t.target)
+        )) + self.ty_args(&t.ty_args)
+            + text(";")
     }
 
     fn function(&self, f: &Function<'_>) -> Doc<'static> {
@@ -67,22 +137,7 @@ impl<'a> Printer<'a> {
         head.push_str("fn #");
         head.push_str(&self.path(f.def));
 
-        let mut sig = text(head);
-        if !f.generics.is_empty() {
-            let parts: Vec<Doc<'static>> = f
-                .generics
-                .iter()
-                .map(|(_, g)| {
-                    let regional = f.regional_generics.contains(g);
-                    text(format!(
-                        "{}${}",
-                        if regional { "regional " } else { "" },
-                        g.0
-                    ))
-                })
-                .collect();
-            sig = sig + text("<") + comma_sep(parts) + text(">");
-        }
+        let mut sig = text(head) + self.generics_binder(&f.generics, &f.regional_generics);
         let params: Vec<Doc<'static>> = f
             .params
             .iter()

@@ -44,13 +44,43 @@ use std::collections::VecDeque;
 use lasso::Rodeo;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use reussir_syntax::kind::{Resolver, TokenKey};
+
 use crate::full::mangle::Mangler;
 use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
-use crate::semi::ctxt::{Elaborator, Report, Severity};
+use crate::semi::ctxt::{Elaborator, Record, Report, Severity, TrampolineRoot};
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
+use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, DefId, Ty, TyCtxt, TyKind};
 use crate::surface::Span;
+
+/// Exactly the part of an [`Elaborator`] that monomorphization reads. Taking
+/// this rather than the whole elaborator lets a program **reconstructed from the
+/// textual HIR** — which has no traits/inference/builtins, only the elaborated
+/// functions, records, and trampoline roots — be monomorphized identically.
+pub struct MonoInput<'a, 'tcx> {
+    pub tcx: &'a TyCtxt<'tcx>,
+    pub defs: &'a DefTable,
+    pub resolver: &'a dyn Resolver<TokenKey>,
+    pub elaborated: &'a [Function<'tcx>],
+    pub records: &'a FxHashMap<DefId, Record<'tcx>>,
+    pub trampolines: &'a [TrampolineRoot<'tcx>],
+}
+
+impl<'a, 'tcx> Elaborator<'a, 'tcx> {
+    /// Borrow this elaborator as the [`MonoInput`] mono consumes.
+    pub fn mono_input(&self) -> MonoInput<'_, 'tcx> {
+        MonoInput {
+            tcx: self.tcx,
+            defs: &self.defs,
+            resolver: self.resolver,
+            elaborated: &self.elaborated,
+            records: &self.records,
+            trampolines: &self.trampolines,
+        }
+    }
+}
 
 /// A ground instantiation of a top-level item: its [`DefId`] applied to an
 /// interned tuple of concrete type arguments (empty for a non-generic item).
@@ -62,14 +92,14 @@ pub struct Instance<'tcx> {
 
 /// Monomorphize an elaborated program into its ground Full MIR, alongside any
 /// diagnostics raised by the call-boundary regional check.
-pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
-    let tcx: &'a TyCtxt<'tcx> = elab.tcx;
+pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
+    let tcx: &'a TyCtxt<'tcx> = input.tcx;
     let by_def: FxHashMap<DefId, &Function<'tcx>> =
-        elab.elaborated.iter().map(|f| (f.def, f)).collect();
+        input.elaborated.iter().map(|f| (f.def, f)).collect();
 
     let mut driver = Driver {
         tcx,
-        mangler: Mangler::new(&elab.defs, elab.resolver),
+        mangler: Mangler::new(input.defs, input.resolver),
         symbols: Rodeo::default(),
         queue: VecDeque::new(),
         seen: FxHashSet::default(),
@@ -78,12 +108,12 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
     };
 
     // Seed roots: every non-generic function, then every trampoline target.
-    for f in &elab.elaborated {
+    for f in input.elaborated {
         if f.generics.is_empty() {
             driver.enqueue(f.def, tcx.intern_tys(&[]));
         }
     }
-    for t in &elab.trampolines {
+    for t in input.trampolines {
         driver.enqueue(t.target, tcx.intern_tys(&t.ty_args));
     }
 
@@ -146,7 +176,7 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
     // regional, so a record instance must supply a regional type for each such
     // generic parameter.
     for &(def, args) in &record_keys {
-        let Some(record) = elab.records.get(&def) else {
+        let Some(record) = input.records.get(&def) else {
             continue;
         };
         for &gid in &record.regional_generics {
@@ -172,7 +202,7 @@ pub fn monomorphize<'a, 'tcx>(elab: &Elaborator<'a, 'tcx>) -> (mir::Program<'tcx
         })
         .collect();
 
-    let trampolines: Vec<mir::Trampoline> = elab
+    let trampolines: Vec<mir::Trampoline> = input
         .trampolines
         .iter()
         .map(|t| mir::Trampoline {
@@ -613,7 +643,7 @@ mod tests {
                 "elaboration errors: {:#?}",
                 elab.reports
             );
-            let (full, reports) = monomorphize(&elab);
+            let (full, reports) = monomorphize(&elab.mono_input());
             assert!(
                 reports.is_empty(),
                 "unexpected mono diagnostics: {reports:#?}"
@@ -627,6 +657,58 @@ mod tests {
             .iter()
             .map(|f| full.symbol(f.symbol).to_string())
             .collect()
+    }
+
+    /// **Resumability**: serialize the elaborated HIR, parse it back into a
+    /// `Parsed` (which carries no `Elaborator`, only functions + records +
+    /// trampoline roots), monomorphize *that*, and check it yields exactly the
+    /// MIR the original elaboration does. This is what "the parsed HIR can be
+    /// monomorphized" means.
+    #[test]
+    fn parsed_hir_monomorphizes_to_the_same_mir() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        use crate::semi::hir::build::parse_program;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        let source = "struct Pair { a: i32, b: i32 } \
+                      fn id<T>(x: T) -> T { x } \
+                      pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }";
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+
+            // Monomorphize the original elaboration.
+            let (mir0, r0) = monomorphize(&elab.mono_input());
+            assert!(r0.is_empty(), "{r0:#?}");
+            let text0 = MirPrinter::new(&elab.defs, elab.resolver).program(&mir0);
+
+            // Serialize the HIR, parse it back, and monomorphize *that*.
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &elab.records,
+                &elab.trampolines,
+            );
+            let parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
+            let input = MonoInput {
+                tcx,
+                defs: &parsed.defs,
+                resolver: &parsed.names,
+                elaborated: &parsed.funcs,
+                records: &parsed.records,
+                trampolines: &parsed.trampolines,
+            };
+            let (mir1, r1) = monomorphize(&input);
+            assert!(r1.is_empty(), "{r1:#?}");
+            let text1 = MirPrinter::new(&parsed.defs, &parsed.names).program(&mir1);
+
+            assert_eq!(
+                text0, text1,
+                "resumed MIR differs from the original:\n=== original ===\n{text0}\n=== resumed ===\n{text1}"
+            );
+        });
     }
 
     fn is_ground(ty: Ty<'_>) -> bool {
@@ -875,7 +957,7 @@ mod tests {
                 "elaboration errors: {:#?}",
                 elab.reports
             );
-            let (_full, reports) = monomorphize(&elab);
+            let (_full, reports) = monomorphize(&elab.mono_input());
             assert!(
                 reports
                     .iter()
@@ -919,7 +1001,7 @@ mod tests {
                 "elaboration errors: {:#?}",
                 elab.reports
             );
-            let (_full, reports) = monomorphize(&elab);
+            let (_full, reports) = monomorphize(&elab.mono_input());
             assert!(
                 reports.iter().any(|r| r.message.contains("`[field]` link")),
                 "expected a `[field]` regionality diagnostic, got {reports:#?}"
@@ -948,7 +1030,7 @@ mod tests {
                 "elaboration errors: {:#?}",
                 elab.reports
             );
-            let (_full, reports) = monomorphize(&elab);
+            let (_full, reports) = monomorphize(&elab.mono_input());
             assert!(
                 reports
                     .iter()

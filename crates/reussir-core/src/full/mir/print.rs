@@ -506,7 +506,7 @@ mod tests {
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(!elab.has_errors(), "errors: {:#?}", elab.reports);
-            let (full, reports) = monomorphize(&elab);
+            let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             Printer::new(&elab.defs, elab.resolver).program(&full)
         })

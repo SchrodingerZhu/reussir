@@ -1,4 +1,4 @@
-//! The owned, context-free AST the HIR grammar (`semi/hir_ir.lalrpop`) produces.
+//! The owned, context-free AST the HIR grammar (`semi/hir/grammar.lalrpop`) produces.
 //!
 //! Mirrors [`crate::full::mir::raw`] (the MIR side) and reuses its operator/
 //! capability enums, but the call forms carry a `#path` + type-argument list
@@ -7,10 +7,72 @@
 
 pub use crate::full::mir::raw::{ArithOp, Cap, CmpOp};
 
-/// The whole HIR program: the elaborated functions.
+/// The whole HIR program: enough to resume into monomorphization — the record
+/// declarations and trampoline roots mono needs, plus the elaborated functions.
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub records: Vec<Record>,
+    pub trampolines: Vec<Tramp>,
     pub funcs: Vec<Func>,
+}
+
+/// One top-level item, as the grammar yields them before partitioning.
+#[derive(Clone, Debug)]
+pub enum Item {
+    Record(Record),
+    Tramp(Tramp),
+    Func(Func),
+}
+
+impl Program {
+    pub fn from_items(items: Vec<Item>) -> Program {
+        let mut p = Program {
+            records: Vec::new(),
+            trampolines: Vec::new(),
+            funcs: Vec::new(),
+        };
+        for item in items {
+            match item {
+                Item::Record(r) => p.records.push(r),
+                Item::Tramp(t) => p.trampolines.push(t),
+                Item::Func(f) => p.funcs.push(f),
+            }
+        }
+        p
+    }
+}
+
+/// A record declaration carrying what mono reads: its path/kind/default cap and
+/// its generic parameters (with the `regional` ones marked). Field layouts are
+/// not part of the mono-resumable form.
+#[derive(Clone, Debug)]
+pub struct Record {
+    pub default_cap: DefaultCap,
+    pub kind: RecordKind,
+    pub path: String,
+    pub generics: Vec<Generic>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DefaultCap {
+    Value,
+    Shared,
+    Regional,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RecordKind {
+    Struct,
+    Enum,
+}
+
+/// An exported trampoline root: its C name/abi and the ground internal target.
+#[derive(Clone, Debug)]
+pub struct Tramp {
+    pub abi: String,
+    pub name: String,
+    pub target: String,
+    pub ty_args: Vec<Ty>,
 }
 
 #[derive(Clone, Debug)]

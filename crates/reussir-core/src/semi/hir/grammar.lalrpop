@@ -9,7 +9,42 @@ use crate::ir_lex::{Token, LexError};
 
 grammar<'input>;
 
-pub Program: raw::Program = <funcs:Func*> => raw::Program { funcs };
+pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
+
+Item: raw::Item = {
+    <r:RecordDecl> => raw::Item::Record(r),
+    <t:TrampDecl> => raw::Item::Tramp(t),
+    <f:Func> => raw::Item::Func(f),
+};
+
+RecordDecl: raw::Record =
+    <default_cap:DefaultCap> <kind:RecordKind> "#" <path:"ident"> <generics:Generics?> ";"
+    => raw::Record {
+        default_cap,
+        kind,
+        path: path.to_string(),
+        generics: generics.unwrap_or_default(),
+    };
+
+DefaultCap: raw::DefaultCap = {
+    "[" "value" "]" => raw::DefaultCap::Value,
+    "[" "shared" "]" => raw::DefaultCap::Shared,
+    "[" "regional" "]" => raw::DefaultCap::Regional,
+};
+
+RecordKind: raw::RecordKind = {
+    "struct" => raw::RecordKind::Struct,
+    "enum" => raw::RecordKind::Enum,
+};
+
+TrampDecl: raw::Tramp =
+    "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:"ident"> <ta:TyArgs?> ";"
+    => raw::Tramp {
+        abi: abi.to_string(),
+        name: name.to_string(),
+        target: target.to_string(),
+        ty_args: ta.unwrap_or_default(),
+    };
 
 Func: raw::Func =
     <p:"pub"?> <r:"regional"?> "fn" "#" <path:"ident"> <generics:Generics?>
@@ -204,6 +239,13 @@ extern {
         "pub" => Token::Pub,
         "regional" => Token::Regional,
         "fn" => Token::Fn,
+        "struct" => Token::Struct,
+        "enum" => Token::Enum,
+        "value" => Token::Value,
+        "shared" => Token::Shared,
+        "extern" => Token::Extern,
+        "trampoline" => Token::Trampoline,
+        "quoted" => Token::Quoted(<&'input str>),
         "let" => Token::Let,
         "if" => Token::If,
         "then" => Token::Then,

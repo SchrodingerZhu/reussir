@@ -1,4 +1,4 @@
-//! Re-intern pass: rebuild the arena-allocated MIR from the owned [`ir_raw`] AST
+//! Re-intern pass: rebuild the arena-allocated MIR from the owned [`raw`] AST
 //! the grammar produces.
 //!
 //! The rebuilt MIR is **value-sound modulo arena re-interning**: every node's
@@ -14,8 +14,8 @@ use lasso::Rodeo;
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
-use crate::ir_lex::lex;
 use crate::full::mir::{self, grammar as ir, raw};
+use crate::ir_lex::lex;
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyCtxt, TyKind};
@@ -429,8 +429,8 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
 #[cfg(test)]
 mod tests {
     use super::parse_program;
-    use crate::full::mono::monomorphize;
     use crate::full::mir::print::Printer;
+    use crate::full::mono::monomorphize;
     use crate::semi::elaborate;
     use crate::{surface, with_tcx};
 
@@ -443,7 +443,7 @@ mod tests {
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
-            let (full, reports) = monomorphize(&elab);
+            let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
 
             let text = Printer::new(&elab.defs, elab.resolver).program(&full);

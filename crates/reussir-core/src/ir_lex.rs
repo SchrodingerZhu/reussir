@@ -1,5 +1,5 @@
-//! Logos lexer for the textual Full/Semi IR. The token stream feeds the lalrpop
-//! grammar (`full/ir.lalrpop`) via its `extern` token declaration.
+//! Logos lexer for the textual IR, shared by both grammars (`full/mir/grammar`
+//! and `semi/hir/grammar`) via their `extern` token declarations.
 //!
 //! The IR is machine-emitted, so the lexer is deliberately small and the error
 //! path is coarse (a lex failure means a printer bug or corrupt input, not user
@@ -20,6 +20,14 @@ pub enum Token<'a> {
     Fn,
     #[token("record")]
     Record,
+    #[token("struct")]
+    Struct,
+    #[token("enum")]
+    Enum,
+    #[token("value")]
+    Value,
+    #[token("shared")]
+    Shared,
     #[token("extern")]
     Extern,
     #[token("trampoline")]

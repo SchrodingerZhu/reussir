@@ -1,4 +1,4 @@
-//! Re-intern pass: rebuild the (owned) HIR from the `hir_raw` AST the grammar
+//! Re-intern pass: rebuild the (owned) HIR from the `raw` AST the grammar
 //! produces. The MIR twin is [`crate::full::mir::build`]; the HIR differs in that
 //! expressions are owned (`Box`/`Vec`, no arena), calls resolve a `#path` to a
 //! fresh [`DefId`], and functions/types carry generics (`$n`) but no inference
@@ -15,19 +15,26 @@ use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
+use crate::semi::ctxt::{DefaultCap, Record, TrampolineRoot};
+use crate::semi::hir::grammar as hir_ir;
+use crate::semi::hir::raw;
 use crate::semi::hir::{
     ArithOp, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
     SwitchCases, VarId,
 };
-use crate::semi::hir::grammar as hir_ir;
-use crate::semi::hir::raw as raw;
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
+use crate::surface::RecordKind;
 use crate::utils::string::StringToken;
 
-/// A parsed HIR program plus the fresh tables needed to re-print it.
+/// A parsed HIR program plus the fresh tables needed to re-print and resume it.
+/// Carries exactly the pieces monomorphization reads — the elaborated functions,
+/// the record declarations, and the trampoline roots — so it can be fed to
+/// [`crate::full::mono::monomorphize`] via a `MonoInput`.
 pub struct Parsed<'tcx> {
     pub funcs: Vec<Function<'tcx>>,
+    pub records: FxHashMap<DefId, Record<'tcx>>,
+    pub trampolines: Vec<TrampolineRoot<'tcx>>,
     pub defs: DefTable,
     pub names: Names,
 }
@@ -69,9 +76,14 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         names: Names::default(),
         defs: DefTable::new(),
     };
+    // Records first so their `DefId`s exist before function bodies reference them.
+    let records: FxHashMap<DefId, Record<'tcx>> = raw.records.iter().map(|r| b.record(r)).collect();
     let funcs = raw.funcs.iter().map(|f| b.func(f)).collect();
+    let trampolines = raw.trampolines.iter().map(|t| b.trampoline(t)).collect();
     Ok(Parsed {
         funcs,
+        records,
+        trampolines,
         defs: b.defs,
         names: b.names,
     })
@@ -100,23 +112,61 @@ impl<'tcx> Builder<'_, 'tcx> {
             .unwrap_or_else(|| self.defs.declare_record(key).expect("fresh record decl"))
     }
 
-    fn func(&mut self, f: &raw::Func) -> Function<'tcx> {
-        let def = self.function_def(&f.path);
-        let name = self.names.intern(&f.path);
-        let generics: Vec<(TokenKey, GenericId)> = f
-            .generics
+    /// Rebuild a generic binder list (`ty_params`) and its regional subset from
+    /// the parsed `$n` / `regional $n` markers.
+    fn generics(&mut self, gs: &[raw::Generic]) -> (Vec<(TokenKey, GenericId)>, Vec<GenericId>) {
+        let ty_params = gs
             .iter()
-            .map(|g| {
-                let gname = self.names.intern(&format!("${}", g.id));
-                (gname, GenericId(g.id))
-            })
+            .map(|g| (self.names.intern(&format!("${}", g.id)), GenericId(g.id)))
             .collect();
-        let regional_generics: Vec<GenericId> = f
-            .generics
+        let regional = gs
             .iter()
             .filter(|g| g.regional)
             .map(|g| GenericId(g.id))
             .collect();
+        (ty_params, regional)
+    }
+
+    /// Rebuild the `Record` metadata mono reads (no field layouts).
+    fn record(&mut self, r: &raw::Record) -> (DefId, Record<'tcx>) {
+        let def = self.record_def(&r.path);
+        let name = self.names.intern(&r.path);
+        let (ty_params, regional_generics) = self.generics(&r.generics);
+        let kind = match r.kind {
+            raw::RecordKind::Struct => RecordKind::StructKind,
+            raw::RecordKind::Enum => RecordKind::EnumKind,
+        };
+        let default_cap = match r.default_cap {
+            raw::DefaultCap::Value => DefaultCap::Value,
+            raw::DefaultCap::Shared => DefaultCap::Shared,
+            raw::DefaultCap::Regional => DefaultCap::Regional,
+        };
+        let record = Record {
+            def,
+            name,
+            ty_params,
+            kind,
+            default_cap,
+            fields: None,
+            regional_generics,
+            span: None,
+        };
+        (def, record)
+    }
+
+    fn trampoline(&mut self, t: &raw::Tramp) -> TrampolineRoot<'tcx> {
+        TrampolineRoot {
+            name: t.name.clone(),
+            abi: t.abi.clone(),
+            target: self.function_def(&t.target),
+            ty_args: self.tys(&t.ty_args),
+        }
+    }
+
+    fn func(&mut self, f: &raw::Func) -> Function<'tcx> {
+        let def = self.function_def(&f.path);
+        let name = self.names.intern(&f.path);
+        let (generics, regional_generics) = self.generics(&f.generics);
         let params: Vec<(TokenKey, VarId, Ty<'tcx>)> = f
             .params
             .iter()
@@ -418,9 +468,17 @@ mod tests {
             let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
-            let text = Printer::new(&elab.defs, elab.resolver).program(&elab.elaborated);
+            let text = Printer::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &elab.records,
+                &elab.trampolines,
+            );
             let parsed = parse_program(tcx, &text).expect("re-parse");
-            let text2 = Printer::new(&parsed.defs, &parsed.names).program(&parsed.funcs);
+            let text2 = Printer::new(&parsed.defs, &parsed.names).program(
+                &parsed.funcs,
+                &parsed.records,
+                &parsed.trampolines,
+            );
             assert_eq!(
                 text, text2,
                 "round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
