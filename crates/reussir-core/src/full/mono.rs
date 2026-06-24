@@ -730,43 +730,40 @@ mod tests {
         use crate::semi::hir::build::parse_program as parse_hir;
         use crate::semi::hir::print::Printer as HirPrinter;
 
-        let source = "\
-            struct Pair { a: i32, b: i32 }\n\
-            struct Point { x: i32, y: i32 }\n\
-            \n\
-            fn id<T>(x: T) -> T { x }\n\
-            fn sum(p: Pair) -> i32 { p.a + p.b }\n\
-            fn shift(p: Point, d: i32) -> Point { Point { x: p.x + d, y: p.y + d } }\n\
-            \n\
-            enum List<T> { Nil, Cons(T, List<T>) }\n\
-            fn head_or<T>(xs: List<T>, d: T) -> T {\n\
-                match xs {\n\
-                    List::Nil => d,\n\
-                    List::Cons(x, rest) => x\n\
-                }\n\
-            }\n\
-            \n\
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
-            \n\
-            regional fn fresh<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }\n\
-            \n\
-            regional fn loop_back(seed: i32) -> i32 {\n\
-                let c = Cell { v: seed, next: Nullable::Null };\n\
-                c->next := Nullable::NonNull{c};\n\
-                c.v\n\
-            }\n\
-            \n\
-            pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }\n\
-            \n\
-            pub fn run(n: i32) -> i32 {\n\
-                let p = mk(n, n);\n\
-                let q = shift(Point { x: n, y: n }, 1);\n\
-                let s = head_or(List::Cons{n, List::Nil}, 0);\n\
-                regional {\n\
-                    let acc = sum(p) + q.x + s;\n\
-                    loop_back(acc)\n\
-                }\n\
-            }";
+        let source = r#"
+            struct Pair { a: i32, b: i32 }
+            struct Point { x: i32, y: i32 }
+
+            fn id<T>(x: T) -> T { x }
+            fn sum(p: Pair) -> i32 { p.a + p.b }
+            fn shift(p: Point, d: i32) -> Point { Point { x: p.x + d, y: p.y + d } }
+
+            enum List<T> { Nil, Cons(T, List<T>) }
+            fn head_or<T>(xs: List<T>, d: T) -> T {
+                match xs {
+                    List::Nil => d,
+                    List::Cons(x, rest) => x
+                }
+            }
+
+            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+
+            regional fn fresh<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }
+
+            regional fn loop_back(seed: i32) -> i32 {
+                let c = Cell { v: seed, next: Nullable::Null };
+                c->next := Nullable::NonNull{c};
+                c.v
+            }
+
+            pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }
+
+            pub fn run(n: i32) -> i32 {
+                let p = mk(n, n);
+                let q = shift(Point { x: n, y: n }, 1);
+                let s = head_or(List::Cons{n, List::Nil}, 0);
+                regional { loop_back(sum(p) + q.x + s) }
+            }"#;
 
         with_tcx(|tcx| {
             // ----- parse + semi-elaborate -----
@@ -951,13 +948,10 @@ mod tests {
                 .find(|f| full.symbol(f.symbol) == "_RC7use_i32")
                 .expect("use_i32 emitted");
             let body = user.body.expect("use_i32 has a body");
-            // The body is a `Seq` whose tail expression is the `id(n)` call.
-            let mir::ExprKind::Seq(stmts) = body.kind else {
-                panic!("expected a Seq body, got {:?}", body.kind);
-            };
-            let mir::ExprKind::Call { callee, .. } = stmts.last().expect("non-empty seq").kind
-            else {
-                panic!("expected a Call, got {:?}", stmts.last().unwrap().kind);
+            // A one-statement block collapses to the statement, so the body is
+            // the `id(n)` call directly.
+            let mir::ExprKind::Call { callee, .. } = body.kind else {
+                panic!("expected a Call body, got {:?}", body.kind);
             };
             assert_eq!(full.symbol(callee), "_RIC2idlE");
         });

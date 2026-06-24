@@ -122,8 +122,9 @@ mod tests {
             |elab, _tcx| {
                 let f = function(elab, "first_or");
                 let body = f.body.as_ref().unwrap();
-                // The body is a sequence wrapping a match expression.
-                assert!(matches!(&body.kind, hir::ExprKind::Seq(_)));
+                // A one-statement block collapses to the statement itself, so the
+                // body is the `match` directly (not a single-element `Seq`).
+                assert!(matches!(&body.kind, hir::ExprKind::Match(..)));
             },
         );
     }
