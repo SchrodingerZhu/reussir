@@ -297,7 +297,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Some(&seg) => match self.defs.resolve_record(seg) {
                 Some(d) => d,
                 None => {
-                    self.error(None, format!("unknown enum `{}`", self.sym(seg)));
+                    let hint = self.record_suggestion(seg);
+                    self.error(None, format!("unknown enum `{}`{hint}", self.sym(seg)));
                     return Pat::Wild;
                 }
             },

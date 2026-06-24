@@ -24,6 +24,7 @@ pub mod ty;
 pub mod check;
 pub mod ctxt;
 pub mod fulfill;
+pub mod fuzzy;
 pub mod hir;
 pub mod pattern;
 pub mod resolve;
@@ -405,5 +406,74 @@ mod tests {
     fn trampoline_unknown_target_errors() {
         let src = "extern \"C\" trampoline \"t_ffi\" = nope<i32>;";
         assert!(has_error(src, "not found"), "{:#?}", reports_of(src));
+    }
+
+    // ----- fuzzy "did you mean" suggestions on a failed name resolution -----
+
+    #[test]
+    fn unknown_function_suggests_a_close_name() {
+        // `lenght` is one transposition from `length`.
+        let src = "fn length(x: i32) -> i32 { x }\n\
+                   fn use_it() -> i32 { lenght(0) }";
+        assert!(
+            has_error(src, "did you mean `length`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_type_suggests_a_close_record() {
+        let src = "struct Point { x: i32, y: i32 }\n\
+                   fn f(p: Pont) -> i32 { 0 }";
+        assert!(
+            has_error(src, "did you mean `Point`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_enum_suggests_a_close_record() {
+        let src = "enum Color { Red, Green }\n\
+                   fn f() -> i32 { Colr::Red; 0 }";
+        assert!(
+            has_error(src, "did you mean `Color`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_variable_suggests_a_close_binding() {
+        let src = "fn f(value: i32) -> i32 { valeu }";
+        assert!(
+            has_error(src, "did you mean `value`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_trait_bound_suggests_a_builtin() {
+        let src = "fn f<T: Nm>(x: T) -> T { x }";
+        assert!(
+            has_error(src, "did you mean `Num`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unrelated_unknown_name_offers_no_suggestion() {
+        // Nothing in scope is close to `Frobnicate`, so no hint is appended.
+        let src = "struct Point { x: i32 }\n\
+                   fn f(p: Frobnicate) -> i32 { 0 }";
+        assert!(has_error(src, "unknown type"), "{:#?}", reports_of(src));
+        assert!(
+            !has_error(src, "did you mean"),
+            "{:#?}",
+            reports_of(src)
+        );
     }
 }

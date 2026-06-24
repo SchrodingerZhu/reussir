@@ -171,9 +171,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             if let Some((id, ty)) = self.vars.lookup(path.basename) {
                 return self.mk_expr(ExprKind::Var(id), ty, span);
             }
+            let hint = self.variable_suggestion(path.basename);
             self.error(
                 span,
-                format!("unknown variable `{}`", self.sym(path.basename)),
+                format!("unknown variable `{}`{hint}", self.sym(path.basename)),
             );
             return self.poison(span);
         }
@@ -366,7 +367,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
         let Some(def) = self.defs.resolve_function(fc.name.basename) else {
-            self.error(span, format!("unknown function `{fname}`"));
+            let hint = self.function_suggestion(fc.name.basename);
+            self.error(span, format!("unknown function `{fname}`{hint}"));
             return self.poison(span);
         };
         let proto = self.functions[&def].clone();
@@ -770,7 +772,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(def) = self.defs.resolve_record(name) else {
-            self.error(span, format!("unknown type `{}`", self.sym(name)));
+            let hint = self.record_suggestion(name);
+            self.error(span, format!("unknown type `{}`{hint}", self.sym(name)));
             return self.poison(span);
         };
         let record = self.records[&def].clone();
@@ -821,7 +824,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(def) = self.defs.resolve_record(enum_name) else {
-            self.error(span, format!("unknown enum `{}`", self.sym(enum_name)));
+            let hint = self.record_suggestion(enum_name);
+            self.error(span, format!("unknown enum `{}`{hint}", self.sym(enum_name)));
             return self.poison(span);
         };
         let record = self.records[&def].clone();

@@ -24,6 +24,8 @@ ftree.workspace = true
 lasso.workspace = true
 rapidhash.workspace = true
 rustc-hash.workspace = true
+# Edit-distance metric behind the fuzzy "did you mean" name suggestions.
+strsim.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true
 # CLI argument parsing for the `reussir-elab` driver.

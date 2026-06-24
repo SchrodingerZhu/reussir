@@ -43,6 +43,9 @@ ena = "0.14"
 stumpalo = { version = "0.4", features = ["std"] }
 lasso = "0.7"
 logos = "0.15"
+# String-similarity metrics (Levenshtein, …) backing the "did you mean"
+# fuzzy suggestions emitted when a name fails to resolve.
+strsim = "0.11"
 # Textual-IR round trip: lalrpop (LR parser generator, build-time) + its runtime
 # support deserialize the printed Full/Semi IR; pprint is the algebraic
 # (Wadler-style) pretty-printer that emits it.

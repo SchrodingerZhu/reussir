@@ -114,6 +114,18 @@ impl DefTable {
         self.values.get(&name).copied()
     }
 
+    /// Every record name currently in the type-namespace scope. Order is
+    /// unspecified; used to build "did you mean" suggestions on a failed lookup.
+    pub fn record_names(&self) -> impl Iterator<Item = TokenKey> + '_ {
+        self.types.keys().copied()
+    }
+
+    /// Every function name currently in the value-namespace scope. Order is
+    /// unspecified; used to build "did you mean" suggestions on a failed lookup.
+    pub fn function_names(&self) -> impl Iterator<Item = TokenKey> + '_ {
+        self.values.keys().copied()
+    }
+
     pub fn info(&self, def: DefId) -> &DefInfo {
         &self.defs[def.0 as usize]
     }

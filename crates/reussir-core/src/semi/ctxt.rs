@@ -4,6 +4,7 @@
 use reussir_syntax::kind::{Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
+use crate::semi::fuzzy::FuzzyIndex;
 use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
@@ -166,6 +167,12 @@ impl<'tcx> VarEnv<'tcx> {
         &self.defs[id.0 as usize]
     }
 
+    /// Names currently visible in scope (innermost shadowing outermost is not
+    /// deduplicated). Used to build "did you mean" hints for an unknown name.
+    pub fn names(&self) -> impl Iterator<Item = TokenKey> + '_ {
+        self.scope.iter().map(|(name, _)| *name)
+    }
+
     /// A marker for the current scope depth; pass to [`VarEnv::restore`].
     pub fn mark(&self) -> usize {
         self.scope.len()
@@ -281,6 +288,47 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.resolver.resolve(key)
     }
 
+    // ----- "did you mean" suggestions -----
+    //
+    // Each helper fuzzy-searches the relevant namespace for the closest spelling
+    // to an unresolved name and returns a hint suffix (e.g. "; did you mean
+    // `List`?") ready to append to the diagnostic, or an empty string when no
+    // candidate is close enough. Appending the empty string is a no-op, so call
+    // sites stay uniform whether or not a suggestion exists.
+
+    /// Hint for an unresolved record/type/enum name.
+    pub(super) fn record_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(self.sym(name), self.defs.record_names().map(|k| self.sym(k)))
+    }
+
+    /// Hint for an unresolved function name.
+    pub(super) fn function_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(
+            self.sym(name),
+            self.defs.function_names().map(|k| self.sym(k)),
+        )
+    }
+
+    /// Hint for an unknown bare variable, drawn from the names in scope.
+    pub(super) fn variable_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(self.sym(name), self.vars.names().map(|k| self.sym(k)))
+    }
+
+    /// Hint for an unknown trait bound, drawn from the built-in trait names.
+    pub(super) fn trait_suggestion(&self, name: &str) -> String {
+        self.fuzzy_hint(name, self.trait_names.keys().copied())
+    }
+
+    /// Search `candidates` for the closest spelling to `query` and render it as
+    /// a `"; did you mean `X`?"` suffix, or `""` if nothing is close enough.
+    fn fuzzy_hint<'b>(&self, query: &str, candidates: impl Iterator<Item = &'b str>) -> String {
+        let index: FuzzyIndex = candidates.collect();
+        match index.suggest(query) {
+            Some(hint) => format!("; did you mean `{hint}`?"),
+            None => String::new(),
+        }
+    }
+
     // ----- id / generic allocation -----
 
     pub fn fresh_expr_id(&mut self) -> ExprId {
@@ -306,7 +354,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match self.trait_names.get(name) {
             Some(&id) => Some(id),
             None => {
-                self.error(span, format!("unknown trait bound `{name}`"));
+                let hint = self.trait_suggestion(name);
+                self.error(span, format!("unknown trait bound `{name}`{hint}"));
                 None
             }
         }
@@ -555,10 +604,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let ty_args: Vec<Ty<'tcx>> = tramp.ty_args.iter().map(|t| self.eval_type(t)).collect();
 
         let Some(target) = self.defs.resolve_function(tramp.func.basename) else {
+            let hint = self.function_suggestion(tramp.func.basename);
             self.error(
                 span,
                 format!(
-                    "trampoline target function `{}` not found",
+                    "trampoline target function `{}` not found{hint}",
                     self.sym(tramp.func.basename)
                 ),
             );

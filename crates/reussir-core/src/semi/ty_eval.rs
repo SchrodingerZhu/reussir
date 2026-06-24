@@ -121,7 +121,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         // A user record, resolved to its def.
         let Some(def) = self.defs.resolve_record(key) else {
-            self.error(Some(span), format!("unknown type `{}`", self.sym(key)));
+            let hint = self.record_suggestion(key);
+            self.error(Some(span), format!("unknown type `{}`{hint}", self.sym(key)));
             return self.tcx.mk(TyKind::Bottom);
         };
         let default_cap = self.records[&def].default_cap;
