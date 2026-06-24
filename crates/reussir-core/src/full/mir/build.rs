@@ -14,8 +14,8 @@ use lasso::Rodeo;
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
-use crate::full::ir_lex::lex;
-use crate::full::{ir, ir_raw as raw, mir};
+use crate::ir_lex::lex;
+use crate::full::mir::{self, grammar as ir, raw};
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyCtxt, TyKind};
@@ -430,7 +430,7 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
 mod tests {
     use super::parse_program;
     use crate::full::mono::monomorphize;
-    use crate::full::print::Printer;
+    use crate::full::mir::print::Printer;
     use crate::semi::elaborate;
     use crate::{surface, with_tcx};
 

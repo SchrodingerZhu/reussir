@@ -1,11 +1,11 @@
 //! The owned, context-free AST the HIR grammar (`semi/hir_ir.lalrpop`) produces.
 //!
-//! Mirrors [`crate::full::ir_raw`] (the MIR side) and reuses its operator/
+//! Mirrors [`crate::full::mir::raw`] (the MIR side) and reuses its operator/
 //! capability enums, but the call forms carry a `#path` + type-argument list
 //! (the HIR is pre-mono and item-keyed, not symbol-keyed) and types/functions
 //! may mention generics (`$n`) and holes (`?n`).
 
-pub use crate::full::ir_raw::{ArithOp, Cap, CmpOp};
+pub use crate::full::mir::raw::{ArithOp, Cap, CmpOp};
 
 /// The whole HIR program: the elaborated functions.
 #[derive(Clone, Debug)]
@@ -67,7 +67,7 @@ pub enum Ty {
 pub type StrTag = [u64; 4];
 
 /// A typed HIR node — every node carries its [`Ty`] (see the MIR twin
-/// [`crate::full::ir_raw::Expr`]); the re-intern pass reads it rather than
+/// [`crate::full::mir::raw::Expr`]); the re-intern pass reads it rather than
 /// inventing one. `Let` is the lone structural exception (always `unit`).
 #[derive(Clone, Debug)]
 pub struct Expr {
@@ -185,7 +185,7 @@ pub enum Cases {
     },
 }
 
-/// A switch-arm label (see [`crate::full::ir_raw::Label`]).
+/// A switch-arm label (see [`crate::full::mir::raw::Label`]).
 #[derive(Clone, Copy, Debug)]
 pub enum Label {
     Int(i128),
@@ -198,7 +198,7 @@ pub enum Label {
 }
 
 /// Reassemble a `switch`'s arms into the typed [`Cases`] (see the MIR twin,
-/// [`crate::full::ir_raw::build_switch`]).
+/// [`crate::full::mir::raw::build_switch`]).
 pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
     let kind = arms
         .iter()

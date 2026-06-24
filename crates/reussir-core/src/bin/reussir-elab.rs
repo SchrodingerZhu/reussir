@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use reussir_core::full::mono::monomorphize;
-use reussir_core::full::print::Printer;
+use reussir_core::full::mir::print::Printer;
 use reussir_core::semi::ctxt::Severity;
 use reussir_core::semi::elaborate;
 use reussir_core::surface::{self, Span};
@@ -120,7 +120,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
 
         let text = match mode {
-            Mode::Semi => reussir_core::semi::hir_print::Printer::new(&elab.defs, elab.resolver)
+            Mode::Semi => reussir_core::semi::hir::print::Printer::new(&elab.defs, elab.resolver)
                 .program(&elab.elaborated),
             Mode::Full => {
                 let (full, mono_reports) = monomorphize(&elab);

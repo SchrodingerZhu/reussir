@@ -9,6 +9,8 @@
 //! interner and adds the ground-only invariant and v0 symbol mangling.
 
 pub mod full;
+/// The shared logos lexer for the textual IR (both the MIR and HIR grammars).
+pub mod ir_lex;
 pub mod semi;
 pub mod surface;
 pub mod utils;

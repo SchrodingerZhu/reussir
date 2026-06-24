@@ -7,7 +7,7 @@
 //! gated by round-trip tests.
 //!
 //! Built with [`pprint`], sharing the spelling conventions of the MIR printer
-//! ([`crate::full::print`]) — `;`-separated blocks, braced `if`, functional
+//! ([`crate::full::mir::print`]) — `;`-separated blocks, braced `if`, functional
 //! `proj`/`assign`/`apply`, turbofish type args — but keyed by `#path`/`$n`
 //! rather than `@symbol`.
 

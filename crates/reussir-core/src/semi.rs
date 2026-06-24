@@ -25,19 +25,9 @@ pub mod check;
 pub mod ctxt;
 pub mod fulfill;
 pub mod hir;
-pub mod hir_build;
-pub mod hir_print;
-pub mod hir_raw;
 pub mod pattern;
 pub mod resolve;
 pub mod ty_eval;
-
-// The textual HIR parser, generated from `semi/hir_ir.lalrpop` at build time.
-lalrpop_util::lalrpop_mod!(
-    #[allow(clippy::all, dead_code, unused_imports)]
-    pub hir_ir,
-    "/semi/hir_ir.rs"
-);
 
 pub use ctxt::{DefaultCap, Elaborator, Report, Severity};
 

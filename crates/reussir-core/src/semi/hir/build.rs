@@ -1,5 +1,5 @@
 //! Re-intern pass: rebuild the (owned) HIR from the `hir_raw` AST the grammar
-//! produces. The MIR twin is [`crate::full::ir_build`]; the HIR differs in that
+//! produces. The MIR twin is [`crate::full::mir::build`]; the HIR differs in that
 //! expressions are owned (`Box`/`Vec`, no arena), calls resolve a `#path` to a
 //! fresh [`DefId`], and functions/types carry generics (`$n`) but no inference
 //! holes (a fully elaborated HIR has none).
@@ -14,13 +14,13 @@
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
-use crate::full::ir_lex::lex;
+use crate::ir_lex::lex;
 use crate::semi::hir::{
     ArithOp, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
     SwitchCases, VarId,
 };
-use crate::semi::hir_ir;
-use crate::semi::hir_raw as raw;
+use crate::semi::hir::grammar as hir_ir;
+use crate::semi::hir::raw as raw;
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
 use crate::utils::string::StringToken;
@@ -405,7 +405,7 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
 mod tests {
     use super::parse_program;
     use crate::semi::elaborate;
-    use crate::semi::hir_print::Printer;
+    use crate::semi::hir::print::Printer;
     use crate::{surface, with_tcx};
 
     /// Print the elaborated HIR, parse it back, re-print, and assert text

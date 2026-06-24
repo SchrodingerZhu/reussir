@@ -1,7 +1,7 @@
 //! The owned, context-free AST the textual-IR grammar produces.
 //!
 //! The lalrpop grammar builds this (plain `String`/`Vec`/`Box`, no interners or
-//! arena), and a separate re-intern pass ([`crate::full::ir_build`]) rebuilds the
+//! arena), and a separate re-intern pass ([`crate::full::mir::build`]) rebuilds the
 //! arena-allocated MIR from it. Decoupling keeps the grammar actions trivial and
 //! the interning logic in ordinary, testable Rust.
 //!
