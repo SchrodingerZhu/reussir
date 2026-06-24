@@ -7,10 +7,12 @@ members = [
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
     "crates/reussir-jit",
+    "crates/reussir-codegen",
 ]
-# The backend crates link against MLIR and the staged Reussir C API, so they are
-# excluded from the default `cargo build`; build them explicitly with
-# `cargo build -p reussir-backend` (the CMake build wires up the needed env).
+# The backend crates (and reussir-codegen, which depends on them) link against
+# MLIR and the staged Reussir C API, so they are excluded from the default
+# `cargo build`; build them explicitly (e.g. `cargo build -p reussir-backend`
+# or `cargo build -p reussir-codegen`) with the CMake build wiring up the env.
 default-members = ["crates/reussir-rt", "crates/reussir-syntax", "crates/reussir-core"]
 
 [workspace.package]
