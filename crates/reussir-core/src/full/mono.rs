@@ -711,6 +711,135 @@ mod tests {
         });
     }
 
+    /// **End-to-end pipeline over a large program.** A single source covering
+    /// value records, projections, a recursive `enum` + `match`, polymorphic
+    /// functions, and the full modality machinery (a `[regional]` record with an
+    /// in-place `[field]` link, `regional` functions, `[flex]` results, and a
+    /// `regional { .. }` region) is driven through every textual stage:
+    ///
+    ///   parse → semi-elaborate → print HIR → parse HIR
+    ///        → resume into full elaboration (monomorphize) → print MIR → parse MIR
+    ///
+    /// Each textual IR is round-tripped (print → parse → print) to prove it is
+    /// stable, and the MIR reached by *resuming a parsed HIR* is checked to be
+    /// byte-for-byte identical to the MIR from the original elaboration.
+    #[test]
+    fn large_program_survives_the_full_pipeline() {
+        use crate::full::mir::build::parse_program as parse_mir;
+        use crate::full::mir::print::Printer as MirPrinter;
+        use crate::semi::hir::build::parse_program as parse_hir;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        let source = "\
+            struct Pair { a: i32, b: i32 }\n\
+            struct Point { x: i32, y: i32 }\n\
+            \n\
+            fn id<T>(x: T) -> T { x }\n\
+            fn sum(p: Pair) -> i32 { p.a + p.b }\n\
+            fn shift(p: Point, d: i32) -> Point { Point { x: p.x + d, y: p.y + d } }\n\
+            \n\
+            enum List<T> { Nil, Cons(T, List<T>) }\n\
+            fn head_or<T>(xs: List<T>, d: T) -> T {\n\
+                match xs {\n\
+                    List::Nil => d,\n\
+                    List::Cons(x, rest) => x\n\
+                }\n\
+            }\n\
+            \n\
+            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
+            \n\
+            regional fn fresh<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }\n\
+            \n\
+            regional fn loop_back(seed: i32) -> i32 {\n\
+                let c = Cell { v: seed, next: Nullable::Null };\n\
+                c->next := Nullable::NonNull{c};\n\
+                c.v\n\
+            }\n\
+            \n\
+            pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }\n\
+            \n\
+            pub fn run(n: i32) -> i32 {\n\
+                let p = mk(n, n);\n\
+                let q = shift(Point { x: n, y: n }, 1);\n\
+                let s = head_or(List::Cons{n, List::Nil}, 0);\n\
+                regional { loop_back(sum(p) + q.x + s) }\n\
+            }";
+
+        with_tcx(|tcx| {
+            // ----- parse + semi-elaborate -----
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+
+            // ----- print HIR + round-trip it through the parser -----
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &elab.records,
+                &elab.trampolines,
+            );
+            let hir = parse_hir(tcx, &hir_text).expect("re-parse HIR");
+            let hir_text2 = HirPrinter::new(&hir.defs, &hir.names).program(
+                &hir.funcs,
+                &hir.records,
+                &hir.trampolines,
+            );
+            assert_eq!(
+                hir_text, hir_text2,
+                "HIR round-trip mismatch\n=== printed ===\n{hir_text}\n=== reparsed ===\n{hir_text2}"
+            );
+
+            // ----- resume the *parsed* HIR into full elaboration -----
+            let resumed_input = MonoInput {
+                tcx,
+                defs: &hir.defs,
+                resolver: &hir.names,
+                elaborated: &hir.funcs,
+                records: &hir.records,
+                trampolines: &hir.trampolines,
+            };
+            let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
+            assert!(r_resumed.is_empty(), "resumed mono reports: {r_resumed:#?}");
+            let mir_text = MirPrinter::new(&hir.defs, &hir.names).program(&mir_resumed);
+
+            // The resumed MIR must equal the MIR of the original elaboration.
+            let (mir_orig, r_orig) = monomorphize(&elab.mono_input());
+            assert!(r_orig.is_empty(), "original mono reports: {r_orig:#?}");
+            let mir_text_orig = MirPrinter::new(&elab.defs, elab.resolver).program(&mir_orig);
+            assert_eq!(
+                mir_text_orig, mir_text,
+                "resuming a parsed HIR produced different MIR\n=== from original elab ===\n{mir_text_orig}\n=== from parsed HIR ===\n{mir_text}"
+            );
+
+            // ----- print MIR + round-trip it through the parser -----
+            let mir = parse_mir(tcx, &mir_text).expect("re-parse MIR");
+            let mir_text2 = MirPrinter::new(&mir.defs, &mir.names).program(&mir.program);
+            assert_eq!(
+                mir_text, mir_text2,
+                "MIR round-trip mismatch\n=== printed ===\n{mir_text}\n=== reparsed ===\n{mir_text2}"
+            );
+
+            // Sanity: the public roots and the eagerly-emitted non-generic
+            // functions all made it into the final MIR.
+            let syms: Vec<String> = mir_resumed
+                .functions
+                .iter()
+                .map(|f| mir_resumed.symbol(f.symbol).to_string())
+                .collect();
+            for root in ["mk", "run", "sum", "shift", "loop_back"] {
+                assert!(
+                    syms.iter().any(|s| s.contains(root)),
+                    "expected `{root}` in the emitted MIR, got: {syms:#?}"
+                );
+            }
+        });
+    }
+
     fn is_ground(ty: Ty<'_>) -> bool {
         match *ty.kind() {
             TyKind::Generic(_) | TyKind::Hole(_) => false,
