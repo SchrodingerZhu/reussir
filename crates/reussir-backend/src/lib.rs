@@ -16,6 +16,7 @@ use melior::dialect::{DialectHandle, DialectRegistry};
 
 use reussir_backend_sys as sys;
 
+pub mod builders;
 pub mod dialect;
 pub mod pipeline;
 

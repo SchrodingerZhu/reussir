@@ -1066,6 +1066,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reussir-codegen"
+version = "0.1.0"
+dependencies = [
+ "reussir-backend",
+ "reussir-core",
+ "reussir-jit",
+ "reussir-syntax",
+ "rustc-hash",
+]
+
+[[package]]
 name = "reussir-core"
 version = "0.1.0"
 dependencies = [

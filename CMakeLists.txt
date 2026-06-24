@@ -91,6 +91,7 @@ add_subdirectory(crates/reussir-rt)
 add_subdirectory(crates/reussir-syntax)
 add_subdirectory(crates/reussir-backend)
 add_subdirectory(crates/reussir-jit)
+add_subdirectory(crates/reussir-codegen)
 add_subdirectory(frontend)
 
 if (REUSSIR_ENABLE_TESTS)
