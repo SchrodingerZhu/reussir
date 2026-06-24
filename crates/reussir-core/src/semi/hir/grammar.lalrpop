@@ -89,6 +89,7 @@ Ty: raw::Ty = {
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     <cap:Cap> "#" <path:"ident"> <args:TyArgs?>
         => raw::Ty::Record { cap, path: path.to_string(), args: args.unwrap_or_default() },
+    "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
 

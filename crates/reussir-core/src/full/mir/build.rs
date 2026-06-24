@@ -533,4 +533,11 @@ mod tests {
         // lexer must accept them.
         roundtrip("pub fn f(\u{3b1}: i32) -> i32 { \u{3b1} }");
     }
+
+    #[test]
+    fn roundtrips_a_zero_arg_closure() {
+        // A parameterless closure has type `() -> ret`; the closure-type grammar
+        // must accept zero parameters.
+        roundtrip("pub fn f(n: i32) -> i32 { (|| n)() }");
+    }
 }
