@@ -762,7 +762,10 @@ mod tests {
                 let p = mk(n, n);\n\
                 let q = shift(Point { x: n, y: n }, 1);\n\
                 let s = head_or(List::Cons{n, List::Nil}, 0);\n\
-                regional { loop_back(sum(p) + q.x + s) }\n\
+                regional {\n\
+                    let acc = sum(p) + q.x + s;\n\
+                    loop_back(acc)\n\
+                }\n\
             }";
 
         with_tcx(|tcx| {

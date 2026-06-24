@@ -51,7 +51,9 @@ impl<'a> Printer<'a> {
     ) -> String {
         let mut items: Vec<Doc<'static>> = Vec::new();
         let mut recs: Vec<&Record<'_>> = records.values().collect();
-        recs.sort_by_key(|r| r.def.0);
+        // Sort by qualified path (phase-canonical: identical across the original
+        // elaboration and a reparse, unlike the session-local `DefId`).
+        recs.sort_by_key(|r| self.path(r.def));
         for r in recs {
             items.push(self.record(r));
         }
