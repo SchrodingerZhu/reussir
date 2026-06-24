@@ -8,6 +8,15 @@ description = "Core language representation for Reussir"
 [lib]
 name = "reussir_core"
 
+[[bin]]
+name = "reussir-elab"
+path = "src/bin/reussir-elab.rs"
+
+[build-dependencies]
+# Generates the textual-IR parsers from the `*/grammar.lalrpop` files
+# (`full/mir/`, `semi/hir/`) at build time.
+lalrpop.workspace = true
+
 [dependencies]
 blake3.workspace = true
 ena.workspace = true
@@ -17,5 +26,12 @@ rapidhash.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true
+# CLI argument parsing for the `reussir-elab` driver.
+palc.workspace = true
+# Textual-IR round trip: the logos lexer feeds the lalrpop-generated parser;
+# pprint is the algebraic (Wadler-style) pretty-printer that emits the IR.
+logos.workspace = true
+lalrpop-util.workspace = true
+pprint.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }

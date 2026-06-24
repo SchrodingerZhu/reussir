@@ -193,6 +193,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             out.push(h);
         }
         self.vars.restore(mark);
+        // A one-statement block *is* that statement: collapse `{ e }` to `e`
+        // rather than wrapping it in a single-element `Seq`. The textual HIR
+        // grammar does the same (a one-element block parses back to the bare
+        // expression), so emitting the `Seq` here would make a printed body fail
+        // to round-trip — and lower to different MIR — than its re-parsed form.
+        if out.len() == 1 {
+            return out.pop().unwrap();
+        }
         self.mk_expr(ExprKind::Seq(out), ty, span)
     }
 

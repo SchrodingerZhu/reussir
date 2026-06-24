@@ -9,6 +9,21 @@ use crate::semi::ty::{DefId, GenericId, Ty};
 use crate::surface::Span;
 use crate::utils::string::StringToken;
 
+// The textual HIR ser/de, as submodules of the IR they (de)serialize: the
+// `pprint` serializer ([`print`]), the owned grammar AST ([`raw`]) the lalrpop
+// [`grammar`] builds, and the re-intern pass ([`build`]).
+pub mod build;
+pub mod print;
+pub mod raw;
+
+// The lalrpop-generated parser (from `semi/hir/grammar.lalrpop`), fed by the
+// shared [`crate::ir_lex`] logos lexer.
+lalrpop_util::lalrpop_mod!(
+    #[allow(clippy::all, dead_code, unused_imports)]
+    pub grammar,
+    "/semi/hir/grammar.rs"
+);
+
 /// A local variable, unique within a function body.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VarId(pub u32);
