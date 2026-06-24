@@ -61,7 +61,7 @@ fn read_input(path: &PathBuf) -> Result<(String, String), String> {
 }
 
 /// Render one diagnostic as `name:line:col: severity: message`, mapping the
-/// character offset to a 1-based line and column.
+/// byte offset to a 1-based line and column.
 fn render_report(name: &str, source: &str, span: Option<Span>, sev: &str, message: &str) {
     let loc = span.map(|s| line_col(source, s.start as usize));
     match loc {
@@ -70,12 +70,14 @@ fn render_report(name: &str, source: &str, span: Option<Span>, sev: &str, messag
     }
 }
 
-/// Map a character offset to a 1-based `(line, column)`.
+/// Map a byte offset (as carried by [`Span`]) to a 1-based `(line, column)`,
+/// counting columns in characters. Iterates by `char_indices` so the byte
+/// offset is compared against byte positions — correct for non-ASCII input.
 fn line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
-    for (i, ch) in source.chars().enumerate() {
-        if i == offset {
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
             break;
         }
         if ch == '\n' {
