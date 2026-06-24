@@ -75,6 +75,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         tcx,
         names: Names::default(),
         defs: DefTable::new(),
+        next_expr_id: 0,
     };
     // Records first so their `DefId`s exist before function bodies reference them.
     let records: FxHashMap<DefId, Record<'tcx>> = raw.records.iter().map(|r| b.record(r)).collect();
@@ -93,9 +94,17 @@ struct Builder<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
     names: Names,
     defs: DefTable,
+    /// Monotonic counter for fresh [`ExprId`]s during the rebuild.
+    next_expr_id: u32,
 }
 
 impl<'tcx> Builder<'_, 'tcx> {
+    fn fresh_expr_id(&mut self) -> ExprId {
+        let id = ExprId(self.next_expr_id);
+        self.next_expr_id += 1;
+        id
+    }
+
     /// Resolve-or-declare a function path to a stable `DefId` (shared by the
     /// definition and its call sites, in any order).
     fn function_def(&mut self, path: &str) -> DefId {
@@ -347,7 +356,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             kind,
             ty,
             span: None,
-            id: ExprId(0),
+            id: self.fresh_expr_id(),
         }
     }
 

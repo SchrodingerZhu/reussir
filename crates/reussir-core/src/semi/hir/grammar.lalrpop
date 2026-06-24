@@ -1,7 +1,8 @@
 //! Grammar for the textual Semi (HIR) IR — the deserializer, dual to
 //! `semi::hir::print`. Shares the `crate::ir_lex` logos lexer with the MIR grammar
 //! but the call forms are `#path` + type arguments and types/functions carry
-//! generics (`$n`) and holes (`?n`). Builds the owned `semi::hir::raw` AST, which
+//! generics (`$n`) but no inference holes (a fully elaborated HIR has none).
+//! Builds the owned `semi::hir::raw` AST, which
 //! `semi::hir::build` re-interns into the HIR.
 
 use crate::semi::hir::raw as raw;
@@ -190,7 +191,7 @@ Bindings: Vec<raw::Binding> = <Binding*>;
 
 Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
 
-// A string-literal tag: all four `StringToken` words, `_`-separated.
+// A string-literal tag: all four `StringToken` words, `#`-separated.
 StrWords: raw::StrTag = "str" "#" <w0:"int"> "#" <w1:"int"> "#" <w2:"int"> "#" <w3:"int">
     => [w0 as u64, w1 as u64, w2 as u64, w3 as u64];
 

@@ -520,4 +520,17 @@ mod tests {
              regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
         );
     }
+
+    #[test]
+    fn roundtrips_an_integral_float() {
+        // `1.0` must print with its point (else it re-lexes as an int).
+        roundtrip("pub fn f() -> f64 { 1.0 }");
+    }
+
+    #[test]
+    fn roundtrips_a_unicode_identifier() {
+        // Source identifiers can be Unicode (XID); they print verbatim and the
+        // lexer must accept them.
+        roundtrip("pub fn f(\u{3b1}: i32) -> i32 { \u{3b1} }");
+    }
 }

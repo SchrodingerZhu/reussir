@@ -13,7 +13,8 @@ name = "reussir-elab"
 path = "src/bin/reussir-elab.rs"
 
 [build-dependencies]
-# Generates the textual-IR parser from `src/full/ir.lalrpop` at build time.
+# Generates the textual-IR parsers from the `*/grammar.lalrpop` files
+# (`full/mir/`, `semi/hir/`) at build time.
 lalrpop.workspace = true
 
 [dependencies]

@@ -155,7 +155,7 @@ Bindings: Vec<raw::Binding> = <Binding*>;
 
 Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
 
-// A string-literal tag: all four `StringToken` words, `_`-separated.
+// A string-literal tag: all four `StringToken` words, `#`-separated.
 StrWords: raw::StrTag = "str" "#" <w0:"int"> "#" <w1:"int"> "#" <w2:"int"> "#" <w3:"int">
     => [w0 as u64, w1 as u64, w2 as u64, w3 as u64];
 

@@ -3,7 +3,8 @@
 //! Mirrors [`crate::full::mir::raw`] (the MIR side) and reuses its operator/
 //! capability enums, but the call forms carry a `#path` + type-argument list
 //! (the HIR is pre-mono and item-keyed, not symbol-keyed) and types/functions
-//! may mention generics (`$n`) and holes (`?n`).
+//! may mention generics (`$n`). A fully elaborated HIR has no inference
+//! holes, so the textual form does not represent them.
 
 pub use crate::full::mir::raw::{ArithOp, Cap, CmpOp};
 

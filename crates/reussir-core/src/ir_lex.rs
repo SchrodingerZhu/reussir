@@ -182,8 +182,9 @@ pub enum Token<'a> {
     /// A floating-point literal.
     #[regex(r"[0-9]+\.[0-9]+", |l| l.slice().parse().ok())]
     Float(f64),
-    /// A bare identifier (symbol bodies after `@`, source names, paths).
-    #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |l| l.slice())]
+    /// A bare identifier (symbol bodies after `@`, source names, paths). Matches
+    /// Unicode XID like the surface lexer, so source identifiers round-trip.
+    #[regex(r"[\p{XID_Start}_]\p{XID_Continue}*", |l| l.slice())]
     Ident(&'a str),
     /// A double-quoted string (trampoline abi / export names).
     #[regex(r#""[^"]*""#, |l| { let s = l.slice(); &s[1..s.len() - 1] })]

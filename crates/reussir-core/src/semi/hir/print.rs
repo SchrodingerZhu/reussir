@@ -2,7 +2,8 @@
 //!
 //! The HIR is the *polymorphic* phase: functions still carry generic parameters
 //! (`$n`), calls reference items by [`DefId`] path (`#path`) with explicit type
-//! arguments, and types may mention [`TyKind::Generic`]/[`TyKind::Hole`]. This is
+//! arguments, and types may mention [`TyKind::Generic`] (but no inference holes:
+//! a fully elaborated HIR has none). This is
 //! the serialize half; the lalrpop grammar (`semi/hir/grammar.lalrpop`) is the dual,
 //! gated by round-trip tests.
 //!
@@ -277,7 +278,7 @@ impl<'a> Printer<'a> {
         match &e.kind {
             ExprKind::GlobalStr(s) => text(str_lit(s.words())),
             ExprKind::ConstInt(n) => text(format!("{n}")),
-            ExprKind::ConstFloat(f) => text(format!("{f}")),
+            ExprKind::ConstFloat(f) => text(float_lit(*f)),
             ExprKind::ConstBool(b) => text(format!("{b}")),
             ExprKind::Var(v) => var(*v),
             ExprKind::Poison => text("poison"),
@@ -515,6 +516,14 @@ fn cap_name(c: Capability) -> &'static str {
 /// round-trips faithfully.
 fn str_lit(w: [u64; 4]) -> String {
     format!("str#{}#{}#{}#{}", w[0], w[1], w[2], w[3])
+}
+
+/// Print a float so it always lexes back as a `Token::Float` (`digits.digits`):
+/// `f64`'s `Display` drops the point for integral values (`1.0` -> `1`), which
+/// would otherwise re-lex as an integer.
+fn float_lit(f: f64) -> String {
+    let s = format!("{f}");
+    if s.contains('.') { s } else { format!("{s}.0") }
 }
 
 fn arith_sym(op: ArithOp) -> &'static str {
