@@ -24,9 +24,8 @@ ftree.workspace = true
 lasso.workspace = true
 rapidhash.workspace = true
 rustc-hash.workspace = true
-# Edit-distance metric behind the fuzzy "did you mean" name suggestions.
-strsim.workspace = true
-# fzf-quality fuzzy matcher used to rank those suggestions (frecency-weighted).
+# fzf-quality fuzzy matcher used to rank the "did you mean" name suggestions
+# (frecency-weighted) emitted when a name fails to resolve.
 atuin-nucleo-matcher.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true

@@ -413,7 +413,8 @@ mod tests {
 
     #[test]
     fn unknown_function_suggests_a_close_name() {
-        // `lenght` is one transposition from `length`.
+        // `lenght` is `length` with the last two letters transposed — caught by
+        // the edit-distance fallback, not nucleo's subsequence match.
         let src = "fn length(x: i32) -> i32 { x }\n\
                    fn use_it() -> i32 { lenght(0) }";
         assert!(
@@ -447,6 +448,7 @@ mod tests {
 
     #[test]
     fn unknown_variable_suggests_a_close_binding() {
+        // `valeu` is `value` with the last two letters transposed.
         let src = "fn f(value: i32) -> i32 { valeu }";
         assert!(
             has_error(src, "did you mean `value`?"),

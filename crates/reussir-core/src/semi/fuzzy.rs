@@ -11,25 +11,19 @@
 //! 1. **Case-only match** (`foo` vs `Foo`) is the strongest signal and wins
 //!    outright — it is almost always the intended name.
 //! 2. **Fuzzy subsequence score** from `atuin-nucleo-matcher` (atuin's fork of
-//!    helix's `nucleo`, an fzf-quality matcher). This is what ranks the bulk of
-//!    near-misses, exactly as a fuzzy finder would.
-//! 3. **Edit distance** (Damerau-Levenshtein, via `strsim`) as a fallback for
-//!    the typo class nucleo's subsequence model misses — adjacent
-//!    transpositions like `valeu` → `value`, where the swapped letters break
-//!    the left-to-right subsequence nucleo requires.
-//!
-//! Within signals 2 and 3 the raw match strength is multiplied by a frecency
-//! factor (see [`Frecency`](crate::semi::frecency::Frecency)), so that among
-//! equally-plausible spellings the name the program actually uses most — and
-//! most recently — is preferred. The acceptance threshold for the edit-distance
-//! fallback follows rustc's `find_best_match_for_name`: within roughly a third
-//! of the longer spelling, so genuine typos are offered but unrelated names are
-//! not.
+//!    helix's `nucleo`, an fzf-quality matcher), multiplied by a frecency
+//!    factor so that among equally-plausible spellings the name the program
+//!    actually uses most — and most recently — is preferred.
+//! 3. **Edit-distance fallback** for the one typo class nucleo's subsequence
+//!    model structurally misses: adjacent transpositions like `valeu` → `value`,
+//!    where the swapped letters break the left-to-right subsequence. Rather than
+//!    depend on a string-similarity crate for this, we carry a compact inline
+//!    [`osa_distance`] (optimal string alignment — Levenshtein with
+//!    transpositions counted as one edit), gated by a rustc-style threshold.
 //!
 //! [frecency]: crate::semi::frecency
 
 use atuin_nucleo_matcher::{Config, Matcher, Utf32Str};
-use strsim::damerau_levenshtein;
 
 /// How much frecency may tilt the ranking. A factor of `1 + WEIGHT·(frec/max)`
 /// means the most-used candidate gets up to a `WEIGHT` fractional boost over an
@@ -43,6 +37,36 @@ const FRECENCY_WEIGHT: f32 = 0.5;
 /// a single slip.
 fn edit_threshold(a: usize, b: usize) -> usize {
     a.max(b).max(3) / 3
+}
+
+/// Optimal string alignment distance: Levenshtein with adjacent transpositions
+/// counted as a single edit, so `valeu` → `value` is distance 1. Identifiers are
+/// short, so the full DP table is the clearest correct implementation. This is a
+/// deliberately small, dependency-free stand-in for the only edit-distance case
+/// the nucleo subsequence matcher cannot cover on its own.
+fn osa_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=m {
+        d[0][j] = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[n][m]
 }
 
 struct Candidate<'a> {
@@ -73,14 +97,13 @@ impl<'a> FuzzyIndex<'a> {
         self.candidates.push(Candidate { name, frecency });
     }
 
-    /// The single best correction of `query`, or `None` when nothing is close
-    /// enough. The query's own exact spelling is never suggested back — if it
+    /// The single best correction of `query`, or `None` when nothing fuzzy-
+    /// matches. The query's own exact spelling is never suggested back — if it
     /// were in the index the lookup would not have failed.
     pub fn suggest(&self, query: &str) -> Option<&'a str> {
-        if let Some(hit) = self.case_only_match(query) {
-            return Some(hit);
-        }
-        self.best_fuzzy(query).or_else(|| self.best_edit(query))
+        self.case_only_match(query)
+            .or_else(|| self.best_fuzzy(query))
+            .or_else(|| self.best_edit(query))
     }
 
     /// A candidate identical to `query` up to ASCII case.
@@ -140,7 +163,7 @@ impl<'a> FuzzyIndex<'a> {
     }
 
     /// Best edit-distance match within the typo threshold, frecency-weighted.
-    /// Catches transpositions and substitutions nucleo's subsequence model skips.
+    /// Catches the adjacent-transposition typos nucleo's subsequence model skips.
     fn best_edit(&self, query: &str) -> Option<&'a str> {
         let max = self.max_frecency();
         let mut best: Option<(f32, &'a str)> = None;
@@ -149,7 +172,7 @@ impl<'a> FuzzyIndex<'a> {
                 continue;
             }
             let limit = edit_threshold(query.len(), cand.name.len());
-            let dist = damerau_levenshtein(query, cand.name);
+            let dist = osa_distance(query, cand.name);
             if dist > limit {
                 continue;
             }
@@ -179,6 +202,7 @@ mod tests {
 
     #[test]
     fn suggests_a_close_typo() {
+        // `Lst` is `List` with the `i` dropped — a subsequence nucleo matches.
         let idx = index(&["List", "Option", "Vec"]);
         assert_eq!(idx.suggest("Lst"), Some("List"));
     }
@@ -192,15 +216,23 @@ mod tests {
     }
 
     #[test]
+    fn osa_counts_a_transposition_as_one_edit() {
+        assert_eq!(osa_distance("valeu", "value"), 1);
+        assert_eq!(osa_distance("ab", "ba"), 1);
+        assert_eq!(osa_distance("kitten", "sitting"), 3);
+        assert_eq!(osa_distance("same", "same"), 0);
+    }
+
+    #[test]
     fn prefers_a_case_only_match() {
         let idx = index(&["Foo", "Food"]);
         assert_eq!(idx.suggest("foo"), Some("Foo"));
     }
 
     #[test]
-    fn case_only_match_beats_the_distance_floor() {
-        // `ID` vs `id` is distance 2, above the edit threshold of 1; the
-        // dedicated case-insensitive check still finds it.
+    fn case_only_match_wins_even_when_not_a_subsequence() {
+        // `ID` is not a left-to-right subsequence of `id` once folded the other
+        // way, but the dedicated case-insensitive check still finds it.
         let idx = index(&["id"]);
         assert_eq!(idx.suggest("ID"), Some("id"));
     }
