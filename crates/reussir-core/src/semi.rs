@@ -23,9 +23,7 @@ pub mod ty;
 // The elaboration passes.
 pub mod check;
 pub mod ctxt;
-pub mod frecency;
 pub mod fulfill;
-pub mod fuzzy;
 pub mod hir;
 pub mod pattern;
 pub mod resolve;

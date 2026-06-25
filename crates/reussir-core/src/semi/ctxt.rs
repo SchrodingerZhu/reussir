@@ -4,14 +4,14 @@
 use reussir_syntax::kind::{Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
-use crate::semi::frecency::Frecency;
-use crate::semi::fuzzy::FuzzyIndex;
 use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
 use crate::semi::ty::{Capability, DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
+use crate::utils::frecency::Frecency;
+use crate::utils::fuzzy::FuzzyIndex;
 use crate::utils::string::StringUniqifier;
 
 use super::fulfill::FulfillCtxt;
@@ -202,7 +202,7 @@ pub struct Elaborator<'a, 'tcx> {
     pub defs: DefTable,
     /// Frequency-and-recency weight per name, accumulated as names resolve
     /// successfully during checking; used to rank "did you mean" suggestions.
-    pub frecency: Frecency,
+    pub frecency: Frecency<TokenKey>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
     /// Resolved extern-trampoline roots (mono seeds). See [`TrampolineRoot`].

@@ -22,7 +22,7 @@
 //!    alignment distance (Levenshtein with transpositions counted as one edit),
 //!    gated by a rustc-style threshold.
 //!
-//! [frecency]: crate::semi::frecency
+//! [frecency]: crate::utils::frecency
 
 use atuin_nucleo_matcher::{Config, Matcher, Utf32Str};
 use strsim::osa_distance;
