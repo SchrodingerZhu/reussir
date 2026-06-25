@@ -125,6 +125,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(Some(span), format!("unknown type `{}`{hint}", self.sym(key)));
             return self.tcx.mk(TyKind::Bottom);
         };
+        self.record_use(key);
         let default_cap = self.records[&def].default_cap;
         let args: Vec<Ty> = args.iter().map(|a| self.eval_type(a)).collect();
         let flex = match default_cap {

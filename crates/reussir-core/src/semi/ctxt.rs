@@ -4,6 +4,7 @@
 use reussir_syntax::kind::{Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
+use crate::semi::frecency::Frecency;
 use crate::semi::fuzzy::FuzzyIndex;
 use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
@@ -199,6 +200,9 @@ pub struct Elaborator<'a, 'tcx> {
     pub trait_names: FxHashMap<&'static str, TraitId>,
     /// Resolution registry: item `DefId`s and their fully-qualified paths.
     pub defs: DefTable,
+    /// Frequency-and-recency weight per name, accumulated as names resolve
+    /// successfully during checking; used to rank "did you mean" suggestions.
+    pub frecency: Frecency,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
     /// Resolved extern-trampoline roots (mono seeds). See [`TrampolineRoot`].
@@ -240,6 +244,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             tcx,
             resolver,
             defs: DefTable::new(),
+            frecency: Frecency::new(),
             traits,
             builtins,
             trait_names,
@@ -288,41 +293,68 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.resolver.resolve(key)
     }
 
+    /// Record one successful resolution of `name`, feeding the frecency model
+    /// that ranks future "did you mean" suggestions.
+    pub(super) fn record_use(&mut self, name: TokenKey) {
+        self.frecency.record(name);
+    }
+
     // ----- "did you mean" suggestions -----
     //
     // Each helper fuzzy-searches the relevant namespace for the closest spelling
     // to an unresolved name and returns a hint suffix (e.g. "; did you mean
     // `List`?") ready to append to the diagnostic, or an empty string when no
-    // candidate is close enough. Appending the empty string is a no-op, so call
-    // sites stay uniform whether or not a suggestion exists.
+    // candidate is close enough. Candidates are weighted by their frecency, so
+    // among equally-plausible spellings the name the program leans on wins.
+    // Appending the empty string is a no-op, so call sites stay uniform whether
+    // or not a suggestion exists.
 
     /// Hint for an unresolved record/type/enum name.
     pub(super) fn record_suggestion(&self, name: TokenKey) -> String {
-        self.fuzzy_hint(self.sym(name), self.defs.record_names().map(|k| self.sym(k)))
+        self.fuzzy_hint(
+            self.sym(name),
+            self.defs
+                .record_names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
+        )
     }
 
     /// Hint for an unresolved function name.
     pub(super) fn function_suggestion(&self, name: TokenKey) -> String {
         self.fuzzy_hint(
             self.sym(name),
-            self.defs.function_names().map(|k| self.sym(k)),
+            self.defs
+                .function_names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
         )
     }
 
     /// Hint for an unknown bare variable, drawn from the names in scope.
     pub(super) fn variable_suggestion(&self, name: TokenKey) -> String {
-        self.fuzzy_hint(self.sym(name), self.vars.names().map(|k| self.sym(k)))
+        self.fuzzy_hint(
+            self.sym(name),
+            self.vars.names().map(|k| (self.sym(k), self.frecency.score(k))),
+        )
     }
 
     /// Hint for an unknown trait bound, drawn from the built-in trait names.
+    /// Built-ins carry no usage history, so every candidate has zero frecency.
     pub(super) fn trait_suggestion(&self, name: &str) -> String {
-        self.fuzzy_hint(name, self.trait_names.keys().copied())
+        self.fuzzy_hint(name, self.trait_names.keys().map(|&k| (k, 0.0)))
     }
 
-    /// Search `candidates` for the closest spelling to `query` and render it as
-    /// a `"; did you mean `X`?"` suffix, or `""` if nothing is close enough.
-    fn fuzzy_hint<'b>(&self, query: &str, candidates: impl Iterator<Item = &'b str>) -> String {
-        let index: FuzzyIndex = candidates.collect();
+    /// Search `candidates` (each a `(name, frecency)` pair) for the best
+    /// correction of `query` and render it as a `"; did you mean `X`?"` suffix,
+    /// or `""` if nothing is close enough.
+    fn fuzzy_hint<'b>(
+        &self,
+        query: &str,
+        candidates: impl Iterator<Item = (&'b str, f32)>,
+    ) -> String {
+        let mut index = FuzzyIndex::new();
+        for (name, frecency) in candidates {
+            index.insert(name, frecency);
+        }
         match index.suggest(query) {
             Some(hint) => format!("; did you mean `{hint}`?"),
             None => String::new(),
@@ -614,6 +646,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return;
         };
+        self.record_use(tramp.func.basename);
 
         // `resolve_function` only yields a function `DefId`, so the prototype is
         // present; `get` rather than indexing keeps this total if that invariant

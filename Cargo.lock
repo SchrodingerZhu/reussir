@@ -91,6 +91,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "atuin-nucleo-matcher"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f297b5b5ddfa03c9c7df05e08c0da0c6f8865814a333e3e0c56f1aaf9a0e086"
+dependencies = [
+ "memchr",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1080,6 +1090,7 @@ dependencies = [
 name = "reussir-core"
 version = "0.1.0"
 dependencies = [
+ "atuin-nucleo-matcher",
  "blake3",
  "ena",
  "ftree",

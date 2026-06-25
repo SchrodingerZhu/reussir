@@ -23,6 +23,7 @@ pub mod ty;
 // The elaboration passes.
 pub mod check;
 pub mod ctxt;
+pub mod frecency;
 pub mod fulfill;
 pub mod fuzzy;
 pub mod hir;
@@ -459,6 +460,27 @@ mod tests {
         let src = "fn f<T: Nm>(x: T) -> T { x }";
         assert!(
             has_error(src, "did you mean `Num`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn frecency_steers_an_ambiguous_suggestion() {
+        // `Lst` is an equally-close typo of both `List` and `Last`. The body
+        // constructs `List` repeatedly before the typo, so the frecency built up
+        // during checking must steer the hint toward `List` rather than `Last`.
+        let src = "struct List { a: i32 }\n\
+                   struct Last { a: i32 }\n\
+                   fn f() -> i32 {\n\
+                       List { a: 1 };\n\
+                       List { a: 2 };\n\
+                       List { a: 3 };\n\
+                       Lst { a: 0 };\n\
+                       0\n\
+                   }";
+        assert!(
+            has_error(src, "did you mean `List`?"),
             "{:#?}",
             reports_of(src)
         );
