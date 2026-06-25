@@ -16,14 +16,16 @@
 //!    actually uses most — and most recently — is preferred.
 //! 3. **Edit-distance fallback** for the one typo class nucleo's subsequence
 //!    model structurally misses: adjacent transpositions like `valeu` → `value`,
-//!    where the swapped letters break the left-to-right subsequence. Rather than
-//!    depend on a string-similarity crate for this, we carry a compact inline
-//!    [`osa_distance`] (optimal string alignment — Levenshtein with
-//!    transpositions counted as one edit), gated by a rustc-style threshold.
+//!    where the swapped letters break the left-to-right subsequence. This is a
+//!    fallback *metric*, not a second suggester — it only runs when nucleo finds
+//!    nothing, scoring the same candidate set with `strsim`'s optimal-string-
+//!    alignment distance (Levenshtein with transpositions counted as one edit),
+//!    gated by a rustc-style threshold.
 //!
 //! [frecency]: crate::semi::frecency
 
 use atuin_nucleo_matcher::{Config, Matcher, Utf32Str};
+use strsim::osa_distance;
 
 /// How much frecency may tilt the ranking. A factor of `1 + WEIGHT·(frec/max)`
 /// means the most-used candidate gets up to a `WEIGHT` fractional boost over an
@@ -37,36 +39,6 @@ const FRECENCY_WEIGHT: f32 = 0.5;
 /// a single slip.
 fn edit_threshold(a: usize, b: usize) -> usize {
     a.max(b).max(3) / 3
-}
-
-/// Optimal string alignment distance: Levenshtein with adjacent transpositions
-/// counted as a single edit, so `valeu` → `value` is distance 1. Identifiers are
-/// short, so the full DP table is the clearest correct implementation. This is a
-/// deliberately small, dependency-free stand-in for the only edit-distance case
-/// the nucleo subsequence matcher cannot cover on its own.
-fn osa_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (n, m) = (a.len(), b.len());
-    let mut d = vec![vec![0usize; m + 1]; n + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for j in 0..=m {
-        d[0][j] = j;
-    }
-    for i in 1..=n {
-        for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
-            }
-        }
-    }
-    d[n][m]
 }
 
 struct Candidate<'a> {
@@ -213,14 +185,6 @@ mod tests {
         // subsequence model can't match it, but the edit-distance fallback can.
         let idx = index(&["value", "length"]);
         assert_eq!(idx.suggest("valeu"), Some("value"));
-    }
-
-    #[test]
-    fn osa_counts_a_transposition_as_one_edit() {
-        assert_eq!(osa_distance("valeu", "value"), 1);
-        assert_eq!(osa_distance("ab", "ba"), 1);
-        assert_eq!(osa_distance("kitten", "sitting"), 3);
-        assert_eq!(osa_distance("same", "same"), 0);
     }
 
     #[test]

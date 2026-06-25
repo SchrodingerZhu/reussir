@@ -27,6 +27,8 @@ rustc-hash.workspace = true
 # fzf-quality fuzzy matcher used to rank the "did you mean" name suggestions
 # (frecency-weighted) emitted when a name fails to resolve.
 atuin-nucleo-matcher.workspace = true
+# Edit-distance metric for the suggester's transposition fallback only.
+strsim.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true
 # CLI argument parsing for the `reussir-elab` driver.
