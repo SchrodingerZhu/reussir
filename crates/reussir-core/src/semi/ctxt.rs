@@ -10,6 +10,8 @@ use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
 use crate::semi::ty::{Capability, DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
+use crate::utils::frecency::Frecency;
+use crate::utils::fuzzy::FuzzyIndex;
 use crate::utils::string::StringUniqifier;
 
 use super::fulfill::FulfillCtxt;
@@ -166,6 +168,12 @@ impl<'tcx> VarEnv<'tcx> {
         &self.defs[id.0 as usize]
     }
 
+    /// Names currently visible in scope (innermost shadowing outermost is not
+    /// deduplicated). Used to build "did you mean" hints for an unknown name.
+    pub fn names(&self) -> impl Iterator<Item = TokenKey> + '_ {
+        self.scope.iter().map(|(name, _)| *name)
+    }
+
     /// A marker for the current scope depth; pass to [`VarEnv::restore`].
     pub fn mark(&self) -> usize {
         self.scope.len()
@@ -192,6 +200,9 @@ pub struct Elaborator<'a, 'tcx> {
     pub trait_names: FxHashMap<&'static str, TraitId>,
     /// Resolution registry: item `DefId`s and their fully-qualified paths.
     pub defs: DefTable,
+    /// Frequency-and-recency weight per name, accumulated as names resolve
+    /// successfully during checking; used to rank "did you mean" suggestions.
+    pub frecency: Frecency<TokenKey>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
     /// Resolved extern-trampoline roots (mono seeds). See [`TrampolineRoot`].
@@ -233,6 +244,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             tcx,
             resolver,
             defs: DefTable::new(),
+            frecency: Frecency::new(),
             traits,
             builtins,
             trait_names,
@@ -281,6 +293,74 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.resolver.resolve(key)
     }
 
+    /// Record one successful resolution of `name`, feeding the frecency model
+    /// that ranks future "did you mean" suggestions.
+    pub(super) fn record_use(&mut self, name: TokenKey) {
+        self.frecency.record(name);
+    }
+
+    // ----- "did you mean" suggestions -----
+    //
+    // Each helper fuzzy-searches the relevant namespace for the closest spelling
+    // to an unresolved name and returns a hint suffix (e.g. "; did you mean
+    // `List`?") ready to append to the diagnostic, or an empty string when no
+    // candidate is close enough. Candidates are weighted by their frecency, so
+    // among equally-plausible spellings the name the program leans on wins.
+    // Appending the empty string is a no-op, so call sites stay uniform whether
+    // or not a suggestion exists.
+
+    /// Hint for an unresolved record/type/enum name.
+    pub(super) fn record_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(
+            self.sym(name),
+            self.defs
+                .record_names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
+        )
+    }
+
+    /// Hint for an unresolved function name.
+    pub(super) fn function_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(
+            self.sym(name),
+            self.defs
+                .function_names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
+        )
+    }
+
+    /// Hint for an unknown bare variable, drawn from the names in scope.
+    pub(super) fn variable_suggestion(&self, name: TokenKey) -> String {
+        self.fuzzy_hint(
+            self.sym(name),
+            self.vars.names().map(|k| (self.sym(k), self.frecency.score(k))),
+        )
+    }
+
+    /// Hint for an unknown trait bound, drawn from the built-in trait names.
+    /// Built-ins carry no usage history, so every candidate has zero frecency.
+    pub(super) fn trait_suggestion(&self, name: &str) -> String {
+        self.fuzzy_hint(name, self.trait_names.keys().map(|&k| (k, 0.0)))
+    }
+
+    /// Search `candidates` (each a `(name, frecency)` pair) for the best
+    /// correction of `query` and render it as a `"; did you mean `X`?"` suffix,
+    /// or `""` if nothing is close enough.
+    fn fuzzy_hint<'b>(
+        &self,
+        query: &str,
+        candidates: impl Iterator<Item = (&'b str, f32)>,
+    ) -> String {
+        let mut index = FuzzyIndex::new();
+        for (name, frecency) in candidates {
+            index.insert(name, frecency);
+        }
+        match index.suggest(query) {
+            Some(hint) => format!("; did you mean `{hint}`?"),
+            None => String::new(),
+        }
+    }
+
     // ----- id / generic allocation -----
 
     pub fn fresh_expr_id(&mut self) -> ExprId {
@@ -306,7 +386,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match self.trait_names.get(name) {
             Some(&id) => Some(id),
             None => {
-                self.error(span, format!("unknown trait bound `{name}`"));
+                let hint = self.trait_suggestion(name);
+                self.error(span, format!("unknown trait bound `{name}`{hint}"));
                 None
             }
         }
@@ -555,15 +636,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let ty_args: Vec<Ty<'tcx>> = tramp.ty_args.iter().map(|t| self.eval_type(t)).collect();
 
         let Some(target) = self.defs.resolve_function(tramp.func.basename) else {
+            let hint = self.function_suggestion(tramp.func.basename);
             self.error(
                 span,
                 format!(
-                    "trampoline target function `{}` not found",
+                    "trampoline target function `{}` not found{hint}",
                     self.sym(tramp.func.basename)
                 ),
             );
             return;
         };
+        self.record_use(tramp.func.basename);
 
         // `resolve_function` only yields a function `DefId`, so the prototype is
         // present; `get` rather than indexing keeps this total if that invariant

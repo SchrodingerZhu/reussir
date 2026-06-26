@@ -169,11 +169,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn infer_var(&mut self, path: &surface::Path, span: Option<Span>) -> Expr<'tcx> {
         if path.segments.is_empty() {
             if let Some((id, ty)) = self.vars.lookup(path.basename) {
+                self.record_use(path.basename);
                 return self.mk_expr(ExprKind::Var(id), ty, span);
             }
+            let hint = self.variable_suggestion(path.basename);
             self.error(
                 span,
-                format!("unknown variable `{}`", self.sym(path.basename)),
+                format!("unknown variable `{}`{hint}", self.sym(path.basename)),
             );
             return self.poison(span);
         }
@@ -366,9 +368,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
         let Some(def) = self.defs.resolve_function(fc.name.basename) else {
-            self.error(span, format!("unknown function `{fname}`"));
+            let hint = self.function_suggestion(fc.name.basename);
+            self.error(span, format!("unknown function `{fname}`{hint}"));
             return self.poison(span);
         };
+        self.record_use(fc.name.basename);
         let proto = self.functions[&def].clone();
         if proto.is_regional && !self.inside_region {
             self.error(span, "cannot call a regional function outside of a region");
@@ -770,9 +774,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(def) = self.defs.resolve_record(name) else {
-            self.error(span, format!("unknown type `{}`", self.sym(name)));
+            let hint = self.record_suggestion(name);
+            self.error(span, format!("unknown type `{}`{hint}", self.sym(name)));
             return self.poison(span);
         };
+        self.record_use(name);
         let record = self.records[&def].clone();
         if matches!(record.fields, Some(RecordFields::Variants(_))) {
             self.error(
@@ -821,9 +827,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let Some(def) = self.defs.resolve_record(enum_name) else {
-            self.error(span, format!("unknown enum `{}`", self.sym(enum_name)));
+            let hint = self.record_suggestion(enum_name);
+            self.error(span, format!("unknown enum `{}`{hint}", self.sym(enum_name)));
             return self.poison(span);
         };
+        self.record_use(enum_name);
         let record = self.records[&def].clone();
         let Some(RecordFields::Variants(variants)) = &record.fields else {
             self.error(span, format!("`{}` is not an enum", self.sym(enum_name)));

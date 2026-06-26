@@ -295,9 +295,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let want = ctor.path.basename;
         let enum_def = match ctor.path.segments.last() {
             Some(&seg) => match self.defs.resolve_record(seg) {
-                Some(d) => d,
+                Some(d) => {
+                    self.record_use(seg);
+                    d
+                }
                 None => {
-                    self.error(None, format!("unknown enum `{}`", self.sym(seg)));
+                    let hint = self.record_suggestion(seg);
+                    self.error(None, format!("unknown enum `{}`{hint}", self.sym(seg)));
                     return Pat::Wild;
                 }
             },

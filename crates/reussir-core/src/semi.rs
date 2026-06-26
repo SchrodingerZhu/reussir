@@ -406,4 +406,96 @@ mod tests {
         let src = "extern \"C\" trampoline \"t_ffi\" = nope<i32>;";
         assert!(has_error(src, "not found"), "{:#?}", reports_of(src));
     }
+
+    // ----- fuzzy "did you mean" suggestions on a failed name resolution -----
+
+    #[test]
+    fn unknown_function_suggests_a_close_name() {
+        // `lenght` is `length` with the last two letters transposed — caught by
+        // the edit-distance fallback, not nucleo's subsequence match.
+        let src = "fn length(x: i32) -> i32 { x }\n\
+                   fn use_it() -> i32 { lenght(0) }";
+        assert!(
+            has_error(src, "did you mean `length`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_type_suggests_a_close_record() {
+        let src = "struct Point { x: i32, y: i32 }\n\
+                   fn f(p: Pont) -> i32 { 0 }";
+        assert!(
+            has_error(src, "did you mean `Point`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_enum_suggests_a_close_record() {
+        let src = "enum Color { Red, Green }\n\
+                   fn f() -> i32 { Colr::Red; 0 }";
+        assert!(
+            has_error(src, "did you mean `Color`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_variable_suggests_a_close_binding() {
+        // `valeu` is `value` with the last two letters transposed.
+        let src = "fn f(value: i32) -> i32 { valeu }";
+        assert!(
+            has_error(src, "did you mean `value`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unknown_trait_bound_suggests_a_builtin() {
+        let src = "fn f<T: Nm>(x: T) -> T { x }";
+        assert!(
+            has_error(src, "did you mean `Num`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn frecency_steers_an_ambiguous_suggestion() {
+        // `Lst` is an equally-close typo of both `List` and `Last`. The body
+        // constructs `List` repeatedly before the typo, so the frecency built up
+        // during checking must steer the hint toward `List` rather than `Last`.
+        let src = "struct List { a: i32 }\n\
+                   struct Last { a: i32 }\n\
+                   fn f() -> i32 {\n\
+                       List { a: 1 };\n\
+                       List { a: 2 };\n\
+                       List { a: 3 };\n\
+                       Lst { a: 0 };\n\
+                       0\n\
+                   }";
+        assert!(
+            has_error(src, "did you mean `List`?"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn unrelated_unknown_name_offers_no_suggestion() {
+        // Nothing in scope is close to `Frobnicate`, so no hint is appended.
+        let src = "struct Point { x: i32 }\n\
+                   fn f(p: Frobnicate) -> i32 { 0 }";
+        assert!(has_error(src, "unknown type"), "{:#?}", reports_of(src));
+        assert!(
+            !has_error(src, "did you mean"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
 }
