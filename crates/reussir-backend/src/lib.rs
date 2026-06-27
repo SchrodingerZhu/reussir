@@ -18,6 +18,7 @@ use reussir_backend_sys as sys;
 
 pub mod builders;
 pub mod dialect;
+pub mod llvm;
 pub mod pipeline;
 
 /// Returns the [`DialectHandle`] for the Reussir dialect.

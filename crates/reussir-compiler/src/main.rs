@@ -11,9 +11,10 @@ use std::process::ExitCode;
 
 use palc::Parser;
 
+use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
 use reussir_codegen::lower::lower_program;
-use reussir_compiler::{OutputKind, RelocMode, TargetSpec, compile_to_file};
+use reussir_compiler::{OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file};
 use reussir_core::full::mono::monomorphize;
 use reussir_core::semi::{Report, Severity, elaborate};
 use reussir_core::{in_arena, surface};
@@ -142,10 +143,28 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
     let prog = surface::program(&parse.root);
 
+    // The target machine is built first: its data layout feeds the polymorphic
+    // FFI gather, which must run before the lowering pipeline erases those ops.
+    let spec = TargetSpec {
+        triple: cli.target_triple.clone(),
+        cpu: cli.target_cpu.clone(),
+        features: cli.target_features.clone(),
+    };
+    let machine = TargetMachine::new(&spec, opt, reloc)?;
+
+    let options = LoweringOptions {
+        opt,
+        reuse_token_across_call: cli.reuse_across_call,
+        ..LoweringOptions::default()
+    };
+    let optimize_ffi = !matches!(opt, OptLevel::None);
+
     let context = reussir_backend::context();
-    // Frontend + lowering inside the arena scope; the lowered module borrows the
-    // context, not the arena, so it outlives `tcx`.
-    let module = in_arena(|tcx| {
+    // Frontend + lowering inside the arena scope. Polymorphic FFI is compiled and
+    // gathered before the pipeline (which erases the polyffi ops) and linked in
+    // after translation; the finalized LLVM module borrows neither the arena nor
+    // the MLIR context, so it outlives `tcx`.
+    let finalized = in_arena(|tcx| {
         let elab = elaborate(tcx, &prog, parse.resolver());
         if report_diagnostics(&name, &elab.reports) {
             return Err(String::new());
@@ -154,10 +173,15 @@ fn run(cli: &Cli) -> Result<bool, String> {
         if report_diagnostics(&name, &reports) {
             return Err(String::new());
         }
-        lower_program(&context, &full).map_err(|e| format!("{name}: {e}"))
+        let mut module = lower_program(&context, &full).map_err(|e| format!("{name}: {e}"))?;
+        let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
+            .map_err(|e| format!("{name}: {e}"))?;
+        pipeline::run_lowering_pipeline(&context, &mut module, &options)
+            .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
+        prepared.finish(&module).map_err(|e| format!("{name}: {e}"))
     });
-    let mut module = match module {
-        Ok(module) => module,
+    let finalized = match finalized {
+        Ok(finalized) => finalized,
         Err(msg) => {
             if !msg.is_empty() {
                 eprintln!("{msg}");
@@ -166,20 +190,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
     };
 
-    let options = LoweringOptions {
-        opt,
-        reuse_token_across_call: cli.reuse_across_call,
-        ..LoweringOptions::default()
-    };
-    pipeline::run_lowering_pipeline(&context, &mut module, &options)
-        .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
-
-    let target = TargetSpec {
-        triple: cli.target_triple.clone(),
-        cpu: cli.target_cpu.clone(),
-        features: cli.target_features.clone(),
-    };
-    compile_to_file(&module, opt, kind, reloc, &target, &cli.output)?;
+    emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
     Ok(true)
 }
 

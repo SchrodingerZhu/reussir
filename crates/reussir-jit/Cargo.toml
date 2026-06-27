@@ -9,12 +9,13 @@ description = "JIT execution engine for Reussir, built on the reussir-backend lo
 name = "reussir_jit"
 
 [dependencies]
-# `melior` for the lowered `Module` type; `mlir-sys` for MLIR->LLVM IR
-# translation; `llvm-sys` for the ORC/LLJIT engine (not bound by mlir-sys).
+# `melior` for the lowered `Module` type; `llvm-sys` for the ORC/LLJIT engine.
 # llvm-sys discovers LLVM via LLVM_SYS_221_PREFIX (set by CMake).
 melior.workspace = true
-mlir-sys.workspace = true
 llvm-sys.workspace = true
+# The shared LLVM-IR boundary: MLIR→LLVM-IR translation, the backend LLVM pass
+# pipeline, and the pipeline `OptLevel` the JIT re-exports.
+reussir-backend = { path = "../reussir-backend" }
 # Links libReussirCAPI (the JIT codegen helper: custom LLVM passes + TPDE) and
 # its TPDE/pass archives into the final binary; see its build.rs.
 reussir-backend-sys = { path = "../reussir-backend-sys" }
@@ -25,7 +26,3 @@ reussir-backend-sys = { path = "../reussir-backend-sys" }
 # allocator of anything that links the JIT.
 reussir-rt = { path = "../reussir-rt", default-features = false }
 tracing.workspace = true
-
-[dev-dependencies]
-# Tests build and lower Reussir IR through reussir-backend, then execute it.
-reussir-backend = { path = "../reussir-backend" }

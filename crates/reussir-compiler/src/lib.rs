@@ -1,42 +1,39 @@
-//! Ahead-of-time compilation: a lowered MLIR module → an object file, assembly,
-//! or LLVM IR on disk.
+//! Ahead-of-time compilation: a finalized LLVM IR module → an object file,
+//! assembly, or LLVM IR on disk.
 //!
-//! This is the AOT counterpart to `reussir-jit`: instead of adding the
-//! translated LLVM IR to an ORC JIT session, it runs the backend LLVM pass
-//! pipeline and emits a file with a host (or cross) `TargetMachine`. It links neither the
-//! JIT engine nor the Reussir runtime — an emitted object is linked against
-//! `reussir-rt` later by the C toolchain. The `reussir-compiler` binary drives
-//! the whole frontend → lowering → [`compile_to_file`] path.
+//! This is the AOT counterpart to `reussir-jit`: instead of adding the finalized
+//! LLVM IR to an ORC JIT session, it emits a file with a host (or cross)
+//! `TargetMachine`. It links neither the JIT engine nor the Reussir runtime — an
+//! emitted object is linked against `reussir-rt` later by the C toolchain.
+//!
+//! The `reussir-compiler` binary drives the shared lowering in
+//! [`reussir_backend::llvm`] — build a [`TargetMachine`] (its data layout feeds
+//! the polymorphic-FFI gather), run the lowering pipeline, finalize, then hand
+//! the [`Finalized`] module to [`emit_to_file`].
 
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CString, c_char};
 use std::path::Path;
-use std::sync::Once;
 
 use llvm_sys::core::{
-    LLVMContextCreate, LLVMContextDispose, LLVMDisposeMessage, LLVMDisposeModule,
-    LLVMPrintModuleToString, LLVMSetTarget,
+    LLVMContextDispose, LLVMDisposeMessage, LLVMDisposeModule, LLVMPrintModuleToString,
+    LLVMSetTarget,
 };
-use llvm_sys::prelude::{LLVMContextRef, LLVMModuleRef};
+use llvm_sys::prelude::LLVMModuleRef;
 use llvm_sys::target::{
-    LLVM_InitializeNativeAsmParser, LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
+    LLVM_InitializeAllAsmParsers, LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos,
+    LLVM_InitializeAllTargetMCs, LLVM_InitializeAllTargets, LLVM_InitializeNativeAsmParser,
+    LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget, LLVMCopyStringRepOfTargetData,
     LLVMDisposeTargetData, LLVMSetModuleDataLayout,
 };
 use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMCodeModel, LLVMCreateTargetDataLayout,
     LLVMCreateTargetMachine, LLVMDisposeTargetMachine, LLVMGetDefaultTargetTriple,
     LLVMGetHostCPUFeatures, LLVMGetHostCPUName, LLVMGetTargetFromTriple, LLVMRelocMode,
-    LLVMTargetMachineEmitToFile, LLVMTargetRef,
+    LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
 };
 
-use melior::ir::Module;
-
+use reussir_backend::llvm::{Finalized, run_backend_llvm_pipeline};
 use reussir_backend::pipeline::OptLevel;
-
-// LLVM-side codegen helper from libReussirCAPI: the custom Reussir LLVM passes,
-// the same pipeline the JIT runs.
-unsafe extern "C" {
-    fn reussirRunBackendLLVMPipeline(module: LLVMModuleRef, opt: c_int);
-}
 
 /// What `reussir-compiler` writes out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,15 +72,30 @@ pub struct TargetSpec {
     pub features: Option<String>,
 }
 
-fn init_native() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        // A non-zero return means the target is unavailable; codegen then fails
-        // loudly at `LLVMGetTargetFromTriple`, so there is nothing to recover here.
-        LLVM_InitializeNativeTarget();
-        LLVM_InitializeNativeAsmPrinter();
-        LLVM_InitializeNativeAsmParser();
-    });
+/// Registers LLVM targets before codegen. A host compile needs only the native
+/// target; a custom triple may name any architecture, so register them all —
+/// otherwise `LLVMGetTargetFromTriple` would not find a foreign target's backend.
+///
+/// No `Once` guard: LLVM's `TargetRegistry::RegisterTarget` early-returns once a
+/// target is registered (`if (T.Name) return;`), and `TargetSelect.h` documents
+/// that "it is legal for a client to make multiple calls to this function", so
+/// these are idempotent on every compile.
+fn init_targets(cross: bool) {
+    unsafe {
+        if cross {
+            LLVM_InitializeAllTargetInfos();
+            LLVM_InitializeAllTargets();
+            LLVM_InitializeAllTargetMCs();
+            LLVM_InitializeAllAsmPrinters();
+            LLVM_InitializeAllAsmParsers();
+        } else {
+            // A non-zero return means the target is unavailable; codegen then
+            // fails loudly at `LLVMGetTargetFromTriple`, so nothing to recover.
+            LLVM_InitializeNativeTarget();
+            LLVM_InitializeNativeAsmPrinter();
+            LLVM_InitializeNativeAsmParser();
+        }
+    }
 }
 
 fn codegen_level(opt: OptLevel) -> LLVMCodeGenOptLevel {
@@ -127,49 +139,114 @@ unsafe fn take_llvm_string(ptr: *mut c_char) -> CString {
     }
 }
 
-/// Compile a lowered (LLVM-dialect) MLIR `module` to `out_path`.
+/// A host or cross `TargetMachine` plus the triple and data layout it implies.
 ///
-/// The module must already have been through
-/// [`crate::pipeline`](reussir_backend::pipeline)-equivalent lowering to the LLVM
-/// dialect; this translates it to LLVM IR, runs the backend LLVM pipeline, and
-/// emits the requested artifact for `target` (the native host by default).
-pub fn compile_to_file(
-    module: &Module,
+/// Built up front (before the lowering pipeline) because the data layout must be
+/// known before polymorphic-FFI gathering; the same machine then emits the file.
+pub struct TargetMachine {
+    machine: LLVMTargetMachineRef,
+    triple: CString,
+    data_layout: CString,
+}
+
+impl TargetMachine {
+    /// Resolves `spec` (host by default), creates the target machine at the given
+    /// optimization and relocation model, and queries its data layout.
+    pub fn new(spec: &TargetSpec, opt: OptLevel, reloc_mode: RelocMode) -> Result<Self, String> {
+        init_targets(spec.triple.is_some());
+        unsafe {
+            // A custom triple defaults CPU/features to empty (architecture
+            // defaults); the host's would crash LLVM against a foreign triple.
+            let foreign = spec.triple.is_some();
+            let triple = match spec.triple.as_deref() {
+                Some(t) => {
+                    CString::new(t).map_err(|_| "target triple contains a NUL byte".to_string())?
+                }
+                None => take_llvm_string(LLVMGetDefaultTargetTriple()),
+            };
+            let cpu = match spec.cpu.as_deref() {
+                Some(c) => {
+                    CString::new(c).map_err(|_| "target CPU contains a NUL byte".to_string())?
+                }
+                None if foreign => CString::default(),
+                None => take_llvm_string(LLVMGetHostCPUName()),
+            };
+            let features = match spec.features.as_deref() {
+                Some(f) => {
+                    CString::new(f).map_err(|_| "target features contain a NUL byte".to_string())?
+                }
+                None if foreign => CString::default(),
+                None => take_llvm_string(LLVMGetHostCPUFeatures()),
+            };
+
+            let mut target: LLVMTargetRef = std::ptr::null_mut();
+            let mut err: *mut c_char = std::ptr::null_mut();
+            if LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut err) != 0 {
+                let msg = c_str(err);
+                LLVMDisposeMessage(err);
+                return Err(format!(
+                    "no target for triple `{}`: {msg}",
+                    triple.to_string_lossy()
+                ));
+            }
+            let machine = LLVMCreateTargetMachine(
+                target,
+                triple.as_ptr(),
+                cpu.as_ptr(),
+                features.as_ptr(),
+                codegen_level(opt),
+                reloc(reloc_mode),
+                LLVMCodeModel::LLVMCodeModelDefault,
+            );
+            if machine.is_null() {
+                return Err("failed to create the target machine".to_string());
+            }
+            let target_data = LLVMCreateTargetDataLayout(machine);
+            let data_layout = take_llvm_string(LLVMCopyStringRepOfTargetData(target_data));
+            LLVMDisposeTargetData(target_data);
+            Ok(TargetMachine {
+                machine,
+                triple,
+                data_layout,
+            })
+        }
+    }
+
+    /// The target's data layout string — feed this to
+    /// [`reussir_backend::llvm::LlvmLowering::prepare`].
+    pub fn data_layout(&self) -> &str {
+        self.data_layout.to_str().unwrap_or("")
+    }
+}
+
+impl Drop for TargetMachine {
+    fn drop(&mut self) {
+        unsafe { LLVMDisposeTargetMachine(self.machine) }
+    }
+}
+
+/// Runs the backend LLVM pass pipeline over a [`Finalized`] module, emits the
+/// requested artifact for `machine`, and disposes the module and its context.
+pub fn emit_to_file(
+    finalized: Finalized,
+    machine: &TargetMachine,
     opt: OptLevel,
     kind: OutputKind,
-    reloc_mode: RelocMode,
-    target: &TargetSpec,
     out_path: &Path,
 ) -> Result<(), String> {
-    init_native();
     unsafe {
-        let context: LLVMContextRef = LLVMContextCreate();
-        let operation = mlir_sys::mlirModuleGetOperation(module.to_raw());
-        let llvm_module =
-            mlir_sys::mlirTranslateModuleToLLVMIR(operation, context as mlir_sys::LLVMContextRef)
-                as LLVMModuleRef;
-        if llvm_module.is_null() {
-            LLVMContextDispose(context);
-            return Err("failed to translate MLIR module to LLVM IR".into());
-        }
-
-        // The custom Reussir LLVM passes + standard optimization.
-        reussirRunBackendLLVMPipeline(llvm_module, opt.as_reussir_opt_option());
-
-        let result = emit(llvm_module, opt, kind, reloc_mode, target, out_path);
-
-        LLVMDisposeModule(llvm_module);
-        LLVMContextDispose(context);
+        run_backend_llvm_pipeline(finalized.module, opt);
+        let result = emit(finalized.module, machine, kind, out_path);
+        LLVMDisposeModule(finalized.module);
+        LLVMContextDispose(finalized.context);
         result
     }
 }
 
 unsafe fn emit(
     llvm_module: LLVMModuleRef,
-    opt: OptLevel,
+    machine: &TargetMachine,
     kind: OutputKind,
-    reloc_mode: RelocMode,
-    target_spec: &TargetSpec,
     out_path: &Path,
 ) -> Result<(), String> {
     unsafe {
@@ -182,57 +259,14 @@ unsafe fn emit(
                 .map_err(|e| format!("failed to write {}: {e}", out_path.display()));
         }
 
-        // Resolve the triple/CPU/features into owned C strings. A custom triple
-        // makes CPU/features default to empty (LLVM picks architecture defaults)
-        // rather than the host's, which would crash for a foreign triple.
-        let foreign = target_spec.triple.is_some();
-        let triple = match target_spec.triple.as_deref() {
-            Some(t) => {
-                CString::new(t).map_err(|_| "target triple contains a NUL byte".to_string())?
-            }
-            None => take_llvm_string(LLVMGetDefaultTargetTriple()),
-        };
-        let cpu = match target_spec.cpu.as_deref() {
-            Some(c) => CString::new(c).map_err(|_| "target CPU contains a NUL byte".to_string())?,
-            None if foreign => CString::default(),
-            None => take_llvm_string(LLVMGetHostCPUName()),
-        };
-        let features = match target_spec.features.as_deref() {
-            Some(f) => {
-                CString::new(f).map_err(|_| "target features contain a NUL byte".to_string())?
-            }
-            None if foreign => CString::default(),
-            None => take_llvm_string(LLVMGetHostCPUFeatures()),
-        };
-
-        let mut target: LLVMTargetRef = std::ptr::null_mut();
-        let mut err: *mut c_char = std::ptr::null_mut();
-        if LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut err) != 0 {
-            let msg = c_str(err);
-            LLVMDisposeMessage(err);
-            return Err(format!(
-                "no target for triple `{}`: {msg}",
-                triple.to_string_lossy()
-            ));
-        }
-        let machine = LLVMCreateTargetMachine(
-            target,
-            triple.as_ptr(),
-            cpu.as_ptr(),
-            features.as_ptr(),
-            codegen_level(opt),
-            reloc(reloc_mode),
-            LLVMCodeModel::LLVMCodeModelDefault,
-        );
-
         // Stamp the module with the target triple and data layout so the emitted
         // object's ABI matches the target (and so `%cc` can link it).
-        LLVMSetTarget(llvm_module, triple.as_ptr());
-        let data_layout = LLVMCreateTargetDataLayout(machine);
+        LLVMSetTarget(llvm_module, machine.triple.as_ptr());
+        let target_data = LLVMCreateTargetDataLayout(machine.machine);
         // `LLVMSetModuleDataLayout` copies the layout into the module, so the
         // target-data handle is ours to dispose.
-        LLVMSetModuleDataLayout(llvm_module, data_layout);
-        LLVMDisposeTargetData(data_layout);
+        LLVMSetModuleDataLayout(llvm_module, target_data);
+        LLVMDisposeTargetData(target_data);
 
         let file_type = match kind {
             OutputKind::Object => LLVMCodeGenFileType::LLVMObjectFile,
@@ -243,13 +277,12 @@ unsafe fn emit(
             .map_err(|_| "output path contains a NUL byte".to_string())?;
         let mut emit_err: *mut c_char = std::ptr::null_mut();
         let failed = LLVMTargetMachineEmitToFile(
-            machine,
+            machine.machine,
             llvm_module,
             path.as_ptr() as *mut c_char,
             file_type,
             &mut emit_err,
         );
-        LLVMDisposeTargetMachine(machine);
         if failed != 0 {
             let msg = c_str(emit_err);
             LLVMDisposeMessage(emit_err);

@@ -25,6 +25,9 @@ set(REUSSIR_BACKEND_CARGO_ENV
     MLIR_SYS_210_PREFIX=${REUSSIR_LLVM_PREFIX}
     TABLEGEN_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     LLVM_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
+    # `llvm-sys` 221 (the shared LLVM-IR boundary: translate, the backend LLVM
+    # pipeline, polyffi gather/link) discovers LLVM through the 221 variable.
+    LLVM_SYS_221_PREFIX=${REUSSIR_LLVM_PREFIX}
     REUSSIR_CAPI_LIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
     REUSSIR_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/include
     RUSTFLAGS=-Awarnings)
