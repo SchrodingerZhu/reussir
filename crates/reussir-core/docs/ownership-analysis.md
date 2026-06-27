@@ -384,13 +384,23 @@ table.
 2. **Control flow — `If` landed.** `If` branch reconciliation (settle one-sided
    ownership so both arms exit owning the same set), multi-use `Dup` (already in
    increment 1), and discarded-result drops via `RcOp::DropValue(ExprId)` for an
-   unconsumed non-`let` `Seq` statement. **`Match` reconciliation over decision
-   trees** (switch/guard/bindings) is split into its own follow-up — it overlaps
-   the container increment (destructuring `Proj`/partial moves).
-3. **Containers:** `Proj` borrow-dup, `Nullable`, `Variant`, transitive
+   unconsumed non-`let` `Seq` statement.
+3. **Pattern matching — landed (no guards yet).** `Match` over `Switch` + `Leaf`,
+   following Perceus/Koka **borrow-dup**: the scrutinee is borrowed; each leaf
+   `dup`s the used RR fields it extracts, drops the consumed scrutinee early (or
+   keeps it if live after), moves a whole-scrutinee binding, and reconciles
+   dead-after outer vars N-way across the switch arms. Reuse specialization
+   (in-place, uniqueness-guarded) is the backend's job, exactly as Koka separates
+   Perceus from reuse analysis. **Guards** (scrutinee stays live across a
+   re-testable failure path) `unimplemented!` for a follow-up.
+   *Note:* binding-type resolution via an enriched `RecordTable` proved
+   **unnecessary** here — an unused binding needs no op (the scrutinee drop frees
+   it), and a used binding's type is on its `Var` node; the enrichment is still
+   wanted for the `Proj` container increment.
+4. **Containers:** `Proj` borrow-dup, `Nullable` payloads, `Variant`, transitive
    value-records.
-4. **Closures & regions:** capture consumption, region-run lifecycle.
-5. **Drop-specialization** (optional, reuse-targeted).
+5. **Closures & regions:** capture consumption, region-run lifecycle.
+6. **Drop-specialization** (optional, reuse-targeted).
 
 Then **pm/08:** codegen consumes `OwnershipTable` → emits `rc.inc` / `rc.dec` /
 `ref.drop`, gated by ASAN/LSAN execution tests.

@@ -8,11 +8,12 @@
 //! MIR is immutable, so the result is a side-table keyed by [`mir::ExprId`]
 //! anchors rather than a rewritten tree — see [`OwnershipTable`].
 //!
-//! This is **increment 1** (see `docs/ownership-analysis.md` §10): the linear
-//! core (`Var` / `Let` / `Seq` / `Call` / `Ctor` / `Variant` / `NullableCall`),
-//! the [`is_rr`](Rr::is_rr) predicate (including transitive value-records), and
-//! the test harness. Control flow (`If` / `Match`), container borrows (`Proj`),
-//! closures, and regions land in later increments; the forms they need
+//! Implemented so far (see `docs/ownership-analysis.md` §10): the linear core
+//! (`Var` / `Let` / `Seq` / `Call` / `Ctor` / `Variant` / `NullableCall`), the
+//! [`is_rr`](Rr::is_rr) predicate (including transitive value-records), `If`
+//! branch reconciliation, discarded-result drops, and **pattern matching**
+//! (`Match` over `Switch` + `Leaf`, borrow-dup). Still to come: match guards,
+//! container borrows (`Proj`), closures, and regions — the forms they need
 //! [`unimplemented!`] loudly rather than silently miscounting.
 //!
 //! # Discipline
@@ -65,6 +66,30 @@
 //!  … ⊕ {s.after: drop-value s}     (its result is owned but unconsumed)
 //! ```
 //!
+//! # Match (borrow-dup, à la Perceus/Koka)
+//!
+//! A `match` **borrows** its scrutinee to read fields; it does not consume it at
+//! the scrutinee position. Per leaf (the reconciliation join is N-way over the
+//! switch arms, like [If-Reconcile]):
+//!
+//! - a used RR field binding `(y, path≠[])` takes `dup y` (borrow-extract: the
+//!   field is aliased out while the scrutinee still holds its reference);
+//! - the scrutinee is **consumed** iff it is dead after the match (a `Var(s)` with
+//!   `s ∉ free(arms) ∪ L`, or any temporary); a consumed scrutinee is dropped at
+//!   each leaf *after* the field dups (early, so the backend can reuse the token);
+//! - binding the **whole** scrutinee `(y, [])` is an identity, so it follows
+//!   ordinary move/borrow: a consumed scrutinee is *moved* into `y` (no op, no
+//!   drop), a borrowed one is `dup`'d;
+//! - an **unused** binding needs no op at all — a consumed scrutinee's drop
+//!   recursively frees its un-extracted fields, and a borrowed scrutinee is never
+//!   extracted.
+//!
+//! Reuse *specialization* (fusing `dup field; drop parent` into an in-place,
+//! uniqueness-guarded move) is the backend's job, exactly as Koka separates
+//! Perceus from its reuse analysis — the frontend only emits the early drop.
+//! Guards (which keep the scrutinee live across a re-testable failure path) land
+//! in a follow-up.
+//!
 //! # Relation to Tree Borrows
 //!
 //! Borrowed as *design inspiration*, not as a model: each owned RR var carries a
@@ -78,7 +103,7 @@ use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 
-use crate::full::mir::{Expr, ExprKind, Function};
+use crate::full::mir::{DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::hir::{ExprId, VarId};
 use crate::semi::ty::{Capability, Ty, TyCtxt, TyKind};
 
@@ -309,6 +334,13 @@ impl VarSet {
         }
     }
 
+    /// Remove every member of `other` (set difference, in place).
+    fn subtract(&mut self, other: &VarSet) {
+        for (a, b) in self.words.iter_mut().zip(other.words.iter()) {
+            *a &= !*b;
+        }
+    }
+
     /// The members, in ascending `VarId` order (deterministic op emission).
     fn iter(&self) -> impl Iterator<Item = VarId> + '_ {
         self.words.iter().enumerate().flat_map(|(w, &word)| {
@@ -421,8 +453,11 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 s.union_with(&self.free(t));
                 s.union_with(&self.free(e));
             }
-            ExprKind::Match(..)
-            | ExprKind::Proj(..)
+            ExprKind::Match(scrut, tree) => {
+                s.union_with(&self.free(scrut));
+                s.union_with(&self.free_tree(&tree));
+            }
+            ExprKind::Proj(..)
             | ExprKind::Assign(..)
             | ExprKind::RegionRun(..)
             | ExprKind::Closure(..)
@@ -431,6 +466,42 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                     "ownership::free: `{}` lands in a later increment (see ownership-analysis.md §10)",
                     kind_name(&e.kind)
                 )
+            }
+        }
+        s
+    }
+
+    /// The free RR variables of a decision tree: vars used in arm bodies (and
+    /// guards), **minus** the variables the patterns bind (those are internal to
+    /// the match, not free in it).
+    fn free_tree(&mut self, tree: &DecisionTree<'tcx>) -> VarSet {
+        let mut free = self.tree_body_free(tree);
+        let bound = tree_bound(tree);
+        free.subtract(&bound);
+        free
+    }
+
+    /// The union of the free sets of every arm body / guard in the tree (still
+    /// including pattern-bound vars; [`free_tree`](Self::free_tree) removes them).
+    fn tree_body_free(&mut self, tree: &DecisionTree<'tcx>) -> VarSet {
+        let mut s = VarSet::default();
+        match *tree {
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+            DecisionTree::Leaf { body, .. } => s.union_with(&self.free(body)),
+            DecisionTree::Guard {
+                guard,
+                success,
+                failure,
+                ..
+            } => {
+                s.union_with(&self.free(guard));
+                s.union_with(&self.tree_body_free(success));
+                s.union_with(&self.tree_body_free(failure));
+            }
+            DecisionTree::Switch { cases, .. } => {
+                for sub in subtrees(&cases) {
+                    s.union_with(&self.tree_body_free(sub));
+                }
             }
         }
         s
@@ -482,8 +553,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
             }
             ExprKind::If(c, t, e) => self.place_if(c, t, e, live_after),
-            ExprKind::Match(..)
-            | ExprKind::Proj(..)
+            ExprKind::Match(scrut, tree) => self.place_match(scrut, &tree, live_after),
+            ExprKind::Proj(..)
             | ExprKind::Assign(..)
             | ExprKind::RegionRun(..)
             | ExprKind::Closure(..)
@@ -494,6 +565,122 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 )
             }
         }
+    }
+
+    /// Place a `match`. See the module "Match" section for the model. The
+    /// scrutinee is borrowed; each leaf dups its used RR fields, drops the
+    /// scrutinee if it is consumed (dead after the match), and drops any
+    /// dead-after outer var it does not use (N-way [If-Reconcile]).
+    fn place_match(
+        &mut self,
+        scrut: &'tcx Expr<'tcx>,
+        tree: &DecisionTree<'tcx>,
+        live_after: &VarSet,
+    ) {
+        let tree_free = self.free_tree(tree);
+        let mut scrut_after = tree_free.clone();
+        scrut_after.union_with(live_after);
+
+        // Decide how the scrutinee value is settled by the match.
+        let (consumed, held) = match scrut.kind {
+            // A `Var` scrutinee is borrowed in place (no op); it is consumed iff
+            // dead after the whole match.
+            ExprKind::Var(s) if self.rr.is_rr(scrut.ty) => {
+                (!scrut_after.contains(s), Some(RcOp::Drop(s)))
+            }
+            // A non-RR scrutinee (matching an int/bool/…): nothing to settle.
+            ExprKind::Var(_) => (false, None),
+            // A temporary: its internals are placed here; the owned result is
+            // consumed by the match and dropped (by anchor) in each leaf.
+            _ => {
+                self.place(scrut, &scrut_after);
+                let held = self.rr.is_rr(scrut.ty).then_some(RcOp::DropValue(scrut.id));
+                (held.is_some(), held)
+            }
+        };
+
+        // Outer RR vars that die within the match: settled per leaf.
+        let mut must_settle = tree_free;
+        must_settle.subtract(live_after);
+        let must_settle: Vec<VarId> = must_settle.iter().collect();
+
+        self.place_tree(tree, live_after, consumed, held, &must_settle);
+    }
+
+    fn place_tree(
+        &mut self,
+        tree: &DecisionTree<'tcx>,
+        live_after: &VarSet,
+        consumed: bool,
+        held: Option<RcOp>,
+        must_settle: &[VarId],
+    ) {
+        match *tree {
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+            DecisionTree::Leaf { body, bindings } => {
+                self.place_leaf(body, bindings, live_after, consumed, held, must_settle);
+            }
+            DecisionTree::Guard { .. } => unimplemented!(
+                "ownership: `match` guards land in a follow-up increment \
+                 (the scrutinee stays live across a re-testable failure path)"
+            ),
+            DecisionTree::Switch { cases, .. } => {
+                for sub in subtrees(&cases) {
+                    self.place_tree(sub, live_after, consumed, held, must_settle);
+                }
+            }
+        }
+    }
+
+    fn place_leaf(
+        &mut self,
+        body: &'tcx Expr<'tcx>,
+        bindings: &'tcx [(VarId, &'tcx [u32])],
+        live_after: &VarSet,
+        consumed: bool,
+        held: Option<RcOp>,
+        must_settle: &[VarId],
+    ) {
+        let body_free = self.free(body);
+        // A used binding of the whole scrutinee (path `[]`) takes ownership of the
+        // borrowed root: moved if the scrutinee is consumed, else dup'd.
+        let has_whole = bindings
+            .iter()
+            .any(|&(y, path)| path.is_empty() && body_free.contains(y));
+
+        // 1. Field dups / whole-binding dup — used RR bindings only.
+        for &(y, path) in bindings {
+            if !body_free.contains(y) {
+                continue; // unused (or non-RR) binding: no op
+            }
+            if path.is_empty() {
+                if !consumed {
+                    self.add_before(body.id, RcOp::Dup(y)); // borrowed root → alias
+                }
+                // consumed whole binding ⇒ move (no op)
+            } else {
+                self.add_before(body.id, RcOp::Dup(y)); // borrow-extract a field
+            }
+        }
+
+        // 2. Drop the consumed scrutinee (after the field dups), unless a whole
+        //    binding moved it out.
+        if consumed
+            && !has_whole
+            && let Some(op) = held
+        {
+            self.add_before(body.id, op);
+        }
+
+        // 3. Reconciliation: settle dead-after outer vars this path does not use.
+        for &v in must_settle {
+            if !body_free.contains(v) {
+                self.add_before(body.id, RcOp::Drop(v));
+            }
+        }
+
+        // 4. The arm body, under the match's own continuation.
+        self.place(body, live_after);
     }
 
     /// [If-Reconcile]: place the condition (live across both arms), then each arm
@@ -580,6 +767,75 @@ impl<'tcx> Analyzer<'_, 'tcx> {
         }
         for (i, arg) in args.iter().enumerate() {
             self.place(arg, &afters[i]);
+        }
+    }
+}
+
+/// The immediate sub-trees of a switch's cases, in source order.
+fn subtrees<'tcx>(cases: &SwitchCases<'tcx>) -> Vec<&'tcx DecisionTree<'tcx>> {
+    let mut v = Vec::new();
+    match *cases {
+        SwitchCases::Int { cases, default } => {
+            for (_, t) in cases {
+                v.push(t);
+            }
+            v.push(default);
+        }
+        SwitchCases::Bool { if_true, if_false } => {
+            v.push(if_true);
+            v.push(if_false);
+        }
+        SwitchCases::Ctor(arms) => {
+            for t in arms {
+                v.push(t);
+            }
+        }
+        SwitchCases::String { cases, default } => {
+            for (_, t) in cases {
+                v.push(t);
+            }
+            v.push(default);
+        }
+        SwitchCases::Nullable { non_null, null } => {
+            v.push(non_null);
+            v.push(null);
+        }
+    }
+    v
+}
+
+/// Every variable bound by a pattern anywhere in the tree (internal to the match;
+/// excluded from its free set).
+fn tree_bound<'tcx>(tree: &DecisionTree<'tcx>) -> VarSet {
+    let mut s = VarSet::default();
+    collect_bound(tree, &mut s);
+    s
+}
+
+fn collect_bound<'tcx>(tree: &DecisionTree<'tcx>, s: &mut VarSet) {
+    match *tree {
+        DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+        DecisionTree::Leaf { bindings, .. } => {
+            for &(y, _) in bindings {
+                s.insert(y);
+            }
+        }
+        DecisionTree::Guard {
+            bindings,
+            success,
+            failure,
+            ..
+        } => {
+            for &(y, _) in bindings {
+                s.insert(y);
+            }
+            collect_bound(success, s);
+            collect_bound(failure, s);
+        }
+        DecisionTree::Switch { cases, .. } => {
+            for sub in subtrees(&cases) {
+                collect_bound(sub, s);
+            }
         }
     }
 }

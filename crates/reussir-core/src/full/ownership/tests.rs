@@ -18,7 +18,7 @@ use lasso::Rodeo;
 use rustc_hash::FxHashMap;
 
 use super::{Managed, OwnershipTable, RcOp, RecordShape, RecordTable, Rr, analyze_function};
-use crate::full::mir::{self, Expr, ExprKind, Function, Param};
+use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, Param, SwitchCases};
 use crate::semi::hir::VarId;
 use crate::semi::ty::{Capability, DefId, IntTy, Ty, TyCtxt};
 use crate::surface::Visibility;
@@ -192,6 +192,33 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
         self.mk(ExprKind::Ctor { record, args }, ty)
     }
 
+    // ----- decision trees -----
+
+    fn leaf(&self, body: Expr<'tcx>, bindings: Vec<(VarId, Vec<u32>)>) -> DecisionTree<'tcx> {
+        let body = self.tcx.alloc(body);
+        let bs: Vec<(VarId, &'tcx [u32])> = bindings
+            .iter()
+            .map(|(y, p)| (*y, self.tcx.alloc_slice(p)))
+            .collect();
+        let bindings = self.tcx.alloc_slice(&bs);
+        DecisionTree::Leaf { body, bindings }
+    }
+
+    /// A variant switch on the value at `path` (root = `[]`), one arm per variant.
+    fn switch_ctor(&self, path: Vec<u32>, arms: Vec<DecisionTree<'tcx>>) -> DecisionTree<'tcx> {
+        let scrutinee = self.tcx.alloc_slice(&path);
+        let arms = self.tcx.alloc_slice(&arms);
+        DecisionTree::Switch {
+            scrutinee,
+            cases: SwitchCases::Ctor(arms),
+        }
+    }
+
+    fn match_(&mut self, scrut: Expr<'tcx>, tree: DecisionTree<'tcx>, ty: Ty<'tcx>) -> Expr<'tcx> {
+        let scrut = self.tcx.alloc(scrut);
+        self.mk(ExprKind::Match(scrut, tree), ty)
+    }
+
     fn param(&mut self, v: VarId, ty: Ty<'tcx>) -> Param<'tcx> {
         Param {
             name: dummy_tok(),
@@ -318,11 +345,39 @@ impl Renderer<'_> {
                 self.line(indent, "else");
                 self.expr(e, indent + 1);
             }
+            ExprKind::Match(scrut, tree) => {
+                self.line(indent, "match");
+                self.expr(scrut, indent + 1);
+                self.tree(&tree, indent + 1);
+            }
             _ => self.line(indent, &format!("<{}>", super::kind_name(&e.kind))),
         }
         let after = self.ot.after(e.id);
         if !after.is_empty() {
             self.line(indent, &format!("« {}", ops_str(after)));
+        }
+    }
+
+    fn tree(&mut self, t: &DecisionTree<'_>, indent: usize) {
+        match *t {
+            DecisionTree::Uncovered => self.line(indent, "uncovered"),
+            DecisionTree::Unreachable => self.line(indent, "unreachable"),
+            DecisionTree::Leaf { body, bindings } => {
+                let bs = bindings
+                    .iter()
+                    .map(|(y, p)| format!("v{}@{p:?}", y.0))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(indent, &format!("leaf [{bs}]"));
+                self.expr(body, indent + 1);
+            }
+            DecisionTree::Guard { .. } => self.line(indent, "guard <…>"),
+            DecisionTree::Switch { cases, .. } => {
+                self.line(indent, "switch");
+                for sub in super::subtrees(&cases) {
+                    self.tree(sub, indent + 1);
+                }
+            }
         }
     }
 }
@@ -357,12 +412,11 @@ fn render(func: &Function<'_>, ot: &OwnershipTable, syms: &Rodeo) -> String {
 
 fn apply(op: RcOp, rc: &mut FxHashMap<VarId, i32>) {
     match op {
+        // A `dup` on an owned var increments it; a `dup` on an as-yet-untracked
+        // var *establishes* it (this is how a borrow-extracted pattern binding
+        // takes ownership — `bind y = project(scrut, path); rc.inc(y)`).
         RcOp::Dup(x) => {
-            let c = rc
-                .get_mut(&x)
-                .unwrap_or_else(|| panic!("dup of unowned v{}", x.0));
-            assert!(*c >= 1, "dup of settled v{} (rc {c})", x.0);
-            *c += 1;
+            *rc.entry(x).or_insert(0) += 1;
         }
         RcOp::Drop(x) => {
             let c = rc
@@ -440,6 +494,47 @@ fn interp<'tcx>(
             );
             *rc = rc_t;
         }
+        // The scrutinee is borrowed: a `Var` scrutinee is left untouched here (the
+        // leaves settle it via the held drop / whole-move); a temporary's internals
+        // are interpreted, its anonymous result settled by a leaf `drop-value`.
+        // Each leaf is interpreted from the same entry state and must reconcile to
+        // identical ownership; pattern bindings are leaf-local and dropped from the
+        // join.
+        ExprKind::Match(scrut, tree) => {
+            if !matches!(scrut.kind, ExprKind::Var(_)) {
+                interp(scrut, ot, rr, rc);
+            }
+            let entry = rc.clone();
+            let mut join: Option<FxHashMap<VarId, i32>> = None;
+            for (body, bindings) in collect_leaves(&tree) {
+                let mut rcl = entry.clone();
+                // A moved whole-binding has no op: transfer the scrutinee's
+                // ownership to the bound var so it can be consumed in the body.
+                for &(y, path) in bindings {
+                    if path.is_empty() && uses_var(body, y) {
+                        let dup_established = ot.before(body.id).contains(&RcOp::Dup(y));
+                        if !dup_established {
+                            let taken = match scrut.kind {
+                                ExprKind::Var(s) => rcl.remove(&s).unwrap_or(1),
+                                _ => 1,
+                            };
+                            rcl.insert(y, taken);
+                        }
+                    }
+                }
+                interp(body, ot, rr, &mut rcl);
+                for &(y, _) in bindings {
+                    rcl.remove(&y);
+                }
+                match &join {
+                    None => join = Some(rcl),
+                    Some(j) => assert_eq!(*j, rcl, "match arms differ: {j:?} vs {rcl:?}"),
+                }
+            }
+            if let Some(j) = join {
+                *rc = j;
+            }
+        }
         ExprKind::GlobalStr(_)
         | ExprKind::ConstInt(_)
         | ExprKind::ConstFloat(_)
@@ -452,6 +547,67 @@ fn interp<'tcx>(
     }
     for &op in ot.after(e.id) {
         apply(op, rc);
+    }
+}
+
+/// A match leaf: its body and the variables its patterns bind.
+type LeafView<'tcx> = (&'tcx Expr<'tcx>, &'tcx [(VarId, &'tcx [u32])]);
+
+/// Every `(body, bindings)` leaf reachable in the tree, in source order.
+fn collect_leaves<'tcx>(tree: &DecisionTree<'tcx>) -> Vec<LeafView<'tcx>> {
+    let mut out = Vec::new();
+    fn go<'tcx>(t: &DecisionTree<'tcx>, out: &mut Vec<LeafView<'tcx>>) {
+        match *t {
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+            DecisionTree::Leaf { body, bindings } => out.push((body, bindings)),
+            DecisionTree::Guard { .. } => panic!("checker: match guards are not yet supported"),
+            DecisionTree::Switch { cases, .. } => {
+                for sub in super::subtrees(&cases) {
+                    go(sub, out);
+                }
+            }
+        }
+    }
+    go(tree, &mut out);
+    out
+}
+
+/// Whether `e`'s tree contains a use of variable `y`.
+fn uses_var(e: &Expr<'_>, y: VarId) -> bool {
+    let mut found = false;
+    fn go(e: &Expr<'_>, y: VarId, found: &mut bool) {
+        if *found {
+            return;
+        }
+        if let ExprKind::Var(x) = e.kind
+            && x == y
+        {
+            *found = true;
+            return;
+        }
+        for child in children(e) {
+            go(child, y, found);
+        }
+    }
+    go(e, y, &mut found);
+    found
+}
+
+/// The immediate sub-expressions of `e` (decision-tree arms reached separately).
+fn children<'tcx>(e: &Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
+    use ExprKind::*;
+    match e.kind {
+        GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => vec![],
+        Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],
+        Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => vec![l, r],
+        If(c, t, e) => vec![c, t, e],
+        Let { value, .. } => vec![value],
+        Seq(es) => es.iter().collect(),
+        Call { args, .. } | Ctor { args, .. } | Variant { args, .. } => args.iter().collect(),
+        NullableCall(opt) => opt.into_iter().collect(),
+        ClosureCall { target, args } => std::iter::once(target).chain(args.iter()).collect(),
+        Closure(c) => vec![c.body],
+        Match(scrut, _) => vec![scrut],
     }
 }
 
@@ -832,6 +988,157 @@ fn discarded_rr_statement_gets_drop_value() {
             ot.after(effect_id),
             &[RcOp::DropValue(effect_id)],
             "discarded Rc result is dropped by value"
+        );
+    });
+}
+
+// ----- increment 3: pattern matching (borrow-dup, Perceus-style) -----
+
+#[test]
+fn match_extracts_field_and_drops_scrutinee() {
+    // fn f(e: E) -> i64 { match e { #0 => 0, #1(x) => use(x) } }
+    //   e dies (returns i64) ⇒ consumed: each arm dups the field it extracts, then
+    //   drops the scrutinee shell (which recursively frees what it didn't extract).
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let e_ty = b.shared(); // the enum, rc-managed
+        let rc = b.shared(); // the payload field type
+        let i64t = b.i64();
+        let e = b.fresh_var();
+        let x = b.fresh_var();
+
+        let body0 = b.const_int(0);
+        let body0_id = body0.id;
+        let leaf0 = b.leaf(body0, vec![]);
+
+        let vx = b.var(x, rc);
+        let use_x = b.call("use", vec![vx], i64t);
+        let body1_id = use_x.id;
+        let leaf1 = b.leaf(use_x, vec![(x, vec![0])]);
+
+        let tree = b.switch_ctor(vec![], vec![leaf0, leaf1]);
+        let scrut = b.var(e, e_ty);
+        let body = b.match_(scrut, tree, i64t);
+
+        let params = vec![b.param(e, e_ty)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(body0_id),
+            &[RcOp::Drop(e)],
+            "empty arm drops the consumed scrutinee"
+        );
+        assert_eq!(
+            ot.before(body1_id),
+            &[RcOp::Dup(x), RcOp::Drop(e)],
+            "extracting arm dups the field, then drops the scrutinee"
+        );
+    });
+}
+
+#[test]
+fn match_whole_scrutinee_moves() {
+    // fn f(e: E) -> i64 { match e { y => use(y) } }
+    //   binding the whole scrutinee is an identity ⇒ a plain move: no inc, no dec.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let e_ty = b.shared();
+        let i64t = b.i64();
+        let e = b.fresh_var();
+        let y = b.fresh_var();
+
+        let vy = b.var(y, e_ty);
+        let use_y = b.call("use", vec![vy], i64t);
+        let use_y_id = use_y.id;
+        let tree = b.leaf(use_y, vec![(y, vec![])]);
+        let scrut = b.var(e, e_ty);
+        let body = b.match_(scrut, tree, i64t);
+
+        let params = vec![b.param(e, e_ty)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert!(
+            ot.get(use_y_id).is_none(),
+            "whole-scrutinee bind is a move: no rc.inc on the root, no rc.dec"
+        );
+    });
+}
+
+#[test]
+fn match_unused_binding_freed_by_scrutinee_drop() {
+    // fn f(e: E) -> i64 { match e { #0 => 0, #1(x) => 0 } }  — x bound but unused.
+    //   No dup for x; the scrutinee drop recursively frees the unextracted field.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let e_ty = b.shared();
+        let i64t = b.i64();
+        let e = b.fresh_var();
+        let x = b.fresh_var();
+
+        let body0 = b.const_int(0);
+        let leaf0 = b.leaf(body0, vec![]);
+        let body1 = b.const_int(0);
+        let body1_id = body1.id;
+        let leaf1 = b.leaf(body1, vec![(x, vec![0])]);
+
+        let tree = b.switch_ctor(vec![], vec![leaf0, leaf1]);
+        let scrut = b.var(e, e_ty);
+        let body = b.match_(scrut, tree, i64t);
+
+        let params = vec![b.param(e, e_ty)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(body1_id),
+            &[RcOp::Drop(e)],
+            "unused binding gets no dup; only the scrutinee drop"
+        );
+    });
+}
+
+#[test]
+fn match_reconciles_an_outer_var() {
+    // fn f(e: E, w: Rc) -> i64 { match e { #0 => use(w), #1(x) => use2(x) } }
+    //   w (an outer var) is used only in arm #0; arm #1 must drop it.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let e_ty = b.shared();
+        let rc = b.shared();
+        let i64t = b.i64();
+        let e = b.fresh_var();
+        let w = b.fresh_var();
+        let x = b.fresh_var();
+
+        let vw = b.var(w, rc);
+        let use_w = b.call("use", vec![vw], i64t);
+        let body0_id = use_w.id;
+        let leaf0 = b.leaf(use_w, vec![]);
+
+        let vx = b.var(x, rc);
+        let use_x = b.call("use2", vec![vx], i64t);
+        let body1_id = use_x.id;
+        let leaf1 = b.leaf(use_x, vec![(x, vec![0])]);
+
+        let tree = b.switch_ctor(vec![], vec![leaf0, leaf1]);
+        let scrut = b.var(e, e_ty);
+        let body = b.match_(scrut, tree, i64t);
+
+        let params = vec![b.param(e, e_ty), b.param(w, rc)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(body0_id),
+            &[RcOp::Drop(e)],
+            "arm #0 uses w ⇒ only the scrutinee drop"
+        );
+        assert_eq!(
+            ot.before(body1_id),
+            &[RcOp::Dup(x), RcOp::Drop(e), RcOp::Drop(w)],
+            "arm #1 dups x, drops the scrutinee, and reconciles by dropping w"
         );
     });
 }
