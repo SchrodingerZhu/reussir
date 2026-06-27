@@ -49,6 +49,20 @@
 //!  p ∈ params,  is_rr(p),  p ∉ free(body)
 //! ──────────────────────────────────────── [Param-Unused]
 //!  {} ⊢ body ⤳ … ⊕ {root.before: drop p}
+//!
+//!  L ⊢ t ⤳ 𝒜ₜ      L ⊢ e ⤳ 𝒜ₑ      free(c) ∪ free(t) ∪ free(e) ∪ L ⊢ c ⤳ 𝒜_c
+//! ──────────────────────────────────────────────────────────────────────── [If-Reconcile]
+//!  L ⊢ (if c then t else e) ⤳ 𝒜_c ⊕ 𝒜ₜ ⊕ 𝒜ₑ
+//!                ⊕ {t.before: drop x | x ∈ free(e) \ free(t), x ∉ L}
+//!                ⊕ {e.before: drop x | x ∈ free(t) \ free(e), x ∉ L}
+//!   A var owned on entry but used in only one branch and dead afterwards is
+//!   settled (moved) on the branch that uses it and dropped on the branch that
+//!   does not, so both arms exit owning the same set. A var in `L` survives both
+//!   arms (dup'd at any in-arm use); a var used in both arms is moved in each.
+//!
+//!  s is a non-final Seq statement, is_rr(s), s not a `let`
+//! ────────────────────────────────────────────────────────── [Discard]
+//!  … ⊕ {s.after: drop-value s}     (its result is owned but unconsumed)
 //! ```
 //!
 //! # Relation to Tree Borrows
@@ -72,15 +86,19 @@ use crate::semi::ty::{Capability, Ty, TyCtxt, TyKind};
 // Output data model
 // ---------------------------------------------------------------------------
 
-/// A single reference-counting operation the backend must emit. Keyed by
-/// [`VarId`]; richer targets (`DropField(VarId, Path)`, dropping an anonymous
-/// result) arrive with the container and control-flow increments.
+/// A single reference-counting operation the backend must emit. Mostly keyed by
+/// [`VarId`]; richer targets (`DropField(VarId, Path)`) arrive with the container
+/// increment.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RcOp {
     /// Increment the refcount of `x` (it has another live owner).
     Dup(VarId),
     /// Decrement the refcount of `x` (its last owner here is releasing it).
     Drop(VarId),
+    /// Decrement the refcount of the **anonymous result** of node `id` — a
+    /// statement value that is produced but neither bound nor consumed (a
+    /// discarded non-final `Seq` statement). Recorded in that node's `after`.
+    DropValue(ExprId),
 }
 
 /// The rc ops to run immediately *before* and *after* evaluating one expression.
@@ -290,6 +308,15 @@ impl VarSet {
             *a |= *b;
         }
     }
+
+    /// The members, in ascending `VarId` order (deterministic op emission).
+    fn iter(&self) -> impl Iterator<Item = VarId> + '_ {
+        self.words.iter().enumerate().flat_map(|(w, &word)| {
+            (0..64)
+                .filter(move |b| (word >> b) & 1 == 1)
+                .map(move |b| VarId((w * 64 + b) as u32))
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +416,12 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                     s.union_with(&self.free(x));
                 }
             }
-            ExprKind::If(..)
-            | ExprKind::Match(..)
+            ExprKind::If(c, t, e) => {
+                s.union_with(&self.free(c));
+                s.union_with(&self.free(t));
+                s.union_with(&self.free(e));
+            }
+            ExprKind::Match(..)
             | ExprKind::Proj(..)
             | ExprKind::Assign(..)
             | ExprKind::RegionRun(..)
@@ -450,8 +481,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                     self.place(x, live_after);
                 }
             }
-            ExprKind::If(..)
-            | ExprKind::Match(..)
+            ExprKind::If(c, t, e) => self.place_if(c, t, e, live_after),
+            ExprKind::Match(..)
             | ExprKind::Proj(..)
             | ExprKind::Assign(..)
             | ExprKind::RegionRun(..)
@@ -461,6 +492,45 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                     "ownership::place: `{}` lands in a later increment (see ownership-analysis.md §10)",
                     kind_name(&e.kind)
                 )
+            }
+        }
+    }
+
+    /// [If-Reconcile]: place the condition (live across both arms), then each arm
+    /// under the shared continuation `L`, then settle one-sided ownership so both
+    /// arms exit owning the same set — a var used in only one arm and dead after
+    /// is moved on the arm that uses it and dropped on the arm that does not.
+    fn place_if(
+        &mut self,
+        c: &'tcx Expr<'tcx>,
+        t: &'tcx Expr<'tcx>,
+        e: &'tcx Expr<'tcx>,
+        live_after: &VarSet,
+    ) {
+        let used_t = self.free(t);
+        let used_e = self.free(e);
+
+        // The condition runs before either arm, so anything an arm needs is live
+        // across it.
+        let mut cond_live = used_t.clone();
+        cond_live.union_with(&used_e);
+        cond_live.union_with(live_after);
+        self.place(c, &cond_live);
+
+        self.place(t, live_after);
+        self.place(e, live_after);
+
+        // Reconciliation drops, ascending var order for determinism. `x ∉ L`
+        // because a var in `L` is owned out of both arms (no drop); a var used in
+        // both arms is moved (settled) in each.
+        for x in used_e.iter() {
+            if !used_t.contains(x) && !live_after.contains(x) {
+                self.add_before(t.id, RcOp::Drop(x));
+            }
+        }
+        for x in used_t.iter() {
+            if !used_e.contains(x) && !live_after.contains(x) {
+                self.add_before(e.id, RcOp::Drop(x));
             }
         }
     }
@@ -486,14 +556,11 @@ impl<'tcx> Analyzer<'_, 'tcx> {
 
     fn place_stmt(&mut self, s: &Expr<'tcx>, after: &VarSet, is_last: bool) {
         self.place(s, after);
-        // A non-final statement whose RR result is neither bound (`Let`) nor
-        // consumed leaves an owned value with no name to drop. Anonymous-result
-        // drops arrive with the control-flow increment.
+        // [Discard]: a non-final statement whose RR result is neither bound
+        // (`Let`) nor consumed leaves an owned value with no name — drop it by
+        // anchor right after the statement.
         if !is_last && !matches!(s.kind, ExprKind::Let { .. }) && self.rr.is_rr(s.ty) {
-            unimplemented!(
-                "ownership: an unconsumed non-`let` statement of RR type needs a \
-                 result-drop (control-flow increment)"
-            );
+            self.add_after(s.id, RcOp::DropValue(s.id));
         }
     }
 

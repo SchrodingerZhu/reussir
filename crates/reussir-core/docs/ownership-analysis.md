@@ -381,8 +381,12 @@ table.
    and the **linear core** (`Var` / `Let` / `Seq` / `Call` / `Ctor` / `Variant` /
    `NullableCall`) with the §9.3 corpus. Deferred forms (`If`/`Match`/`Proj`/…)
    `unimplemented!` loudly rather than miscount.
-2. **Control flow:** `If` / `Match` branch reconciliation, multi-use `Dup`,
-   discarded-result drops.
+2. **Control flow — `If` landed.** `If` branch reconciliation (settle one-sided
+   ownership so both arms exit owning the same set), multi-use `Dup` (already in
+   increment 1), and discarded-result drops via `RcOp::DropValue(ExprId)` for an
+   unconsumed non-`let` `Seq` statement. **`Match` reconciliation over decision
+   trees** (switch/guard/bindings) is split into its own follow-up — it overlaps
+   the container increment (destructuring `Proj`/partial moves).
 3. **Containers:** `Proj` borrow-dup, `Nullable`, `Variant`, transitive
    value-records.
 4. **Closures & regions:** capture consumption, region-run lifecycle.

@@ -142,6 +142,18 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
         self.mk(ExprKind::ConstInt(n), ty)
     }
 
+    fn const_bool(&mut self, b: bool) -> Expr<'tcx> {
+        let ty = self.tcx.mk_bool();
+        self.mk(ExprKind::ConstBool(b), ty)
+    }
+
+    fn if_(&mut self, c: Expr<'tcx>, t: Expr<'tcx>, e: Expr<'tcx>, ty: Ty<'tcx>) -> Expr<'tcx> {
+        let c = self.tcx.alloc(c);
+        let t = self.tcx.alloc(t);
+        let e = self.tcx.alloc(e);
+        self.mk(ExprKind::If(c, t, e), ty)
+    }
+
     /// `let v = value;` (a Seq statement; its own result type is unit).
     fn let_(&mut self, v: VarId, value: Expr<'tcx>) -> Expr<'tcx> {
         let value = self.tcx.alloc(value);
@@ -217,6 +229,7 @@ fn ops_str(ops: &[RcOp]) -> String {
         .map(|op| match op {
             RcOp::Dup(v) => format!("dup v{}", v.0),
             RcOp::Drop(v) => format!("drop v{}", v.0),
+            RcOp::DropValue(id) => format!("drop-value #{}", id.0),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -297,6 +310,14 @@ impl Renderer<'_> {
                 self.line(indent, "unop");
                 self.expr(x, indent + 1);
             }
+            ExprKind::If(c, t, e) => {
+                self.line(indent, "if");
+                self.expr(c, indent + 1);
+                self.line(indent, "then");
+                self.expr(t, indent + 1);
+                self.line(indent, "else");
+                self.expr(e, indent + 1);
+            }
             _ => self.line(indent, &format!("<{}>", super::kind_name(&e.kind))),
         }
         let after = self.ot.after(e.id);
@@ -350,6 +371,9 @@ fn apply(op: RcOp, rc: &mut FxHashMap<VarId, i32>) {
             assert!(*c >= 1, "drop of settled v{} (rc {c})", x.0);
             *c -= 1;
         }
+        // Settles an anonymous statement result, which this named-var checker
+        // does not track — nothing to charge.
+        RcOp::DropValue(_) => {}
     }
 }
 
@@ -401,6 +425,20 @@ fn interp<'tcx>(
         ExprKind::Arith(l, _, r) | ExprKind::Cmp(l, _, r) => {
             interp(l, ot, rr, rc);
             interp(r, ot, rr, rc);
+        }
+        // Each arm is interpreted from the same entry state; reconciliation must
+        // leave both with identical ownership (the join is well-defined).
+        ExprKind::If(c, t, e) => {
+            interp(c, ot, rr, rc);
+            let mut rc_t = rc.clone();
+            let mut rc_e = rc.clone();
+            interp(t, ot, rr, &mut rc_t);
+            interp(e, ot, rr, &mut rc_e);
+            assert_eq!(
+                rc_t, rc_e,
+                "if-arms leave different ownership: then={rc_t:?} else={rc_e:?}"
+            );
+            *rc = rc_t;
         }
         ExprKind::GlobalStr(_)
         | ExprKind::ConstInt(_)
@@ -651,5 +689,149 @@ fn chained_moves_need_no_rc_ops() {
 
         assert!(ot.get(let_id).is_none(), "y is moved out ⇒ no drop");
         assert!(ot.before(xval.id).is_empty(), "x moved into y ⇒ no dup");
+    });
+}
+
+// ----- increment 2: control flow -----
+
+#[test]
+fn case3_if_var_used_in_one_arm_dropped_in_other() {
+    // fn f(x: Rc) -> i64 { if c { consume(x) } else { 0 } }
+    //   x dies (returns i64): moved in the `then` arm, dropped in the `else` arm.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rc = b.shared();
+        let i64t = b.i64();
+        let x = b.fresh_var();
+
+        let xuse = b.var(x, rc);
+        let then = b.call("consume", vec![xuse], i64t);
+        let then_id = then.id;
+        let els = b.const_int(0);
+        let els_id = els.id;
+        let cond = b.const_bool(true);
+        let body = b.if_(cond, then, els, i64t);
+
+        let params = vec![b.param(x, rc)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert!(ot.before(then_id).is_empty(), "then moves x ⇒ no drop");
+        assert_eq!(
+            ot.before(els_id),
+            &[RcOp::Drop(x)],
+            "else never uses x ⇒ drop on entry to that arm"
+        );
+    });
+}
+
+#[test]
+fn if_returns_one_of_two_params() {
+    // fn f(x: Rc, y: Rc) -> Rc { if c { x } else { y } }
+    //   each arm moves one and drops the other, so both exit owning nothing.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rc = b.shared();
+        let x = b.fresh_var();
+        let y = b.fresh_var();
+
+        let then = b.var(x, rc);
+        let then_id = then.id;
+        let els = b.var(y, rc);
+        let els_id = els.id;
+        let cond = b.const_bool(true);
+        let body = b.if_(cond, then, els, rc);
+
+        let params = vec![b.param(x, rc), b.param(y, rc)];
+        let func = b.function("f", params, rc, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(then_id),
+            &[RcOp::Drop(y)],
+            "then drops the unused y"
+        );
+        assert_eq!(
+            ot.before(els_id),
+            &[RcOp::Drop(x)],
+            "else drops the unused x"
+        );
+    });
+}
+
+#[test]
+fn if_var_live_after_dups_in_each_arm() {
+    // fn f(x: Rc) -> Pair { let a = if c { g(x) } else { h(x) }; mk(x, a) }
+    //   x is used in each arm *and* again in `mk`, so each arm dup's it; the
+    //   trailing `mk` is x's last use and moves it.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rc = b.shared();
+        let pair = b.value(vec![rc, rc]);
+        let x = b.fresh_var();
+        let a = b.fresh_var();
+
+        let xg = b.var(x, rc);
+        let xg_id = xg.id;
+        let gx = b.call("g", vec![xg], rc);
+        let xh = b.var(x, rc);
+        let xh_id = xh.id;
+        let hx = b.call("h", vec![xh], rc);
+        let cond = b.const_bool(true);
+        let iff = b.if_(cond, gx, hx, rc);
+        let let_a = b.let_(a, iff);
+
+        let xm = b.var(x, rc);
+        let xm_id = xm.id;
+        let am = b.var(a, rc);
+        let mk = b.call("mk", vec![xm, am], pair);
+        let body = b.seq(vec![let_a, mk], pair);
+
+        let params = vec![b.param(x, rc)];
+        let func = b.function("f", params, pair, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(xg_id),
+            &[RcOp::Dup(x)],
+            "then dup's the still-live x"
+        );
+        assert_eq!(
+            ot.before(xh_id),
+            &[RcOp::Dup(x)],
+            "else dup's the still-live x"
+        );
+        assert!(
+            ot.before(xm_id).is_empty(),
+            "trailing use of x is the last ⇒ move"
+        );
+    });
+}
+
+#[test]
+fn discarded_rr_statement_gets_drop_value() {
+    // fn f(x: Rc) -> i64 { effect(x); 0 }
+    //   `effect(x)` returns an Rc that is discarded ⇒ drop-value its result.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rc = b.shared();
+        let i64t = b.i64();
+        let x = b.fresh_var();
+
+        let xuse = b.var(x, rc);
+        let effect = b.call("effect", vec![xuse], rc);
+        let effect_id = effect.id;
+        let zero = b.const_int(0);
+        let body = b.seq(vec![effect, zero], i64t);
+
+        let params = vec![b.param(x, rc)];
+        let func = b.function("f", params, i64t, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.after(effect_id),
+            &[RcOp::DropValue(effect_id)],
+            "discarded Rc result is dropped by value"
+        );
     });
 }
