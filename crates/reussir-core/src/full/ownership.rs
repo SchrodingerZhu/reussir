@@ -8,13 +8,13 @@
 //! MIR is immutable, so the result is a side-table keyed by [`mir::ExprId`]
 //! anchors rather than a rewritten tree — see [`OwnershipTable`].
 //!
-//! Implemented so far (see `docs/ownership-analysis.md` §10): the linear core
-//! (`Var` / `Let` / `Seq` / `Call` / `Ctor` / `Variant` / `NullableCall`), the
-//! [`is_rr`](Rr::is_rr) predicate (including transitive value-records), `If`
-//! branch reconciliation, discarded-result drops, and **pattern matching**
-//! (`Match` over `Switch` + `Leaf`, borrow-dup). Still to come: match guards,
-//! container borrows (`Proj`), closures, and regions — the forms they need
-//! [`unimplemented!`] loudly rather than silently miscounting.
+//! Every Full MIR form is handled (see `docs/ownership-analysis.md` §10): the
+//! linear core (`Var` / `Let` / `Seq` / `Call` / `Ctor` / `Variant` /
+//! `NullableCall`), the [`is_rr`](Rr::is_rr) predicate (including transitive
+//! value-records), `If` branch reconciliation, discarded-result drops, **pattern
+//! matching** (`Match` over `Switch` + `Leaf` + `Guard`, borrow-dup), container
+//! borrows (`Proj`, `Assign`), closures (`Closure`, `ClosureCall`), and regions
+//! (`RegionRun`). No form is deferred — the analysis is total over the MIR.
 //!
 //! # Discipline
 //!
@@ -29,7 +29,7 @@
 //!
 //! Judgment `L ⊢ e ⤳ 𝒜`: "with continuation-live set `L`, expression `e`
 //! annotates to actions `𝒜`". `free(e)` is the set of named RR vars used in `e`;
-//! `L` is the set live in `e`'s continuation. The increment-1 rules:
+//! `L` is the set live in `e`'s continuation. The core rules:
 //!
 //! ```text
 //! x ∈ L                                   x ∉ L
@@ -87,8 +87,14 @@
 //! Reuse *specialization* (fusing `dup field; drop parent` into an in-place,
 //! uniqueness-guarded move) is the backend's job, exactly as Koka separates
 //! Perceus from its reuse analysis — the frontend only emits the early drop.
-//! Guards (which keep the scrutinee live across a re-testable failure path) land
-//! in a follow-up.
+//!
+//! A **guard** keeps the scrutinee live across its re-testable `failure` path, so
+//! the scrutinee drop is *not* hoisted above the guard — it stays in each terminal
+//! leaf. The guard's pattern bindings are borrow-extracted (dup at the guard,
+//! before either branch); a binding used only in the guard is consumed there,
+//! while one that survives into a branch is settled there (the branch that uses it
+//! moves it, the branch that does not drops it) — i.e. it joins the sub-trees'
+//! per-leaf settle obligations.
 //!
 //! # Relation to Tree Borrows
 //!
@@ -103,7 +109,7 @@ use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 
-use crate::full::mir::{DecisionTree, Expr, ExprKind, Function, SwitchCases};
+use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::hir::{ExprId, VarId};
 use crate::semi::ty::{Capability, Ty, TyCtxt, TyKind};
 
@@ -111,9 +117,8 @@ use crate::semi::ty::{Capability, Ty, TyCtxt, TyKind};
 // Output data model
 // ---------------------------------------------------------------------------
 
-/// A single reference-counting operation the backend must emit. Mostly keyed by
-/// [`VarId`]; richer targets (`DropField(VarId, Path)`) arrive with the container
-/// increment.
+/// A single reference-counting operation the backend must emit, keyed either by
+/// [`VarId`] (a named owner) or by [`ExprId`] (an anonymous intermediate result).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RcOp {
     /// Increment the refcount of `x` (it has another live owner).
@@ -122,8 +127,13 @@ pub enum RcOp {
     Drop(VarId),
     /// Decrement the refcount of the **anonymous result** of node `id` — a
     /// statement value that is produced but neither bound nor consumed (a
-    /// discarded non-final `Seq` statement). Recorded in that node's `after`.
+    /// discarded non-final `Seq` statement, or a consumed temporary that was
+    /// projected from). Recorded in that node's `after`.
     DropValue(ExprId),
+    /// Increment the refcount of the **anonymous result** of node `id` — a field
+    /// borrow-extracted by a [`Proj`](ExprKind::Proj): the parent record still
+    /// owns the original, so the extracted owned copy must be inc'd.
+    DupValue(ExprId),
 }
 
 /// The rc ops to run immediately *before* and *after* evaluating one expression.
@@ -457,15 +467,28 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 s.union_with(&self.free(scrut));
                 s.union_with(&self.free_tree(&tree));
             }
-            ExprKind::Proj(..)
-            | ExprKind::Assign(..)
-            | ExprKind::RegionRun(..)
-            | ExprKind::Closure(..)
-            | ExprKind::ClosureCall { .. } => {
-                unimplemented!(
-                    "ownership::free: `{}` lands in a later increment (see ownership-analysis.md §10)",
-                    kind_name(&e.kind)
-                )
+            // A projection reads (borrows) its base: the base's vars are used, so
+            // the enclosing scope keeps them live until the projection.
+            ExprKind::Proj(base, _) => s.union_with(&self.free(base)),
+            ExprKind::Assign(dst, _, src) => {
+                s.union_with(&self.free(dst));
+                s.union_with(&self.free(src));
+            }
+            ExprKind::RegionRun(x) => s.union_with(&self.free(x)),
+            // A closure consumes its captured outer vars; its body is a separate
+            // scope and does not contribute to the enclosing function's free set.
+            ExprKind::Closure(c) => {
+                for &(v, ty) in c.captures {
+                    if self.rr.is_rr(ty) {
+                        s.insert(v);
+                    }
+                }
+            }
+            ExprKind::ClosureCall { target, args } => {
+                s.union_with(&self.free(target));
+                for arg in args {
+                    s.union_with(&self.free(arg));
+                }
             }
         }
         s
@@ -554,15 +577,113 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             }
             ExprKind::If(c, t, e) => self.place_if(c, t, e, live_after),
             ExprKind::Match(scrut, tree) => self.place_match(scrut, &tree, live_after),
-            ExprKind::Proj(..)
-            | ExprKind::Assign(..)
-            | ExprKind::RegionRun(..)
-            | ExprKind::Closure(..)
-            | ExprKind::ClosureCall { .. } => {
-                unimplemented!(
-                    "ownership::place: `{}` lands in a later increment (see ownership-analysis.md §10)",
-                    kind_name(&e.kind)
-                )
+            // Borrow-extract: the result is an owned field copy (inc'd, since the
+            // parent keeps the original); the base is navigated and its root
+            // dropped early if this is its last use.
+            ExprKind::Proj(base, _) => {
+                if self.rr.is_rr(e.ty) {
+                    self.add_after(e.id, RcOp::DupValue(e.id));
+                }
+                self.navigate_base(base, e.id, live_after);
+            }
+            ExprKind::Assign(dst, _, src) => self.place_assign(e.id, dst, src, live_after),
+            // Transparent: a region scope does not change rc ownership (region
+            // lifetime is a separate axis); its body's result is moved out.
+            ExprKind::RegionRun(x) => self.place(x, live_after),
+            ExprKind::Closure(c) => self.place_closure(e.id, &c, live_after),
+            ExprKind::ClosureCall { target, args } => {
+                self.place_closure_call(target, args, live_after)
+            }
+        }
+    }
+
+    /// Navigate the base of a [`Proj`](ExprKind::Proj) / [`Assign`](ExprKind::Assign)
+    /// dst — a borrow, so the root is not consumed in place. Nested projections
+    /// are pure navigation; a `Var` root is dropped (early, at `drop_anchor`) if
+    /// dead after; a temporary root is placed and dropped (consumed).
+    fn navigate_base(&mut self, e: &'tcx Expr<'tcx>, drop_anchor: ExprId, live_after: &VarSet) {
+        match e.kind {
+            ExprKind::Proj(inner, _) => self.navigate_base(inner, drop_anchor, live_after),
+            ExprKind::Var(s) => {
+                if self.rr.is_rr(e.ty) && !live_after.contains(s) {
+                    self.add_after(drop_anchor, RcOp::Drop(s));
+                }
+            }
+            _ => {
+                self.place(e, live_after);
+                if self.rr.is_rr(e.ty) {
+                    self.add_after(drop_anchor, RcOp::DropValue(e.id));
+                }
+            }
+        }
+    }
+
+    /// `dst->field := src`: `src` is moved into the field (consumed); `dst` is
+    /// borrowed (mutated in place). The old field value is *not* dropped here —
+    /// flex/regional field links carry `field` capability and are freed with their
+    /// parent / region, not by an individual dec at the store.
+    fn place_assign(
+        &mut self,
+        id: ExprId,
+        dst: &'tcx Expr<'tcx>,
+        src: &'tcx Expr<'tcx>,
+        live_after: &VarSet,
+    ) {
+        // `dst` is evaluated and live across `src`, but only borrowed, so its
+        // root's drop is decided by the assignment's own continuation.
+        self.navigate_base(dst, id, live_after);
+        self.place(src, live_after);
+    }
+
+    /// Creating a closure consumes its captured outer vars (dup any still live
+    /// after), and analyzes the body as its own owned scope (captures + params
+    /// owned on entry, result moved out).
+    fn place_closure(&mut self, id: ExprId, c: &mir::ClosureExpr<'tcx>, live_after: &VarSet) {
+        for &(v, ty) in c.captures {
+            if self.rr.is_rr(ty) && live_after.contains(v) {
+                self.add_before(id, RcOp::Dup(v));
+            }
+        }
+        let owned = c.captures.iter().chain(c.params.iter());
+        self.analyze_owned_body(c.body, owned);
+    }
+
+    /// `target(args)`: the closure value and every argument are consumed, in
+    /// left-to-right evaluation order (a value reused later is dup'd).
+    fn place_closure_call(
+        &mut self,
+        target: &'tcx Expr<'tcx>,
+        args: &'tcx [Expr<'tcx>],
+        live_after: &VarSet,
+    ) {
+        let mut target_after = self.free_slice(args);
+        target_after.union_with(live_after);
+        self.place(target, &target_after);
+        self.place_args(args, live_after);
+    }
+
+    /// The union of the free sets of a slice of expressions.
+    fn free_slice(&mut self, es: &'tcx [Expr<'tcx>]) -> VarSet {
+        let mut s = VarSet::default();
+        for e in es {
+            s.union_with(&self.free(e));
+        }
+        s
+    }
+
+    /// Place a body whose `owned` vars (function params, or closure captures +
+    /// params) are owned on entry: the body under an empty continuation, then an
+    /// entry drop for any owned RR var the body never uses ([Param-Unused]).
+    fn analyze_owned_body(
+        &mut self,
+        body: &'tcx Expr<'tcx>,
+        owned: impl Iterator<Item = &'tcx (VarId, Ty<'tcx>)>,
+    ) {
+        self.place(body, &VarSet::default());
+        let body_free = self.free(body);
+        for &(v, ty) in owned {
+            if self.rr.is_rr(ty) && !body_free.contains(v) {
+                self.add_before(body.id, RcOp::Drop(v));
             }
         }
     }
@@ -620,9 +741,20 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             DecisionTree::Leaf { body, bindings } => {
                 self.place_leaf(body, bindings, live_after, consumed, held, must_settle);
             }
-            DecisionTree::Guard { .. } => unimplemented!(
-                "ownership: `match` guards land in a follow-up increment \
-                 (the scrutinee stays live across a re-testable failure path)"
+            DecisionTree::Guard {
+                bindings,
+                guard,
+                success,
+                failure,
+            } => self.place_guard(
+                bindings,
+                guard,
+                success,
+                failure,
+                live_after,
+                consumed,
+                held,
+                must_settle,
             ),
             DecisionTree::Switch { cases, .. } => {
                 for sub in subtrees(&cases) {
@@ -630,6 +762,58 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
             }
         }
+    }
+
+    /// A guarded arm. The scrutinee stays live across the guard (its `failure`
+    /// branch re-tests it), so the scrutinee drop stays in the terminal leaves.
+    /// The guard's pattern bindings are borrow-extracted (dup at the guard); a
+    /// binding used only in the guard is consumed there, one used in a branch is
+    /// settled in that branch (success consumes, failure drops) — so it joins the
+    /// sub-trees' `must_settle`.
+    #[allow(clippy::too_many_arguments)]
+    fn place_guard(
+        &mut self,
+        bindings: &'tcx [(VarId, &'tcx [u32])],
+        guard: &'tcx Expr<'tcx>,
+        success: &'tcx DecisionTree<'tcx>,
+        failure: &'tcx DecisionTree<'tcx>,
+        live_after: &VarSet,
+        consumed: bool,
+        held: Option<RcOp>,
+        must_settle: &[VarId],
+    ) {
+        let guard_free = self.free(guard);
+        let mut below = self.free_tree(success);
+        below.union_with(&self.free_tree(failure));
+
+        // Extract (dup) each RR binding used in the guard or a branch. Membership
+        // in a free set already implies RR, so no type lookup is needed.
+        let mut extracted = Vec::new();
+        for &(y, _) in bindings {
+            if guard_free.contains(y) || below.contains(y) {
+                self.add_before(guard.id, RcOp::Dup(y));
+                extracted.push(y);
+            }
+        }
+
+        // The guard runs before either branch; everything used below (or in the
+        // match's continuation, or still owed a settle) is live across it.
+        let mut guard_after = below.clone();
+        guard_after.union_with(live_after);
+        for &v in must_settle {
+            guard_after.insert(v);
+        }
+        self.place(guard, &guard_after);
+
+        // Bindings that survive the guard into a branch must be settled there.
+        let mut sub_settle = must_settle.to_vec();
+        for &y in &extracted {
+            if below.contains(y) {
+                sub_settle.push(y);
+            }
+        }
+        self.place_tree(success, live_after, consumed, held, &sub_settle);
+        self.place_tree(failure, live_after, consumed, held, &sub_settle);
     }
 
     fn place_leaf(
@@ -837,36 +1021,6 @@ fn collect_bound<'tcx>(tree: &DecisionTree<'tcx>, s: &mut VarSet) {
                 collect_bound(sub, s);
             }
         }
-    }
-}
-
-/// A short name for an [`ExprKind`], for `unimplemented!` diagnostics.
-fn kind_name(kind: &ExprKind<'_>) -> &'static str {
-    match kind {
-        ExprKind::GlobalStr(_) => "GlobalStr",
-        ExprKind::ConstInt(_) => "ConstInt",
-        ExprKind::ConstFloat(_) => "ConstFloat",
-        ExprKind::ConstBool(_) => "ConstBool",
-        ExprKind::Var(_) => "Var",
-        ExprKind::Negate(_) => "Negate",
-        ExprKind::Not(_) => "Not",
-        ExprKind::Arith(..) => "Arith",
-        ExprKind::Cmp(..) => "Cmp",
-        ExprKind::Cast(..) => "Cast",
-        ExprKind::If(..) => "If",
-        ExprKind::RegionRun(_) => "RegionRun",
-        ExprKind::Proj(..) => "Proj",
-        ExprKind::Assign(..) => "Assign",
-        ExprKind::Let { .. } => "Let",
-        ExprKind::Seq(_) => "Seq",
-        ExprKind::Call { .. } => "Call",
-        ExprKind::Ctor { .. } => "Ctor",
-        ExprKind::Variant { .. } => "Variant",
-        ExprKind::NullableCall(_) => "NullableCall",
-        ExprKind::Closure(_) => "Closure",
-        ExprKind::ClosureCall { .. } => "ClosureCall",
-        ExprKind::Match(..) => "Match",
-        ExprKind::Poison => "Poison",
     }
 }
 

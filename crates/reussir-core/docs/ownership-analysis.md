@@ -385,22 +385,33 @@ table.
    ownership so both arms exit owning the same set), multi-use `Dup` (already in
    increment 1), and discarded-result drops via `RcOp::DropValue(ExprId)` for an
    unconsumed non-`let` `Seq` statement.
-3. **Pattern matching — landed (no guards yet).** `Match` over `Switch` + `Leaf`,
-   following Perceus/Koka **borrow-dup**: the scrutinee is borrowed; each leaf
-   `dup`s the used RR fields it extracts, drops the consumed scrutinee early (or
-   keeps it if live after), moves a whole-scrutinee binding, and reconciles
+3. **Pattern matching — landed (with guards).** `Match` over `Switch` + `Leaf` +
+   `Guard`, following Perceus/Koka **borrow-dup**: the scrutinee is borrowed; each
+   leaf `dup`s the used RR fields it extracts, drops the consumed scrutinee early
+   (or keeps it if live after), moves a whole-scrutinee binding, and reconciles
    dead-after outer vars N-way across the switch arms. Reuse specialization
    (in-place, uniqueness-guarded) is the backend's job, exactly as Koka separates
-   Perceus from reuse analysis. **Guards** (scrutinee stays live across a
-   re-testable failure path) `unimplemented!` for a follow-up.
+   Perceus from reuse analysis. **Guards** keep the scrutinee live across the
+   re-testable `failure` path (its drop stays in each terminal leaf, not hoisted);
+   bindings are borrow-extracted at the guard, then settled per branch (consumed
+   in the branch that uses them, dropped in the one that does not).
    *Note:* binding-type resolution via an enriched `RecordTable` proved
    **unnecessary** here — an unused binding needs no op (the scrutinee drop frees
-   it), and a used binding's type is on its `Var` node; the enrichment is still
-   wanted for the `Proj` container increment.
-4. **Containers:** `Proj` borrow-dup, `Nullable` payloads, `Variant`, transitive
-   value-records.
-5. **Closures & regions:** capture consumption, region-run lifecycle.
-6. **Drop-specialization** (optional, reuse-targeted).
+   it), and a used binding's type is on its `Var` node.
+4. **Containers — landed.** `Proj` borrow-dup (the extracted field is inc'd while
+   the parent keeps the original; nested projections are pure navigation; the dead
+   base drops early at the projection), `Assign` (`src` moved into the field, `dst`
+   borrowed and dropped if dead — no old-field dec, the link is freed with its
+   parent/region), `Nullable` payloads, `Variant`, transitive value-records.
+5. **Closures & regions — landed.** Closure capture consumption (`dup` a capture
+   still live after; the body is analyzed as its own owned scope — captures +
+   params owned on entry, unused ones dropped), `ClosureCall` (target + args
+   consumed left-to-right), and `RegionRun` (rc-transparent: the body's result is
+   moved straight through; region lifetime is a separate axis).
+6. **Drop-specialization** (optional, reuse-targeted) — still future backend work.
+
+**Every MIR form is now handled — no `unimplemented!` remains; the analysis is
+total over the Full MIR.**
 
 Then **pm/08:** codegen consumes `OwnershipTable` → emits `rc.inc` / `rc.dec` /
 `ref.drop`, gated by ASAN/LSAN execution tests.
