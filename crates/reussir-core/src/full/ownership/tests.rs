@@ -22,7 +22,7 @@ use crate::full::mir::{
     self, ClosureExpr, DecisionTree, Expr, ExprKind, Function, Param, SwitchCases,
 };
 use crate::semi::hir::{ExprId, VarId};
-use crate::semi::ty::{Capability, DefId, IntTy, Ty, TyCtxt};
+use crate::semi::ty::{Flexivity, DefId, IntTy, Ty, TyCtxt};
 use crate::surface::Visibility;
 use crate::with_tcx;
 
@@ -83,7 +83,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
     /// A heap, reference-counted `Shared` record (the default `struct`/`enum`).
     fn shared(&mut self) -> Ty<'tcx> {
         let def = self.fresh_def();
-        let ty = self.tcx.mk_record(def, &[], Capability::Irrelevant);
+        let ty = self.tcx.mk_record(def, &[], Flexivity::Irrelevant);
         self.table.insert(
             ty,
             RecordShape {
@@ -97,7 +97,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
     /// An inline `Value` record with the given ground field types.
     fn value(&mut self, fields: Vec<Ty<'tcx>>) -> Ty<'tcx> {
         let def = self.fresh_def();
-        let ty = self.tcx.mk_record(def, &[], Capability::Irrelevant);
+        let ty = self.tcx.mk_record(def, &[], Flexivity::Irrelevant);
         self.table.insert(
             ty,
             RecordShape {
@@ -113,7 +113,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
     /// returned type keeps its `Regional` value coloring.
     fn regional(&mut self) -> Ty<'tcx> {
         let def = self.fresh_def();
-        let canonical = self.tcx.mk_record(def, &[], Capability::Irrelevant);
+        let canonical = self.tcx.mk_record(def, &[], Flexivity::Irrelevant);
         self.table.insert(
             canonical,
             RecordShape {
@@ -121,7 +121,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
                 fields: vec![],
             },
         );
-        self.tcx.mk_record(def, &[], Capability::Regional)
+        self.tcx.mk_record(def, &[], Flexivity::Regional)
     }
 
     // ----- expressions (each stamped with a fresh anchor) -----

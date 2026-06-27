@@ -2,7 +2,7 @@
 //! ("flexivity") coloring of regional records.
 //!
 //! A `[regional]` record is a type that can be *created locally* inside a region.
-//! Flexivity is the per-use color such a value carries; the four [`Capability`]
+//! Flexivity is the per-use color such a value carries; the four [`Flexivity`]
 //! states mean:
 //!
 //! * **Flex** — a live, freshly created regional object. Its `[field]` links can
@@ -24,7 +24,7 @@
 //! Lifecycle: create ⟶ Flex ──(freeze on escape)──▶ Rigid (materializable).
 //!
 //! Representation note: a regional record's *type annotation* is evaluated by
-//! `eval_type` to an unpinned [`Capability::Regional`], which
+//! `eval_type` to an unpinned [`Flexivity::Regional`], which
 //! [`Elaborator::eval_type_flex`] then pins to Flex (`[flex]`) or Rigid. A
 //! freshly *constructed* regional record is different: it is born Flex directly
 //! (the checker's `record_ty`) — the live, region-local form, so it is
@@ -39,7 +39,7 @@
 //! binding. Generics are left uncolored — their modality is resolved at
 //! monomorphization.
 
-use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyKind};
+use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
 
 use super::ctxt::{DefaultCap, Elaborator};
@@ -129,8 +129,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let default_cap = self.records[&def].default_cap;
         let args: Vec<Ty> = args.iter().map(|a| self.eval_type(a)).collect();
         let flex = match default_cap {
-            DefaultCap::Value | DefaultCap::Shared => Capability::Irrelevant,
-            DefaultCap::Regional => Capability::Regional,
+            DefaultCap::Value | DefaultCap::Shared => Flexivity::Irrelevant,
+            DefaultCap::Regional => Flexivity::Regional,
         };
         self.tcx.mk_record(def, &args, flex)
     }
@@ -145,21 +145,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Refine a regional record's flexivity by a `[flex]` flag.
     pub fn refine_flex(&self, t: Ty<'tcx>, is_flex: bool) -> Ty<'tcx> {
         let refined = if is_flex {
-            Capability::Flex
+            Flexivity::Flex
         } else {
-            Capability::Rigid
+            Flexivity::Rigid
         };
         match t.kind() {
             TyKind::Record {
                 def,
                 args,
-                flex: Capability::Regional,
+                flex: Flexivity::Regional,
             } => self.tcx.mk_record(*def, args, refined),
             TyKind::Nullable(inner) => {
                 if let TyKind::Record {
                     def,
                     args,
-                    flex: Capability::Regional,
+                    flex: Flexivity::Regional,
                 } = inner.kind()
                 {
                     let inner = self.tcx.mk_record(*def, args, refined);
@@ -187,8 +187,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             TyKind::Record {
                 def,
                 args,
-                flex: Capability::Regional | Capability::Flex,
-            } => self.tcx.mk_record(*def, args, Capability::Rigid),
+                flex: Flexivity::Regional | Flexivity::Flex,
+            } => self.tcx.mk_record(*def, args, Flexivity::Rigid),
             TyKind::Nullable(inner) => {
                 let inner = self.freeze_region(*inner);
                 self.tcx.mk_nullable(inner)

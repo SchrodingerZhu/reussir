@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{Capability, DefId, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Flexivity, DefId, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::frecency::Frecency;
 use crate::utils::fuzzy::FuzzyIndex;
@@ -17,7 +17,7 @@ use crate::utils::string::StringUniqifier;
 use super::fulfill::FulfillCtxt;
 use super::hir::{ExprId, Function, VarId};
 
-/// The capability a record declares by default. (Per-use [`crate::semi::ty::Capability`]
+/// The capability a record declares by default. (Per-use [`crate::semi::ty::Flexivity`]
 /// flexivity is derived from this during coloring.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DefaultCap {
@@ -711,7 +711,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
             }
             TyKind::Record {
-                flex: Capability::Irrelevant,
+                flex: Flexivity::Irrelevant,
                 ..
             } => self.error(span, "a `[field]` link element must be a regional record"),
             // Regional records are fine; non-record elements are already rejected

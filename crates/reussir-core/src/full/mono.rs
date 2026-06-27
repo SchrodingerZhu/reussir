@@ -52,7 +52,7 @@ use crate::full::subst::{Subst, subst_ty};
 use crate::semi::ctxt::{Elaborator, Record, Report, Severity, TrampolineRoot};
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use crate::surface::Span;
 
 /// Exactly the part of an [`Elaborator`] that monomorphization reads. Taking
@@ -199,7 +199,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         .map(|(def, args)| mir::RecordInstance {
             symbol: driver.symbol_of(def, args),
             // Layout is capability-independent, so canonicalize the coloring.
-            ty: tcx.mk_record(def, args, Capability::Irrelevant),
+            ty: tcx.mk_record(def, args, Flexivity::Irrelevant),
         })
         .collect();
 
@@ -270,8 +270,8 @@ fn ty_depth(ty: Ty<'_>) -> usize {
 /// `Irrelevant` and scalars carry none.
 fn is_regional_arg(ty: Ty<'_>) -> bool {
     matches!(
-        ty.capability(),
-        Some(Capability::Regional | Capability::Flex | Capability::Rigid)
+        ty.flexivity(),
+        Some(Flexivity::Regional | Flexivity::Flex | Flexivity::Rigid)
     )
 }
 

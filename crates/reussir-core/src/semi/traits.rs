@@ -6,7 +6,7 @@
 //! [`Evidence`] returned is a proof tree consumed statically at monomorphization;
 //! its shape is also what a future `dyn` vtable would carry.
 //!
-//! Capability-as-a-bound is deferred (see [`crate::semi::ty::Capability`]); if it
+//! Flexivity-as-a-bound is deferred (see [`crate::semi::ty::Flexivity`]); if it
 //! lands it becomes a second [`Obligation`] variant discharged through the same
 //! [`TraitDb::select`] entry point.
 
@@ -46,8 +46,8 @@ impl<'tcx> TraitRef<'tcx> {
     }
 }
 
-/// A predicate the solver must discharge. (Capability-as-a-bound will join this
-/// once its semantics are settled — see [`crate::semi::ty::Capability`].)
+/// A predicate the solver must discharge. (Flexivity-as-a-bound will join this
+/// once its semantics are settled — see [`crate::semi::ty::Flexivity`].)
 #[derive(Clone, Debug)]
 pub enum Obligation<'tcx> {
     /// `τ : Trait<…>`, discharged by impl search.

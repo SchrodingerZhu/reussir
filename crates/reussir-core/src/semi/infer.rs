@@ -577,12 +577,12 @@ mod tests {
             let a = tcx.mk_record(
                 def(1),
                 &[tcx.mk_int(IntTy::Signed(32))],
-                crate::semi::ty::Capability::Rigid,
+                crate::semi::ty::Flexivity::Rigid,
             );
             let b = tcx.mk_record(
                 def(1),
                 &[tcx.mk_int(IntTy::Signed(32))],
-                crate::semi::ty::Capability::Rigid,
+                crate::semi::ty::Flexivity::Rigid,
             );
             // Structurally equal -> the very same handle.
             assert_eq!(a, b);
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn record_head_and_arity_clash() {
         with_tcx(|tcx| {
-            use crate::semi::ty::Capability::Irrelevant;
+            use crate::semi::ty::Flexivity::Irrelevant;
             let mut ic = InferCtxt::new(tcx);
             let i32 = tcx.mk_int(IntTy::Signed(32));
             // Different head constructor.

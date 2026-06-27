@@ -36,17 +36,24 @@ pub struct GenericId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct HoleId(pub u32);
 
-/// The per-use memory capability ("flexivity") a value carries: `Flex` is
-/// mutable but cannot be materialized out of its region, `Rigid` is immutable
-/// but materializable (the frozen form that escapes a region), `Regional` is
-/// the unrefined regional form, and `Irrelevant` is the non-regional default.
+/// The per-use *flexivity* a value carries — its regional memory coloring:
+/// `Flex` is mutable but cannot be materialized out of its region, `Rigid` is
+/// immutable but materializable (the frozen form that escapes a region),
+/// `Regional` is the unrefined regional form, and `Irrelevant` is the
+/// non-regional default.
+///
+/// This names the regional-coloring axis **only**; it is deliberately *not*
+/// called a "capability", to keep it distinct from rc-management (value vs
+/// shared vs regional, decided per record from its declaration). The two
+/// interact in exactly one place — a region-managed record needs rc only when
+/// its flexivity is `Rigid` (frozen/escaped); see `full::ownership`.
 ///
 /// These do **not** form a total order — `Flex` and `Rigid` are incomparable
 /// (different axes: mutability vs materializability) — so there is no
-/// subsumption helper. Capability-as-a-bound is deferred until its semantics are
+/// subsumption helper. Flexivity-as-a-bound is deferred until its semantics are
 /// settled; for now this is purely the coloring stored on [`TyKind::Record`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Capability {
+pub enum Flexivity {
     Irrelevant,
     Regional,
     Flex,
@@ -80,7 +87,7 @@ pub enum TyKind<'tcx> {
     Record {
         def: DefId,
         args: &'tcx [Ty<'tcx>],
-        flex: Capability,
+        flex: Flexivity,
     },
     Int(IntTy),
     Fp(FpTy),
@@ -111,9 +118,9 @@ impl<'tcx> Ty<'tcx> {
         self.0
     }
 
-    /// The capability a value of this type carries, if any. Only nominal
-    /// records carry one today.
-    pub fn capability(self) -> Option<Capability> {
+    /// The flexivity (regional coloring) a value of this type carries, if any.
+    /// Only nominal records carry one today.
+    pub fn flexivity(self) -> Option<Flexivity> {
         match self.0 {
             TyKind::Record { flex, .. } => Some(*flex),
             _ => None,
@@ -207,7 +214,7 @@ impl<'tcx> TyCtxt<'tcx> {
         self.mk(TyKind::Nullable(inner))
     }
 
-    pub fn mk_record(&self, def: DefId, args: &[Ty<'tcx>], flex: Capability) -> Ty<'tcx> {
+    pub fn mk_record(&self, def: DefId, args: &[Ty<'tcx>], flex: Flexivity) -> Ty<'tcx> {
         let args = self.intern_tys(args);
         self.mk(TyKind::Record { def, args, flex })
     }

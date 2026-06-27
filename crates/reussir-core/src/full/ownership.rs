@@ -111,7 +111,7 @@ use rustc_hash::FxHashMap;
 
 use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::hir::{ExprId, VarId};
-use crate::semi::ty::{Capability, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Flexivity, Ty, TyCtxt, TyKind};
 
 // ---------------------------------------------------------------------------
 // Output data model
@@ -177,7 +177,7 @@ impl OwnershipTable {
 
 /// How a record's memory is managed — its [`ctxt::Record.default_cap`] carried
 /// forward. This axis is **orthogonal to the `Ty`'s capability**: the capability
-/// records *regional value coloring* (and is [`Capability::Irrelevant`] for any
+/// records *regional value coloring* (and is [`Flexivity::Irrelevant`] for any
 /// record that does not participate in it — i.e. every non-regional record), so
 /// it cannot say whether a record is Rc-managed. That is decided here, from the
 /// record table, for every record (regional or not).
@@ -211,7 +211,7 @@ pub struct RecordShape<'tcx> {
 }
 
 /// How every ground record instance is managed, keyed by its **canonical** record
-/// type (capability normalized to [`Capability::Irrelevant`], matching the
+/// type (capability normalized to [`Flexivity::Irrelevant`], matching the
 /// instance types `mono` records, so a record and its regionally-colored variants
 /// share one entry). Built from the elaborated record table by the pipeline;
 /// built directly by the test harness.
@@ -228,7 +228,7 @@ impl<'tcx> RecordTable<'tcx> {
     }
 
     /// Register `canonical_ty`'s shape. `canonical_ty` must carry
-    /// [`Capability::Irrelevant`] (the form `is_rr` looks up).
+    /// [`Flexivity::Irrelevant`] (the form `is_rr` looks up).
     pub fn insert(&mut self, canonical_ty: Ty<'tcx>, shape: RecordShape<'tcx>) {
         self.shapes.insert(canonical_ty, shape);
     }
@@ -282,7 +282,7 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
             // Rc-management is the record table's call, for every record — the
             // capability (regional coloring) is canonicalized away for the key.
             TyKind::Record { def, args, .. } => {
-                let canonical = self.tcx.mk_record(def, args, Capability::Irrelevant);
+                let canonical = self.tcx.mk_record(def, args, Flexivity::Irrelevant);
                 match self.table.shape(canonical) {
                     Some(shape) if shape.managed.is_rc() => true,
                     Some(shape) => shape.fields.iter().any(|&f| self.is_rr(f)),

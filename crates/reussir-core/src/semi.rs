@@ -52,7 +52,7 @@ pub fn elaborate<'a, 'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semi::ty::{Capability, IntTy};
+    use crate::semi::ty::{Flexivity, IntTy};
     use crate::with_tcx;
 
     /// Parse + lower + elaborate, asserting there are no errors, then run `f`
@@ -140,7 +140,7 @@ mod tests {
                 let crate::semi::ty::TyKind::Record { flex, .. } = f.return_ty.kind() else {
                     panic!("expected a record return type, got {:?}", f.return_ty);
                 };
-                assert_eq!(*flex, Capability::Flex);
+                assert_eq!(*flex, Flexivity::Flex);
             },
         );
     }
@@ -168,8 +168,8 @@ mod tests {
                     panic!("expected a `let` binding first, got {:?}", stmts[0].kind);
                 };
                 assert_eq!(
-                    value.ty.capability(),
-                    Some(Capability::Flex),
+                    value.ty.flexivity(),
+                    Some(Flexivity::Flex),
                     "a fresh regional construction should be flex"
                 );
             },
@@ -192,7 +192,7 @@ mod tests {
                 let crate::semi::hir::ExprKind::Let { value, .. } = &stmts[0].kind else {
                     panic!("expected a `let` binding first, got {:?}", stmts[0].kind);
                 };
-                assert_eq!(value.ty.capability(), Some(Capability::Irrelevant));
+                assert_eq!(value.ty.flexivity(), Some(Flexivity::Irrelevant));
             },
         );
     }

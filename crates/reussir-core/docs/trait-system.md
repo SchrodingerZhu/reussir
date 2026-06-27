@@ -97,7 +97,7 @@ vtable — dynamic dispatch is then an additive feature, not a redesign.
   Super-traits subsume what the DAG did (`Integral: Num`).
 - **D4 — Bounds desugar to obligations.** `<T: Trait>` and `where` clauses are
   sugar for predicates `T: Trait` that the solver must discharge.
-- **D5 — Capability is a bound.** A trait ranges over a value *type*; but a
+- **D5 — Flexivity is a bound.** A trait ranges over a value *type*; but a
   value's `Flexivity` (`Irrelevant | Regional | Flex | Rigid`) is itself
   expressible in bound position: `<T: Flex>`, `where T: Regional`. These are
   *built-in capability predicates*, not traits — the capability lattice is
@@ -153,13 +153,13 @@ pub struct TraitRef { pub trait_id: TraitId, pub args: Vec<Ty> }
 /// A predicate the solver must discharge.
 pub enum Obligation {
     Trait(TraitRef),        // `τ: Trait<…>` — discharged by impl search (§5.1)
-    Cap(Ty, Capability),    // `τ: Flex` etc. — discharged by lattice subsumption
+    Cap(Ty, Flexivity),    // `τ: Flex` etc. — discharged by lattice subsumption
     // later: projection-equality `<T as Trait>::Assoc == U`, etc.
 }
 
-/// The capability lattice (built-in, closed). `Cap(τ, c)` holds when the
-/// capability of τ is at least `c` in this ordering.
-pub enum Capability { Irrelevant, Regional, Flex, Rigid }
+/// The flexivity lattice (built-in, closed). `Cap(τ, c)` holds when the
+/// flexivity of τ is at least `c` in this ordering.
+pub enum Flexivity { Irrelevant, Regional, Flex, Rigid }
 
 /// The proof that an obligation holds — consumed statically now, a vtable later.
 pub enum Evidence {
@@ -309,7 +309,7 @@ idea lifted from single variables to whole substitutions, and it is exactly the
 Monomorphization* (Lutze et al., OOPSLA 2025) draws. We borrow that boundary,
 not its per-variable flow encoding.
 
-### 5.6 Capability obligations
+### 5.6 Flexivity obligations
 
 > **Status (revised): deferred.** This section assumed a *total* capability
 > lattice with a `⊒` subsumption. That is wrong: `Flex` (mutable, but cannot be
@@ -317,7 +317,7 @@ not its per-variable flow encoding.
 > are **incomparable** — different axes, not a chain. Because the subsumption
 > semantics are unsettled, the capability-as-a-bound machinery (`Obligation::Cap`
 > / `Evidence::Cap` / the `satisfies` lattice) has been **removed** from the
-> code for now; `Capability` is just the coloring stored on `Ty::Record`. The
+> code for now; `Flexivity` is just the coloring stored on `Ty::Record`. The
 > design below is retained as a sketch and will be reworked (likely as a partial
 > order, or folded into coloring/region checking) before capability bounds
 > return.
@@ -349,7 +349,7 @@ monomorphized, mangled representation) is its future sibling. As built:
 crates/reussir-core/src/
   surface.rs          typed surface AST + direct CST lowering / aeson serde
   semi/               the whole Semi phase
-    ty.rs             Ty, TyKind, TyCtxt (interned), IntTy, FpTy, Capability, ids
+    ty.rs             Ty, TyKind, TyCtxt (interned), IntTy, FpTy, Flexivity, ids
     infer.rs          ena union-find holes, unify/occurs/zonk, lazy instantiation
     traits.rs         TraitRef, Obligation, Evidence
     traits/db.rs      instance database, select(), super-trait evidence chains
@@ -404,7 +404,7 @@ That is: lexer keywords (`trait`, `impl`, `for`, `where`), grammar rules, CST
 kinds, and AST/JSON lowering in `reussir-syntax`. **Decision: this is in the
 first cut** — user-declared traits from the start, not deferred.
 
-Capability bounds reuse the existing bound position. The names `Irrelevant`,
+Flexivity bounds reuse the existing bound position. The names `Irrelevant`,
 `Regional`, `Flex`, `Rigid` in a bound list are recognized as built-in
 capability predicates (§5.6) rather than trait references; everything else in
 bound position resolves to a `TraitRef`.

@@ -18,7 +18,7 @@ use crate::full::mir::{self, grammar as ir, raw};
 use crate::ir_lex::lex;
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, FpTy, IntTy, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyCtxt, TyKind};
 use crate::utils::string::StringToken;
 
 /// A parsed program plus the fresh tables needed to re-print it.
@@ -400,12 +400,12 @@ impl<'tcx> Builder<'_, 'tcx> {
     }
 }
 
-fn cap(c: raw::Cap) -> Capability {
+fn cap(c: raw::Cap) -> Flexivity {
     match c {
-        raw::Cap::None => Capability::Irrelevant,
-        raw::Cap::Flex => Capability::Flex,
-        raw::Cap::Rigid => Capability::Rigid,
-        raw::Cap::Regional => Capability::Regional,
+        raw::Cap::None => Flexivity::Irrelevant,
+        raw::Cap::Flex => Flexivity::Flex,
+        raw::Cap::Rigid => Flexivity::Rigid,
+        raw::Cap::Regional => Flexivity::Regional,
     }
 }
 

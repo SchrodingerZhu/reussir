@@ -214,7 +214,7 @@ fn fp_code(fp: FpTy) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semi::ty::{Capability, TyCtxt};
+    use crate::semi::ty::{Flexivity, TyCtxt};
     use reussir_syntax::kind::InternKey;
 
     /// A test resolver: key `i` (1-based) resolves to segment `i - 1`.
@@ -318,11 +318,11 @@ mod tests {
             let foo_i32 = tcx.mk_record(
                 foo,
                 &[tcx.mk_int(IntTy::Signed(32))],
-                Capability::Irrelevant,
+                Flexivity::Irrelevant,
             );
             assert_eq!(m.mangle_ty(foo_i32), "_RIC3FoolE");
             // `Foo` (no args) → `C3Foo`; mangling a function instance is the same.
-            let foo0 = tcx.mk_record(foo, &[], Capability::Irrelevant);
+            let foo0 = tcx.mk_record(foo, &[], Flexivity::Irrelevant);
             assert_eq!(m.mangle_ty(foo0), "_RC3Foo");
             assert_eq!(m.mangle_instance(foo, &[]), "_RC3Foo");
         });
