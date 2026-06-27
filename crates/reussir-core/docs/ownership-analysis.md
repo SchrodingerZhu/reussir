@@ -43,27 +43,37 @@ refinement.
 ```text
 is_rr(ty) =
   match ty.kind():
-    Record{def, args} =>                                  // capability ignored
+    Record{def, args, flex} =>
         match record_table.shape(def, args).managed:      // Value | Shared | Regional
-            Shared | Regional => true                     // rc-managed
-            Value             => any field is_rr           // transitive
+            Shared   => true                              // always rc-managed
+            Value    => any field is_rr                   // transitive
+            Regional => flex == Rigid                     // rc only when frozen out
     Closure{..}      => true            // owns a captured environment
     Nullable(inner)  => is_rr(inner)
     Int | Float | Bool | …             => false
 ```
 
-- **Two orthogonal axes.** A record's `Ty` *capability* records **regional value
-  coloring** (`Regional`/`Flex`/`Rigid`, or `Irrelevant` for anything that does
-  not participate — i.e. every non-regional record). That is a *different axis*
-  from **rc-management** (is it heap/region reference-counted, or inline by
-  value), which the elaborator stores in `ctxt::Record.default_cap`
-  (`Value | Shared | Regional`). The capability cannot answer "is this rc'd": the
-  dialect's `Capability` has no `Shared`/`Value` variant, and `[value]`/`[shared]`
-  both elaborate to `Irrelevant` (`ty_eval.rs`).
-- **So `is_rr` decides rc-management from the `RecordTable` for *every* record**
-  (regional or not), keyed by the canonical (`Irrelevant`) record type — never
-  from the capability. The table (`canonical-Ty → RecordShape { managed, fields }`)
-  carries `default_cap` forward.
+- **Two axes — management and flexivity.** A record's **rc-management** (is it
+  heap reference-counted, region-allocated, or inline by value) is what the
+  elaborator stores in `ctxt::Record.default_cap` (`Value | Shared | Regional`)
+  and the `RecordTable` carries forward, keyed by the canonical (flexivity-erased)
+  record type. A `Ty`'s **flexivity** (`Regional`/`Flex`/`Rigid`, or `Irrelevant`
+  for any non-regional record) is the orthogonal *regional value coloring*. The
+  flexivity cannot, on its own, say "is this rc'd": `[value]`/`[shared]` both
+  erase to `Irrelevant` (`ty_eval.rs`), so management must come from the table.
+- **The two axes meet in exactly one case: a `Regional` record.** A
+  region-allocated value is freed *en masse* when its region is torn down — no
+  per-object rc — **unless** it has been frozen to `Rigid`, which lifts it into a
+  managed (reference-counted) object that escapes the region. So a `Regional`
+  record is RR iff its flexivity is `Rigid`; a region-local `Flex` (or unrefined
+  `Regional`) value needs no `dup`/`drop`. `Shared` is always RR and `Value` is
+  transitive, independent of flexivity. The table is
+  `canonical-Ty → RecordShape { managed, fields }`.
+  - *Managed fields of a region-local record are still rc'd.* The flex container
+    itself takes no ops, but a `Shared`/`Rigid` field it is assembled from is an
+    ordinary RR value — `dup`'d if the source stays live, moved (ownership
+    transferred to the field, dec'd by region teardown) if it is a last use.
+    Container-unmanaged never means field-unmanaged.
 - Memoized per interned `Ty` (pointer-identity key — types are arena-interned);
   a provisional `false` guards the (illegal but defensively-handled) value-record
   field cycle.
@@ -422,11 +432,11 @@ Then **pm/08:** codegen consumes `OwnershipTable` → emits `rc.inc` / `rc.dec` 
   choke point via a shared `ExprIdGen` (§4). *Locked, landed.*
 - **Owned-only convention** to start (no borrowed-parameter optimization); the
   simplest correct base, refined later. *Resolved.*
-- **RR set:** rc-management (`Shared`/`Regional`) and closures are always rc;
-  `Value` records are rc iff transitively so; `Nullable` follows its inner.
-  Rc-management comes from the `RecordTable` for *every* record — the `Ty`
-  capability (regional coloring) is an orthogonal axis and is not consulted
-  (§3). *Resolved.*
+- **RR set:** `Shared` records and closures are always rc; `Value` records are rc
+  iff transitively so; a `Regional` record is rc iff its flexivity is `Rigid`
+  (frozen out of its region); `Nullable` follows its inner. Management comes from
+  the `RecordTable` for *every* record; the `Ty`'s flexivity (regional coloring)
+  refines only the regional case (§3). *Resolved.*
 - **Increment 1 = linear core + `is_rr` + harness.** *Resolved, landed.*
 
 ## Open questions

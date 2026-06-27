@@ -22,7 +22,7 @@ use crate::full::mir::{
     self, ClosureExpr, DecisionTree, Expr, ExprKind, Function, Param, SwitchCases,
 };
 use crate::semi::hir::{ExprId, VarId};
-use crate::semi::ty::{Flexivity, DefId, IntTy, Ty, TyCtxt};
+use crate::semi::ty::{DefId, Flexivity, IntTy, Ty, TyCtxt};
 use crate::surface::Visibility;
 use crate::with_tcx;
 
@@ -108,10 +108,11 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
         ty
     }
 
-    /// A `[regional]` record. It is rc-managed like a shared record; the table
-    /// (keyed by the canonical `Irrelevant` type) records that, while the
-    /// returned type keeps its `Regional` value coloring.
-    fn regional(&mut self) -> Ty<'tcx> {
+    /// A `[regional]` record at the given flexivity. The table (keyed by the
+    /// canonical `Irrelevant` type) records that it is region-managed; the returned
+    /// type carries the requested regional coloring, which is what decides whether
+    /// a value of it is rc-managed: only `Rigid` (frozen) is.
+    fn regional_colored(&mut self, flex: Flexivity) -> Ty<'tcx> {
         let def = self.fresh_def();
         let canonical = self.tcx.mk_record(def, &[], Flexivity::Irrelevant);
         self.table.insert(
@@ -121,7 +122,19 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
                 fields: vec![],
             },
         );
-        self.tcx.mk_record(def, &[], Flexivity::Regional)
+        self.tcx.mk_record(def, &[], flex)
+    }
+
+    /// A region-local `Flex` regional record — freed with its region, *not*
+    /// rc-managed.
+    fn regional_flex(&mut self) -> Ty<'tcx> {
+        self.regional_colored(Flexivity::Flex)
+    }
+
+    /// A frozen `Rigid` regional record — a managed object that escapes its region,
+    /// so it *is* rc-managed.
+    fn regional_rigid(&mut self) -> Ty<'tcx> {
+        self.regional_colored(Flexivity::Rigid)
     }
 
     // ----- expressions (each stamped with a fresh anchor) -----
@@ -927,15 +940,22 @@ fn is_rr_classification() {
         let val_with_rc = b.value(vec![rc]);
         let i64t = b.i64();
         let val_plain = b.value(vec![i64t]);
-        let reg = b.regional();
+        let reg_flex = b.regional_flex();
+        let reg_rigid = b.regional_rigid();
         let rr = Rr::new(tcx, &b.table);
 
         assert!(rr.is_rr(rc), "shared record is rc");
         assert!(rr.is_rr(val_with_rc), "value record holding an rc is RR");
         assert!(!rr.is_rr(val_plain), "scalar-only value record is not RR");
+        // A regional record is rc-managed only when frozen to `Rigid`; a
+        // region-local `Flex` value is freed with its region and needs no rc.
         assert!(
-            rr.is_rr(reg),
-            "regional record is RR (rc-managed, per table)"
+            !rr.is_rr(reg_flex),
+            "region-local flex value is not rc-managed"
+        );
+        assert!(
+            rr.is_rr(reg_rigid),
+            "frozen rigid value is a managed object ⇒ rc"
         );
         assert!(rr.is_rr(tcx.mk_nullable(rc)), "nullable rc is RR");
         assert!(
@@ -1515,14 +1535,16 @@ fn nested_proj_navigates_to_root() {
 }
 
 #[test]
-fn assign_moves_src_and_borrows_dst() {
+fn assign_moves_src_and_borrows_flex_dst() {
     // fn f(c: Flex, x: Rc) -> i64 { c.0 := x; 0 }
-    //   x is moved into the field; c is borrowed (mutated in place) and, being dead
-    //   after, dropped early at the store; the old field link is freed with c.
+    //   You assign into a `flex` (region-local) record. The shared `x` is moved
+    //   into the field; the flex dst `c` is region-managed — *not* rc — so it is
+    //   borrowed in place with no drop (it is freed with its region, and the
+    //   shared value now in its field is reclaimed by the region's drop glue).
     with_tcx(|tcx| {
         let mut b = MirBuilder::new(tcx);
         let rc = b.shared();
-        let flex = b.regional();
+        let flex = b.regional_flex();
         let i64t = b.i64();
         let c = b.fresh_var();
         let x = b.fresh_var();
@@ -1543,10 +1565,9 @@ fn assign_moves_src_and_borrows_dst() {
             ot.before(vx_id).is_empty(),
             "x moved into the field ⇒ no dup"
         );
-        assert_eq!(
-            ot.after(assign_id),
-            &[RcOp::Drop(c)],
-            "dead borrowed dst dropped after the store; no old-field dec"
+        assert!(
+            ot.get(assign_id).is_none(),
+            "flex dst is region-managed ⇒ no drop on it"
         );
     });
 }
@@ -1572,6 +1593,114 @@ fn region_run_is_transparent() {
 
         assert!(ot.get(body_id).is_none(), "region scope adds no ops");
         assert!(ot.get(vx_id).is_none(), "x moved straight through ⇒ no ops");
+    });
+}
+
+#[test]
+fn frozen_rigid_is_managed_across_a_later_region() {
+    // fn f() -> Pair {
+    //     let frozen = region { seed() };        // region 1, frozen to Rigid
+    //     region {                                // region 2
+    //         let local = mk();                   // a region-2-local Flex value
+    //         cons(local, frozen, frozen)         // frozen reused
+    //     }
+    // }
+    //
+    // The first region produces a value frozen to `Rigid` — a managed (refcounted)
+    // object that outlives the region. Inside the second region it is still
+    // rc-managed: reusing it dup's the earlier occurrence and moves the last. The
+    // second region's own `local` is `Flex` — region-allocated, freed when the
+    // region is torn down — so it takes no rc ops at all, even used as an argument.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rigid = b.regional_rigid();
+        let flex = b.regional_flex();
+        let pair = b.shared();
+        let frozen = b.fresh_var();
+        let local = b.fresh_var();
+
+        // region 1: produce the frozen (rigid) value.
+        let seed = b.call("seed", vec![], rigid);
+        let region1 = b.region(seed, rigid);
+        let let_frozen = b.let_(frozen, region1);
+
+        // region 2: a flex local, then reuse the rigid value twice.
+        let mk = b.call("mk", vec![], flex);
+        let let_local = b.let_(local, mk);
+        let a_local = b.var(local, flex);
+        let a_local_id = a_local.id;
+        let a_frozen0 = b.var(frozen, rigid);
+        let a_frozen0_id = a_frozen0.id;
+        let a_frozen1 = b.var(frozen, rigid);
+        let a_frozen1_id = a_frozen1.id;
+        let cons = b.call("cons", vec![a_local, a_frozen0, a_frozen1], pair);
+        let region2_body = b.seq(vec![let_local, cons], pair);
+        let region2 = b.region(region2_body, pair);
+
+        let body = b.seq(vec![let_frozen, region2], pair);
+        let func = b.function("f", vec![], pair, body);
+        let ot = run(tcx, &func, &b);
+
+        assert!(
+            ot.get(a_local_id).is_none(),
+            "region-local flex value takes no rc ops, even as an argument"
+        );
+        assert_eq!(
+            ot.before(a_frozen0_id),
+            &[RcOp::Dup(frozen)],
+            "the frozen rigid value is managed ⇒ dup'd across its reuse"
+        );
+        assert!(
+            ot.before(a_frozen1_id).is_empty(),
+            "the last use of the rigid value is moved"
+        );
+    });
+}
+
+#[test]
+fn flex_record_assembly_still_incs_its_rigid_field() {
+    // fn f(r: Rigid) -> Pair {
+    //     let rec = FlexRec { r };   // assemble a region-local flex record from r
+    //     use2(rec, r)               // r is needed again ⇒ the assembly dup's it
+    // }
+    //
+    // The flex record `rec` is region-managed and takes no rc ops of its own — but
+    // the *rigid* (managed) field it is assembled from is an ordinary RR value.
+    // Because r stays live past the constructor, storing it into the field dup's
+    // it; the later use is then the move. Container-unmanaged is not
+    // field-unmanaged.
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let rigid = b.regional_rigid();
+        let flex = b.regional_flex();
+        let pair = b.shared();
+        let r = b.fresh_var();
+        let rec = b.fresh_var();
+
+        let field_r = b.var(r, rigid);
+        let field_r_id = field_r.id;
+        let ctor = b.ctor("FlexRec", vec![field_r], flex);
+        let let_rec = b.let_(rec, ctor);
+
+        let a_rec = b.var(rec, flex);
+        let a_r = b.var(r, rigid);
+        let a_r_id = a_r.id;
+        let use2 = b.call("use2", vec![a_rec, a_r], pair);
+        let body = b.seq(vec![let_rec, use2], pair);
+
+        let param = b.param(r, rigid);
+        let func = b.function("f", vec![param], pair, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.before(field_r_id),
+            &[RcOp::Dup(r)],
+            "storing the still-live rigid value into the flex field dup's it"
+        );
+        assert!(
+            ot.before(a_r_id).is_empty(),
+            "the later use of r is its last ⇒ moved"
+        );
     });
 }
 

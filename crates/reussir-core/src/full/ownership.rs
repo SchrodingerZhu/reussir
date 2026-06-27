@@ -176,29 +176,29 @@ impl OwnershipTable {
 // ---------------------------------------------------------------------------
 
 /// How a record's memory is managed — its [`ctxt::Record.default_cap`] carried
-/// forward. This axis is **orthogonal to the `Ty`'s capability**: the capability
-/// records *regional value coloring* (and is [`Flexivity::Irrelevant`] for any
-/// record that does not participate in it — i.e. every non-regional record), so
-/// it cannot say whether a record is Rc-managed. That is decided here, from the
-/// record table, for every record (regional or not).
+/// forward. This is a **different axis from the `Ty`'s [`Flexivity`]**: flexivity
+/// is the *regional value coloring* (and is [`Flexivity::Irrelevant`] for any
+/// non-regional record), while management says how the storage is reclaimed. The
+/// management class comes from the record table, never from the flexivity.
+///
+/// The two axes are independent for `Value`/`Shared`, and meet in exactly one
+/// place: a `Regional` record is rc-managed only when its flexivity is `Rigid`
+/// (see [`Rr::is_rr`]).
 ///
 /// [`ctxt::Record.default_cap`]: crate::semi::ctxt::Record
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Managed {
     /// Stored inline (by value). Rc-managed only transitively — RR iff a field is.
     Value,
-    /// Heap-allocated and reference-counted (the default `struct`/`enum`).
+    /// Heap-allocated and reference-counted (the default `struct`/`enum`). Always
+    /// RR.
     Shared,
-    /// Region-allocated and reference-counted (a `[regional]` record).
+    /// Region-allocated (a `[regional]` record). RR only when the value's
+    /// [`Flexivity`] is `Rigid` (frozen out of its region into a managed object);
+    /// a region-local `Flex` / unrefined value is freed with its region and needs
+    /// no rc. This is the one place the two axes (management vs flexivity) meet —
+    /// see [`Rr::is_rr`].
     Regional,
-}
-
-impl Managed {
-    /// Whether the record itself owns an rc (`Shared`/`Regional`), independent of
-    /// its fields. A `Value` record is rc only through what it transitively holds.
-    pub fn is_rc(self) -> bool {
-        matches!(self, Managed::Shared | Managed::Regional)
-    }
 }
 
 /// The shape of a ground record instance, as the ownership pass needs it: how it
@@ -263,11 +263,12 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
 
     /// Is a value of `ty` reference-counted (needs `dup`/`drop`)?
     ///
-    /// An Rc-managed record (`Shared`/`Regional`, per the record table) and a
-    /// closure are always RR; a `Value` record is RR iff some field transitively
-    /// is; `Nullable(inner)` follows `inner`; scalars are not. The record's `Ty`
-    /// *capability* is not consulted — it tracks regional value coloring, a
-    /// different axis from rc-management.
+    /// A `Shared` record and a closure are always RR; a `Value` record is RR iff
+    /// some field transitively is; a `Regional` record is RR only when its
+    /// [`Flexivity`] is `Rigid` (frozen into a managed object — a `Flex` or
+    /// unrefined-regional value is freed with its region); `Nullable(inner)`
+    /// follows `inner`; scalars are not. Management comes from the record table;
+    /// flexivity is consulted only to settle the regional case.
     pub(crate) fn is_rr(&self, ty: Ty<'tcx>) -> bool {
         if let Some(&b) = self.memo.borrow().get(&ty) {
             return b;
@@ -279,13 +280,22 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
         // Overwritten with the real answer below.
         self.memo.borrow_mut().insert(ty, false);
         let b = match *ty.kind() {
-            // Rc-management is the record table's call, for every record — the
-            // capability (regional coloring) is canonicalized away for the key.
-            TyKind::Record { def, args, .. } => {
+            // The management class is the record table's call (keyed by the
+            // canonical, flexivity-erased type); the per-use flexivity then refines
+            // the one case where it matters — a regional record.
+            TyKind::Record { def, args, flex } => {
                 let canonical = self.tcx.mk_record(def, args, Flexivity::Irrelevant);
                 match self.table.shape(canonical) {
-                    Some(shape) if shape.managed.is_rc() => true,
-                    Some(shape) => shape.fields.iter().any(|&f| self.is_rr(f)),
+                    Some(shape) => match shape.managed {
+                        Managed::Shared => true,
+                        Managed::Value => shape.fields.iter().any(|&f| self.is_rr(f)),
+                        // A region-allocated value is freed en masse when its region
+                        // is torn down — no per-object rc — *unless* it has been
+                        // frozen to `Rigid`, which lifts it to a managed (refcounted)
+                        // object that escapes the region. Flex / unrefined-regional
+                        // values stay region-local, so they need no dup/drop.
+                        Managed::Regional => flex == Flexivity::Rigid,
+                    },
                     // Unknown record: treat as non-RR. The pipeline populates
                     // every reachable instance; a miss means a scalar-only type.
                     None => false,
