@@ -1063,7 +1063,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "reussir-backend"
 version = "0.1.0"
 dependencies = [
+ "llvm-sys",
  "melior",
+ "mlir-sys",
  "reussir-backend-sys",
  "tracing",
 ]
@@ -1084,6 +1086,21 @@ dependencies = [
  "reussir-jit",
  "reussir-syntax",
  "rustc-hash",
+]
+
+[[package]]
+name = "reussir-compiler"
+version = "0.1.0"
+dependencies = [
+ "llvm-sys",
+ "melior",
+ "mlir-sys",
+ "palc",
+ "reussir-backend",
+ "reussir-backend-sys",
+ "reussir-codegen",
+ "reussir-core",
+ "reussir-syntax",
 ]
 
 [[package]]
@@ -1114,7 +1131,6 @@ version = "0.1.0"
 dependencies = [
  "llvm-sys",
  "melior",
- "mlir-sys",
  "reussir-backend",
  "reussir-backend-sys",
  "reussir-rt",

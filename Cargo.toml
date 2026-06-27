@@ -8,6 +8,7 @@ members = [
     "crates/reussir-backend",
     "crates/reussir-jit",
     "crates/reussir-codegen",
+    "crates/reussir-compiler",
 ]
 # The backend crates (and reussir-codegen, which depends on them) link against
 # MLIR and the staged Reussir C API, so they are excluded from the default

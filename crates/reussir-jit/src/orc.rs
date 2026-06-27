@@ -40,46 +40,20 @@ use llvm_sys::target_machine::LLVMGetDefaultTargetTriple;
 
 use melior::ir::Module;
 
-// LLVM-side codegen helpers provided by libReussirCAPI (lib/CAPI/Jit.cpp): the
-// custom Reussir LLVM passes and TPDE, which cannot be reached through the
-// LLVM-C ORC API. Linked via the reussir-backend-sys dependency.
+// The MLIR→LLVM-IR translation and the backend LLVM pass pipeline are shared with
+// the AOT compiler; `OptLevel` is the backend's pipeline level.
+use reussir_backend::llvm::{run_backend_llvm_pipeline, translate_to_llvm_ir};
+pub use reussir_backend::pipeline::OptLevel;
+
+// TPDE object compilation is JIT-specific (libReussirCAPI / lib/CAPI/Jit.cpp); it
+// cannot be reached through the LLVM-C ORC API. Linked via reussir-backend-sys.
 unsafe extern "C" {
-    fn reussirRunBackendLLVMPipeline(module: LLVMModuleRef, opt: c_int);
     fn reussirTpdeCompileToObject(
         module: LLVMModuleRef,
         data_layout: *const c_char,
         triple: *const c_char,
     ) -> LLVMMemoryBufferRef;
     fn reussirHasTPDE() -> c_int;
-}
-
-/// Optimization / codegen level for [`OrcJit::add_module`], mirroring the
-/// backend's `ReussirOptOption`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum OptLevel {
-    /// No LLVM optimization.
-    None,
-    /// Default optimization (`-O2`).
-    #[default]
-    Default,
-    /// Aggressive optimization (`-O3`).
-    Aggressive,
-    /// Optimize for size (`-Os`).
-    Size,
-    /// Compile with the TPDE fast back end instead of the LLVM code generator.
-    Tpde,
-}
-
-impl OptLevel {
-    fn as_c(self) -> c_int {
-        match self {
-            OptLevel::None => 0,
-            OptLevel::Default => 1,
-            OptLevel::Aggressive => 2,
-            OptLevel::Size => 3,
-            OptLevel::Tpde => 4,
-        }
-    }
 }
 
 /// Reports whether TPDE support was compiled into the backend. [`OptLevel::Tpde`]
@@ -301,21 +275,28 @@ impl OrcJit {
     /// For [`OptLevel::Tpde`] the module is compiled to an object file by TPDE
     /// and added directly; otherwise the Reussir LLVM pass pipeline runs and the
     /// IR module is handed to the default `LLJIT` compiler.
+    ///
+    /// TODO(polyffi): this path does not gather/link polymorphic FFI. The module
+    /// arrives already lowered, but `reussir_backend::llvm::LlvmLowering::prepare`
+    /// (compile + gather) must run *before* the lowering pipeline erases the
+    /// `reussir.polyffi` ops, and `finish` (translate + link) after — see the AOT
+    /// compiler's flow. A polyffi-capable JIT entry would orchestrate
+    /// `prepare → run_lowering_pipeline → finish` and add the resulting
+    /// [`reussir_backend::llvm::Finalized`] here. Until then a module containing
+    /// `reussir.polyffi` fails loudly at `run_lowering_pipeline`, not silently.
     pub fn add_module(&self, module: &Module, opt: OptLevel) -> Result<(), String> {
         let _span = tracing::debug_span!("orcjit_add_module", opt = ?opt).entered();
         unsafe {
-            let context = LLVMContextCreate();
-            let operation = mlir_sys::mlirModuleGetOperation(module.to_raw());
             // The translated module is created in (and owned alongside) `context`.
-            let llvm_module = mlir_sys::mlirTranslateModuleToLLVMIR(
-                operation,
-                context as mlir_sys::LLVMContextRef,
-            ) as LLVMModuleRef;
-            if llvm_module.is_null() {
-                LLVMContextDispose(context);
-                tracing::error!("failed to translate MLIR module to LLVM IR");
-                return Err("failed to translate MLIR module to LLVM IR".into());
-            }
+            let context = LLVMContextCreate();
+            let llvm_module = match translate_to_llvm_ir(module, context) {
+                Ok(llvm_module) => llvm_module,
+                Err(message) => {
+                    LLVMContextDispose(context);
+                    tracing::error!("{message}");
+                    return Err(message);
+                }
+            };
             tracing::trace!("translated MLIR module to LLVM IR");
 
             if opt == OptLevel::Tpde {
@@ -329,7 +310,7 @@ impl OrcJit {
 
             // Run the Reussir LLVM passes in place, then add the IR module.
             tracing::trace!("running backend LLVM pass pipeline");
-            reussirRunBackendLLVMPipeline(llvm_module, opt.as_c());
+            run_backend_llvm_pipeline(llvm_module, opt);
             self.add_owned_module(context, llvm_module)?;
             tracing::debug!("added LLVM-IR module to the JIT");
             Ok(())

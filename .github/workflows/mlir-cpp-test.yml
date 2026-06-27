@@ -129,3 +129,6 @@ jobs:
 
       - name: Build and Test reussir-codegen
         run: cmake --build build --target reussir-codegen-test
+
+      - name: Build and Test reussir-compiler
+        run: cmake --build build --target reussir-compiler-test

@@ -70,10 +70,16 @@ pub struct LlvmOpaqueModule {
 pub struct LlvmOpaqueContext {
     _private: [u8; 0],
 }
+#[repr(C)]
+pub struct LlvmOpaqueMemoryBuffer {
+    _private: [u8; 0],
+}
 /// Mirrors `LLVMModuleRef`.
 pub type LLVMModuleRef = *mut LlvmOpaqueModule;
 /// Mirrors `LLVMContextRef`.
 pub type LLVMContextRef = *mut LlvmOpaqueContext;
+/// Mirrors `LLVMMemoryBufferRef`.
+pub type LLVMMemoryBufferRef = *mut LlvmOpaqueMemoryBuffer;
 
 unsafe extern "C" {
     //==-- Dialect registration --==//
@@ -141,6 +147,22 @@ unsafe extern "C" {
 
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
+
+    //==-- LLVM-side codegen helpers (Jit.h) --==//
+
+    /// Runs the Reussir LLVM optimization pipeline on `module` in place at the
+    /// requested level (a no-op for `None`/`Tpde`). `opt` mirrors the backend's
+    /// `ReussirOptOption`/`ReussirJitOptLevel` C enum.
+    pub fn reussirRunBackendLLVMPipeline(module: LLVMModuleRef, opt: c_int);
+
+    /// Compiles `module` to an ELF object with TPDE after stamping the given data
+    /// layout and triple on it. Returns null if TPDE is unavailable or
+    /// compilation fails; otherwise the caller owns the returned memory buffer.
+    pub fn reussirTpdeCompileToObject(
+        module: LLVMModuleRef,
+        data_layout: *const c_char,
+        triple: *const c_char,
+    ) -> LLVMMemoryBufferRef;
 
     //==-- Reussir type constructors --==//
     //
