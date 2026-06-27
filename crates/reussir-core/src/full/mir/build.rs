@@ -66,6 +66,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         symbols: Rodeo::default(),
         names: Names::default(),
         defs: DefTable::new(),
+        ids: mir::ExprIdGen::default(),
     };
     let program = b.program(raw);
     Ok(Parsed {
@@ -80,6 +81,10 @@ struct Builder<'a, 'tcx> {
     symbols: Rodeo,
     names: Names,
     defs: DefTable,
+    /// Fresh [`mir::ExprId`] anchors, regenerated deterministically on each
+    /// parse. Ids are not part of the textual form, so a freshly re-interned
+    /// tree re-numbers from zero without affecting round-trip text equality.
+    ids: mir::ExprIdGen,
 }
 
 impl<'tcx> Builder<'_, 'tcx> {
@@ -387,6 +392,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             }
         };
         mir::Expr {
+            id: self.ids.fresh(),
             kind,
             ty,
             span: None,

@@ -105,6 +105,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         seen: FxHashSet::default(),
         records: FxHashSet::default(),
         reports: Vec::new(),
+        ids: mir::ExprIdGen::default(),
     };
 
     // Seed roots: every non-generic function, then every trampoline target.
@@ -286,6 +287,10 @@ struct Driver<'a, 'tcx> {
     /// Ground record instances whose layout is needed (keyed flex-independently).
     records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
     reports: Vec<Report>,
+    /// Source of fresh [`mir::ExprId`] anchors for every lowered node. A single
+    /// counter across the whole program: one semi expr may lower into many MIR
+    /// exprs (once per instantiation), so semi ids are not reused.
+    ids: mir::ExprIdGen,
 }
 
 impl<'a, 'tcx> Driver<'a, 'tcx> {
@@ -380,6 +385,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         self.note_records(ty);
         let kind = self.lower_kind(&e.kind, subst);
         mir::Expr {
+            id: self.ids.fresh(),
             kind,
             ty,
             span: e.span,
