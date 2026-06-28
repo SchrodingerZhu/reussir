@@ -15,6 +15,7 @@
 //!   annotated tree and asserts every owned RR var settles exactly once.
 
 use lasso::Rodeo;
+use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use rustc_hash::FxHashMap;
 
 use super::{Managed, OwnershipTable, RcOp, RecordShape, RecordTable, Rr, analyze_function};
@@ -415,133 +416,134 @@ fn kind_name(kind: &ExprKind<'_>) -> &'static str {
     }
 }
 
+/// Two-space block indentation; block structure is forced with `hardline`, so the
+/// width only bounds how wide an op annotation may run before it wraps.
+const ANNO_PRINTER: PpPrinter = PpPrinter {
+    max_width: 100,
+    indent: 2,
+    use_tabs: false,
+};
+
+/// An owned text [`Doc`] node (the renderer never borrows into a `Doc`).
+fn text(s: impl Into<String>) -> Doc<'static> {
+    Doc::from(s.into())
+}
+
+/// `head` followed by each of `children` on its own line, indented one level.
+fn nest(head: Doc<'static>, children: impl IntoIterator<Item = Doc<'static>>) -> Doc<'static> {
+    let mut inner = Doc::Null;
+    for c in children {
+        inner = inner + hardline() + c;
+    }
+    head + indent(inner)
+}
+
+fn binding_list(bindings: &[mir::Binding<'_>]) -> String {
+    bindings
+        .iter()
+        .map(|(y, p)| format!("v{}@{p:?}", y.0))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Renders the analyzed function as a `pprint` [`Doc`] tree with each node's rc
+/// ops woven onto its own header line.
 struct Renderer<'a> {
-    out: String,
     ot: &'a OwnershipTable,
     syms: &'a Rodeo,
 }
 
 impl Renderer<'_> {
-    fn line(&mut self, indent: usize, s: &str) {
-        for _ in 0..indent {
-            self.out.push_str("  ");
-        }
-        self.out.push_str(s);
-        self.out.push('\n');
-    }
-
-    /// Emit a node's header line with its own rc ops woven inline: `before` ops as
-    /// a `»` prefix, `after` ops as a `«` suffix. Keeping the ops on the node's own
-    /// line (rather than on separate lines that visually float between siblings)
-    /// makes it unambiguous *which* node each op belongs to — e.g. a `dup` on the
-    /// first argument of a call reads as the argument's op, not the call's.
-    fn head(&mut self, indent: usize, id: ExprId, text: &str) {
+    /// Weave a node's rc ops onto its header `Doc`: `before` ops as a `»` prefix,
+    /// `after` ops as a `«` suffix. Keeping them on the node's own line makes it
+    /// unambiguous *which* node each op belongs to — a `dup` on a call's first
+    /// argument reads as the argument's op, not the call's.
+    fn anno(&self, id: ExprId, head: Doc<'static>) -> Doc<'static> {
         let before = self.ot.before(id);
         let after = self.ot.after(id);
-        let prefix = if before.is_empty() {
-            String::new()
-        } else {
-            format!("» {}  ", ops_str(before))
-        };
-        let suffix = if after.is_empty() {
-            String::new()
-        } else {
-            format!("  « {}", ops_str(after))
-        };
-        self.line(indent, &format!("{prefix}{text}{suffix}"));
+        let mut d = head;
+        if !before.is_empty() {
+            d = text(format!("» {}  ", ops_str(before))) + d;
+        }
+        if !after.is_empty() {
+            d = d + text(format!("  « {}", ops_str(after)));
+        }
+        d
     }
 
-    fn expr(&mut self, e: &Expr<'_>, indent: usize) {
+    fn exprs(&self, es: &[Expr<'_>]) -> Vec<Doc<'static>> {
+        es.iter().map(|e| self.expr(e)).collect()
+    }
+
+    fn expr(&self, e: &Expr<'_>) -> Doc<'static> {
         match e.kind {
-            ExprKind::Var(x) => self.head(indent, e.id, &format!("var v{}", x.0)),
-            ExprKind::ConstInt(n) => self.head(indent, e.id, &format!("const {n}")),
-            ExprKind::ConstBool(b) => self.head(indent, e.id, &format!("const {b}")),
-            ExprKind::Let { var, value, .. } => {
-                self.head(indent, e.id, &format!("let v{} =", var.0));
-                self.expr(value, indent + 1);
-            }
-            ExprKind::Seq(es) => {
-                self.head(indent, e.id, "seq");
-                for s in es {
-                    self.expr(s, indent + 1);
-                }
-            }
-            ExprKind::Call { callee, args, .. } => {
-                self.head(
-                    indent,
+            ExprKind::Var(x) => self.anno(e.id, text(format!("var v{}", x.0))),
+            ExprKind::ConstInt(n) => self.anno(e.id, text(format!("const {n}"))),
+            ExprKind::ConstBool(b) => self.anno(e.id, text(format!("const {b}"))),
+            ExprKind::Let { var, value, .. } => nest(
+                self.anno(e.id, text(format!("let v{} =", var.0))),
+                [self.expr(value)],
+            ),
+            ExprKind::Seq(es) => nest(self.anno(e.id, text("seq")), self.exprs(es)),
+            ExprKind::Call { callee, args, .. } => nest(
+                self.anno(
                     e.id,
-                    &format!("call @{}", self.syms.resolve(&callee.0)),
-                );
-                for a in args {
-                    self.expr(a, indent + 1);
-                }
-            }
-            ExprKind::Ctor { record, args } => {
-                self.head(
-                    indent,
+                    text(format!("call @{}", self.syms.resolve(&callee.0))),
+                ),
+                self.exprs(args),
+            ),
+            ExprKind::Ctor { record, args } => nest(
+                self.anno(
                     e.id,
-                    &format!("ctor @{}", self.syms.resolve(&record.0)),
-                );
-                for a in args {
-                    self.expr(a, indent + 1);
-                }
-            }
+                    text(format!("ctor @{}", self.syms.resolve(&record.0))),
+                ),
+                self.exprs(args),
+            ),
             ExprKind::Variant {
                 record,
                 variant,
                 args,
-            } => {
-                self.head(
-                    indent,
+            } => nest(
+                self.anno(
                     e.id,
-                    &format!("variant @{}#{variant}", self.syms.resolve(&record.0)),
-                );
-                for a in args {
-                    self.expr(a, indent + 1);
-                }
-            }
+                    text(format!(
+                        "variant @{}#{variant}",
+                        self.syms.resolve(&record.0)
+                    )),
+                ),
+                self.exprs(args),
+            ),
             ExprKind::NullableCall(opt) => match opt {
-                Some(x) => {
-                    self.head(indent, e.id, "nullable");
-                    self.expr(x, indent + 1);
-                }
-                None => self.head(indent, e.id, "null"),
+                Some(x) => nest(self.anno(e.id, text("nullable")), [self.expr(x)]),
+                None => self.anno(e.id, text("null")),
             },
             ExprKind::Arith(l, _, r) | ExprKind::Cmp(l, _, r) => {
-                self.head(indent, e.id, "binop");
-                self.expr(l, indent + 1);
-                self.expr(r, indent + 1);
+                nest(self.anno(e.id, text("binop")), [self.expr(l), self.expr(r)])
             }
             ExprKind::Negate(x) | ExprKind::Not(x) | ExprKind::Cast(x, _) => {
-                self.head(indent, e.id, "unop");
-                self.expr(x, indent + 1);
+                nest(self.anno(e.id, text("unop")), [self.expr(x)])
             }
-            ExprKind::If(c, t, e2) => {
-                self.head(indent, e.id, "if");
-                self.expr(c, indent + 1);
-                self.line(indent, "then");
-                self.expr(t, indent + 1);
-                self.line(indent, "else");
-                self.expr(e2, indent + 1);
-            }
-            ExprKind::Match(scrut, tree) => {
-                self.head(indent, e.id, "match");
-                self.expr(scrut, indent + 1);
-                self.tree(&tree, indent + 1);
-            }
-            ExprKind::Proj(base, path) => {
-                self.head(indent, e.id, &format!("proj {path:?}"));
-                self.expr(base, indent + 1);
-            }
-            ExprKind::Assign(dst, field, src) => {
-                self.head(indent, e.id, &format!("assign .{field} :="));
-                self.expr(dst, indent + 1);
-                self.expr(src, indent + 1);
-            }
-            ExprKind::RegionRun(x) => {
-                self.head(indent, e.id, "region-run");
-                self.expr(x, indent + 1);
-            }
+            ExprKind::If(c, t, f) => nest(
+                self.anno(e.id, text("if")),
+                [
+                    self.expr(c),
+                    nest(text("then"), [self.expr(t)]),
+                    nest(text("else"), [self.expr(f)]),
+                ],
+            ),
+            ExprKind::Match(scrut, tree) => nest(
+                self.anno(e.id, text("match")),
+                [self.expr(scrut), self.tree(&tree)],
+            ),
+            ExprKind::Proj(base, path) => nest(
+                self.anno(e.id, text(format!("proj {path:?}"))),
+                [self.expr(base)],
+            ),
+            ExprKind::Assign(dst, field, src) => nest(
+                self.anno(e.id, text(format!("assign .{field} :="))),
+                [self.expr(dst), self.expr(src)],
+            ),
+            ExprKind::RegionRun(x) => nest(self.anno(e.id, text("region-run")), [self.expr(x)]),
             ExprKind::Closure(c) => {
                 let caps = c
                     .captures
@@ -549,87 +551,66 @@ impl Renderer<'_> {
                     .map(|(v, _)| format!("v{}", v.0))
                     .collect::<Vec<_>>()
                     .join(", ");
-                self.head(indent, e.id, &format!("closure [{caps}]"));
-                self.expr(c.body, indent + 1);
+                nest(
+                    self.anno(e.id, text(format!("closure [{caps}]"))),
+                    [self.expr(c.body)],
+                )
             }
             ExprKind::ClosureCall { target, args } => {
-                self.head(indent, e.id, "closure-call");
-                self.expr(target, indent + 1);
-                for a in args {
-                    self.expr(a, indent + 1);
-                }
+                let mut kids = vec![self.expr(target)];
+                kids.extend(self.exprs(args));
+                nest(self.anno(e.id, text("closure-call")), kids)
             }
-            _ => self.head(indent, e.id, &format!("<{}>", kind_name(&e.kind))),
+            _ => self.anno(e.id, text(format!("<{}>", kind_name(&e.kind)))),
         }
     }
 
-    fn tree(&mut self, t: &DecisionTree<'_>, indent: usize) {
+    fn tree(&self, t: &DecisionTree<'_>) -> Doc<'static> {
         match *t {
-            DecisionTree::Uncovered => self.line(indent, "uncovered"),
-            DecisionTree::Unreachable => self.line(indent, "unreachable"),
-            DecisionTree::Leaf { body, bindings } => {
-                let bs = bindings
-                    .iter()
-                    .map(|(y, p)| format!("v{}@{p:?}", y.0))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                self.line(indent, &format!("leaf [{bs}]"));
-                self.expr(body, indent + 1);
-            }
+            DecisionTree::Uncovered => text("uncovered"),
+            DecisionTree::Unreachable => text("unreachable"),
+            DecisionTree::Leaf { body, bindings } => nest(
+                text(format!("leaf [{}]", binding_list(bindings))),
+                [self.expr(body)],
+            ),
+            // `if` / `success` / `failure` are the guard's three parts, each
+            // nested under it (and their contents one level deeper still).
             DecisionTree::Guard {
                 bindings,
                 guard,
                 success,
                 failure,
-            } => {
-                let bs = bindings
-                    .iter()
-                    .map(|(y, p)| format!("v{}@{p:?}", y.0))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                // `if` / `success` / `failure` are the guard's three parts, so
-                // indent them under it (and their contents one deeper still),
-                // rather than leaving them flush with the `guard` line.
-                self.line(indent, &format!("guard [{bs}]"));
-                self.line(indent + 1, "if");
-                self.expr(guard, indent + 2);
-                self.line(indent + 1, "success");
-                self.tree(success, indent + 2);
-                self.line(indent + 1, "failure");
-                self.tree(failure, indent + 2);
-            }
-            DecisionTree::Switch { cases, .. } => {
-                self.line(indent, "switch");
-                for sub in super::subtrees(&cases) {
-                    self.tree(sub, indent + 1);
-                }
-            }
+            } => nest(
+                text(format!("guard [{}]", binding_list(bindings))),
+                [
+                    nest(text("if"), [self.expr(guard)]),
+                    nest(text("success"), [self.tree(success)]),
+                    nest(text("failure"), [self.tree(failure)]),
+                ],
+            ),
+            DecisionTree::Switch { cases, .. } => nest(
+                text("switch"),
+                super::subtrees(&cases).into_iter().map(|s| self.tree(s)),
+            ),
         }
     }
 }
 
 /// Render a function body with its inc/dec ops woven in (`»` before, `«` after).
 fn render(func: &Function<'_>, ot: &OwnershipTable, syms: &Rodeo) -> String {
-    let mut r = Renderer {
-        out: String::new(),
-        ot,
-        syms,
-    };
-    let params: Vec<String> = func
+    let r = Renderer { ot, syms };
+    let params = func
         .params
         .iter()
         .map(|p| format!("v{}", p.var.0))
-        .collect();
-    let header = format!(
-        "fn @{}({}):",
-        syms.resolve(&func.symbol.0),
-        params.join(", ")
-    );
-    r.line(0, &header);
-    if let Some(body) = func.body {
-        r.expr(body, 1);
-    }
-    r.out
+        .collect::<Vec<_>>()
+        .join(", ");
+    let header = text(format!("fn @{}({}):", syms.resolve(&func.symbol.0), params));
+    let doc = match func.body {
+        Some(body) => nest(header, [r.expr(body)]),
+        None => header,
+    };
+    pprint(doc, ANNO_PRINTER)
 }
 
 // ---------------------------------------------------------------------------
