@@ -1467,6 +1467,108 @@ fn match_reconciles_an_outer_var() {
     });
 }
 
+#[test]
+fn match_handles_outer_vars_unused_used_and_across() {
+    // fn f(e: E, p: Rc, q: Rc, u: Rc) -> Rc {
+    //     let r = match e { #0 => use0(p, q), #1(x) => use1(p, x) };
+    //     tail(q, r)
+    // }
+    //   Three non-scrutinee RR values, three different fates, all in one match:
+    //     p — used in BOTH arms, dead after → moved in each arm (no dup, no drop).
+    //     q — used in arm #0 AND after the match → live *across*: dup'd at its
+    //         in-arm use, never reconcile-dropped in the arm that skips it, and
+    //         moved at the post-match use.
+    //     u — used nowhere → dead: dropped once on entry (Param-Unused).
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let e_ty = b.shared(); // the enum scrutinee, rc-managed
+        let rc = b.shared(); // the outer values / payload field
+        let e = b.fresh_var();
+        let p = b.fresh_var();
+        let q = b.fresh_var();
+        let u = b.fresh_var();
+        let x = b.fresh_var();
+        let r = b.fresh_var();
+
+        // arm #0: use0(p, q)
+        let vp0 = b.var(p, rc);
+        let vq0 = b.var(q, rc);
+        let (vp0_id, vq0_id) = (vp0.id, vq0.id);
+        let use0 = b.call("use0", vec![vp0, vq0], rc);
+        let body0_id = use0.id;
+        let leaf0 = b.leaf(use0, vec![]);
+
+        // arm #1: use1(p, x), where x is field 0 of the scrutinee
+        let vp1 = b.var(p, rc);
+        let vx = b.var(x, rc);
+        let vp1_id = vp1.id;
+        let use1 = b.call("use1", vec![vp1, vx], rc);
+        let body1_id = use1.id;
+        let leaf1 = b.leaf(use1, vec![(x, vec![0])]);
+
+        let tree = b.switch_ctor(vec![], vec![leaf0, leaf1]);
+        let scrut = b.var(e, e_ty);
+        let matched = b.match_(scrut, tree, rc);
+        let let_r = b.let_(r, matched);
+
+        // tail(q, r): q is used again after the match; r is the match result.
+        let vq_tail = b.var(q, rc);
+        let vq_tail_id = vq_tail.id;
+        let vr = b.var(r, rc);
+        let tail = b.call("tail", vec![vq_tail, vr], rc);
+
+        let body = b.seq(vec![let_r, tail], rc);
+        let body_id = body.id;
+
+        let params = vec![
+            b.param(e, e_ty),
+            b.param(p, rc),
+            b.param(q, rc),
+            b.param(u, rc),
+        ];
+        let func = b.function("f", params, rc, body);
+        let ot = run(tcx, &func, &b);
+
+        // u — wholly unused ⇒ dropped once on entry, at the body root.
+        assert_eq!(
+            ot.before(body_id),
+            &[RcOp::Drop(u)],
+            "the wholly-unused outer var is dropped once on entry"
+        );
+
+        // arm #0 uses both p and q; q is live across, so the leaf carries only the
+        // consumed scrutinee's drop — no reconcile drop of q.
+        assert_eq!(
+            ot.before(body0_id),
+            &[RcOp::Drop(e)],
+            "arm #0: only the scrutinee drop — q is live across, never reconcile-dropped"
+        );
+        // q is used in the arm yet live after the match ⇒ dup at its occurrence.
+        assert_eq!(
+            ot.before(vq0_id),
+            &[RcOp::Dup(q)],
+            "q used in-arm but live across ⇒ dup'd to keep it past the match"
+        );
+        // p is dead after the match and this is its last use here ⇒ moved.
+        assert!(ot.before(vp0_id).is_empty(), "p moved in arm #0 (last use)");
+
+        // arm #1: extract the field then drop the scrutinee; q is NOT dropped here
+        // (still live across) and p is moved.
+        assert_eq!(
+            ot.before(body1_id),
+            &[RcOp::Dup(x), RcOp::Drop(e)],
+            "arm #1: field dup + scrutinee drop; the live-across q is not dropped"
+        );
+        assert!(ot.before(vp1_id).is_empty(), "p moved in arm #1 (last use)");
+
+        // After the match, q's final use is its last ⇒ a plain move.
+        assert!(
+            ot.before(vq_tail_id).is_empty(),
+            "q's post-match use is its last ⇒ moved, no dup"
+        );
+    });
+}
+
 // ----- containers (Proj / Assign) -----
 
 #[test]
