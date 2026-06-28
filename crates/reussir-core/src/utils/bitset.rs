@@ -10,8 +10,16 @@
 //!
 //! Equality is by *contents*, independent of representation, so a `HybridBitSet`
 //! can be used as a value in the usual way.
+//!
+//! Because the dense/dense regime dominates, the per-element operations
+//! ([`HybridBitSet::insert`], [`HybridBitSet::contains`],
+//! [`HybridBitSet::union_with`], [`HybridBitSet::subtract`]) tag every
+//! compressed and promotion branch with [`std::hint::cold_path`], steering the
+//! compiler to keep the dense fast path straight-line and the rare cases out of
+//! line.
 
 use std::fmt;
+use std::hint::cold_path;
 
 use fixedbitset::FixedBitSet;
 use roaring::RoaringBitmap;
@@ -46,15 +54,20 @@ impl HybridBitSet {
     /// promotes the set to a [`RoaringBitmap`].
     pub fn insert(&mut self, value: u32) {
         match self {
-            HybridBitSet::Sparse(bitmap) => {
-                bitmap.insert(value);
-            }
+            // Fast path: a small element into the dense backing.
             HybridBitSet::Dense(dense) if value < MAX_DENSE_BITS => {
                 dense.grow(register_aligned_len(value));
                 dense.insert(value as usize);
             }
-            // Beyond the cap: promote self by inserting into a bitmap copy.
+            // Already compressed: a rare regime (most sets stay dense).
+            HybridBitSet::Sparse(bitmap) => {
+                cold_path();
+                bitmap.insert(value);
+            }
+            // Beyond the cap: promote self by inserting into a bitmap copy. A
+            // one-way, once-per-set transition.
             this @ HybridBitSet::Dense(_) => {
+                cold_path();
                 let mut bitmap = this.to_bitmap();
                 bitmap.insert(value);
                 *this = HybridBitSet::Sparse(bitmap);
@@ -67,7 +80,10 @@ impl HybridBitSet {
         match self {
             // `FixedBitSet::contains` treats out-of-capacity bits as unset.
             HybridBitSet::Dense(dense) => dense.contains(value as usize),
-            HybridBitSet::Sparse(bitmap) => bitmap.contains(value),
+            HybridBitSet::Sparse(bitmap) => {
+                cold_path();
+                bitmap.contains(value)
+            }
         }
     }
 
@@ -75,14 +91,20 @@ impl HybridBitSet {
     /// elements beyond the cap) `self` is promoted to match.
     pub fn union_with(&mut self, other: &HybridBitSet) {
         match (self, other) {
+            // Fast path: both operands dense.
             (HybridBitSet::Dense(a), HybridBitSet::Dense(b)) => a.union_with(b),
-            (HybridBitSet::Sparse(a), HybridBitSet::Sparse(b)) => *a |= b,
+            (HybridBitSet::Sparse(a), HybridBitSet::Sparse(b)) => {
+                cold_path();
+                *a |= b;
+            }
             (HybridBitSet::Sparse(a), HybridBitSet::Dense(b)) => {
+                cold_path();
                 a.extend(b.ones().map(|i| i as u32));
             }
             // Dense ∪ Sparse: `other` may hold elements past the cap, so promote
             // self by folding its bits into a copy of the compressed `b`.
             (this @ HybridBitSet::Dense(_), HybridBitSet::Sparse(b)) => {
+                cold_path();
                 let mut bitmap = this.to_bitmap();
                 bitmap |= b;
                 *this = HybridBitSet::Sparse(bitmap);
@@ -94,14 +116,20 @@ impl HybridBitSet {
     /// representation — a difference only removes elements.
     pub fn subtract(&mut self, other: &HybridBitSet) {
         match (self, other) {
+            // Fast path: both operands dense.
             (HybridBitSet::Dense(a), HybridBitSet::Dense(b)) => a.difference_with(b),
-            (HybridBitSet::Sparse(a), HybridBitSet::Sparse(b)) => *a -= b,
+            (HybridBitSet::Sparse(a), HybridBitSet::Sparse(b)) => {
+                cold_path();
+                *a -= b;
+            }
             (HybridBitSet::Sparse(a), HybridBitSet::Dense(b)) => {
+                cold_path();
                 for i in b.ones() {
                     a.remove(i as u32);
                 }
             }
             (HybridBitSet::Dense(a), HybridBitSet::Sparse(b)) => {
+                cold_path();
                 let drop: Vec<usize> = a.ones().filter(|&i| b.contains(i as u32)).collect();
                 for i in drop {
                     a.remove(i);
@@ -120,7 +148,8 @@ impl HybridBitSet {
     }
 
     /// Materialize the current contents as a [`RoaringBitmap`] (used when a dense
-    /// set has to promote).
+    /// set has to promote). Only reached from the cold promotion paths.
+    #[cold]
     fn to_bitmap(&self) -> RoaringBitmap {
         match self {
             HybridBitSet::Dense(dense) => dense.ones().map(|i| i as u32).collect(),
