@@ -49,7 +49,9 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 use crate::full::mangle::Mangler;
 use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
-use crate::semi::ctxt::{Elaborator, Record, Report, Severity, TrampolineRoot};
+use crate::semi::ctxt::{
+    DefaultCap, Elaborator, Record, RecordFields, Report, Severity, TrampolineRoot,
+};
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
@@ -194,14 +196,24 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             }
         }
     }
-    let mut records: Vec<mir::RecordInstance<'tcx>> = record_keys
-        .into_iter()
-        .map(|(def, args)| mir::RecordInstance {
-            symbol: driver.symbol_of(def, args),
-            // Layout is capability-independent, so canonicalize the coloring.
-            ty: tcx.mk_record(def, args, Flexivity::Irrelevant),
-        })
-        .collect();
+    let mut records: Vec<mir::RecordInstance<'tcx>> = Vec::with_capacity(record_keys.len());
+    for (def, args) in record_keys {
+        let symbol = driver.symbol_of(def, args);
+        // Layout is capability-independent, so canonicalize the coloring.
+        let ty = tcx.mk_record(def, args, Flexivity::Irrelevant);
+        // A record whose definition is missing (it failed to elaborate) gets an
+        // empty value layout so lowering still has a well-formed instance.
+        let (default_cap, layout) = match input.records.get(&def) {
+            Some(record) => resolve_layout(tcx, record, args, input.resolver, &mut driver.symbols),
+            None => (DefaultCap::Value, mir::RecordLayout::Compound(&[])),
+        };
+        records.push(mir::RecordInstance {
+            symbol,
+            ty,
+            default_cap,
+            layout,
+        });
+    }
 
     let trampolines: Vec<mir::Trampoline> = input
         .trampolines
@@ -229,6 +241,63 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         },
         reports,
     )
+}
+
+/// Resolve a record instance to its ground layout: the field types with the
+/// instance's generics substituted away (variants expanded), plus the
+/// default capability that selects the lowering. Variant names are interned into
+/// `symbols` (the program's symbol table).
+fn resolve_layout<'tcx>(
+    tcx: &TyCtxt<'tcx>,
+    record: &Record<'tcx>,
+    args: &'tcx [Ty<'tcx>],
+    resolver: &dyn Resolver<TokenKey>,
+    symbols: &mut Rodeo,
+) -> (DefaultCap, mir::RecordLayout<'tcx>) {
+    let mut subst = Subst::default();
+    for ((_, gid), &ty) in record.ty_params.iter().zip(args.iter()) {
+        subst.insert(*gid, ty);
+    }
+    let layout = match record.fields.as_ref() {
+        Some(RecordFields::Named(fields)) => {
+            let members: Vec<mir::Member<'tcx>> = fields
+                .iter()
+                .map(|(_, ty, is_mut)| mir::Member {
+                    ty: subst_ty(tcx, *ty, &subst),
+                    is_field: *is_mut,
+                })
+                .collect();
+            mir::RecordLayout::Compound(tcx.alloc_slice(&members))
+        }
+        Some(RecordFields::Unnamed(fields)) => {
+            let members: Vec<mir::Member<'tcx>> = fields
+                .iter()
+                .map(|(ty, is_mut)| mir::Member {
+                    ty: subst_ty(tcx, *ty, &subst),
+                    is_field: *is_mut,
+                })
+                .collect();
+            mir::RecordLayout::Compound(tcx.alloc_slice(&members))
+        }
+        Some(RecordFields::Variants(variants)) => {
+            let vdefs: Vec<mir::VariantDef<'tcx>> = variants
+                .iter()
+                .map(|v| {
+                    let fields: Vec<Ty<'tcx>> =
+                        v.fields.iter().map(|&t| subst_ty(tcx, t, &subst)).collect();
+                    mir::VariantDef {
+                        name: mir::Symbol(symbols.get_or_intern(resolver.resolve(v.name))),
+                        fields: tcx.intern_tys(&fields),
+                    }
+                })
+                .collect();
+            mir::RecordLayout::Variant(tcx.alloc_slice(&vdefs))
+        }
+        // A record that failed field population elaborates with no fields; treat
+        // it as an empty compound so lowering still has a well-formed layout.
+        None => mir::RecordLayout::Compound(&[]),
+    };
+    (record.default_cap, layout)
 }
 
 /// The maximum type-argument nesting depth monomorphization will instantiate

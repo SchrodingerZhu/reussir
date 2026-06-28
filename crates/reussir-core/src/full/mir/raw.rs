@@ -12,11 +12,11 @@
 //! correct by construction. This makes the round trip value-sound, not merely
 //! text-faithful.
 
-/// A whole program: record instances (with their ground type), functions,
+/// A whole program: record instances (with their ground layout), functions,
 /// exported trampolines.
 #[derive(Clone, Debug)]
 pub struct Program {
-    pub records: Vec<(String, Ty)>,
+    pub records: Vec<RecordDecl>,
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
 }
@@ -24,9 +24,54 @@ pub struct Program {
 /// One top-level item, as the grammar yields them before partitioning.
 #[derive(Clone, Debug)]
 pub enum Item {
-    Record(String, Ty),
+    Record(RecordDecl),
     Func(Func),
     Tramp(Tramp),
+}
+
+/// A ground record declaration: its v0 symbol, the capability it declares by
+/// default, the nominal record type (path + ground args), and its field layout.
+/// The layout is what makes the textual MIR self-contained — a parsed program
+/// carries enough to lower records without re-consulting the elaborator.
+#[derive(Clone, Debug)]
+pub struct RecordDecl {
+    pub symbol: String,
+    pub default_cap: DefCap,
+    pub ty: Ty,
+    pub body: RecordBody,
+}
+
+/// A record's ground shape.
+#[derive(Clone, Debug)]
+pub enum RecordBody {
+    /// A struct: ordered fields.
+    Compound(Vec<Member>),
+    /// An enum: one compound sub-record per variant, in declaration order.
+    Variant(Vec<Variant>),
+}
+
+/// One compound field: its ground type, and whether it is a mutable `[field]`
+/// link (only regional records carry these).
+#[derive(Clone, Debug)]
+pub struct Member {
+    pub is_field: bool,
+    pub ty: Ty,
+}
+
+/// One enum variant: its source name and ordered field types.
+#[derive(Clone, Debug)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<Ty>,
+}
+
+/// The capability a record declares by default (mirrors
+/// [`crate::semi::ctxt::DefaultCap`]).
+#[derive(Clone, Copy, Debug)]
+pub enum DefCap {
+    Value,
+    Shared,
+    Regional,
 }
 
 impl Program {
@@ -39,7 +84,7 @@ impl Program {
         };
         for item in items {
             match item {
-                Item::Record(s, ty) => p.records.push((s, ty)),
+                Item::Record(r) => p.records.push(r),
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
             }

@@ -15,7 +15,7 @@
 use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 
-use crate::semi::ctxt::{DefaultCap, Record, TrampolineRoot};
+use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot};
 use crate::semi::hir::{
     ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
 };
@@ -114,9 +114,51 @@ impl<'a> Printer<'a> {
             RecordKind::StructKind => "struct #",
             RecordKind::EnumKind => "enum #",
         };
-        text(format!("{cap}{kind}{}", self.path(r.def)))
-            + self.generics_binder(&r.ty_params, &r.regional_generics)
-            + text(";")
+        let head = text(format!("{cap}{kind}{}", self.path(r.def)))
+            + self.generics_binder(&r.ty_params, &r.regional_generics);
+        head + text(" { ") + self.record_body(r) + text(" };")
+    }
+
+    /// The field layout of a record: `field?`-marked member types for a struct,
+    /// `Name(types)` variants for an enum. Struct field names are not emitted —
+    /// mono does not read them, so leaving them out keeps the form minimal and
+    /// the round-trip exact.
+    fn record_body(&self, r: &Record<'_>) -> Doc<'static> {
+        match r.fields.as_ref() {
+            Some(RecordFields::Named(fields)) => {
+                let parts = fields
+                    .iter()
+                    .map(|(_, ty, is_mut)| self.member(*ty, *is_mut))
+                    .collect();
+                comma_sep(parts)
+            }
+            Some(RecordFields::Unnamed(fields)) => {
+                let parts = fields
+                    .iter()
+                    .map(|(ty, is_mut)| self.member(*ty, *is_mut))
+                    .collect();
+                comma_sep(parts)
+            }
+            Some(RecordFields::Variants(variants)) => {
+                let parts = variants
+                    .iter()
+                    .map(|v| {
+                        let fields = v.fields.iter().map(|&t| self.ty(t)).collect();
+                        text(format!("{}(", self.resolver.resolve(v.name)))
+                            + comma_sep(fields)
+                            + text(")")
+                    })
+                    .collect();
+                comma_sep(parts)
+            }
+            // A record that failed field population elaborates with no fields.
+            None => Doc::Null,
+        }
+    }
+
+    fn member(&self, ty: Ty<'_>, is_mut: bool) -> Doc<'static> {
+        let marker = if is_mut { text("field ") } else { Doc::Null };
+        marker + self.ty(ty)
     }
 
     fn trampoline(&self, t: &TrampolineRoot<'_>) -> Doc<'static> {

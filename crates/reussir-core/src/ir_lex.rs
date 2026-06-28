@@ -28,6 +28,8 @@ pub enum Token<'a> {
     Value,
     #[token("shared")]
     Shared,
+    #[token("field")]
+    Field,
     #[token("extern")]
     Extern,
     #[token("trampoline")]

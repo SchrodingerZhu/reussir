@@ -18,6 +18,7 @@
 use lasso::{Rodeo, Spur};
 use reussir_syntax::kind::TokenKey;
 
+use crate::semi::ctxt::DefaultCap;
 use crate::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use crate::semi::ty::Ty;
 use crate::surface::{Span, Visibility};
@@ -85,13 +86,44 @@ pub struct Param<'tcx> {
     pub ty: Ty<'tcx>,
 }
 
-/// A ground record instance whose layout the backend must materialize. Keyed by
-/// [`Symbol`]; the ground type carries the fields needed to compute that layout.
+/// A ground record instance whose layout the backend materializes. Keyed by
+/// [`Symbol`]; the [`layout`](Self::layout) carries the ground member types so a
+/// program parsed from textual MIR is lowerable without re-consulting the
+/// elaborator (the [`ty`](Self::ty) is the nominal record handle used to match a
+/// record-typed value back to its instance).
 #[derive(Clone, Copy, Debug)]
 pub struct RecordInstance<'tcx> {
     pub symbol: Symbol,
-    /// The ground record type (`def` + args + capability) for layout.
+    /// The nominal ground record type (`def` + args), capability-canonicalized.
     pub ty: Ty<'tcx>,
+    /// The capability the record declares by default — selects the lowering
+    /// (only `Value` records lower today; `Shared`/`Regional` await the rc work).
+    pub default_cap: DefaultCap,
+    /// The ground field layout.
+    pub layout: RecordLayout<'tcx>,
+}
+
+/// A ground record's shape: a struct's ordered fields, or an enum's variants.
+#[derive(Clone, Copy, Debug)]
+pub enum RecordLayout<'tcx> {
+    Compound(&'tcx [Member<'tcx>]),
+    Variant(&'tcx [VariantDef<'tcx>]),
+}
+
+/// One compound field: its ground type and whether it is a mutable `[field]`
+/// link (only regional records carry these).
+#[derive(Clone, Copy, Debug)]
+pub struct Member<'tcx> {
+    pub ty: Ty<'tcx>,
+    pub is_field: bool,
+}
+
+/// One enum variant: its source name (interned in the program's symbol table)
+/// and ordered field types.
+#[derive(Clone, Copy, Debug)]
+pub struct VariantDef<'tcx> {
+    pub name: Symbol,
+    pub fields: &'tcx [Ty<'tcx>],
 }
 
 /// An exported C-ABI trampoline aliasing a concrete function instance.

@@ -13,13 +13,14 @@
 //!
 //! # Scope
 //!
-//! This is the **scalar / control-flow subset**: integer and floating-point
-//! values, arithmetic and comparison, `if`, `let`/sequencing, direct calls, and
-//! exported trampolines — enough to compile and run reference programs like
-//! `fibonacci.rr` end-to-end. Reference-counted constructs (records, closures,
-//! `match`, regions, strings) are not yet lowered and surface as an explicit
-//! [`LoweringError`] rather than wrong code; they arrive with the ownership
-//! analysis in a later change.
+//! Currently lowered: the **scalar / control-flow subset** (integer and
+//! floating-point values, arithmetic and comparison, `if`, `let`/sequencing,
+//! direct calls, exported trampolines) and **by-value (`[value]`) records**
+//! (construction via `reussir.record.compound` and field projection via
+//! `reussir.record.extract`). Reference-counted constructs (shared/regional
+//! records, enums/`match`, closures, regions, strings) are not yet lowered and
+//! surface as an explicit [`LoweringError`] rather than wrong code; they arrive
+//! with the ownership analysis in later changes.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
 //! [`mir::Symbol`](reussir_core::full::mir::Symbol) (mono did the mangling), so
@@ -118,6 +119,22 @@ mod tests {
         assert!(mlir.contains("scf.if"), "{mlir}");
         assert!(mlir.contains("call @_RC9fibonacci"), "{mlir}");
         assert!(mlir.contains("reussir.trampoline"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_value_records_to_verifiable_mlir() {
+        // A `[value]` record is a by-value aggregate: construction lowers to
+        // `reussir.record.compound` and field access to `reussir.record.extract`.
+        let src = r#"
+            struct [value] Point { x: i64, y: i64 }
+            pub fn dot(a: Point, b: Point) -> i64 { a.x * b.x + a.y * b.y }
+            pub fn mk(x: i64, y: i64) -> Point { Point { x: x, y: y } }
+            extern "C" trampoline "dot_ffi" = dot;
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.record.compound"), "{mlir}");
+        assert!(mlir.contains("reussir.record.extract"), "{mlir}");
+        assert!(mlir.contains("!reussir.record<"), "{mlir}");
     }
 
     #[test]

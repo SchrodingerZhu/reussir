@@ -25,26 +25,33 @@ use reussir_backend::melior::ir::{
 };
 
 use reussir_core::full::mir::{self, Expr, ExprKind};
+use reussir_core::semi::ctxt::DefaultCap;
 use reussir_core::semi::hir::{ArithOp, CmpOp, VarId};
 use reussir_core::semi::ty::{IntTy, Ty, TyKind};
 use reussir_core::surface::Visibility;
 
-use super::ty::{is_unit, mlir_ty, num_class};
+use super::ty::{TypeCtx, is_unit, num_class};
 use super::{LoweringError, Result, err};
 
 /// The variable → SSA-value environment for one block scope.
 type Env<'c, 'b> = FxHashMap<VarId, Value<'c, 'b>>;
 
-/// Per-program lowering state: the context to build in and the program whose
-/// symbol table resolves callee/trampoline names. Reused across functions.
+/// Per-program lowering state: the context to build in, the program whose symbol
+/// table resolves callee/trampoline names, and the [`TypeCtx`] that lowers types
+/// and resolves record layouts. Reused across functions.
 pub(super) struct Lowerer<'c, 'p, 'tcx> {
     context: &'c Context,
     program: &'p mir::Program<'tcx>,
+    tys: TypeCtx<'c, 'p, 'tcx>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     pub(super) fn new(context: &'c Context, program: &'p mir::Program<'tcx>) -> Self {
-        Lowerer { context, program }
+        Lowerer {
+            context,
+            program,
+            tys: TypeCtx::new(context, program),
+        }
     }
 
     fn loc(&self) -> Location<'c> {
@@ -57,13 +64,13 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let param_tys = func
             .params
             .iter()
-            .map(|p| mlir_ty(self.context, p.ty))
+            .map(|p| self.tys.mlir_ty(p.ty))
             .collect::<Result<Vec<_>>>()?;
         let ret = func.return_ty;
         let result_tys = if is_unit(ret) {
             Vec::new()
         } else {
-            vec![mlir_ty(self.context, ret)?]
+            vec![self.tys.mlir_ty(ret)?]
         };
         let fn_ty = FunctionType::new(self.context, &param_tys, &result_tys);
 
@@ -123,7 +130,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let loc = self.loc();
         match &e.kind {
             ConstInt(n) => {
-                let attr = IntegerAttribute::new(mlir_ty(self.context, e.ty)?, *n as i64).into();
+                let attr = IntegerAttribute::new(self.tys.mlir_ty(e.ty)?, *n as i64).into();
                 Ok(Some(
                     self.append(block, arith::constant(self.context, attr, loc)),
                 ))
@@ -136,8 +143,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 ))
             }
             ConstFloat(f) => {
-                let attr =
-                    FloatAttribute::new(self.context, mlir_ty(self.context, e.ty)?, *f).into();
+                let attr = FloatAttribute::new(self.context, self.tys.mlir_ty(e.ty)?, *f).into();
                 Ok(Some(
                     self.append(block, arith::constant(self.context, attr, loc)),
                 ))
@@ -185,7 +191,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 let result_tys = if is_unit(e.ty) {
                     Vec::new()
                 } else {
-                    vec![mlir_ty(self.context, e.ty)?]
+                    vec![self.tys.mlir_ty(e.ty)?]
                 };
                 let symbol =
                     FlatSymbolRefAttribute::new(self.context, self.program.symbol(*callee));
@@ -203,16 +209,75 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 }
             }
             RegionRun(_) => err("region-run lowering not yet implemented"),
-            Proj(..) => err("projection lowering not yet implemented"),
+            Proj(base, path) => self.proj(block, env, base, path).map(Some),
             Assign(..) => err("assignment lowering not yet implemented"),
             Match(..) => err("match lowering not yet implemented"),
-            Ctor { .. } | Variant { .. } | NullableCall(_) => {
-                err("constructor lowering not yet implemented")
-            }
+            Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
+            Variant { .. } | NullableCall(_) => err("enum/nullable lowering not yet implemented"),
             Closure(_) | ClosureCall { .. } => err("closure lowering not yet implemented"),
             GlobalStr(_) => err("string literal lowering not yet implemented"),
             Poison => err("poison expression reached lowering"),
         }
+    }
+
+    /// Construct a `[value]` record from its (declaration-ordered) field args via
+    /// `reussir.record.compound`.
+    fn compound<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        e: &Expr<'tcx>,
+        args: &[Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        // `record_type` also enforces the value-only restriction.
+        let record_ty = self.tys.record_type(e.ty)?;
+        let mut operands = Vec::with_capacity(args.len());
+        for a in args.iter() {
+            operands.push(
+                self.expr(block, env, a)?
+                    .ok_or_else(|| LoweringError("record field is unit".into()))?,
+            );
+        }
+        Ok(self.append(block, builders::record_compound(&operands, record_ty, loc)))
+    }
+
+    /// Project a chain of fields out of a `[value]` record value with a sequence
+    /// of `reussir.record.extract` ops.
+    fn proj<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        base: &Expr<'tcx>,
+        path: &[u32],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let mut cur_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("projection base is unit".into()))?;
+        let mut cur_ty = base.ty;
+        for &idx in path.iter() {
+            let rec = self
+                .tys
+                .record_of(cur_ty)
+                .ok_or_else(|| LoweringError("projection base is not a record".into()))?;
+            if rec.default_cap != DefaultCap::Value {
+                return err("projection of shared/regional records not yet implemented");
+            }
+            let members = match rec.layout {
+                mir::RecordLayout::Compound(ms) => ms,
+                mir::RecordLayout::Variant(_) => return err("projection of an enum value"),
+            };
+            let field = members
+                .get(idx as usize)
+                .ok_or_else(|| LoweringError(format!("field index {idx} out of range")))?;
+            let field_ty = field.ty;
+            let field_mlir = self.tys.mlir_ty(field_ty)?;
+            let op = builders::record_extract(self.context, cur_val, idx as usize, field_mlir, loc);
+            cur_val = self.append(block, op);
+            cur_ty = field_ty;
+        }
+        Ok(cur_val)
     }
 
     /// Append `op` to `block` and return its single result as a value.
@@ -233,7 +298,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         match x.ty.kind() {
             TyKind::Fp(_) => Ok(self.append(block, arith::negf(xv, loc))),
             TyKind::Int(_) => {
-                let ty = mlir_ty(self.context, x.ty)?;
+                let ty = self.tys.mlir_ty(x.ty)?;
                 let zero = self.append(
                     block,
                     arith::constant(self.context, IntegerAttribute::new(ty, 0).into(), loc),
@@ -362,7 +427,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             .ok_or_else(|| LoweringError("cast operand is unit".into()))?;
         let src = num_class(x.ty)?;
         let dst = num_class(to)?;
-        let to_ty = mlir_ty(self.context, to)?;
+        let to_ty = self.tys.mlir_ty(to)?;
         let op = match (src.float, dst.float) {
             (false, false) => {
                 if dst.width == src.width {
@@ -419,7 +484,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let result_tys = if is_unit(ty) {
             Vec::new()
         } else {
-            vec![mlir_ty(self.context, ty)?]
+            vec![self.tys.mlir_ty(ty)?]
         };
         let then_region = self.branch_region(env, t, ty)?;
         let else_region = self.branch_region(env, f, ty)?;

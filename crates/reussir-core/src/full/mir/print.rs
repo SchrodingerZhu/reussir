@@ -18,6 +18,7 @@ use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 
 use crate::full::mir;
+use crate::semi::ctxt::DefaultCap;
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyKind};
@@ -53,8 +54,7 @@ impl<'a> Printer<'a> {
 
         let mut items: Vec<Doc<'static>> = Vec::new();
         for rec in &program.records {
-            items
-                .push(text(format!("record @{} : ", r.sym(rec.symbol))) + r.ty(rec.ty) + text(";"));
+            items.push(r.record(rec));
         }
         for func in &program.functions {
             items.push(r.function(func));
@@ -93,6 +93,47 @@ struct Render<'a> {
 impl Render<'_> {
     fn sym(&self, s: mir::Symbol) -> &str {
         self.symbols.resolve(&s.0)
+    }
+
+    /// Render a record instance: its symbol, default capability, nominal type,
+    /// and ground field layout (`struct { … }` / `enum { … }`). The nominal type
+    /// reprints capability-canonicalized, so the leading keyword carries the
+    /// default capability instead.
+    fn record(&self, rec: &mir::RecordInstance<'_>) -> Doc<'static> {
+        let cap = match rec.default_cap {
+            DefaultCap::Value => "value",
+            DefaultCap::Shared => "shared",
+            DefaultCap::Regional => "regional",
+        };
+        let head = text(format!("record @{} : {cap} ", self.sym(rec.symbol)));
+        let body = match rec.layout {
+            mir::RecordLayout::Compound(members) => {
+                let parts: Vec<Doc<'static>> = members
+                    .iter()
+                    .map(|m| {
+                        let marker = if m.is_field {
+                            text("field ")
+                        } else {
+                            Doc::Null
+                        };
+                        marker + self.ty(m.ty)
+                    })
+                    .collect();
+                text("struct ") + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")
+            }
+            mir::RecordLayout::Variant(variants) => {
+                let parts: Vec<Doc<'static>> = variants
+                    .iter()
+                    .map(|v| {
+                        let fields: Vec<Doc<'static>> =
+                            v.fields.iter().map(|&t| self.ty(t)).collect();
+                        text(format!("{}(", self.sym(v.name))) + comma_sep(fields) + text(")")
+                    })
+                    .collect();
+                text("enum ") + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")
+            }
+        };
+        head + body + text(";")
     }
 
     fn function(&self, func: &mir::Function<'_>) -> Doc<'static> {
