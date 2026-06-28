@@ -109,6 +109,7 @@ use std::cell::RefCell;
 
 use crate::utils::bitset::HybridBitSet;
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::hir::{ExprId, VarId};
@@ -936,7 +937,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
         if n == 0 {
             return;
         }
-        let mut afters = vec![VarSet::default(); n];
+        let mut afters = SmallVec::<[_; 4]>::with_capacity(n);
+        afters.resize_with(n, VarSet::default);
         afters[n - 1] = live_after.clone();
         for i in (0..n - 1).rev() {
             let mut s = self.free(&args[i + 1]);
@@ -950,8 +952,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
 }
 
 /// The immediate sub-trees of a switch's cases, in source order.
-fn subtrees<'tcx>(cases: &SwitchCases<'tcx>) -> Vec<&'tcx DecisionTree<'tcx>> {
-    let mut v = Vec::new();
+fn subtrees<'tcx>(cases: &SwitchCases<'tcx>) -> SmallVec<[&'tcx DecisionTree<'tcx>; 8]> {
+    let mut v = SmallVec::new();
     match *cases {
         SwitchCases::Int { cases, default } => {
             for (_, t) in cases {
