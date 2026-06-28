@@ -9,12 +9,7 @@
 
 pub mod lower;
 
+// Test-only helpers, shared with the integration tests (which include the same
+// file directly via `#[path]`). Not part of the crate's API.
 #[cfg(test)]
-pub(crate) mod test {
-    pub(crate) fn init_tracing() {
-        static TRACING_INIT: std::sync::Once = std::sync::Once::new();
-        TRACING_INIT.call_once(|| {
-            tracing_subscriber::fmt().init();
-        });
-    }
-}
+pub(crate) mod testing;

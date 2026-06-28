@@ -230,4 +230,5 @@ unsafe extern "C" {
         member_is_field: *const bool,
         default_capability: ReussirCapability,
     );
+    pub fn reussirRecordTypeIsComplete(record: MlirType) -> bool;
 }

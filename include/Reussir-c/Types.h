@@ -142,6 +142,12 @@ void reussirRecordTypeComplete(MlirType record, intptr_t nMembers,
                                bool const *memberIsField,
                                ReussirCapability defaultCapability);
 
+// Whether an identified record type has had its body filled in. A handle
+// obtained from `reussirRecordTypeGetIncomplete` reports `false` until
+// `reussirRecordTypeComplete` runs; this lets a caller look a record up by name
+// and skip rebuilding its members when it is already complete.
+bool reussirRecordTypeIsComplete(MlirType record);
+
 #ifdef __cplusplus
 }
 #endif

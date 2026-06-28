@@ -152,3 +152,7 @@ void reussirRecordTypeComplete(MlirType record, intptr_t nMembers,
   llvm::cast<RecordType>(unwrap(record))
       .complete(memberTypes, fields, toCapability(defaultCapability));
 }
+
+bool reussirRecordTypeIsComplete(MlirType record) {
+  return llvm::cast<RecordType>(unwrap(record)).getComplete();
+}

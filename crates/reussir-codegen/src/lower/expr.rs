@@ -10,9 +10,12 @@
 //! lifetime-shortening reborrow). Bindings introduced inside a branch stay
 //! scoped to it.
 
+use std::cell::RefCell;
+
 use rustc_hash::FxHashMap;
 
 use reussir_backend::builders;
+use reussir_backend::dialect;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
@@ -25,9 +28,9 @@ use reussir_backend::melior::ir::{
 };
 
 use reussir_core::full::mir::{self, Expr, ExprKind};
-use reussir_core::semi::ctxt::DefaultCap;
-use reussir_core::semi::hir::{ArithOp, CmpOp, VarId};
-use reussir_core::semi::ty::{IntTy, Ty, TyKind};
+use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
+use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
+use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
 use reussir_core::surface::Visibility;
 
 use super::ty::{TypeCtx, is_unit, num_class};
@@ -36,26 +39,67 @@ use super::{LoweringError, Result, err};
 /// The variable → SSA-value environment for one block scope.
 type Env<'c, 'b> = FxHashMap<VarId, Value<'c, 'b>>;
 
-/// Per-program lowering state: the context to build in, the program whose symbol
-/// table resolves callee/trampoline names, and the [`TypeCtx`] that lowers types
-/// and resolves record layouts. Reused across functions.
+/// The state threaded through a field-projection walk: either a loaded value or a
+/// borrowed reference into a record, each tagged with its ground MIR type so the
+/// next step can consult the record layout and pick the right op.
+enum Cursor<'c, 'b, 'tcx> {
+    /// A loaded SSA value of record or scalar type `ty`. For a `[value]` record
+    /// this is the inline aggregate; for a `[shared]` record it is the `rc`
+    /// pointer.
+    Value { val: Value<'c, 'b>, ty: Ty<'tcx> },
+    /// A borrowed `!reussir.ref<…>` into a record whose MIR type is `ty`.
+    Ref { val: Value<'c, 'b>, ty: Ty<'tcx> },
+}
+
+/// Per-program lowering state: the context to build in, the type arena, the
+/// program whose symbol table resolves callee/trampoline names, the [`TypeCtx`]
+/// that lowers types and resolves record layouts, and the record table the
+/// ownership analysis consults. Reused across functions.
+///
+/// Two side-tables hold state for the function currently being lowered (reset on
+/// entry to [`function`](Self::function)): the [`OwnershipTable`] that says where
+/// to emit reference-count ops, and the type of each named local (so a `dup`/
+/// `drop` keyed by a variable knows whether to emit an `rc` op or to recurse
+/// through an inline record).
 pub(super) struct Lowerer<'c, 'p, 'tcx> {
     context: &'c Context,
+    tcx: &'p TyCtxt<'tcx>,
     program: &'p mir::Program<'tcx>,
     tys: TypeCtx<'c, 'p, 'tcx>,
+    records: RecordTable<'tcx>,
+    ownership: RefCell<OwnershipTable>,
+    var_tys: RefCell<FxHashMap<VarId, Ty<'tcx>>>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
-    pub(super) fn new(context: &'c Context, program: &'p mir::Program<'tcx>) -> Self {
+    pub(super) fn new(
+        context: &'c Context,
+        tcx: &'p TyCtxt<'tcx>,
+        program: &'p mir::Program<'tcx>,
+    ) -> Self {
         Lowerer {
             context,
+            tcx,
             program,
             tys: TypeCtx::new(context, program),
+            records: RecordTable::from_records(&program.records),
+            ownership: RefCell::new(OwnershipTable::default()),
+            var_tys: RefCell::new(FxHashMap::default()),
         }
     }
 
     fn loc(&self) -> Location<'c> {
         Location::unknown(self.context)
+    }
+
+    /// Record the ground type of a local, so reference-count ops keyed by it can
+    /// pick the right instruction.
+    fn bind_var_ty(&self, var: VarId, ty: Ty<'tcx>) {
+        self.var_tys.borrow_mut().insert(var, ty);
+    }
+
+    fn var_ty(&self, var: VarId) -> Option<Ty<'tcx>> {
+        self.var_tys.borrow().get(&var).copied()
     }
 
     /// Lower one MIR function to a `func.func` operation.
@@ -74,6 +118,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         };
         let fn_ty = FunctionType::new(self.context, &param_tys, &result_tys);
 
+        // Reset the per-function side-tables, then run the ownership analysis for
+        // this body so the tree-walk can emit each node's reference-count ops.
+        *self.ownership.borrow_mut() = analyze_function(self.tcx, func, &self.records);
+        self.var_tys.borrow_mut().clear();
+
         let region = Region::new();
         if let Some(body) = func.body {
             let block_args: Vec<(Type<'c>, Location<'c>)> =
@@ -85,6 +134,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     .argument(i)
                     .map_err(|e| LoweringError(format!("missing block argument: {e}").into()))?;
                 env.insert(p.var, arg.into());
+                self.bind_var_ty(p.var, p.ty);
             }
             let value = self.expr(&block, &mut env, body)?;
             if is_unit(ret) {
@@ -120,7 +170,25 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Lower an expression into `block`, returning the SSA value holding its
     /// result (`None` for a unit-typed expression).
+    ///
+    /// Around the node's own ops, this emits the reference-count ops the
+    /// ownership analysis placed at its anchor: the `before` ops first, then the
+    /// node, then the `after` ops (which may reference the node's freshly-produced
+    /// value, e.g. to increment a borrowed field or drop a discarded result).
     fn expr<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        e: &Expr<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        self.emit_rc_before(block, env, e.id)?;
+        let value = self.expr_inner(block, env, e)?;
+        self.emit_rc_after(block, env, e.id, e.ty, value)?;
+        Ok(value)
+    }
+
+    /// Lower the node itself, without its surrounding reference-count ops.
+    fn expr_inner<'b>(
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
@@ -175,6 +243,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 Ok(last)
             }
             Let { var, value, .. } => {
+                self.bind_var_ty(*var, value.ty);
                 if let Some(v) = self.expr(block, env, value)? {
                     env.insert(*var, v);
                 }
@@ -220,8 +289,13 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// Construct a `[value]` record from its (declaration-ordered) field args via
-    /// `reussir.record.compound`.
+    /// Construct a record from its (declaration-ordered) field args.
+    ///
+    /// The fields are packed into the inline record payload with
+    /// `reussir.record.compound`. A `[value]` record stops there; a `[shared]`
+    /// record then boxes that payload into a fresh reference-counted pointer with
+    /// `reussir.rc.create` (the rc-create fusion pass folds the two into one
+    /// allocation later).
     fn compound<'b>(
         &self,
         block: &'b Block<'c>,
@@ -230,8 +304,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         args: &[Expr<'tcx>],
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
-        // `record_type` also enforces the value-only restriction.
-        let record_ty = self.tys.record_type(e.ty)?;
+        let payload_ty = self.tys.record_inner_of(e.ty)?;
         let mut operands = Vec::with_capacity(args.len());
         for a in args.iter() {
             operands.push(
@@ -239,11 +312,25 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     .ok_or_else(|| LoweringError("record field is unit".into()))?,
             );
         }
-        Ok(self.append(block, builders::record_compound(&operands, record_ty, loc)))
+        let payload = self.append(block, builders::record_compound(&operands, payload_ty, loc));
+        if self.tys.is_shared_record(e.ty) {
+            let rc_ty = self.tys.rc_type(payload_ty);
+            Ok(self.append(block, builders::rc_create(self.context, payload, rc_ty, loc)))
+        } else {
+            Ok(payload)
+        }
     }
 
-    /// Project a chain of fields out of a `[value]` record value with a sequence
-    /// of `reussir.record.extract` ops.
+    /// Project a chain of fields out of a record value.
+    ///
+    /// The walk is type-directed (see [`Cursor`]): an inline `[value]` record is
+    /// read field-by-field with `reussir.record.extract`; a `[shared]` record is
+    /// borrowed (`reussir.rc.borrow`) and then navigated with
+    /// `reussir.ref.project`, loading (`reussir.ref.load`) wherever a value is
+    /// needed — either to cross into a nested `rc` link or to materialize the
+    /// final result. The result is always a loaded value; if it is itself an rc
+    /// resource, the ownership analysis records the matching increment in the
+    /// projection's `after` ops.
     fn proj<'b>(
         &self,
         block: &'b Block<'c>,
@@ -251,38 +338,260 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         base: &Expr<'tcx>,
         path: &[u32],
     ) -> Result<Value<'c, 'b>> {
-        let loc = self.loc();
-        let mut cur_val = self
+        let base_val = self
             .expr(block, env, base)?
             .ok_or_else(|| LoweringError("projection base is unit".into()))?;
-        let mut cur_ty = base.ty;
+        let mut cursor = Cursor::Value {
+            val: base_val,
+            ty: base.ty,
+        };
         for &idx in path.iter() {
-            let rec = self
-                .tys
-                .record_of(cur_ty)
-                .ok_or_else(|| LoweringError("projection base is not a record".into()))?;
-            if rec.default_cap != DefaultCap::Value {
-                return err("projection of shared/regional records not yet implemented");
-            }
-            let members = match rec.layout {
-                mir::RecordLayout::Compound(ms) => ms,
-                mir::RecordLayout::Variant(_) => return err("projection of an enum value"),
-            };
-            let field = members
-                .get(idx as usize)
-                .ok_or_else(|| LoweringError(format!("field index {idx} out of range").into()))?;
-            let field_ty = field.ty;
-            let field_mlir = self.tys.mlir_ty(field_ty)?;
-            let op = builders::record_extract(self.context, cur_val, idx as usize, field_mlir, loc);
-            cur_val = self.append(block, op);
-            cur_ty = field_ty;
+            cursor = self.project_one(block, cursor, idx)?;
         }
-        Ok(cur_val)
+        self.load_cursor(block, cursor)
+    }
+
+    /// Advance the projection [`Cursor`] by one field index.
+    fn project_one<'b>(
+        &self,
+        block: &'b Block<'c>,
+        cursor: Cursor<'c, 'b, 'tcx>,
+        idx: u32,
+    ) -> Result<Cursor<'c, 'b, 'tcx>> {
+        let loc = self.loc();
+        match cursor {
+            // A shared record value is an rc pointer: borrow it to obtain a
+            // reference, then project through that reference.
+            Cursor::Value { val, ty } if self.tys.is_shared_record(ty) => {
+                let inner = self.tys.record_inner_of(ty)?;
+                let ref_ty = self.tys.shared_ref_type(inner);
+                let borrowed =
+                    self.append(block, dialect::rc_borrow(self.context, ref_ty, val, loc).into());
+                self.project_ref(block, borrowed, ty, idx)
+            }
+            // An inline record value: read the field out by value.
+            Cursor::Value { val, ty } => {
+                let (field_ty, _) = self.field_at(ty, idx)?;
+                let field_mlir = self.tys.mlir_ty(field_ty)?;
+                let extracted = self.append(
+                    block,
+                    builders::record_extract(self.context, val, idx as usize, field_mlir, loc),
+                );
+                Ok(Cursor::Value {
+                    val: extracted,
+                    ty: field_ty,
+                })
+            }
+            Cursor::Ref { val, ty } => self.project_ref(block, val, ty, idx),
+        }
+    }
+
+    /// Project field `idx` out of a reference into a record. A shared field is an
+    /// rc link stored inline, so it is loaded to a pointer value (ready to be
+    /// re-borrowed or returned); any other field stays a reference until the walk
+    /// finishes.
+    fn project_ref<'b>(
+        &self,
+        block: &'b Block<'c>,
+        reference: Value<'c, 'b>,
+        record_ty: Ty<'tcx>,
+        idx: u32,
+    ) -> Result<Cursor<'c, 'b, 'tcx>> {
+        let loc = self.loc();
+        let (field_ty, shared) = self.field_at(record_ty, idx)?;
+        let field_mlir = self.tys.mlir_ty(field_ty)?;
+        let proj_ref_ty = self.tys.shared_ref_type(field_mlir);
+        let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
+        let projected = self.append(
+            block,
+            dialect::ref_project(self.context, proj_ref_ty, reference, index, loc).into(),
+        );
+        if shared {
+            let loaded = self.append(
+                block,
+                dialect::ref_load(self.context, field_mlir, projected, loc).into(),
+            );
+            Ok(Cursor::Value {
+                val: loaded,
+                ty: field_ty,
+            })
+        } else {
+            Ok(Cursor::Ref {
+                val: projected,
+                ty: field_ty,
+            })
+        }
+    }
+
+    /// The type of field `idx` of a compound record, and whether it is a shared
+    /// (rc-link) field.
+    fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<(Ty<'tcx>, bool)> {
+        let rec = self
+            .tys
+            .record_of(record_ty)
+            .ok_or_else(|| LoweringError("projection base is not a record".into()))?;
+        let members = match rec.layout {
+            mir::RecordLayout::Compound(ms) => ms,
+            mir::RecordLayout::Variant(_) => return err("projection of an enum value"),
+        };
+        let field = members
+            .get(idx as usize)
+            .ok_or_else(|| LoweringError(format!("field index {idx} out of range").into()))?;
+        if field.is_field {
+            return err("projection of a regional field link not yet implemented");
+        }
+        Ok((field.ty, self.tys.is_shared_record(field.ty)))
+    }
+
+    /// Materialize a [`Cursor`] as a loaded SSA value, loading through a trailing
+    /// reference if the walk ended on one.
+    fn load_cursor<'b>(
+        &self,
+        block: &'b Block<'c>,
+        cursor: Cursor<'c, 'b, 'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        match cursor {
+            Cursor::Value { val, .. } => Ok(val),
+            Cursor::Ref { val, ty } => {
+                let inner = self.tys.mlir_ty(ty)?;
+                Ok(self.append(
+                    block,
+                    dialect::ref_load(self.context, inner, val, self.loc()).into(),
+                ))
+            }
+        }
     }
 
     /// Append `op` to `block` and return its single result as a value.
     fn append<'b>(&self, block: &'b Block<'c>, op: Operation<'c>) -> Value<'c, 'b> {
         block.append_operation(op).result(0).unwrap().into()
+    }
+
+    // --- Reference-count op emission ----------------------------------------
+
+    /// Emit the reference-count ops the ownership analysis placed *before* node
+    /// `id`. These only ever target named locals here: a `dup`/`drop` of an
+    /// anonymous result before a node would refer to an already-evaluated
+    /// temporary, which the constructs lowered here do not produce.
+    fn emit_rc_before<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b>,
+        id: ExprId,
+    ) -> Result<()> {
+        let ops = self.ownership.borrow().before(id).to_vec();
+        for op in ops {
+            match op {
+                RcOp::Dup(v) => self.emit_inc_var(block, env, v)?,
+                RcOp::Drop(v) => self.emit_dec_var(block, env, v)?,
+                RcOp::DupValue(_) | RcOp::DropValue(_) => {
+                    return err("reference-count op on an unbound temporary is not supported");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit the reference-count ops the ownership analysis placed *after* node
+    /// `id`, whose `ty`/`value` are the node's just-produced result. A `DupValue`/
+    /// `DropValue` keyed by `id` acts on that result (a borrowed field to retain,
+    /// or a discarded result to release).
+    fn emit_rc_after<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b>,
+        id: ExprId,
+        ty: Ty<'tcx>,
+        value: Option<Value<'c, 'b>>,
+    ) -> Result<()> {
+        let ops = self.ownership.borrow().after(id).to_vec();
+        for op in ops {
+            match op {
+                RcOp::Dup(v) => self.emit_inc_var(block, env, v)?,
+                RcOp::Drop(v) => self.emit_dec_var(block, env, v)?,
+                RcOp::DupValue(target) if target == id => {
+                    let val = value
+                        .ok_or_else(|| LoweringError("retain of a node with no value".into()))?;
+                    self.emit_inc(block, val, ty)?;
+                }
+                RcOp::DropValue(target) if target == id => {
+                    let val = value
+                        .ok_or_else(|| LoweringError("release of a node with no value".into()))?;
+                    self.emit_dec(block, val, ty)?;
+                }
+                RcOp::DupValue(_) | RcOp::DropValue(_) => {
+                    return err("reference-count op on an unbound temporary is not supported");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Increment the refcount owned by local `v`. A value-less local (e.g. unit)
+    /// holds no resource, so there is nothing to do.
+    fn emit_inc_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
+        match (env.get(&v).copied(), self.var_ty(v)) {
+            (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
+            _ => Ok(()),
+        }
+    }
+
+    /// Decrement the refcount owned by local `v` (see [`emit_inc_var`](Self::emit_inc_var)).
+    fn emit_dec_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
+        match (env.get(&v).copied(), self.var_ty(v)) {
+            (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
+            _ => Ok(()),
+        }
+    }
+
+    /// Increment a value's refcount: an `rc` pointer is incremented directly,
+    /// while an inline record that transitively owns rc fields is acquired through
+    /// a reference (which increments every rc pointer it reaches).
+    fn emit_inc<'b>(&self, block: &'b Block<'c>, val: Value<'c, 'b>, ty: Ty<'tcx>) -> Result<()> {
+        let loc = self.loc();
+        if self.tys.is_shared_record(ty) {
+            block.append_operation(dialect::rc_inc(self.context, val, loc).into());
+            Ok(())
+        } else if matches!(ty.kind(), TyKind::Record { .. }) {
+            let reference = self.spill(block, val, ty)?;
+            block.append_operation(dialect::ref_acquire(self.context, reference, loc).into());
+            Ok(())
+        } else {
+            err("reference-count increment on an unsupported type")
+        }
+    }
+
+    /// Decrement a value's refcount, the dual of [`emit_inc`](Self::emit_inc): an
+    /// `rc` pointer is decremented directly, an inline record is dropped through a
+    /// reference (releasing every rc pointer it reaches).
+    fn emit_dec<'b>(&self, block: &'b Block<'c>, val: Value<'c, 'b>, ty: Ty<'tcx>) -> Result<()> {
+        let loc = self.loc();
+        if self.tys.is_shared_record(ty) {
+            block.append_operation(dialect::rc_dec(self.context, val, loc).into());
+            Ok(())
+        } else if matches!(ty.kind(), TyKind::Record { .. }) {
+            let reference = self.spill(block, val, ty)?;
+            block.append_operation(dialect::ref_drop(self.context, reference, loc).into());
+            Ok(())
+        } else {
+            err("reference-count decrement on an unsupported type")
+        }
+    }
+
+    /// Spill a value to a fresh stack slot and return an (unspecified-capability)
+    /// reference to it, so the recursive acquire/drop ops can walk its fields.
+    fn spill<'b>(
+        &self,
+        block: &'b Block<'c>,
+        val: Value<'c, 'b>,
+        ty: Ty<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let inner = self.tys.mlir_ty(ty)?;
+        let ref_ty = self.tys.unspecified_ref_type(inner);
+        Ok(self.append(
+            block,
+            dialect::ref_spilled(self.context, ref_ty, val, self.loc()).into(),
+        ))
     }
 
     fn negate<'b>(
