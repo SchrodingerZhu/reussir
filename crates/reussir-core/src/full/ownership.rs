@@ -404,7 +404,6 @@ impl<'tcx> Analyzer<'_, 'tcx> {
     }
 
     // --- Pass A: free RR variables, memoized per anchor ---
-
     fn free(&mut self, e: &Expr<'tcx>) -> VarSet {
         if let Some(s) = self.free_memo.get(&e.id) {
             return s.clone();
@@ -580,7 +579,7 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
                 self.navigate_base(base, e.id, live_after);
             }
-            ExprKind::Assign(dst, _, src) => self.place_assign(e.id, dst, src, live_after),
+            ExprKind::Assign(dst, _, src) => self.place_assign(dst, src, live_after),
             // Transparent: a region scope does not change rc ownership (region
             // lifetime is a separate axis); its body's result is moved out.
             ExprKind::RegionRun(x) => self.place(x, live_after),
@@ -612,20 +611,21 @@ impl<'tcx> Analyzer<'_, 'tcx> {
         }
     }
 
-    /// `dst->field := src`: `src` is moved into the field (consumed); `dst` is
-    /// borrowed (mutated in place). The old field value is *not* dropped here —
-    /// flex/regional field links carry `field` capability and are freed with their
-    /// parent / region, not by an individual dec at the store.
-    fn place_assign(
-        &mut self,
-        id: ExprId,
-        dst: &'tcx Expr<'tcx>,
-        src: &'tcx Expr<'tcx>,
-        live_after: &VarSet,
-    ) {
-        // `dst` is evaluated and live across `src`, but only borrowed, so its
-        // root's drop is decided by the assignment's own continuation.
-        self.navigate_base(dst, id, live_after);
+    /// `dst->field := src`: store `src` into a field of `dst`.
+    ///
+    /// An assignment target is always a **flex regional** record — mutation is
+    /// only legal on a mutable, region-local value, and such a value is not RR
+    /// (it is freed with its region, never individually rc'd). So neither `dst`
+    /// nor its root takes any rc op, and the old field value is *not* dropped
+    /// here (flex/regional field links are reclaimed with the parent / region,
+    /// not by a per-store dec). The only work is to place `src`, moved into the
+    /// field: a rigid/managed `src` is inc'd like any other move into an owning
+    /// slot.
+    fn place_assign(&mut self, dst: &'tcx Expr<'tcx>, src: &'tcx Expr<'tcx>, live_after: &VarSet) {
+        debug_assert!(
+            !self.rr.is_rr(dst.ty),
+            "assign dst must be a flex regional (non-RR) record",
+        );
         self.place(src, live_after);
     }
 
