@@ -15,7 +15,7 @@ use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
 use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
-use crate::semi::ctxt::{DefaultCap, Record, TrampolineRoot};
+use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot, Variant};
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
 use crate::semi::hir::{
@@ -136,7 +136,9 @@ impl<'tcx> Builder<'_, 'tcx> {
         (ty_params, regional)
     }
 
-    /// Rebuild the `Record` metadata mono reads (no field layouts).
+    /// Rebuild the `Record` metadata mono reads, including the ground field
+    /// layout. Struct field names are not serialized (mono ignores them), so a
+    /// struct's fields rebuild as [`RecordFields::Unnamed`] — layout-equivalent.
     fn record(&mut self, r: &raw::Record) -> (DefId, Record<'tcx>) {
         let def = self.record_def(&r.path);
         let name = self.names.intern(&r.path);
@@ -150,13 +152,30 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::DefaultCap::Shared => DefaultCap::Shared,
             raw::DefaultCap::Regional => DefaultCap::Regional,
         };
+        let fields = match &r.body {
+            raw::RecordBody::Compound(members) => RecordFields::Unnamed(
+                members
+                    .iter()
+                    .map(|m| (self.ty(&m.ty), m.is_field))
+                    .collect(),
+            ),
+            raw::RecordBody::Variant(variants) => RecordFields::Variants(
+                variants
+                    .iter()
+                    .map(|v| Variant {
+                        name: self.names.intern(&v.name),
+                        fields: v.fields.iter().map(|t| self.ty(t)).collect(),
+                    })
+                    .collect(),
+            ),
+        };
         let record = Record {
             def,
             name,
             ty_params,
             kind,
             default_cap,
-            fields: None,
+            fields: Some(fields),
             regional_generics,
             span: None,
         };

@@ -18,14 +18,26 @@ Item: raw::Item = {
     <f:Func> => raw::Item::Func(f),
 };
 
-RecordDecl: raw::Record =
-    <default_cap:DefaultCap> <kind:RecordKind> "#" <path:"ident"> <generics:Generics?> ";"
+RecordDecl: raw::Record = {
+    <default_cap:DefaultCap> "struct" "#" <path:"ident"> <generics:Generics?>
+    "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
         default_cap,
-        kind,
+        kind: raw::RecordKind::Struct,
         path: path.to_string(),
         generics: generics.unwrap_or_default(),
-    };
+        body: raw::RecordBody::Compound(ms),
+    },
+    <default_cap:DefaultCap> "enum" "#" <path:"ident"> <generics:Generics?>
+    "{" <vs:Comma<Variant>> "}" ";"
+    => raw::Record {
+        default_cap,
+        kind: raw::RecordKind::Enum,
+        path: path.to_string(),
+        generics: generics.unwrap_or_default(),
+        body: raw::RecordBody::Variant(vs),
+    },
+};
 
 DefaultCap: raw::DefaultCap = {
     "[" "value" "]" => raw::DefaultCap::Value,
@@ -33,10 +45,13 @@ DefaultCap: raw::DefaultCap = {
     "[" "regional" "]" => raw::DefaultCap::Regional,
 };
 
-RecordKind: raw::RecordKind = {
-    "struct" => raw::RecordKind::Struct,
-    "enum" => raw::RecordKind::Enum,
-};
+/// A compound field: an optional `field` marker (a mutable `[field]` link) and
+/// its type.
+Member: raw::Member = <f:"field"?> <t:Ty> => raw::Member { is_field: f.is_some(), ty: t };
+
+/// An enum variant: its source name and ordered field types.
+Variant: raw::Variant =
+    <name:"ident"> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.to_string(), fields: fs };
 
 TrampDecl: raw::Tramp =
     "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:"ident"> <ta:TyArgs?> ";"
@@ -245,6 +260,7 @@ extern {
         "enum" => Token::Enum,
         "value" => Token::Value,
         "shared" => Token::Shared,
+        "field" => Token::Field,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
         "quoted" => Token::Quoted(<&'input str>),

@@ -315,11 +315,8 @@ mod tests {
             let resolver = VecResolver(vec!["Foo"]);
             let m = Mangler::new(&defs, &resolver);
             // `Foo<i32>` → `IC3FoolE`.
-            let foo_i32 = tcx.mk_record(
-                foo,
-                &[tcx.mk_int(IntTy::Signed(32))],
-                Flexivity::Irrelevant,
-            );
+            let foo_i32 =
+                tcx.mk_record(foo, &[tcx.mk_int(IntTy::Signed(32))], Flexivity::Irrelevant);
             assert_eq!(m.mangle_ty(foo_i32), "_RIC3FoolE");
             // `Foo` (no args) → `C3Foo`; mangling a function instance is the same.
             let foo0 = tcx.mk_record(foo, &[], Flexivity::Irrelevant);

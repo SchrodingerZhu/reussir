@@ -72,7 +72,16 @@ struct RecordTypeStorage : public mlir::TypeStorage {
 
   static RecordTypeStorage *construct(::mlir::TypeStorageAllocator &allocator,
                                       const KeyTy &key) {
-    return new (allocator.allocate<RecordTypeStorage>()) RecordTypeStorage(key);
+    auto *storage =
+        new (allocator.allocate<RecordTypeStorage>()) RecordTypeStorage(key);
+    // The key's `members`/`memberIsField` point at caller-owned buffers (a
+    // local `SmallVector` in the parser or the C API). Copy them into the
+    // uniquer's allocator so the uniqued storage owns them; otherwise a record
+    // built complete directly via `get` (rather than parsed-then-`mutate`d)
+    // dangles and crashes on first use.
+    storage->members = allocator.copyInto(key.members);
+    storage->memberIsField = allocator.copyInto(key.memberIsField);
+    return storage;
   }
 
   /// Mutates the members and attributes an identified record.

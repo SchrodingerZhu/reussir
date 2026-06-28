@@ -61,6 +61,31 @@ fn runs_recursive_fibonacci() {
 }
 
 #[test]
+fn runs_value_record_construction_and_projection() {
+    // `[value]` records are by-value aggregates: no heap, no rc. Build a point,
+    // pass it by value across internal calls, and project its fields —
+    // exercising `reussir.record.compound` / `record.extract` and the
+    // record-by-value function ABI end-to-end. The records stay internal; only
+    // two scalars cross the trampoline (the Reussir C ABI packs ≥4 args behind a
+    // pointer, an orthogonal concern, so we keep the entry point at two args).
+    let src = r#"
+        struct [value] Point { x: i64, y: i64 }
+        fn mk(x: i64, y: i64) -> Point { Point { x: x, y: y } }
+        fn dot(a: Point, b: Point) -> i64 { a.x * b.x + a.y * b.y }
+        pub fn sq_norm(x: i64, y: i64) -> i64 { dot(mk(x, y), mk(x, y)) }
+        extern "C" trampoline "sq_norm_ffi" = sq_norm;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("sq_norm_ffi").expect("lookup sq_norm_ffi");
+        let sq_norm: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // |(3,4)|² = 3*3 + 4*4 = 25
+        assert_eq!(sq_norm(3, 4), 25);
+        // |(5,6)|² = 25 + 36 = 61
+        assert_eq!(sq_norm(5, 6), 61);
+    });
+}
+
+#[test]
 fn runs_iterative_helper_and_signed_arithmetic() {
     let src = r#"
         fn iter_impl(n: u64, a: u64, b: u64) -> u64 {

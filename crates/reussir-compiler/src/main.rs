@@ -59,6 +59,12 @@ struct Cli {
     /// Let the token-reuse pass reuse tokens across function calls.
     #[arg(long = "reuse-across-call")]
     reuse_across_call: bool,
+
+    /// Run the MLIR backend single-threaded (disable its thread pool). Useful for
+    /// deterministic diagnostics and for debugging under tools that dislike the
+    /// backend's worker threads (e.g. some sanitizers/debuggers).
+    #[arg(long = "disable-backend-multithreading")]
+    disable_backend_multithreading: bool,
 }
 
 fn parse_emit(cli: &Cli) -> Result<OutputKind, String> {
@@ -160,6 +166,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let optimize_ffi = !matches!(opt, OptLevel::None);
 
     let context = reussir_backend::context();
+    if cli.disable_backend_multithreading {
+        context.enable_multi_threading(false);
+    }
     // Frontend + lowering inside the arena scope. Polymorphic FFI is compiled and
     // gathered before the pipeline (which erases the polyffi ops) and linked in
     // after translation; the finalized LLVM module borrows neither the arena nor

@@ -235,7 +235,7 @@ impl<'tcx> FulfillCtxt<'tcx> {
 mod tests {
     use super::ty_has_hole;
     use crate::semi::infer::InferCtxt;
-    use crate::semi::ty::{Flexivity, DefId, IntTy};
+    use crate::semi::ty::{DefId, Flexivity, IntTy};
     use crate::with_tcx;
 
     #[test]

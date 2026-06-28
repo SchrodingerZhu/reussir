@@ -65,3 +65,41 @@ pub fn trampoline_export<'c>(
         .build()
         .expect("valid reussir.trampoline")
 }
+
+/// `reussir.record.compound (<fields> : <types>) : <result_type>` — construct a
+/// compound record value from its (declaration-ordered) field operands.
+///
+/// melior has no generated builder for the Reussir dialect, so the op is built
+/// raw; the result type (the compound record type) must be supplied explicitly.
+pub fn record_compound<'c>(
+    fields: &[Value<'c, '_>],
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.record.compound", location)
+        .add_operands(fields)
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.record.compound")
+}
+
+/// `reussir.record.extract (<record> : <type>) [<index>] : <field_type>` —
+/// project a field out of a record value.
+///
+/// The field selector is an `index`-typed `IndexAttr`; the result type is the
+/// projected field's type.
+pub fn record_extract<'c>(
+    context: &'c Context,
+    record: Value<'c, '_>,
+    index: usize,
+    field_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let index_attr = IntegerAttribute::new(Type::index(context), index as i64).into();
+    OperationBuilder::new("reussir.record.extract", location)
+        .add_operands(&[record])
+        .add_attributes(&[(Identifier::new(context, "index"), index_attr)])
+        .add_results(&[field_type])
+        .build()
+        .expect("valid reussir.record.extract")
+}

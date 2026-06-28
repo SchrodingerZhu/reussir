@@ -16,6 +16,7 @@ use rustc_hash::FxHashMap;
 
 use crate::full::mir::{self, grammar as ir, raw};
 use crate::ir_lex::lex;
+use crate::semi::ctxt::DefaultCap;
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyCtxt, TyKind};
@@ -101,15 +102,45 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
+    /// Rebuild a record instance (symbol, nominal type, default capability, and
+    /// ground layout) from its parsed declaration.
+    fn record(&mut self, r: &raw::RecordDecl) -> mir::RecordInstance<'tcx> {
+        let layout = match &r.body {
+            raw::RecordBody::Compound(members) => {
+                let ms: Vec<mir::Member<'tcx>> = members
+                    .iter()
+                    .map(|m| mir::Member {
+                        ty: self.ty(&m.ty),
+                        is_field: m.is_field,
+                    })
+                    .collect();
+                mir::RecordLayout::Compound(self.tcx.alloc_slice(&ms))
+            }
+            raw::RecordBody::Variant(variants) => {
+                let vs: Vec<mir::VariantDef<'tcx>> = variants
+                    .iter()
+                    .map(|v| {
+                        let fields: Vec<Ty<'tcx>> = v.fields.iter().map(|t| self.ty(t)).collect();
+                        mir::VariantDef {
+                            name: self.sym(&v.name),
+                            fields: self.tcx.intern_tys(&fields),
+                        }
+                    })
+                    .collect();
+                mir::RecordLayout::Variant(self.tcx.alloc_slice(&vs))
+            }
+        };
+        mir::RecordInstance {
+            symbol: self.sym(&r.symbol),
+            ty: self.ty(&r.ty),
+            default_cap: def_cap(r.default_cap),
+            layout,
+        }
+    }
+
     fn program(&mut self, raw: raw::Program) -> mir::Program<'tcx> {
-        let records: Vec<mir::RecordInstance<'tcx>> = raw
-            .records
-            .iter()
-            .map(|(s, t)| mir::RecordInstance {
-                symbol: self.sym(s),
-                ty: self.ty(t),
-            })
-            .collect();
+        let records: Vec<mir::RecordInstance<'tcx>> =
+            raw.records.iter().map(|r| self.record(r)).collect();
         let trampolines: Vec<mir::Trampoline> = raw
             .trampolines
             .iter()
@@ -406,6 +437,14 @@ fn cap(c: raw::Cap) -> Flexivity {
         raw::Cap::Flex => Flexivity::Flex,
         raw::Cap::Rigid => Flexivity::Rigid,
         raw::Cap::Regional => Flexivity::Regional,
+    }
+}
+
+fn def_cap(c: raw::DefCap) -> DefaultCap {
+    match c {
+        raw::DefCap::Value => DefaultCap::Value,
+        raw::DefCap::Shared => DefaultCap::Shared,
+        raw::DefCap::Regional => DefaultCap::Regional,
     }
 }
 

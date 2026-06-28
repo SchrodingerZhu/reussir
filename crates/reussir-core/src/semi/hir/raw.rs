@@ -43,15 +43,40 @@ impl Program {
     }
 }
 
-/// A record declaration carrying what mono reads: its path/kind/default cap and
-/// its generic parameters (with the `regional` ones marked). Field layouts are
-/// not part of the mono-resumable form.
+/// A record declaration carrying what mono reads: its path/kind/default cap, its
+/// generic parameters (with the `regional` ones marked), and its field layout.
+/// Field types are serialized (struct field *names* are not — mono does not read
+/// them) so the resumed HIR resolves ground record layouts identically.
 #[derive(Clone, Debug)]
 pub struct Record {
     pub default_cap: DefaultCap,
     pub kind: RecordKind,
     pub path: String,
     pub generics: Vec<Generic>,
+    pub body: RecordBody,
+}
+
+/// A record's field layout in the HIR form.
+#[derive(Clone, Debug)]
+pub enum RecordBody {
+    /// A struct's ordered fields (names dropped; mono does not read them).
+    Compound(Vec<Member>),
+    /// An enum's variants, in declaration order.
+    Variant(Vec<Variant>),
+}
+
+/// One compound field: a `[field]`-mutability marker and its type.
+#[derive(Clone, Debug)]
+pub struct Member {
+    pub is_field: bool,
+    pub ty: Ty,
+}
+
+/// One enum variant: its source name and ordered field types.
+#[derive(Clone, Debug)]
+pub struct Variant {
+    pub name: String,
+    pub fields: Vec<Ty>,
 }
 
 #[derive(Clone, Copy, Debug)]
