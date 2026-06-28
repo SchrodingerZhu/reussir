@@ -492,10 +492,6 @@ mod tests {
         let src = "struct Point { x: i32 }\n\
                    fn f(p: Frobnicate) -> i32 { 0 }";
         assert!(has_error(src, "unknown type"), "{:#?}", reports_of(src));
-        assert!(
-            !has_error(src, "did you mean"),
-            "{:#?}",
-            reports_of(src)
-        );
+        assert!(!has_error(src, "did you mean"), "{:#?}", reports_of(src));
     }
 }

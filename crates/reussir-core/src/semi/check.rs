@@ -828,7 +828,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     ) -> Expr<'tcx> {
         let Some(def) = self.defs.resolve_record(enum_name) else {
             let hint = self.record_suggestion(enum_name);
-            self.error(span, format!("unknown enum `{}`{hint}", self.sym(enum_name)));
+            self.error(
+                span,
+                format!("unknown enum `{}`{hint}", self.sym(enum_name)),
+            );
             return self.poison(span);
         };
         self.record_use(enum_name);

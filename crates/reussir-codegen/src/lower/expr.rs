@@ -83,7 +83,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             for (i, p) in func.params.iter().enumerate() {
                 let arg = block
                     .argument(i)
-                    .map_err(|e| LoweringError(format!("missing block argument: {e}")))?;
+                    .map_err(|e| LoweringError(format!("missing block argument: {e}").into()))?;
                 env.insert(p.var, arg.into());
             }
             let value = self.expr(&block, &mut env, body)?;
@@ -158,7 +158,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     env.get(v)
                         .copied()
                         .map(Some)
-                        .ok_or_else(|| LoweringError(format!("unbound variable {v:?}")))
+                        .ok_or_else(|| LoweringError(format!("unbound variable {v:?}").into()))
                 }
             }
             Negate(x) => self.negate(block, env, x).map(Some),
@@ -270,7 +270,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             };
             let field = members
                 .get(idx as usize)
-                .ok_or_else(|| LoweringError(format!("field index {idx} out of range")))?;
+                .ok_or_else(|| LoweringError(format!("field index {idx} out of range").into()))?;
             let field_ty = field.ty;
             let field_mlir = self.tys.mlir_ty(field_ty)?;
             let op = builders::record_extract(self.context, cur_val, idx as usize, field_mlir, loc);

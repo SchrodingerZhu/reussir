@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{Flexivity, DefId, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::frecency::Frecency;
 use crate::utils::fuzzy::FuzzyIndex;
@@ -333,7 +333,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub(super) fn variable_suggestion(&self, name: TokenKey) -> String {
         self.fuzzy_hint(
             self.sym(name),
-            self.vars.names().map(|k| (self.sym(k), self.frecency.score(k))),
+            self.vars
+                .names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
         )
     }
 

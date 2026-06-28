@@ -30,6 +30,8 @@
 mod expr;
 mod ty;
 
+use std::borrow::Cow;
+
 use reussir_backend::builders;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::{BlockLike, Location, Module};
@@ -40,7 +42,7 @@ use expr::Lowerer;
 
 /// A construct the current lowering subset does not handle.
 #[derive(Debug, Clone)]
-pub struct LoweringError(pub String);
+pub struct LoweringError(pub Cow<'static, str>);
 
 impl std::fmt::Display for LoweringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -52,7 +54,7 @@ impl std::error::Error for LoweringError {}
 
 type Result<T> = std::result::Result<T, LoweringError>;
 
-fn err<T>(msg: impl Into<String>) -> Result<T> {
+fn err<T>(msg: impl Into<Cow<'static, str>>) -> Result<T> {
     Err(LoweringError(msg.into()))
 }
 
