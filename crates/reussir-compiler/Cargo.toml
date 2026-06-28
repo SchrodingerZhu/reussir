@@ -8,6 +8,10 @@ description = "Ahead-of-time Reussir compiler: source → native object / assemb
 [lib]
 name = "reussir_compiler"
 
+[[bin]]
+name = "rrc"
+path = "src/main.rs"
+
 [dependencies]
 # `melior` for the lowered `Module` type; `mlir-sys` for the MLIR→LLVM-IR
 # translation; `llvm-sys` for the host `TargetMachine` emission. llvm-sys

@@ -1,10 +1,15 @@
 # Builds the reussir-compiler Rust crate (the AOT driver: Reussir source ->
 # native object / assembly / LLVM IR) with cargo.
 #
+# The CMake targets and the produced binary are named `rrc`, not
+# `reussir-compiler`: frontend/CMakeLists.txt already registers a
+# `reussir-compiler` custom target, and CMake aborts configuration when two
+# targets share a name.
+#
 # Like reussir-backend / reussir-jit / reussir-codegen, these targets are NOT
 # part of the default `ALL` build. Invoke them explicitly:
-#   ninja -C build reussir-compiler         # compile the crate + binary
-#   ninja -C build reussir-compiler-test    # run the crate's tests
+#   ninja -C build rrc         # compile the crate + binary
+#   ninja -C build rrc-test    # run the crate's tests
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(REUSSIR_COMPILER_CARGO_PROFILE "dev")
@@ -26,22 +31,22 @@ set(REUSSIR_COMPILER_CARGO_ENV
     REUSSIR_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/include
     RUSTFLAGS=-Awarnings)
 
-add_custom_target(reussir-compiler
+add_custom_target(rrc
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_COMPILER_CARGO_ENV}
         cargo build --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
-    COMMENT "Building reussir-compiler with cargo (${REUSSIR_COMPILER_CARGO_PROFILE} profile)"
+    COMMENT "Building rrc with cargo (${REUSSIR_COMPILER_CARGO_PROFILE} profile)"
     USES_TERMINAL
 )
 
-add_custom_target(reussir-compiler-test
+add_custom_target(rrc-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_COMPILER_CARGO_ENV}
         cargo test --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
-    COMMENT "Testing reussir-compiler with cargo"
+    COMMENT "Testing rrc with cargo"
     USES_TERMINAL
 )
