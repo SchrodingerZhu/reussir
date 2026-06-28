@@ -52,7 +52,7 @@ use crate::full::subst::{Subst, subst_ty};
 use crate::semi::ctxt::{Elaborator, Record, Report, Severity, TrampolineRoot};
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use crate::surface::Span;
 
 /// Exactly the part of an [`Elaborator`] that monomorphization reads. Taking
@@ -105,6 +105,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         seen: FxHashSet::default(),
         records: FxHashSet::default(),
         reports: Vec::new(),
+        ids: mir::ExprIdGen::default(),
     };
 
     // Seed roots: every non-generic function, then every trampoline target.
@@ -198,7 +199,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         .map(|(def, args)| mir::RecordInstance {
             symbol: driver.symbol_of(def, args),
             // Layout is capability-independent, so canonicalize the coloring.
-            ty: tcx.mk_record(def, args, Capability::Irrelevant),
+            ty: tcx.mk_record(def, args, Flexivity::Irrelevant),
         })
         .collect();
 
@@ -269,8 +270,8 @@ fn ty_depth(ty: Ty<'_>) -> usize {
 /// `Irrelevant` and scalars carry none.
 fn is_regional_arg(ty: Ty<'_>) -> bool {
     matches!(
-        ty.capability(),
-        Some(Capability::Regional | Capability::Flex | Capability::Rigid)
+        ty.flexivity(),
+        Some(Flexivity::Regional | Flexivity::Flex | Flexivity::Rigid)
     )
 }
 
@@ -286,6 +287,10 @@ struct Driver<'a, 'tcx> {
     /// Ground record instances whose layout is needed (keyed flex-independently).
     records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
     reports: Vec<Report>,
+    /// Source of fresh [`mir::ExprId`] anchors for every lowered node. A single
+    /// counter across the whole program: one semi expr may lower into many MIR
+    /// exprs (once per instantiation), so semi ids are not reused.
+    ids: mir::ExprIdGen,
 }
 
 impl<'a, 'tcx> Driver<'a, 'tcx> {
@@ -380,6 +385,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         self.note_records(ty);
         let kind = self.lower_kind(&e.kind, subst);
         mir::Expr {
+            id: self.ids.fresh(),
             kind,
             ty,
             span: e.span,

@@ -18,7 +18,7 @@
 use lasso::{Rodeo, Spur};
 use reussir_syntax::kind::TokenKey;
 
-use crate::semi::hir::{ArithOp, CmpOp, VarId};
+use crate::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use crate::semi::ty::Ty;
 use crate::surface::{Span, Visibility};
 use crate::utils::string::StringToken;
@@ -103,11 +103,38 @@ pub struct Trampoline {
 }
 
 /// A monomorphized expression: a ground type, the structure, and a source span.
+///
+/// The [`id`](Self::id) is a per-program-unique **anchor** the ownership pass
+/// keys its inc/dec/drop placement on (see [`crate::full::ownership`]); the MIR
+/// itself stays immutable, so analyses record their results in side-tables keyed
+/// by this id rather than rewriting the tree.
 #[derive(Clone, Copy, Debug)]
 pub struct Expr<'tcx> {
+    pub id: ExprId,
     pub kind: ExprKind<'tcx>,
     pub ty: Ty<'tcx>,
     pub span: Option<Span>,
+}
+
+/// A monotonic source of fresh [`ExprId`]s, threaded through whichever pass
+/// constructs MIR — monomorphization ([`crate::full::mono`]), textual re-intern
+/// ([`mir::build`](self::build)), or the test-only builder. Centralizing id
+/// assignment here is what makes "one expr, one stable anchor" hold regardless of
+/// who built the tree; ids are *not* printed (they are regenerated
+/// deterministically on parse), so they never enter the textual round-trip.
+#[derive(Default)]
+pub struct ExprIdGen {
+    next: u32,
+}
+
+impl ExprIdGen {
+    /// Hand out the next id. Post-order at the construction site (children are
+    /// built before their parent), but the pass only relies on uniqueness.
+    pub fn fresh(&mut self) -> ExprId {
+        let id = ExprId(self.next);
+        self.next += 1;
+        id
+    }
 }
 
 /// The closure form; see [`crate::semi::hir::ClosureExpr`] for the

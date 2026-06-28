@@ -27,6 +27,12 @@ blake3 = "1"
 rapidhash = "4.4.1"
 # Fast non-DoS-resistant hasher for interner/compiler-internal maps.
 rustc-hash = "2.1"
+# Compressed (Roaring) bitmaps over u32; the sparse backend of the ownership
+# pass's small-set-optimized VarId live-sets (utils::bitset).
+roaring = "0.11.4"
+# Dense word-backed bitset; the small-domain backend of utils::bitset before it
+# promotes to a Roaring bitmap.
+fixedbitset = "0.5.7"
 # Small-size-optimized vectors: arity-bounded surface-AST lists (path segments,
 # argument/type-parameter lists) stay inline and skip heap allocation.
 smallvec = "1.15"
@@ -63,7 +69,6 @@ llvm-sys = "221"
 melior = "0.27"
 mlir-sys = "220"
 palc = "0.0.2"
-serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 stacker = "0.1.21"
 tracing = "0.1"

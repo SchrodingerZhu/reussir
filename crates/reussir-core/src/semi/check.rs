@@ -486,7 +486,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn is_flex(&mut self, ty: Ty<'tcx>) -> bool {
         match self.infer.shallow_resolve(ty).kind() {
             TyKind::Record {
-                flex: crate::semi::ty::Capability::Flex,
+                flex: crate::semi::ty::Flexivity::Flex,
                 ..
             } => true,
             TyKind::Nullable(inner) => self.is_flex(*inner),
@@ -582,7 +582,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let TyKind::Record {
             def,
             args,
-            flex: crate::semi::ty::Capability::Flex,
+            flex: crate::semi::ty::Flexivity::Flex,
         } = dty.kind()
         else {
             self.error(span, "assignment target must be a flex record");
@@ -612,11 +612,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     }
                 }
                 _ if matches!(
-                    inner.capability(),
+                    inner.flexivity(),
                     Some(
-                        crate::semi::ty::Capability::Regional
-                            | crate::semi::ty::Capability::Flex
-                            | crate::semi::ty::Capability::Rigid
+                        crate::semi::ty::Flexivity::Regional
+                            | crate::semi::ty::Flexivity::Flex
+                            | crate::semi::ty::Flexivity::Rigid
                     )
                 ) => {}
                 _ => self.error(
@@ -955,8 +955,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // re-reads the head (`unify` ignores flexivity). Construction outside a
         // region is reported separately by the caller.
         let flex = match record.default_cap {
-            super::ctxt::DefaultCap::Regional => crate::semi::ty::Capability::Flex,
-            _ => crate::semi::ty::Capability::Irrelevant,
+            super::ctxt::DefaultCap::Regional => crate::semi::ty::Flexivity::Flex,
+            _ => crate::semi::ty::Flexivity::Irrelevant,
         };
         self.tcx.mk_record(record.def, &args, flex)
     }

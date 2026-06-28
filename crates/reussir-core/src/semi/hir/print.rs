@@ -20,7 +20,7 @@ use crate::semi::hir::{
     ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
 };
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyKind};
+use crate::semi::ty::{DefId, Flexivity, FpTy, GenericId, IntTy, Ty, TyKind};
 use crate::surface::{RecordKind, Visibility};
 
 const IR_PRINTER: PpPrinter = PpPrinter {
@@ -176,10 +176,10 @@ impl<'a> Printer<'a> {
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
             TyKind::Record { def, args, flex } => {
                 let mut d = match flex {
-                    Capability::Flex | Capability::Rigid | Capability::Regional => {
+                    Flexivity::Flex | Flexivity::Rigid | Flexivity::Regional => {
                         text(format!("[{}] ", cap_name(flex)))
                     }
-                    Capability::Irrelevant => Doc::Null,
+                    Flexivity::Irrelevant => Doc::Null,
                 };
                 d = d + text(format!("#{}", self.path(def)));
                 if !args.is_empty() {
@@ -505,12 +505,12 @@ fn comma_sep(docs: Vec<Doc<'static>>) -> Doc<'static> {
     d
 }
 
-fn cap_name(c: Capability) -> &'static str {
+fn cap_name(c: Flexivity) -> &'static str {
     match c {
-        Capability::Flex => "flex",
-        Capability::Rigid => "rigid",
-        Capability::Regional => "regional",
-        Capability::Irrelevant => "",
+        Flexivity::Flex => "flex",
+        Flexivity::Rigid => "rigid",
+        Flexivity::Regional => "regional",
+        Flexivity::Irrelevant => "",
     }
 }
 

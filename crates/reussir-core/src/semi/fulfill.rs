@@ -235,7 +235,7 @@ impl<'tcx> FulfillCtxt<'tcx> {
 mod tests {
     use super::ty_has_hole;
     use crate::semi::infer::InferCtxt;
-    use crate::semi::ty::{Capability, DefId, IntTy};
+    use crate::semi::ty::{Flexivity, DefId, IntTy};
     use crate::with_tcx;
 
     #[test]
@@ -254,12 +254,12 @@ mod tests {
             assert!(ty_has_hole(tcx.mk_record(
                 DefId(0),
                 &[hole],
-                Capability::Irrelevant
+                Flexivity::Irrelevant
             )));
             assert!(!ty_has_hole(tcx.mk_record(
                 DefId(0),
                 &[ground],
-                Capability::Irrelevant
+                Flexivity::Irrelevant
             )));
             assert!(ty_has_hole(tcx.mk_nullable(hole)));
         });

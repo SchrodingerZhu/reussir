@@ -23,7 +23,7 @@ use crate::semi::hir::{
     SwitchCases, VarId,
 };
 use crate::semi::resolve::DefTable;
-use crate::semi::ty::{Capability, DefId, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
 use crate::surface::RecordKind;
 use crate::utils::string::StringToken;
 
@@ -220,7 +220,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Ty::Record { cap, path, args } => {
                 let def = self.record_def(path);
                 let args: Vec<Ty<'tcx>> = args.iter().map(|a| self.ty(a)).collect();
-                self.tcx.mk_record(def, &args, capability(*cap))
+                self.tcx.mk_record(def, &args, flexivity(*cap))
             }
             raw::Ty::Closure { params, ret } => {
                 let params: Vec<Ty<'tcx>> = params.iter().map(|p| self.ty(p)).collect();
@@ -428,12 +428,12 @@ impl<'tcx> Builder<'_, 'tcx> {
     }
 }
 
-fn capability(c: raw::Cap) -> Capability {
+fn flexivity(c: raw::Cap) -> Flexivity {
     match c {
-        raw::Cap::None => Capability::Irrelevant,
-        raw::Cap::Flex => Capability::Flex,
-        raw::Cap::Rigid => Capability::Rigid,
-        raw::Cap::Regional => Capability::Regional,
+        raw::Cap::None => Flexivity::Irrelevant,
+        raw::Cap::Flex => Flexivity::Flex,
+        raw::Cap::Rigid => Flexivity::Rigid,
+        raw::Cap::Regional => Flexivity::Regional,
     }
 }
 
