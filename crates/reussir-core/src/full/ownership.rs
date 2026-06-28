@@ -107,7 +107,7 @@
 
 use std::cell::RefCell;
 
-use roaring::RoaringBitmap;
+use crate::utils::bitset::HybridBitSet;
 use rustc_hash::FxHashMap;
 
 use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
@@ -322,12 +322,12 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
 // Live-variable sets
 // ---------------------------------------------------------------------------
 
-/// A set of [`VarId`]s, backed by a [`RoaringBitmap`]. Var ids are dense `u32`s
-/// (allocated per function) — exactly the domain a Roaring bitmap keys on — so no
-/// index mapping is needed. Backs both `free(e)` and the threaded `live_after`
-/// sets.
+/// A set of [`VarId`]s, backed by a [`HybridBitSet`]. Var ids are dense `u32`s
+/// (allocated per function), so a body with a handful of locals stays in the
+/// hybrid's word-backed dense form and only large bodies pay for a compressed
+/// bitmap. Backs both `free(e)` and the threaded `live_after` sets.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
-struct VarSet(RoaringBitmap);
+struct VarSet(HybridBitSet);
 
 impl VarSet {
     fn insert(&mut self, v: VarId) {
@@ -340,15 +340,15 @@ impl VarSet {
 
     /// In place: `self ← self ∪ other`.
     fn union_with(&mut self, other: &VarSet) {
-        self.0 |= &other.0;
+        self.0.union_with(&other.0);
     }
 
     /// Remove every member of `other` (set difference, in place).
     fn subtract(&mut self, other: &VarSet) {
-        self.0 -= &other.0;
+        self.0.subtract(&other.0);
     }
 
-    /// The members, in ascending `VarId` order (a Roaring bitmap iterates sorted,
+    /// The members, in ascending `VarId` order (the hybrid set iterates sorted,
     /// keeping op emission deterministic).
     fn iter(&self) -> impl Iterator<Item = VarId> + '_ {
         self.0.iter().map(VarId)

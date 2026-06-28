@@ -1122,6 +1122,7 @@ dependencies = [
  "atuin-nucleo-matcher",
  "blake3",
  "ena",
+ "fixedbitset",
  "ftree",
  "lalrpop",
  "lalrpop-util",
