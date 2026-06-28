@@ -40,3 +40,5 @@ lalrpop-util.workspace = true
 pprint.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }
+# Compressed bitmaps over u32, used for the ownership pass's VarId live-sets.
+roaring.workspace = true

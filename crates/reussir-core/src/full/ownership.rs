@@ -107,6 +107,7 @@
 
 use std::cell::RefCell;
 
+use roaring::RoaringBitmap;
 use rustc_hash::FxHashMap;
 
 use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
@@ -321,53 +322,36 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
 // Live-variable sets
 // ---------------------------------------------------------------------------
 
-/// A dense set of [`VarId`]s, a fixed-width bitset (var ids are dense per
-/// function). Backs both `free(e)` and the threaded `live_after` sets.
+/// A set of [`VarId`]s, backed by a [`RoaringBitmap`]. Var ids are dense `u32`s
+/// (allocated per function) — exactly the domain a Roaring bitmap keys on — so no
+/// index mapping is needed. Backs both `free(e)` and the threaded `live_after`
+/// sets.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
-struct VarSet {
-    words: Vec<u64>,
-}
+struct VarSet(RoaringBitmap);
 
 impl VarSet {
     fn insert(&mut self, v: VarId) {
-        let i = v.0 as usize;
-        let w = i / 64;
-        if w >= self.words.len() {
-            self.words.resize(w + 1, 0);
-        }
-        self.words[w] |= 1u64 << (i % 64);
+        self.0.insert(v.0);
     }
 
     fn contains(&self, v: VarId) -> bool {
-        let i = v.0 as usize;
-        self.words
-            .get(i / 64)
-            .is_some_and(|x| (x >> (i % 64)) & 1 == 1)
+        self.0.contains(v.0)
     }
 
+    /// In place: `self ← self ∪ other`.
     fn union_with(&mut self, other: &VarSet) {
-        if other.words.len() > self.words.len() {
-            self.words.resize(other.words.len(), 0);
-        }
-        for (a, b) in self.words.iter_mut().zip(other.words.iter()) {
-            *a |= *b;
-        }
+        self.0 |= &other.0;
     }
 
     /// Remove every member of `other` (set difference, in place).
     fn subtract(&mut self, other: &VarSet) {
-        for (a, b) in self.words.iter_mut().zip(other.words.iter()) {
-            *a &= !*b;
-        }
+        self.0 -= &other.0;
     }
 
-    /// The members, in ascending `VarId` order (deterministic op emission).
+    /// The members, in ascending `VarId` order (a Roaring bitmap iterates sorted,
+    /// keeping op emission deterministic).
     fn iter(&self) -> impl Iterator<Item = VarId> + '_ {
-        self.words.iter().enumerate().flat_map(|(w, &word)| {
-            (0..64)
-                .filter(move |b| (word >> b) & 1 == 1)
-                .map(move |b| VarId((w * 64 + b) as u32))
-        })
+        self.0.iter().map(VarId)
     }
 }
 
