@@ -430,7 +430,7 @@ fn text(s: impl Into<String>) -> Doc<'static> {
 }
 
 /// `head` followed by each of `children` on its own line, indented one level.
-fn nest(head: Doc<'static>, children: impl IntoIterator<Item = Doc<'static>>) -> Doc<'static> {
+fn nest(head: Doc<'static>, children: Vec<Doc<'static>>) -> Doc<'static> {
     let mut inner = Doc::Null;
     for c in children {
         inner = inner + hardline() + c;
@@ -440,10 +440,7 @@ fn nest(head: Doc<'static>, children: impl IntoIterator<Item = Doc<'static>>) ->
 
 /// Like [`nest`], but with a blank line between children — for branch contexts
 /// (switch arms, `if` and guard sections) so each branch stands visually apart.
-fn nest_spaced(
-    head: Doc<'static>,
-    children: impl IntoIterator<Item = Doc<'static>>,
-) -> Doc<'static> {
+fn nest_spaced(head: Doc<'static>, children: Vec<Doc<'static>>) -> Doc<'static> {
     let mut inner = Doc::Null;
     for (i, c) in children.into_iter().enumerate() {
         if i > 0 {
@@ -470,11 +467,10 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
-    /// Weave a node's rc ops onto its header `Doc`: `before` ops as a `»` prefix,
-    /// `after` ops as a `«` suffix. Keeping them on the node's own line makes it
-    /// unambiguous *which* node each op belongs to — a `dup` on a call's first
-    /// argument reads as the argument's op, not the call's.
-    fn anno(&self, id: ExprId, head: Doc<'static>) -> Doc<'static> {
+    /// A **leaf** node (no children): weave its rc ops onto the single line —
+    /// `before` as a `»` prefix, `after` as a `«` suffix. With nothing below it,
+    /// the ops bind unambiguously to this one node (`» dup v0  var v0`).
+    fn leaf(&self, id: ExprId, head: Doc<'static>) -> Doc<'static> {
         let before = self.ot.before(id);
         let after = self.ot.after(id);
         let mut d = head;
@@ -487,79 +483,113 @@ impl Renderer<'_> {
         d
     }
 
+    /// A node **with children**: `head` over its indented `children`, with the rc
+    /// ops on their own lines — `before` above the head, `after` below the
+    /// children. Dedicated lines keep the head label legible (not buried after a
+    /// run of ops), and put an `after` op in its true position (it runs once the
+    /// children are done). `layout` is `nest` or `nest_spaced`.
+    fn block(
+        &self,
+        id: ExprId,
+        head: Doc<'static>,
+        children: Vec<Doc<'static>>,
+        layout: fn(Doc<'static>, Vec<Doc<'static>>) -> Doc<'static>,
+    ) -> Doc<'static> {
+        let before = self.ot.before(id);
+        let after = self.ot.after(id);
+        let mut d = Doc::Null;
+        if !before.is_empty() {
+            d = d + text(format!("» {}", ops_str(before))) + hardline();
+        }
+        d = d + layout(head, children);
+        if !after.is_empty() {
+            d = d + hardline() + text(format!("« {}", ops_str(after)));
+        }
+        d
+    }
+
     fn exprs(&self, es: &[Expr<'_>]) -> Vec<Doc<'static>> {
         es.iter().map(|e| self.expr(e)).collect()
     }
 
     fn expr(&self, e: &Expr<'_>) -> Doc<'static> {
         match e.kind {
-            ExprKind::Var(x) => self.anno(e.id, text(format!("var v{}", x.0))),
-            ExprKind::ConstInt(n) => self.anno(e.id, text(format!("const {n}"))),
-            ExprKind::ConstBool(b) => self.anno(e.id, text(format!("const {b}"))),
-            ExprKind::Let { var, value, .. } => nest(
-                self.anno(e.id, text(format!("let v{} =", var.0))),
-                [self.expr(value)],
+            ExprKind::Var(x) => self.leaf(e.id, text(format!("var v{}", x.0))),
+            ExprKind::ConstInt(n) => self.leaf(e.id, text(format!("const {n}"))),
+            ExprKind::ConstBool(b) => self.leaf(e.id, text(format!("const {b}"))),
+            ExprKind::NullableCall(None) => self.leaf(e.id, text("null")),
+            ExprKind::Let { var, value, .. } => self.block(
+                e.id,
+                text(format!("let v{} =", var.0)),
+                vec![self.expr(value)],
+                nest,
             ),
-            ExprKind::Seq(es) => nest(self.anno(e.id, text("seq")), self.exprs(es)),
-            ExprKind::Call { callee, args, .. } => nest(
-                self.anno(
-                    e.id,
-                    text(format!("call @{}", self.syms.resolve(&callee.0))),
-                ),
+            ExprKind::Seq(es) => self.block(e.id, text("seq"), self.exprs(es), nest),
+            ExprKind::Call { callee, args, .. } => self.block(
+                e.id,
+                text(format!("call @{}", self.syms.resolve(&callee.0))),
                 self.exprs(args),
+                nest,
             ),
-            ExprKind::Ctor { record, args } => nest(
-                self.anno(
-                    e.id,
-                    text(format!("ctor @{}", self.syms.resolve(&record.0))),
-                ),
+            ExprKind::Ctor { record, args } => self.block(
+                e.id,
+                text(format!("ctor @{}", self.syms.resolve(&record.0))),
                 self.exprs(args),
+                nest,
             ),
             ExprKind::Variant {
                 record,
                 variant,
                 args,
-            } => nest(
-                self.anno(
-                    e.id,
-                    text(format!(
-                        "variant @{}#{variant}",
-                        self.syms.resolve(&record.0)
-                    )),
-                ),
+            } => self.block(
+                e.id,
+                text(format!(
+                    "variant @{}#{variant}",
+                    self.syms.resolve(&record.0)
+                )),
                 self.exprs(args),
+                nest,
             ),
-            ExprKind::NullableCall(opt) => match opt {
-                Some(x) => nest(self.anno(e.id, text("nullable")), [self.expr(x)]),
-                None => self.anno(e.id, text("null")),
-            },
+            ExprKind::NullableCall(Some(x)) => {
+                self.block(e.id, text("nullable"), vec![self.expr(x)], nest)
+            }
             ExprKind::Arith(l, _, r) | ExprKind::Cmp(l, _, r) => {
-                nest(self.anno(e.id, text("binop")), [self.expr(l), self.expr(r)])
+                self.block(e.id, text("binop"), vec![self.expr(l), self.expr(r)], nest)
             }
             ExprKind::Negate(x) | ExprKind::Not(x) | ExprKind::Cast(x, _) => {
-                nest(self.anno(e.id, text("unop")), [self.expr(x)])
+                self.block(e.id, text("unop"), vec![self.expr(x)], nest)
             }
-            ExprKind::If(c, t, f) => nest_spaced(
-                self.anno(e.id, text("if")),
-                [
+            ExprKind::If(c, t, f) => self.block(
+                e.id,
+                text("if"),
+                vec![
                     self.expr(c),
-                    nest(text("then"), [self.expr(t)]),
-                    nest(text("else"), [self.expr(f)]),
+                    nest(text("then"), vec![self.expr(t)]),
+                    nest(text("else"), vec![self.expr(f)]),
                 ],
+                nest_spaced,
             ),
-            ExprKind::Match(scrut, tree) => nest(
-                self.anno(e.id, text("match")),
-                [self.expr(scrut), self.tree(&tree)],
+            ExprKind::Match(scrut, tree) => self.block(
+                e.id,
+                text("match"),
+                vec![self.expr(scrut), self.tree(&tree)],
+                nest,
             ),
-            ExprKind::Proj(base, path) => nest(
-                self.anno(e.id, text(format!("proj {path:?}"))),
-                [self.expr(base)],
+            ExprKind::Proj(base, path) => self.block(
+                e.id,
+                text(format!("proj {path:?}")),
+                vec![self.expr(base)],
+                nest,
             ),
-            ExprKind::Assign(dst, field, src) => nest(
-                self.anno(e.id, text(format!("assign .{field} :="))),
-                [self.expr(dst), self.expr(src)],
+            ExprKind::Assign(dst, field, src) => self.block(
+                e.id,
+                text(format!("assign .{field} :=")),
+                vec![self.expr(dst), self.expr(src)],
+                nest,
             ),
-            ExprKind::RegionRun(x) => nest(self.anno(e.id, text("region-run")), [self.expr(x)]),
+            ExprKind::RegionRun(x) => {
+                self.block(e.id, text("region-run"), vec![self.expr(x)], nest)
+            }
             ExprKind::Closure(c) => {
                 let caps = c
                     .captures
@@ -567,17 +597,19 @@ impl Renderer<'_> {
                     .map(|(v, _)| format!("v{}", v.0))
                     .collect::<Vec<_>>()
                     .join(", ");
-                nest(
-                    self.anno(e.id, text(format!("closure [{caps}]"))),
-                    [self.expr(c.body)],
+                self.block(
+                    e.id,
+                    text(format!("closure [{caps}]")),
+                    vec![self.expr(c.body)],
+                    nest,
                 )
             }
             ExprKind::ClosureCall { target, args } => {
                 let mut kids = vec![self.expr(target)];
                 kids.extend(self.exprs(args));
-                nest(self.anno(e.id, text("closure-call")), kids)
+                self.block(e.id, text("closure-call"), kids, nest)
             }
-            _ => self.anno(e.id, text(format!("<{}>", kind_name(&e.kind)))),
+            _ => self.leaf(e.id, text(format!("<{}>", kind_name(&e.kind)))),
         }
     }
 
@@ -587,7 +619,7 @@ impl Renderer<'_> {
             DecisionTree::Unreachable => text("unreachable"),
             DecisionTree::Leaf { body, bindings } => nest(
                 text(format!("leaf [{}]", binding_list(bindings))),
-                [self.expr(body)],
+                vec![self.expr(body)],
             ),
             // `if` / `success` / `failure` are the guard's three parts, each
             // nested under it (and their contents one level deeper still).
@@ -598,15 +630,18 @@ impl Renderer<'_> {
                 failure,
             } => nest_spaced(
                 text(format!("guard [{}]", binding_list(bindings))),
-                [
-                    nest(text("if"), [self.expr(guard)]),
-                    nest(text("success"), [self.tree(success)]),
-                    nest(text("failure"), [self.tree(failure)]),
+                vec![
+                    nest(text("if"), vec![self.expr(guard)]),
+                    nest(text("success"), vec![self.tree(success)]),
+                    nest(text("failure"), vec![self.tree(failure)]),
                 ],
             ),
             DecisionTree::Switch { cases, .. } => nest_spaced(
                 text("switch"),
-                super::subtrees(&cases).into_iter().map(|s| self.tree(s)),
+                super::subtrees(&cases)
+                    .into_iter()
+                    .map(|s| self.tree(s))
+                    .collect(),
             ),
         }
     }
@@ -623,7 +658,7 @@ fn render(func: &Function<'_>, ot: &OwnershipTable, syms: &Rodeo) -> String {
         .join(", ");
     let header = text(format!("fn @{}({}):", syms.resolve(&func.symbol.0), params));
     let doc = match func.body {
-        Some(body) => nest(header, [r.expr(body)]),
+        Some(body) => nest(header, vec![r.expr(body)]),
         None => header,
     };
     pprint(doc, ANNO_PRINTER)
