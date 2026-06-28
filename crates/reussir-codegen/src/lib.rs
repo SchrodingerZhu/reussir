@@ -8,3 +8,13 @@
 //! of any MLIR dependency.
 
 pub mod lower;
+
+#[cfg(test)]
+pub(crate) mod test {
+    pub(crate) fn init_tracing() {
+        static TRACING_INIT: std::sync::Once = std::sync::Once::new();
+        TRACING_INIT.call_once(|| {
+            tracing_subscriber::fmt().init();
+        });
+    }
+}

@@ -86,6 +86,7 @@ mod tests {
     /// Elaborate + monomorphize + lower `source`, checking the module verifies
     /// and returning its printed text for assertions.
     fn lower_source(source: &str) -> String {
+        crate::test::init_tracing();
         let context = reussir_backend::context();
         in_arena(|tcx| {
             let parse = reussir_syntax::parse(source);
@@ -101,6 +102,7 @@ mod tests {
                 "module verifies:\n{}",
                 module.as_operation()
             );
+            tracing::info!("IR lowered successfully:\n{}", module.as_operation());
             module.as_operation().to_string()
         })
     }
