@@ -438,6 +438,22 @@ fn nest(head: Doc<'static>, children: impl IntoIterator<Item = Doc<'static>>) ->
     head + indent(inner)
 }
 
+/// Like [`nest`], but with a blank line between children — for branch contexts
+/// (switch arms, `if` and guard sections) so each branch stands visually apart.
+fn nest_spaced(
+    head: Doc<'static>,
+    children: impl IntoIterator<Item = Doc<'static>>,
+) -> Doc<'static> {
+    let mut inner = Doc::Null;
+    for (i, c) in children.into_iter().enumerate() {
+        if i > 0 {
+            inner = inner + hardline();
+        }
+        inner = inner + hardline() + c;
+    }
+    head + indent(inner)
+}
+
 fn binding_list(bindings: &[mir::Binding<'_>]) -> String {
     bindings
         .iter()
@@ -523,7 +539,7 @@ impl Renderer<'_> {
             ExprKind::Negate(x) | ExprKind::Not(x) | ExprKind::Cast(x, _) => {
                 nest(self.anno(e.id, text("unop")), [self.expr(x)])
             }
-            ExprKind::If(c, t, f) => nest(
+            ExprKind::If(c, t, f) => nest_spaced(
                 self.anno(e.id, text("if")),
                 [
                     self.expr(c),
@@ -580,7 +596,7 @@ impl Renderer<'_> {
                 guard,
                 success,
                 failure,
-            } => nest(
+            } => nest_spaced(
                 text(format!("guard [{}]", binding_list(bindings))),
                 [
                     nest(text("if"), [self.expr(guard)]),
@@ -588,7 +604,7 @@ impl Renderer<'_> {
                     nest(text("failure"), [self.tree(failure)]),
                 ],
             ),
-            DecisionTree::Switch { cases, .. } => nest(
+            DecisionTree::Switch { cases, .. } => nest_spaced(
                 text("switch"),
                 super::subtrees(&cases).into_iter().map(|s| self.tree(s)),
             ),
