@@ -273,6 +273,7 @@ unsafe extern "C" {
     pub fn reussirDBGBoxedTypeAttrGet(
         context: MlirContext,
         dbg_type: MlirAttribute,
+        regional: bool,
     ) -> MlirAttribute;
     pub fn reussirDBGLocalVarAttrGet(
         context: MlirContext,

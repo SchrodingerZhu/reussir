@@ -62,9 +62,10 @@ MlirAttribute reussirDBGSubprogramAttrGet(MlirContext context,
                                           MlirAttribute const *typeParams);
 
 // A debug type for a reference-counted (boxed) value, wrapping the payload's
-// debug type.
+// debug type. `regional` selects the box header to skip past: a shared box has a
+// single ref-count word, a regional box a three-word header.
 MlirAttribute reussirDBGBoxedTypeAttrGet(MlirContext context,
-                                         MlirAttribute dbgType);
+                                         MlirAttribute dbgType, bool regional);
 
 // A debug local-variable attribute: its debug type and source name.
 MlirAttribute reussirDBGLocalVarAttrGet(MlirContext context,

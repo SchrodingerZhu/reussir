@@ -11,7 +11,7 @@ use melior::Context;
 use melior::ir::attribute::{
     DenseI32ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
 };
-use melior::ir::operation::{OperationBuilder, OperationLike, OperationRef};
+use melior::ir::operation::{OperationBuilder, OperationRef};
 use melior::ir::r#type::IntegerType;
 use melior::ir::{Identifier, Location, Operation, Type, Value};
 

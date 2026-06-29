@@ -90,6 +90,15 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             .is_some_and(|rec| rec.default_cap == DefaultCap::Shared)
     }
 
+    /// Whether `ty` is a `[regional]` record. Like a `[shared]` record its value
+    /// is a boxed `rc` pointer, but the box carries a larger three-word header, so
+    /// debug info reaches the payload at a different offset. (Regional records are
+    /// not lowered yet; this lets debug-info emission stay correct once they are.)
+    pub(super) fn is_regional_record(&self, ty: Ty<'tcx>) -> bool {
+        self.record_of(ty)
+            .is_some_and(|rec| rec.default_cap == DefaultCap::Regional)
+    }
+
     /// Lower a ground type to MLIR: records resolve through the layout table,
     /// everything else is a scalar.
     pub(super) fn mlir_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {

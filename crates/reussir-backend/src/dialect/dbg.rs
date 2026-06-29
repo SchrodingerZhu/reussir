@@ -105,12 +105,19 @@ pub fn subprogram<'c>(
 }
 
 /// A `#reussir.dbg_boxedtype` for a reference-counted value, wrapping the
-/// payload's debug type `inner`.
-pub fn boxed_type<'c>(context: &'c Context, inner: Attribute<'c>) -> Attribute<'c> {
+/// payload's debug type `inner`. `regional` selects the box header the debug-info
+/// pass skips past: a shared box has a single ref-count word, a regional box a
+/// three-word `{ status, next, vtable }` header.
+pub fn boxed_type<'c>(
+    context: &'c Context,
+    inner: Attribute<'c>,
+    regional: bool,
+) -> Attribute<'c> {
     unsafe {
         Attribute::from_raw(sys::reussirDBGBoxedTypeAttrGet(
             context.to_raw(),
             inner.to_raw(),
+            regional,
         ))
     }
 }
@@ -174,5 +181,13 @@ mod tests {
 
         let sp = subprogram(&context, name("add"), &[int, int]);
         assert!(sp.to_string().contains("dbg_subprogram"), "{sp}");
+
+        let shared = boxed_type(&context, record, false);
+        assert!(shared.to_string().contains("regional : false"), "{shared}");
+        let regional = boxed_type(&context, record, true);
+        assert!(
+            regional.to_string().contains("regional : true"),
+            "{regional}"
+        );
     }
 }

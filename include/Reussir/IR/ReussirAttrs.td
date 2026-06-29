@@ -165,15 +165,22 @@ def Reussir_DBGLocalVar : ReussirAttr<"DBGLocalVar", "dbg_localvar"> {
     `>`
   }];
 }
-// A reference-counted (`[shared]`) value: the variable is an `rc` pointer to a
-// box `{ header, payload }`. `dbgType` describes the payload; the debug-info
-// pass presents the variable as the payload, reached by dereferencing the
-// pointer and skipping the box header (a `DW_OP_deref, DW_OP_plus_uconst`
-// expression on the `dbg.declare`).
+// A reference-counted (`[shared]`/`[regional]`) value: the variable is an `rc`
+// pointer to a box `{ header, payload }`. `dbgType` describes the payload; the
+// debug-info pass presents the variable as the payload, reached by
+// dereferencing the pointer and skipping the box header (a `DW_OP_deref,
+// DW_OP_plus_uconst` expression on the `dbg.declare`). The two box flavours have
+// different header sizes — a shared box has a single ref-count word, a regional
+// box a three-word `{ status, next, vtable }` header — so `regional` selects
+// which to skip past. Once the `rc` is lowered to an opaque pointer the box type
+// is unrecoverable, hence the flag is carried here.
 def Reussir_DBGBoxedType : ReussirAttr<"DBGBoxedType", "dbg_boxedtype"> {
   let description = "Debug type for a reference-counted (boxed) value";
-  let parameters = (ins "::mlir::Attribute":$dbgType);
-  let assemblyFormat = [{ `<` $dbgType `>` }];
+  let parameters = (ins
+    "::mlir::Attribute":$dbgType,
+    "bool":$regional
+  );
+  let assemblyFormat = [{ `<` $dbgType `,` `regional` `:` $regional `>` }];
 }
 def Reussir_DBGFuncArg : ReussirAttr<"DBGFuncArg", "dbg_func_arg"> {
   let description = "Debug function argument attribute";

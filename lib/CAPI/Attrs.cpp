@@ -74,8 +74,9 @@ MlirAttribute reussirDBGSubprogramAttrGet(MlirContext context,
 }
 
 MlirAttribute reussirDBGBoxedTypeAttrGet(MlirContext context,
-                                         MlirAttribute dbgType) {
-  return wrap(DBGBoxedTypeAttr::get(unwrap(context), unwrap(dbgType)));
+                                         MlirAttribute dbgType, bool regional) {
+  return wrap(
+      DBGBoxedTypeAttr::get(unwrap(context), unwrap(dbgType), regional));
 }
 
 MlirAttribute reussirDBGLocalVarAttrGet(MlirContext context,

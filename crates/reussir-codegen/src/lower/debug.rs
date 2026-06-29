@@ -152,13 +152,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 mlir,
                 StringAttribute::new(self.context, "bf16"),
             )),
-            // A `[shared]` record is an `rc` box: describe the payload composite
+            // A managed record is an `rc` box: describe the payload composite
             // (built over the inline record type) wrapped as a boxed type, so the
-            // pass can reach it by dereferencing past the box header.
-            TyKind::Record { .. } if self.tys.is_shared_record(ty) => {
+            // pass can reach it by dereferencing past the box header. `regional`
+            // selects which header size to skip — shared boxes have a one-word
+            // ref-count, regional boxes a three-word header.
+            TyKind::Record { .. }
+                if self.tys.is_shared_record(ty) || self.tys.is_regional_record(ty) =>
+            {
                 let payload_mlir = self.tys.record_inner_of(ty).ok()?;
                 let payload = self.dbg_record(ty, payload_mlir)?;
-                Some(dbg::boxed_type(self.context, payload))
+                let regional = self.tys.is_regional_record(ty);
+                Some(dbg::boxed_type(self.context, payload, regional))
             }
             // A by-value record: a composite of its (precisely-typed) fields. If
             // a field has no debug type the whole record is skipped.

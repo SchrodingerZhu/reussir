@@ -264,10 +264,14 @@ mlir::LLVM::DIExpressionAttr boxedExpr(mlir::ModuleOp moduleOp,
     return {};
   auto *context = moduleOp.getContext();
   mlir::DataLayout dataLayout{moduleOp};
-  // A shared rc box is `{ i64 refcount, payload }`; the payload begins after the
-  // 8-byte header, aligned up to its own alignment.
-  uint64_t offset =
-      llvm::alignTo(8, dataLayout.getTypeABIAlignment(payloadTy));
+  // The box header is a run of pointer-sized words: one ref-count word for a
+  // shared box `{ count, payload }`, or three (`{ status, next, vtable }`) for a
+  // regional box. The payload follows, aligned up to its own alignment.
+  uint64_t headerWords = boxed.getRegional() ? 3 : 1;
+  uint64_t indexSize =
+      dataLayout.getTypeSize(mlir::IndexType::get(context));
+  uint64_t offset = llvm::alignTo(headerWords * indexSize,
+                                  dataLayout.getTypeABIAlignment(payloadTy));
   llvm::SmallVector<mlir::LLVM::DIExpressionElemAttr, 2> elems = {
       mlir::LLVM::DIExpressionElemAttr::get(context, llvm::dwarf::DW_OP_deref,
                                             {}),
