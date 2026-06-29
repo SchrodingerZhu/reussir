@@ -11,7 +11,9 @@
 //! — the latter boxed, reached through a `DIExpression` past the rc-box header —
 //! and enums (`variant`), described as a tag plus a union of the per-case
 //! payloads. Both `let` locals and parameters are emitted. A recursive type is
-//! broken with a forward-declared (memberless) composite (see [`Self::dbg_record`]).
+//! emitted as a memberless placeholder at the recursion point (see
+//! [`Self::dbg_record`]); the backend ties it back to the enclosing composite as
+//! a recursive self-reference, so the recursive field stays walkable.
 
 use reussir_backend::builders;
 use reussir_backend::dialect::dbg;
@@ -178,9 +180,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// (the conversion pass lays these out as a tag plus an overlapping payload).
     ///
     /// A record reached recursively (through a boxed field or variant payload) is
-    /// emitted as a memberless composite — a forward declaration that breaks the
-    /// cycle. The recursion always crosses a pointer (a managed field), so the
-    /// elided body is the pointee's, described once at its own occurrence.
+    /// emitted as a memberless composite carrying only the record's name. The
+    /// recursion always crosses a pointer (a managed field); the backend matches
+    /// that name to the enclosing composite being built and resolves the
+    /// placeholder into a recursive self-reference, so the field's pointee is the
+    /// full type and the debugger can descend it.
     fn dbg_record(&self, ty: Ty<'tcx>, underlying: Type<'c>) -> Option<Attribute<'c>> {
         let rec = self.tys.record_of(ty)?;
         let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));

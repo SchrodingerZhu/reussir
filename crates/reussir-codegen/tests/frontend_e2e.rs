@@ -229,6 +229,26 @@ fn lowers_variant_debug_info_through_the_pipeline() {
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
         .expect("pipeline lowers variant debug info to LLVM");
 
+    // The recursive `List` must lower to a DWARF type *cycle*: a `rec-self`
+    // placeholder plus the named composite that carries the matching recursion
+    // id. That cycle is what lets a debugger descend a list node by node;
+    // without it the recursive field's pointee would be an empty forward
+    // declaration. Tie the placeholder to its anchor by the shared recId.
+    let text = module.as_operation().to_string();
+    let self_at = text.find("isRecSelf = true").unwrap_or_else(|| {
+        panic!("recursive variant must emit a rec-self DI placeholder:\n{text}")
+    });
+    let id_at = text[..self_at]
+        .rfind("distinct[")
+        .expect("rec-self carries a recId");
+    let id_end = id_at + text[id_at..].find("]<>").expect("malformed recId") + "]<>".len();
+    let rec_id = &text[id_at..id_end];
+    let anchor = format!("di_composite_type<recId = {rec_id}, tag = DW_TAG_structure_type, name =");
+    assert!(
+        text.contains(&anchor),
+        "rec-self id {rec_id} must anchor a named recursive composite:\n{text}"
+    );
+
     let jit = OrcJit::with_runtime().expect("create JIT");
     jit.add_module(&module, OptLevel::Default)
         .expect("add lowered module");

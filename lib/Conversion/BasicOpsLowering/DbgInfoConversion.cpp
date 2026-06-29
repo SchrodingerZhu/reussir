@@ -15,6 +15,8 @@
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 
+#include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/Support/MathExtras.h>
@@ -63,13 +65,29 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
       .Default([](auto attr) { return mlir::Type{}; });
 }
 
+// State for emitting recursive record debug types. A record's debug attr is
+// re-entered on a recursive field (the frontend hands us a memberless,
+// same-named placeholder to break its own recursion); MLIR attributes are
+// immutable and cannot reference themselves directly, so the cycle is expressed
+// with the `DIRecursiveTypeAttrInterface`: the outer composite is tagged with a
+// `recId` and the recursive reference becomes a `getRecSelf(recId)` placeholder
+// that LLVM stitches back to the outer composite. `ancestors` maps a record
+// name to the `recId` of the occurrence currently being built; `used` records
+// which of those were actually referenced, so only genuinely recursive
+// composites carry a `recId`.
+struct RecursionState {
+  llvm::DenseMap<mlir::StringAttr, mlir::DistinctAttr> ancestors;
+  llvm::DenseSet<mlir::DistinctAttr> used;
+};
+
 template <typename RetType = mlir::Attribute>
 RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                                mlir::LLVM::DIFileAttr diFile,
                                mlir::LLVM::DICompileUnitAttr diCU,
                                mlir::LLVM::LLVMFuncOp funcOp,
                                mlir::LLVM::DIScopeAttr funcScope,
-                               mlir::Location loc) {
+                               mlir::Location loc,
+                               RecursionState *recState = nullptr) {
   mlir::DataLayout dataLayout{moduleOp};
   return llvm::dyn_cast_if_present<RetType>(
       llvm::TypeSwitch<mlir::Attribute, mlir::Attribute>(dbgAttr)
@@ -92,6 +110,26 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
           .template Case<DBGRecordTypeAttr>([&](DBGRecordTypeAttr recAttr)
                                                 -> mlir::Attribute {
             auto *ctx = moduleOp.getContext();
+            auto name = recAttr.getDbgName();
+
+            // A record reached recursively reappears with the same name (the
+            // frontend's forward-declared placeholder). If this name is already
+            // being built, emit a `rec-self` placeholder tied to that
+            // occurrence's `recId` instead of expanding again — LLVM resolves it
+            // back to the enclosing composite, giving the recursive field a real
+            // pointee type the debugger can descend.
+            RecursionState localState;
+            RecursionState *state = recState ? recState : &localState;
+            if (auto it = state->ancestors.find(name);
+                it != state->ancestors.end()) {
+              state->used.insert(it->second);
+              return mlir::Attribute(
+                  mlir::LLVM::DICompositeTypeAttr::getRecSelf(it->second));
+            }
+            auto recId =
+                mlir::DistinctAttr::create(mlir::UnitAttr::get(ctx));
+            state->ancestors.insert({name, recId});
+
             auto makeComposite =
                 [&](unsigned tag, mlir::StringAttr name, uint64_t sizeInBits,
                     uint64_t alignInBits,
@@ -117,7 +155,8 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 -> std::optional<
                     std::tuple<mlir::LLVM::DITypeAttr, uint64_t, uint64_t>> {
               auto diType = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
-                  moduleOp, typeAttr, diFile, diCU, funcOp, funcScope, loc);
+                  moduleOp, typeAttr, diFile, diCU, funcOp, funcScope, loc,
+                  state);
               if (!diType)
                 return std::nullopt;
               if (auto boxed = llvm::dyn_cast<DBGBoxedTypeAttr>(typeAttr)) {
@@ -220,9 +259,14 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   /*extraData=*/nullptr);
               llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {tagMember,
                                                                    payloadMember};
-              return makeComposite(llvm::dwarf::DW_TAG_structure_type,
-                                   recAttr.getDbgName(), sizeInBits, alignInBits,
-                                   members);
+              auto composite =
+                  makeComposite(llvm::dwarf::DW_TAG_structure_type, name,
+                                sizeInBits, alignInBits, members);
+              state->ancestors.erase(name);
+              if (!state->used.contains(recId))
+                return composite;
+              return mlir::cast<mlir::LLVM::DICompositeTypeAttr>(
+                  composite.withRecId(recId));
             }
 
             llvm::SmallVector<mlir::LLVM::DINodeAttr> members;
@@ -243,9 +287,13 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   /*address space=*/std::nullopt, /*extraData=*/nullptr));
               currentOffsetBits += memberSizeBits;
             }
-            return makeComposite(llvm::dwarf::DW_TAG_class_type,
-                                 recAttr.getDbgName(), sizeInBits, alignInBits,
-                                 members);
+            auto composite = makeComposite(llvm::dwarf::DW_TAG_class_type, name,
+                                           sizeInBits, alignInBits, members);
+            state->ancestors.erase(name);
+            if (!state->used.contains(recId))
+              return composite;
+            return mlir::cast<mlir::LLVM::DICompositeTypeAttr>(
+                composite.withRecId(recId));
           })
           // A boxed value is presented as its payload composite; the pointer is
           // dereferenced (and the header skipped) by the `dbg.declare`'s
@@ -254,7 +302,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               [&](DBGBoxedTypeAttr boxed) -> mlir::Attribute {
                 return translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
                     moduleOp, boxed.getDbgType(), diFile, diCU, funcOp,
-                    funcScope, loc);
+                    funcScope, loc, recState);
               })
           .template Case<DBGSubprogramAttr>(
               [&](DBGSubprogramAttr spAttr) -> mlir::Attribute {
