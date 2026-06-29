@@ -182,7 +182,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
         if report_diagnostics(&name, &reports) {
             return Err(String::new());
         }
-        let mut module = lower_program(&context, &full).map_err(|e| format!("{name}: {e}"))?;
+        let mut module = lower_program(&context, tcx, &full).map_err(|e| format!("{name}: {e}"))?;
         let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
             .map_err(|e| format!("{name}: {e}"))?;
         pipeline::run_lowering_pipeline(&context, &mut module, &options)

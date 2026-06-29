@@ -2,14 +2,28 @@
 //!
 //! Scalars map directly to builtin MLIR types. A record has no `DefTable` here,
 //! so it resolves through a layout table ([`TypeCtx`]) keyed by its `(def, args)`
-//! identity — the ground layout `mono` baked into the MIR. `[value]` records
-//! build an identified `!reussir.record<…>`; shared/regional records and enums
-//! arrive with the rc lowering. This module also holds the numeric classification
-//! [`expr`](super::expr) uses to choose the right cast op.
+//! identity — the ground layout `mono` baked into the MIR.
+//!
+//! Two record flavours lower, selected by the instance's declared capability:
+//! * a **`[value]`** record is an inline aggregate — an identified
+//!   `!reussir.record<…>` held directly by value;
+//! * a **`[shared]`** record is heap-allocated and reference-counted — the same
+//!   identified record type wrapped in a `!reussir.rc<…>` pointer. A shared
+//!   record that appears as a field of another record is therefore stored as an
+//!   `rc` link, which falls out of lowering its field type here.
+//!
+//! Regional records and enum (`variant`) layouts are not lowered yet. This
+//! module also holds the numeric classification [`expr`](super::expr) uses to
+//! choose the right cast op.
 
-use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 
-use reussir_backend::dialect::ty::{ReussirCapability, ReussirRecordKind, record_complete};
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use reussir_backend::dialect::ty::{
+    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, rc, record_complete_in_place,
+    record_incomplete, record_is_complete, r#ref,
+};
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
 use reussir_backend::melior::ir::attribute::StringAttribute;
@@ -28,10 +42,18 @@ type RecordInstanceKey<'tcx> = (DefId, &'tcx [Ty<'tcx>]);
 /// Type-lowering state: the MLIR context to build types in, the program (whose
 /// symbol table names record types), and the record instances indexed by their
 /// `(def, args)` identity so a record-typed value can find its ground layout.
+///
+/// The MLIR context already uniques identified record types by name, so it is the
+/// type cache; `building` is just the set of record symbols whose body is
+/// currently being lowered — the construction stack. A record that reaches itself
+/// (directly or through an `rc` field) re-enters lowering on the back-edge, finds
+/// its symbol already on the stack, and hands back the same (still-incomplete)
+/// identified type rather than recursing forever.
 pub(super) struct TypeCtx<'c, 'p, 'tcx> {
     context: &'c Context,
     program: &'p mir::Program<'tcx>,
     records: FxHashMap<RecordInstanceKey<'tcx>, &'p mir::RecordInstance<'tcx>>,
+    building: RefCell<FxHashSet<mir::Symbol>>,
 }
 
 impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
@@ -48,6 +70,7 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             context,
             program,
             records,
+            building: RefCell::new(FxHashSet::default()),
         }
     }
 
@@ -59,6 +82,14 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         }
     }
 
+    /// Whether `ty` is a `[shared]` record — one whose value is represented as an
+    /// `!reussir.rc<…>` pointer rather than held inline. (Regional records are
+    /// also managed, but region-allocated and lowered separately.)
+    pub(super) fn is_shared_record(&self, ty: Ty<'tcx>) -> bool {
+        self.record_of(ty)
+            .is_some_and(|rec| rec.default_cap == DefaultCap::Shared)
+    }
+
     /// Lower a ground type to MLIR: records resolve through the layout table,
     /// everything else is a scalar.
     pub(super) fn mlir_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
@@ -68,20 +99,67 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         }
     }
 
-    /// Build the MLIR record type for a record instance. Only `[value]` records
-    /// lower today; shared/regional records arrive with the rc lowering.
+    /// The MLIR type of a value of record type `ty`: the inline record type for a
+    /// `[value]` record, or an `rc` pointer to it for a `[shared]` record.
     pub(super) fn record_type(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         let rec = self
             .record_of(ty)
             .ok_or_else(|| LoweringError("record instance has no resolved layout".into()))?;
+        let inner = self.record_inner_type(rec)?;
         match rec.default_cap {
-            DefaultCap::Value => {}
-            DefaultCap::Shared => return err("shared (rc) record lowering not yet implemented"),
-            DefaultCap::Regional => return err("regional record lowering not yet implemented"),
+            DefaultCap::Value => Ok(inner),
+            DefaultCap::Shared => Ok(self.rc_type(inner)),
+            DefaultCap::Regional => err("regional record lowering not yet implemented"),
         }
+    }
+
+    /// The identified `!reussir.record<…>` payload type for a record-typed `ty`
+    /// (the inline layout, before any `rc` wrapping). For a `[shared]` record this
+    /// is the type stored inside its `rc` box, as produced by
+    /// `reussir.record.compound` before `reussir.rc.create`.
+    pub(super) fn record_inner_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let rec = self
+            .record_of(ty)
+            .ok_or_else(|| LoweringError("record instance has no resolved layout".into()))?;
+        self.record_inner_type(rec)
+    }
+
+    /// Build the identified `!reussir.record<…>` payload type for a record
+    /// instance (the inline layout, before any `rc` wrapping). Shared record-typed
+    /// members lower to `rc` links through [`mlir_ty`](Self::mlir_ty).
+    ///
+    /// The identified type is obtained by its unique v0 symbol — which is how the
+    /// MLIR context uniques it, so this returns the same handle however many times
+    /// it is called. The body is filled in only when the record is not already
+    /// complete and not already on the construction stack, so each record is
+    /// completed exactly once and a self-referential record's back-edge resolves
+    /// to the still-incomplete handle instead of recursing forever.
+    fn record_inner_type(&self, rec: &mir::RecordInstance<'tcx>) -> Result<Type<'c>> {
+        let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
+        let record = record_incomplete(self.context, name, ReussirRecordKind::Compound);
+        // Already built, or currently being built further up the stack (a
+        // recursive reference): hand back the identified handle as-is.
+        if record_is_complete(record) || !self.building.borrow_mut().insert(rec.symbol) {
+            return Ok(record);
+        }
+        let result = self.complete_record(rec, record);
+        self.building.borrow_mut().remove(&rec.symbol);
+        result
+    }
+
+    /// Fill in `record`'s body from `rec`'s layout. The caller has marked
+    /// `rec.symbol` as on the construction stack, so the recursion through
+    /// [`mlir_ty`](Self::mlir_ty) below terminates at any back-edge.
+    fn complete_record(
+        &self,
+        rec: &mir::RecordInstance<'tcx>,
+        record: Type<'c>,
+    ) -> Result<Type<'c>> {
         let members = match rec.layout {
             mir::RecordLayout::Compound(ms) => ms,
-            mir::RecordLayout::Variant(_) => return err("a `[value]` record cannot be an enum"),
+            mir::RecordLayout::Variant(_) => {
+                return err("enum (variant) record lowering not yet implemented");
+            }
         };
         let mut member_tys = Vec::with_capacity(members.len());
         let mut member_is_field = Vec::with_capacity(members.len());
@@ -89,17 +167,41 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             member_tys.push(self.mlir_ty(m.ty)?);
             member_is_field.push(m.is_field);
         }
-        // Identify the record by its unique v0 symbol so distinct generic
-        // instances stay distinct MLIR types.
-        let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
-        Ok(record_complete(
-            self.context,
+        record_complete_in_place(
+            record,
             &member_tys,
             &member_is_field,
-            Some(name),
-            ReussirRecordKind::Compound,
-            ReussirCapability::Value,
-        ))
+            capability(rec.default_cap),
+        );
+        Ok(record)
+    }
+
+    /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,
+    /// reference-counted value with the default (non-atomic) box layout.
+    pub(super) fn rc_type(&self, inner: Type<'c>) -> Type<'c> {
+        rc(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
+    }
+
+    /// `!reussir.ref<inner, shared>` — a borrowed reference into a shared value,
+    /// as produced by `reussir.rc.borrow` and `reussir.ref.project`.
+    pub(super) fn shared_ref_type(&self, inner: Type<'c>) -> Type<'c> {
+        r#ref(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
+    }
+
+    /// `!reussir.ref<inner>` with unspecified capability — the form a spilled
+    /// stack reference takes, used to acquire/drop an inline value in place.
+    pub(super) fn unspecified_ref_type(&self, inner: Type<'c>) -> Type<'c> {
+        r#ref(inner, ReussirCapability::Unspecified, ReussirAtomicKind::Normal)
+    }
+}
+
+/// Map a record's declared management to the MLIR record type's default member
+/// capability.
+fn capability(cap: DefaultCap) -> ReussirCapability {
+    match cap {
+        DefaultCap::Value => ReussirCapability::Value,
+        DefaultCap::Shared => ReussirCapability::Shared,
+        DefaultCap::Regional => ReussirCapability::Regional,
     }
 }
 

@@ -193,6 +193,14 @@ pub fn record_incomplete<'c>(
     }
 }
 
+/// Whether an identified record type has had its body filled in. A type from
+/// [`record_incomplete`] reports `false` until [`record_complete_in_place`]
+/// runs, so a caller can look a record up by name and skip rebuilding its
+/// members when it is already complete.
+pub fn record_is_complete(record: Type) -> bool {
+    unsafe { sys::reussirRecordTypeIsComplete(record.to_raw()) }
+}
+
 /// Completes a previously created incomplete record type in place. `members` and
 /// `member_is_field` must have the same length.
 pub fn record_complete_in_place(

@@ -1107,6 +1107,7 @@ dependencies = [
  "reussir-jit",
  "reussir-syntax",
  "rustc-hash",
+ "smallvec",
  "tracing",
  "tracing-subscriber",
 ]

@@ -229,6 +229,31 @@ impl<'tcx> RecordTable<'tcx> {
         }
     }
 
+    /// Build the table from a monomorphized program's record instances. Each
+    /// instance's nominal type is already capability-canonicalized
+    /// ([`Flexivity::Irrelevant`]), the form [`is_rr`](Rr::is_rr) looks up, so it
+    /// is used directly as the key.
+    pub fn from_records(records: &[mir::RecordInstance<'tcx>]) -> Self {
+        use crate::semi::ctxt::DefaultCap;
+        let mut table = RecordTable::new();
+        for r in records {
+            let managed = match r.default_cap {
+                DefaultCap::Value => Managed::Value,
+                DefaultCap::Shared => Managed::Shared,
+                DefaultCap::Regional => Managed::Regional,
+            };
+            let fields = match r.layout {
+                mir::RecordLayout::Compound(members) => members.iter().map(|m| m.ty).collect(),
+                mir::RecordLayout::Variant(variants) => variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter().copied())
+                    .collect(),
+            };
+            table.insert(r.ty, RecordShape { managed, fields });
+        }
+        table
+    }
+
     /// Register `canonical_ty`'s shape. `canonical_ty` must carry
     /// [`Flexivity::Irrelevant`] (the form `is_rr` looks up).
     pub fn insert(&mut self, canonical_ty: Ty<'tcx>, shape: RecordShape<'tcx>) {

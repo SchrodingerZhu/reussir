@@ -11,10 +11,15 @@ use reussir_core::full::mono::monomorphize;
 use reussir_core::{in_arena, semi::elaborate, surface};
 use reussir_jit::{OptLevel, OrcJit};
 
+// Share the crate's test helpers (a tracing-enabled backend context) by
+// including the same source the unit tests use.
+#[path = "../src/testing.rs"]
+mod testing;
+
 /// Compile `source` to a lowered LLVM-dialect module, then JIT it and hand the
 /// engine to `run` to look up and call entry points.
 fn jit_run<R>(source: &str, run: impl FnOnce(&OrcJit) -> R) -> R {
-    let context = reussir_backend::context();
+    let context = testing::context();
     // Frontend + lowering, inside the arena scope; the module outlives it.
     let mut module = in_arena(|tcx| {
         let parse = reussir_syntax::parse(source);
@@ -28,7 +33,7 @@ fn jit_run<R>(source: &str, run: impl FnOnce(&OrcJit) -> R) -> R {
         );
         let (full, reports) = monomorphize(&elab.mono_input());
         assert!(reports.is_empty(), "mono reports: {reports:#?}");
-        lower_program(&context, &full).expect("scalar lowering succeeds")
+        lower_program(&context, tcx, &full).expect("scalar lowering succeeds")
     });
 
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
@@ -82,6 +87,78 @@ fn runs_value_record_construction_and_projection() {
         assert_eq!(sq_norm(3, 4), 25);
         // |(5,6)|² = 25 + 36 = 61
         assert_eq!(sq_norm(5, 6), 61);
+    });
+}
+
+#[test]
+fn runs_shared_record_construction_and_projection() {
+    // `[shared]` records are heap-allocated and reference-counted. `Outer` nests a
+    // shared `Inner`, so the whole spine — allocate (`rc.create`), borrow + project
+    // + load a field, retain a borrowed `rc` field (`rc.inc`), and release consumed
+    // boxes (`rc.dec`) — runs through the runtime allocator. The records stay
+    // internal; only a scalar crosses the trampoline.
+    let src = r#"
+        struct [shared] Inner { n: i64 }
+        struct [shared] Outer { inner: Inner }
+        fn mk_inner(n: i64) -> Inner { Inner { n: n } }
+        fn mk_outer(i: Inner) -> Outer { Outer { inner: i } }
+        fn inner_of(o: Outer) -> Inner { o.inner }
+        fn n_of(i: Inner) -> i64 { i.n }
+        pub fn build_and_read(n: i64) -> i64 { n_of(inner_of(mk_outer(mk_inner(n)))) }
+        extern "C" trampoline "build_and_read_ffi" = build_and_read;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("build_and_read_ffi").expect("lookup build_and_read_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(5), 5);
+        assert_eq!(f(42), 42);
+    });
+}
+
+#[test]
+fn runs_shared_record_deep_projection() {
+    // A single chained field access `o.inner.n` crosses two shared records in one
+    // projection: borrow the outer box, project + load the inner `rc` link, borrow
+    // *that*, project + load the scalar. Exercises the multi-step projection walk
+    // (path length > 1) and that the transient inner borrow is neither retained nor
+    // double-freed (the consumed outer box is released once).
+    let src = r#"
+        struct [shared] Inner { n: i64 }
+        struct [shared] Outer { inner: Inner }
+        fn mk_inner(n: i64) -> Inner { Inner { n: n } }
+        fn mk_outer(n: i64) -> Outer { Outer { inner: mk_inner(n) } }
+        fn deep(o: Outer) -> i64 { o.inner.n }
+        pub fn run(n: i64) -> i64 { deep(mk_outer(n)) }
+        extern "C" trampoline "deep_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("deep_ffi").expect("lookup deep_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(9), 9);
+        assert_eq!(f(-3), -3);
+    });
+}
+
+#[test]
+fn runs_shared_record_with_aliasing_and_release() {
+    // Passing the same shared box to both parameters of `sum` aliases it, so the
+    // ownership analysis inserts one `rc.inc` before the call; `sum` then releases
+    // each parameter, so the box is freed exactly once. A wrong reference count
+    // would double-free (crash) or leak — the arithmetic result pins correctness.
+    let src = r#"
+        struct [shared] Box { v: i64 }
+        fn mk(v: i64) -> Box { Box { v: v } }
+        fn sum(a: Box, b: Box) -> i64 { a.v + b.v }
+        fn use_twice(b: Box) -> i64 { sum(b, b) }
+        pub fn run(n: i64) -> i64 { use_twice(mk(n)) }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // use_twice(mk(7)) = 7 + 7 = 14
+        assert_eq!(f(7), 14);
+        assert_eq!(f(21), 42);
     });
 }
 

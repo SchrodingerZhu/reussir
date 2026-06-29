@@ -172,6 +172,11 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         });
     }
 
+    // Close the record set over fields before resolving layouts: a record used
+    // only as another record's field is otherwise never collected, leaving its
+    // layout unresolved.
+    driver.close_records_over_fields(input.records, tcx);
+
     // Resolve the discovered record instances to symbols. Collect the keys first
     // so the interner can be borrowed mutably while we map them.
     let record_keys: Vec<(DefId, &'tcx [Ty<'tcx>])> = driver.records.iter().copied().collect();
@@ -424,6 +429,79 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             TyKind::Nullable(inner) => self.note_records(inner),
             _ => {}
+        }
+    }
+
+    /// Collect the records reachable from a ground type, pushing each *newly*
+    /// discovered instance onto `worklist` (and into [`records`](Self::records)).
+    /// Used to close the record set over fields; bounds nesting depth like
+    /// [`enqueue`](Self::enqueue) so polymorphic recursion through a field trips
+    /// the limit rather than looping forever.
+    fn discover_records(
+        &mut self,
+        ty: Ty<'tcx>,
+        worklist: &mut Vec<(DefId, &'tcx [Ty<'tcx>])>,
+    ) {
+        match *ty.kind() {
+            TyKind::Record { def, args, .. } => {
+                if self.records.insert((def, args)) {
+                    let depth = args.iter().map(|&t| ty_depth(t)).max().unwrap_or(0);
+                    assert!(
+                        depth <= RECURSION_LIMIT,
+                        "monomorphize: record field nesting depth {depth} exceeds the \
+                         recursion limit ({RECURSION_LIMIT}); this is almost certainly \
+                         unbounded instantiation from polymorphic recursion through a field"
+                    );
+                    worklist.push((def, args));
+                }
+                for &arg in args {
+                    self.discover_records(arg, worklist);
+                }
+            }
+            TyKind::Closure { params, ret } => {
+                for &p in params {
+                    self.discover_records(p, worklist);
+                }
+                self.discover_records(ret, worklist);
+            }
+            TyKind::Nullable(inner) => self.discover_records(inner, worklist),
+            _ => {}
+        }
+    }
+
+    /// Close [`records`](Self::records) over record fields: a record reachable
+    /// only as another record's field (never in a signature) still needs its
+    /// layout. Each instance's field types are substituted under its type
+    /// arguments — mirroring [`resolve_layout`] — and the records they mention are
+    /// added, to a fixed point.
+    fn close_records_over_fields(
+        &mut self,
+        records: &FxHashMap<DefId, Record<'tcx>>,
+        tcx: &TyCtxt<'tcx>,
+    ) {
+        let mut worklist: Vec<(DefId, &'tcx [Ty<'tcx>])> = self.records.iter().copied().collect();
+        while let Some((def, args)) = worklist.pop() {
+            let Some(record) = records.get(&def) else {
+                continue;
+            };
+            let mut subst = Subst::default();
+            for ((_, gid), &ty) in record.ty_params.iter().zip(args.iter()) {
+                subst.insert(*gid, ty);
+            }
+            let field_tys: Vec<Ty<'tcx>> = match record.fields.as_ref() {
+                Some(RecordFields::Named(fields)) => {
+                    fields.iter().map(|(_, ty, _)| *ty).collect()
+                }
+                Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _)| *ty).collect(),
+                Some(RecordFields::Variants(variants)) => {
+                    variants.iter().flat_map(|v| v.fields.iter().copied()).collect()
+                }
+                None => Vec::new(),
+            };
+            for field_ty in field_tys {
+                let ground = subst_ty(tcx, field_ty, &subst);
+                self.discover_records(ground, &mut worklist);
+            }
         }
     }
 

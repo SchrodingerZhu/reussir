@@ -8,7 +8,9 @@
 //! downstream code generators.
 
 use melior::Context;
-use melior::ir::attribute::{FlatSymbolRefAttribute, IntegerAttribute, StringAttribute};
+use melior::ir::attribute::{
+    DenseI32ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
+};
 use melior::ir::operation::OperationBuilder;
 use melior::ir::r#type::IntegerType;
 use melior::ir::{Identifier, Location, Operation, Type, Value};
@@ -81,6 +83,33 @@ pub fn record_compound<'c>(
         .add_results(&[result_type])
         .build()
         .expect("valid reussir.record.compound")
+}
+
+/// `reussir.rc.create value(<value> : <type>) : <result_type>` — box a value into
+/// a fresh reference-counted pointer with an initial count of 1.
+///
+/// The op carries `AttrSizedOperandSegments` over its `[value, token, region]`
+/// operand groups, but melior's generated builder leaves the required
+/// `operandSegmentSizes` attribute unset, so it is constructed here with the
+/// single value operand present (`[1, 0, 0]`). The allocation token and any
+/// region are supplied later by the token-instantiation pass; the rc-create
+/// fusion pass then folds an immediately preceding `record.compound` into this
+/// op (`reussir.rc.create_compound`).
+pub fn rc_create<'c>(
+    context: &'c Context,
+    value: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.rc.create", location)
+        .add_operands(&[value])
+        .add_attributes(&[(
+            Identifier::new(context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(context, &[1, 0, 0]).into(),
+        )])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.rc.create")
 }
 
 /// `reussir.record.extract (<record> : <type>) [<index>] : <field_type>` —
