@@ -31,6 +31,7 @@
 //! lowering only looks names up in the program's symbol table — it needs no
 //! `DefTable`/resolver/`Mangler`.
 
+mod debug;
 mod expr;
 mod ty;
 
@@ -42,7 +43,9 @@ use reussir_backend::melior::ir::{BlockLike, Location, Module};
 
 use reussir_core::full::mir;
 use reussir_core::semi::ty::TyCtxt;
+use reussir_syntax::kind::{Resolver, TokenKey};
 
+use crate::source::SourceMap;
 use expr::Lowerer;
 
 /// A construct the current lowering subset does not handle.
@@ -67,14 +70,25 @@ fn err<T>(msg: impl Into<Cow<'static, str>>) -> Result<T> {
 ///
 /// `tcx` is the type arena the program was monomorphized in; the ownership
 /// analysis that places reference-count ops is run per function against it.
+/// `source`, when given, labels each lowered op with a `FileLineColLoc` resolved
+/// from the MIR's byte spans (and carries the file name into the module's debug
+/// attributes); without it, ops get `unknown` locations.
+///
+/// `names`, when given *together with* `source`, additionally emits DWARF debug
+/// info: it resolves the interned source names of functions, parameters, and
+/// locals so the debug-info conversion pass can describe each variable and its
+/// (precise) type. Without `names`, only line locations are emitted.
 pub fn lower_program<'c, 'tcx>(
     context: &'c Context,
     tcx: &TyCtxt<'tcx>,
     program: &mir::Program<'tcx>,
+    source: Option<&SourceMap<'_>>,
+    names: Option<&dyn Resolver<TokenKey>>,
 ) -> Result<Module<'c>> {
-    let module = Module::new(Location::unknown(context));
+    let mut module = Module::new(Location::unknown(context));
+    let lowerer = Lowerer::new(context, tcx, program, source, names);
+    lowerer.set_module_debug_attrs(&mut module);
     let body = module.body();
-    let lowerer = Lowerer::new(context, tcx, program);
     for func in &program.functions {
         body.append_operation(lowerer.function(func)?);
     }
@@ -110,7 +124,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let module = lower_program(&context, tcx, &full).expect("lowering succeeds");
+            let module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
             assert!(
                 module.as_operation().verify(),
                 "module verifies:\n{}",
@@ -118,6 +133,81 @@ mod tests {
             );
             module.as_operation().to_string()
         })
+    }
+
+    #[test]
+    fn attaches_source_locations() {
+        use reussir_backend::melior::ir::operation::OperationPrintingFlags;
+        let src = "pub fn add(a: i64, b: i64) -> i64 { a + b }\n";
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let path = std::path::Path::new("add.rr");
+            let map = crate::source::SourceMap::new(path, src);
+            let module =
+                lower_program(&context, tcx, &full, Some(&map), None).expect("lowering succeeds");
+            let printed = module
+                .as_operation()
+                .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+                .expect("print with locations");
+            assert!(printed.contains("loc(\"add.rr\":1:"), "{printed}");
+        });
+    }
+
+    #[test]
+    fn emits_debug_info_for_a_function() {
+        use reussir_backend::melior::ir::operation::OperationPrintingFlags;
+        // Exercises every kind of debug type emitted: scalars, a `[value]` record
+        // (with named members), a `[shared]` record (boxed), and a `let` local.
+        let src = r#"
+            struct [value] Point { x: i64, y: f64 }
+            struct [shared] Boxed { n: i64 }
+            fn proj(p: Point) -> i64 { let q = p.x; q }
+            fn unbox(b: Boxed) -> i64 { b.n }
+            pub fn entry(a: i64, b: f64) -> i64 {
+                let p = Point { x: a, y: b };
+                let bx = Boxed { n: a };
+                proj(p) + unbox(bx)
+            }
+            extern "C" trampoline "entry" = entry;
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let path = std::path::Path::new("pt.rr");
+            let map = crate::source::SourceMap::new(path, src);
+            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
+                .expect("lowering succeeds");
+            let printed = module
+                .as_operation()
+                .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+                .expect("print with debug info");
+            // Module file attributes, the subprogram + parameter array, and every
+            // debug-type form including precise member names and the boxed type.
+            assert!(printed.contains("reussir.dbg.file_basename"), "{printed}");
+            assert!(printed.contains("dbg_subprogram"), "{printed}");
+            assert!(printed.contains("dbg_func_args"), "{printed}");
+            assert!(printed.contains("dbg_recordtype"), "{printed}");
+            assert!(printed.contains("dbg_inttype"), "{printed}");
+            assert!(printed.contains("dbg_fptype"), "{printed}");
+            assert!(printed.contains("dbg_boxedtype"), "{printed}");
+            assert!(printed.contains("dbg_localvar"), "{printed}");
+            // Field names are preserved (not positional).
+            assert!(printed.contains("name : \"x\""), "{printed}");
+            assert!(printed.contains("name : \"y\""), "{printed}");
+        });
     }
 
     #[test]
@@ -246,7 +336,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let mut module = lower_program(&context, tcx, &full).expect("lowering succeeds");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,

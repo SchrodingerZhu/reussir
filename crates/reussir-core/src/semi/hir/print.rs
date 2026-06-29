@@ -119,23 +119,22 @@ impl<'a> Printer<'a> {
         head + text(" { ") + self.record_body(r) + text(" };")
     }
 
-    /// The field layout of a record: `field?`-marked member types for a struct,
-    /// `Name(types)` variants for an enum. Struct field names are not emitted —
-    /// mono does not read them, so leaving them out keeps the form minimal and
-    /// the round-trip exact.
+    /// The field layout of a record: `name:`-prefixed (for a struct) `field?`-
+    /// marked member types, or `Name(types)` variants for an enum. Field names
+    /// are emitted so the round-trip preserves them (a tuple field has none).
     fn record_body(&self, r: &Record<'_>) -> Doc<'static> {
         match r.fields.as_ref() {
             Some(RecordFields::Named(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(_, ty, is_mut)| self.member(*ty, *is_mut))
+                    .map(|(name, ty, is_mut)| self.member(Some(*name), *ty, *is_mut))
                     .collect();
                 comma_sep(parts)
             }
             Some(RecordFields::Unnamed(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(ty, is_mut)| self.member(*ty, *is_mut))
+                    .map(|(ty, is_mut)| self.member(None, *ty, *is_mut))
                     .collect();
                 comma_sep(parts)
             }
@@ -156,9 +155,13 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn member(&self, ty: Ty<'_>, is_mut: bool) -> Doc<'static> {
+    fn member(&self, name: Option<TokenKey>, ty: Ty<'_>, is_mut: bool) -> Doc<'static> {
+        let name = match name {
+            Some(n) => text(format!("\"{}\": ", self.resolver.resolve(n))),
+            None => Doc::Null,
+        };
         let marker = if is_mut { text("field ") } else { Doc::Null };
-        marker + self.ty(ty)
+        name + marker + self.ty(ty)
     }
 
     fn trampoline(&self, t: &TrampolineRoot<'_>) -> Doc<'static> {

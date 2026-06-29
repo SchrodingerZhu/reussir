@@ -1102,6 +1102,7 @@ dependencies = [
 name = "reussir-codegen"
 version = "0.1.0"
 dependencies = [
+ "ariadne",
  "reussir-backend",
  "reussir-core",
  "reussir-jit",

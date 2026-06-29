@@ -8,6 +8,7 @@
 //! of any MLIR dependency.
 
 pub mod lower;
+pub mod source;
 
 // Test-only helpers, shared with the integration tests (which include the same
 // file directly via `#[path]`). Not part of the crate's API.

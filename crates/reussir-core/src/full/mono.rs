@@ -267,9 +267,10 @@ fn resolve_layout<'tcx>(
         Some(RecordFields::Named(fields)) => {
             let members: Vec<mir::Member<'tcx>> = fields
                 .iter()
-                .map(|(_, ty, is_mut)| mir::Member {
+                .map(|(name, ty, is_mut)| mir::Member {
                     ty: subst_ty(tcx, *ty, &subst),
                     is_field: *is_mut,
+                    name: Some(mir::Symbol(symbols.get_or_intern(resolver.resolve(*name)))),
                 })
                 .collect();
             mir::RecordLayout::Compound(tcx.alloc_slice(&members))
@@ -280,6 +281,7 @@ fn resolve_layout<'tcx>(
                 .map(|(ty, is_mut)| mir::Member {
                     ty: subst_ty(tcx, *ty, &subst),
                     is_field: *is_mut,
+                    name: None,
                 })
                 .collect();
             mir::RecordLayout::Compound(tcx.alloc_slice(&members))
@@ -437,11 +439,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     /// Used to close the record set over fields; bounds nesting depth like
     /// [`enqueue`](Self::enqueue) so polymorphic recursion through a field trips
     /// the limit rather than looping forever.
-    fn discover_records(
-        &mut self,
-        ty: Ty<'tcx>,
-        worklist: &mut Vec<(DefId, &'tcx [Ty<'tcx>])>,
-    ) {
+    fn discover_records(&mut self, ty: Ty<'tcx>, worklist: &mut Vec<(DefId, &'tcx [Ty<'tcx>])>) {
         match *ty.kind() {
             TyKind::Record { def, args, .. } => {
                 if self.records.insert((def, args)) {
@@ -489,13 +487,12 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 subst.insert(*gid, ty);
             }
             let field_tys: Vec<Ty<'tcx>> = match record.fields.as_ref() {
-                Some(RecordFields::Named(fields)) => {
-                    fields.iter().map(|(_, ty, _)| *ty).collect()
-                }
+                Some(RecordFields::Named(fields)) => fields.iter().map(|(_, ty, _)| *ty).collect(),
                 Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _)| *ty).collect(),
-                Some(RecordFields::Variants(variants)) => {
-                    variants.iter().flat_map(|v| v.fields.iter().copied()).collect()
-                }
+                Some(RecordFields::Variants(variants)) => variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter().copied())
+                    .collect(),
                 None => Vec::new(),
             };
             for field_ty in field_tys {

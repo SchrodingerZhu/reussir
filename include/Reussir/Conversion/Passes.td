@@ -41,6 +41,24 @@ def ReussirBasicOpsLoweringPass
 }
 
 //===----------------------------------------------------------------------===//
+// DebugInfoConversion
+//===----------------------------------------------------------------------===//
+def ReussirDebugInfoConversionPass
+    : ReussirLoweringPass<"debug-info", "::mlir::ModuleOp"> {
+  let summary = "lower Reussir fused debug-info attributes to LLVM DI";
+  let description = [{
+    `reussir-lowering-debug-info` translates the Reussir `DBG*` attributes that
+    ride on fused locations (subprograms, local variables, function arguments)
+    into LLVM debug-info attributes, and materializes `llvm.dbg.value` ops. It
+    must run *after* `convert-to-llvm`: the conversion preserves the fused
+    locations and the `reussir.dbg_func_args` attribute onto the `llvm.func`,
+    and a function's debug info only survives translation once its `llvm.func`
+    carries a `DISubprogram`.
+  }];
+  let dependentDialects = ["::mlir::LLVM::LLVMDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // SCFOpsLowering
 //===----------------------------------------------------------------------===//
 def ReussirSCFOpsLoweringPass

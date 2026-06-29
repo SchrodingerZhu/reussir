@@ -31,8 +31,11 @@ use reussir_core::full::mir::{self, Expr, ExprKind};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
-use reussir_core::surface::Visibility;
+use reussir_core::surface::{Span, Visibility};
+use reussir_syntax::kind::{Resolver, TokenKey};
 use smallvec::SmallVec;
+
+use crate::source::SourceMap;
 
 use super::ty::{TypeCtx, is_unit, num_class};
 use super::{LoweringError, Result, err};
@@ -63,13 +66,23 @@ enum Cursor<'c, 'b, 'tcx> {
 /// `drop` keyed by a variable knows whether to emit an `rc` op or to recurse
 /// through an inline record).
 pub(super) struct Lowerer<'c, 'p, 'tcx> {
-    context: &'c Context,
-    tcx: &'p TyCtxt<'tcx>,
-    program: &'p mir::Program<'tcx>,
-    tys: TypeCtx<'c, 'p, 'tcx>,
+    pub(super) context: &'c Context,
+    pub(super) tcx: &'p TyCtxt<'tcx>,
+    pub(super) program: &'p mir::Program<'tcx>,
+    pub(super) tys: TypeCtx<'c, 'p, 'tcx>,
     records: RecordTable<'tcx>,
+    /// Resolves MIR byte spans to file/line/column; `None` lowers to `unknown`
+    /// locations.
+    pub(super) source: Option<&'p SourceMap<'p>>,
+    /// Resolves interned source names for debug info; `Some` (with `source`)
+    /// enables DWARF variable/type emission. See [`debug`](super::debug).
+    pub(super) names: Option<&'p dyn Resolver<TokenKey>>,
     ownership: RefCell<OwnershipTable>,
     var_tys: RefCell<FxHashMap<VarId, Ty<'tcx>>>,
+    /// The location attached to ops as they are built. Set to the current
+    /// expression's span by [`expr`](Self::expr) (saved and restored around each
+    /// node), so every op a node emits shares that node's source position.
+    cur_loc: RefCell<Location<'c>>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
@@ -77,6 +90,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         context: &'c Context,
         tcx: &'p TyCtxt<'tcx>,
         program: &'p mir::Program<'tcx>,
+        source: Option<&'p SourceMap<'p>>,
+        names: Option<&'p dyn Resolver<TokenKey>>,
     ) -> Self {
         Lowerer {
             context,
@@ -84,13 +99,35 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             program,
             tys: TypeCtx::new(context, program),
             records: RecordTable::from_records(&program.records),
+            source,
+            names,
             ownership: RefCell::new(OwnershipTable::default()),
             var_tys: RefCell::new(FxHashMap::default()),
+            cur_loc: RefCell::new(Location::unknown(context)),
         }
     }
 
-    fn loc(&self) -> Location<'c> {
-        Location::unknown(self.context)
+    /// Whether debug info should be emitted (both a source map and a name
+    /// resolver were supplied).
+    pub(super) fn debug_enabled(&self) -> bool {
+        self.source.is_some() && self.names.is_some()
+    }
+
+    /// The location currently attached to emitted ops (see [`cur_loc`](Self::cur_loc)).
+    pub(super) fn loc(&self) -> Location<'c> {
+        *self.cur_loc.borrow()
+    }
+
+    /// Resolve a MIR span to a `FileLineColLoc`, or `unknown` without a source
+    /// map or span.
+    pub(super) fn location(&self, span: Option<Span>) -> Location<'c> {
+        match (self.source, span) {
+            (Some(map), Some(span)) => {
+                let (line, col) = map.span_start(span);
+                Location::new(self.context, &map.filename(), line, col)
+            }
+            _ => Location::unknown(self.context),
+        }
     }
 
     /// Record the ground type of a local, so reference-count ops keyed by it can
@@ -105,7 +142,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Lower one MIR function to a `func.func` operation.
     pub(super) fn function(&self, func: &mir::Function<'tcx>) -> Result<Operation<'c>> {
-        let loc = self.loc();
+        // The function and its entry-level ops (block args, return) take the
+        // body's source position; nested nodes refine it as they are walked.
+        let loc = self.location(func.body.and_then(|b| b.span));
+        self.cur_loc.replace(loc);
         let param_tys = func
             .params
             .iter()
@@ -150,14 +190,20 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
         // A `private` function carries an explicit `sym_visibility` attribute;
         // the printer renders it as the `private` keyword.
-        let attributes = if func.visibility == Visibility::Private {
-            vec![(
+        let mut attributes = Vec::new();
+        if func.visibility == Visibility::Private {
+            attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
                 StringAttribute::new(self.context, "private").into(),
-            )]
-        } else {
-            Vec::new()
-        };
+            ));
+        }
+        // Debug info (when enabled): the parameters' names/types as an attribute
+        // the conversion pass reads, and the function's own location fused with a
+        // subprogram attribute.
+        if let Some(args) = self.dbg_func_args_attr(func) {
+            attributes.push(args);
+        }
+        let func_loc = self.subprogram_location(func);
 
         Ok(func::func(
             self.context,
@@ -165,7 +211,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             TypeAttribute::new(fn_ty.into()),
             region,
             &attributes,
-            loc,
+            func_loc,
         ))
     }
 
@@ -182,10 +228,17 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         env: &mut Env<'c, 'b>,
         e: &Expr<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
-        self.emit_rc_before(block, env, e.id)?;
-        let value = self.expr_inner(block, env, e)?;
-        self.emit_rc_after(block, env, e.id, e.ty, value)?;
-        Ok(value)
+        // Attach this node's source position to every op it emits, restoring the
+        // enclosing node's position afterwards.
+        let prev = self.cur_loc.replace(self.location(e.span));
+        let result = (|| {
+            self.emit_rc_before(block, env, e.id)?;
+            let value = self.expr_inner(block, env, e)?;
+            self.emit_rc_after(block, env, e.id, e.ty, value)?;
+            Ok(value)
+        })();
+        self.cur_loc.replace(prev);
+        result
     }
 
     /// Lower the node itself, without its surrounding reference-count ops.
@@ -243,9 +296,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 }
                 Ok(last)
             }
-            Let { var, value, .. } => {
+            Let { var, name, value } => {
                 self.bind_var_ty(*var, value.ty);
                 if let Some(v) = self.expr(block, env, value)? {
+                    self.tag_local(v, *name, value.ty);
                     env.insert(*var, v);
                 }
                 Ok(None)

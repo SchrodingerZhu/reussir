@@ -114,6 +114,7 @@ unsafe extern "C" {
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;
     pub fn reussirCreateInvariantGroupAnalysisPass() -> MlirPass;
     pub fn reussirCreateBasicOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateDebugInfoConversionPass() -> MlirPass;
     pub fn reussirCreateAcquireDropExpansionPass(
         expand_decrement: bool,
         outline_record: bool,
@@ -231,4 +232,66 @@ unsafe extern "C" {
         default_capability: ReussirCapability,
     );
     pub fn reussirRecordTypeIsComplete(record: MlirType) -> bool;
+
+    //==-- Reussir debug-info attribute constructors --==//
+    //
+    // The debug-info attributes describe a value's debug type/variable for the
+    // debug-info conversion pass; their custom storage cannot be built through
+    // the generic MLIR C API, so each constructor wraps the attribute's C++
+    // `get` builder.
+
+    pub fn reussirDBGIntTypeAttrGet(
+        context: MlirContext,
+        inner_type: MlirType,
+        is_signed: bool,
+        dbg_name: MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGFPTypeAttrGet(
+        context: MlirContext,
+        inner_type: MlirType,
+        dbg_name: MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGRecordMemberAttrGet(
+        context: MlirContext,
+        name: MlirAttribute,
+        type_attr: MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGRecordTypeAttrGet(
+        context: MlirContext,
+        n_members: isize,
+        members: *const MlirAttribute,
+        is_variant: bool,
+        underlying_type: MlirType,
+        dbg_name: MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGSubprogramAttrGet(
+        context: MlirContext,
+        raw_name: MlirAttribute,
+        n_type_params: isize,
+        type_params: *const MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGBoxedTypeAttrGet(
+        context: MlirContext,
+        dbg_type: MlirAttribute,
+        regional: bool,
+    ) -> MlirAttribute;
+    pub fn reussirDBGLocalVarAttrGet(
+        context: MlirContext,
+        dbg_type: MlirAttribute,
+        var_name: MlirAttribute,
+    ) -> MlirAttribute;
+    pub fn reussirDBGFuncArgAttrGet(
+        context: MlirContext,
+        dbg_type: MlirAttribute,
+        arg_name: MlirAttribute,
+        arg_index: core::ffi::c_uint,
+    ) -> MlirAttribute;
+
+    /// Set an operation's location (`mlir-sys` does not bind
+    /// `mlirOperationSetLocation`). Used to attach a fused debug location to a
+    /// local variable's defining op.
+    pub fn reussirOperationSetLocation(
+        op: mlir_sys::MlirOperation,
+        location: mlir_sys::MlirLocation,
+    );
 }

@@ -2748,7 +2748,10 @@ struct BasicOpsLoweringPass
     mlir::LLVMTypeConverter converter(moduleOp.getContext(),
                                       getReussirToLLVMOptions(moduleOp));
     ensureRuntimeFunctions(moduleOp, converter);
-    lowerFusedDBGAttributeInLocations(moduleOp);
+    // Fused debug-info attributes are converted to LLVM DI by the separate
+    // `reussir-lowering-debug-info` pass, which runs after `convert-to-llvm`
+    // so the functions are already `llvm.func` (a function's DI only survives
+    // translation once its `llvm.func` carries a `DISubprogram`).
   }
 };
 } // namespace

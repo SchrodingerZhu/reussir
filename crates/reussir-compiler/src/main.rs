@@ -14,6 +14,7 @@ use palc::Parser;
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
 use reussir_codegen::lower::lower_program;
+use reussir_codegen::source::SourceMap;
 use reussir_compiler::{OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file};
 use reussir_core::full::mono::monomorphize;
 use reussir_core::semi::{Report, Severity, elaborate};
@@ -65,6 +66,10 @@ struct Cli {
     /// backend's worker threads (e.g. some sanitizers/debuggers).
     #[arg(long = "disable-backend-multithreading")]
     disable_backend_multithreading: bool,
+
+    /// Emit DWARF debug info (source locations, function/variable debug types).
+    #[arg(short = 'g', long = "debug")]
+    debug: bool,
 }
 
 fn parse_emit(cli: &Cli) -> Result<OutputKind, String> {
@@ -158,6 +163,12 @@ fn run(cli: &Cli) -> Result<bool, String> {
     };
     let machine = TargetMachine::new(&spec, opt, reloc)?;
 
+    // Resolve the MIR's byte spans to source positions so lowered ops carry
+    // `FileLineColLoc`s (and, with debug info, DWARF line tables). With `-g`, the
+    // parser's name resolver feeds variable/function names into the debug info.
+    let source_map = SourceMap::new(&cli.input, &source);
+    let names = cli.debug.then(|| parse.resolver());
+
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
@@ -182,7 +193,8 @@ fn run(cli: &Cli) -> Result<bool, String> {
         if report_diagnostics(&name, &reports) {
             return Err(String::new());
         }
-        let mut module = lower_program(&context, tcx, &full).map_err(|e| format!("{name}: {e}"))?;
+        let mut module = lower_program(&context, tcx, &full, Some(&source_map), names)
+            .map_err(|e| format!("{name}: {e}"))?;
         let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
             .map_err(|e| format!("{name}: {e}"))?;
         pipeline::run_lowering_pipeline(&context, &mut module, &options)

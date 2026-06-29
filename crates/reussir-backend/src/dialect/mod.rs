@@ -16,6 +16,7 @@
 //! `REUSSIR_INCLUDE_DIR` environment variable, which the crate's build script
 //! sets (see `build.rs`).
 
+pub mod dbg;
 pub mod ty;
 
 // melior's `dialect!` macro emits a `pub mod reussir { ... }` containing the

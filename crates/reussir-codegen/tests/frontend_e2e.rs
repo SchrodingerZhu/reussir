@@ -33,7 +33,7 @@ fn jit_run<R>(source: &str, run: impl FnOnce(&OrcJit) -> R) -> R {
         );
         let (full, reports) = monomorphize(&elab.mono_input());
         assert!(reports.is_empty(), "mono reports: {reports:#?}");
-        lower_program(&context, tcx, &full).expect("scalar lowering succeeds")
+        lower_program(&context, tcx, &full, None, None).expect("scalar lowering succeeds")
     });
 
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
@@ -108,7 +108,9 @@ fn runs_shared_record_construction_and_projection() {
         extern "C" trampoline "build_and_read_ffi" = build_and_read;
     "#;
     jit_run(src, |jit| {
-        let a = jit.lookup("build_and_read_ffi").expect("lookup build_and_read_ffi");
+        let a = jit
+            .lookup("build_and_read_ffi")
+            .expect("lookup build_and_read_ffi");
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
         assert_eq!(f(5), 5);
         assert_eq!(f(42), 42);

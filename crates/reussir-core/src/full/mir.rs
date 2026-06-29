@@ -116,6 +116,10 @@ pub enum RecordLayout<'tcx> {
 pub struct Member<'tcx> {
     pub ty: Ty<'tcx>,
     pub is_field: bool,
+    /// The source field name (interned), for debug info. `None` for a tuple
+    /// (unnamed) field, or when the layout was rebuilt from textual MIR (which
+    /// does not carry field names). Not part of the textual round-trip.
+    pub name: Option<Symbol>,
 }
 
 /// One enum variant: its source name (interned in the program's symbol table)

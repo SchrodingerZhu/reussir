@@ -137,8 +137,8 @@ impl<'tcx> Builder<'_, 'tcx> {
     }
 
     /// Rebuild the `Record` metadata mono reads, including the ground field
-    /// layout. Struct field names are not serialized (mono ignores them), so a
-    /// struct's fields rebuild as [`RecordFields::Unnamed`] — layout-equivalent.
+    /// layout. A struct rebuilds as [`RecordFields::Named`] when its fields carry
+    /// names (debug info reads them) and [`RecordFields::Unnamed`] for a tuple.
     fn record(&mut self, r: &raw::Record) -> (DefId, Record<'tcx>) {
         let def = self.record_def(&r.path);
         let name = self.names.intern(&r.path);
@@ -153,6 +153,18 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::DefaultCap::Regional => DefaultCap::Regional,
         };
         let fields = match &r.body {
+            // Named when the fields carry names (a struct), unnamed for a tuple.
+            raw::RecordBody::Compound(members) if members.iter().any(|m| m.name.is_some()) => {
+                RecordFields::Named(
+                    members
+                        .iter()
+                        .map(|m| {
+                            let name = self.names.intern(m.name.as_deref().unwrap_or(""));
+                            (name, self.ty(&m.ty), m.is_field)
+                        })
+                        .collect(),
+                )
+            }
             raw::RecordBody::Compound(members) => RecordFields::Unnamed(
                 members
                     .iter()

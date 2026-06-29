@@ -111,12 +111,16 @@ impl Render<'_> {
                 let parts: Vec<Doc<'static>> = members
                     .iter()
                     .map(|m| {
+                        let name = match m.name {
+                            Some(s) => text(format!("\"{}\": ", self.sym(s))),
+                            None => Doc::Null,
+                        };
                         let marker = if m.is_field {
                             text("field ")
                         } else {
                             Doc::Null
                         };
-                        marker + self.ty(m.ty)
+                        name + marker + self.ty(m.ty)
                     })
                     .collect();
                 text("struct ") + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")

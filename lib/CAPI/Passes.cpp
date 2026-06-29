@@ -92,6 +92,9 @@ MlirPass reussirCreateInvariantGroupAnalysisPass(void) {
 MlirPass reussirCreateBasicOpsLoweringPass(void) {
   return wrapOwned(reussir::createReussirBasicOpsLoweringPass());
 }
+MlirPass reussirCreateDebugInfoConversionPass(void) {
+  return wrapOwned(reussir::createReussirDebugInfoConversionPass());
+}
 MlirPass reussirCreateAcquireDropExpansionPass(bool expandDecrement,
                                                bool outlineRecord) {
   reussir::ReussirAcquireDropExpansionPassOptions options;
