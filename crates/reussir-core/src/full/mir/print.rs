@@ -131,7 +131,9 @@ impl Render<'_> {
                     .map(|v| {
                         let fields: Vec<Doc<'static>> =
                             v.fields.iter().map(|&t| self.ty(t)).collect();
-                        text(format!("{}(", self.sym(v.name))) + comma_sep(fields) + text(")")
+                        text(format!("@{} {}(", self.sym(v.symbol), self.sym(v.name)))
+                            + comma_sep(fields)
+                            + text(")")
                     })
                     .collect();
                 text("enum ") + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")

@@ -89,59 +89,163 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 intAttr.getIsSigned() ? llvm::dwarf::DW_ATE_signed
                                       : llvm::dwarf::DW_ATE_unsigned);
           })
-          // TODO: we ignore boxed and variant for now
           .template Case<DBGRecordTypeAttr>([&](DBGRecordTypeAttr recAttr)
                                                 -> mlir::Attribute {
-            if (recAttr.getIsVariant())
-              return nullptr;
-            llvm::SmallVector<mlir::LLVM::DINodeAttr> members;
-            size_t currentOffset = 0;
-            for (auto element : recAttr.getMembers()) {
-              auto memberAttr = llvm::dyn_cast<DBGRecordMemberAttr>(element);
-              if (!memberAttr)
-                return nullptr;
-              auto memberTy = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
-                  moduleOp, memberAttr.getTypeAttr(), diFile, diCU, funcOp,
-                  funcScope, loc);
-              if (!memberTy)
-                return nullptr;
-              auto memberUnderlyingTy =
-                  getUnderlyingTypeFromDbgAttr(memberAttr.getTypeAttr());
-              if (!memberUnderlyingTy)
-                return nullptr;
-              auto sizeInBits =
-                  dataLayout.getTypeSizeInBits(memberUnderlyingTy);
-              auto alignInBytes =
-                  dataLayout.getTypeABIAlignment(memberUnderlyingTy);
-              currentOffset = llvm::alignTo(currentOffset, alignInBytes);
-              // align current offset
-              members.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
-                  moduleOp->getContext(), llvm::dwarf::DW_TAG_member,
-                  memberAttr.getName(), memberTy, sizeInBits, alignInBytes * 8,
-                  currentOffset * 8,
-                  /*address space=*/std::nullopt, /*extraData=*/nullptr));
-              currentOffset += sizeInBits / 8;
-            }
+            auto *ctx = moduleOp.getContext();
+            auto makeComposite =
+                [&](unsigned tag, mlir::StringAttr name, uint64_t sizeInBits,
+                    uint64_t alignInBits,
+                    llvm::ArrayRef<mlir::LLVM::DINodeAttr> members)
+                -> mlir::LLVM::DICompositeTypeAttr {
+              return mlir::LLVM::DICompositeTypeAttr::get(
+                  ctx, tag, name, /*file=*/diFile, /*line=*/0, diCU,
+                  /*baseType=*/nullptr, /*flags=*/mlir::LLVM::DIFlags::Zero,
+                  sizeInBits, alignInBits, /*dataLocation=*/nullptr,
+                  /*rank=*/nullptr, /*allocated=*/nullptr,
+                  /*associated=*/nullptr, members);
+            };
+
+            // The debug type, size, and alignment (bits) for one member. A boxed
+            // (rc) member is a *pointer* to the payload composite — not the
+            // composite inlined: the `DW_OP_deref` expression that presents a
+            // boxed *variable* as its payload applies only to that variable's
+            // slot, never to a field. Emitting it as a pointer is also what keeps
+            // a recursive record (a field whose box points back to the record)
+            // from sending the debugger into an unbounded layout recursion.
+            auto memberType =
+                [&](mlir::Attribute typeAttr)
+                -> std::optional<
+                    std::tuple<mlir::LLVM::DITypeAttr, uint64_t, uint64_t>> {
+              auto diType = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
+                  moduleOp, typeAttr, diFile, diCU, funcOp, funcScope, loc);
+              if (!diType)
+                return std::nullopt;
+              if (auto boxed = llvm::dyn_cast<DBGBoxedTypeAttr>(typeAttr)) {
+                auto ptrTy = mlir::LLVM::LLVMPointerType::get(ctx);
+                uint64_t ptrBits = dataLayout.getTypeSizeInBits(ptrTy);
+                uint64_t ptrAlignBits =
+                    dataLayout.getTypeABIAlignment(ptrTy) * 8;
+                // The rc pointer aims at the box *header*, not the payload, and a
+                // member cannot carry the `DW_OP_deref`/header-skip expression a
+                // variable would. So the pointee models the box `{ header, value }`
+                // with the payload (`value`) past the header — one ref-count word
+                // for a shared box, three (`{ status, next, vtable }`) regional —
+                // matching the variable-side `DIExpression` offset.
+                auto payloadUnderlying = getUnderlyingTypeFromDbgAttr(typeAttr);
+                if (!payloadUnderlying)
+                  return std::nullopt;
+                uint64_t payloadBits =
+                    dataLayout.getTypeSizeInBits(payloadUnderlying);
+                uint64_t payloadAlignBytes =
+                    dataLayout.getTypeABIAlignment(payloadUnderlying);
+                uint64_t headerWords = boxed.getRegional() ? 3 : 1;
+                uint64_t valueOffBytes = llvm::alignTo(
+                    headerWords * (ptrBits / 8), payloadAlignBytes);
+                auto valueMember = mlir::LLVM::DIDerivedTypeAttr::get(
+                    ctx, llvm::dwarf::DW_TAG_member,
+                    mlir::StringAttr::get(ctx, "value"), diType, payloadBits,
+                    payloadAlignBytes * 8, valueOffBytes * 8,
+                    /*address space=*/std::nullopt, /*extraData=*/nullptr);
+                auto box = makeComposite(
+                    llvm::dwarf::DW_TAG_structure_type,
+                    mlir::StringAttr::get(ctx, ""), valueOffBytes * 8 + payloadBits,
+                    payloadAlignBytes * 8, {valueMember});
+                auto pointer = mlir::LLVM::DIDerivedTypeAttr::get(
+                    ctx, llvm::dwarf::DW_TAG_pointer_type,
+                    /*name=*/mlir::StringAttr{}, box, ptrBits, ptrAlignBits,
+                    /*offsetInBits=*/0, /*address space=*/std::nullopt,
+                    /*extraData=*/nullptr);
+                return std::make_tuple(mlir::cast<mlir::LLVM::DITypeAttr>(pointer),
+                                       ptrBits, ptrAlignBits);
+              }
+              auto underlying = getUnderlyingTypeFromDbgAttr(typeAttr);
+              if (!underlying)
+                return std::nullopt;
+              return std::make_tuple(
+                  diType, dataLayout.getTypeSizeInBits(underlying),
+                  dataLayout.getTypeABIAlignment(underlying) * 8);
+            };
+
             auto sizeInBits =
                 dataLayout.getTypeSizeInBits(recAttr.getUnderlyingType());
             auto alignInBits =
                 dataLayout.getTypeABIAlignment(recAttr.getUnderlyingType()) * 8;
-#if LLVM_VERSION_MAJOR >= 22
-            return mlir::LLVM::DICompositeTypeAttr::get(
-                moduleOp.getContext(), llvm::dwarf::DW_TAG_class_type,
-                recAttr.getDbgName(), /*file=*/diFile, /*line=*/0, diCU,
-                /*baseType=*/nullptr, /*flags=*/mlir::LLVM::DIFlags::Zero,
-                sizeInBits, alignInBits,
-                /*dataLocation=*/nullptr, /*rank=*/nullptr,
-                /*allocated=*/nullptr, /*associated=*/nullptr, members);
-#else
-            return mlir::LLVM::DICompositeTypeAttr::get(
-                moduleOp.getContext(), llvm::dwarf::DW_TAG_class_type,
-                recAttr.getDbgName(), /*file=*/diFile, /*line=*/0, diCU,
-                /*baseType=*/nullptr, /*flags=*/mlir::LLVM::DIFlags::Zero,
-                sizeInBits, alignInBits, members, nullptr, nullptr, nullptr,
-                nullptr);
-#endif
+
+            if (recAttr.getIsVariant()) {
+              // A variant lays out as a tag word followed by a payload area large
+              // enough for any case. MLIR's `DICompositeTypeAttr` cannot express a
+              // discriminated `DW_TAG_variant_part`, so the cases are modelled as
+              // an overlapping union (every case at the payload offset) carried in
+              // a `payload` member after the `tag` — every case stays inspectable.
+              llvm::SmallVector<mlir::LLVM::DINodeAttr> cases;
+              uint64_t payloadAlignBytes = 1;
+              for (auto element : recAttr.getMembers()) {
+                auto memberAttr = llvm::dyn_cast<DBGRecordMemberAttr>(element);
+                if (!memberAttr)
+                  return nullptr;
+                auto info = memberType(memberAttr.getTypeAttr());
+                if (!info)
+                  return nullptr;
+                auto [caseTy, caseSizeBits, caseAlignBits] = *info;
+                payloadAlignBytes =
+                    std::max(payloadAlignBytes, caseAlignBits / 8);
+                cases.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
+                    ctx, llvm::dwarf::DW_TAG_member, memberAttr.getName(), caseTy,
+                    caseSizeBits, caseAlignBits, /*offsetInBits=*/0,
+                    /*address space=*/std::nullopt, /*extraData=*/nullptr));
+              }
+              auto indexTy = mlir::IndexType::get(ctx);
+              uint64_t tagSizeBits = dataLayout.getTypeSizeInBits(indexTy);
+              uint64_t tagSizeBytes = dataLayout.getTypeSize(indexTy);
+              uint64_t payloadOffsetBytes =
+                  llvm::alignTo(tagSizeBytes, payloadAlignBytes);
+              uint64_t payloadSizeBits = sizeInBits - payloadOffsetBytes * 8;
+              auto tagTy = mlir::LLVM::DIBasicTypeAttr::get(
+                  ctx, llvm::dwarf::DW_TAG_base_type,
+                  mlir::StringAttr::get(ctx, "<tag>"), tagSizeBits,
+                  llvm::dwarf::DW_ATE_unsigned);
+              auto tagMember = mlir::LLVM::DIDerivedTypeAttr::get(
+                  ctx, llvm::dwarf::DW_TAG_member,
+                  mlir::StringAttr::get(ctx, "tag"), tagTy, tagSizeBits,
+                  tagSizeBytes * 8, /*offsetInBits=*/0,
+                  /*address space=*/std::nullopt, /*extraData=*/nullptr);
+              auto payloadUnion = makeComposite(
+                  llvm::dwarf::DW_TAG_union_type, mlir::StringAttr::get(ctx, ""),
+                  payloadSizeBits, payloadAlignBytes * 8, cases);
+              auto payloadMember = mlir::LLVM::DIDerivedTypeAttr::get(
+                  ctx, llvm::dwarf::DW_TAG_member,
+                  mlir::StringAttr::get(ctx, "payload"), payloadUnion,
+                  payloadSizeBits, payloadAlignBytes * 8,
+                  payloadOffsetBytes * 8, /*address space=*/std::nullopt,
+                  /*extraData=*/nullptr);
+              llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {tagMember,
+                                                                   payloadMember};
+              return makeComposite(llvm::dwarf::DW_TAG_structure_type,
+                                   recAttr.getDbgName(), sizeInBits, alignInBits,
+                                   members);
+            }
+
+            llvm::SmallVector<mlir::LLVM::DINodeAttr> members;
+            uint64_t currentOffsetBits = 0;
+            for (auto element : recAttr.getMembers()) {
+              auto memberAttr = llvm::dyn_cast<DBGRecordMemberAttr>(element);
+              if (!memberAttr)
+                return nullptr;
+              auto info = memberType(memberAttr.getTypeAttr());
+              if (!info)
+                return nullptr;
+              auto [memberTy, memberSizeBits, memberAlignBits] = *info;
+              currentOffsetBits = llvm::alignTo(currentOffsetBits, memberAlignBits);
+              members.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
+                  moduleOp->getContext(), llvm::dwarf::DW_TAG_member,
+                  memberAttr.getName(), memberTy, memberSizeBits, memberAlignBits,
+                  currentOffsetBits,
+                  /*address space=*/std::nullopt, /*extraData=*/nullptr));
+              currentOffsetBits += memberSizeBits;
+            }
+            return makeComposite(llvm::dwarf::DW_TAG_class_type,
+                                 recAttr.getDbgName(), sizeInBits, alignInBits,
+                                 members);
           })
           // A boxed value is presented as its payload composite; the pointer is
           // dereferenced (and the header skipped) by the `dbg.declare`'s

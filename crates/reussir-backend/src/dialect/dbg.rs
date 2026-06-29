@@ -108,11 +108,7 @@ pub fn subprogram<'c>(
 /// payload's debug type `inner`. `regional` selects the box header the debug-info
 /// pass skips past: a shared box has a single ref-count word, a regional box a
 /// three-word `{ status, next, vtable }` header.
-pub fn boxed_type<'c>(
-    context: &'c Context,
-    inner: Attribute<'c>,
-    regional: bool,
-) -> Attribute<'c> {
+pub fn boxed_type<'c>(context: &'c Context, inner: Attribute<'c>, regional: bool) -> Attribute<'c> {
     unsafe {
         Attribute::from_raw(sys::reussirDBGBoxedTypeAttrGet(
             context.to_raw(),

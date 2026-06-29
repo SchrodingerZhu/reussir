@@ -67,6 +67,21 @@ impl<'a> Mangler<'a> {
         out
     }
 
+    /// The symbol for an enum's variant *payload* record: the variant name nested
+    /// as a path component *under the enum applied to its type arguments*, so a
+    /// generic enum mangles as `Record<Params>::Variant` — the arguments stay on
+    /// the record, not the variant (`_RNvI…E<Variant>`). `List::<i32>::Cons` and
+    /// `List::<u8>::Cons` thus get distinct symbols, and a variant payload reads
+    /// back as a proper path component rather than a synthetic name.
+    pub fn mangle_variant(&self, def: DefId, variant: &str, ty_args: &[Ty<'_>]) -> String {
+        let mut out = String::from("_R");
+        out.push('N');
+        out.push('v');
+        self.path_with_args(&mut out, def, ty_args);
+        ident(&mut out, variant);
+        out
+    }
+
     // ----- paths -----
 
     /// A path applied to (possibly zero) type arguments. Bare path when empty,
@@ -322,6 +337,27 @@ mod tests {
             let foo0 = tcx.mk_record(foo, &[], Flexivity::Irrelevant);
             assert_eq!(m.mangle_ty(foo0), "_RC3Foo");
             assert_eq!(m.mangle_instance(foo, &[]), "_RC3Foo");
+        });
+    }
+
+    #[test]
+    fn variant_payload_nests_under_the_enum() {
+        crate::with_tcx(|tcx: &TyCtxt<'_>| {
+            let mut defs = DefTable::new();
+            let list = defs.declare_record(key(1)).expect("fresh");
+            let resolver = VecResolver(vec!["List"]);
+            let m = Mangler::new(&defs, &resolver);
+            // `List::Cons` (no args) nests the variant as a path component:
+            // `Nv C4List 4Cons`.
+            assert_eq!(m.mangle_variant(list, "Cons", &[]), "_RNvC4List4Cons");
+            // For a generic enum the arguments stay on the *record*, with the
+            // variant nested outside: `List<i32>::Cons` → `Nv (IC4ListlE) 4Cons`,
+            // not `List::Cons<i32>`.
+            let i32_ty = tcx.mk_int(IntTy::Signed(32));
+            assert_eq!(
+                m.mangle_variant(list, "Cons", &[i32_ty]),
+                "_RNvIC4ListlE4Cons"
+            );
         });
     }
 }

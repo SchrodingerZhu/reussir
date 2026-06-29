@@ -7,11 +7,11 @@
 //! reads. A variable's *type* is built precisely from its ground MIR type
 //! ([`dbg_type`](Lowerer::dbg_type)).
 //!
-//! Only what the conversion pass already handles is emitted: scalars and
-//! by-value records. Reference-counted (`[shared]`) records are boxed and need a
-//! pointer type plus a `DIExpression`; they are skipped here until that lands.
-//! Local (`let`) variables are likewise not emitted yet — they require attaching
-//! the attribute to a specific defining op.
+//! Emitted debug types cover scalars, by-value and managed (`[shared]`) records
+//! — the latter boxed, reached through a `DIExpression` past the rc-box header —
+//! and enums (`variant`), described as a tag plus a union of the per-case
+//! payloads. Both `let` locals and parameters are emitted. A recursive type is
+//! broken with a forward-declared (memberless) composite (see [`Self::dbg_record`]).
 
 use reussir_backend::builders;
 use reussir_backend::dialect::dbg;
@@ -172,36 +172,101 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// Build a `dbg_recordtype` for a by-value record, or `None` if any field
-    /// lacks a debug type.
+    /// Build a `dbg_recordtype` for a record, or `None` if any field lacks a debug
+    /// type. A struct becomes a composite of its precisely-typed fields; an enum
+    /// becomes a variant composite whose members are the per-case payload structs
+    /// (the conversion pass lays these out as a tag plus an overlapping payload).
+    ///
+    /// A record reached recursively (through a boxed field or variant payload) is
+    /// emitted as a memberless composite — a forward declaration that breaks the
+    /// cycle. The recursion always crosses a pointer (a managed field), so the
+    /// elided body is the pointee's, described once at its own occurrence.
     fn dbg_record(&self, ty: Ty<'tcx>, underlying: Type<'c>) -> Option<Attribute<'c>> {
         let rec = self.tys.record_of(ty)?;
+        let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
+        let is_variant = matches!(rec.layout, mir::RecordLayout::Variant(_));
+        // Recursion guard: a record already being expanded reappears as an empty
+        // (forward-declared) composite rather than recursing forever.
+        if !self.dbg_building.borrow_mut().insert(rec.symbol) {
+            return Some(dbg::record_type(
+                self.context,
+                &[],
+                is_variant,
+                underlying,
+                name,
+            ));
+        }
         let members = match rec.layout {
-            mir::RecordLayout::Compound(members) => members,
-            mir::RecordLayout::Variant(_) => return None,
+            mir::RecordLayout::Compound(members) => self.dbg_struct_members(members),
+            mir::RecordLayout::Variant(variants) => variants
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let case = self.dbg_variant_case(ty, i, v)?;
+                    let case_name = StringAttribute::new(self.context, self.program.symbol(v.name));
+                    Some(dbg::record_member(self.context, case_name, case))
+                })
+                .collect(),
         };
-        let member_attrs: Option<Vec<Attribute<'c>>> = members
+        self.dbg_building.borrow_mut().remove(&rec.symbol);
+        Some(dbg::record_type(
+            self.context,
+            &members?,
+            is_variant,
+            underlying,
+            name,
+        ))
+    }
+
+    /// Build the `dbg_record_member`s for a struct's fields (named, or positional
+    /// for tuple fields / a layout rebuilt from textual MIR), or `None` if any
+    /// field lacks a debug type.
+    fn dbg_struct_members(&self, members: &[mir::Member<'tcx>]) -> Option<Vec<Attribute<'c>>> {
+        members
             .iter()
             .enumerate()
             .map(|(i, m)| {
                 let field_type = self.dbg_type(m.ty)?;
-                // The source field name, falling back to the positional index for
-                // a tuple field (or layout rebuilt from textual MIR).
+                // Named field, else a positional `fN` (a bare number confuses some
+                // debuggers' member rendering).
                 let field_name = m
                     .name
                     .map(|s| self.program.symbol(s).to_string())
-                    .unwrap_or_else(|| i.to_string());
+                    .unwrap_or_else(|| format!("f{i}"));
                 let name = StringAttribute::new(self.context, &field_name);
                 Some(dbg::record_member(self.context, name, field_type))
             })
+            .collect()
+    }
+
+    /// The debug type for one enum case `v` (variant `idx`): a struct composite
+    /// over its (positional) fields, built on the case's payload layout, named by
+    /// the case's source name. `None` if any field lacks a debug type.
+    fn dbg_variant_case(
+        &self,
+        ty: Ty<'tcx>,
+        idx: usize,
+        v: &mir::VariantDef<'tcx>,
+    ) -> Option<Attribute<'c>> {
+        let payload = self.tys.variant_payload_of(ty, idx).ok()?;
+        let field_attrs: Option<Vec<Attribute<'c>>> = v
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, &f)| {
+                let field_type = self.dbg_type(f)?;
+                // Variant fields are positional; name them `fN`.
+                let name = StringAttribute::new(self.context, &format!("f{i}"));
+                Some(dbg::record_member(self.context, name, field_type))
+            })
             .collect();
-        let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
+        let case_name = StringAttribute::new(self.context, self.program.symbol(v.name));
         Some(dbg::record_type(
             self.context,
-            &member_attrs?,
+            &field_attrs?,
             false,
-            underlying,
-            name,
+            payload,
+            case_name,
         ))
     }
 }

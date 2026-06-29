@@ -165,6 +165,79 @@ fn runs_shared_record_with_aliasing_and_release() {
 }
 
 #[test]
+fn runs_shared_variant_construction_and_drop() {
+    // Build a two-node shared (managed) list, then drop it unused and return the
+    // scalar. This drives the whole variant-construction spine through the runtime:
+    // each case packs its payload (`record.compound`), tags it (`record.variant`),
+    // and boxes it (`rc.create`); the recursive `Cons` field is an `rc` link back
+    // to the enum; and the unused list is released (`rc.dec`), so the tag-dispatched
+    // drop runs over the heap-allocated nodes. A wrong refcount or a bad variant
+    // layout would crash or leak — returning `n` intact pins it down.
+    let src = r#"
+        enum IntList { Nil, Cons(i64, IntList) }
+        fn build(n: i64) -> i64 { let l = IntList::Cons{n, IntList::Cons{n, IntList::Nil}}; n }
+        pub fn run(n: i64) -> i64 { build(n) }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(7), 7);
+        assert_eq!(f(-13), -13);
+    });
+}
+
+#[test]
+fn lowers_variant_debug_info_through_the_pipeline() {
+    // Lower a value enum and a recursive shared enum *with debug info on*, then
+    // run the whole lowering pipeline and JIT-execute. This drives the backend's
+    // debug-info conversion over variant types — the tag-plus-union composite and
+    // the boxed-member pointer past the rc header — which the no-debug `jit_run`
+    // path never reaches; a malformed variant `DICompositeType` would fail the
+    // pipeline or the JIT here.
+    let src = r#"
+        enum [value] Shape { Dot, Circle(i64), Rect(i64, i64) }
+        enum List { Nil, Cons(i64, List) }
+        fn describe(s: Shape) -> i64 { let k = 0; k }
+        fn walk(l: List) -> i64 { let z = 0; z }
+        pub fn run(n: i64) -> i64 {
+            let r = describe(Shape::Rect{n, n + 1});
+            let w = walk(List::Cons{n, List::Nil});
+            n + r + w
+        }
+        extern "C" trampoline "run_dbg_ffi" = run;
+    "#;
+    let context = testing::context();
+    let mut module = in_arena(|tcx| {
+        let parse = reussir_syntax::parse(src);
+        assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+        let prog = surface::program(&parse.root);
+        let elab = elaborate(tcx, &prog, parse.resolver());
+        assert!(
+            !elab.has_errors(),
+            "elaboration errors: {:#?}",
+            elab.reports
+        );
+        let (full, reports) = monomorphize(&elab.mono_input());
+        assert!(reports.is_empty(), "mono reports: {reports:#?}");
+        let path = std::path::Path::new("variant.rr");
+        let map = reussir_codegen::source::SourceMap::new(path, src);
+        lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
+            .expect("variant lowering with debug info succeeds")
+    });
+
+    run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
+        .expect("pipeline lowers variant debug info to LLVM");
+
+    let jit = OrcJit::with_runtime().expect("create JIT");
+    jit.add_module(&module, OptLevel::Default)
+        .expect("add lowered module");
+    let a = jit.lookup("run_dbg_ffi").expect("lookup run_dbg_ffi");
+    let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+    assert_eq!(f(5), 5);
+}
+
+#[test]
 fn runs_iterative_helper_and_signed_arithmetic() {
     let src = r#"
         fn iter_impl(n: u64, a: u64, b: u64) -> u64 {

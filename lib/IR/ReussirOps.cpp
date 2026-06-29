@@ -1094,12 +1094,8 @@ void ReussirRegionRunOp::getSuccessorRegions(
     regions.emplace_back(&getRegion());
     return;
   }
-// Otherwise, the region branches back to the parent operation.
-#if LLVM_VERSION_MAJOR >= 22
+  // Otherwise, the region branches back to the parent operation.
   regions.emplace_back(getOperation(), getResults());
-#else
-  regions.emplace_back(getResults());
-#endif
 }
 
 //===----------------------------------------------------------------------===//
@@ -1115,12 +1111,8 @@ void ReussirNullableDispatchOp::getSuccessorRegions(
     regions.emplace_back(&getNullRegion());
     return;
   }
-// Otherwise, the region branches back to the parent operation.
-#if LLVM_VERSION_MAJOR >= 22
+  // Otherwise, the region branches back to the parent operation.
   regions.emplace_back(getOperation(), getResults());
-#else
-  regions.emplace_back(getResults());
-#endif
 }
 
 //===----------------------------------------------------------------------===//
@@ -1137,11 +1129,7 @@ void ReussirRecordDispatchOp::getSuccessorRegions(
     return;
   }
   // Otherwise, the region branches back to the parent operation.
-#if LLVM_VERSION_MAJOR >= 22
   regions.emplace_back(getOperation(), getResults());
-#else
-  regions.emplace_back(getResults());
-#endif
 }
 
 //===----------------------------------------------------------------------===//

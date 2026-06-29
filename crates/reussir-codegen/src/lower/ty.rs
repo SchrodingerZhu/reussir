@@ -12,7 +12,10 @@
 //!   record that appears as a field of another record is therefore stored as an
 //!   `rc` link, which falls out of lowering its field type here.
 //!
-//! Regional records and enum (`variant`) layouts are not lowered yet. This
+//! Both struct (`compound`) and enum (`variant`) records lower this way. An enum
+//! is an identified `!reussir.record<variant …>` whose members are the per-case
+//! payload compounds (`{enum}::{case}`); the variant carries a tag plus a payload
+//! area sized to the largest case. Regional records are still pending. This
 //! module also holds the numeric classification [`expr`](super::expr) uses to
 //! choose the right cast op.
 
@@ -108,6 +111,36 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         }
     }
 
+    /// Lower a type as it appears *as a record member*. A record-typed member is
+    /// named by its bare element type, never an `rc` pointer: the dialect boxes a
+    /// member whose element capability is `shared`/`regional` to a pointer on its
+    /// own (a `!reussir.rc<…>` member is rejected — "use capability instead"). A
+    /// scalar or `[value]` record member is the same as [`mlir_ty`](Self::mlir_ty).
+    fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        match *ty.kind() {
+            TyKind::Record { .. } => self.record_inner_of(ty),
+            _ => self.mlir_ty(ty),
+        }
+    }
+
+    /// The payload compound type for variant `idx` of an enum-typed `ty` — the
+    /// inline `{enum}::{case}` record holding that case's fields, as used by the
+    /// `reussir.record.compound` / `reussir.record.variant` construction pair.
+    pub(super) fn variant_payload_of(&self, ty: Ty<'tcx>, idx: usize) -> Result<Type<'c>> {
+        let rec = self
+            .record_of(ty)
+            .ok_or_else(|| LoweringError("record instance has no resolved layout".into()))?;
+        match rec.layout {
+            mir::RecordLayout::Variant(variants) => {
+                let v = variants
+                    .get(idx)
+                    .ok_or_else(|| LoweringError("variant index out of range".into()))?;
+                self.variant_payload_type(v)
+            }
+            mir::RecordLayout::Compound(_) => err("variant payload requested for a struct record"),
+        }
+    }
+
     /// The MLIR type of a value of record type `ty`: the inline record type for a
     /// `[value]` record, or an `rc` pointer to it for a `[shared]` record.
     pub(super) fn record_type(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
@@ -144,8 +177,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// completed exactly once and a self-referential record's back-edge resolves
     /// to the still-incomplete handle instead of recursing forever.
     fn record_inner_type(&self, rec: &mir::RecordInstance<'tcx>) -> Result<Type<'c>> {
+        let kind = match rec.layout {
+            mir::RecordLayout::Compound(_) => ReussirRecordKind::Compound,
+            mir::RecordLayout::Variant(_) => ReussirRecordKind::Variant,
+        };
         let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
-        let record = record_incomplete(self.context, name, ReussirRecordKind::Compound);
+        let record = record_incomplete(self.context, name, kind);
         // Already built, or currently being built further up the stack (a
         // recursive reference): hand back the identified handle as-is.
         if record_is_complete(record) || !self.building.borrow_mut().insert(rec.symbol) {
@@ -164,18 +201,27 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         rec: &mir::RecordInstance<'tcx>,
         record: Type<'c>,
     ) -> Result<Type<'c>> {
-        let members = match rec.layout {
-            mir::RecordLayout::Compound(ms) => ms,
-            mir::RecordLayout::Variant(_) => {
-                return err("enum (variant) record lowering not yet implemented");
+        let (member_tys, member_is_field) = match rec.layout {
+            mir::RecordLayout::Compound(members) => {
+                let mut tys = Vec::with_capacity(members.len());
+                let mut is_field = Vec::with_capacity(members.len());
+                for m in members {
+                    tys.push(self.member_ty(m.ty)?);
+                    is_field.push(m.is_field);
+                }
+                (tys, is_field)
+            }
+            // An enum's members are its per-case payload compounds; the tag and
+            // payload area the variant adds around them are the dialect's concern.
+            mir::RecordLayout::Variant(variants) => {
+                let mut tys = Vec::with_capacity(variants.len());
+                for v in variants {
+                    tys.push(self.variant_payload_type(v)?);
+                }
+                let is_field = vec![false; variants.len()];
+                (tys, is_field)
             }
         };
-        let mut member_tys = Vec::with_capacity(members.len());
-        let mut member_is_field = Vec::with_capacity(members.len());
-        for m in members {
-            member_tys.push(self.mlir_ty(m.ty)?);
-            member_is_field.push(m.is_field);
-        }
         record_complete_in_place(
             record,
             &member_tys,
@@ -183,6 +229,37 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             capability(rec.default_cap),
         );
         Ok(record)
+    }
+
+    /// The identified payload compound holding variant `v`'s fields — the payload
+    /// member stored at `v`'s tag in the enum's variant record. It is named by the
+    /// variant's mangled payload symbol (`Enum<Params>::Variant`, baked into the
+    /// MIR by mono — see [`mir::VariantDef`]).
+    ///
+    /// The payload is always a `[value]` compound: it is the inline storage for a
+    /// case, sitting in the variant's payload area, so `reussir.record.variant`
+    /// takes it by value (the enum's own `shared` capability boxes the whole
+    /// variant, not each case). Built the first time it is asked for and cached by
+    /// the MLIR context under its unique name; a field that refers back to the enum
+    /// resolves to the still-incomplete enum handle, because the enum's symbol is
+    /// on the construction stack while its payloads are built.
+    fn variant_payload_type(&self, v: &mir::VariantDef<'tcx>) -> Result<Type<'c>> {
+        let name = self.program.symbol(v.symbol);
+        let payload = record_incomplete(
+            self.context,
+            StringAttribute::new(self.context, name),
+            ReussirRecordKind::Compound,
+        );
+        if record_is_complete(payload) {
+            return Ok(payload);
+        }
+        let mut field_tys = Vec::with_capacity(v.fields.len());
+        for &f in v.fields {
+            field_tys.push(self.member_ty(f)?);
+        }
+        let is_field = vec![false; v.fields.len()];
+        record_complete_in_place(payload, &field_tys, &is_field, ReussirCapability::Value);
+        Ok(payload)
     }
 
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,

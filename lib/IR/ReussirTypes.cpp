@@ -41,11 +41,10 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
 
-#if LLVM_VERSION_MAJOR >= 21
+// The `DataLayoutTypeInterface` no longer carries `getPreferredAlignment`, so the
+// generated declarations omit it; this elides our out-of-line definitions to
+// match.
 #define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...)
-#else
-#define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...) __VA_ARGS__
-#endif
 
 #define GET_TYPEDEF_CLASSES
 #include "Reussir/IR/ReussirOpsTypes.cpp.inc"
