@@ -2,6 +2,7 @@ add_mlir_conversion_library(MLIRReussirBasicOpsLowering
   BasicOpsLowering.cpp
   CABISignatureConversion.cpp
   DbgInfoConversion.cpp
+  VariantDebugInfo.cpp
 
   DEPENDS
   MLIRReussirConversionPassIncGen

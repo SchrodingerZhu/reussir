@@ -444,9 +444,13 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
     return;
   auto llvmDIFileAttr =
       mlir::LLVM::DIFileAttr::get(context, fileBasename, fileDirectory);
+  // Reussir is a Rust-like language (sum types, `_R…` mangling). Tagging the
+  // compile unit as Rust is both more accurate and what makes debuggers expose
+  // the `DW_TAG_variant_part` an enum lowers to (see `fixupVariantDebugInfo`):
+  // under a C/C++ language they ignore variant parts entirely.
   auto dbgCompileUnitAttr = mlir::LLVM::DICompileUnitAttr::get(
       mlir::DistinctAttr::create(mlir::UnitAttr::get(context)),
-      llvm::dwarf::DW_LANG_C_plus_plus_20, llvmDIFileAttr,
+      llvm::dwarf::DW_LANG_Rust, llvmDIFileAttr,
       mlir::StringAttr::get(context, "reussir"), true,
       mlir::LLVM::DIEmissionKind::Full);
   mlir::OpBuilder builder(moduleOp);
