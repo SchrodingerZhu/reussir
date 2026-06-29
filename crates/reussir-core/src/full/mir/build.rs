@@ -112,6 +112,7 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .map(|m| mir::Member {
                         ty: self.ty(&m.ty),
                         is_field: m.is_field,
+                        name: m.name.as_deref().map(|s| self.sym(s)),
                     })
                     .collect();
                 mir::RecordLayout::Compound(self.tcx.alloc_slice(&ms))

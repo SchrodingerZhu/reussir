@@ -44,6 +44,7 @@ MlirPass reussirCreateTRMCRecursionAnalysisPass(void);
 MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized);
 MlirPass reussirCreateInvariantGroupAnalysisPass(void);
 MlirPass reussirCreateBasicOpsLoweringPass(void);
+MlirPass reussirCreateDebugInfoConversionPass(void);
 
 // Acquire/drop expansion has two phases controlled by these options; the
 // pipeline runs it once with both disabled and once with both enabled.

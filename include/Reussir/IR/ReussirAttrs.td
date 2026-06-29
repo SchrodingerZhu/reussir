@@ -165,6 +165,16 @@ def Reussir_DBGLocalVar : ReussirAttr<"DBGLocalVar", "dbg_localvar"> {
     `>`
   }];
 }
+// A reference-counted (`[shared]`) value: the variable is an `rc` pointer to a
+// box `{ header, payload }`. `dbgType` describes the payload; the debug-info
+// pass presents the variable as the payload, reached by dereferencing the
+// pointer and skipping the box header (a `DW_OP_deref, DW_OP_plus_uconst`
+// expression on the `dbg.declare`).
+def Reussir_DBGBoxedType : ReussirAttr<"DBGBoxedType", "dbg_boxedtype"> {
+  let description = "Debug type for a reference-counted (boxed) value";
+  let parameters = (ins "::mlir::Attribute":$dbgType);
+  let assemblyFormat = [{ `<` $dbgType `>` }];
+}
 def Reussir_DBGFuncArg : ReussirAttr<"DBGFuncArg", "dbg_func_arg"> {
   let description = "Debug function argument attribute";
   let parameters = (ins

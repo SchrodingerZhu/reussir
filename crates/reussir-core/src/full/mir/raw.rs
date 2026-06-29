@@ -50,10 +50,12 @@ pub enum RecordBody {
     Variant(Vec<Variant>),
 }
 
-/// One compound field: its ground type, and whether it is a mutable `[field]`
-/// link (only regional records carry these).
+/// One compound field: its ground type, whether it is a mutable `[field]` link
+/// (only regional records carry these), and its source name (`None` for a tuple
+/// field).
 #[derive(Clone, Debug)]
 pub struct Member {
+    pub name: Option<String>,
     pub is_field: bool,
     pub ty: Ty,
 }

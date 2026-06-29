@@ -172,6 +172,10 @@ pub fn run_lowering_pipeline(
         module: sys::reussirCreateBasicOpsLoweringPass();
         module: sys::reussirCreateConvertToLLVMPass();
         module: sys::reussirCreateReconcileUnrealizedCastsPass();
+        // Convert fused Reussir debug-info attributes to LLVM DI now that
+        // functions are `llvm.func`; a function's DI only survives translation
+        // once its `llvm.func` carries a `DISubprogram`.
+        module: sys::reussirCreateDebugInfoConversionPass();
         module: sys::reussirCreateCSEPass();
         module: sys::reussirCreateCanonicalizerPass();
     );

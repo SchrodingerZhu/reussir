@@ -25,6 +25,7 @@
 namespace reussir {
 
 #define GEN_PASS_DECL_REUSSIRBASICOPSLOWERINGPASS
+#define GEN_PASS_DECL_REUSSIRDEBUGINFOCONVERSIONPASS
 #include "Reussir/Conversion/Passes.h.inc"
 
 void populateBasicOpsLoweringToLLVMConversionPatterns(

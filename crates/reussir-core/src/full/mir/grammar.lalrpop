@@ -33,9 +33,10 @@ RecordBody: (raw::Ty, raw::RecordBody) = {
     "enum" <t:Ty> "{" <vs:Comma<Variant>> "}" => (t, raw::RecordBody::Variant(vs)),
 };
 
-/// A compound field: an optional `field` marker (a mutable `[field]` link) and
-/// its ground type.
-Member: raw::Member = <f:"field"?> <t:Ty> => raw::Member { is_field: f.is_some(), ty: t };
+/// A compound field: an optional `name:` prefix (absent for a tuple field), an
+/// optional `field` marker (a mutable `[field]` link), and its ground type.
+Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
+    => raw::Member { name: n.map(|s| s.to_string()), is_field: f.is_some(), ty: t };
 
 /// An enum variant: its source name and ordered field types.
 Variant: raw::Variant =

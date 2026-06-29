@@ -17,10 +17,12 @@ reussir-backend = { path = "../reussir-backend" }
 rustc-hash.workspace = true
 tracing.workspace = true
 smallvec.workspace = true
+# Source line/column cache for resolving MIR byte spans to MLIR locations.
+ariadne.workspace = true
+# Resolves interned source names (`TokenKey`) for debug-info variable names.
+reussir-syntax = { path = "../reussir-syntax" }
 
 [dev-dependencies]
-# End-to-end tests: source → elaborate → monomorphize → lower → run.
-reussir-syntax = { path = "../reussir-syntax" }
 # JIT-execute the lowered module to check the compiled program's meaning.
 reussir-jit = { path = "../reussir-jit" }
 tracing-subscriber = "0.3.23"

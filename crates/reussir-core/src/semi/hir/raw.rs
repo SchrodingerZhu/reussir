@@ -65,9 +65,11 @@ pub enum RecordBody {
     Variant(Vec<Variant>),
 }
 
-/// One compound field: a `[field]`-mutability marker and its type.
+/// One compound field: an optional source name (absent for a tuple field), a
+/// `[field]`-mutability marker, and its type.
 #[derive(Clone, Debug)]
 pub struct Member {
+    pub name: Option<String>,
     pub is_field: bool,
     pub ty: Ty,
 }

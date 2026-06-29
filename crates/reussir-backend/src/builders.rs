@@ -11,9 +11,22 @@ use melior::Context;
 use melior::ir::attribute::{
     DenseI32ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
 };
-use melior::ir::operation::OperationBuilder;
+use melior::ir::operation::{OperationBuilder, OperationLike, OperationRef};
 use melior::ir::r#type::IntegerType;
 use melior::ir::{Identifier, Location, Operation, Type, Value};
+
+use reussir_backend_sys as sys;
+
+/// Set `operation`'s location after it has been built.
+///
+/// Used to attach a fused debug-info location (carrying a `DBGLocalVar`) to the
+/// op that defines a local variable; `mlir-sys` does not bind
+/// `mlirOperationSetLocation`, so this goes through the Reussir C API.
+pub fn set_location(operation: OperationRef<'_, '_>, location: Location<'_>) {
+    unsafe {
+        sys::reussirOperationSetLocation(operation.to_raw(), location.to_raw());
+    }
+}
 
 /// `arith.truncf %value : <from> to <result_type>`.
 ///

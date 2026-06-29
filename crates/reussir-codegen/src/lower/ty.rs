@@ -191,7 +191,11 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// `!reussir.ref<inner>` with unspecified capability — the form a spilled
     /// stack reference takes, used to acquire/drop an inline value in place.
     pub(super) fn unspecified_ref_type(&self, inner: Type<'c>) -> Type<'c> {
-        r#ref(inner, ReussirCapability::Unspecified, ReussirAtomicKind::Normal)
+        r#ref(
+            inner,
+            ReussirCapability::Unspecified,
+            ReussirAtomicKind::Normal,
+        )
     }
 }
 
