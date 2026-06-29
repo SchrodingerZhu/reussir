@@ -32,6 +32,7 @@ use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_f
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
 use reussir_core::surface::Visibility;
+use smallvec::SmallVec;
 
 use super::ty::{TypeCtx, is_unit, num_class};
 use super::{LoweringError, Result, err};
@@ -125,7 +126,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
         let region = Region::new();
         if let Some(body) = func.body {
-            let block_args: Vec<(Type<'c>, Location<'c>)> =
+            let block_args: SmallVec<[(Type<'c>, Location<'c>); 8]> =
                 param_tys.iter().map(|t| (*t, loc)).collect();
             let block = Block::new(&block_args);
             let mut env: Env<'c, '_> = FxHashMap::default();
@@ -315,7 +316,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let payload = self.append(block, builders::record_compound(&operands, payload_ty, loc));
         if self.tys.is_shared_record(e.ty) {
             let rc_ty = self.tys.rc_type(payload_ty);
-            Ok(self.append(block, builders::rc_create(self.context, payload, rc_ty, loc)))
+            Ok(self.append(
+                block,
+                builders::rc_create(self.context, payload, rc_ty, loc),
+            ))
         } else {
             Ok(payload)
         }
@@ -365,8 +369,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Cursor::Value { val, ty } if self.tys.is_shared_record(ty) => {
                 let inner = self.tys.record_inner_of(ty)?;
                 let ref_ty = self.tys.shared_ref_type(inner);
-                let borrowed =
-                    self.append(block, dialect::rc_borrow(self.context, ref_ty, val, loc).into());
+                let borrowed = self.append(
+                    block,
+                    dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
+                );
                 self.project_ref(block, borrowed, ty, idx)
             }
             // An inline record value: read the field out by value.

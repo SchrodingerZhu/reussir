@@ -116,6 +116,30 @@ fn runs_shared_record_construction_and_projection() {
 }
 
 #[test]
+fn runs_shared_record_deep_projection() {
+    // A single chained field access `o.inner.n` crosses two shared records in one
+    // projection: borrow the outer box, project + load the inner `rc` link, borrow
+    // *that*, project + load the scalar. Exercises the multi-step projection walk
+    // (path length > 1) and that the transient inner borrow is neither retained nor
+    // double-freed (the consumed outer box is released once).
+    let src = r#"
+        struct [shared] Inner { n: i64 }
+        struct [shared] Outer { inner: Inner }
+        fn mk_inner(n: i64) -> Inner { Inner { n: n } }
+        fn mk_outer(n: i64) -> Outer { Outer { inner: mk_inner(n) } }
+        fn deep(o: Outer) -> i64 { o.inner.n }
+        pub fn run(n: i64) -> i64 { deep(mk_outer(n)) }
+        extern "C" trampoline "deep_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("deep_ffi").expect("lookup deep_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(9), 9);
+        assert_eq!(f(-3), -3);
+    });
+}
+
+#[test]
 fn runs_shared_record_with_aliasing_and_release() {
     // Passing the same shared box to both parameters of `sum` aliases it, so the
     // ownership analysis inserts one `rc.inc` before the call; `sum` then releases

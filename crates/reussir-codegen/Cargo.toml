@@ -16,6 +16,7 @@ reussir-backend = { path = "../reussir-backend" }
 # The fast map for the per-function SSA environment.
 rustc-hash.workspace = true
 tracing.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 # End-to-end tests: source → elaborate → monomorphize → lower → run.

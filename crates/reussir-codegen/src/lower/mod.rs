@@ -183,6 +183,26 @@ mod tests {
     }
 
     #[test]
+    fn lowers_a_chained_projection_through_shared_records() {
+        // `o.inner.n` is a single projection with a two-element path crossing two
+        // shared records: borrow the outer box, project + load the inner `rc` link,
+        // borrow that, then project the scalar — so the walk emits two `rc.borrow`s.
+        let src = r#"
+            struct [shared] Inner { n: i64 }
+            struct [shared] Outer { inner: Inner }
+            pub fn deep(o: Outer) -> i64 { o.inner.n }
+        "#;
+        let mlir = lower_source(src);
+        assert_eq!(
+            mlir.matches("reussir.rc.borrow").count(),
+            2,
+            "expected two borrows for a two-level shared chain:\n{mlir}"
+        );
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+        assert!(mlir.contains("reussir.rc.dec"), "{mlir}");
+    }
+
+    #[test]
     fn lowers_a_recursive_shared_record() {
         // A `[shared]` record whose field is the record itself is finite — the
         // field is an `rc` pointer, not an inline copy. Lowering its type must
