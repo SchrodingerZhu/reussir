@@ -4,28 +4,33 @@
 //! so it resolves through a layout table ([`TypeCtx`]) keyed by its `(def, args)`
 //! identity — the ground layout `mono` baked into the MIR.
 //!
-//! Two record flavours lower, selected by the instance's declared capability:
+//! Three record flavours lower, selected by the instance's declared capability:
 //! * a **`[value]`** record is an inline aggregate — an identified
 //!   `!reussir.record<…>` held directly by value;
 //! * a **`[shared]`** record is heap-allocated and reference-counted — the same
 //!   identified record type wrapped in a `!reussir.rc<…>` pointer. A shared
 //!   record that appears as a field of another record is therefore stored as an
 //!   `rc` link, which falls out of lowering its field type here.
+//! * a **`[regional]`** record is also a boxed `rc` pointer, but region-allocated;
+//!   the box capability is read from the value's flexivity coloring — `flex`
+//!   while it is region-local and mutable, `rigid` once it has been frozen out of
+//!   its region. A mutable `[field]` link is stored by its bare element type (the
+//!   dialect derives the `!reussir.nullable<!reussir.rc<…>>` slot from the
+//!   `field` member flag), so a `Nullable<…>` value lowers to that nullable box.
 //!
 //! Both struct (`compound`) and enum (`variant`) records lower this way. An enum
 //! is an identified `!reussir.record<variant …>` whose members are the per-case
 //! payload compounds (`{enum}::{case}`); the variant carries a tag plus a payload
-//! area sized to the largest case. Regional records are still pending. This
-//! module also holds the numeric classification [`expr`](super::expr) uses to
-//! choose the right cast op.
+//! area sized to the largest case. This module also holds the numeric
+//! classification [`expr`](super::expr) uses to choose the right cast op.
 
 use std::cell::RefCell;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, rc, record_complete_in_place,
-    record_incomplete, record_is_complete, r#ref,
+    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, nullable, rc,
+    record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -34,7 +39,7 @@ use reussir_backend::melior::ir::r#type::IntegerType;
 
 use reussir_core::full::mir;
 use reussir_core::semi::ctxt::DefaultCap;
-use reussir_core::semi::ty::{DefId, FpTy, IntTy, Ty, TyKind};
+use reussir_core::semi::ty::{DefId, Flexivity, FpTy, IntTy, Ty, TyKind};
 
 use super::{LoweringError, Result, err};
 
@@ -102,11 +107,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             .is_some_and(|rec| rec.default_cap == DefaultCap::Regional)
     }
 
-    /// Lower a ground type to MLIR: records resolve through the layout table,
-    /// everything else is a scalar.
+    /// Lower a ground type to MLIR: records resolve through the layout table, a
+    /// nullable pointer wraps its (pointer-typed) element, and everything else is
+    /// a scalar.
     pub(super) fn mlir_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Record { .. } => self.record_type(ty),
+            // A `Nullable<T>` wraps its element's MLIR pointer type (an `rc` link
+            // for the regional/shared records that can sit behind a nullable
+            // `[field]` slot) so it may additionally hold null.
+            TyKind::Nullable(inner) => Ok(nullable(self.mlir_ty(inner)?)),
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -121,6 +131,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             TyKind::Record { .. } => self.record_inner_of(ty),
             _ => self.mlir_ty(ty),
         }
+    }
+
+    /// Lower a mutable `[field]` link member to its stored type. The member is
+    /// typed `Nullable<Record>` in the MIR, but the record stores the bare
+    /// element record type (under the `field` flag the dialect derives the
+    /// `nullable<rc<…>>` slot itself), so this strips the nullable wrapper and
+    /// names the link's element record.
+    fn field_member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let element = field_link_element(ty);
+        self.record_inner_of(element)
     }
 
     /// The payload compound type for variant `idx` of an enum-typed `ty` — the
@@ -151,7 +171,15 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         match rec.default_cap {
             DefaultCap::Value => Ok(inner),
             DefaultCap::Shared => Ok(self.rc_type(inner)),
-            DefaultCap::Regional => err("regional record lowering not yet implemented"),
+            // A regional record is also an `rc` box, but its capability is read
+            // from the value's flexivity coloring (the type carries it): a `flex`
+            // box is region-local and mutable, a `rigid` box has been frozen out
+            // of its region into a managed object.
+            DefaultCap::Regional => Ok(rc(
+                inner,
+                regional_capability(ty)?,
+                ReussirAtomicKind::Normal,
+            )),
         }
     }
 
@@ -206,7 +234,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                 let mut tys = Vec::with_capacity(members.len());
                 let mut is_field = Vec::with_capacity(members.len());
                 for m in members {
-                    tys.push(self.member_ty(m.ty)?);
+                    let member_ty = if m.is_field {
+                        self.field_member_ty(m.ty)?
+                    } else {
+                        self.member_ty(m.ty)?
+                    };
+                    tys.push(member_ty);
                     is_field.push(m.is_field);
                 }
                 (tys, is_field)
@@ -268,10 +301,35 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         rc(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
     }
 
-    /// `!reussir.ref<inner, shared>` — a borrowed reference into a shared value,
-    /// as produced by `reussir.rc.borrow` and `reussir.ref.project`.
-    pub(super) fn shared_ref_type(&self, inner: Type<'c>) -> Type<'c> {
-        r#ref(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
+    /// `!reussir.rc<inner, cap>` with the default (non-atomic) box layout — used
+    /// to build the `flex`/`rigid` box types of a regional record.
+    pub(super) fn rc_type_with_cap(&self, inner: Type<'c>, cap: ReussirCapability) -> Type<'c> {
+        rc(inner, cap, ReussirAtomicKind::Normal)
+    }
+
+    /// The `rc` capability a value of regional record type `ty` carries, read
+    /// from its flexivity coloring (see [`regional_capability`]).
+    pub(super) fn regional_capability(&self, ty: Ty<'tcx>) -> Result<ReussirCapability> {
+        regional_capability(ty)
+    }
+
+    /// `!reussir.region` — the arena-allocator handle a `regional` function or a
+    /// `region-run` body threads to its regional allocations.
+    pub(super) fn region_type(&self) -> Type<'c> {
+        region(self.context)
+    }
+
+    /// `!reussir.nullable<pointer>` — a nullable wrapper around a pointer type
+    /// (the `rc` link behind a mutable `[field]` slot).
+    pub(super) fn nullable_type(&self, pointer: Type<'c>) -> Type<'c> {
+        nullable(pointer)
+    }
+
+    /// `!reussir.ref<inner, cap>` at an explicit capability — the borrowed
+    /// reference into a regional value (`flex` while region-local and mutable,
+    /// `rigid` once frozen).
+    pub(super) fn ref_type_with_cap(&self, inner: Type<'c>, cap: ReussirCapability) -> Type<'c> {
+        r#ref(inner, cap, ReussirAtomicKind::Normal)
     }
 
     /// `!reussir.ref<inner>` with unspecified capability — the form a spilled
@@ -285,6 +343,22 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     }
 }
 
+/// The `rc` capability a value of regional record type `ty` carries, read from
+/// its flexivity coloring.
+///
+/// A `Flex` value is region-local and mutable; a `Rigid` value has been frozen
+/// out of its region into a managed (reference-counted) object. An as-yet
+/// unrefined `Regional` color is still region-local, so it lowers like `flex`;
+/// the `Irrelevant` color only ever tags a non-regional record, so reaching it
+/// here means a regional record was built without a coloring — a frozen managed
+/// object is the safe reading, so it lowers like `rigid`.
+fn regional_capability(ty: Ty<'_>) -> Result<ReussirCapability> {
+    match ty.flexivity() {
+        Some(Flexivity::Flex) | Some(Flexivity::Regional) => Ok(ReussirCapability::Flex),
+        Some(Flexivity::Rigid) | Some(Flexivity::Irrelevant) | None => Ok(ReussirCapability::Rigid),
+    }
+}
+
 /// Map a record's declared management to the MLIR record type's default member
 /// capability.
 fn capability(cap: DefaultCap) -> ReussirCapability {
@@ -292,6 +366,16 @@ fn capability(cap: DefaultCap) -> ReussirCapability {
         DefaultCap::Value => ReussirCapability::Value,
         DefaultCap::Shared => ReussirCapability::Shared,
         DefaultCap::Regional => ReussirCapability::Regional,
+    }
+}
+
+/// The element record a mutable `[field]` link points at. The link is typed
+/// `Nullable<Record>` in the MIR; this strips the nullable wrapper to name the
+/// pointee record (tolerating an already-bare record type).
+pub(super) fn field_link_element(ty: Ty<'_>) -> Ty<'_> {
+    match *ty.kind() {
+        TyKind::Nullable(inner) => inner,
+        _ => ty,
     }
 }
 

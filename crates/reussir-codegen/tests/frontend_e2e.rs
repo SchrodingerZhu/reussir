@@ -281,3 +281,51 @@ fn runs_iterative_helper_and_signed_arithmetic() {
         assert_eq!(signed_mix(6, -5), -18);
     });
 }
+
+#[test]
+fn runs_regional_record_construction_and_projection() {
+    // A `[regional]` record is region-allocated. The `regional` function `make`
+    // receives the region as an implicit parameter and builds a `flex` `Cell`
+    // into it (`rc.create … region`); the `region-run` scope in `run`
+    // establishes that region, runs the body, and reclaims the allocation on
+    // exit. Reading `c.v` borrows the box and projects the scalar field. Only the
+    // scalar crosses the trampoline.
+    let src = r#"
+        struct [regional] Cell { v: i64 }
+        regional fn make(x: i64) -> i64 { let c = Cell { v: x }; c.v }
+        pub fn run(n: i64) -> i64 { regional { make(n) } }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(5), 5);
+        assert_eq!(f(42), 42);
+        assert_eq!(f(-13), -13);
+    });
+}
+
+#[test]
+fn runs_regional_field_assignment() {
+    // A `[regional]` record with a mutable `[field]` link. Construction seeds the
+    // link with a null nullable; `c->next := Nullable::NonNull{c}` then borrows
+    // the `flex` box, projects the writable `field` slot, and stores a non-null
+    // link back to the node — a self-cycle the region reclaims en masse on exit.
+    // The scalar payload `c.v` is read back out and returned.
+    let src = r#"
+        struct [regional] Node { v: i64, next: [field] Node }
+        regional fn build(x: i64) -> i64 {
+            let c = Node { v: x, next: Nullable::Null };
+            c->next := Nullable::NonNull{c};
+            c.v
+        }
+        pub fn run(n: i64) -> i64 { regional { build(n) } }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(7), 7);
+        assert_eq!(f(-21), -21);
+    });
+}

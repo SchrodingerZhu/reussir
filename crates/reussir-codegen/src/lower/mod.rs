@@ -409,6 +409,91 @@ mod tests {
     }
 
     #[test]
+    fn lowers_regional_record_construction_and_projection() {
+        // A `[regional]` record is region-allocated and reference-counted with a
+        // `flex` (region-local, mutable) box. A `regional` function takes the
+        // region as an implicit `!reussir.region` parameter and allocates into it
+        // (`rc.create … region(%r)`); a `region-run` scope (`reussir.region.run`)
+        // establishes that region and freezes the result as it escapes. Reading a
+        // field borrows the box and projects through it.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> i64 { let c = Cell { v: x }; c.v }
+            pub fn run(n: i64) -> i64 { regional { make(n) } }
+        "#;
+        let mlir = lower_source(src);
+        // A regional function carries the implicit region parameter, and builds a
+        // `flex` box into it.
+        assert!(mlir.contains("!reussir.region"), "{mlir}");
+        assert!(mlir.contains("!reussir.rc<"), "{mlir}");
+        assert!(mlir.contains("flex"), "{mlir}");
+        assert!(mlir.contains("reussir.rc.create"), "{mlir}");
+        assert!(mlir.contains("region("), "{mlir}");
+        // The region scope, and the borrow/project/load read of `c.v`.
+        assert!(mlir.contains("reussir.region.run"), "{mlir}");
+        assert!(mlir.contains("reussir.region.yield"), "{mlir}");
+        assert!(mlir.contains("reussir.rc.borrow"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.load"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_regional_field_assignment() {
+        // A `[field]` link is a mutable, nullable slot. Construction supplies it a
+        // `reussir.nullable.create` value; `c->next := …` borrows the `flex` box,
+        // projects the writable `field`-capability slot, and stores the nullable
+        // pointer into it (`reussir.ref.store`). Here the link is made to point at
+        // the node itself, forming a cycle the region reclaims en masse.
+        let src = r#"
+            struct [regional] Node { v: i64, next: [field] Node }
+            regional fn build(x: i64) -> i64 {
+                let c = Node { v: x, next: Nullable::Null };
+                c->next := Nullable::NonNull{c};
+                c.v
+            }
+            pub fn run(n: i64) -> i64 { regional { build(n) } }
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.nullable.create"), "{mlir}");
+        assert!(mlir.contains("!reussir.nullable<"), "{mlir}");
+        // The mutable-link store: a `field`-capability reference written in place.
+        assert!(mlir.contains("reussir.ref.store"), "{mlir}");
+        assert!(mlir.contains("field"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_regional_record_through_the_pipeline() {
+        // The regional subset lowers all the way to the LLVM dialect: the token
+        // instantiation and region patterns passes turn `region.run` into an
+        // allocation scope, attach the box vtable, and freeze the flex result.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> i64 { let c = Cell { v: x }; c.v }
+            pub fn run(n: i64) -> i64 { regional { make(n) } }
+            extern "C" trampoline "run_ffi" = run;
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the regional module to LLVM");
+        });
+    }
+
+    #[test]
     fn lowers_and_runs_through_the_pipeline() {
         let src = r#"
             pub fn add3(a: i32, b: i32, c: i32) -> i32 { a + b + c }

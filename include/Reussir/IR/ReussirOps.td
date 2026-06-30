@@ -507,7 +507,10 @@ def ReussirRcCreateOp : ReussirRcOp<"create", [
   let extraClassDeclaration = [{
     bool needsVTable() {
       auto recordType = llvm::dyn_cast<RecordType>(getValue().getType());
-      return getRegion() && recordType && !isTriviallyCopyable(recordType);
+      // A region-allocated object always needs a vtable: the region reclaims
+      // every object it owns and reads the vtable for its layout (and any
+      // drop/scan) to do so, even when the payload is trivially copyable.
+      return getRegion() && recordType;
     }
   }];
 }
@@ -556,7 +559,10 @@ def ReussirRcCreateCompoundOp : ReussirRcOp<"create_compound", [
 
     bool needsVTable() {
       auto recordType = getRecordType();
-      return getRegion() && recordType && !isTriviallyCopyable(recordType);
+      // A region-allocated object always needs a vtable: the region reclaims
+      // every object it owns and reads the vtable for its layout (and any
+      // drop/scan) to do so, even when the payload is trivially copyable.
+      return getRegion() && recordType;
     }
   }];
 }
@@ -597,7 +603,10 @@ def ReussirRcCreateVariantOp : ReussirRcOp<"create_variant", [
 
     bool needsVTable() {
       auto recordType = getRecordType();
-      return getRegion() && recordType && !isTriviallyCopyable(recordType);
+      // A region-allocated object always needs a vtable: the region reclaims
+      // every object it owns and reads the vtable for its layout (and any
+      // drop/scan) to do so, even when the payload is trivially copyable.
+      return getRegion() && recordType;
     }
   }];
 }

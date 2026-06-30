@@ -16,6 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::builders;
 use reussir_backend::dialect;
+use reussir_backend::dialect::ty::ReussirCapability;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
@@ -37,7 +38,7 @@ use smallvec::SmallVec;
 
 use crate::source::SourceMap;
 
-use super::ty::{TypeCtx, is_unit, num_class};
+use super::ty::{TypeCtx, field_link_element, is_unit, num_class};
 use super::{LoweringError, Result, err};
 
 /// The variable → SSA-value environment for one block scope.
@@ -48,11 +49,29 @@ type Env<'c, 'b> = FxHashMap<VarId, Value<'c, 'b>>;
 /// next step can consult the record layout and pick the right op.
 enum Cursor<'c, 'b, 'tcx> {
     /// A loaded SSA value of record or scalar type `ty`. For a `[value]` record
-    /// this is the inline aggregate; for a `[shared]` record it is the `rc`
-    /// pointer.
+    /// this is the inline aggregate; for a `[shared]`/`[regional]` record it is
+    /// the `rc` pointer.
     Value { val: Value<'c, 'b>, ty: Ty<'tcx> },
-    /// A borrowed `!reussir.ref<…>` into a record whose MIR type is `ty`.
-    Ref { val: Value<'c, 'b>, ty: Ty<'tcx> },
+    /// A borrowed `!reussir.ref<…, cap>` into a record whose MIR type is `ty`.
+    /// `cap` is the reference's capability, carried so a further projection out
+    /// of it picks the matching projected-reference capability.
+    Ref {
+        val: Value<'c, 'b>,
+        ty: Ty<'tcx>,
+        cap: ReussirCapability,
+    },
+}
+
+/// How a single field projects out of a record reference: the field's MIR type,
+/// the projected reference's element type and capability, and whether the
+/// projection is a pointer link to load (an `rc`/nullable-`rc`) rather than an
+/// inline sub-field to keep navigating by reference. See
+/// [`projected_member`](Lowerer::projected_member).
+struct ProjectedMember<'c, 'tcx> {
+    field_ty: Ty<'tcx>,
+    elem_ty: Type<'c>,
+    proj_cap: ReussirCapability,
+    is_link: bool,
 }
 
 /// Per-program lowering state: the context to build in, the type arena, the
@@ -152,11 +171,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // body's source position; nested nodes refine it as they are walked.
         let loc = self.location(func.body.and_then(|b| b.span));
         self.cur_loc.replace(loc);
-        let param_tys = func
+        // A `regional` function takes the region it allocates into as an implicit
+        // leading `!reussir.region` parameter, ahead of its source parameters.
+        let user_param_tys = func
             .params
             .iter()
             .map(|p| self.tys.mlir_ty(p.ty))
             .collect::<Result<Vec<_>>>()?;
+        let mut param_tys = Vec::with_capacity(user_param_tys.len() + 1);
+        if func.is_regional {
+            param_tys.push(self.tys.region_type());
+        }
+        param_tys.extend_from_slice(&user_param_tys);
         let ret = func.return_ty;
         let result_tys = if is_unit(ret) {
             Vec::new()
@@ -176,14 +202,25 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 param_tys.iter().map(|t| (*t, loc)).collect();
             let block = Block::new(&block_args);
             let mut env: Env<'c, '_> = FxHashMap::default();
+            // The implicit region parameter (regional functions only) leads the
+            // block arguments and is not a source variable; it is threaded as the
+            // region rather than bound in `env`. Source parameters follow it.
+            let (region_handle, param_base) = if func.is_regional {
+                let arg = block
+                    .argument(0)
+                    .map_err(|e| LoweringError(format!("missing region argument: {e}").into()))?;
+                (Some(arg.into()), 1)
+            } else {
+                (None, 0)
+            };
             for (i, p) in func.params.iter().enumerate() {
                 let arg = block
-                    .argument(i)
+                    .argument(param_base + i)
                     .map_err(|e| LoweringError(format!("missing block argument: {e}").into()))?;
                 env.insert(p.var, arg.into());
                 self.bind_var_ty(p.var, p.ty);
             }
-            let value = self.expr(&block, &mut env, body)?;
+            let value = self.expr(&block, &mut env, region_handle, body)?;
             if is_unit(ret) {
                 block.append_operation(func::r#return(&[], loc));
             } else {
@@ -228,10 +265,17 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// ownership analysis placed at its anchor: the `before` ops first, then the
     /// node, then the `after` ops (which may reference the node's freshly-produced
     /// value, e.g. to increment a borrowed field or drop a discarded result).
+    ///
+    /// `region` is the SSA value of the enclosing region (the implicit first
+    /// parameter of a `regional` function, or a `region-run` body's region
+    /// argument), threaded down so that a regional record construction or a call
+    /// into a regional function — which may appear anywhere inside the scope —
+    /// can allocate into it. It is `None` outside any region.
     fn expr<'b>(
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         e: &Expr<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         // Attach this node's source position to every op it emits, restoring the
@@ -239,7 +283,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let prev = self.cur_loc.replace(self.location(e.span));
         let result = (|| {
             self.emit_rc_before(block, env, e.id)?;
-            let value = self.expr_inner(block, env, e)?;
+            let value = self.expr_inner(block, env, region, e)?;
             self.emit_rc_after(block, env, e.id, e.ty, value)?;
             Ok(value)
         })();
@@ -252,6 +296,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         e: &Expr<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         use ExprKind::*;
@@ -289,32 +334,43 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                         .ok_or_else(|| LoweringError(format!("unbound variable {v:?}").into()))
                 }
             }
-            Negate(x) => self.negate(block, env, x).map(Some),
-            Not(x) => self.not(block, env, x).map(Some),
-            Arith(l, op, r) => self.arith(block, env, l, *op, r, e.ty).map(Some),
-            Cmp(l, op, r) => self.cmp(block, env, l, *op, r).map(Some),
-            Cast(x, t) => self.cast(block, env, x, *t),
-            If(c, t, f) => self.lower_if(block, env, c, t, f, e.ty),
+            Negate(x) => self.negate(block, env, region, x).map(Some),
+            Not(x) => self.not(block, env, region, x).map(Some),
+            Arith(l, op, r) => self.arith(block, env, region, l, *op, r, e.ty).map(Some),
+            Cmp(l, op, r) => self.cmp(block, env, region, l, *op, r).map(Some),
+            Cast(x, t) => self.cast(block, env, region, x, *t),
+            If(c, t, f) => self.lower_if(block, env, region, c, t, f, e.ty),
             Seq(items) => {
                 let mut last = None;
                 for item in items.iter() {
-                    last = self.expr(block, env, item)?;
+                    last = self.expr(block, env, region, item)?;
                 }
                 Ok(last)
             }
             Let { var, name, value } => {
                 self.bind_var_ty(*var, value.ty);
-                if let Some(v) = self.expr(block, env, value)? {
+                if let Some(v) = self.expr(block, env, region, value)? {
                     self.tag_local(v, *name, value.ty);
                     env.insert(*var, v);
                 }
                 Ok(None)
             }
-            Call { callee, args, .. } => {
-                let mut operands = Vec::with_capacity(args.len());
+            Call {
+                callee,
+                args,
+                regional,
+            } => {
+                // A `regional` callee takes the enclosing region as an implicit
+                // leading argument; thread it ahead of the source arguments.
+                let mut operands = Vec::with_capacity(args.len() + usize::from(*regional));
+                if *regional {
+                    operands.push(region.ok_or_else(|| {
+                        LoweringError("regional call outside a region scope".into())
+                    })?);
+                }
                 for a in args.iter() {
                     operands.push(
-                        self.expr(block, env, a)?
+                        self.expr(block, env, region, a)?
                             .ok_or_else(|| LoweringError("call argument is unit".into()))?,
                     );
                 }
@@ -338,13 +394,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     Ok(Some(op.result(0).unwrap().into()))
                 }
             }
-            RegionRun(_) => err("region-run lowering not yet implemented"),
-            Proj(base, path) => self.proj(block, env, base, path).map(Some),
-            Assign(..) => err("assignment lowering not yet implemented"),
+            RegionRun(body) => self.region_run(block, env, body, e.ty),
+            Proj(base, path) => self.proj(block, env, region, base, path).map(Some),
+            Assign(dst, field, src) => {
+                self.assign(block, env, region, dst, *field, src)?;
+                Ok(None)
+            }
             Match(..) => err("match lowering not yet implemented"),
-            Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
-            Variant { variant, args, .. } => self.variant(block, env, e, *variant, args).map(Some),
-            NullableCall(_) => err("nullable lowering not yet implemented"),
+            Ctor { args, .. } => self.compound(block, env, region, e, args).map(Some),
+            Variant { variant, args, .. } => self
+                .variant(block, env, region, e, *variant, args)
+                .map(Some),
+            NullableCall(inner) => self.nullable_call(block, env, region, e, *inner).map(Some),
             Closure(_) | ClosureCall { .. } => err("closure lowering not yet implemented"),
             GlobalStr(_) => err("string literal lowering not yet implemented"),
             Poison => err("poison expression reached lowering"),
@@ -354,14 +415,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// Construct a record from its (declaration-ordered) field args.
     ///
     /// The fields are packed into the inline record payload with
-    /// `reussir.record.compound`. A `[value]` record stops there; a `[shared]`
-    /// record then boxes that payload into a fresh reference-counted pointer with
-    /// `reussir.rc.create` (the rc-create fusion pass folds the two into one
-    /// allocation later).
+    /// `reussir.record.compound`, which [`box_record`](Self::box_record) then
+    /// boxes according to the record's management — a `[value]` record stays
+    /// inline, a `[shared]` record is heap-boxed, and a `[regional]` record is
+    /// region-allocated.
     fn compound<'b>(
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         e: &Expr<'tcx>,
         args: &[Expr<'tcx>],
     ) -> Result<Value<'c, 'b>> {
@@ -370,20 +432,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let mut operands = Vec::with_capacity(args.len());
         for a in args.iter() {
             operands.push(
-                self.expr(block, env, a)?
+                self.expr(block, env, region, a)?
                     .ok_or_else(|| LoweringError("record field is unit".into()))?,
             );
         }
         let payload = self.append(block, builders::record_compound(&operands, payload_ty, loc));
-        if self.tys.is_shared_record(e.ty) {
-            let rc_ty = self.tys.rc_type(payload_ty);
-            Ok(self.append(
-                block,
-                builders::rc_create(self.context, payload, rc_ty, loc),
-            ))
-        } else {
-            Ok(payload)
-        }
+        self.box_record(block, region, e, payload, payload_ty)
     }
 
     /// Construct an enum value: select a case by tag and supply its payload.
@@ -391,14 +445,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// The case's fields are packed into the `{enum}::{case}` payload compound
     /// with `reussir.record.compound` (an empty compound for a fieldless case),
     /// which `reussir.record.variant [tag]` then tags into the enum's variant
-    /// record. A `[value]` enum stops there; a `[shared]` enum boxes the tagged
-    /// value with `reussir.rc.create` (the rc-create fusion pass folds the
+    /// record. [`box_record`](Self::box_record) then boxes the tagged value per
+    /// the enum's management (the rc-create fusion pass later folds the
     /// `record.compound` + `record.variant` + `rc.create` chain into a single
-    /// `reussir.rc.create_variant` allocation later).
+    /// `reussir.rc.create_variant` allocation).
     fn variant<'b>(
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         e: &Expr<'tcx>,
         variant: usize,
         args: &[Expr<'tcx>],
@@ -409,7 +464,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let mut operands = Vec::with_capacity(args.len());
         for a in args.iter() {
             operands.push(
-                self.expr(block, env, a)?
+                self.expr(block, env, region, a)?
                     .ok_or_else(|| LoweringError("variant field is unit".into()))?,
             );
         }
@@ -418,12 +473,166 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             block,
             builders::record_variant(self.context, variant, payload, variant_ty, loc),
         );
+        self.box_record(block, region, e, tagged, variant_ty)
+    }
+
+    /// Box a freshly-built record payload according to the record's management.
+    ///
+    /// A `[value]` record is held inline (the payload is the value). A `[shared]`
+    /// record is heap-boxed into a fresh `!reussir.rc<…, shared>` with
+    /// `reussir.rc.create`. A `[regional]` record is region-allocated: it is
+    /// boxed into a `flex` `rc` pointer with `reussir.rc.create … region(%r)`,
+    /// which both makes its fields mutable and ties its lifetime to the enclosing
+    /// region (the region patterns pass freezes it to `rigid` where it escapes).
+    fn box_record<'b>(
+        &self,
+        block: &'b Block<'c>,
+        region: Option<Value<'c, 'b>>,
+        e: &Expr<'tcx>,
+        payload: Value<'c, 'b>,
+        inner_ty: Type<'c>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
         if self.tys.is_shared_record(e.ty) {
-            let rc_ty = self.tys.rc_type(variant_ty);
-            Ok(self.append(block, builders::rc_create(self.context, tagged, rc_ty, loc)))
+            let rc_ty = self.tys.rc_type(inner_ty);
+            Ok(self.append(
+                block,
+                builders::rc_create(self.context, payload, rc_ty, loc),
+            ))
+        } else if self.tys.is_regional_record(e.ty) {
+            // A regional record is constructed region-local, so its box is always
+            // `flex`; the frozen `rigid` form only arises later, at region exit.
+            let cap = self.tys.regional_capability(e.ty)?;
+            if cap != ReussirCapability::Flex {
+                return err("a regional record is constructed flex, but its type is not flex");
+            }
+            let region = region.ok_or_else(|| {
+                LoweringError("regional record constructed outside a region scope".into())
+            })?;
+            let rc_ty = self.tys.rc_type_with_cap(inner_ty, cap);
+            Ok(self.append(
+                block,
+                builders::rc_create_in_region(self.context, payload, region, rc_ty, loc),
+            ))
         } else {
-            Ok(tagged)
+            Ok(payload)
         }
+    }
+
+    /// Lower a `region-run` scope to `reussir.region.run`.
+    ///
+    /// The body lowers into a fresh region whose entry block takes the arena
+    /// handle (`!reussir.region`) as its single argument; that handle is threaded
+    /// as the region for the body, so regional constructions inside allocate into
+    /// it. The body terminates with `reussir.region.yield`, carrying its result
+    /// out — a `flex` (region-local) result is frozen to `rigid` as it escapes
+    /// (the region patterns pass inserts the freeze).
+    fn region_run<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        body: &Expr<'tcx>,
+        ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let unit = is_unit(ty);
+        let result_ty = if unit {
+            None
+        } else {
+            Some(self.tys.mlir_ty(ty)?)
+        };
+        let region_ty = self.tys.region_type();
+        let body_block = Block::new(&[(region_ty, loc)]);
+        let region_arg: Value<'c, '_> = body_block
+            .argument(0)
+            .map_err(|e| LoweringError(format!("missing region argument: {e}").into()))?
+            .into();
+        // The body sees the enclosing locals plus the region handle; bindings it
+        // makes stay local to the region block (see [`branch_region`]).
+        let mut child: Env<'c, '_> = FxHashMap::default();
+        for (k, v) in env.iter() {
+            child.insert(*k, *v);
+        }
+        let value = self.expr(&body_block, &mut child, Some(region_arg), body)?;
+        if unit {
+            body_block.append_operation(builders::region_yield(None, loc));
+        } else {
+            let v = value.ok_or_else(|| LoweringError("region body produced no value".into()))?;
+            body_block.append_operation(builders::region_yield(Some(v), loc));
+        }
+        let body_region = Region::new();
+        body_region.append_block(body_block);
+        let op = block.append_operation(builders::region_run(result_ty, body_region, loc));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Lower a `dst->field := src` assignment into a mutable `[field]` link.
+    ///
+    /// Mutation is only legal on a region-local `flex` regional record, so the
+    /// destination is borrowed at `flex` capability, the `[field]` slot is
+    /// projected out to a writable `field`-capability reference, and the source
+    /// (a `nullable<rc<…>>` value) is stored into it.
+    fn assign<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
+        dst: &Expr<'tcx>,
+        field: u32,
+        src: &Expr<'tcx>,
+    ) -> Result<()> {
+        let loc = self.loc();
+        let dst_val = self
+            .expr(block, env, region, dst)?
+            .ok_or_else(|| LoweringError("assignment target is unit".into()))?;
+        if self.tys.regional_capability(dst.ty)? != ReussirCapability::Flex {
+            return err("assignment target is not a mutable (flex) regional record");
+        }
+        let inner = self.tys.record_inner_of(dst.ty)?;
+        let ref_ty = self.tys.ref_type_with_cap(inner, ReussirCapability::Flex);
+        let borrowed = self.append(
+            block,
+            dialect::rc_borrow(self.context, ref_ty, dst_val, loc).into(),
+        );
+        let proj = self.projected_member(dst.ty, ReussirCapability::Flex, field)?;
+        let field_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
+        let index = IntegerAttribute::new(Type::index(self.context), i64::from(field));
+        let field_ref = self.append(
+            block,
+            dialect::ref_project(self.context, field_ref_ty, borrowed, index, loc).into(),
+        );
+        let src_val = self
+            .expr(block, env, region, src)?
+            .ok_or_else(|| LoweringError("assignment source is unit".into()))?;
+        block.append_operation(dialect::ref_store(self.context, field_ref, src_val, loc).into());
+        Ok(())
+    }
+
+    /// Lower a nullable constructor (`Nullable::NonNull{e}` or `Nullable::Null`)
+    /// to `reussir.nullable.create`, wrapping the pointer value (or building the
+    /// null pointer when there is no inner expression).
+    fn nullable_call<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
+        e: &Expr<'tcx>,
+        inner: Option<&'tcx Expr<'tcx>>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let result_ty = self.tys.mlir_ty(e.ty)?;
+        let value = match inner {
+            Some(x) => Some(
+                self.expr(block, env, region, x)?
+                    .ok_or_else(|| LoweringError("nullable payload is unit".into()))?,
+            ),
+            None => None,
+        };
+        Ok(self.append(block, builders::nullable_create(value, result_ty, loc)))
     }
 
     /// Project a chain of fields out of a record value.
@@ -440,11 +649,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         base: &Expr<'tcx>,
         path: &[u32],
     ) -> Result<Value<'c, 'b>> {
         let base_val = self
-            .expr(block, env, base)?
+            .expr(block, env, region, base)?
             .ok_or_else(|| LoweringError("projection base is unit".into()))?;
         let mut cursor = Cursor::Value {
             val: base_val,
@@ -465,18 +675,20 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
         match cursor {
-            // A shared record value is an rc pointer: borrow it to obtain a
-            // reference, then project through that reference.
-            Cursor::Value { val, ty } if self.tys.is_shared_record(ty) => {
+            // A boxed record value (shared or regional) is an rc pointer: borrow
+            // it at its capability to obtain a reference, then project through
+            // that reference.
+            Cursor::Value { val, ty } if self.record_ref_cap(ty)?.is_some() => {
+                let cap = self.record_ref_cap(ty)?.expect("just checked");
                 let inner = self.tys.record_inner_of(ty)?;
-                let ref_ty = self.tys.shared_ref_type(inner);
+                let ref_ty = self.tys.ref_type_with_cap(inner, cap);
                 let borrowed = self.append(
                     block,
                     dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
                 );
-                self.project_ref(block, borrowed, ty, idx)
+                self.project_ref(block, borrowed, ty, cap, idx)
             }
-            // An inline record value: read the field out by value.
+            // An inline `[value]` record value: read the field out by value.
             Cursor::Value { val, ty } => {
                 let (field_ty, _) = self.field_at(ty, idx)?;
                 let field_mlir = self.tys.mlir_ty(field_ty)?;
@@ -489,49 +701,133 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     ty: field_ty,
                 })
             }
-            Cursor::Ref { val, ty } => self.project_ref(block, val, ty, idx),
+            Cursor::Ref { val, ty, cap } => self.project_ref(block, val, ty, cap, idx),
         }
     }
 
-    /// Project field `idx` out of a reference into a record. A shared field is an
-    /// rc link stored inline, so it is loaded to a pointer value (ready to be
-    /// re-borrowed or returned); any other field stays a reference until the walk
-    /// finishes.
+    /// Project field `idx` out of a reference (`ref<record_ty, ref_cap>`) into a
+    /// record. A field stored as a pointer link — a `[shared]`/`[regional]`
+    /// record member or a mutable `[field]` link — is loaded to its (rc or
+    /// nullable-rc) value, ready to be re-borrowed or returned; an inline field
+    /// stays a reference until the walk finishes.
     fn project_ref<'b>(
         &self,
         block: &'b Block<'c>,
         reference: Value<'c, 'b>,
         record_ty: Ty<'tcx>,
+        ref_cap: ReussirCapability,
         idx: u32,
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
-        let (field_ty, shared) = self.field_at(record_ty, idx)?;
-        let field_mlir = self.tys.mlir_ty(field_ty)?;
-        let proj_ref_ty = self.tys.shared_ref_type(field_mlir);
+        let proj = self.projected_member(record_ty, ref_cap, idx)?;
+        let proj_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
         let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
         let projected = self.append(
             block,
             dialect::ref_project(self.context, proj_ref_ty, reference, index, loc).into(),
         );
-        if shared {
+        if proj.is_link {
             let loaded = self.append(
                 block,
-                dialect::ref_load(self.context, field_mlir, projected, loc).into(),
+                dialect::ref_load(self.context, proj.elem_ty, projected, loc).into(),
             );
             Ok(Cursor::Value {
                 val: loaded,
-                ty: field_ty,
+                ty: proj.field_ty,
             })
         } else {
             Ok(Cursor::Ref {
                 val: projected,
-                ty: field_ty,
+                ty: proj.field_ty,
+                cap: proj.proj_cap,
             })
         }
     }
 
-    /// The type of field `idx` of a compound record, and whether it is a shared
-    /// (rc-link) field.
+    /// The capability to borrow a record-typed value at, or `None` for an inline
+    /// `[value]` record (or a non-record type) that is held by value rather than
+    /// behind an `rc` pointer.
+    fn record_ref_cap(&self, ty: Ty<'tcx>) -> Result<Option<ReussirCapability>> {
+        if self.tys.is_shared_record(ty) {
+            Ok(Some(ReussirCapability::Shared))
+        } else if self.tys.is_regional_record(ty) {
+            Ok(Some(self.tys.regional_capability(ty)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// How field `idx` of `record_ty` projects out of a `ref<…, ref_cap>`: its
+    /// MIR type, the projected reference's element type and capability, and
+    /// whether that projection is a pointer link to load (an `rc`/nullable-rc) or
+    /// an inline sub-field to keep navigating by reference.
+    ///
+    /// This mirrors the dialect's member-projection rule: a `[field]` link
+    /// projects to a `nullable<rc<…>>` slot (its reference becomes a writable
+    /// `field` capability when taken out of a `flex` parent, else read-only); a
+    /// `[shared]`/`[regional]` record member projects to an `rc` link; anything
+    /// else projects to its own type, inline.
+    fn projected_member(
+        &self,
+        record_ty: Ty<'tcx>,
+        ref_cap: ReussirCapability,
+        idx: u32,
+    ) -> Result<ProjectedMember<'c, 'tcx>> {
+        let (field_ty, is_field) = self.field_at(record_ty, idx)?;
+        if is_field {
+            // A mutable link: `nullable<rc<inner, flex|rigid>>`. Taken out of a
+            // `flex` parent the slot is itself writable (`field` capability);
+            // out of a `rigid` (frozen) parent it is read-only. The MIR types the
+            // member `Nullable<Record>`, so name the link's element record.
+            let inner = self.tys.record_inner_of(field_link_element(field_ty))?;
+            let link_cap = if ref_cap == ReussirCapability::Flex {
+                ReussirCapability::Flex
+            } else {
+                ReussirCapability::Rigid
+            };
+            let elem_ty = self
+                .tys
+                .nullable_type(self.tys.rc_type_with_cap(inner, link_cap));
+            let proj_cap = if ref_cap == ReussirCapability::Flex {
+                ReussirCapability::Field
+            } else {
+                ref_cap
+            };
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty,
+                proj_cap,
+                is_link: true,
+            })
+        } else if self.tys.is_shared_record(field_ty) {
+            let inner = self.tys.record_inner_of(field_ty)?;
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.rc_type(inner),
+                proj_cap: ref_cap,
+                is_link: true,
+            })
+        } else if self.tys.is_regional_record(field_ty) {
+            // A non-`[field]` regional member is an already-frozen (`rigid`) link.
+            let inner = self.tys.record_inner_of(field_ty)?;
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.rc_type_with_cap(inner, ReussirCapability::Rigid),
+                proj_cap: ref_cap,
+                is_link: true,
+            })
+        } else {
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.mlir_ty(field_ty)?,
+                proj_cap: ref_cap,
+                is_link: false,
+            })
+        }
+    }
+
+    /// The MIR type of field `idx` of a compound record, and whether it is a
+    /// mutable `[field]` link.
     fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<(Ty<'tcx>, bool)> {
         let rec = self
             .tys
@@ -544,10 +840,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let field = members
             .get(idx as usize)
             .ok_or_else(|| LoweringError(format!("field index {idx} out of range").into()))?;
-        if field.is_field {
-            return err("projection of a regional field link not yet implemented");
-        }
-        Ok((field.ty, self.tys.is_shared_record(field.ty)))
+        Ok((field.ty, field.is_field))
     }
 
     /// Materialize a [`Cursor`] as a loaded SSA value, loading through a trailing
@@ -559,7 +852,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Value<'c, 'b>> {
         match cursor {
             Cursor::Value { val, .. } => Ok(val),
-            Cursor::Ref { val, ty } => {
+            Cursor::Ref { val, ty, .. } => {
                 let inner = self.tys.mlir_ty(ty)?;
                 Ok(self.append(
                     block,
@@ -705,11 +998,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         x: &Expr<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
         let xv = self
-            .expr(block, env, x)?
+            .expr(block, env, region, x)?
             .ok_or_else(|| LoweringError("negate on unit".into()))?;
         match x.ty.kind() {
             TyKind::Fp(_) => Ok(self.append(block, arith::negf(xv, loc))),
@@ -729,11 +1023,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         x: &Expr<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
         let xv = self
-            .expr(block, env, x)?
+            .expr(block, env, region, x)?
             .ok_or_else(|| LoweringError("not on unit".into()))?;
         let i1 = IntegerType::new(self.context, 1).into();
         let one = self.append(
@@ -748,6 +1043,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         l: &Expr<'tcx>,
         op: ArithOp,
         r: &Expr<'tcx>,
@@ -755,10 +1051,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
         let lv = self
-            .expr(block, env, l)?
+            .expr(block, env, region, l)?
             .ok_or_else(|| LoweringError("arith operand is unit".into()))?;
         let rv = self
-            .expr(block, env, r)?
+            .expr(block, env, region, r)?
             .ok_or_else(|| LoweringError("arith operand is unit".into()))?;
         let signed = matches!(ty.kind(), TyKind::Int(IntTy::Signed(_)));
         let float = matches!(ty.kind(), TyKind::Fp(_));
@@ -785,6 +1081,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         l: &Expr<'tcx>,
         op: CmpOp,
         r: &Expr<'tcx>,
@@ -792,10 +1089,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let loc = self.loc();
         let operand_ty = l.ty;
         let lv = self
-            .expr(block, env, l)?
+            .expr(block, env, region, l)?
             .ok_or_else(|| LoweringError("cmp operand is unit".into()))?;
         let rv = self
-            .expr(block, env, r)?
+            .expr(block, env, region, r)?
             .ok_or_else(|| LoweringError("cmp operand is unit".into()))?;
         let signed = matches!(operand_ty.kind(), TyKind::Int(IntTy::Signed(_)));
         let float = matches!(operand_ty.kind(), TyKind::Fp(_));
@@ -834,12 +1131,13 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         x: &Expr<'tcx>,
         to: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         let loc = self.loc();
         let xv = self
-            .expr(block, env, x)?
+            .expr(block, env, region, x)?
             .ok_or_else(|| LoweringError("cast operand is unit".into()))?;
         let src = num_class(x.ty)?;
         let dst = num_class(to)?;
@@ -888,6 +1186,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &mut Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         c: &Expr<'tcx>,
         t: &Expr<'tcx>,
         f: &Expr<'tcx>,
@@ -895,15 +1194,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Option<Value<'c, 'b>>> {
         let loc = self.loc();
         let cv = self
-            .expr(block, env, c)?
+            .expr(block, env, region, c)?
             .ok_or_else(|| LoweringError("if condition is unit".into()))?;
         let result_tys = if is_unit(ty) {
             Vec::new()
         } else {
             vec![self.tys.mlir_ty(ty)?]
         };
-        let then_region = self.branch_region(env, t, ty)?;
-        let else_region = self.branch_region(env, f, ty)?;
+        let then_region = self.branch_region(env, region, t, ty)?;
+        let else_region = self.branch_region(env, region, f, ty)?;
         let op = block.append_operation(scf::r#if(cv, &result_tys, then_region, else_region, loc));
         if is_unit(ty) {
             Ok(None)
@@ -918,6 +1217,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn branch_region<'b>(
         &self,
         env: &Env<'c, 'b>,
+        region: Option<Value<'c, 'b>>,
         e: &Expr<'tcx>,
         ty: Ty<'tcx>,
     ) -> Result<Region<'c>> {
@@ -929,7 +1229,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         for (k, v) in env {
             child.insert(*k, *v);
         }
-        let value = self.expr(&block, &mut child, e)?;
+        let value = self.expr(&block, &mut child, region, e)?;
         if is_unit(ty) {
             block.append_operation(scf::r#yield(&[], loc));
         } else {
