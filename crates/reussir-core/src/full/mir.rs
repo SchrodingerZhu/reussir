@@ -122,11 +122,15 @@ pub struct Member<'tcx> {
     pub name: Option<Symbol>,
 }
 
-/// One enum variant: its source name (interned in the program's symbol table)
-/// and ordered field types.
+/// One enum variant: its source name, the mangled symbol of its payload record
+/// (the enum path with the variant nested as a final segment — see
+/// [`crate::full::mangle::Mangler::mangle_variant`]), and ordered field types.
+/// The payload symbol is carried so a program rebuilt from textual MIR names the
+/// per-case record identically without re-running the mangler.
 #[derive(Clone, Copy, Debug)]
 pub struct VariantDef<'tcx> {
     pub name: Symbol,
+    pub symbol: Symbol,
     pub fields: &'tcx [Ty<'tcx>],
 }
 

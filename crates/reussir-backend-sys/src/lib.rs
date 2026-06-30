@@ -146,6 +146,11 @@ unsafe extern "C" {
         data_layout: *const c_char,
     ) -> LLVMModuleRef;
 
+    /// Rewrites the `{ tag, payload-union }` debug type emitted for each enum
+    /// into a real DWARF `DW_TAG_variant_part`, so a debugger shows only the
+    /// active case. Operates in place; a no-op when `module` has no debug info.
+    pub fn reussirFixupVariantDebugInfo(module: LLVMModuleRef);
+
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
 

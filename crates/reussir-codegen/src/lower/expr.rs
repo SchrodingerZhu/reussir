@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::builders;
 use reussir_backend::dialect;
@@ -83,6 +83,11 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     /// expression's span by [`expr`](Self::expr) (saved and restored around each
     /// node), so every op a node emits shares that node's source position.
     cur_loc: RefCell<Location<'c>>,
+    /// Record symbols whose debug composite is currently being built — the
+    /// recursion guard for [`debug`](super::debug). A type that reaches itself
+    /// (directly or through a boxed field) is emitted as a memberless
+    /// forward-declared composite instead of expanding forever.
+    pub(super) dbg_building: RefCell<FxHashSet<mir::Symbol>>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
@@ -104,6 +109,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             ownership: RefCell::new(OwnershipTable::default()),
             var_tys: RefCell::new(FxHashMap::default()),
             cur_loc: RefCell::new(Location::unknown(context)),
+            dbg_building: RefCell::new(FxHashSet::default()),
         }
     }
 
@@ -337,7 +343,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Assign(..) => err("assignment lowering not yet implemented"),
             Match(..) => err("match lowering not yet implemented"),
             Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
-            Variant { .. } | NullableCall(_) => err("enum/nullable lowering not yet implemented"),
+            Variant { variant, args, .. } => self.variant(block, env, e, *variant, args).map(Some),
+            NullableCall(_) => err("nullable lowering not yet implemented"),
             Closure(_) | ClosureCall { .. } => err("closure lowering not yet implemented"),
             GlobalStr(_) => err("string literal lowering not yet implemented"),
             Poison => err("poison expression reached lowering"),
@@ -376,6 +383,46 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             ))
         } else {
             Ok(payload)
+        }
+    }
+
+    /// Construct an enum value: select a case by tag and supply its payload.
+    ///
+    /// The case's fields are packed into the `{enum}::{case}` payload compound
+    /// with `reussir.record.compound` (an empty compound for a fieldless case),
+    /// which `reussir.record.variant [tag]` then tags into the enum's variant
+    /// record. A `[value]` enum stops there; a `[shared]` enum boxes the tagged
+    /// value with `reussir.rc.create` (the rc-create fusion pass folds the
+    /// `record.compound` + `record.variant` + `rc.create` chain into a single
+    /// `reussir.rc.create_variant` allocation later).
+    fn variant<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        e: &Expr<'tcx>,
+        variant: usize,
+        args: &[Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let variant_ty = self.tys.record_inner_of(e.ty)?;
+        let payload_ty = self.tys.variant_payload_of(e.ty, variant)?;
+        let mut operands = Vec::with_capacity(args.len());
+        for a in args.iter() {
+            operands.push(
+                self.expr(block, env, a)?
+                    .ok_or_else(|| LoweringError("variant field is unit".into()))?,
+            );
+        }
+        let payload = self.append(block, builders::record_compound(&operands, payload_ty, loc));
+        let tagged = self.append(
+            block,
+            builders::record_variant(self.context, variant, payload, variant_ty, loc),
+        );
+        if self.tys.is_shared_record(e.ty) {
+            let rc_ty = self.tys.rc_type(variant_ty);
+            Ok(self.append(block, builders::rc_create(self.context, tagged, rc_ty, loc)))
+        } else {
+            Ok(tagged)
         }
     }
 

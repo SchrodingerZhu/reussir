@@ -82,6 +82,12 @@ LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
                                            LLVMContextRef context,
                                            const char *dataLayout);
 
+// Rewrites the `{ tag, payload-union }` debug type emitted for each enum into a
+// real DWARF `DW_TAG_variant_part`, so a debugger shows only the active case.
+// Operates in place on the (already debug-info-bearing) LLVM module; a no-op
+// when there is no debug info.
+void reussirFixupVariantDebugInfo(LLVMModuleRef module);
+
 // Reports whether TPDE support was compiled into the backend.
 int reussirHasTPDE(void);
 

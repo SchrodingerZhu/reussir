@@ -211,6 +211,50 @@ mod tests {
     }
 
     #[test]
+    fn emits_debug_info_for_variants() {
+        use reussir_backend::melior::ir::operation::OperationPrintingFlags;
+        // A `[value]` enum (inline tagged union) and a managed (`[shared]`) enum
+        // (a boxed variant). Each enum-typed parameter gets a variant debug type;
+        // the shared one is additionally a boxed type. Case names ride along as
+        // member names.
+        let src = r#"
+            enum [value] Tag { A, B(i64) }
+            enum List { Nil, Cons(i64, List) }
+            fn use_tag(t: Tag) -> i64 { 0 }
+            fn use_list(l: List) -> i64 { 0 }
+            pub fn entry(n: i64) -> i64 { use_tag(Tag::B{n}) + use_list(List::Nil) }
+            extern "C" trampoline "entry" = entry;
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let path = std::path::Path::new("variant.rr");
+            let map = crate::source::SourceMap::new(path, src);
+            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
+                .expect("lowering succeeds");
+            let printed = module
+                .as_operation()
+                .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
+                .expect("print with debug info");
+            // A variant debug type is emitted, and the shared variant is boxed.
+            assert!(printed.contains("dbg_recordtype"), "{printed}");
+            assert!(printed.contains("is_variant : true"), "{printed}");
+            assert!(printed.contains("dbg_boxedtype"), "{printed}");
+            // Case names ride along as the variant's member names.
+            assert!(printed.contains("\"A\""), "{printed}");
+            assert!(printed.contains("\"B\""), "{printed}");
+            assert!(printed.contains("\"Nil\""), "{printed}");
+            assert!(printed.contains("\"Cons\""), "{printed}");
+        });
+    }
+
+    #[test]
     fn lowers_fibonacci_to_verifiable_mlir() {
         let src = r#"
             pub fn fibonacci(n: u64) -> u64 {
@@ -319,6 +363,49 @@ mod tests {
         "#;
         let mlir = lower_source(src);
         assert!(mlir.contains("reussir.rc.dec"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_value_variant_construction() {
+        // A `[value]` enum is an inline tagged union. Each case's fields are packed
+        // into its `{enum}::{case}` payload compound with `record.compound`, which
+        // `record.variant [tag]` then tags into the variant record. A fieldless
+        // case builds an empty payload compound. No `rc` is involved.
+        let src = r#"
+            enum [value] Shape { Dot, Segment(i64, i64) }
+            pub fn dot() -> Shape { Shape::Dot }
+            pub fn segment(x: i64, y: i64) -> Shape { Shape::Segment{x, y} }
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("!reussir.record<variant"), "{mlir}");
+        assert!(mlir.contains("reussir.record.variant[0]"), "{mlir}");
+        assert!(mlir.contains("reussir.record.variant[1]"), "{mlir}");
+        assert!(mlir.contains("reussir.record.compound"), "{mlir}");
+        // No heap allocation for a by-value enum.
+        assert!(!mlir.contains("reussir.rc.create"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_shared_variant_construction() {
+        // A managed (default `[shared]`) enum boxes the tagged value: build the
+        // case payload, tag it with `record.variant`, then `rc.create` the box. The
+        // recursive `Cons` field is itself an `rc` link back to the enum, so the
+        // record type lowers finitely (the self-reference resolves to the
+        // in-progress handle).
+        let src = r#"
+            enum IntList { Nil, Cons(i64, IntList) }
+            pub fn one(x: i64) -> IntList { IntList::Cons{x, IntList::Nil} }
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("!reussir.record<variant"), "{mlir}");
+        assert!(mlir.contains("!reussir.rc<"), "{mlir}");
+        assert!(mlir.contains("reussir.record.variant[0]"), "{mlir}");
+        assert!(mlir.contains("reussir.record.variant[1]"), "{mlir}");
+        assert_eq!(
+            mlir.matches("reussir.rc.create").count(),
+            2,
+            "one box per constructed case (Nil and Cons):\n{mlir}"
+        );
     }
 
     #[test]

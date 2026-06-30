@@ -102,17 +102,12 @@ mlir::DataLayout getDataLayout(const mlir::LLVMTypeConverter &converter,
 
 template <typename Op>
 void addLifetimeOrInvariantOp(mlir::OpBuilder &rewriter, mlir::Location loc,
-                              mlir::Type type, mlir::Value value,
-                              const mlir::LLVMTypeConverter &converter,
-                              mlir::Operation *scopeOp) {
-#if LLVM_VERSION_MAJOR >= 22
-  // no size argument
+                              [[maybe_unused]] mlir::Type type,
+                              mlir::Value value,
+                              [[maybe_unused]] const mlir::LLVMTypeConverter &converter,
+                              [[maybe_unused]] mlir::Operation *scopeOp) {
+  // The lifetime/invariant intrinsics take no size argument.
   Op::create(rewriter, loc, value);
-#else
-  // size argument
-  size_t size = getDataLayout(converter, scopeOp).getTypeSize(type).getFixedValue();
-  Op::create(rewriter, loc, size, value);
-#endif
 }
 
 struct ReussirPanicConversionPattern

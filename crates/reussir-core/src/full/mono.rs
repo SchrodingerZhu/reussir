@@ -209,7 +209,14 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         // A record whose definition is missing (it failed to elaborate) gets an
         // empty value layout so lowering still has a well-formed instance.
         let (default_cap, layout) = match input.records.get(&def) {
-            Some(record) => resolve_layout(tcx, record, args, input.resolver, &mut driver.symbols),
+            Some(record) => resolve_layout(
+                tcx,
+                record,
+                args,
+                input.resolver,
+                &driver.mangler,
+                &mut driver.symbols,
+            ),
             None => (DefaultCap::Value, mir::RecordLayout::Compound(&[])),
         };
         records.push(mir::RecordInstance {
@@ -257,6 +264,7 @@ fn resolve_layout<'tcx>(
     record: &Record<'tcx>,
     args: &'tcx [Ty<'tcx>],
     resolver: &dyn Resolver<TokenKey>,
+    mangler: &Mangler<'_>,
     symbols: &mut Rodeo,
 ) -> (DefaultCap, mir::RecordLayout<'tcx>) {
     let mut subst = Subst::default();
@@ -292,8 +300,11 @@ fn resolve_layout<'tcx>(
                 .map(|v| {
                     let fields: Vec<Ty<'tcx>> =
                         v.fields.iter().map(|&t| subst_ty(tcx, t, &subst)).collect();
+                    let name = resolver.resolve(v.name);
+                    let symbol = mangler.mangle_variant(record.def, name, args);
                     mir::VariantDef {
-                        name: mir::Symbol(symbols.get_or_intern(resolver.resolve(v.name))),
+                        name: mir::Symbol(symbols.get_or_intern(name)),
+                        symbol: mir::Symbol(symbols.get_or_intern(&symbol)),
                         fields: tcx.intern_tys(&fields),
                     }
                 })

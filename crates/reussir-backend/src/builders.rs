@@ -125,6 +125,30 @@ pub fn rc_create<'c>(
         .expect("valid reussir.rc.create")
 }
 
+/// `reussir.record.variant [<tag>] (<payload> : <payload_type>) : <variant_type>`
+/// — wrap a case payload into a variant (enum) record value under its tag.
+///
+/// melior has no generated builder for the Reussir dialect, so the op is built
+/// raw; the `tag` selector is an `index`-typed `IndexAttr` and the result is the
+/// enum's variant record type. The payload is the `{enum}::{case}` compound
+/// produced by a preceding `reussir.record.compound`; the rc-create fusion pass
+/// later folds `variant` + `rc.create` into `reussir.rc.create_variant`.
+pub fn record_variant<'c>(
+    context: &'c Context,
+    tag: usize,
+    payload: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let tag_attr = IntegerAttribute::new(Type::index(context), tag as i64).into();
+    OperationBuilder::new("reussir.record.variant", location)
+        .add_operands(&[payload])
+        .add_attributes(&[(Identifier::new(context, "tag"), tag_attr)])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.record.variant")
+}
+
 /// `reussir.record.extract (<record> : <type>) [<index>] : <field_type>` —
 /// project a field out of a record value.
 ///

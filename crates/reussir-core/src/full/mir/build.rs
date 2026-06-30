@@ -124,6 +124,7 @@ impl<'tcx> Builder<'_, 'tcx> {
                         let fields: Vec<Ty<'tcx>> = v.fields.iter().map(|t| self.ty(t)).collect();
                         mir::VariantDef {
                             name: self.sym(&v.name),
+                            symbol: self.sym(&v.symbol),
                             fields: self.tcx.intern_tys(&fields),
                         }
                     })
@@ -535,11 +536,23 @@ mod tests {
     #[test]
     fn roundtrips_a_match() {
         // Exercises `match`, a ctor `switch scrut { #0 => {..} #1 => {..} }`,
-        // a pattern binding (`v1=scrut.0`), and a leaf body.
+        // a pattern binding (`v1=scrut.0`), and a leaf body. Each variant prints
+        // with its mangled payload symbol (`@_RNv… Name(..)`), which must re-parse.
         roundtrip(
             "enum Opt { None, Some(i32) } \
              pub fn unwrap(o: Opt) -> i32 { \
              match o { Opt::None => 0, Opt::Some(x) => x } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_a_generic_enum_construction() {
+        // A monomorphized generic enum: its instantiated variant payload symbols
+        // carry the type arguments on the record (`Opt<i32>::Some` →
+        // `_RNvI…lE…`), and the `@sym Name(..)` form must survive print → parse.
+        roundtrip(
+            "enum Opt<T> { None, Some(T) } \
+             pub fn wrap(x: i32) -> Opt<i32> { Opt::Some{x} }",
         );
     }
 

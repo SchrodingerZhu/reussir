@@ -60,9 +60,11 @@ pub struct Member {
     pub ty: Ty,
 }
 
-/// One enum variant: its source name and ordered field types.
+/// One enum variant: its mangled payload symbol, source name, and ordered field
+/// types.
 #[derive(Clone, Debug)]
 pub struct Variant {
+    pub symbol: String,
     pub name: String,
     pub fields: Vec<Ty>,
 }
