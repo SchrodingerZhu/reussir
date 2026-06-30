@@ -48,8 +48,12 @@ private:
       return existingVTable;
     mlir::OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(moduleOp.getBody());
-    mlir::FlatSymbolRefAttr dropOpRef = mlir::SymbolRefAttr::get(dropOp);
-    auto vtableOp = ReussirRegionVTableOp::create(builder, 
+    // A trivially-copyable record has no destructor: the vtable is still needed
+    // (for the object's size/alignment and scan program), but its drop pointer
+    // is left null, which the runtime skips.
+    mlir::FlatSymbolRefAttr dropOpRef =
+        dropOp ? mlir::SymbolRefAttr::get(dropOp) : mlir::FlatSymbolRefAttr{};
+    auto vtableOp = ReussirRegionVTableOp::create(builder,
         moduleOp.getLoc(), vtableName, type, dropOpRef);
     return vtableOp;
   }
@@ -65,8 +69,12 @@ public:
     mlir::Type elementType = op.getRcPtr().getType().getElementType();
     RecordType recordType = llvm::dyn_cast<RecordType>(elementType);
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
+    // A trivially-copyable record needs no destructor, so leave the vtable's
+    // drop pointer null rather than synthesizing a no-op dtor.
     mlir::func::FuncOp dropFunc =
-        createDtorIfNotExists(moduleOp, recordType, rewriter);
+        isTriviallyCopyable(recordType)
+            ? mlir::func::FuncOp{}
+            : createDtorIfNotExists(moduleOp, recordType, rewriter);
     ReussirRegionVTableOp vtableOp =
         createVTableIfNotExists(moduleOp, recordType, dropFunc, rewriter);
     mlir::FlatSymbolRefAttr vtableRef = mlir::SymbolRefAttr::get(vtableOp);
