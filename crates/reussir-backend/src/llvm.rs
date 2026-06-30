@@ -122,6 +122,10 @@ impl LlvmLowering {
         unsafe {
             let main = translate_to_llvm_ir(module, self.context)?;
             LLVMSetDataLayout(main, self.data_layout.as_ptr());
+            // Promote each enum's `{ tag, payload-union }` debug type to a real
+            // DWARF `DW_TAG_variant_part` now that we are at the LLVM-DI level,
+            // where the discriminator operand exists (MLIR's attribute has none).
+            sys::reussirFixupVariantDebugInfo(main as sys::LLVMModuleRef);
             // `LLVMLinkModules2` consumes (disposes) the source module, even on
             // failure — so null our handle either way to keep `Drop` correct.
             let gathered = std::mem::replace(&mut self.gathered, std::ptr::null_mut());

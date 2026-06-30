@@ -150,6 +150,10 @@ LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
   return llvm::wrap(result.release());
 }
 
+void reussirFixupVariantDebugInfo(LLVMModuleRef module) {
+  reussir::fixupVariantDebugInfo(*llvm::unwrap(module));
+}
+
 int reussirHasTPDE(void) {
 #ifdef REUSSIR_HAS_TPDE
   return 1;
