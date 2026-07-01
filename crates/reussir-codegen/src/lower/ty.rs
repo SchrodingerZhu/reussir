@@ -291,10 +291,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         region(self.context)
     }
 
-    /// `!reussir.ref<inner, shared>` — a borrowed reference into a shared value,
-    /// as produced by `reussir.rc.borrow` and `reussir.ref.project`.
-    pub(super) fn shared_ref_type(&self, inner: Type<'c>) -> Type<'c> {
-        r#ref(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
+    /// `!reussir.ref<inner, cap>` — a borrowed reference at an explicit
+    /// capability, as produced by `reussir.rc.borrow` and `reussir.ref.project`:
+    /// `shared` into a shared value, or `flex`/`rigid` into a regional one
+    /// (region-local and mutable, or frozen).
+    pub(super) fn ref_type_with_cap(&self, inner: Type<'c>, cap: ReussirCapability) -> Type<'c> {
+        r#ref(inner, cap, ReussirAtomicKind::Normal)
     }
 
     /// `!reussir.ref<inner>` with unspecified capability — the form a spilled

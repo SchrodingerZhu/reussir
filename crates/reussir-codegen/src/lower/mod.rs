@@ -24,12 +24,13 @@
 //!   placing the `dup`/`drop` reference-count ops (see [`expr`]);
 //! * **regional (`[regional]`) records** — construction of region-allocated
 //!   `flex` boxes (`reussir.rc.create … region`), `region-run` scopes
-//!   (`reussir.region.run`/`region.yield`), and calls into `regional` functions
-//!   (threading the implicit region handle).
+//!   (`reussir.region.run`/`region.yield`), calls into `regional` functions
+//!   (threading the implicit region handle), and projection of their scalar /
+//!   by-value / `[shared]` members (capability-aware borrow/project/load).
 //!
-//! Regional projection and mutation (`[field]` links, assignment), enums/`match`,
-//! closures, and strings are not yet lowered and surface as an explicit
-//! [`LoweringError`] rather than wrong code.
+//! Regional `[field]` links (projection and assignment), a non-`[field]` member
+//! that is itself a regional record, enums/`match`, closures, and strings are not
+//! yet lowered and surface as an explicit [`LoweringError`] rather than wrong code.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
 //! [`mir::Symbol`](reussir_core::full::mir::Symbol) (mono did the mangling), so
@@ -469,6 +470,25 @@ mod tests {
             )
             .expect("pipeline lowers the regional module to LLVM");
         });
+    }
+
+    #[test]
+    fn lowers_regional_record_field_projection() {
+        // Projecting a field out of a `flex` regional record borrows it at its
+        // `flex` capability (`rc.borrow`), navigates by reference
+        // (`reussir.ref.project`), and loads the scalar field (`reussir.ref.load`)
+        // — the result leaves the region as a plain `i64`, so nothing escapes.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            pub fn run(n: i64) -> i64 { regional { make(n).v } }
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.rc.borrow"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.load"), "{mlir}");
+        // The reference into the region-local record carries `flex` capability.
+        assert!(mlir.contains("ref<") && mlir.contains("flex"), "{mlir}");
     }
 
     #[test]
