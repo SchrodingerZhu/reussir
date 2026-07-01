@@ -13,8 +13,11 @@ name = "reussir_codegen"
 reussir-core = { path = "../reussir-core" }
 # The MLIR foundation: melior, the Reussir dialect ODS builders, and `context()`.
 reussir-backend = { path = "../reussir-backend" }
-# The fast map for the per-function SSA environment.
+# The fast hasher for compiler-internal maps.
 rustc-hash.workspace = true
+# Insertion-ordered map backing the per-function SSA environment, so a nested
+# scope recovers by truncating back to a saved length.
+indexmap.workspace = true
 tracing.workspace = true
 smallvec.workspace = true
 # Source line/column cache for resolving MIR byte spans to MLIR locations.
