@@ -27,6 +27,9 @@ blake3 = "1"
 rapidhash = "4.4.1"
 # Fast non-DoS-resistant hasher for interner/compiler-internal maps.
 rustc-hash = "2.1"
+# Insertion-ordered map; the lowering variable environment relies on its
+# stable ordering to recover a nested scope by truncating back to a mark.
+indexmap = "2.14"
 # Compressed (Roaring) bitmaps over u32; the sparse backend of the ownership
 # pass's small-set-optimized VarId live-sets (utils::bitset).
 roaring = "0.11.4"

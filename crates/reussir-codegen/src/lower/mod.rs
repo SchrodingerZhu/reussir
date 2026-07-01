@@ -21,10 +21,15 @@
 //!   `reussir.record.compound`, field projection via `reussir.record.extract`;
 //! * **shared (`[shared]`) records** — heap-allocated and reference-counted
 //!   (`reussir.rc.create`, borrow/project/load), with the ownership analysis
-//!   placing the `dup`/`drop` reference-count ops (see [`expr`]).
+//!   placing the `dup`/`drop` reference-count ops (see [`expr`]);
+//! * **regional (`[regional]`) records** — construction of region-allocated
+//!   `flex` boxes (`reussir.rc.create … region`), `region-run` scopes
+//!   (`reussir.region.run`/`region.yield`), and calls into `regional` functions
+//!   (threading the implicit region handle).
 //!
-//! Regional records, enums/`match`, closures, regions, and strings are not yet
-//! lowered and surface as an explicit [`LoweringError`] rather than wrong code.
+//! Regional projection and mutation (`[field]` links, assignment), enums/`match`,
+//! closures, and strings are not yet lowered and surface as an explicit
+//! [`LoweringError`] rather than wrong code.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
 //! [`mir::Symbol`](reussir_core::full::mir::Symbol) (mono did the mangling), so
@@ -406,6 +411,64 @@ mod tests {
             2,
             "one box per constructed case (Nil and Cons):\n{mlir}"
         );
+    }
+
+    #[test]
+    fn lowers_regional_record_construction_and_region_run() {
+        // A `[regional]` record is region-allocated with a `flex` (region-local,
+        // mutable) box. A `regional` function takes the region it allocates into
+        // as an implicit `!reussir.region` parameter and builds into it
+        // (`rc.create … region`); a `region-run` scope (`reussir.region.run`)
+        // establishes that region and threads it into the regional call.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            pub fn run(n: i64) -> Cell { regional { make(n) } }
+        "#;
+        let mlir = lower_source(src);
+        // The regional function carries the implicit region parameter and builds
+        // a `flex` box into it.
+        assert!(mlir.contains("!reussir.region"), "{mlir}");
+        assert!(mlir.contains("!reussir.rc<"), "{mlir}");
+        assert!(mlir.contains("flex"), "{mlir}");
+        assert!(mlir.contains("reussir.rc.create"), "{mlir}");
+        assert!(mlir.contains("region("), "{mlir}");
+        // The value escapes the region, so `run` yields it as a `rigid` box.
+        assert!(mlir.contains("rigid"), "{mlir}");
+        // The region scope and its terminator.
+        assert!(mlir.contains("reussir.region.run"), "{mlir}");
+        assert!(mlir.contains("reussir.region.yield"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_regional_record_through_the_pipeline() {
+        // The regional construction subset lowers all the way to the LLVM
+        // dialect: token instantiation and the region patterns pass turn
+        // `region.run` into an allocation scope, attach the box vtable, and
+        // freeze the flex result on the way out.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            pub fn run(n: i64) -> Cell { regional { make(n) } }
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the regional module to LLVM");
+        });
     }
 
     #[test]

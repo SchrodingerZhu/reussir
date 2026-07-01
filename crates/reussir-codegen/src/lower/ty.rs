@@ -4,20 +4,23 @@
 //! so it resolves through a layout table ([`TypeCtx`]) keyed by its `(def, args)`
 //! identity — the ground layout `mono` baked into the MIR.
 //!
-//! Two record flavours lower, selected by the instance's declared capability:
+//! Three record flavours lower, selected by the instance's declared capability:
 //! * a **`[value]`** record is an inline aggregate — an identified
 //!   `!reussir.record<…>` held directly by value;
 //! * a **`[shared]`** record is heap-allocated and reference-counted — the same
 //!   identified record type wrapped in a `!reussir.rc<…>` pointer. A shared
 //!   record that appears as a field of another record is therefore stored as an
 //!   `rc` link, which falls out of lowering its field type here.
+//! * a **`[regional]`** record is also a boxed `rc` pointer, but region-allocated;
+//!   the box capability is read from the value's flexivity coloring — `flex`
+//!   while it is region-local and mutable, `rigid` once it has been frozen out of
+//!   its region.
 //!
 //! Both struct (`compound`) and enum (`variant`) records lower this way. An enum
 //! is an identified `!reussir.record<variant …>` whose members are the per-case
 //! payload compounds (`{enum}::{case}`); the variant carries a tag plus a payload
-//! area sized to the largest case. Regional records are still pending. This
-//! module also holds the numeric classification [`expr`](super::expr) uses to
-//! choose the right cast op.
+//! area sized to the largest case. This module also holds the numeric
+//! classification [`expr`](super::expr) uses to choose the right cast op.
 
 use std::cell::RefCell;
 
@@ -25,7 +28,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
     ReussirAtomicKind, ReussirCapability, ReussirRecordKind, rc, record_complete_in_place,
-    record_incomplete, record_is_complete, r#ref,
+    record_incomplete, record_is_complete, r#ref, region,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -34,7 +37,7 @@ use reussir_backend::melior::ir::r#type::IntegerType;
 
 use reussir_core::full::mir;
 use reussir_core::semi::ctxt::DefaultCap;
-use reussir_core::semi::ty::{DefId, FpTy, IntTy, Ty, TyKind};
+use reussir_core::semi::ty::{DefId, Flexivity, FpTy, IntTy, Ty, TyKind};
 
 use super::{LoweringError, Result, err};
 
@@ -93,10 +96,10 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             .is_some_and(|rec| rec.default_cap == DefaultCap::Shared)
     }
 
-    /// Whether `ty` is a `[regional]` record. Like a `[shared]` record its value
-    /// is a boxed `rc` pointer, but the box carries a larger three-word header, so
-    /// debug info reaches the payload at a different offset. (Regional records are
-    /// not lowered yet; this lets debug-info emission stay correct once they are.)
+    /// Whether `ty` is a `[regional]` record — a region-allocated boxed `rc`
+    /// pointer whose `flex`/`rigid` capability comes from its flexivity coloring
+    /// (see [`regional_capability`]). The box carries a larger three-word header
+    /// than a shared one, so debug info reaches the payload at a different offset.
     pub(super) fn is_regional_record(&self, ty: Ty<'tcx>) -> bool {
         self.record_of(ty)
             .is_some_and(|rec| rec.default_cap == DefaultCap::Regional)
@@ -151,7 +154,15 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         match rec.default_cap {
             DefaultCap::Value => Ok(inner),
             DefaultCap::Shared => Ok(self.rc_type(inner)),
-            DefaultCap::Regional => err("regional record lowering not yet implemented"),
+            // A regional record is also an `rc` box, but its capability is read
+            // from the record's flexivity coloring (the type carries it): a `flex`
+            // box is region-local and mutable, a `rigid` box is frozen (immutable,
+            // free to escape its region) — still a regional `rc`, not a shared one.
+            DefaultCap::Regional => Ok(rc(
+                inner,
+                regional_capability(ty)?,
+                ReussirAtomicKind::Normal,
+            )),
         }
     }
 
@@ -268,6 +279,18 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         rc(inner, ReussirCapability::Shared, ReussirAtomicKind::Normal)
     }
 
+    /// `!reussir.rc<inner, cap>` with the default (non-atomic) box layout — used
+    /// to build the `flex`/`rigid` box types of a regional record.
+    pub(super) fn rc_type_with_cap(&self, inner: Type<'c>, cap: ReussirCapability) -> Type<'c> {
+        rc(inner, cap, ReussirAtomicKind::Normal)
+    }
+
+    /// `!reussir.region` — the arena-allocator handle a `regional` function or a
+    /// `region-run` body threads to its regional allocations.
+    pub(super) fn region_type(&self) -> Type<'c> {
+        region(self.context)
+    }
+
     /// `!reussir.ref<inner, shared>` — a borrowed reference into a shared value,
     /// as produced by `reussir.rc.borrow` and `reussir.ref.project`.
     pub(super) fn shared_ref_type(&self, inner: Type<'c>) -> Type<'c> {
@@ -282,6 +305,27 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             ReussirCapability::Unspecified,
             ReussirAtomicKind::Normal,
         )
+    }
+}
+
+/// The `rc` capability a regional record `ty` carries, read from its flexivity
+/// coloring.
+///
+/// A regional `rc` is colored either `Flex` — region-local and mutable — or
+/// `Rigid` — frozen: immutable and free to escape its region, but still a
+/// *regional* `rc` (not a shared one). Those are the only two colors a regional
+/// record may carry in expression position: full elaboration colors every
+/// regional `rc`, so an unrefined `Regional` color, or an `Irrelevant`/absent
+/// one, reaching codegen means the value was left uncolored. Rather than guess a
+/// color, that is rejected as an elaboration invariant violation.
+pub(super) fn regional_capability(ty: Ty<'_>) -> Result<ReussirCapability> {
+    match ty.flexivity() {
+        Some(Flexivity::Flex) => Ok(ReussirCapability::Flex),
+        Some(Flexivity::Rigid) => Ok(ReussirCapability::Rigid),
+        other => err(format!(
+            "regional record reached codegen with an unrefined flexivity coloring \
+             ({other:?}); elaboration must resolve it to flex or rigid"
+        )),
     }
 }
 

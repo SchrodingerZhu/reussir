@@ -3,19 +3,23 @@
 //!
 //! # SSA environment
 //!
-//! The variable environment maps each [`VarId`] to the melior [`Value`] that
-//! holds it. melior values borrow the block they were built in, so an `scf.if`
-//! branch — which builds into its own block — gets a fresh environment copied
-//! from its parent (outer values outlive the inner block, so the copy is a plain
-//! lifetime-shortening reborrow). Bindings introduced inside a branch stay
-//! scoped to it.
+//! The variable environment ([`Env`]) maps each [`VarId`] to the melior [`Value`]
+//! that holds it, and carries the enclosing region handle. melior values borrow
+//! the block they were built in, so an `scf.if` branch or a `region-run` body —
+//! which builds into its own block — is a nested scope. Because variable ids are
+//! globally unique, such a scope only ever appends bindings, so rather than
+//! copying the environment it is entered through [`Env::subscope`], which lends
+//! it reborrowed at the inner block's shorter lifetime and rewinds the additions
+//! (and any region swap) on return.
 
 use std::cell::RefCell;
 
+use indexmap::IndexMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::builders;
 use reussir_backend::dialect;
+use reussir_backend::dialect::ty::ReussirCapability;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
@@ -37,11 +41,69 @@ use smallvec::SmallVec;
 
 use crate::source::SourceMap;
 
-use super::ty::{TypeCtx, is_unit, num_class};
+use super::ty::{TypeCtx, is_unit, num_class, regional_capability};
 use super::{LoweringError, Result, err};
 
-/// The variable → SSA-value environment for one block scope.
-type Env<'c, 'b> = FxHashMap<VarId, Value<'c, 'b>>;
+/// The lexical environment threaded through one block scope: the SSA value bound
+/// to each in-scope variable, together with the enclosing region handle regional
+/// allocations flow into.
+///
+/// The region is genuinely environmental — it is inherited unchanged across an
+/// `if` branch and swapped for the body's own arena handle inside a `region-run`
+/// — so it rides here rather than as a separate threaded argument. It is `None`
+/// outside any region: a `regional` function seeds it with its implicit region
+/// parameter, and a plain function leaves it unset.
+///
+/// A nested block (an `if` branch, a `region-run` body) is a nested scope that
+/// only ever *appends* bindings — variable ids are globally unique, so a scope
+/// never rebinds one already in `vars`. That lets a subscope be recovered by
+/// truncating `vars` back to its length on entry (see [`Env::subscope`]) instead
+/// of copying the whole map, which is why `vars` is an insertion-ordered map.
+struct Env<'c, 'b> {
+    vars: IndexMap<VarId, Value<'c, 'b>, rustc_hash::FxBuildHasher>,
+    region: Option<Value<'c, 'b>>,
+}
+
+impl<'c, 'b> Env<'c, 'b> {
+    /// An empty environment carrying `region` as its enclosing region handle.
+    fn new(region: Option<Value<'c, 'b>>) -> Self {
+        Self {
+            vars: IndexMap::default(),
+            region,
+        }
+    }
+
+    /// Run `f` in a nested block scope: it borrows the environment reborrowed at
+    /// the nested block's (shorter) lifetime `'s`, and everything it adds is
+    /// discarded afterwards — `vars` is truncated back to its length on entry and
+    /// `region` is restored (a `region-run` body swaps in its own handle for the
+    /// duration).
+    ///
+    /// The nested block's SSA values are shorter-lived than this environment
+    /// (they borrow a block the caller created for the scope), and `&mut` is
+    /// invariant, so the borrow checker will not let `f` insert them through a
+    /// `&mut Env<'c, 'b>`. This performs the one reborrow that shortens the value
+    /// lifetime; it is sound because every binding `f` makes at `'s` is removed
+    /// before returning, so no `'s`-lived value is ever observed at `'b`.
+    fn subscope<'s, R>(&mut self, f: impl FnOnce(&mut Env<'c, 's>) -> R) -> R
+    where
+        'b: 's,
+    {
+        let mark = self.vars.len();
+        let saved_region = self.region;
+        // SAFETY: `'b: 's`, so viewing the stored `Value<'c, 'b>`s as
+        // `Value<'c, 's>` is a lifetime *shortening* — a sound covariant coercion
+        // the compiler declines to perform through the invariant `&mut`. `short`
+        // aliases `*self`, but `self` is untouched until `f` returns, and the
+        // truncate/restore below removes every `'s`-lived value `f` added before
+        // `self` is next read at `'b`.
+        let short: &mut Env<'c, 's> = unsafe { &mut *(self as *mut Env<'c, 'b>).cast() };
+        let r = f(short);
+        self.vars.truncate(mark);
+        self.region = saved_region;
+        r
+    }
+}
 
 /// The state threaded through a field-projection walk: either a loaded value or a
 /// borrowed reference into a record, each tagged with its ground MIR type so the
@@ -152,11 +214,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // body's source position; nested nodes refine it as they are walked.
         let loc = self.location(func.body.and_then(|b| b.span));
         self.cur_loc.replace(loc);
-        let param_tys = func
+        // A `regional` function takes the region it allocates into as an implicit
+        // leading `!reussir.region` parameter, ahead of its source parameters.
+        let user_param_tys = func
             .params
             .iter()
             .map(|p| self.tys.mlir_ty(p.ty))
             .collect::<Result<Vec<_>>>()?;
+        let mut param_tys = Vec::with_capacity(user_param_tys.len() + 1);
+        if func.is_regional {
+            param_tys.push(self.tys.region_type());
+        }
+        param_tys.extend_from_slice(&user_param_tys);
         let ret = func.return_ty;
         let result_tys = if is_unit(ret) {
             Vec::new()
@@ -175,12 +244,24 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             let block_args: SmallVec<[(Type<'c>, Location<'c>); 8]> =
                 param_tys.iter().map(|t| (*t, loc)).collect();
             let block = Block::new(&block_args);
-            let mut env: Env<'c, '_> = FxHashMap::default();
+            // The implicit region parameter (regional functions only) leads the
+            // block arguments and is not a source variable; it seeds the
+            // environment's region rather than being bound as a local. Source
+            // parameters follow it.
+            let (region_handle, param_base) = if func.is_regional {
+                let arg = block
+                    .argument(0)
+                    .map_err(|e| LoweringError(format!("missing region argument: {e}").into()))?;
+                (Some(arg.into()), 1)
+            } else {
+                (None, 0)
+            };
+            let mut env = Env::new(region_handle);
             for (i, p) in func.params.iter().enumerate() {
                 let arg = block
-                    .argument(i)
+                    .argument(param_base + i)
                     .map_err(|e| LoweringError(format!("missing block argument: {e}").into()))?;
-                env.insert(p.var, arg.into());
+                env.vars.insert(p.var, arg.into());
                 self.bind_var_ty(p.var, p.ty);
             }
             let value = self.expr(&block, &mut env, body)?;
@@ -228,6 +309,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// ownership analysis placed at its anchor: the `before` ops first, then the
     /// node, then the `after` ops (which may reference the node's freshly-produced
     /// value, e.g. to increment a borrowed field or drop a discarded result).
+    ///
+    /// The enclosing region a regional construction or `regional` call allocates
+    /// into travels in `env` (see [`Env`]), so it need not be threaded here.
     fn expr<'b>(
         &self,
         block: &'b Block<'c>,
@@ -283,7 +367,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 if is_unit(e.ty) {
                     Ok(None)
                 } else {
-                    env.get(v)
+                    env.vars
+                        .get(v)
                         .copied()
                         .map(Some)
                         .ok_or_else(|| LoweringError(format!("unbound variable {v:?}").into()))
@@ -306,12 +391,23 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 self.bind_var_ty(*var, value.ty);
                 if let Some(v) = self.expr(block, env, value)? {
                     self.tag_local(v, *name, value.ty);
-                    env.insert(*var, v);
+                    env.vars.insert(*var, v);
                 }
                 Ok(None)
             }
-            Call { callee, args, .. } => {
-                let mut operands = Vec::with_capacity(args.len());
+            Call {
+                callee,
+                args,
+                regional,
+            } => {
+                // A `regional` callee takes the enclosing region as an implicit
+                // leading argument; thread it ahead of the source arguments.
+                let mut operands = Vec::with_capacity(args.len() + usize::from(*regional));
+                if *regional {
+                    operands.push(env.region.ok_or_else(|| {
+                        LoweringError("regional call outside a region scope".into())
+                    })?);
+                }
                 for a in args.iter() {
                     operands.push(
                         self.expr(block, env, a)?
@@ -338,7 +434,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     Ok(Some(op.result(0).unwrap().into()))
                 }
             }
-            RegionRun(_) => err("region-run lowering not yet implemented"),
+            RegionRun(body) => self.region_run(block, env, body, e.ty),
             Proj(base, path) => self.proj(block, env, base, path).map(Some),
             Assign(..) => err("assignment lowering not yet implemented"),
             Match(..) => err("match lowering not yet implemented"),
@@ -354,10 +450,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// Construct a record from its (declaration-ordered) field args.
     ///
     /// The fields are packed into the inline record payload with
-    /// `reussir.record.compound`. A `[value]` record stops there; a `[shared]`
-    /// record then boxes that payload into a fresh reference-counted pointer with
-    /// `reussir.rc.create` (the rc-create fusion pass folds the two into one
-    /// allocation later).
+    /// `reussir.record.compound`, which [`box_record`](Self::box_record) then
+    /// boxes according to the record's management — a `[value]` record stays
+    /// inline, a `[shared]` record is heap-boxed, and a `[regional]` record is
+    /// region-allocated.
     fn compound<'b>(
         &self,
         block: &'b Block<'c>,
@@ -375,15 +471,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             );
         }
         let payload = self.append(block, builders::record_compound(&operands, payload_ty, loc));
-        if self.tys.is_shared_record(e.ty) {
-            let rc_ty = self.tys.rc_type(payload_ty);
-            Ok(self.append(
-                block,
-                builders::rc_create(self.context, payload, rc_ty, loc),
-            ))
-        } else {
-            Ok(payload)
-        }
+        self.box_record(block, env, e, payload, payload_ty)
     }
 
     /// Construct an enum value: select a case by tag and supply its payload.
@@ -391,10 +479,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// The case's fields are packed into the `{enum}::{case}` payload compound
     /// with `reussir.record.compound` (an empty compound for a fieldless case),
     /// which `reussir.record.variant [tag]` then tags into the enum's variant
-    /// record. A `[value]` enum stops there; a `[shared]` enum boxes the tagged
-    /// value with `reussir.rc.create` (the rc-create fusion pass folds the
+    /// record. [`box_record`](Self::box_record) then boxes the tagged value per
+    /// the enum's management (the rc-create fusion pass later folds the
     /// `record.compound` + `record.variant` + `rc.create` chain into a single
-    /// `reussir.rc.create_variant` allocation later).
+    /// `reussir.rc.create_variant` allocation).
     fn variant<'b>(
         &self,
         block: &'b Block<'c>,
@@ -418,11 +506,102 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             block,
             builders::record_variant(self.context, variant, payload, variant_ty, loc),
         );
+        self.box_record(block, env, e, tagged, variant_ty)
+    }
+
+    /// Box a freshly-built record payload according to the record's management.
+    ///
+    /// A `[value]` record is held inline (the payload is the value). A `[shared]`
+    /// record is heap-boxed into a fresh `!reussir.rc<…, shared>` with
+    /// `reussir.rc.create`. A `[regional]` record is region-allocated: it is
+    /// boxed into a `flex` `rc` pointer with `reussir.rc.create … region(%r)`,
+    /// which both makes its fields mutable and ties its lifetime to the enclosing
+    /// region (the region patterns pass freezes it to `rigid` where it escapes).
+    fn box_record<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b>,
+        e: &Expr<'tcx>,
+        payload: Value<'c, 'b>,
+        inner_ty: Type<'c>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
         if self.tys.is_shared_record(e.ty) {
-            let rc_ty = self.tys.rc_type(variant_ty);
-            Ok(self.append(block, builders::rc_create(self.context, tagged, rc_ty, loc)))
+            let rc_ty = self.tys.rc_type(inner_ty);
+            Ok(self.append(
+                block,
+                builders::rc_create(self.context, payload, rc_ty, loc),
+            ))
+        } else if self.tys.is_regional_record(e.ty) {
+            // A regional record is constructed region-local, so its box is always
+            // `flex`; the frozen `rigid` form only arises later, at region exit.
+            let cap = regional_capability(e.ty)?;
+            if cap != ReussirCapability::Flex {
+                return err("a regional record is constructed flex, but its type is not flex");
+            }
+            let region = env.region.ok_or_else(|| {
+                LoweringError("regional record constructed outside a region scope".into())
+            })?;
+            let rc_ty = self.tys.rc_type_with_cap(inner_ty, cap);
+            Ok(self.append(
+                block,
+                builders::rc_create_in_region(self.context, payload, region, rc_ty, loc),
+            ))
         } else {
-            Ok(tagged)
+            Ok(payload)
+        }
+    }
+
+    /// Lower a `region-run` scope to `reussir.region.run`.
+    ///
+    /// The body lowers into a fresh region whose entry block takes the arena
+    /// handle (`!reussir.region`) as its single argument; that handle is threaded
+    /// as the region for the body, so regional constructions inside allocate into
+    /// it. The body terminates with `reussir.region.yield`, carrying its result
+    /// out — a `flex` (region-local) result is frozen to `rigid` as it escapes
+    /// (the region patterns pass inserts the freeze).
+    fn region_run<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        body: &Expr<'tcx>,
+        ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let unit = is_unit(ty);
+        let result_ty = if unit {
+            None
+        } else {
+            Some(self.tys.mlir_ty(ty)?)
+        };
+        let region_ty = self.tys.region_type();
+        let body_block = Block::new(&[(region_ty, loc)]);
+        let region_arg: Value<'c, '_> = body_block
+            .argument(0)
+            .map_err(|e| LoweringError(format!("missing region argument: {e}").into()))?
+            .into();
+        // The body sees the enclosing locals but allocates into this region's own
+        // arena handle; its bindings and the swapped-in region are rewound when
+        // the scope returns, before the block is moved into its region below.
+        env.subscope(|scope| {
+            scope.region = Some(region_arg);
+            let value = self.expr(&body_block, scope, body)?;
+            if unit {
+                body_block.append_operation(builders::region_yield(None, loc));
+            } else {
+                let v =
+                    value.ok_or_else(|| LoweringError("region body produced no value".into()))?;
+                body_block.append_operation(builders::region_yield(Some(v), loc));
+            }
+            Ok::<_, LoweringError>(())
+        })?;
+        let body_region = Region::new();
+        body_region.append_block(body_block);
+        let op = block.append_operation(builders::region_run(result_ty, body_region, loc));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
         }
     }
 
@@ -637,7 +816,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// Increment the refcount owned by local `v`. A value-less local (e.g. unit)
     /// holds no resource, so there is nothing to do.
     fn emit_inc_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
-        match (env.get(&v).copied(), self.var_ty(v)) {
+        match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
             _ => Ok(()),
         }
@@ -645,7 +824,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Decrement the refcount owned by local `v` (see [`emit_inc_var`](Self::emit_inc_var)).
     fn emit_dec_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
-        match (env.get(&v).copied(), self.var_ty(v)) {
+        match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
             _ => Ok(()),
         }
@@ -743,7 +922,6 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         Ok(self.append(block, arith::xori(xv, one, loc)))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn arith<'b>(
         &self,
         block: &'b Block<'c>,
@@ -883,7 +1061,6 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         Ok(Some(self.append(block, op)))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn lower_if<'b>(
         &self,
         block: &'b Block<'c>,
@@ -912,30 +1089,30 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// Build one `scf.if` branch region: an entry block whose body lowers `e`
-    /// (over a copy of the enclosing environment) and terminates with
+    /// Build one `scf.if` branch region: an entry block whose body lowers `e` in
+    /// a nested scope over the enclosing environment and terminates with
     /// `scf.yield` (yielding its value unless unit-typed).
     fn branch_region<'b>(
         &self,
-        env: &Env<'c, 'b>,
+        env: &mut Env<'c, 'b>,
         e: &Expr<'tcx>,
         ty: Ty<'tcx>,
     ) -> Result<Region<'c>> {
         let loc = self.loc();
         let block = Block::new(&[]);
-        // Reborrow the outer values at the inner block's (shorter) lifetime;
-        // bindings made in the branch stay local to this copy.
-        let mut child: Env<'c, '_> = FxHashMap::default();
-        for (k, v) in env {
-            child.insert(*k, *v);
-        }
-        let value = self.expr(&block, &mut child, e)?;
-        if is_unit(ty) {
-            block.append_operation(scf::r#yield(&[], loc));
-        } else {
-            let v = value.ok_or_else(|| LoweringError("if branch produced no value".into()))?;
-            block.append_operation(scf::r#yield(&[v], loc));
-        }
+        // Lower the branch in a nested scope over the same environment: it sees
+        // the outer locals and region, and any bindings it adds are rewound when
+        // the scope returns, before the block is moved into its region below.
+        env.subscope(|scope| {
+            let value = self.expr(&block, scope, e)?;
+            if is_unit(ty) {
+                block.append_operation(scf::r#yield(&[], loc));
+            } else {
+                let v = value.ok_or_else(|| LoweringError("if branch produced no value".into()))?;
+                block.append_operation(scf::r#yield(&[v], loc));
+            }
+            Ok::<_, LoweringError>(())
+        })?;
         let region = Region::new();
         region.append_block(block);
         Ok(region)
