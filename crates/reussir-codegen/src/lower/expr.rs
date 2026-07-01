@@ -110,11 +110,29 @@ impl<'c, 'b> Env<'c, 'b> {
 /// next step can consult the record layout and pick the right op.
 enum Cursor<'c, 'b, 'tcx> {
     /// A loaded SSA value of record or scalar type `ty`. For a `[value]` record
-    /// this is the inline aggregate; for a `[shared]` record it is the `rc`
-    /// pointer.
+    /// this is the inline aggregate; for a `[shared]`/`[regional]` record it is
+    /// the `rc` pointer.
     Value { val: Value<'c, 'b>, ty: Ty<'tcx> },
-    /// A borrowed `!reussir.ref<…>` into a record whose MIR type is `ty`.
-    Ref { val: Value<'c, 'b>, ty: Ty<'tcx> },
+    /// A borrowed `!reussir.ref<…, cap>` into a record whose MIR type is `ty`.
+    /// `cap` is the reference's capability, carried so a further projection out
+    /// of it picks the matching projected-reference capability.
+    Ref {
+        val: Value<'c, 'b>,
+        ty: Ty<'tcx>,
+        cap: ReussirCapability,
+    },
+}
+
+/// How a single field projects out of a record reference: the field's MIR type,
+/// the projected reference's element type and capability, and whether the
+/// projection is a pointer link to load (an `rc` member) rather than an inline
+/// sub-field to keep navigating by reference. See
+/// [`projected_member`](Lowerer::projected_member).
+struct ProjectedMember<'c, 'tcx> {
+    field_ty: Ty<'tcx>,
+    elem_ty: Type<'c>,
+    proj_cap: ReussirCapability,
+    is_link: bool,
 }
 
 /// Per-program lowering state: the context to build in, the type arena, the
@@ -644,74 +662,130 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
         match cursor {
-            // A shared record value is an rc pointer: borrow it to obtain a
-            // reference, then project through that reference.
-            Cursor::Value { val, ty } if self.tys.is_shared_record(ty) => {
-                let inner = self.tys.record_inner_of(ty)?;
-                let ref_ty = self.tys.shared_ref_type(inner);
-                let borrowed = self.append(
-                    block,
-                    dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
-                );
-                self.project_ref(block, borrowed, ty, idx)
-            }
-            // An inline record value: read the field out by value.
             Cursor::Value { val, ty } => {
-                let (field_ty, _) = self.field_at(ty, idx)?;
-                let field_mlir = self.tys.mlir_ty(field_ty)?;
-                let extracted = self.append(
-                    block,
-                    builders::record_extract(self.context, val, idx as usize, field_mlir, loc),
-                );
-                Ok(Cursor::Value {
-                    val: extracted,
-                    ty: field_ty,
-                })
+                if let Some(cap) = self.record_ref_cap(ty)? {
+                    // A boxed record value (shared or regional) is an rc pointer:
+                    // borrow it at its capability to obtain a reference, then
+                    // project through that reference.
+                    let inner = self.tys.record_inner_of(ty)?;
+                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
+                    let borrowed = self.append(
+                        block,
+                        dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
+                    );
+                    self.project_ref(block, borrowed, ty, cap, idx)
+                } else {
+                    // An inline `[value]` record value: read the field out by value.
+                    let field_ty = self.field_at(ty, idx)?;
+                    let field_mlir = self.tys.mlir_ty(field_ty)?;
+                    let extracted = self.append(
+                        block,
+                        builders::record_extract(self.context, val, idx as usize, field_mlir, loc),
+                    );
+                    Ok(Cursor::Value {
+                        val: extracted,
+                        ty: field_ty,
+                    })
+                }
             }
-            Cursor::Ref { val, ty } => self.project_ref(block, val, ty, idx),
+            Cursor::Ref { val, ty, cap } => self.project_ref(block, val, ty, cap, idx),
         }
     }
 
-    /// Project field `idx` out of a reference into a record. A shared field is an
-    /// rc link stored inline, so it is loaded to a pointer value (ready to be
-    /// re-borrowed or returned); any other field stays a reference until the walk
-    /// finishes.
+    /// Project field `idx` out of a reference (`ref<record_ty, ref_cap>`) into a
+    /// record. A field stored as a pointer link — a `[shared]`/`[regional]`
+    /// record member — is loaded to its `rc` value, ready to be re-borrowed or
+    /// returned; an inline field stays a reference until the walk finishes.
     fn project_ref<'b>(
         &self,
         block: &'b Block<'c>,
         reference: Value<'c, 'b>,
         record_ty: Ty<'tcx>,
+        ref_cap: ReussirCapability,
         idx: u32,
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
-        let (field_ty, shared) = self.field_at(record_ty, idx)?;
-        let field_mlir = self.tys.mlir_ty(field_ty)?;
-        let proj_ref_ty = self.tys.shared_ref_type(field_mlir);
+        let proj = self.projected_member(record_ty, ref_cap, idx)?;
+        let proj_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
         let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
         let projected = self.append(
             block,
             dialect::ref_project(self.context, proj_ref_ty, reference, index, loc).into(),
         );
-        if shared {
+        if proj.is_link {
             let loaded = self.append(
                 block,
-                dialect::ref_load(self.context, field_mlir, projected, loc).into(),
+                dialect::ref_load(self.context, proj.elem_ty, projected, loc).into(),
             );
             Ok(Cursor::Value {
                 val: loaded,
-                ty: field_ty,
+                ty: proj.field_ty,
             })
         } else {
             Ok(Cursor::Ref {
                 val: projected,
-                ty: field_ty,
+                ty: proj.field_ty,
+                cap: proj.proj_cap,
             })
         }
     }
 
-    /// The type of field `idx` of a compound record, and whether it is a shared
-    /// (rc-link) field.
-    fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<(Ty<'tcx>, bool)> {
+    /// The capability to borrow a record-typed value at, or `None` for an inline
+    /// `[value]` record (or a non-record type) that is held by value rather than
+    /// behind an `rc` pointer.
+    fn record_ref_cap(&self, ty: Ty<'tcx>) -> Result<Option<ReussirCapability>> {
+        if self.tys.is_shared_record(ty) {
+            Ok(Some(ReussirCapability::Shared))
+        } else if self.tys.is_regional_record(ty) {
+            Ok(Some(regional_capability(ty)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// How field `idx` of `record_ty` projects out of a `ref<…, ref_cap>`: its
+    /// MIR type, the projected reference's element type and capability, and
+    /// whether that projection is a pointer link to load (an `rc` member) or an
+    /// inline sub-field to keep navigating by reference.
+    ///
+    /// This mirrors the dialect's member-projection rule: a `[shared]` record
+    /// member projects to an `rc` link; anything else projects to its own type,
+    /// inline. The projected reference inherits the parent reference's capability.
+    fn projected_member(
+        &self,
+        record_ty: Ty<'tcx>,
+        ref_cap: ReussirCapability,
+        idx: u32,
+    ) -> Result<ProjectedMember<'c, 'tcx>> {
+        let field_ty = self.field_at(record_ty, idx)?;
+        if self.tys.is_shared_record(field_ty) {
+            let inner = self.tys.record_inner_of(field_ty)?;
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.rc_type(inner),
+                proj_cap: ref_cap,
+                is_link: true,
+            })
+        } else if self.tys.is_regional_record(field_ty) {
+            // A non-`[field]` regional member would be a frozen (`rigid`) link, but
+            // it is not projectable yet: elaboration leaves such a member's
+            // flexivity unrefined (`Regional`), so the loaded value has no concrete
+            // `flex`/`rigid` coloring to project further through. Error explicitly
+            // here rather than surface a confusing "unrefined flexivity" downstream.
+            err("projection of a non-`[field]` regional record member not yet implemented")
+        } else {
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.mlir_ty(field_ty)?,
+                proj_cap: ref_cap,
+                is_link: false,
+            })
+        }
+    }
+
+    /// The MIR type of field `idx` of a compound record. A mutable `[field]` link
+    /// is not projected yet and surfaces as an explicit error.
+    fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<Ty<'tcx>> {
         let rec = self
             .tys
             .record_of(record_ty)
@@ -726,7 +800,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         if field.is_field {
             return err("projection of a regional field link not yet implemented");
         }
-        Ok((field.ty, self.tys.is_shared_record(field.ty)))
+        Ok(field.ty)
     }
 
     /// Materialize a [`Cursor`] as a loaded SSA value, loading through a trailing
@@ -738,7 +812,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<Value<'c, 'b>> {
         match cursor {
             Cursor::Value { val, .. } => Ok(val),
-            Cursor::Ref { val, ty } => {
+            Cursor::Ref { val, ty, .. } => {
                 let inner = self.tys.mlir_ty(ty)?;
                 Ok(self.append(
                     block,
