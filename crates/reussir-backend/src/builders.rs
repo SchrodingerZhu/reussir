@@ -146,6 +146,8 @@ pub fn rc_create_in_region<'c>(
         .add_operands(&[value, region])
         .add_attributes(&[(
             Identifier::new(context, "operandSegmentSizes"),
+            // operandSegmentSizes over [value, token, region]: value and region
+            // present, token absent.
             DenseI32ArrayAttribute::new(context, &[1, 0, 1]).into(),
         )])
         .add_results(&[result_type])
@@ -181,9 +183,10 @@ pub fn record_variant<'c>(
 ///
 /// The body region's single block takes a `!reussir.region` argument (the arena
 /// handle) and terminates with `reussir.region.yield`. A `flex` value it yields
-/// is frozen to `rigid` as it leaves the scope. melior has no generated builder
-/// for the Reussir dialect, so the op is built raw; `result_type` is `None` for a
-/// region whose body yields nothing.
+/// is frozen to `rigid` as it leaves the scope. melior's generated builder takes
+/// only `(context, region, location)` — it exposes no result type for the op's
+/// `Optional` result — so a value-yielding `region.run` is built raw here;
+/// `result_type` is `None` for a region whose body yields nothing.
 pub fn region_run<'c>(
     result_type: Option<Type<'c>>,
     body: Region<'c>,
@@ -202,8 +205,9 @@ pub fn region_run<'c>(
 /// `reussir.region.yield (<value> : <type>)?` — terminate a `reussir.region.run`
 /// body, optionally yielding a value out of the region.
 ///
-/// melior has no generated builder for the Reussir dialect, so the op is built
-/// raw; the single value operand is optional (absent for a unit-typed region).
+/// melior's generated builder takes only `(context, location)` — it exposes no
+/// parameter for the op's `Optional` value operand — so the op is built raw here
+/// (the value is absent for a unit-typed region).
 pub fn region_yield<'c>(value: Option<Value<'c, '_>>, location: Location<'c>) -> Operation<'c> {
     let mut builder = OperationBuilder::new("reussir.region.yield", location);
     if let Some(value) = value {
