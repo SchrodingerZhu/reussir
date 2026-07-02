@@ -207,3 +207,32 @@ fn rejects_running_the_pipeline_backward() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("only runs forward"), "stderr:\n{stderr}");
 }
+
+#[test]
+fn compiles_to_the_wasm_target() {
+    // Cross-compile to WebAssembly via `--target-triple`. This exercises the
+    // cross-target path (all LLVM targets registered, wasm data layout feeding
+    // the pipeline) end to end; the emitted object is a real wasm module even
+    // though its runtime symbols stay unresolved until link.
+    let (dir, src) = source("wasm");
+    let obj = dir.join("prog.wasm.o");
+    let output = rrc(&[
+        &src,
+        Path::new("--target-triple"),
+        Path::new("wasm32-unknown-unknown"),
+        Path::new("-o"),
+        &obj,
+    ]);
+    assert!(
+        output.status.success(),
+        "wasm compile failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = std::fs::read(&obj).expect("read wasm object");
+    // A WebAssembly object begins with the magic `\0asm` followed by the version.
+    assert!(
+        bytes.starts_with(b"\0asm"),
+        "not a wasm object, leading bytes: {:02x?}",
+        &bytes[..bytes.len().min(8)]
+    );
+}

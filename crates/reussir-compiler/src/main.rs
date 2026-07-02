@@ -37,7 +37,10 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 
 /// A stage on the compilation chain, ordered from source to object so a target
 /// can be compared against the input (`>=` means "reachable going forward").
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Deriving [`palc::ValueEnum`] gives `--emit`/`--from` their value parsing and a
+/// kebab-case [`Display`] (`MlirLlvm` → `mlir-llvm`, `LlvmIr` → `llvm-ir`, …).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, palc::ValueEnum)]
 enum Stage {
     /// Reussir source (`.rr`).
     Rr,
@@ -58,17 +61,13 @@ enum Stage {
 }
 
 impl Stage {
-    fn name(self) -> &'static str {
-        match self {
-            Stage::Rr => "rr",
-            Stage::Hir => "hir",
-            Stage::Mir => "mir",
-            Stage::Mlir => "mlir",
-            Stage::MlirLlvm => "mlir-llvm",
-            Stage::LlvmIr => "llvm-ir",
-            Stage::Asm => "asm",
-            Stage::Obj => "obj",
-        }
+    /// Whether this stage can be *read* as an input (it has a parser). The two
+    /// derived MLIR/assembly forms and the object file are outputs only.
+    fn is_input(self) -> bool {
+        matches!(
+            self,
+            Stage::Rr | Stage::Hir | Stage::Mir | Stage::Mlir | Stage::LlvmIr
+        )
     }
 
     /// The stage a file extension denotes, if any.
@@ -113,12 +112,12 @@ struct Cli {
     /// Stage to emit: `hir`, `mir`, `mlir`, `mlir-llvm`, `llvm-ir`, `asm`, or
     /// `obj`. Defaults to the output extension (else `obj`).
     #[arg(short = 't', long = "emit")]
-    emit: Option<String>,
+    emit: Option<Stage>,
 
     /// Treat the input as this stage instead of inferring from its extension:
     /// `rr`, `hir`, `mir`, `mlir`, or `llvm-ir`.
     #[arg(short = 'x', long = "from")]
-    from: Option<String>,
+    from: Option<Stage>,
 
     /// Optimization level: `none`, `default`, `aggressive`, or `size`.
     #[arg(short = 'O', long = "opt", default_value = "default")]
@@ -153,64 +152,45 @@ struct Cli {
     /// Emit DWARF debug info (source locations, function/variable debug types).
     #[arg(short = 'g', long = "debug")]
     debug: bool,
-}
 
-fn parse_input_stage(s: &str) -> Result<Stage, String> {
-    Ok(match s {
-        "rr" => Stage::Rr,
-        "hir" => Stage::Hir,
-        "mir" => Stage::Mir,
-        "mlir" => Stage::Mlir,
-        "ll" | "llvm-ir" | "llvmir" => Stage::LlvmIr,
-        other => return Err(format!("unknown input stage `{other}`")),
-    })
-}
-
-fn parse_emit_stage(s: &str) -> Result<Stage, String> {
-    Ok(match s {
-        "hir" => Stage::Hir,
-        "mir" => Stage::Mir,
-        "mlir" => Stage::Mlir,
-        "mlir-llvm" => Stage::MlirLlvm,
-        "llvm-ir" | "llvmir" | "ll" => Stage::LlvmIr,
-        "asm" | "assembly" => Stage::Asm,
-        "obj" | "object" => Stage::Obj,
-        other => return Err(format!("unknown --emit `{other}`")),
-    })
+    /// Log the lowering/backend `tracing` events (to stderr) at DEBUG level.
+    /// `RUST_LOG`, if set, takes precedence over this.
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
 }
 
 /// The stage the input enters at: `--from` if given, else the extension. `-`
 /// (stdin) has no extension, so it defaults to source.
 fn resolve_input_stage(cli: &Cli) -> Result<Stage, String> {
-    if let Some(from) = &cli.from {
-        return parse_input_stage(from);
+    let stage = if let Some(from) = cli.from {
+        from
+    } else if cli.input.as_os_str() == "-" {
+        Stage::Rr
+    } else {
+        Stage::from_extension(&cli.input).ok_or_else(|| {
+            format!(
+                "cannot infer the input stage of `{}`; pass --from",
+                cli.input.display()
+            )
+        })?
+    };
+    if !stage.is_input() {
+        return Err(format!("`{stage}` is an output-only stage; it cannot be read as input"));
     }
-    if cli.input.as_os_str() == "-" {
-        return Ok(Stage::Rr);
-    }
-    match Stage::from_extension(&cli.input) {
-        Some(stage @ (Stage::Rr | Stage::Hir | Stage::Mir | Stage::Mlir | Stage::LlvmIr)) => {
-            Ok(stage)
-        }
-        Some(other) => Err(format!(
-            "`{}` is an output-only stage; cannot read a {} input",
-            other.name(),
-            other.name()
-        )),
-        None => Err(format!(
-            "cannot infer the input stage of `{}`; pass --from",
-            cli.input.display()
-        )),
-    }
+    Ok(stage)
 }
 
 /// The stage the driver stops at: `--emit` if given, else the output extension,
 /// else an object file.
 fn resolve_target(cli: &Cli) -> Result<Stage, String> {
-    if let Some(emit) = &cli.emit {
-        return parse_emit_stage(emit);
+    let stage = cli
+        .emit
+        .or_else(|| Stage::from_extension(&cli.output))
+        .unwrap_or(Stage::Obj);
+    if stage == Stage::Rr {
+        return Err("`rr` is the source input, not an emittable stage".into());
     }
-    Ok(Stage::from_extension(&cli.output).unwrap_or(Stage::Obj))
+    Ok(stage)
 }
 
 fn parse_opt(s: &str) -> Result<OptLevel, String> {
@@ -284,8 +264,22 @@ enum Produced<'c> {
     Module(Module<'c>),
 }
 
+/// Install a `tracing` subscriber writing to **stderr** (so it never corrupts a
+/// `-o -` stdout dump). `RUST_LOG` wins if set; otherwise `-v` selects DEBUG and
+/// the default is quiet (WARN).
+fn init_tracing(verbose: bool) {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "warn" }));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    init_tracing(cli.verbose);
     match run(&cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -303,17 +297,14 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let target = resolve_target(cli)?;
     if target < input_stage {
         return Err(format!(
-            "cannot emit `{}` from a `{}` input: the pipeline only runs forward",
-            target.name(),
-            input_stage.name()
+            "cannot emit `{target}` from a `{input_stage}` input: the pipeline only runs forward"
         ));
     }
     // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj` go through the
     // file-based LLVM emitter, so `-o -` would write a file literally named `-`.
     if cli.output.as_os_str() == "-" && target.output_kind().is_some() {
         return Err(format!(
-            "cannot write `{}` to stdout; give a file path with -o",
-            target.name()
+            "cannot write `{target}` to stdout; give a file path with -o"
         ));
     }
     let opt = parse_opt(&cli.opt)?;
@@ -331,7 +322,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     if input_stage == Stage::LlvmIr {
         let kind = target
             .output_kind()
-            .ok_or_else(|| format!("cannot emit `{}` from LLVM IR", target.name()))?;
+            .ok_or_else(|| format!("cannot emit `{target}` from LLVM IR"))?;
         let machine = TargetMachine::new(&spec, opt, reloc)?;
         let finalized = parse_llvm_ir(&name, &source)?;
         emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
