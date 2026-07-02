@@ -23,6 +23,12 @@ pub(crate) mod parser;
 use diagnostics::{ParseError, SourceMap};
 use kind::{ResolvedNode, SyntaxKind};
 
+// The shared-interner types [`parse_with_interner`] / [`parse_repl`] take, so
+// downstream crates don't need a direct cstree dependency. `Interner` is the
+// trait carrying `get_or_intern` (e.g. for a REPL driver interning synthetic
+// names); its `Resolver` counterpart is re-exported from [`kind`].
+pub use cstree::interning::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
+
 /// The result of parsing: a lossless syntax tree (always produced, even in
 /// the presence of errors) plus collected diagnostics.
 pub struct Parse {
@@ -61,6 +67,85 @@ impl Parse {
 
 /// Parse a whole source file.
 pub fn parse(source: &str) -> Parse {
+    parse_impl(source, lasso::Rodeo::<kind::TokenKey>::new(), |p| {
+        p.source_file()
+    })
+}
+
+/// Parse a whole source file, interning token text into a caller-supplied
+/// shared interner.
+///
+/// [`TokenKey`](kind::TokenKey)s are stable across every parse that shares the
+/// interner, so typed-AST keys from one parse resolve correctly against
+/// another's — the property a REPL session needs to elaborate many small
+/// inputs against one accumulated program. The session keeps one `Arc` clone
+/// as the long-lived [`kind::Resolver`]; each parse's tree holds another.
+pub fn parse_with_interner(
+    source: &str,
+    interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
+) -> Parse {
+    parse_impl(source, interner, |p| p.source_file())
+}
+
+/// How [`parse_repl`] routed an input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplInputKind {
+    /// Top-level items; the tree root is a `SourceFile`.
+    Items,
+    /// An expression sequence (`e1; e2; ...`); the tree root is a
+    /// `BlockExpr`.
+    Expr,
+}
+
+/// The result of parsing one REPL input.
+pub struct ReplParse {
+    pub parse: Parse,
+    pub kind: ReplInputKind,
+}
+
+/// Parse one REPL input as either top-level items or an expression sequence.
+///
+/// The route is decided by the first significant token — `fn`, `struct`,
+/// `enum`, `mod`, `extern`, and `pub` start items, and `regional` does iff
+/// the next token is `fn` (otherwise it is a `regional { ... }` expression);
+/// everything else is an expression. No backtracking: errors are reported
+/// against the chosen route. Since the language has no reserved identifiers,
+/// an expression *headed* by a variable literally named like an item keyword
+/// misroutes to items; accepted as a documented limitation.
+pub fn parse_repl(
+    source: &str,
+    interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
+) -> ReplParse {
+    let kind_cell = std::cell::Cell::new(ReplInputKind::Expr);
+    let parse = parse_impl(source, interner, |p| {
+        let kind = match p.current() {
+            SyntaxKind::FnKw
+            | SyntaxKind::StructKw
+            | SyntaxKind::EnumKw
+            | SyntaxKind::ModKw
+            | SyntaxKind::ExternKw
+            | SyntaxKind::PubKw => ReplInputKind::Items,
+            SyntaxKind::RegionalKw if p.nth(1) == SyntaxKind::FnKw => ReplInputKind::Items,
+            _ => ReplInputKind::Expr,
+        };
+        kind_cell.set(kind);
+        match kind {
+            ReplInputKind::Items => p.source_file(),
+            ReplInputKind::Expr => p.repl_expr_seq(),
+        }
+    });
+    ReplParse {
+        parse,
+        kind: kind_cell.get(),
+    }
+}
+
+/// The shared parse pipeline: lex, run `entry` on the parser, then build the
+/// lossless tree with `interner` (which becomes the tree's resolver).
+fn parse_impl<I>(source: &str, interner: I, entry: impl FnOnce(&mut parser::Parser)) -> Parse
+where
+    I: cstree::interning::Interner<kind::TokenKey> + kind::Resolver<kind::TokenKey> + 'static,
+{
     let (all_tokens, lex_errors) = lexer::tokenize(source);
     let significant: Vec<lexer::Token> = all_tokens
         .iter()
@@ -69,7 +154,7 @@ pub fn parse(source: &str) -> Parse {
         .collect();
 
     let mut p = parser::Parser::new(source, significant);
-    p.source_file();
+    entry(&mut p);
     let (events, parse_errors) = p.finish();
 
     let mut errors: Vec<ParseError> = lex_errors
@@ -85,7 +170,7 @@ pub fn parse(source: &str) -> Parse {
     // the first message is the most informative one.
     errors.dedup_by_key(|e| e.span.0);
 
-    let mut interner: lasso::Rodeo = lasso::Rodeo::new();
+    let mut interner = interner;
     let green = parser::sink::Sink::new(source, &all_tokens, events, &mut interner).finish();
     let root = kind::SyntaxNode::new_root_with_resolver(green, interner);
     Parse { root, errors }
@@ -111,6 +196,85 @@ mod tests {
     fn json_of(source: &str) -> serde_json::Value {
         let map = SourceMap::new(source);
         parse_ok(source).to_json(&map)
+    }
+
+    #[test]
+    fn shared_interner_keeps_token_keys_stable_across_parses() {
+        use cstree::interning::Resolver;
+
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let a = parse_with_interner("fn foo() -> i32 { 1 }", interner.clone());
+        let b = parse_with_interner("fn bar() -> i32 { foo() }", interner.clone());
+        assert!(a.ok() && b.ok());
+
+        // The `foo` token in parse B resolves through parse A's resolver (and
+        // the session interner) to the same text, i.e. the keys share one
+        // key space.
+        let key_in_a = token_key_of(&a, "foo").expect("foo in a");
+        let key_in_b = token_key_of(&b, "foo").expect("foo in b");
+        assert_eq!(key_in_a, key_in_b);
+        assert_eq!(interner.try_resolve(key_in_b), Some("foo"));
+    }
+
+    /// The key of the first token with the given text.
+    fn token_key_of(parse: &Parse, text: &str) -> Option<kind::TokenKey> {
+        parse
+            .root
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.text() == text)
+            .and_then(|t| t.text_key())
+    }
+
+    #[test]
+    fn repl_routes_items_and_expressions() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let items = [
+            "fn f() -> i32 { 1 }",
+            "struct P { x: i32 }",
+            "enum E { A, B }",
+            "pub fn g() -> i32 { 2 }",
+            "mod m;",
+            "extern \"C\" trampoline \"f_ffi\" = f;",
+            "regional fn h(c: [flex] L<i32>) { c->v := 1 }",
+            // Several items in one input.
+            "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }",
+        ];
+        for source in items {
+            let rp = parse_repl(source, interner.clone());
+            assert_eq!(rp.kind, ReplInputKind::Items, "{source}");
+            assert!(rp.parse.ok(), "{source}: {:#?}", rp.parse.errors);
+            assert_eq!(rp.parse.root.kind(), SyntaxKind::SourceFile);
+        }
+
+        let exprs = [
+            "42",
+            "1 + 2",
+            "f(1, 2)",
+            "let a = 10; let b = 20; a + b",
+            "if true { 1 } else { 0 }",
+            "{ let x = 1; x }",
+            "|x: i32| x + 1",
+            // `regional` NOT followed by `fn` is a regional expression.
+            "regional { Cell { value: 1 } }",
+        ];
+        for source in exprs {
+            let rp = parse_repl(source, interner.clone());
+            assert_eq!(rp.kind, ReplInputKind::Expr, "{source}");
+            assert!(rp.parse.ok(), "{source}: {:#?}", rp.parse.errors);
+            assert_eq!(rp.parse.root.kind(), SyntaxKind::BlockExpr);
+            assert_eq!(rp.parse.root.text(), source);
+        }
+    }
+
+    #[test]
+    fn repl_expr_seq_reports_trailing_garbage() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let rp = parse_repl("1 + 2 3", interner);
+        assert_eq!(rp.kind, ReplInputKind::Expr);
+        assert!(!rp.parse.ok());
+        // Lossless even under recovery.
+        assert_eq!(rp.parse.root.text(), "1 + 2 3");
     }
 
     #[test]

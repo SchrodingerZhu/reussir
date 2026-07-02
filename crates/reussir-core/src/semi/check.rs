@@ -15,10 +15,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// against the declared return type (`Γ ⊢ body ⇐ return_ty`), discharge the
     /// collected trait obligations, then zonk. Drives the checking judgment over a
     /// whole function body.
-    pub(super) fn check_function(&mut self, func: &surface::Function, span: Option<Span>) {
-        let Some(def) = self.defs.resolve_function(func.name) else {
-            return;
-        };
+    pub(super) fn check_function(
+        &mut self,
+        func: &surface::Function,
+        def: DefId,
+        span: Option<Span>,
+    ) {
         let Some(proto) = self.functions.get(&def).cloned() else {
             return;
         };
@@ -574,7 +576,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Whether `ty`'s head (peeling `Nullable`) is a flex regional record — a
     /// value that cannot be materialized, hence cannot escape its region.
-    fn is_flex(&mut self, ty: Ty<'tcx>) -> bool {
+    pub(super) fn is_flex(&mut self, ty: Ty<'tcx>) -> bool {
         match self.infer.shallow_resolve(ty).kind() {
             TyKind::Record {
                 flex: crate::semi::ty::Flexivity::Flex,

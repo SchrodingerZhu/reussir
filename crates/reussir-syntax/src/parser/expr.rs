@@ -414,6 +414,42 @@ impl Parser<'_> {
         m.complete(self, BlockExpr)
     }
 
+    /// A REPL expression input: `e1; e2; ...` — semicolon-separated with no
+    /// surrounding braces, spanning the whole input. Completes as a
+    /// [`BlockExpr`] so the surface layer's existing block projection
+    /// (`BlockExpr` → `ExprSeq`) applies unchanged and `let x = 1; x + 1`
+    /// gets block semantics.
+    pub(crate) fn repl_expr_seq(&mut self) {
+        let m = self.start();
+        while !self.at_eof() {
+            let before = self.snapshot();
+            self.expr();
+            if self.errored_since(&before) {
+                break;
+            }
+            if self.at(Semicolon) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        if !self.at_eof() {
+            // Anything left over is not part of an expression sequence;
+            // collect it into an error node (mirroring source_file recovery)
+            // so the tree stays lossless.
+            let e = self.start();
+            self.error(format!(
+                "expected `;` or the end of the input, found {}",
+                self.current().describe()
+            ));
+            while !self.at_eof() {
+                self.bump();
+            }
+            e.complete(self, ErrorNode);
+        }
+        m.complete(self, BlockExpr);
+    }
+
     /// `|x, y: T| (-> T)? body`. A `||` token is an empty parameter list
     /// (the lexer fuses the two pipes).
     fn lambda_expr(&mut self) {

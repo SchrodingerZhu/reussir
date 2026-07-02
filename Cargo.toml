@@ -43,7 +43,10 @@ smallvec = "1.15"
 # keep the v0 Punycode encoder's per-occurrence "code points placed to the left"
 # query sub-linear, so Bootstring encoding is O(n log n) rather than O(n²).
 ftree = "1.3.0"
-cstree = { version = "0.14", features = ["derive", "lasso_compat"] }
+# `multi_threaded_interning` provides the shared (Arc-able) token interner a
+# REPL session uses to keep TokenKeys stable across many `parse` calls (see
+# `reussir_syntax::parse_with_interner`).
+cstree = { version = "0.14", features = ["derive", "lasso_compat", "multi_threaded_interning"] }
 # rustc's extracted union-find: keyed unification with value merging and
 # snapshot/rollback (the logged path-compression makes speculation correct).
 ena = "0.14"

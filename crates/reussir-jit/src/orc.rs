@@ -23,8 +23,9 @@ use llvm_sys::error::{LLVMDisposeErrorMessage, LLVMErrorRef, LLVMGetErrorMessage
 use llvm_sys::ir_reader::LLVMParseIRInContext;
 use llvm_sys::orc2::lljit::{
     LLVMOrcCreateLLJIT, LLVMOrcDisposeLLJIT, LLVMOrcLLJITAddLLVMIRModule,
-    LLVMOrcLLJITAddObjectFile, LLVMOrcLLJITGetDataLayoutStr, LLVMOrcLLJITGetGlobalPrefix,
-    LLVMOrcLLJITGetMainJITDylib, LLVMOrcLLJITLookup, LLVMOrcLLJITMangleAndIntern, LLVMOrcLLJITRef,
+    LLVMOrcLLJITAddLLVMIRModuleWithRT, LLVMOrcLLJITAddObjectFile, LLVMOrcLLJITAddObjectFileWithRT,
+    LLVMOrcLLJITGetDataLayoutStr, LLVMOrcLLJITGetGlobalPrefix, LLVMOrcLLJITGetMainJITDylib,
+    LLVMOrcLLJITLookup, LLVMOrcLLJITMangleAndIntern, LLVMOrcLLJITRef,
 };
 use llvm_sys::orc2::{
     LLVMJITEvaluatedSymbol, LLVMJITSymbolFlags, LLVMJITSymbolGenericFlags, LLVMOrcAbsoluteSymbols,
@@ -32,7 +33,8 @@ use llvm_sys::orc2::{
     LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess,
     LLVMOrcCreateNewThreadSafeContextFromLLVMContext, LLVMOrcCreateNewThreadSafeModule,
     LLVMOrcDefinitionGeneratorRef, LLVMOrcDisposeThreadSafeContext, LLVMOrcExecutorAddress,
-    LLVMOrcJITDylibAddGenerator, LLVMOrcJITDylibDefine,
+    LLVMOrcJITDylibAddGenerator, LLVMOrcJITDylibCreateResourceTracker, LLVMOrcJITDylibDefine,
+    LLVMOrcReleaseResourceTracker, LLVMOrcResourceTrackerRef, LLVMOrcResourceTrackerRemove,
 };
 use llvm_sys::prelude::{LLVMContextRef, LLVMMemoryBufferRef, LLVMModuleRef};
 use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
@@ -99,6 +101,31 @@ fn check_error(error: LLVMErrorRef) -> Result<(), String> {
 /// A persistent ORC `LLJIT` engine for Reussir.
 pub struct OrcJit {
     jit: LLVMOrcLLJITRef,
+}
+
+/// A handle to one tracked module added with [`OrcJit::add_module_tracked`]
+/// or [`OrcJit::add_ir_module_tracked`]: a `ResourceTracker` scoped to that
+/// module's resources in the main `JITDylib`.
+///
+/// Passing the handle to [`OrcJit::remove_module`] removes the module's
+/// symbols and memory from the session — the failure-recovery path a REPL
+/// needs when a module was added but materialization then failed. Dropping
+/// the handle instead releases only the tracker: the module stays in the
+/// session permanently (its resources fold into the dylib default).
+#[derive(Debug)]
+pub struct ModuleHandle {
+    tracker: LLVMOrcResourceTrackerRef,
+}
+
+// Resource trackers are part of the execution session, which is internally
+// synchronized (same rationale as `OrcJit` itself).
+unsafe impl Send for ModuleHandle {}
+unsafe impl Sync for ModuleHandle {}
+
+impl Drop for ModuleHandle {
+    fn drop(&mut self) {
+        unsafe { LLVMOrcReleaseResourceTracker(self.tracker) }
+    }
 }
 
 // The LLJIT session is internally synchronized and may be used across threads.
@@ -240,6 +267,22 @@ impl OrcJit {
     /// Parses LLVM IR text and adds it to the main `JITDylib`. `name` only labels
     /// the buffer for diagnostics.
     pub fn add_ir_module(&self, name: &str, ir: &str) -> Result<(), String> {
+        self.add_ir_module_at(name, ir, std::ptr::null_mut())
+    }
+
+    /// Like [`OrcJit::add_ir_module`], but scopes the module's resources to a
+    /// returned [`ModuleHandle`] so it can later be removed with
+    /// [`OrcJit::remove_module`].
+    pub fn add_ir_module_tracked(&self, name: &str, ir: &str) -> Result<ModuleHandle, String> {
+        self.tracked(|tracker| self.add_ir_module_at(name, ir, tracker))
+    }
+
+    fn add_ir_module_at(
+        &self,
+        name: &str,
+        ir: &str,
+        tracker: LLVMOrcResourceTrackerRef,
+    ) -> Result<(), String> {
         unsafe {
             let context = LLVMContextCreate();
 
@@ -263,7 +306,7 @@ impl OrcJit {
                 return Err(format!("failed to parse LLVM IR: {message}"));
             }
 
-            self.add_owned_module(context, module)
+            self.add_owned_module(context, module, tracker)
         }
     }
 
@@ -285,6 +328,27 @@ impl OrcJit {
     /// [`reussir_backend::llvm::Finalized`] here. Until then a module containing
     /// `reussir.polyffi` fails loudly at `run_lowering_pipeline`, not silently.
     pub fn add_module(&self, module: &Module, opt: OptLevel) -> Result<(), String> {
+        self.add_module_at(module, opt, std::ptr::null_mut())
+    }
+
+    /// Like [`OrcJit::add_module`], but scopes the module's resources to a
+    /// returned [`ModuleHandle`] so it can later be removed with
+    /// [`OrcJit::remove_module`] — e.g. a REPL evicting an input whose
+    /// materialization failed after the module was added.
+    pub fn add_module_tracked(
+        &self,
+        module: &Module,
+        opt: OptLevel,
+    ) -> Result<ModuleHandle, String> {
+        self.tracked(|tracker| self.add_module_at(module, opt, tracker))
+    }
+
+    fn add_module_at(
+        &self,
+        module: &Module,
+        opt: OptLevel,
+        tracker: LLVMOrcResourceTrackerRef,
+    ) -> Result<(), String> {
         let _span = tracing::debug_span!("orcjit_add_module", opt = ?opt).entered();
         unsafe {
             // The translated module is created in (and owned alongside) `context`.
@@ -302,7 +366,7 @@ impl OrcJit {
             if opt == OptLevel::Tpde {
                 // TPDE compiles the IR to an object directly; the IR module and
                 // its context are not handed to the JIT, so we free them here.
-                let result = self.add_tpde_object(llvm_module);
+                let result = self.add_tpde_object(llvm_module, tracker);
                 LLVMDisposeModule(llvm_module);
                 LLVMContextDispose(context);
                 return result;
@@ -311,15 +375,50 @@ impl OrcJit {
             // Run the Reussir LLVM passes in place, then add the IR module.
             tracing::trace!("running backend LLVM pass pipeline");
             run_backend_llvm_pipeline(llvm_module, opt);
-            self.add_owned_module(context, llvm_module)?;
+            self.add_owned_module(context, llvm_module, tracker)?;
             tracing::debug!("added LLVM-IR module to the JIT");
             Ok(())
         }
     }
 
+    // Runs `add` against a fresh per-module resource tracker, wrapping it in a
+    // [`ModuleHandle`] on success. On failure nothing was added under the
+    // tracker, so only the tracker reference itself is released.
+    fn tracked(
+        &self,
+        add: impl FnOnce(LLVMOrcResourceTrackerRef) -> Result<(), String>,
+    ) -> Result<ModuleHandle, String> {
+        let tracker = unsafe {
+            let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
+            LLVMOrcJITDylibCreateResourceTracker(dylib)
+        };
+        match add(tracker) {
+            Ok(()) => Ok(ModuleHandle { tracker }),
+            Err(message) => {
+                unsafe { LLVMOrcReleaseResourceTracker(tracker) };
+                Err(message)
+            }
+        }
+    }
+
+    /// Removes a tracked module's resources — its symbols and any compiled
+    /// memory — from the session. Already-materialized code in *other*
+    /// modules that called into the removed module keeps its (now dangling)
+    /// resolutions, so this is intended for modules whose symbols were never
+    /// successfully materialized (the REPL failure-recovery path).
+    pub fn remove_module(&self, handle: ModuleHandle) -> Result<(), String> {
+        // The handle's Drop releases the tracker reference after removal.
+        check_error(unsafe { LLVMOrcResourceTrackerRemove(handle.tracker) })
+    }
+
     // Compiles a module to an object with TPDE and adds the object to the main
-    // JITDylib. Does not take ownership of `module`.
-    fn add_tpde_object(&self, module: LLVMModuleRef) -> Result<(), String> {
+    // JITDylib (or to `tracker`, when non-null). Does not take ownership of
+    // `module`.
+    fn add_tpde_object(
+        &self,
+        module: LLVMModuleRef,
+        tracker: LLVMOrcResourceTrackerRef,
+    ) -> Result<(), String> {
         if !has_tpde() {
             return Err("TPDE support is not compiled into the backend".into());
         }
@@ -335,20 +434,27 @@ impl OrcJit {
                 tracing::error!("TPDE compilation failed");
                 return Err("TPDE compilation failed".into());
             }
-            let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
-            // Consumes `buffer`.
-            check_error(LLVMOrcLLJITAddObjectFile(self.jit, dylib, buffer))?;
+            // Both variants consume `buffer`.
+            let result = if tracker.is_null() {
+                let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
+                LLVMOrcLLJITAddObjectFile(self.jit, dylib, buffer)
+            } else {
+                LLVMOrcLLJITAddObjectFileWithRT(self.jit, tracker, buffer)
+            };
+            check_error(result)?;
             tracing::debug!("added TPDE object to the JIT");
             Ok(())
         }
     }
 
-    // Wraps an owned (context, module) pair in a thread-safe module and adds it to
-    // the main JITDylib. Consumes ownership of both.
+    // Wraps an owned (context, module) pair in a thread-safe module and adds it
+    // to the main JITDylib (or to `tracker`, when non-null). Consumes ownership
+    // of both.
     unsafe fn add_owned_module(
         &self,
         context: LLVMContextRef,
         module: LLVMModuleRef,
+        tracker: LLVMOrcResourceTrackerRef,
     ) -> Result<(), String> {
         unsafe {
             // The thread-safe context takes ownership of `context`; the
@@ -358,8 +464,14 @@ impl OrcJit {
             let ts_module = LLVMOrcCreateNewThreadSafeModule(module, ts_context);
             LLVMOrcDisposeThreadSafeContext(ts_context);
 
-            let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
-            check_error(LLVMOrcLLJITAddLLVMIRModule(self.jit, dylib, ts_module))
+            if tracker.is_null() {
+                let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
+                check_error(LLVMOrcLLJITAddLLVMIRModule(self.jit, dylib, ts_module))
+            } else {
+                check_error(LLVMOrcLLJITAddLLVMIRModuleWithRT(
+                    self.jit, tracker, ts_module,
+                ))
+            }
         }
     }
 
@@ -461,6 +573,86 @@ mod tests {
             return;
         }
         assert_eq!(jit_add(OptLevel::Tpde), 42);
+    }
+
+    #[test]
+    fn a_failed_add_leaves_the_session_usable() {
+        let jit = OrcJit::new().expect("create LLJIT");
+        // Unparsable IR fails the add without defining anything.
+        assert!(jit.add_ir_module_tracked("bad", "this is not IR").is_err());
+        // The session is intact: the same engine accepts and runs new code.
+        jit.add_ir_module("good", "define i32 @fine() { ret i32 7 }")
+            .expect("add after failure");
+        let address = jit.lookup("fine").expect("lookup fine");
+        let fine: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address as usize) };
+        assert_eq!(fine(), 7);
+    }
+
+    #[test]
+    fn a_removed_module_frees_its_symbols_for_redefinition() {
+        let jit = OrcJit::new().expect("create LLJIT");
+        // Add a tracked module but do NOT materialize it (no lookup), then
+        // remove it — the REPL failure-recovery path.
+        let handle = jit
+            .add_ir_module_tracked("first", "define i32 @answer() { ret i32 1 }")
+            .expect("tracked add");
+        jit.remove_module(handle).expect("remove");
+
+        // The name is free again; a fresh definition materializes fine.
+        jit.add_ir_module("second", "define i32 @answer() { ret i32 42 }")
+            .expect("redefine after removal");
+        let address = jit.lookup("answer").expect("lookup answer");
+        let answer: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address as usize) };
+        assert_eq!(answer(), 42);
+    }
+
+    #[test]
+    fn a_dropped_handle_keeps_the_module_alive() {
+        let jit = OrcJit::new().expect("create LLJIT");
+        let handle = jit
+            .add_ir_module_tracked("kept", "define i32 @kept() { ret i32 9 }")
+            .expect("tracked add");
+        drop(handle);
+        let address = jit.lookup("kept").expect("lookup kept");
+        let kept: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address as usize) };
+        assert_eq!(kept(), 9);
+    }
+
+    #[test]
+    fn tracked_mlir_modules_run_and_duplicates_are_rejected() {
+        let context = reussir_backend::context();
+        let source = r#"
+            module {
+              func.func @tracked_add(%a: i32, %b: i32) -> i32 {
+                %0 = arith.addi %a, %b : i32
+                func.return %0 : i32
+              }
+            }
+        "#;
+        let mut module = Module::parse(&context, source).expect("module should parse");
+        reussir_backend::pipeline::run_lowering_pipeline(
+            &context,
+            &mut module,
+            &reussir_backend::pipeline::LoweringOptions::default(),
+        )
+        .expect("lowering should succeed");
+
+        let jit = OrcJit::new().expect("create LLJIT");
+        let _handle = jit
+            .add_module_tracked(&module, OptLevel::Default)
+            .expect("tracked add");
+        let address = jit.lookup("tracked_add").expect("lookup");
+        let add: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(address as usize) };
+        assert_eq!(add(20, 22), 42);
+
+        // A second module defining the same materialized symbol is rejected,
+        // and the rejection reports the duplicate.
+        let err = jit
+            .add_ir_module_tracked("dup", "define i32 @tracked_add() { ret i32 0 }")
+            .expect_err("duplicate symbol");
+        assert!(err.contains("uplicate"), "{err}");
+        // The engine is still usable afterwards.
+        assert_eq!(add(1, 2), 3);
     }
 
     // A host function defined as an absolute symbol and called from JIT'd code.

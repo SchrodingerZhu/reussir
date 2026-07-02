@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 pub mod orc;
 
-pub use orc::{OptLevel, OrcJit};
+pub use orc::{ModuleHandle, OptLevel, OrcJit};
 
 /// Locates the Reussir runtime shared library.
 ///

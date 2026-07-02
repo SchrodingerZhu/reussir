@@ -26,10 +26,11 @@ pub mod ctxt;
 pub mod fulfill;
 pub mod hir;
 pub mod pattern;
+pub mod repl;
 pub mod resolve;
 pub mod ty_eval;
 
-pub use ctxt::{DefaultCap, Elaborator, Report, Severity, render_reports};
+pub use ctxt::{Checkpoint, DefaultCap, Elaborator, Report, Severity, render_reports};
 
 use reussir_syntax::kind::{Resolver, TokenKey};
 
@@ -69,6 +70,113 @@ mod tests {
                 elab.reports
             );
             f(&elab, tcx);
+        });
+    }
+
+    #[test]
+    fn try_extend_accumulates_and_rolls_back_atomically() {
+        use std::sync::Arc;
+
+        with_tcx(|tcx| {
+            // The REPL flow: many small parses sharing one interner, one
+            // persistent elaborator.
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+
+            // Input 1: a definition is accepted.
+            let p1 = parse("fn double(x: i32) -> i32 { x + x }");
+            elab.try_extend(&surface::program(&p1.root))
+                .expect("first definition");
+            assert_eq!(elab.elaborated.len(), 1);
+
+            // Input 2: a batch containing a duplicate is rejected wholesale —
+            // including its error-free items.
+            let p2 = parse(
+                "fn triple(x: i32) -> i32 { 3 * x }\n\
+                 fn double(x: i32) -> i32 { x }",
+            );
+            let errs = elab
+                .try_extend(&surface::program(&p2.root))
+                .expect_err("duplicate must be rejected");
+            assert!(
+                errs.iter()
+                    .any(|r| r.message.contains("defined more than once")),
+                "{errs:#?}"
+            );
+            assert_eq!(elab.elaborated.len(), 1, "batch rolled back");
+            assert!(!elab.has_errors(), "rejected reports don't persist");
+
+            // Input 3: `triple` was rolled back, so its name is free again,
+            // and cross-input references (`double`) resolve.
+            let p3 = parse("fn triple(x: i32) -> i32 { double(x) + x }");
+            elab.try_extend(&surface::program(&p3.root))
+                .expect("retracted name is reusable");
+            assert_eq!(elab.elaborated.len(), 2);
+
+            // Input 4: a type error rolls back the whole batch too.
+            let p4 = parse("fn bad() -> i32 { true }");
+            elab.try_extend(&surface::program(&p4.root))
+                .expect_err("type mismatch");
+            assert_eq!(elab.elaborated.len(), 2);
+
+            // A record checkpointed away frees its fields and name as well.
+            let p5 = parse("struct P { x: i32 }\nstruct P { y: i32 }");
+            elab.try_extend(&surface::program(&p5.root))
+                .expect_err("duplicate record in one batch");
+            assert!(elab.records.values().all(|r| elab.sym(r.name) != "P"));
+            let p6 = parse("struct P { x: i32, y: i32 }");
+            elab.try_extend(&surface::program(&p6.root))
+                .expect("name free after rollback");
+        });
+    }
+
+    #[test]
+    fn duplicate_definitions_are_rejected_without_clobbering() {
+        with_tcx(|tcx| {
+            let source = "struct P { x: i32, y: i32 }\n\
+                          struct P { z: f64 }\n\
+                          fn f(a: i32) -> i32 { a }\n\
+                          fn f(b: f64, c: f64) -> f64 { b }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+
+            let duplicates = elab
+                .reports
+                .iter()
+                .filter(|r| r.message.contains("defined more than once"))
+                .count();
+            assert_eq!(duplicates, 2, "reports: {:#?}", elab.reports);
+
+            // The first `P` keeps its own fields — the duplicate declaration
+            // must not repopulate the surviving record.
+            let p = elab
+                .records
+                .values()
+                .find(|r| elab.sym(r.name) == "P")
+                .expect("record P");
+            let crate::semi::ctxt::RecordFields::Named(fields) =
+                p.fields.as_ref().expect("populated")
+            else {
+                panic!("named fields");
+            };
+            assert_eq!(fields.len(), 2);
+
+            // Only the first `f` was checked; the duplicate's body was not
+            // elaborated against the surviving prototype.
+            let fs: Vec<_> = elab
+                .elaborated
+                .iter()
+                .filter(|f| elab.sym(f.name) == "f")
+                .collect();
+            assert_eq!(fs.len(), 1);
+            assert_eq!(fs[0].params.len(), 1);
         });
     }
 

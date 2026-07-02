@@ -16,8 +16,9 @@
 //! each obligation against the (now solved) self type — via impl search for
 //! concrete types and super-trait subsumption for in-scope generics.
 
+use crate::semi::hir;
 use crate::semi::traits::{Obligation, TraitRef};
-use crate::semi::ty::TyKind;
+use crate::semi::ty::{FpTy, IntTy, TyKind};
 use crate::surface::Span;
 
 use super::ctxt::Elaborator;
@@ -112,6 +113,50 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         for p in pending {
             self.error(p.span, "type annotations needed: cannot resolve a bound");
+        }
+    }
+
+    /// REPL defaulting: solve numeric holes that only literal/arithmetic
+    /// bounds constrain. A hole pending a `FloatingPoint` obligation defaults
+    /// to `f64`; a hole pending `Integral` or `Num` defaults to `i64` (the
+    /// generalization of GHCi-style defaulting the old REPL applied to the
+    /// root type only). Obligations stay registered — the subsequent
+    /// [`resolve_obligations`](Elaborator::resolve_obligations) discharges
+    /// them against the now-solved types, and still errors on genuinely
+    /// conflicting bounds.
+    ///
+    /// Order matters: a hole can carry both `Num` (from arithmetic) and
+    /// `FloatingPoint` (from a float literal), e.g. `1.5 * 2`; the float
+    /// default must win, so `FloatingPoint` holes are solved first.
+    pub(super) fn default_numeric_holes(&mut self) {
+        let f64_ty = self.tcx.mk_fp(FpTy::Ieee(64));
+        let i64_ty = self.tcx.mk_int(IntTy::Signed(64));
+        let passes = [
+            (self.builtins.floating_point, f64_ty),
+            (self.builtins.integral, i64_ty),
+            (self.builtins.num, i64_ty),
+        ];
+        for (want, default) in passes {
+            let candidates: Vec<_> = self
+                .fulfill
+                .pending
+                .iter()
+                .filter(|p| {
+                    let Obligation::Trait(tref) = &p.obligation;
+                    tref.trait_id == want
+                })
+                .map(|p| {
+                    let Obligation::Trait(tref) = &p.obligation;
+                    tref.self_ty()
+                })
+                .collect();
+            for ty in candidates {
+                let ty = self.infer.shallow_resolve(ty);
+                if matches!(ty.kind(), TyKind::Hole(_)) {
+                    // Unifying a hole with a ground type cannot fail.
+                    let _ = self.infer.unify(ty, default);
+                }
+            }
         }
     }
 
@@ -213,7 +258,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// Does `ty` contain an unsolved inference hole anywhere in its structure?
 /// `ty` is expected to be deeply resolved (`InferCtxt::resolve`), so a remaining
 /// `Hole` is an unsolved variable, not an indirection.
-fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
+pub(super) fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
     match ty.kind() {
         TyKind::Hole(_) => true,
         TyKind::Record { args, .. } => args.iter().any(|a| ty_has_hole(*a)),
@@ -222,6 +267,74 @@ fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
         }
         TyKind::Nullable(inner) => ty_has_hole(*inner),
         _ => false,
+    }
+}
+
+/// Does any type anywhere in a zonked expression tree still hold an inference
+/// hole? Monomorphization panics on a residual hole (`subst_ty`), so a REPL
+/// input must be rejected up front when one survives zonking — e.g. a bare
+/// `Nullable::Null`, whose element hole carries no obligation for
+/// [`Elaborator::default_numeric_holes`] to solve. Mirrors the `zonk_expr`
+/// traversal: node types, cast targets, call type arguments, closure
+/// capture/parameter types, and decision-tree bodies/guards.
+pub(super) fn expr_has_hole(e: &hir::Expr<'_>) -> bool {
+    use hir::ExprKind::*;
+    if ty_has_hole(e.ty) {
+        return true;
+    }
+    match &e.kind {
+        GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => false,
+        Negate(e) | Not(e) | RegionRun(e) | Proj(e, _) => expr_has_hole(e),
+        Cast(e, t) => ty_has_hole(*t) || expr_has_hole(e),
+        Arith(l, _, r) | Cmp(l, _, r) => expr_has_hole(l) || expr_has_hole(r),
+        If(c, t, f) => expr_has_hole(c) || expr_has_hole(t) || expr_has_hole(f),
+        Assign(dst, _, src) => expr_has_hole(dst) || expr_has_hole(src),
+        Let { value, .. } => expr_has_hole(value),
+        Seq(es) => es.iter().any(expr_has_hole),
+        FuncCall { ty_args, args, .. }
+        | CompoundCall { ty_args, args, .. }
+        | VariantCall { ty_args, args, .. } => {
+            ty_args.iter().any(|t| ty_has_hole(*t)) || args.iter().any(expr_has_hole)
+        }
+        NullableCall(e) => e.as_deref().is_some_and(expr_has_hole),
+        Closure(c) => {
+            c.captures
+                .iter()
+                .chain(&c.params)
+                .any(|(_, t)| ty_has_hole(*t))
+                || expr_has_hole(&c.body)
+        }
+        ClosureCall { target, args } => expr_has_hole(target) || args.iter().any(expr_has_hole),
+        Match(scrutinee, tree) => expr_has_hole(scrutinee) || tree_has_hole(tree),
+    }
+}
+
+fn tree_has_hole(tree: &hir::DecisionTree<'_>) -> bool {
+    use hir::{DecisionTree::*, SwitchCases};
+    match tree {
+        Uncovered | Unreachable => false,
+        Leaf { body, .. } => expr_has_hole(body),
+        Guard {
+            guard,
+            success,
+            failure,
+            ..
+        } => expr_has_hole(guard) || tree_has_hole(success) || tree_has_hole(failure),
+        Switch { cases, .. } => match cases {
+            SwitchCases::Int { cases, default } => {
+                cases.iter().any(|(_, t)| tree_has_hole(t)) || tree_has_hole(default)
+            }
+            SwitchCases::Bool { if_true, if_false } => {
+                tree_has_hole(if_true) || tree_has_hole(if_false)
+            }
+            SwitchCases::Ctor(trees) => trees.iter().any(tree_has_hole),
+            SwitchCases::String { cases, default } => {
+                cases.iter().any(|(_, t)| tree_has_hole(t)) || tree_has_hole(default)
+            }
+            SwitchCases::Nullable { non_null, null } => {
+                tree_has_hole(non_null) || tree_has_hole(null)
+            }
+        },
     }
 }
 

@@ -126,6 +126,32 @@ impl DefTable {
         self.values.keys().copied()
     }
 
+    /// The number of declared defs — a checkpoint for [`DefTable::truncate`].
+    pub fn len(&self) -> usize {
+        self.defs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.defs.is_empty()
+    }
+
+    /// Retract every def declared at index `>= len`, removing its name from the
+    /// owning namespace scope. The REPL uses this to roll an elaboration
+    /// attempt back atomically; it relies on `declare` rejecting clashes, so a
+    /// name in a scope always maps to the def that introduced it.
+    pub fn truncate(&mut self, len: usize) {
+        while self.defs.len() > len {
+            let id = DefId((self.defs.len() - 1) as u32);
+            let info = self.defs.pop().expect("len checked above");
+            let scope = match info.kind {
+                DefKind::Record => &mut self.types,
+                DefKind::Function => &mut self.values,
+            };
+            let removed = scope.remove(&info.path.name());
+            debug_assert_eq!(removed, Some(id), "scope must point at the popped def");
+        }
+    }
+
     pub fn info(&self, def: DefId) -> &DefInfo {
         &self.defs[def.0 as usize]
     }
@@ -170,5 +196,23 @@ mod tests {
         let mut t = DefTable::new();
         assert!(t.declare_record(k(1)).is_some());
         assert!(t.declare_record(k(1)).is_none());
+    }
+
+    #[test]
+    fn truncate_retracts_later_defs() {
+        let mut t = DefTable::new();
+        let a = t.declare_record(k(1)).expect("fresh");
+        let cp = t.len();
+        t.declare_record(k(2)).expect("fresh");
+        t.declare_function(k(3)).expect("fresh");
+        t.truncate(cp);
+        // Defs before the checkpoint survive; later ones are gone from both
+        // the registry and their namespace scopes.
+        assert_eq!(t.resolve_record(k(1)), Some(a));
+        assert_eq!(t.resolve_record(k(2)), None);
+        assert_eq!(t.resolve_function(k(3)), None);
+        assert_eq!(t.len(), cp);
+        // A retracted name can be declared again.
+        assert!(t.declare_record(k(2)).is_some());
     }
 }

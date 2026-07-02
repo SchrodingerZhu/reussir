@@ -1049,6 +1049,16 @@ pub fn program(root: &ResolvedNode) -> Program {
     root.children().map(Stmt::new).collect()
 }
 
+/// View the root of a REPL expression parse
+/// ([`reussir_syntax::parse_repl`] with [`reussir_syntax::ReplInputKind::Expr`])
+/// as a typed expression. The root is a brace-less `BlockExpr`, so its
+/// [`Expr::kind`] is an [`ExprKind::ExprSeq`] and `let x = 1; x + 1` inputs
+/// get block semantics.
+pub fn repl_expr(root: &ResolvedNode) -> Expr {
+    assert_eq!(root.kind(), BlockExpr, "expected a REPL expression root");
+    Expr::new(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
