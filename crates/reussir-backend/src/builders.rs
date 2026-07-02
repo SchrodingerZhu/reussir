@@ -9,7 +9,8 @@
 
 use melior::Context;
 use melior::ir::attribute::{
-    DenseI32ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
+    ArrayAttribute, DenseI32ArrayAttribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute,
+    IntegerAttribute, StringAttribute,
 };
 use melior::ir::operation::{OperationBuilder, OperationRef};
 use melior::ir::r#type::IntegerType;
@@ -345,4 +346,72 @@ pub fn record_extract<'c>(
         .add_results(&[field_type])
         .build()
         .expect("valid reussir.record.extract")
+}
+
+/// `reussir.record.dispatch (<variant> : <ref>) (-> <result>)? { [t] -> {…} … }`
+/// — dispatch on the tag of the variant record behind `variant`, one region per
+/// entry of `tags_per_region` (region `i` handles the single tag
+/// `tags_per_region[i]`, whose block takes a `!reussir.ref` to that case's
+/// payload compound).
+///
+/// The `tagSets` attribute is an array of `DenseI64ArrayAttr`s (one tag set per
+/// region), matching the dialect's expansion to `scf.index_switch`. Each region
+/// must terminate with [`scf_yield`]. Built raw because the op's result is
+/// `Optional`: melior's generated builder takes the regions and the `tagSets`
+/// attribute but exposes no result-type parameter, so it can only build a void
+/// dispatch — a value-producing `match` needs the result set here.
+pub fn record_dispatch<'c>(
+    context: &'c Context,
+    variant: Value<'c, '_>,
+    tags_per_region: &[i64],
+    result_type: Option<Type<'c>>,
+    regions: Vec<Region<'c>>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let tag_sets: Vec<_> = tags_per_region
+        .iter()
+        .map(|&t| DenseI64ArrayAttribute::new(context, &[t]).into())
+        .collect();
+    let tag_sets_attr = ArrayAttribute::new(context, &tag_sets).into();
+    let mut builder = OperationBuilder::new("reussir.record.dispatch", location)
+        .add_operands(&[variant])
+        .add_attributes(&[(Identifier::new(context, "tagSets"), tag_sets_attr)])
+        .add_regions_vec(regions);
+    if let Some(result_type) = result_type {
+        builder = builder.add_results(&[result_type]);
+    }
+    builder.build().expect("valid reussir.record.dispatch")
+}
+
+/// `reussir.scf.yield (<value> : <type>)?` — terminate a `reussir.record.dispatch`
+/// or `reussir.nullable.dispatch` arm, optionally yielding the dispatch's result.
+/// Built raw like [`region_yield`]: the op's `$value` operand is `Optional`, and
+/// melior's generated builder takes only `(context, location)` — it exposes no
+/// parameter for it, so it can build only a value-less yield. The value is absent
+/// for a void dispatch.
+pub fn scf_yield<'c>(value: Option<Value<'c, '_>>, location: Location<'c>) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.scf.yield", location);
+    if let Some(value) = value {
+        builder = builder.add_operands(&[value]);
+    }
+    builder.build().expect("valid reussir.scf.yield")
+}
+
+/// `ub.poison : <ty>` — a poison value of arbitrary type, used to terminate a
+/// provably-dead branch (a non-exhaustive gap or a redundant arm the frontend
+/// already diagnosed) whose result is never observed.
+///
+/// Built raw because melior binds no `ub` dialect at all (it is neither a
+/// `melior::dialect` module nor one of its `ods` dialects), so there is no
+/// generated builder; the dialect itself is registered in the context as a
+/// Reussir lowering dependency. The `value` attribute is the `#ub.poison`
+/// poison attribute, parsed since melior cannot construct it directly.
+pub fn poison<'c>(context: &'c Context, ty: Type<'c>, location: Location<'c>) -> Operation<'c> {
+    let value = melior::ir::attribute::Attribute::parse(context, "#ub.poison")
+        .expect("valid #ub.poison attribute");
+    OperationBuilder::new("ub.poison", location)
+        .add_attributes(&[(Identifier::new(context, "value"), value)])
+        .add_results(&[ty])
+        .build()
+        .expect("valid ub.poison")
 }

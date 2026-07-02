@@ -24,14 +24,15 @@ use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
 use reussir_backend::melior::ir::attribute::{
-    FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute, StringAttribute, TypeAttribute,
+    Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute,
+    StringAttribute, TypeAttribute,
 };
 use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType};
 use reussir_backend::melior::ir::{
     Block, BlockLike, Identifier, Location, Operation, Region, RegionLike, Type, Value,
 };
 
-use reussir_core::full::mir::{self, Expr, ExprKind};
+use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
@@ -54,42 +55,85 @@ use super::{LoweringError, Result, err};
 /// outside any region: a `regional` function seeds it with its implicit region
 /// parameter, and a plain function leaves it unset.
 ///
-/// A nested block (an `if` branch, a `region-run` body) is a nested scope that
-/// only ever *appends* bindings — variable ids are globally unique, so a scope
-/// never rebinds one already in `vars`. That lets a subscope be recovered by
-/// truncating `vars` back to its length on entry (see [`Env::subscope`]) instead
-/// of copying the whole map, which is why `vars` is an insertion-ordered map.
-struct Env<'c, 'b> {
+/// A nested block (an `if` branch, a `region-run` body, a `match` arm) is a
+/// nested scope that only ever *appends* to its append-only tables — variable
+/// ids are globally unique, so a scope never rebinds one already in `vars`, and
+/// `temps`/`anchors` are searched most-recent-first so an inner entry shadows an
+/// outer one at the same key. That lets a subscope be recovered by truncating
+/// each table back to its length on entry (see [`Env::subscope`]) instead of
+/// copying, which is why `vars` is an insertion-ordered map.
+///
+/// The last two tables serve `match` lowering, which walks a compiled
+/// [`DecisionTree`](reussir_core::full::mir::DecisionTree) rather than plain
+/// arms:
+///
+/// * `temps` maps a temporary expression's [`ExprId`] to the SSA value it
+///   produced. `vars` names *variables* for the reference-count ops, but a
+///   decision tree may match on an anonymous temporary (`match tail(xs) { … }`),
+///   whose per-leaf drop the ownership pass keys to the scrutinee's own id — this
+///   is the id→value lookup that lets that drop name the value. `temp_tys` on the
+///   [`Lowerer`] holds the matching type (it outlives the block, so it cannot
+///   ride here).
+/// * `anchors` records the value or reference reached at each scrutinee
+///   [`Path`](reussir_core::full::mir::Path) as the decision tree descends, so a
+///   leaf binding or a nested `Switch` projects the rest of its path from the
+///   nearest already-materialized point. A dispatch arm pushes the narrowed case
+///   reference at the switch's path, shadowing the enclosing entry there.
+struct Env<'c, 'b, 'tcx> {
     vars: IndexMap<VarId, Value<'c, 'b>, rustc_hash::FxBuildHasher>,
     region: Option<Value<'c, 'b>>,
+    temps: IndexMap<ExprId, Value<'c, 'b>, rustc_hash::FxBuildHasher>,
+    anchors: Vec<(SmallVec<[u32; 4]>, Anchor<'c, 'b, 'tcx>)>,
 }
 
-impl<'c, 'b> Env<'c, 'b> {
+/// A point already materialized while walking a `match`
+/// [`DecisionTree`](reussir_core::full::mir::DecisionTree), keyed in
+/// [`Env::anchors`] by the [`Path`](reussir_core::full::mir::Path) it sits at.
+#[derive(Clone, Copy)]
+enum Anchor<'c, 'b, 'tcx> {
+    /// The match root: the loaded scrutinee value (an `rc` pointer for a boxed
+    /// enum, the inline aggregate for a `[value]` one).
+    Root { val: Value<'c, 'b>, ty: Ty<'tcx> },
+    /// A dispatch arm's narrowed reference to a variant's case payload. The case
+    /// payload compound has no MIR [`Ty`], so its fields are projected through
+    /// the variant's own field-type list rather than the record layout.
+    Case {
+        reference: Value<'c, 'b>,
+        variant: &'tcx mir::VariantDef<'tcx>,
+        cap: ReussirCapability,
+    },
+}
+
+impl<'c, 'b, 'tcx> Env<'c, 'b, 'tcx> {
     /// An empty environment carrying `region` as its enclosing region handle.
     fn new(region: Option<Value<'c, 'b>>) -> Self {
         Self {
             vars: IndexMap::default(),
             region,
+            temps: IndexMap::default(),
+            anchors: Vec::new(),
         }
     }
 
     /// Run `f` in a nested block scope: it borrows the environment reborrowed at
     /// the nested block's (shorter) lifetime `'s`, and everything it adds is
-    /// discarded afterwards — `vars` is truncated back to its length on entry and
-    /// `region` is restored (a `region-run` body swaps in its own handle for the
-    /// duration).
+    /// discarded afterwards — `vars`/`temps`/`anchors` are truncated back to their
+    /// lengths on entry and `region` is restored (a `region-run` body swaps in its
+    /// own handle for the duration).
     ///
     /// The nested block's SSA values are shorter-lived than this environment
     /// (they borrow a block the caller created for the scope), and `&mut` is
     /// invariant, so the borrow checker will not let `f` insert them through a
-    /// `&mut Env<'c, 'b>`. This performs the one reborrow that shortens the value
-    /// lifetime; it is sound because every binding `f` makes at `'s` is removed
-    /// before returning, so no `'s`-lived value is ever observed at `'b`.
-    fn subscope<'s, R>(&mut self, f: impl FnOnce(&mut Env<'c, 's>) -> R) -> R
+    /// `&mut Env<'c, 'b, 'tcx>`. This performs the one reborrow that shortens the
+    /// value lifetime; it is sound because every binding `f` makes at `'s` is
+    /// removed before returning, so no `'s`-lived value is ever observed at `'b`.
+    fn subscope<'s, R>(&mut self, f: impl FnOnce(&mut Env<'c, 's, 'tcx>) -> R) -> R
     where
         'b: 's,
     {
-        let mark = self.vars.len();
+        let vars_mark = self.vars.len();
+        let temps_mark = self.temps.len();
+        let anchors_mark = self.anchors.len();
         let saved_region = self.region;
         // SAFETY: `'b: 's`, so viewing the stored `Value<'c, 'b>`s as
         // `Value<'c, 's>` is a lifetime *shortening* — a sound covariant coercion
@@ -97,9 +141,12 @@ impl<'c, 'b> Env<'c, 'b> {
         // aliases `*self`, but `self` is untouched until `f` returns, and the
         // truncate/restore below removes every `'s`-lived value `f` added before
         // `self` is next read at `'b`.
-        let short: &mut Env<'c, 's> = unsafe { &mut *(self as *mut Env<'c, 'b>).cast() };
+        let short: &mut Env<'c, 's, 'tcx> =
+            unsafe { &mut *(self as *mut Env<'c, 'b, 'tcx>).cast() };
         let r = f(short);
-        self.vars.truncate(mark);
+        self.vars.truncate(vars_mark);
+        self.temps.truncate(temps_mark);
+        self.anchors.truncate(anchors_mark);
         self.region = saved_region;
         r
     }
@@ -159,6 +206,10 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     pub(super) names: Option<&'p dyn Resolver<TokenKey>>,
     ownership: RefCell<OwnershipTable>,
     var_tys: RefCell<FxHashMap<VarId, Ty<'tcx>>>,
+    /// Ground types of the temporary expressions currently held in
+    /// [`Env::temps`], so a reference-count op the ownership pass keyed to such a
+    /// temporary (a `match` scrutinee's per-arm drop) can pick the right op.
+    temp_tys: RefCell<FxHashMap<ExprId, Ty<'tcx>>>,
     /// The location attached to ops as they are built. Set to the current
     /// expression's span by [`expr`](Self::expr) (saved and restored around each
     /// node), so every op a node emits shares that node's source position.
@@ -188,6 +239,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             names,
             ownership: RefCell::new(OwnershipTable::default()),
             var_tys: RefCell::new(FxHashMap::default()),
+            temp_tys: RefCell::new(FxHashMap::default()),
             cur_loc: RefCell::new(Location::unknown(context)),
             dbg_building: RefCell::new(FxHashSet::default()),
         }
@@ -226,6 +278,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         self.var_tys.borrow().get(&var).copied()
     }
 
+    fn temp_ty(&self, id: ExprId) -> Option<Ty<'tcx>> {
+        self.temp_tys.borrow().get(&id).copied()
+    }
+
     /// Lower one MIR function to a `func.func` operation.
     pub(super) fn function(&self, func: &mir::Function<'tcx>) -> Result<Operation<'c>> {
         // The function and its entry-level ops (block args, return) take the
@@ -256,6 +312,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // this body so the tree-walk can emit each node's reference-count ops.
         *self.ownership.borrow_mut() = analyze_function(self.tcx, func, &self.records);
         self.var_tys.borrow_mut().clear();
+        self.temp_tys.borrow_mut().clear();
 
         let region = Region::new();
         if let Some(body) = func.body {
@@ -333,7 +390,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn expr<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         // Attach this node's source position to every op it emits, restoring the
@@ -353,7 +410,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn expr_inner<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         use ExprKind::*;
@@ -458,7 +515,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 self.assign(block, env, dst, *field, src)?;
                 Ok(None)
             }
-            Match(..) => err("match lowering not yet implemented"),
+            Match(scrut, tree) => self.lower_match(block, env, e, scrut, tree),
             Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
             Variant { variant, args, .. } => self.variant(block, env, e, *variant, args).map(Some),
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
@@ -479,7 +536,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn compound<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
         args: &[Expr<'tcx>],
     ) -> Result<Value<'c, 'b>> {
@@ -508,7 +565,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn variant<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
         variant: usize,
         args: &[Expr<'tcx>],
@@ -542,7 +599,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn box_record<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &Env<'c, 'b>,
+        env: &Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
         payload: Value<'c, 'b>,
         inner_ty: Type<'c>,
@@ -585,7 +642,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn region_run<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         body: &Expr<'tcx>,
         ty: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
@@ -636,7 +693,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn assign<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         dst: &Expr<'tcx>,
         field: u32,
         src: &Expr<'tcx>,
@@ -674,7 +731,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn nullable_call<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
         inner: Option<&'tcx Expr<'tcx>>,
     ) -> Result<Value<'c, 'b>> {
@@ -710,7 +767,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn closure<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         c: &mir::ClosureExpr<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
@@ -787,7 +844,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn closure_call<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         target: &Expr<'tcx>,
         args: &'tcx [Expr<'tcx>],
     ) -> Result<Option<Value<'c, 'b>>> {
@@ -846,6 +903,624 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
+    // --- Pattern matching ---------------------------------------------------
+
+    /// Lower a `match`: evaluate the scrutinee once, then walk the compiled
+    /// decision tree, dispatching enums to `reussir.record.dispatch`, booleans and
+    /// integers to `scf.if`, and materializing each leaf's variable bindings by
+    /// projecting the scrutinee along their paths.
+    ///
+    /// The scrutinee is **borrowed** (its reference-count settlement — a per-arm
+    /// drop when it dies in the match — is placed by the ownership pass at each
+    /// leaf, keyed to the scrutinee's own id for a temporary or to its variable).
+    /// It is recorded as the root [`Anchor`] at the empty path so every binding
+    /// and nested switch resolves its path from the nearest already-materialized
+    /// point; a dispatch arm narrows that anchor to the case payload it receives.
+    fn lower_match<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        scrut: &Expr<'tcx>,
+        tree: &DecisionTree<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let scrut_val = self
+            .expr(block, env, scrut)?
+            .ok_or_else(|| LoweringError("match scrutinee is unit".into()))?;
+        // Record the scrutinee's type so the ownership pass's per-arm drop (keyed
+        // to the scrutinee id for a non-variable scrutinee) resolves it, and hold
+        // its value in `temps` for the same reason.
+        self.temp_tys.borrow_mut().insert(scrut.id, scrut.ty);
+        let temps_mark = env.temps.len();
+        let anchors_mark = env.anchors.len();
+        env.temps.insert(scrut.id, scrut_val);
+        let root_idx = env.anchors.len();
+        env.anchors.push((
+            SmallVec::new(),
+            Anchor::Root {
+                val: scrut_val,
+                ty: scrut.ty,
+            },
+        ));
+        let result = self.lower_tree(block, env, root_idx, tree, e.ty);
+        env.anchors.truncate(anchors_mark);
+        env.temps.truncate(temps_mark);
+        result
+    }
+
+    /// Lower one decision-tree node into `block`, yielding the match's result
+    /// value (`None` if the match is unit-typed). `root_idx` indexes the root
+    /// [`Anchor`] of the enclosing match, so a whole-scrutinee binding (path `[]`)
+    /// resolves to the original scrutinee value.
+    fn lower_tree<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        tree: &DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        match *tree {
+            DecisionTree::Leaf { body, bindings } => {
+                self.lower_leaf(block, env, root_idx, body, bindings, result_ty)
+            }
+            DecisionTree::Guard {
+                bindings,
+                guard,
+                success,
+                failure,
+            } => self.lower_guard(
+                block, env, root_idx, bindings, guard, success, failure, result_ty,
+            ),
+            DecisionTree::Switch { scrutinee, cases } => {
+                self.lower_switch(block, env, root_idx, scrutinee, cases, result_ty)
+            }
+            // A non-exhaustive gap or a redundant arm: both were already diagnosed
+            // by the frontend, so this position is dead — a poison of the result
+            // type terminates it without observing an undefined value.
+            DecisionTree::Uncovered | DecisionTree::Unreachable => self.dead_arm(block, result_ty),
+        }
+    }
+
+    /// Lower a `Switch` on the sub-value at `path`, choosing the dispatch shape by
+    /// the case family.
+    fn lower_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        cases: SwitchCases<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        match cases {
+            SwitchCases::Ctor(subtrees) => {
+                self.ctor_switch(block, env, root_idx, path, subtrees, result_ty)
+            }
+            SwitchCases::Bool { if_true, if_false } => {
+                self.bool_switch(block, env, root_idx, path, if_true, if_false, result_ty)
+            }
+            SwitchCases::Int { cases, default } => {
+                self.int_switch(block, env, root_idx, path, cases, default, result_ty)
+            }
+            SwitchCases::Nullable { .. } => err("nullable-pattern match lowering not yet implemented"),
+            SwitchCases::String { .. } => err("string-pattern match lowering not yet implemented"),
+        }
+    }
+
+    /// Lower an enum `Switch` to `reussir.record.dispatch`: one arm per variant
+    /// (in tag order), each receiving a `!reussir.ref` to that variant's case
+    /// payload, which becomes the narrowed anchor for the arm's sub-tree.
+    fn ctor_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        subtrees: &'tcx [DecisionTree<'tcx>],
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (variant_ref, enum_ty, cap) = self.resolve_variant_ref(block, env, path)?;
+        let variants = match self.tys.record_of(enum_ty).map(|r| r.layout) {
+            Some(mir::RecordLayout::Variant(variants)) => variants,
+            _ => return err("match scrutinee is not an enum"),
+        };
+        if subtrees.len() != variants.len() {
+            return err("match arm count does not match the enum's variant count");
+        }
+        let unit = is_unit(result_ty);
+        let result_type = if unit {
+            None
+        } else {
+            Some(self.tys.mlir_ty(result_ty)?)
+        };
+        let mut regions = Vec::with_capacity(subtrees.len());
+        let mut tags = Vec::with_capacity(subtrees.len());
+        for (i, subtree) in subtrees.iter().enumerate() {
+            let payload_ty = self.tys.variant_payload_of(enum_ty, i)?;
+            let arg_ref_ty = self.tys.ref_type_with_cap(payload_ty, cap);
+            let arm_block = Block::new(&[(arg_ref_ty, loc)]);
+            let arg: Value<'c, '_> = arm_block
+                .argument(0)
+                .map_err(|e| LoweringError(format!("missing dispatch arm argument: {e}").into()))?
+                .into();
+            let variant = &variants[i];
+            let anchor_path = SmallVec::<[u32; 4]>::from_slice(path);
+            env.subscope(|scope| {
+                scope.anchors.push((
+                    anchor_path,
+                    Anchor::Case {
+                        reference: arg,
+                        variant,
+                        cap,
+                    },
+                ));
+                let value = self.lower_tree(&arm_block, scope, root_idx, subtree, result_ty)?;
+                arm_block.append_operation(builders::scf_yield(value, loc));
+                Ok::<_, LoweringError>(())
+            })?;
+            let region = Region::new();
+            region.append_block(arm_block);
+            regions.push(region);
+            tags.push(i as i64);
+        }
+        let op = block.append_operation(builders::record_dispatch(
+            self.context,
+            variant_ref,
+            &tags,
+            result_type,
+            regions,
+            loc,
+        ));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Lower a boolean `Switch` to `scf.if`, its condition the (loaded) `i1` at
+    /// `path` and its two branches the `if_true`/`if_false` sub-trees.
+    #[allow(clippy::too_many_arguments)]
+    fn bool_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        if_true: &'tcx DecisionTree<'tcx>,
+        if_false: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (cond, _) = self.resolve_loaded(block, env, path)?;
+        let unit = is_unit(result_ty);
+        let result_tys = if unit {
+            Vec::new()
+        } else {
+            vec![self.tys.mlir_ty(result_ty)?]
+        };
+        let then_region = self.tree_branch_region(env, root_idx, if_true, result_ty)?;
+        let else_region = self.tree_branch_region(env, root_idx, if_false, result_ty)?;
+        let op = block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Lower an integer `Switch` to `scf.index_switch`. The case bodies always run
+    /// through the switch (one region per key, `default` as its default region —
+    /// the open family's fall-through), each terminated by `scf.yield`; only the
+    /// switched-on value differs by scrutinee width:
+    ///
+    /// * width ≤ 64 — the (loaded) scrutinee round-trips through `index`
+    ///   (`arith.index_cast` when signed, `arith.index_castui` when unsigned) and
+    ///   each key's low 64 bits is an exact `i64` case value.
+    /// * width > 64 — an `index` cannot hold the scrutinee and the keys may exceed
+    ///   `i64`, so a full-width `scf.if` compare-chain first reduces the keys to a
+    ///   compact selector in `[0, cases.len()]` (case `i` → `i`, no match → the
+    ///   default), and the switch dispatches on that. (Reachable once the frontend
+    ///   types integers wider than 64 bits — it rejects `i128` today.)
+    #[allow(clippy::too_many_arguments)]
+    fn int_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        cases: &'tcx [(i128, DecisionTree<'tcx>)],
+        default: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, path)?;
+        let width = match scrut_ty.kind() {
+            TyKind::Int(IntTy::Signed(w) | IntTy::Unsigned(w)) => *w,
+            _ => return err("integer match on a non-integer scrutinee"),
+        };
+        let unit = is_unit(result_ty);
+        let result_tys = if unit {
+            Vec::new()
+        } else {
+            vec![self.tys.mlir_ty(result_ty)?]
+        };
+        // The case bodies (which run once) and the default, in `scf.index_switch`
+        // region order: default first, then one region per key.
+        let mut regions = Vec::with_capacity(cases.len() + 1);
+        regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
+        for (_, subtree) in cases {
+            regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
+        }
+        let (arg, case_values) = if width > 64 {
+            // Reduce the wide keys to a dense selector, then switch on that.
+            let selector = self.wide_int_selector(block, scrut_val, scrut_ty, cases, 0)?;
+            (selector, (0..cases.len() as i64).collect::<Vec<_>>())
+        } else {
+            let index_ty = Type::index(self.context);
+            let signed = matches!(scrut_ty.kind(), TyKind::Int(IntTy::Signed(_)));
+            let cast = if signed {
+                arith::index_cast(scrut_val, index_ty, loc)
+            } else {
+                arith::index_castui(scrut_val, index_ty, loc)
+            };
+            let arg = self.append(block, cast);
+            (arg, cases.iter().map(|(key, _)| *key as i64).collect::<Vec<_>>())
+        };
+        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
+        let op = block.append_operation(scf::index_switch(
+            self.context,
+            arg,
+            &result_tys,
+            cases_attr,
+            regions,
+            loc,
+        ));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Reduce a wide-integer switch to a dense `index` selector: a right-nested
+    /// `scf.if` chain that tests the scrutinee against each key (full-width
+    /// `arith.cmpi`) and yields that case's position `idx`, falling through to the
+    /// next key on a miss and to `cases.len()` (the default's slot) when every key
+    /// has been ruled out.
+    fn wide_int_selector<'b>(
+        &self,
+        block: &'b Block<'c>,
+        scrut_val: Value<'c, 'b>,
+        scrut_ty: Ty<'tcx>,
+        cases: &'tcx [(i128, DecisionTree<'tcx>)],
+        idx: i64,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let index_ty = Type::index(self.context);
+        let Some(((key, _), rest)) = cases.split_first() else {
+            // Every key was ruled out: select the default's slot.
+            return Ok(self.index_const(block, idx));
+        };
+        let key_val = self.wide_int_constant(block, *key, scrut_ty)?;
+        let eq = self.append(
+            block,
+            arith::cmpi(self.context, CmpiPredicate::Eq, scrut_val, key_val, loc),
+        );
+        let then_block = Block::new(&[]);
+        let hit = self.index_const(&then_block, idx);
+        then_block.append_operation(scf::r#yield(&[hit], loc));
+        let then_region = Region::new();
+        then_region.append_block(then_block);
+        let else_block = Block::new(&[]);
+        let miss = self.wide_int_selector(&else_block, scrut_val, scrut_ty, rest, idx + 1)?;
+        else_block.append_operation(scf::r#yield(&[miss], loc));
+        let else_region = Region::new();
+        else_region.append_block(else_block);
+        let op = block.append_operation(scf::r#if(eq, &[index_ty], then_region, else_region, loc));
+        Ok(op.result(0).unwrap().into())
+    }
+
+    /// An `index`-typed constant.
+    fn index_const<'b>(&self, block: &'b Block<'c>, n: i64) -> Value<'c, 'b> {
+        let index_ty = Type::index(self.context);
+        self.append(
+            block,
+            arith::constant(
+                self.context,
+                IntegerAttribute::new(index_ty, n).into(),
+                self.loc(),
+            ),
+        )
+    }
+
+    /// Materialize an integer constant of `ty` holding `key`. melior's
+    /// `IntegerAttribute::new` takes only an `i64`, so a key wider than that is
+    /// built by parsing its textual attribute form (`<value> : iN`).
+    fn wide_int_constant<'b>(
+        &self,
+        block: &'b Block<'c>,
+        key: i128,
+        ty: Ty<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let mlir_ty = self.tys.mlir_ty(ty)?;
+        let text = format!("{key} : {mlir_ty}");
+        let attr = Attribute::parse(self.context, &text)
+            .ok_or_else(|| LoweringError(format!("could not build integer constant `{text}`").into()))?;
+        Ok(self.append(block, arith::constant(self.context, attr, loc)))
+    }
+
+    /// Build an `scf.if` branch region whose body lowers a decision sub-tree and
+    /// terminates with `scf.yield` (yielding its value unless the match is unit).
+    fn tree_branch_region<'b>(
+        &self,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        tree: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Region<'c>> {
+        let loc = self.loc();
+        let block = Block::new(&[]);
+        env.subscope(|scope| {
+            let value = self.lower_tree(&block, scope, root_idx, tree, result_ty)?;
+            if is_unit(result_ty) {
+                block.append_operation(scf::r#yield(&[], loc));
+            } else {
+                let value =
+                    value.ok_or_else(|| LoweringError("match branch produced no value".into()))?;
+                block.append_operation(scf::r#yield(&[value], loc));
+            }
+            Ok::<_, LoweringError>(())
+        })?;
+        let region = Region::new();
+        region.append_block(block);
+        Ok(region)
+    }
+
+    /// Lower a leaf: bind each pattern variable to the scrutinee value at its path
+    /// (a whole-scrutinee binding reuses the root value; a field binding projects
+    /// and loads it — the ownership pass's `dup` on the leaf retains an aliased rc
+    /// field), then lower the arm body. Bindings ride the enclosing branch scope,
+    /// so they are visible to the body and rewound with it.
+    fn lower_leaf<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        body: &'tcx Expr<'tcx>,
+        bindings: &'tcx [(VarId, &'tcx [u32])],
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let _ = result_ty;
+        self.bind_pattern(block, env, root_idx, bindings)?;
+        self.expr(block, env, body)
+    }
+
+    /// Lower a guarded arm: bind the guard's pattern variables, evaluate the guard,
+    /// and branch to the `success`/`failure` sub-trees with `scf.if`. The bindings
+    /// stay live across both branches (the ownership pass dups them at the guard).
+    #[allow(clippy::too_many_arguments)]
+    fn lower_guard<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        bindings: &'tcx [(VarId, &'tcx [u32])],
+        guard: &'tcx Expr<'tcx>,
+        success: &'tcx DecisionTree<'tcx>,
+        failure: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        self.bind_pattern(block, env, root_idx, bindings)?;
+        let cond = self
+            .expr(block, env, guard)?
+            .ok_or_else(|| LoweringError("match guard is unit".into()))?;
+        let unit = is_unit(result_ty);
+        let result_tys = if unit {
+            Vec::new()
+        } else {
+            vec![self.tys.mlir_ty(result_ty)?]
+        };
+        let then_region = self.tree_branch_region(env, root_idx, success, result_ty)?;
+        let else_region = self.tree_branch_region(env, root_idx, failure, result_ty)?;
+        let op = block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Bind each `(var, path)` pattern binding into `env` by resolving the
+    /// scrutinee value at `path` (its type recorded so reference-count ops keyed
+    /// to the binding pick the right instruction).
+    fn bind_pattern<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        bindings: &'tcx [(VarId, &'tcx [u32])],
+    ) -> Result<()> {
+        for &(var, path) in bindings {
+            let (val, ty) = if path.is_empty() {
+                self.root_anchor(env, root_idx)?
+            } else {
+                self.resolve_loaded(block, env, path)?
+            };
+            self.bind_var_ty(var, ty);
+            env.vars.insert(var, val);
+        }
+        Ok(())
+    }
+
+    /// Terminate a provably-dead decision position with a poison value of the
+    /// result type (or nothing for a unit match).
+    fn dead_arm<'b>(
+        &self,
+        block: &'b Block<'c>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        if is_unit(result_ty) {
+            Ok(None)
+        } else {
+            let ty = self.tys.mlir_ty(result_ty)?;
+            Ok(Some(
+                self.append(block, builders::poison(self.context, ty, self.loc())),
+            ))
+        }
+    }
+
+    /// The root scrutinee value and type of the enclosing match (its `[]` anchor).
+    fn root_anchor<'b>(
+        &self,
+        env: &Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+    ) -> Result<(Value<'c, 'b>, Ty<'tcx>)> {
+        match env.anchors.get(root_idx) {
+            Some((_, Anchor::Root { val, ty })) => Ok((*val, *ty)),
+            _ => err("match root anchor missing"),
+        }
+    }
+
+    /// Resolve the scrutinee sub-value at `path` to a loaded SSA value and its MIR
+    /// type, projecting from the nearest anchor (see [`resolve`](Self::resolve)).
+    fn resolve_loaded<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        path: &[u32],
+    ) -> Result<(Value<'c, 'b>, Ty<'tcx>)> {
+        let cursor = self.resolve(block, env, path)?;
+        let ty = match &cursor {
+            Cursor::Value { ty, .. } | Cursor::Ref { ty, .. } => *ty,
+        };
+        Ok((self.load_cursor(block, cursor)?, ty))
+    }
+
+    /// Resolve the scrutinee sub-value at `path` to a `!reussir.ref` to a variant
+    /// record, ready to feed `reussir.record.dispatch`: a boxed enum is borrowed,
+    /// an inline `[value]` enum is spilled, and a value already reached by
+    /// reference is used as-is. Returns the reference, the enum's MIR type, and
+    /// the reference capability (which the arm payload references inherit).
+    fn resolve_variant_ref<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        path: &[u32],
+    ) -> Result<(Value<'c, 'b>, Ty<'tcx>, ReussirCapability)> {
+        let loc = self.loc();
+        match self.resolve(block, env, path)? {
+            Cursor::Ref { val, ty, cap } => Ok((val, ty, cap)),
+            Cursor::Value { val, ty } => {
+                let inner = self.tys.record_inner_of(ty)?;
+                if let Some(cap) = self.record_ref_cap(ty)? {
+                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
+                    let reference =
+                        self.append(block, dialect::rc_borrow(self.context, ref_ty, val, loc).into());
+                    Ok((reference, ty, cap))
+                } else {
+                    let cap = ReussirCapability::Value;
+                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
+                    let reference = self
+                        .append(block, dialect::ref_spilled(self.context, ref_ty, val, loc).into());
+                    Ok((reference, ty, cap))
+                }
+            }
+        }
+    }
+
+    /// Resolve a scrutinee `path` to a [`Cursor`] by projecting the tail of the
+    /// path from the deepest anchor that is a prefix of it (most recent on a tie,
+    /// so a dispatch arm's narrowed case reference shadows the enclosing enum).
+    fn resolve<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        path: &[u32],
+    ) -> Result<Cursor<'c, 'b, 'tcx>> {
+        let mut best: Option<(usize, usize)> = None;
+        for (i, (anchor_path, _)) in env.anchors.iter().enumerate() {
+            if anchor_path.len() <= path.len() && path[..anchor_path.len()] == anchor_path[..] {
+                let take = best.is_none_or(|(_, len)| anchor_path.len() >= len);
+                if take {
+                    best = Some((i, anchor_path.len()));
+                }
+            }
+        }
+        let (index, prefix_len) =
+            best.ok_or_else(|| LoweringError("no anchor covers the scrutinee path".into()))?;
+        let suffix = &path[prefix_len..];
+        match env.anchors[index].1 {
+            Anchor::Root { val, ty } => {
+                let mut cursor = Cursor::Value { val, ty };
+                for &idx in suffix {
+                    cursor = self.project_one(block, cursor, idx)?;
+                }
+                Ok(cursor)
+            }
+            Anchor::Case {
+                reference,
+                variant,
+                cap,
+            } => {
+                let (first, rest) = suffix
+                    .split_first()
+                    .ok_or_else(|| LoweringError("variant anchor resolved to a whole case".into()))?;
+                let mut cursor = self.project_variant_field(block, reference, variant, cap, *first)?;
+                for &idx in rest {
+                    cursor = self.project_one(block, cursor, idx)?;
+                }
+                Ok(cursor)
+            }
+        }
+    }
+
+    /// Project field `idx` out of a reference to a variant case payload. Mirrors
+    /// [`project_ref`](Self::project_ref) but reads the field type from the
+    /// variant's field list — a case payload compound has no MIR record [`Ty`] to
+    /// look a layout up in, and its fields are never `[field]` links.
+    fn project_variant_field<'b>(
+        &self,
+        block: &'b Block<'c>,
+        case_ref: Value<'c, 'b>,
+        variant: &'tcx mir::VariantDef<'tcx>,
+        cap: ReussirCapability,
+        idx: u32,
+    ) -> Result<Cursor<'c, 'b, 'tcx>> {
+        let loc = self.loc();
+        let field_ty = *variant
+            .fields
+            .get(idx as usize)
+            .ok_or_else(|| LoweringError("variant field index out of range".into()))?;
+        let proj = self.projected_member_of(field_ty, false, cap)?;
+        let proj_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
+        let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
+        let projected = self.append(
+            block,
+            dialect::ref_project(self.context, proj_ref_ty, case_ref, index, loc).into(),
+        );
+        if proj.is_link {
+            let loaded = self.append(
+                block,
+                dialect::ref_load(self.context, proj.elem_ty, projected, loc).into(),
+            );
+            Ok(Cursor::Value {
+                val: loaded,
+                ty: proj.field_ty,
+            })
+        } else {
+            Ok(Cursor::Ref {
+                val: projected,
+                ty: proj.field_ty,
+                cap: proj.proj_cap,
+            })
+        }
+    }
+
     /// Project a chain of fields out of a record value.
     ///
     /// The walk is type-directed (see [`Cursor`]): an inline `[value]` record is
@@ -859,7 +1534,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn proj<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         base: &Expr<'tcx>,
         path: &[u32],
     ) -> Result<Value<'c, 'b>> {
@@ -982,6 +1657,20 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         idx: u32,
     ) -> Result<ProjectedMember<'c, 'tcx>> {
         let (field_ty, is_field) = self.field_at(record_ty, idx)?;
+        self.projected_member_of(field_ty, is_field, ref_cap)
+    }
+
+    /// The projection of a member given its MIR type and link flag directly, the
+    /// core of [`projected_member`](Self::projected_member). Split out so a
+    /// variant case payload — which has no MIR record [`Ty`] to look a layout up
+    /// in, only a [`VariantDef`](mir::VariantDef) field list — can project its
+    /// fields the same way (a case field is never a `[field]` link).
+    fn projected_member_of(
+        &self,
+        field_ty: Ty<'tcx>,
+        is_field: bool,
+        ref_cap: ReussirCapability,
+    ) -> Result<ProjectedMember<'c, 'tcx>> {
         if is_field {
             // A mutable link: `nullable<rc<inner, flex|rigid>>`. Taken out of a
             // `flex` parent the slot is itself writable (`field` capability); out
@@ -1076,13 +1765,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     // --- Reference-count op emission ----------------------------------------
 
     /// Emit the reference-count ops the ownership analysis placed *before* node
-    /// `id`. These only ever target named locals here: a `dup`/`drop` of an
-    /// anonymous result before a node would refer to an already-evaluated
-    /// temporary, which the constructs lowered here do not produce.
+    /// `id`. A `dup`/`drop` targets a named local; a `dup-value`/`drop-value`
+    /// targets a live temporary held in [`Env::temps`] — the `match` scrutinee
+    /// whose per-arm settlement (its drop, placed before each leaf body) is keyed
+    /// to the temporary's own id rather than to a variable.
     fn emit_rc_before<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &Env<'c, 'b>,
+        env: &Env<'c, 'b, 'tcx>,
         id: ExprId,
     ) -> Result<()> {
         let ops = self.ownership.borrow().before(id).to_vec();
@@ -1090,9 +1780,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             match op {
                 RcOp::Dup(v) => self.emit_inc_var(block, env, v)?,
                 RcOp::Drop(v) => self.emit_dec_var(block, env, v)?,
-                RcOp::DupValue(_) | RcOp::DropValue(_) => {
-                    return err("reference-count op on an unbound temporary is not supported");
-                }
+                RcOp::DupValue(target) => self.emit_inc_temp(block, env, target)?,
+                RcOp::DropValue(target) => self.emit_dec_temp(block, env, target)?,
             }
         }
         Ok(())
@@ -1105,7 +1794,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn emit_rc_after<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &Env<'c, 'b>,
+        env: &Env<'c, 'b, 'tcx>,
         id: ExprId,
         ty: Ty<'tcx>,
         value: Option<Value<'c, 'b>>,
@@ -1125,17 +1814,35 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                         .ok_or_else(|| LoweringError("release of a node with no value".into()))?;
                     self.emit_dec(block, val, ty)?;
                 }
-                RcOp::DupValue(_) | RcOp::DropValue(_) => {
-                    return err("reference-count op on an unbound temporary is not supported");
-                }
+                RcOp::DupValue(target) => self.emit_inc_temp(block, env, target)?,
+                RcOp::DropValue(target) => self.emit_dec_temp(block, env, target)?,
             }
         }
         Ok(())
     }
 
+    /// Increment the refcount of the temporary held in [`Env::temps`] under `id`
+    /// (see [`emit_rc_before`](Self::emit_rc_before)); an unknown id is a genuine
+    /// gap — a value op keyed to a temporary the walk did not record.
+    fn emit_inc_temp<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, id: ExprId) -> Result<()> {
+        match (env.temps.get(&id).copied(), self.temp_ty(id)) {
+            (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
+            _ => err("reference-count op on an unbound temporary is not supported"),
+        }
+    }
+
+    /// Decrement the refcount of the temporary held in [`Env::temps`] under `id`
+    /// (the dual of [`emit_inc_temp`](Self::emit_inc_temp)).
+    fn emit_dec_temp<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, id: ExprId) -> Result<()> {
+        match (env.temps.get(&id).copied(), self.temp_ty(id)) {
+            (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
+            _ => err("reference-count op on an unbound temporary is not supported"),
+        }
+    }
+
     /// Increment the refcount owned by local `v`. A value-less local (e.g. unit)
     /// holds no resource, so there is nothing to do.
-    fn emit_inc_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
+    fn emit_inc_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, v: VarId) -> Result<()> {
         match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
             _ => Ok(()),
@@ -1143,7 +1850,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     }
 
     /// Decrement the refcount owned by local `v` (see [`emit_inc_var`](Self::emit_inc_var)).
-    fn emit_dec_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b>, v: VarId) -> Result<()> {
+    fn emit_dec_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, v: VarId) -> Result<()> {
         match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
             _ => Ok(()),
@@ -1209,7 +1916,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn negate<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         x: &Expr<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
@@ -1233,7 +1940,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn not<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         x: &Expr<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
@@ -1251,7 +1958,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn arith<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         l: &Expr<'tcx>,
         op: ArithOp,
         r: &Expr<'tcx>,
@@ -1288,7 +1995,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn cmp<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         l: &Expr<'tcx>,
         op: CmpOp,
         r: &Expr<'tcx>,
@@ -1337,7 +2044,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn cast<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         x: &Expr<'tcx>,
         to: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
@@ -1390,7 +2097,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     fn lower_if<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         c: &Expr<'tcx>,
         t: &Expr<'tcx>,
         f: &Expr<'tcx>,
@@ -1420,7 +2127,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// `scf.yield` (yielding its value unless unit-typed).
     fn branch_region<'b>(
         &self,
-        env: &mut Env<'c, 'b>,
+        env: &mut Env<'c, 'b, 'tcx>,
         e: &Expr<'tcx>,
         ty: Ty<'tcx>,
     ) -> Result<Region<'c>> {
