@@ -1,0 +1,34 @@
+[package]
+name = "reussir-repl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reussir REPL: incremental elaboration over a persistent HIR, JIT-executed via ORC"
+
+[lib]
+name = "reussir_repl"
+
+# The binary is `rrepl`, not `reussir-repl`: the Haskell frontend already
+# installs a `reussir-repl` executable (and CMake target); the two coexist
+# until the Rust pipeline reaches feature parity.
+[[bin]]
+name = "rrepl"
+path = "src/main.rs"
+
+[dependencies]
+# The lowered `Module` type and the MLIR context.
+melior.workspace = true
+# The MLIR foundation: `context()`, the lowering `pipeline` and its `OptLevel`.
+reussir-backend = { path = "../reussir-backend" }
+# Full MIR → MLIR lowering.
+reussir-codegen = { path = "../reussir-codegen" }
+# The frontend: parse → elaborate (persistent, incremental) → monomorphize.
+reussir-core = { path = "../reussir-core" }
+reussir-syntax = { path = "../reussir-syntax" }
+# The persistent ORC LLJIT session (links the in-process runtime).
+reussir-jit = { path = "../reussir-jit" }
+ariadne.workspace = true
+palc.workspace = true
+rustc-hash.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

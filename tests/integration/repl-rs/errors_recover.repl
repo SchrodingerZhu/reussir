@@ -1,0 +1,24 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+
+// Every kind of failure leaves the session usable.
+
+// A type error in a definition body:
+fn bad() -> i32 { true }
+// CHECK: error: type mismatch
+
+// A type error in an expression:
+1 + true
+// CHECK: error:
+
+// An expression whose type cannot be inferred:
+Nullable::Null
+// CHECK: error: cannot infer the type of this expression
+
+// A parse error:
+fn broken( { 2 }
+// CHECK: error
+
+// The session still evaluates:
+40 + 2
+// CHECK: 42 : i64

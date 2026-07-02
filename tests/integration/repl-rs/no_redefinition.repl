@@ -1,0 +1,29 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+
+// The REPL rejects redefinition: accepted items are immutable. A failed
+// input rolls back atomically and the session keeps working.
+
+fn f(x: i64) -> i64 { x + 1 }
+// CHECK: Definition added.
+
+fn f(x: i64) -> i64 { x + 2 }
+// CHECK: error: function `f` is defined more than once
+
+f(1)
+// CHECK: 2 : i64
+
+// A batch containing a duplicate is rejected wholesale, including its
+// error-free items...
+:{
+fn g(x: i64) -> i64 { x * 10 }
+fn f(x: i64) -> i64 { x }
+}:
+// CHECK: error: function `f` is defined more than once
+
+// ...so `g` was rolled back too and its name is still free.
+fn g(x: i64) -> i64 { x * 100 }
+// CHECK: Definition added.
+
+g(3)
+// CHECK: 300 : i64

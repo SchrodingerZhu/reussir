@@ -1,0 +1,36 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror -Onone | %FileCheck %s
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+1 + 1
+// CHECK: 2 : i64
+
+1.5 * 2.0
+// CHECK: 3.0 : f64
+
+true && false
+// CHECK: false : bool
+
+fn double(x: i32) -> i32 { x + x }
+// CHECK: Definition added.
+
+double(21)
+// CHECK: 42 : i32
+
+// Multiline definitions use GHCi-style `:{` / `}:` blocks.
+:{
+fn fact(n: u64) -> u64 {
+    if n == 0 { 1 } else { n * fact(n - 1) }
+}
+}:
+// CHECK: Definition added.
+
+fact(10)
+// CHECK: 3628800 : u64
+
+// Expression sequences get block semantics.
+let a = 10; let b = 20; a + b
+// CHECK: 30 : i64
+
+:type fact(3)
+// CHECK: fact(3) : u64

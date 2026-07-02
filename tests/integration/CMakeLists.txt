@@ -42,6 +42,9 @@ set(reussir_elab_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-elab${CMAKE_EXEC
 set(reussir_compiler_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-compiler${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rrc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_repl_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-repl${CMAKE_EXECUTABLE_SUFFIX})
+# The Rust REPL (`crates/reussir-repl`, binary `rrepl`), tested side by side
+# with the Haskell one until the Rust pipeline reaches parity.
+set(rrepl_path ${REUSSIR_RREPL_BINARY})
 set(reussir_parser_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-parser${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_surface_verify_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-surface-verify${CMAKE_EXECUTABLE_SUFFIX})

@@ -30,6 +30,11 @@ config.substitutions.append((r'%reussir-elab', config.reussir_elab_path))
 config.substitutions.append((r'%reussir-compiler', config.reussir_compiler_path))
 config.substitutions.append((r'%rrc', config.reussir_rrc_path))
 config.substitutions.append((r'%reussir-repl', config.reussir_repl_path))
+# The Rust REPL; its suite lives in repl-rs/ and only runs when the `rrepl`
+# CMake target has been built.
+config.substitutions.append((r'%rrepl', config.rrepl_path))
+if config.rrepl_path and os.path.exists(config.rrepl_path):
+    config.available_features.add('rrepl')
 config.substitutions.append((r'%reussir-parser', config.reussir_parser_path))
 config.substitutions.append((r'%reussir-syntax', config.reussir_syntax_path))
 config.substitutions.append((r'%reussir-surface-verify', config.reussir_surface_verify_path))

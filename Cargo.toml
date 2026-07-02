@@ -9,6 +9,7 @@ members = [
     "crates/reussir-jit",
     "crates/reussir-codegen",
     "crates/reussir-compiler",
+    "crates/reussir-repl",
 ]
 # The backend crates (and reussir-codegen, which depends on them) link against
 # MLIR and the staged Reussir C API, so they are excluded from the default
@@ -83,6 +84,8 @@ palc = "0.0.2"
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 stacker = "0.1.21"
 tracing = "0.1"
+# Log-level plumbing for the REPL binary's `-l` flag.
+tracing-subscriber = "0.3"
 
 [profile.release]
 lto = "thin"
