@@ -927,13 +927,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let scrut_val = self
             .expr(block, env, scrut)?
             .ok_or_else(|| LoweringError("match scrutinee is unit".into()))?;
-        // Record the scrutinee's type so the ownership pass's per-arm drop (keyed
-        // to the scrutinee id for a non-variable scrutinee) resolves it, and hold
-        // its value in `temps` for the same reason.
-        self.temp_tys.borrow_mut().insert(scrut.id, scrut.ty);
+        // Record the scrutinee's value and type so the ownership pass's per-arm
+        // drop (keyed to the scrutinee id for a non-variable scrutinee) resolves
+        // it.
         let temps_mark = env.temps.len();
         let anchors_mark = env.anchors.len();
-        env.temps.insert(scrut.id, scrut_val);
+        self.remember_temp(env, scrut, scrut_val);
         let root_idx = env.anchors.len();
         env.anchors.push((
             SmallVec::new(),
@@ -1541,6 +1540,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let base_val = self
             .expr(block, env, base)?
             .ok_or_else(|| LoweringError("projection base is unit".into()))?;
+        // A borrow-projection through a *temporary* rr base (`foo(x).field`, not
+        // `xs.field`) leaves the base owned by no variable; the ownership pass
+        // frees it with a `DropValue` keyed to this `Proj` node, which resolves
+        // the base's value through `env.temps`. Record it so that drop can land.
+        // A `Var` root is dropped via `env.vars`, and a nested `Proj` root is
+        // registered by its own recursive lowering, so neither needs this.
+        if !matches!(base.kind, ExprKind::Var(_) | ExprKind::Proj(..)) {
+            self.remember_temp(env, base, base_val);
+        }
         let mut cursor = Cursor::Value {
             val: base_val,
             ty: base.ty,
@@ -1819,6 +1827,20 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             }
         }
         Ok(())
+    }
+
+    /// Record a temporary's value and type under its [`ExprId`] so a value-keyed
+    /// reference-count op the ownership pass anchored to a *later* node can find
+    /// it. A deferred `DropValue`/`DupValue` (the `match` scrutinee's per-arm
+    /// drop, or a projection base freed after the field is borrowed out) fires
+    /// in [`emit_rc_after`](Self::emit_rc_after) of the node it is keyed to, not
+    /// of the temporary itself, so the value must outlive its own lowering; this
+    /// stashes it. Entries live for the rest of the (sub)scope — the ids are
+    /// unique, so a stale entry is never mislooked-up, and subscope truncation
+    /// reclaims them.
+    fn remember_temp<'b>(&self, env: &mut Env<'c, 'b, 'tcx>, e: &Expr<'tcx>, val: Value<'c, 'b>) {
+        self.temp_tys.borrow_mut().insert(e.id, e.ty);
+        env.temps.insert(e.id, val);
     }
 
     /// Increment the refcount of the temporary held in [`Env::temps`] under `id`
