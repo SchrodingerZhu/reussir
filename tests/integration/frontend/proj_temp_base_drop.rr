@@ -1,0 +1,31 @@
+// Regression: projecting a field out of a *temporary* reference-counted base
+// (`make(x).val`, not `rc.val`) must settle the temporary's refcount. The
+// ownership pass frees the base with a `DropValue` keyed to the `Proj` node,
+// which the lowering resolves through `env.temps`; before the fix this bailed
+// with "reference-count op on an unbound temporary is not supported".
+
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
+
+struct [shared] RcBox<T> {
+    val : T
+}
+
+fn make(x : u32) -> RcBox<u32> {
+    RcBox { val : x }
+}
+
+pub fn temp_project(x : u32) -> u32 {
+    make(x).val
+}
+
+extern "C" trampoline "temp_project_ffi" = temp_project;
+
+// The temporary `make(x)` result is borrowed, its field projected and loaded,
+// and then the temporary itself is dec'd — the field read keeps no owning ref.
+// CHECK-MLIR-LABEL: func.func @_RC12temp_project(
+// CHECK-MLIR:       %[[TMP:.+]] = call @_RC4make(
+// CHECK-MLIR:       %[[REF:.+]] = reussir.rc.borrow(%[[TMP]]
+// CHECK-MLIR:       reussir.ref.project(%[[REF]]
+// CHECK-MLIR:       reussir.ref.load
+// CHECK-MLIR:       reussir.rc.dec(%[[TMP]]
+// CHECK-MLIR:       return
