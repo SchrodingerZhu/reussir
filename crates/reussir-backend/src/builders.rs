@@ -179,6 +179,29 @@ pub fn record_variant<'c>(
         .expect("valid reussir.record.variant")
 }
 
+/// `reussir.nullable.create (<value> : <type>)? : <result_type>` — wrap a
+/// non-null pointer into a nullable pointer, or build a null pointer when no
+/// value is given.
+///
+/// The op's `$ptr` operand is `Optional`, and melior's generated builder is
+/// `(context, result_type, location)` — it exposes no parameter for that operand,
+/// so it can only build the null pointer. The value-wrapping (non-null) case is
+/// built raw here, adding the single pointer operand.
+pub fn nullable_create<'c>(
+    value: Option<Value<'c, '_>>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.nullable.create", location);
+    if let Some(value) = value {
+        builder = builder.add_operands(&[value]);
+    }
+    builder
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.nullable.create")
+}
+
 /// `reussir.region.run (-> <result_type>)? { <body> }` — execute a region scope.
 ///
 /// The body region's single block takes a `!reussir.region` argument (the arena

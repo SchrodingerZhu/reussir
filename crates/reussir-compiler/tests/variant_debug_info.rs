@@ -62,7 +62,10 @@ fn enum_debug_info_is_a_discriminated_variant_part() {
     );
     // One variant part per enum (Shape and List), not the old `{tag, union}`.
     let parts = ir.matches("DW_TAG_variant_part").count();
-    assert!(parts >= 2, "expected a variant part per enum, found {parts}");
+    assert!(
+        parts >= 2,
+        "expected a variant part per enum, found {parts}"
+    );
     // The old union form must be gone — the fixup rewrites it in place.
     assert!(
         !ir.contains("DW_TAG_union_type"),

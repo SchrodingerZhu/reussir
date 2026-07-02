@@ -27,8 +27,8 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, rc, record_complete_in_place,
-    record_incomplete, record_is_complete, r#ref, region,
+    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, nullable, rc,
+    record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -105,11 +105,26 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             .is_some_and(|rec| rec.default_cap == DefaultCap::Regional)
     }
 
-    /// Lower a ground type to MLIR: records resolve through the layout table,
-    /// everything else is a scalar.
+    /// Lower a ground type to MLIR: records resolve through the layout table, a
+    /// nullable pointer wraps its (pointer-typed) element, and everything else is
+    /// a scalar.
     pub(super) fn mlir_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Record { .. } => self.record_type(ty),
+            // A `Nullable<T>` wraps its element's MLIR pointer type (an `rc` link
+            // for the regional/shared records that can sit behind a nullable
+            // `[field]` slot) so it may additionally hold null. The dialect's
+            // `nullable` needs a non-null *pointer* element; the frontend's
+            // pointer-like check is conservative (it passes a `[value]` record),
+            // so reject a concrete non-pointer element here rather than build a
+            // malformed `nullable<record<…>>` that later passes fall over.
+            TyKind::Nullable(inner) => {
+                if !(self.is_shared_record(inner) || self.is_regional_record(inner)) {
+                    return err("`Nullable` element does not lower to a pointer: only a \
+                         managed `[shared]`/`[regional]` record can sit behind a nullable");
+                }
+                Ok(nullable(self.mlir_ty(inner)?))
+            }
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -124,6 +139,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             TyKind::Record { .. } => self.record_inner_of(ty),
             _ => self.mlir_ty(ty),
         }
+    }
+
+    /// Lower a mutable `[field]` link member to its stored type. The member is
+    /// typed `Nullable<Record>` in the MIR, but the record stores the bare
+    /// element record type (under the `field` flag the dialect derives the
+    /// `nullable<rc<…>>` slot itself), so this strips the nullable wrapper and
+    /// names the link's element record.
+    fn field_member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let element = field_link_element(ty);
+        self.record_inner_of(element)
     }
 
     /// The payload compound type for variant `idx` of an enum-typed `ty` — the
@@ -217,7 +242,14 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                 let mut tys = Vec::with_capacity(members.len());
                 let mut is_field = Vec::with_capacity(members.len());
                 for m in members {
-                    tys.push(self.member_ty(m.ty)?);
+                    // A `[field]` link member stores the bare element record type;
+                    // the dialect derives its `nullable<rc<…>>` slot from the flag.
+                    let member_ty = if m.is_field {
+                        self.field_member_ty(m.ty)?
+                    } else {
+                        self.member_ty(m.ty)?
+                    };
+                    tys.push(member_ty);
                     is_field.push(m.is_field);
                 }
                 (tys, is_field)
@@ -291,6 +323,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         region(self.context)
     }
 
+    /// `!reussir.nullable<pointer>` — a nullable wrapper around a pointer type
+    /// (the `rc` link stored in a mutable `[field]` slot), which may hold null.
+    pub(super) fn nullable_type(&self, pointer: Type<'c>) -> Type<'c> {
+        nullable(pointer)
+    }
+
     /// `!reussir.ref<inner, cap>` — a borrowed reference at an explicit
     /// capability, as produced by `reussir.rc.borrow` and `reussir.ref.project`:
     /// `shared` into a shared value, or `flex`/`rigid` into a regional one
@@ -328,6 +366,16 @@ pub(super) fn regional_capability(ty: Ty<'_>) -> Result<ReussirCapability> {
             "regional record reached codegen with an unrefined flexivity coloring \
              ({other:?}); elaboration must resolve it to flex or rigid"
         )),
+    }
+}
+
+/// The element record a mutable `[field]` link points at. The link is typed
+/// `Nullable<Record>` in the MIR; this strips the nullable wrapper to name the
+/// pointee record (tolerating an already-bare record type).
+pub(super) fn field_link_element(ty: Ty<'_>) -> Ty<'_> {
+    match *ty.kind() {
+        TyKind::Nullable(inner) => inner,
+        _ => ty,
     }
 }
 

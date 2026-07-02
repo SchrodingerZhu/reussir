@@ -48,16 +48,56 @@ pub struct HoleId(pub u32);
 /// interact in exactly one place — a region-managed record needs rc only when
 /// its flexivity is `Rigid` (frozen/escaped); see `full::ownership`.
 ///
-/// These do **not** form a total order — `Flex` and `Rigid` are incomparable
-/// (different axes: mutability vs materializability) — so there is no
-/// subsumption helper. Flexivity-as-a-bound is deferred until its semantics are
-/// settled; for now this is purely the coloring stored on [`TyKind::Record`].
+/// The colorings form a **refinement tree** — each one refines (is more specific
+/// than) its parent:
+///
+/// ```text
+/// Unknown (absent — a non-regional or not-yet-resolved head; see `flexivity()`)
+/// ├─ Irrelevant   (a value/shared record: carries no regional coloring)
+/// └─ Regional     (unrefined: may still resolve to flex or rigid)
+///    ├─ Flex      (region-local, mutable)
+///    └─ Rigid     (frozen, materializable)
+/// ```
+///
+/// Two colorings are **compatible** ([`compatible`](Self::compatible)) when one
+/// refines to the other — i.e. they are comparable, a directed path connects
+/// them in the tree. The only incompatibilities are the sibling pairs: `Flex`
+/// versus `Rigid` (a mutable region-local value is not a frozen one), and
+/// `Irrelevant` versus a regional coloring. This is a compatibility *check*, not
+/// full lattice unification: it does not rewrite a `Regional` head to the more
+/// refined `Flex`/`Rigid` it meets.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Flexivity {
     Irrelevant,
     Regional,
     Flex,
     Rigid,
+}
+
+impl Flexivity {
+    /// This coloring's parent in the refinement tree, or `None` for a child of
+    /// the (absent) `Unknown` root.
+    fn parent(self) -> Option<Flexivity> {
+        match self {
+            Flexivity::Irrelevant | Flexivity::Regional => None,
+            Flexivity::Flex | Flexivity::Rigid => Some(Flexivity::Regional),
+        }
+    }
+
+    /// Whether `self` is `other` or refines from it — `self` lies on the path
+    /// from the root down to `other` (equivalently, `other` is an ancestor of
+    /// `self`, or they are equal).
+    fn refines_from(self, other: Flexivity) -> bool {
+        self == other || self.parent().is_some_and(|p| p.refines_from(other))
+    }
+
+    /// Whether two colorings are compatible: one refines to the other, so a
+    /// directed path connects them in the [refinement tree](Flexivity). `Flex`
+    /// and `Rigid` (incomparable siblings), and `Irrelevant` versus a regional
+    /// coloring, are the only incompatible pairs.
+    pub fn compatible(self, other: Flexivity) -> bool {
+        self.refines_from(other) || other.refines_from(self)
+    }
 }
 
 /// A width-tagged integer type.
@@ -237,5 +277,30 @@ impl<'tcx> TyCtxt<'tcx> {
             return &[];
         }
         self.arena.alloc_slice_copy(slice)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Flexivity::{Flex, Irrelevant, Regional, Rigid};
+
+    #[test]
+    fn flexivity_compatibility_follows_the_refinement_tree() {
+        // Reflexive, and symmetric.
+        for x in [Irrelevant, Regional, Flex, Rigid] {
+            assert!(x.compatible(x), "{x:?} should be compatible with itself");
+            for y in [Irrelevant, Regional, Flex, Rigid] {
+                assert_eq!(x.compatible(y), y.compatible(x), "symmetry {x:?}/{y:?}");
+            }
+        }
+        // Regional is the parent of Flex and Rigid, so it refines to either.
+        assert!(Regional.compatible(Flex));
+        assert!(Regional.compatible(Rigid));
+        // Siblings do not refine to each other.
+        assert!(!Flex.compatible(Rigid));
+        // Irrelevant is in a separate subtree from the regional colorings.
+        assert!(!Irrelevant.compatible(Regional));
+        assert!(!Irrelevant.compatible(Flex));
+        assert!(!Irrelevant.compatible(Rigid));
     }
 }

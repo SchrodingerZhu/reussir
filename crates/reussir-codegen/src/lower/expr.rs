@@ -41,7 +41,7 @@ use smallvec::SmallVec;
 
 use crate::source::SourceMap;
 
-use super::ty::{TypeCtx, is_unit, num_class, regional_capability};
+use super::ty::{TypeCtx, field_link_element, is_unit, num_class, regional_capability};
 use super::{LoweringError, Result, err};
 
 /// The lexical environment threaded through one block scope: the SSA value bound
@@ -454,11 +454,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             }
             RegionRun(body) => self.region_run(block, env, body, e.ty),
             Proj(base, path) => self.proj(block, env, base, path).map(Some),
-            Assign(..) => err("assignment lowering not yet implemented"),
+            Assign(dst, field, src) => {
+                self.assign(block, env, dst, *field, src)?;
+                Ok(None)
+            }
             Match(..) => err("match lowering not yet implemented"),
             Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
             Variant { variant, args, .. } => self.variant(block, env, e, *variant, args).map(Some),
-            NullableCall(_) => err("nullable lowering not yet implemented"),
+            NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
             Closure(_) | ClosureCall { .. } => err("closure lowering not yet implemented"),
             GlobalStr(_) => err("string literal lowering not yet implemented"),
             Poison => err("poison expression reached lowering"),
@@ -623,6 +626,69 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
+    /// Lower `dst->field := src` — store into a mutable `[field]` link.
+    ///
+    /// Mutation is only legal on a region-local `flex` regional record, so the
+    /// destination is borrowed at `flex` capability, the `[field]` slot is
+    /// projected out to a writable `field`-capability reference, and the source
+    /// (a `nullable<rc<…>>` value) is stored into it.
+    fn assign<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        dst: &Expr<'tcx>,
+        field: u32,
+        src: &Expr<'tcx>,
+    ) -> Result<()> {
+        let loc = self.loc();
+        let dst_val = self
+            .expr(block, env, dst)?
+            .ok_or_else(|| LoweringError("assignment target is unit".into()))?;
+        if regional_capability(dst.ty)? != ReussirCapability::Flex {
+            return err("assignment target is not a mutable (flex) regional record");
+        }
+        let inner = self.tys.record_inner_of(dst.ty)?;
+        let ref_ty = self.tys.ref_type_with_cap(inner, ReussirCapability::Flex);
+        let borrowed = self.append(
+            block,
+            dialect::rc_borrow(self.context, ref_ty, dst_val, loc).into(),
+        );
+        let proj = self.projected_member(dst.ty, ReussirCapability::Flex, field)?;
+        let field_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
+        let index = IntegerAttribute::new(Type::index(self.context), i64::from(field));
+        let field_ref = self.append(
+            block,
+            dialect::ref_project(self.context, field_ref_ty, borrowed, index, loc).into(),
+        );
+        let src_val = self
+            .expr(block, env, src)?
+            .ok_or_else(|| LoweringError("assignment source is unit".into()))?;
+        block.append_operation(dialect::ref_store(self.context, field_ref, src_val, loc).into());
+        Ok(())
+    }
+
+    /// Lower a nullable constructor (`Nullable::NonNull{e}` or `Nullable::Null`)
+    /// to `reussir.nullable.create`, wrapping the pointer value (or building the
+    /// null pointer when there is no inner expression).
+    fn nullable_call<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        e: &Expr<'tcx>,
+        inner: Option<&'tcx Expr<'tcx>>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let result_ty = self.tys.mlir_ty(e.ty)?;
+        let value = match inner {
+            Some(x) => Some(
+                self.expr(block, env, x)?
+                    .ok_or_else(|| LoweringError("nullable payload is unit".into()))?,
+            ),
+            None => None,
+        };
+        Ok(self.append(block, builders::nullable_create(value, result_ty, loc)))
+    }
+
     /// Project a chain of fields out of a record value.
     ///
     /// The walk is type-directed (see [`Cursor`]): an inline `[value]` record is
@@ -675,8 +741,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     );
                     self.project_ref(block, borrowed, ty, cap, idx)
                 } else {
-                    // An inline `[value]` record value: read the field out by value.
-                    let field_ty = self.field_at(ty, idx)?;
+                    // An inline `[value]` record value: read the field out by value
+                    // (an inline record has no `[field]` link members).
+                    let (field_ty, _) = self.field_at(ty, idx)?;
                     let field_mlir = self.tys.mlir_ty(field_ty)?;
                     let extracted = self.append(
                         block,
@@ -757,8 +824,33 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         ref_cap: ReussirCapability,
         idx: u32,
     ) -> Result<ProjectedMember<'c, 'tcx>> {
-        let field_ty = self.field_at(record_ty, idx)?;
-        if self.tys.is_shared_record(field_ty) {
+        let (field_ty, is_field) = self.field_at(record_ty, idx)?;
+        if is_field {
+            // A mutable link: `nullable<rc<inner, flex|rigid>>`. Taken out of a
+            // `flex` parent the slot is itself writable (`field` capability); out
+            // of a `rigid` (frozen) parent it is read-only. The MIR types the
+            // member `Nullable<Record>`, so name the link's element record.
+            let inner = self.tys.record_inner_of(field_link_element(field_ty))?;
+            let link_cap = if ref_cap == ReussirCapability::Flex {
+                ReussirCapability::Flex
+            } else {
+                ReussirCapability::Rigid
+            };
+            let elem_ty = self
+                .tys
+                .nullable_type(self.tys.rc_type_with_cap(inner, link_cap));
+            let proj_cap = if ref_cap == ReussirCapability::Flex {
+                ReussirCapability::Field
+            } else {
+                ref_cap
+            };
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty,
+                proj_cap,
+                is_link: true,
+            })
+        } else if self.tys.is_shared_record(field_ty) {
             let inner = self.tys.record_inner_of(field_ty)?;
             Ok(ProjectedMember {
                 field_ty,
@@ -783,9 +875,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// The MIR type of field `idx` of a compound record. A mutable `[field]` link
-    /// is not projected yet and surfaces as an explicit error.
-    fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<Ty<'tcx>> {
+    /// The MIR type of field `idx` of a compound record, and whether it is a
+    /// mutable `[field]` link.
+    fn field_at(&self, record_ty: Ty<'tcx>, idx: u32) -> Result<(Ty<'tcx>, bool)> {
         let rec = self
             .tys
             .record_of(record_ty)
@@ -797,10 +889,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let field = members
             .get(idx as usize)
             .ok_or_else(|| LoweringError(format!("field index {idx} out of range").into()))?;
-        if field.is_field {
-            return err("projection of a regional field link not yet implemented");
-        }
-        Ok(field.ty)
+        Ok((field.ty, field.is_field))
     }
 
     /// Materialize a [`Cursor`] as a loaded SSA value, loading through a trailing

@@ -52,7 +52,7 @@ pub fn elaborate<'a, 'tcx>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semi::ty::{Flexivity, IntTy};
+    use crate::semi::ty::{Flexivity, IntTy, TyKind};
     use crate::with_tcx;
 
     /// Parse + lower + elaborate, asserting there are no errors, then run `f`
@@ -336,6 +336,105 @@ mod tests {
                    regional fn f(c: [flex] Cell<i32>) -> i32 { let g = || c; 0 }";
         assert!(
             has_error(src, "closure cannot return a flex value"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_non_regional_function_returning_flex() {
+        // The `frozen()` shape: a plain function cannot return a flex value — the
+        // only way its body could produce one is a region-run, which freezes to
+        // `rigid` on exit, so a `[flex]` return can never be satisfied.
+        let src = "struct [regional] A { v: i32, next: [field] A }\n\
+                   fn frozen(x: i32) -> [flex] A { regional { A { v: x, next: Nullable::Null } } }";
+        assert!(
+            has_error(src, "non-regional function cannot return a flex value"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_non_regional_function_taking_flex_param() {
+        // A flex value cannot exist outside a region, so it cannot be handed to a
+        // plain function as an argument.
+        let src = "struct [regional] A { v: i32, next: [field] A }\n\
+                   fn f(a: [flex] A) -> i32 { a.v }";
+        assert!(
+            has_error(src, "non-regional function cannot take flex parameter"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn accepts_regional_function_with_flex_signature() {
+        // A `regional fn` shares its caller's region, so flex params and a flex
+        // return are legal there — the boundary check must not over-reject them.
+        let src = "struct [regional] A { v: i32, next: [field] A }\n\
+                   regional fn thread(a: [flex] A) -> [flex] A { a }";
+        assert!(!has_error(src, "cannot"), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn colors_field_link_null_flex() {
+        // `Nullable::Null` stored into a `[field]` slot of a flex record must be
+        // colored `flex` (a freshly-built region-local value), not left at the
+        // record's default `Regional` — otherwise it reaches the backend uncolored.
+        let src = "struct [regional] Cell { v: i32, next: [field] Cell }\n\
+                   regional fn clear(c: [flex] Cell) -> i32 { c->next := Nullable::Null; c.v }";
+        check(src, |elab, _| {
+            // Body is `Seq[ Assign(c, next, Nullable::Null), c.v ]`.
+            let body = function(elab, "clear").body.as_ref().unwrap();
+            let hir::ExprKind::Seq(items) = &body.kind else {
+                panic!("expected a block, got {:?}", body.kind)
+            };
+            let src_ty = items
+                .iter()
+                .find_map(|e| match &e.kind {
+                    hir::ExprKind::Assign(_, _, src) => Some(src.ty),
+                    _ => None,
+                })
+                .expect("an assignment");
+            let TyKind::Nullable(inner) = src_ty.kind() else {
+                panic!("assignment source is not Nullable: {src_ty:?}")
+            };
+            assert_eq!(
+                inner.flexivity(),
+                Some(Flexivity::Flex),
+                "a `[field]` null's element should be flex, got {:?}",
+                inner.flexivity()
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_storing_a_rigid_value_into_a_field_link() {
+        // A `[field]` link on a flex record holds region-local (flex) values. A
+        // frozen (`rigid`) value — here the result of a `region { }` that escaped
+        // its region — is a flexivity mismatch against that flex slot.
+        let src = "struct [regional] Cell { v: i32, next: [field] Cell }\n\
+                   fn frozen() -> Cell { regional { Cell { v: 0, next: Nullable::Null } } }\n\
+                   regional fn t(c: [flex] Cell) -> i32 { c->next := Nullable::NonNull{ frozen() }; c.v }";
+        assert!(
+            has_error(src, "flexivity mismatch"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_returning_a_frozen_body_as_flex() {
+        // A regional function whose body is a frozen (`rigid`) value but which
+        // declares a `[flex]` return is a flexivity mismatch at the return — the
+        // residual the boundary check alone (which only guards the non-regional
+        // case) would miss.
+        let src = "struct [regional] A { v: i32, next: [field] A }\n\
+                   fn mk() -> A { regional { A { v: 0, next: Nullable::Null } } }\n\
+                   regional fn f() -> [flex] A { mk() }";
+        assert!(
+            has_error(src, "flexivity mismatch"),
             "{:#?}",
             reports_of(src)
         );
