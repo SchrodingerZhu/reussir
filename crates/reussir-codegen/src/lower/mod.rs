@@ -804,4 +804,67 @@ mod tests {
             .expect("pipeline lowers the closure module to LLVM");
         });
     }
+
+    #[test]
+    fn lowers_a_match_on_a_shared_enum() {
+        // A consuming traversal over a recursive `[shared]` enum: the scrutinee is
+        // borrowed to a reference, `reussir.record.dispatch` branches on the tag,
+        // the `Cons` arm projects/loads its fields out of the case-payload
+        // reference, and each arm terminates with `reussir.scf.yield`.
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            pub fn sum(list: List<i64>) -> i64 {
+                match list {
+                    List::Nil => 0,
+                    List::Cons(x, xs) => x + sum(xs)
+                }
+            }
+            extern "C" trampoline "sum_ffi" = sum;
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.rc.borrow"), "{mlir}");
+        assert!(mlir.contains("reussir.record.dispatch"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.load"), "{mlir}");
+        assert!(mlir.contains("reussir.scf.yield"), "{mlir}");
+        // The consumed scrutinee is dropped in each arm; the aliased-out `xs`
+        // link is retained before the recursive call consumes it.
+        assert!(mlir.contains("reussir.rc.dec"), "{mlir}");
+        assert!(mlir.contains("reussir.rc.inc"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_a_match_through_the_pipeline() {
+        // The whole match path lowers to the LLVM dialect: `record.dispatch`
+        // expands (SCF-ops lowering) to an `scf.index_switch` and thence to LLVM
+        // control flow, and the reference projections lower to GEP/load.
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            pub fn sum(list: List<i64>) -> i64 {
+                match list {
+                    List::Nil => 0,
+                    List::Cons(x, xs) => x + sum(xs)
+                }
+            }
+            extern "C" trampoline "sum_ffi" = sum;
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the match module to LLVM");
+        });
+    }
 }

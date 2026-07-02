@@ -394,3 +394,120 @@ fn runs_iterative_helper_and_signed_arithmetic() {
         assert_eq!(signed_mix(6, -5), -18);
     });
 }
+
+#[test]
+fn runs_a_match_summing_a_shared_list() {
+    // Build a recursive `[shared]` list `[n, n-1, …, 1]` then consume it with a
+    // `match`, summing the elements. Exercises enum construction, tag dispatch,
+    // field projection, and the Perceus rc traffic (retain the aliased tail,
+    // drop the consumed cons cell) at runtime — a wrong count would leak or
+    // double-free.
+    let src = r#"
+        enum List<T> { Nil, Cons(T, List<T>) }
+        fn range(n: i64) -> List<i64> {
+            if n == 0 { List::Nil } else { List::Cons{n, range(n - 1)} }
+        }
+        fn sum(list: List<i64>) -> i64 {
+            match list {
+                List::Nil => 0,
+                List::Cons(x, xs) => x + sum(xs)
+            }
+        }
+        pub fn run(n: i64) -> i64 { sum(range(n)) }
+        extern "C" trampoline "run" = run;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("run").expect("lookup run");
+        let run: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(run(0), 0);
+        assert_eq!(run(1), 1);
+        assert_eq!(run(8), 36); // 8*9/2
+        assert_eq!(run(100), 5050);
+    });
+}
+
+#[test]
+fn runs_a_nested_match_on_a_recursive_enum() {
+    // A nested constructor pattern (`Succ(Succ(m))`) and a nested constructor
+    // literal (`Succ(Zero)`) over a recursive `[shared]` enum: this compiles to
+    // a `record.dispatch` whose `Succ` arm holds a second `record.dispatch`, and
+    // the deepest binding `m` resolves through two narrowed case anchors.
+    let src = r#"
+        enum Nat { Zero, Succ(Nat) }
+        fn to_nat(n: i64) -> Nat {
+            if n == 0 { Nat::Zero } else { Nat::Succ{to_nat(n - 1)} }
+        }
+        fn even(n: Nat) -> i64 {
+            match n {
+                Nat::Zero => 1,
+                Nat::Succ(Nat::Zero) => 0,
+                Nat::Succ(Nat::Succ(m)) => even(m)
+            }
+        }
+        pub fn run(n: i64) -> i64 { even(to_nat(n)) }
+        extern "C" trampoline "run" = run;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("run").expect("lookup run");
+        let run: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(run(0), 1);
+        assert_eq!(run(1), 0);
+        assert_eq!(run(2), 1);
+        assert_eq!(run(7), 0);
+        assert_eq!(run(10), 1);
+    });
+}
+
+#[test]
+fn runs_a_guarded_match() {
+    // A pattern guard compiles to an `scf.if` inside the `Some` dispatch arm: the
+    // bound `x` is tested, taken on success and falling through to the wildcard
+    // arm otherwise.
+    let src = r#"
+        enum Opt { None, Some(i64) }
+        fn pick(o: Opt) -> i64 {
+            match o {
+                Opt::Some(x) if x > 10 => x,
+                Opt::Some(_) => 0,
+                Opt::None => 0 - 1
+            }
+        }
+        pub fn run(n: i64) -> i64 { pick(Opt::Some{n}) }
+        extern "C" trampoline "run" = run;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("run").expect("lookup run");
+        let run: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(run(20), 20);
+        assert_eq!(run(11), 11);
+        assert_eq!(run(10), 0);
+        assert_eq!(run(5), 0);
+    });
+}
+
+#[test]
+fn runs_an_integer_match() {
+    // Integer-literal patterns lower to `scf.index_switch` (scrutinee cast to
+    // `index`), one case region per key with the wildcard as the default region.
+    let src = r#"
+        fn classify(n: i64) -> i64 {
+            match n {
+                0 => 100,
+                1 => 200,
+                2 => 300,
+                _ => 999
+            }
+        }
+        pub fn run(n: i64) -> i64 { classify(n) }
+        extern "C" trampoline "run" = run;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("run").expect("lookup run");
+        let run: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(run(0), 100);
+        assert_eq!(run(1), 200);
+        assert_eq!(run(2), 300);
+        assert_eq!(run(3), 999);
+        assert_eq!(run(-7), 999);
+    });
+}
