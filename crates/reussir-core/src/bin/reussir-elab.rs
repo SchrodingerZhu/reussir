@@ -5,6 +5,7 @@
 //! Full IR to stdout. The exit code is 0 on success, 1 on a syntax or
 //! elaboration error, and 2 on a usage or I/O error.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -13,8 +14,9 @@ use palc::Parser;
 use reussir_core::full::mir::print::Printer;
 use reussir_core::full::mono::monomorphize;
 use reussir_core::semi::ctxt::Severity;
-use reussir_core::semi::elaborate;
-use reussir_core::surface::{self, Span};
+use reussir_core::semi::{elaborate, render_reports};
+use reussir_core::surface;
+use reussir_syntax::diagnostics::{self, SourceMap};
 
 /// Which phase to run to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,45 +62,23 @@ fn read_input(path: &PathBuf) -> Result<(String, String), String> {
     }
 }
 
-/// Render one diagnostic as `name:line:col: severity: message`, mapping the
-/// byte offset to a 1-based line and column.
-fn render_report(name: &str, source: &str, span: Option<Span>, sev: &str, message: &str) {
-    let loc = span.map(|s| line_col(source, s.start as usize));
-    match loc {
-        Some((line, col)) => eprintln!("{name}:{line}:{col}: {sev}: {message}"),
-        None => eprintln!("{name}: {sev}: {message}"),
-    }
-}
-
-/// Map a byte offset (as carried by [`Span`]) to a 1-based `(line, column)`,
-/// counting columns in characters. Iterates by `char_indices` so the byte
-/// offset is compared against byte positions — correct for non-ASCII input.
-fn line_col(source: &str, offset: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
 fn run(cli: &Cli) -> Result<bool, String> {
     let mode = parse_mode(&cli.mode)?;
     let (name, source) = read_input(&cli.input)?;
 
+    let map = SourceMap::new(&source);
+
     let parse = reussir_syntax::parse(&source);
     if !parse.ok() {
-        for err in &parse.errors {
-            eprintln!("{name}: error: {err:?}");
-        }
+        let color = std::io::stderr().is_terminal();
+        let _ = diagnostics::render_errors(
+            &name,
+            &source,
+            &map,
+            &parse.errors,
+            color,
+            std::io::stderr().lock(),
+        );
         eprintln!("error: {} syntax error(s) in {name}", parse.errors.len());
         return Ok(false);
     }
@@ -110,13 +90,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let (rendered, ok) = reussir_core::in_arena(|tcx| {
         let elab = elaborate(tcx, &prog, parse.resolver());
 
-        for report in &elab.reports {
-            let sev = match report.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-            };
-            render_report(&name, &source, report.span, sev, &report.message);
-        }
+        render_reports(&name, &source, &elab.reports);
         if elab.has_errors() {
             return (String::new(), false);
         }
@@ -126,13 +100,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
                 .program(&elab.elaborated, &elab.records, &elab.trampolines),
             Mode::Full => {
                 let (full, mono_reports) = monomorphize(&elab.mono_input());
-                for report in &mono_reports {
-                    let sev = match report.severity {
-                        Severity::Error => "error",
-                        Severity::Warning => "warning",
-                    };
-                    render_report(&name, &source, report.span, sev, &report.message);
-                }
+                render_reports(&name, &source, &mono_reports);
                 if mono_reports
                     .iter()
                     .any(|r| matches!(r.severity, Severity::Error))

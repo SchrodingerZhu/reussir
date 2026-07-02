@@ -479,6 +479,10 @@ impl Pattern {
         Pattern { node: node.clone() }
     }
 
+    pub fn span(&self) -> Span {
+        node_span(&self.node)
+    }
+
     pub fn kind(&self) -> PatternKind {
         let k = nodes(&self.node)
             .find(|n| {

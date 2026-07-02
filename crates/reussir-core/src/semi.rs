@@ -29,7 +29,7 @@ pub mod pattern;
 pub mod resolve;
 pub mod ty_eval;
 
-pub use ctxt::{DefaultCap, Elaborator, Report, Severity};
+pub use ctxt::{DefaultCap, Elaborator, Report, Severity, render_reports};
 
 use reussir_syntax::kind::{Resolver, TokenKey};
 

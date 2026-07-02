@@ -40,6 +40,40 @@ pub struct Report {
     pub span: Option<Span>,
 }
 
+/// Render `reports` to stderr with source-caret context and return whether any
+/// was an error (warnings alone do not fail a compile). A report the middle-end
+/// could not trace back to a span — an internal/whole-program error — prints as
+/// a plain line. Both frontend drivers (`rrc`, `reussir-elab`) funnel through
+/// here so parse and elaboration diagnostics render identically.
+pub fn render_reports(name: &str, source: &str, reports: &[Report]) -> bool {
+    use std::io::IsTerminal;
+
+    use reussir_syntax::diagnostics::{self, Diagnostic, Severity as RenderSeverity, SourceMap};
+
+    let had_error = reports
+        .iter()
+        .any(|r| matches!(r.severity, Severity::Error));
+    // The happy path carries no reports; skip building the byte→char map.
+    if reports.is_empty() {
+        return had_error;
+    }
+    let diags: Vec<Diagnostic> = reports
+        .iter()
+        .map(|r| Diagnostic {
+            span: r.span.map(|s| (s.start, s.end)),
+            severity: match r.severity {
+                Severity::Error => RenderSeverity::Error,
+                Severity::Warning => RenderSeverity::Warning,
+            },
+            message: &r.message,
+        })
+        .collect();
+    let map = SourceMap::new(source);
+    let color = std::io::stderr().is_terminal();
+    let _ = diagnostics::render(name, source, &map, &diags, color, std::io::stderr().lock());
+    had_error
+}
+
 /// Per-generic metadata: its name and the trait bounds declared on it.
 #[derive(Clone, Debug)]
 pub struct GenericInfo {
