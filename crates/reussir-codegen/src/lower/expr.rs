@@ -462,7 +462,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Ctor { args, .. } => self.compound(block, env, e, args).map(Some),
             Variant { variant, args, .. } => self.variant(block, env, e, *variant, args).map(Some),
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
-            Closure(_) | ClosureCall { .. } => err("closure lowering not yet implemented"),
+            Closure(c) => self.closure(block, env, c).map(Some),
+            ClosureCall { target, args } => self.closure_call(block, env, target, args),
             GlobalStr(_) => err("string literal lowering not yet implemented"),
             Poison => err("poison expression reached lowering"),
         }
@@ -687,6 +688,162 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             None => None,
         };
         Ok(self.append(block, builders::nullable_create(value, result_ty, loc)))
+    }
+
+    /// Lower a closure creation.
+    ///
+    /// The runtime closure has no separate capture environment: captures and
+    /// parameters share one input list with the captures leading, so a closure
+    /// lowers to a shared `rc<closure<(captures ++ params) -> ret>>` built inline
+    /// (`reussir.closure.create` with a body region), and each captured value is
+    /// then supplied with one `reussir.closure.apply`, leaving the user-visible
+    /// `rc<closure<params -> ret>>`.
+    ///
+    /// The body region is `IsolatedFromAbove`: its block arguments *are* the
+    /// closure inputs (captures then parameters), so it is lowered in a fresh
+    /// environment that binds them to those arguments and inherits no enclosing
+    /// region — a closure cannot capture a `flex`/region-local value, so the body
+    /// never allocates into the creator's region. The reference-count ops the
+    /// ownership analysis placed for the captures (a `dup` before this node for
+    /// each still-live captured `rc`) and inside the body ride on the surrounding
+    /// [`expr`](Self::expr) walk as usual.
+    fn closure<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        c: &mir::ClosureExpr<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let ret = c.body.ty;
+        // The closure's inputs at creation: every capture, then every parameter.
+        let inputs: Vec<(VarId, Ty<'tcx>)> =
+            c.captures.iter().chain(c.params.iter()).copied().collect();
+        let input_tys: Vec<Ty<'tcx>> = inputs.iter().map(|&(_, t)| t).collect();
+        let created_ty = self.tys.closure_type(&input_tys, ret)?;
+
+        // The body block takes one argument per closure input, in order.
+        let arg_mlir = input_tys
+            .iter()
+            .map(|&t| self.tys.mlir_ty(t))
+            .collect::<Result<Vec<_>>>()?;
+        let block_args: SmallVec<[(Type<'c>, Location<'c>); 8]> =
+            arg_mlir.iter().map(|t| (*t, loc)).collect();
+        let body_block = Block::new(&block_args);
+        let mut body_env = Env::new(None);
+        for (i, &(var, ty)) in inputs.iter().enumerate() {
+            let arg = body_block
+                .argument(i)
+                .map_err(|e| LoweringError(format!("missing closure body argument: {e}").into()))?;
+            body_env.vars.insert(var, arg.into());
+            self.bind_var_ty(var, ty);
+        }
+        let value = self.expr(&body_block, &mut body_env, c.body)?;
+        if is_unit(ret) {
+            body_block.append_operation(builders::closure_yield(None, loc));
+        } else {
+            let v = value.ok_or_else(|| LoweringError("closure body produced no value".into()))?;
+            body_block.append_operation(builders::closure_yield(Some(v), loc));
+        }
+        let body_region = Region::new();
+        body_region.append_block(body_block);
+        let mut closure = self.append(
+            block,
+            builders::closure_create(created_ty, body_region, loc),
+        );
+
+        // Supply the captured values, consuming the leading inputs in order; each
+        // apply drops one input, so after capture `i` the residual closure keeps
+        // `input_tys[i + 1..]` — a slice of the original inputs, no per-step shift.
+        for (i, &(var, _)) in c.captures.iter().enumerate() {
+            let cap_val = env.vars.get(&var).copied().ok_or_else(|| {
+                LoweringError(format!("unbound captured variable {var:?}").into())
+            })?;
+            let applied_ty = self.tys.closure_type(&input_tys[i + 1..], ret)?;
+            closure = self.append(
+                block,
+                builders::closure_apply(cap_val, closure, applied_ty, loc),
+            );
+        }
+        Ok(closure)
+    }
+
+    /// Lower a closure call `target(args)`.
+    ///
+    /// The target lowers to `rc<closure<params -> ret>>`; each argument is
+    /// supplied with a `reussir.closure.apply` that consumes the leading input.
+    /// A partial application (fewer arguments than parameters) stops at the
+    /// residual closure; a full application evaluates it with
+    /// `reussir.closure.eval` and produces the result (`None` for a unit return).
+    ///
+    /// Both `apply` (which writes into the closure box in place) and `eval` (which
+    /// hands the box's payload to the body as owned, to be consumed) are only
+    /// sound on a uniquely-owned closure. The target here is an arbitrary closure
+    /// value that may be shared (the ownership analysis hands us one owned
+    /// reference, dup'ing it when the closure is reused), so it is always first
+    /// passed through `reussir.closure.uniqify`, which deep-clones it when it is
+    /// shared and returns it as-is when unique. (The capture-application in
+    /// [`closure`](Self::closure) needs no uniqify because it feeds directly from
+    /// `closure.create`, which is already unique.)
+    fn closure_call<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b>,
+        target: &Expr<'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (params, ret) = match target.ty.kind() {
+            TyKind::Closure { params, ret } => (*params, *ret),
+            _ => return err("closure call target is not a closure"),
+        };
+        let closure_val = self
+            .expr(block, env, target)?
+            .ok_or_else(|| LoweringError("closure call target is unit".into()))?;
+        // Make the target unique before touching it. `apply` writes its argument
+        // into the closure box in place, and `eval` hands the box's payload (the
+        // values applied by earlier, possibly-curried applications) to the body as
+        // owned — the body consumes them. A shared closure is referenced by other
+        // holders that still own that same payload, so applying to *or* evaluating
+        // it in place would corrupt or double-free their values. This is needed
+        // even for a zero-argument (eval-only) call, since the target may already
+        // carry payload. `uniqify` deep-clones a shared closure and is a no-op on
+        // a unique one.
+        let target_ty = self.tys.mlir_ty(target.ty)?;
+        let mut closure = self.append(
+            block,
+            builders::closure_uniqify(closure_val, target_ty, loc),
+        );
+        for (i, a) in args.iter().enumerate() {
+            let arg_val = self
+                .expr(block, env, a)?
+                .ok_or_else(|| LoweringError("closure call argument is unit".into()))?;
+            // Apply consumes the leading input, so after argument `i` the residual
+            // closure keeps `params[i + 1..]` — a slice of the original parameters,
+            // no per-step shift or copy.
+            let applied_ty = self.tys.closure_type(&params[i + 1..], ret)?;
+            closure = self.append(
+                block,
+                builders::closure_apply(arg_val, closure, applied_ty, loc),
+            );
+        }
+        // A partial application leaves a closure value; only a fully-applied
+        // closure (every parameter supplied) is evaluated. Comparing arities
+        // rather than inspecting the result type stays correct when `ret` is
+        // itself a closure type.
+        if args.len() < params.len() {
+            return Ok(Some(closure));
+        }
+        let result_ty = if is_unit(ret) {
+            None
+        } else {
+            Some(self.tys.mlir_ty(ret)?)
+        };
+        let op = block.append_operation(builders::closure_eval(closure, result_ty, loc));
+        if result_ty.is_some() {
+            Ok(Some(op.result(0).unwrap().into()))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Project a chain of fields out of a record value.
@@ -998,7 +1155,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// a reference (which increments every rc pointer it reaches).
     fn emit_inc<'b>(&self, block: &'b Block<'c>, val: Value<'c, 'b>, ty: Ty<'tcx>) -> Result<()> {
         let loc = self.loc();
-        if self.tys.is_shared_record(ty) {
+        // A managed `rc` pointer — a shared record, a rigid regional record, or a
+        // closure — is bumped directly; an inline `[value]` record is acquired
+        // through a reference (which reaches the rc pointers inside it).
+        if self.tys.is_managed_rc(ty) {
             block.append_operation(dialect::rc_inc(self.context, val, loc).into());
             Ok(())
         } else if matches!(ty.kind(), TyKind::Record { .. }) {
@@ -1015,7 +1175,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// reference (releasing every rc pointer it reaches).
     fn emit_dec<'b>(&self, block: &'b Block<'c>, val: Value<'c, 'b>, ty: Ty<'tcx>) -> Result<()> {
         let loc = self.loc();
-        if self.tys.is_shared_record(ty) {
+        // The dual of [`emit_inc`](Self::emit_inc): a managed `rc` pointer (shared
+        // record, rigid regional record, or closure) is decremented directly, an
+        // inline `[value]` record dropped through a reference.
+        if self.tys.is_managed_rc(ty) {
             block.append_operation(dialect::rc_dec(self.context, val, loc).into());
             Ok(())
         } else if matches!(ty.kind(), TyKind::Record { .. }) {
