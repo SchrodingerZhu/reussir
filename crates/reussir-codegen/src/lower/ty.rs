@@ -27,7 +27,7 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, nullable, rc,
+    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, closure, nullable, rc,
     record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
 };
 use reussir_backend::melior::Context;
@@ -105,6 +105,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             .is_some_and(|rec| rec.default_cap == DefaultCap::Regional)
     }
 
+    /// Whether a value of type `ty` is represented as a managed `!reussir.rc<…>`
+    /// pointer whose refcount is adjusted directly with `rc.inc`/`rc.dec`: a
+    /// `[shared]` record, a regional record (reference-counted once frozen to
+    /// `rigid` — the only regional coloring that is a resource), or a closure.
+    /// This is the complement, among reference-counted values, of an inline
+    /// `[value]` record — which is acquired/dropped through a reference instead.
+    pub(super) fn is_managed_rc(&self, ty: Ty<'tcx>) -> bool {
+        self.is_shared_record(ty) || self.is_regional_record(ty) || is_closure(ty)
+    }
+
     /// Lower a ground type to MLIR: records resolve through the layout table, a
     /// nullable pointer wraps its (pointer-typed) element, and everything else is
     /// a scalar.
@@ -125,6 +135,9 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                 }
                 Ok(nullable(self.mlir_ty(inner)?))
             }
+            // A closure value is a shared `rc<closure<params -> ret>>`; captures
+            // have already been supplied (see [`closure_type`](Self::closure_type)).
+            TyKind::Closure { params, ret } => self.closure_type(params, ret),
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -305,6 +318,25 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         Ok(payload)
     }
 
+    /// `!reussir.rc<closure<(inputs) -> ret>, shared>` — the pointer type for a
+    /// closure value over `inputs`. A closure is always a shared `rc` box; the
+    /// runtime has no separate capture environment, so `inputs` is the closure's
+    /// full argument list (captures followed by parameters at creation, or just
+    /// the remaining parameters once captures have been applied). A unit return is
+    /// a closure with no output type.
+    pub(super) fn closure_type(&self, inputs: &[Ty<'tcx>], ret: Ty<'tcx>) -> Result<Type<'c>> {
+        let input_tys = inputs
+            .iter()
+            .map(|&t| self.mlir_ty(t))
+            .collect::<Result<Vec<_>>>()?;
+        let output = if is_unit(ret) {
+            None
+        } else {
+            Some(self.mlir_ty(ret)?)
+        };
+        Ok(self.rc_type(closure(self.context, &input_tys, output)))
+    }
+
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,
     /// reference-counted value with the default (non-atomic) box layout.
     pub(super) fn rc_type(&self, inner: Type<'c>) -> Type<'c> {
@@ -394,6 +426,12 @@ pub(super) fn is_unit(ty: Ty<'_>) -> bool {
     matches!(ty.kind(), TyKind::Unit)
 }
 
+/// Whether `ty` is a closure type — a shared `rc<closure<…>>` value, which is
+/// reference-counted like a `[shared]` record.
+pub(super) fn is_closure(ty: Ty<'_>) -> bool {
+    matches!(ty.kind(), TyKind::Closure { .. })
+}
+
 /// The MLIR type for a ground scalar Reussir type. Records are handled by
 /// [`TypeCtx::record_type`], which intercepts them before this fallback; reaching
 /// the `Record` arm here is a bug.
@@ -413,7 +451,8 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Str => err("string type lowering not yet implemented"),
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
-        TyKind::Closure { .. } => err("closure type lowering not yet implemented"),
+        // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.
+        TyKind::Closure { .. } => err("closure type reached scalar lowering without an rc wrapper"),
         TyKind::Bottom => err("bottom type reached lowering"),
         TyKind::Generic(_) | TyKind::Hole(_) => err("non-ground type reached lowering"),
     }

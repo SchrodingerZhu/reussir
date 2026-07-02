@@ -239,6 +239,93 @@ pub fn region_yield<'c>(value: Option<Value<'c, '_>>, location: Location<'c>) ->
     builder.build().expect("valid reussir.region.yield")
 }
 
+/// `reussir.closure.create -> <result_type> { body … }` — create a closure from
+/// an inlined body region.
+///
+/// The result is a shared `!reussir.rc<closure<(inputs) -> output>>`; the body
+/// region's single block takes the closure input types as arguments (captures
+/// followed by parameters) and terminates with `reussir.closure.yield`. This
+/// builds the *inlined* form — no allocation token (the token-instantiation pass
+/// supplies it) and no outlined vtable (the closure-outlining pass generates the
+/// evaluate/drop/clone functions and vtable from the body). The op has a custom
+/// assembly format and no generated builder, so it is built raw here.
+pub fn closure_create<'c>(
+    result_type: Type<'c>,
+    body: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.closure.create", location)
+        .add_regions([body])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.closure.create")
+}
+
+/// `reussir.closure.yield (<value> : <type>)?` — terminate a
+/// `reussir.closure.create` body, yielding the closure's result (absent for a
+/// closure with no output). Built raw like [`region_yield`] — the generated
+/// builder exposes no parameter for the `Optional` value operand.
+pub fn closure_yield<'c>(value: Option<Value<'c, '_>>, location: Location<'c>) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.closure.yield", location);
+    if let Some(value) = value {
+        builder = builder.add_operands(&[value]);
+    }
+    builder.build().expect("valid reussir.closure.yield")
+}
+
+/// `reussir.closure.apply (<arg> : <type>) to (<closure> : <type>) : <result_type>`
+/// — supply one leading argument to a closure, yielding a closure with one fewer
+/// input. Built raw here; the result type is the residual closure `rc` type.
+pub fn closure_apply<'c>(
+    arg: Value<'c, '_>,
+    closure: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.closure.apply", location)
+        .add_operands(&[arg, closure])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.closure.apply")
+}
+
+/// `reussir.closure.uniqify (<closure> : <type>) : <result_type>` — obtain a
+/// uniquely-owned copy of a closure.
+///
+/// It expands (in the SCF-lowering pass) to an `rc.is_unique` guarded `scf.if`:
+/// a uniquely-referenced closure is returned as-is, otherwise it is deep-cloned
+/// (and the shared reference dropped). It must precede any `reussir.closure.apply`
+/// on a closure that may be shared, because `apply` writes the argument into the
+/// closure box *in place* — mutating a shared closure would corrupt every other
+/// holder. The result type is the same closure `rc` type as the input.
+pub fn closure_uniqify<'c>(
+    closure: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.closure.uniqify", location)
+        .add_operands(&[closure])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.closure.uniqify")
+}
+
+/// `reussir.closure.eval (<closure> : <type>) (: <result_type>)?` — evaluate a
+/// fully-applied closure, producing its result (absent for a closure with no
+/// output). Built raw here; `result_type` is `None` for a unit-returning closure.
+pub fn closure_eval<'c>(
+    closure: Value<'c, '_>,
+    result_type: Option<Type<'c>>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.closure.eval", location);
+    builder = builder.add_operands(&[closure]);
+    if let Some(result_type) = result_type {
+        builder = builder.add_results(&[result_type]);
+    }
+    builder.build().expect("valid reussir.closure.eval")
+}
+
 /// `reussir.record.extract (<record> : <type>) [<index>] : <field_type>` —
 /// project a field out of a record value.
 ///

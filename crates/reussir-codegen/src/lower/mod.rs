@@ -30,11 +30,19 @@
 //!   mutation of a `[field]` link (`c->f := …` — project the `nullable<rc<…>>`
 //!   slot to a writable `field` reference and store), with the `Nullable`
 //!   constructor lowering to `reussir.nullable.create`.
+//! * **closures** — a closure lowers to a shared `rc<closure<…>>` built inline
+//!   (`reussir.closure.create` with a body region; the closure-outlining pass
+//!   generates the evaluate/drop/clone functions), with captures supplied as the
+//!   leading inputs via `reussir.closure.apply`. A call first makes its
+//!   (possibly-shared) target unique with `reussir.closure.uniqify` — `apply`
+//!   mutates the closure box in place — then applies its arguments the same way
+//!   and, once fully applied, evaluates with `reussir.closure.eval`; partial
+//!   application stops at the residual closure.
 //!
 //! Reading a `[field]` link back (which needs `match`/`nullable.dispatch`), a
-//! non-`[field]` member that is itself a regional record, enums/`match`,
-//! closures, and strings are not yet lowered and surface as an explicit
-//! [`LoweringError`] rather than wrong code.
+//! non-`[field]` member that is itself a regional record, enums/`match`, and
+//! strings are not yet lowered and surface as an explicit [`LoweringError`]
+//! rather than wrong code.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
 //! [`mir::Symbol`](reussir_core::full::mir::Symbol) (mono did the mangling), so
@@ -611,6 +619,189 @@ mod tests {
                 &reussir_backend::pipeline::LoweringOptions::default(),
             )
             .expect("pipeline lowers the scalar module to LLVM");
+        });
+    }
+
+    #[test]
+    fn uniqifies_a_zero_argument_closure_call_before_eval() {
+        // A zero-argument call evaluates the target with no `apply`. `eval` still
+        // hands the closure's payload to the body to consume, so a shared target
+        // (which may carry payload from earlier curried applications) must be made
+        // unique first — evaluating it in place would let the body consume values
+        // another holder still owns. So the target is uniqified even with no
+        // arguments to apply.
+        let src = r#"
+            pub fn thunk() -> i64 { (|| 42)() }
+        "#;
+        let mlir = lower_source(src);
+        assert!(
+            mlir.contains("reussir.closure.uniqify"),
+            "no uniqify:\n{mlir}"
+        );
+        assert!(mlir.contains("reussir.closure.eval"), "no eval:\n{mlir}");
+        assert!(
+            !mlir.contains("reussir.closure.apply"),
+            "unexpected apply:\n{mlir}"
+        );
+    }
+
+    #[test]
+    fn drops_a_frozen_regional_record_by_reference_count() {
+        // A regional record that escapes its region is frozen to a `rigid` `rc`
+        // box — a managed, reference-counted value, not an inline aggregate. When
+        // such a value is bound and then goes dead, the ownership analysis drops
+        // it, which must lower to a direct `reussir.rc.dec` on the `rc` pointer
+        // (not an inline `ref.drop`, which would mis-handle the pointer). Here `c`
+        // is read by two projections — a projection *borrows* the parent and the
+        // extracted `i64` field is not itself reference-counted, so neither use
+        // transfers ownership (no `dup`): `c` is simply dropped once after the
+        // last one.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            pub fn run(n: i64) -> i64 {
+                let c = regional { make(n) };
+                c.v + c.v
+            }
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            let printed = module.as_operation().to_string();
+            // The frozen `rigid` box is dropped with a direct reference-count
+            // decrement, not spilled and dropped as an inline record.
+            assert!(printed.contains("reussir.rc.dec"), "{printed}");
+            assert!(printed.contains("rigid"), "{printed}");
+            // Borrowing projections of a non-owned (`i64`) field transfer no
+            // ownership, so `c` is dropped exactly once with no matching `inc`.
+            assert!(!printed.contains("reussir.rc.inc"), "{printed}");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the frozen-record drop to LLVM");
+        });
+    }
+
+    #[test]
+    fn dups_a_frozen_regional_record_reused_across_calls() {
+        // The `inc` dual of the drop test: a frozen `rigid` regional record reused
+        // in two calls is not a last use at the first, so the ownership analysis
+        // `dup`s it — which must lower to a direct `reussir.rc.inc` on the `rc`
+        // pointer (the managed-rc path), then each callee consumes its own
+        // reference. Passing `c` to `take` twice forces exactly this.
+        let src = r#"
+            struct [regional] Cell { v: i64 }
+            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            fn take(c: Cell) -> i64 { c.v }
+            pub fn run(n: i64) -> i64 {
+                let c = regional { make(n) };
+                take(c) + take(c)
+            }
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            let printed = module.as_operation().to_string();
+            // The reused frozen box is retained with a direct reference-count
+            // increment, and dropped (by the callees / at last use) with a
+            // decrement — both on the `rigid` `rc` pointer.
+            assert!(printed.contains("reussir.rc.inc"), "{printed}");
+            assert!(printed.contains("reussir.rc.dec"), "{printed}");
+            assert!(printed.contains("rigid"), "{printed}");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the frozen-record reuse to LLVM");
+        });
+    }
+
+    #[test]
+    fn lowers_a_closure_with_a_capture_to_verifiable_mlir() {
+        // A closure captures the enclosing `n` and takes one parameter `x`. It
+        // lowers to an inline `reussir.closure.create` over `(n, x) -> i64`; the
+        // captured `n` is supplied with a `reussir.closure.apply`, leaving a
+        // `(x) -> i64` closure. Calling it applies `x` and evaluates
+        // (`reussir.closure.eval`) the fully-applied closure.
+        let src = r#"
+            pub fn adder(n: i64) -> i64 { (|x: i64| x + n)(1) }
+            extern "C" trampoline "adder_ffi" = adder;
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.closure.create"), "{mlir}");
+        assert!(mlir.contains("reussir.closure.apply"), "{mlir}");
+        assert!(mlir.contains("reussir.closure.eval"), "{mlir}");
+        assert!(mlir.contains("reussir.closure.yield"), "{mlir}");
+        // The call makes the (possibly-shared) target unique before the in-place
+        // `apply`; the capture-application on the fresh `create` result does not.
+        assert!(mlir.contains("reussir.closure.uniqify"), "{mlir}");
+        // The closure value is a shared `rc` over a `closure` type.
+        assert!(mlir.contains("!reussir.closure<"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_a_partially_applied_closure() {
+        // Applying fewer arguments than parameters stops at the residual closure:
+        // the inner `(…)(1)` supplies one of two parameters, so it lowers to a
+        // `reussir.closure.apply` whose result is still a closure (no
+        // `reussir.closure.eval`); the outer `(…)(2)` fully applies and evaluates.
+        let src = r#"
+            pub fn sum(n: i64) -> i64 { ((|x: i64, y: i64| x + y + n)(1))(2) }
+            extern "C" trampoline "sum_ffi" = sum;
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.closure.create"), "{mlir}");
+        assert!(mlir.contains("reussir.closure.apply"), "{mlir}");
+        // The final application evaluates the fully-applied closure.
+        assert!(mlir.contains("reussir.closure.eval"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_a_closure_through_the_pipeline() {
+        // The whole closure path lowers to the LLVM dialect: the closure-outlining
+        // pass turns the inline `closure.create` body into an evaluate function
+        // with a vtable and drop/clone functions, and apply/eval lower to the
+        // runtime protocol.
+        let src = r#"
+            pub fn adder(n: i64) -> i64 { (|x: i64| x + n)(1) }
+            extern "C" trampoline "adder_ffi" = adder;
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the closure module to LLVM");
         });
     }
 }

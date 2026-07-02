@@ -258,6 +258,119 @@ fn lowers_variant_debug_info_through_the_pipeline() {
 }
 
 #[test]
+fn runs_a_closure_with_a_captured_value() {
+    // A closure captures the enclosing `n` and takes one parameter. It lowers to
+    // an inline `closure.create` over `(n, x) -> i64`; the capture is supplied
+    // with `closure.apply`, and the call uniqifies, applies the argument, and
+    // evaluates. If the whole create/apply/eval protocol and the closure-box
+    // layout are right, the arithmetic comes back exact.
+    let src = r#"
+        pub fn adder(n: i64) -> i64 { (|x: i64| x + n)(1) }
+        extern "C" trampoline "adder_ffi" = adder;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("adder_ffi").expect("lookup adder_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // (|x| x + n)(1) = 1 + n
+        assert_eq!(f(41), 42);
+        assert_eq!(f(-1), 0);
+    });
+}
+
+#[test]
+fn runs_a_closure_capturing_a_shared_record() {
+    // The captured value is a heap-allocated `[shared]` record, so the closure
+    // box holds an `rc` pointer in its payload. Evaluating the closure hands the
+    // payload to the body as owned and the body consumes it, so the box is freed
+    // exactly once (the capture is a last use — moved in, not dup'd). A wrong
+    // refcount would double-free or leak the `Box`; the returned scalar pins it.
+    let src = r#"
+        struct [shared] Box { v: i64 }
+        fn mk(v: i64) -> Box { Box { v: v } }
+        pub fn run(n: i64) -> i64 {
+            let b = mk(n);
+            (|x: i64| x + b.v)(1)
+        }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // (|x| x + b.v)(1) with b.v = n  ⇒  1 + n
+        assert_eq!(f(41), 42);
+        assert_eq!(f(99), 100);
+    });
+}
+
+#[test]
+fn runs_a_partially_then_fully_applied_closure() {
+    // The inner `(…)(6)` supplies one of two parameters — a partial application
+    // that uniqifies, applies, and stops at the residual `(y) -> i64` closure.
+    // The outer `(…)(7)` uniqifies that residual, applies the last argument, and
+    // evaluates. Exercises the multi-argument apply chain and both the
+    // partial-application and full-application paths in one call.
+    let src = r#"
+        pub fn run(n: i64) -> i64 { ((|x: i64, y: i64| x * y + n)(6))(7) }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // 6 * 7 + n = 42 + n
+        assert_eq!(f(0), 42);
+        assert_eq!(f(8), 50);
+    });
+}
+
+#[test]
+fn runs_regional_record_construction_and_projection() {
+    // A `[regional]` record is region-allocated as a `flex` box inside a
+    // `region-run` scope; projecting a scalar field out of it leaves the region
+    // as a plain `i64`. Drives the region lifecycle — allocate into the arena,
+    // read the field, tear the region down — through the runtime.
+    let src = r#"
+        struct [regional] Cell { v: i64 }
+        regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+        pub fn run(n: i64) -> i64 { regional { make(n).v } }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(7), 7);
+        assert_eq!(f(-3), -3);
+    });
+}
+
+#[test]
+fn runs_a_reused_frozen_regional_record() {
+    // A regional record that escapes its region is frozen to a `rigid` `rc` box —
+    // a managed, reference-counted value. Reusing `c` across two `take` calls is
+    // not a last use at the first, so the ownership analysis `dup`s it (a direct
+    // `rc.inc` on the `rc` pointer), and each callee consumes and drops its
+    // reference (`rc.dec`), freeing the box exactly once. A wrong count would
+    // double-free (crash) or leak; the arithmetic result pins it down. This is
+    // the runtime check for the managed-rc inc/dec path on a frozen record.
+    let src = r#"
+        struct [regional] Cell { v: i64 }
+        regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+        fn take(c: Cell) -> i64 { c.v }
+        pub fn run(n: i64) -> i64 {
+            let c = regional { make(n) };
+            take(c) + take(c)
+        }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        // take(c) + take(c) = n + n
+        assert_eq!(f(21), 42);
+        assert_eq!(f(-5), -10);
+    });
+}
+
+#[test]
 fn runs_iterative_helper_and_signed_arithmetic() {
     let src = r#"
         fn iter_impl(n: u64, a: u64, b: u64) -> u64 {
