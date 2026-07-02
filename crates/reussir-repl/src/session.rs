@@ -324,6 +324,12 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         }
     }
 
+    /// Number of accepted (elaborated) definitions, expression wrappers
+    /// included; shown in the TUI status line.
+    pub fn definition_count(&self) -> usize {
+        self.elab.elaborated.len()
+    }
+
     /// Render a ground Semi type for display (`i64`, `f64`, `List::<i64>`).
     pub(crate) fn render_ty(&self, ty: Ty<'tcx>) -> String {
         match *ty.kind() {

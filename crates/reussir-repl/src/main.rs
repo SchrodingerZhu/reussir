@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use reussir_jit::OptLevel;
-use reussir_repl::frontend::plain;
+use reussir_repl::frontend::{plain, tui};
 use reussir_repl::session::{self, Config, Exit};
 
 /// Reussir REPL (Rust pipeline).
@@ -70,32 +70,26 @@ fn run(cli: &Cli) -> Result<(), String> {
         opt: resolve_opt(cli)?,
     };
 
-    let (mut lines, interactive): (Box<dyn BufRead>, bool) = match &cli.input {
+    // Mode selection: a script file or piped stdin drive the plain
+    // line-based frontend; a real terminal gets the TUI.
+    let mut lines: Box<dyn BufRead> = match &cli.input {
         Some(path) => {
             let file = std::fs::File::open(path)
                 .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-            (Box::new(BufReader::new(file)), false)
+            Box::new(BufReader::new(file))
         }
         None => {
-            let interactive = std::io::stdin().is_terminal();
-            (Box::new(BufReader::new(std::io::stdin())), interactive)
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                return tui::run(config);
+            }
+            Box::new(BufReader::new(std::io::stdin()))
         }
     };
-
-    if interactive {
-        println!(
-            "Reussir REPL v{} (Rust pipeline)",
-            env!("CARGO_PKG_VERSION")
-        );
-        println!("Type :help for available commands, :q to quit");
-    }
 
     // Each `:clear` tears the whole session (arena, elaborator, JIT) down
     // and starts a fresh one; the input stream carries on where it was.
     loop {
-        let exit = session::run(config, |session| {
-            plain::drive(session, &mut lines, interactive)
-        })?;
+        let exit = session::run(config, |session| plain::drive(session, &mut lines, false))?;
         match exit {
             Exit::Quit => return Ok(()),
             Exit::Clear => {

@@ -28,6 +28,8 @@ reussir-syntax = { path = "../reussir-syntax" }
 # The persistent ORC LLJIT session (links the in-process runtime).
 reussir-jit = { path = "../reussir-jit" }
 palc.workspace = true
+ratatui.workspace = true
+ratatui-textarea.workspace = true
 rustc-hash.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

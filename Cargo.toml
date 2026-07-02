@@ -86,6 +86,10 @@ stacker = "0.1.21"
 tracing = "0.1"
 # Log-level plumbing for the REPL binary's `-l` flag.
 tracing-subscriber = "0.3"
+# The REPL's interactive terminal UI: ratatui renders it, ratatui-textarea is
+# the multiline input editor (smart-Enter submission lives in the REPL).
+ratatui = "0.30"
+ratatui-textarea = "0.9"
 
 [profile.release]
 lto = "thin"

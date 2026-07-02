@@ -7,3 +7,4 @@
 //! interactive frontend on a real terminal.
 
 pub mod plain;
+pub mod tui;
