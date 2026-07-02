@@ -35,3 +35,7 @@ palc.workspace = true
 # so `-v`/`RUST_LOG` surface them (to stderr, never stdout).
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# Auto-cleaned scratch directories for the driver integration tests.
+tempfile = "3"
