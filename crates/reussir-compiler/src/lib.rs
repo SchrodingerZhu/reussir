@@ -15,9 +15,11 @@ use std::ffi::{CString, c_char};
 use std::path::Path;
 
 use llvm_sys::core::{
-    LLVMContextDispose, LLVMDisposeMessage, LLVMDisposeModule, LLVMPrintModuleToString,
+    LLVMContextCreate, LLVMContextDispose, LLVMCreateMemoryBufferWithMemoryRangeCopy,
+    LLVMDisposeMemoryBuffer, LLVMDisposeMessage, LLVMDisposeModule, LLVMPrintModuleToString,
     LLVMSetTarget,
 };
+use llvm_sys::ir_reader::LLVMParseIRInContext2;
 use llvm_sys::prelude::LLVMModuleRef;
 use llvm_sys::target::{
     LLVM_InitializeAllAsmParsers, LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos,
@@ -222,6 +224,37 @@ impl TargetMachine {
 impl Drop for TargetMachine {
     fn drop(&mut self) {
         unsafe { LLVMDisposeTargetMachine(self.machine) }
+    }
+}
+
+/// Parses LLVM IR text into a fresh context, yielding a [`Finalized`] ready for
+/// [`emit_to_file`] — the entry point for a `.ll` input, which skips the whole
+/// MLIR front of the pipeline. `name` labels parse diagnostics.
+pub fn parse_llvm_ir(name: &str, source: &str) -> Result<Finalized, String> {
+    init_targets(false);
+    unsafe {
+        let context = LLVMContextCreate();
+        // `source` is borrowed, so copy it into an LLVM-owned buffer we control.
+        let name_c =
+            CString::new(name).unwrap_or_else(|_| CString::new("<input>").expect("valid cstr"));
+        let buffer = LLVMCreateMemoryBufferWithMemoryRangeCopy(
+            source.as_ptr() as *const c_char,
+            source.len(),
+            name_c.as_ptr(),
+        );
+        let mut module: LLVMModuleRef = std::ptr::null_mut();
+        let mut err: *mut c_char = std::ptr::null_mut();
+        // `LLVMParseIRInContext2` copies what it needs and does *not* take the
+        // buffer, so we free it ourselves either way.
+        let failed = LLVMParseIRInContext2(context, buffer, &mut module, &mut err) != 0;
+        LLVMDisposeMemoryBuffer(buffer);
+        if failed {
+            let msg = c_str(err);
+            LLVMDisposeMessage(err);
+            LLVMContextDispose(context);
+            return Err(format!("{name}: failed to parse LLVM IR: {msg}"));
+        }
+        Ok(Finalized { context, module })
     }
 }
 

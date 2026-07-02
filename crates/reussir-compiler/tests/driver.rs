@@ -1,0 +1,209 @@
+//! Driver end-to-end tests: run the real `rrc` binary through the stage chain,
+//! checking that each input/output pair produces the expected artifact and that
+//! the re-entry points (`.mir`/`.mlir`/`.ll` inputs) rejoin the pipeline.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const PROGRAM: &str = r#"
+    enum List<T> { Nil, Cons(T, List<T>) }
+    pub fn sum(list: List<i64>) -> i64 {
+        match list {
+            List::Nil => 0,
+            List::Cons(x, xs) => x + sum(xs)
+        }
+    }
+    extern "C" trampoline "sum_ffi" = sum;
+"#;
+
+/// A throwaway directory unique to one test.
+fn scratch(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rrc-driver-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
+}
+
+fn rrc(args: &[&Path]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args(args)
+        .output()
+        .expect("spawn rrc")
+}
+
+/// Compile `input` to `target` (`--emit target`), writing `out`; assert success.
+fn emit(input: &Path, target: &str, out: &Path) {
+    let output = rrc(&[input, Path::new("-o"), out, Path::new("--emit"), Path::new(target)]);
+    assert!(
+        output.status.success(),
+        "rrc {} -> {target} failed:\n{}",
+        input.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Write `PROGRAM` to a `.rr` file in a fresh scratch dir and return its path.
+fn source(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch(tag);
+    let src = dir.join("prog.rr");
+    std::fs::write(&src, PROGRAM).expect("write source");
+    (dir, src)
+}
+
+#[test]
+fn dumps_hir_mir_and_mlir_from_source() {
+    let (dir, src) = source("dumps");
+
+    let hir = dir.join("prog.hir");
+    emit(&src, "hir", &hir);
+    let hir_text = read(&hir);
+    assert!(hir_text.contains("fn #sum"), "hir:\n{hir_text}");
+    assert!(hir_text.contains("match"), "hir:\n{hir_text}");
+
+    let mir = dir.join("prog.mir");
+    emit(&src, "mir", &mir);
+    let mir_text = read(&mir);
+    // The MIR is mangled and monomorphized.
+    assert!(mir_text.contains("sum"), "mir:\n{mir_text}");
+    assert!(mir_text.contains("switch") || mir_text.contains("match"), "mir:\n{mir_text}");
+
+    let mlir = dir.join("prog.mlir");
+    emit(&src, "mlir", &mlir);
+    let mlir_text = read(&mlir);
+    assert!(mlir_text.contains("reussir.record.dispatch"), "mlir:\n{mlir_text}");
+    assert!(mlir_text.contains("func.func"), "mlir:\n{mlir_text}");
+}
+
+#[test]
+fn dumps_mlir_llvm_and_llvm_ir_from_source() {
+    let (dir, src) = source("llvm");
+
+    let mlir_llvm = dir.join("prog.mlir-llvm");
+    emit(&src, "mlir-llvm", &mlir_llvm);
+    let text = read(&mlir_llvm);
+    // After the pipeline the module is the LLVM dialect: no reussir ops remain.
+    assert!(text.contains("llvm."), "mlir-llvm:\n{text}");
+    assert!(!text.contains("reussir.record.dispatch"), "mlir-llvm still high-level:\n{text}");
+
+    let ll = dir.join("prog.ll");
+    emit(&src, "llvm-ir", &ll);
+    let ll_text = read(&ll);
+    assert!(ll_text.contains("define"), "ll:\n{ll_text}");
+    // The exported C-ABI trampoline is present.
+    assert!(ll_text.contains("sum_ffi"), "ll:\n{ll_text}");
+}
+
+#[test]
+fn compiles_source_to_object() {
+    let (dir, src) = source("obj");
+    let obj = dir.join("prog.o");
+    // Target inferred from the `.o` extension (no --emit).
+    let output = rrc(&[&src, Path::new("-o"), &obj]);
+    assert!(
+        output.status.success(),
+        "rrc -> obj failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = std::fs::metadata(&obj).expect("object exists").len();
+    assert!(bytes > 0, "object file is empty");
+}
+
+#[test]
+fn reenters_from_mir_and_matches_source_lowering() {
+    let (dir, src) = source("mir-reentry");
+
+    // Dump MIR from source, then lower that MIR file to MLIR.
+    let mir = dir.join("prog.mir");
+    emit(&src, "mir", &mir);
+    let via_mir = dir.join("via-mir.mlir");
+    emit(&mir, "mlir", &via_mir);
+
+    // Lowering straight from source should reach the same high-level ops.
+    let via_src = dir.join("via-src.mlir");
+    emit(&src, "mlir", &via_src);
+
+    for path in [&via_mir, &via_src] {
+        let text = read(path);
+        assert!(text.contains("reussir.record.dispatch"), "{}: {text}", path.display());
+        assert!(text.contains("sum_ffi"), "{}: {text}", path.display());
+    }
+}
+
+#[test]
+fn mir_and_hir_round_trip_by_reprinting() {
+    let (dir, src) = source("round-trip");
+
+    // print(parse(t)) == t for MIR: dumping, re-parsing, and re-dumping is stable.
+    let mir1 = dir.join("one.mir");
+    emit(&src, "mir", &mir1);
+    let mir2 = dir.join("two.mir");
+    emit(&mir1, "mir", &mir2);
+    assert_eq!(read(&mir1), read(&mir2), "MIR is not print/parse stable");
+
+    // Same for HIR.
+    let hir1 = dir.join("one.hir");
+    emit(&src, "hir", &hir1);
+    let hir2 = dir.join("two.hir");
+    emit(&hir1, "hir", &hir2);
+    assert_eq!(read(&hir1), read(&hir2), "HIR is not print/parse stable");
+}
+
+#[test]
+fn reenters_from_mlir_and_llvm_ir_to_object() {
+    let (dir, src) = source("obj-reentry");
+
+    // .mlir -> .o : parse the dialect, run the pipeline, emit.
+    let mlir = dir.join("prog.mlir");
+    emit(&src, "mlir", &mlir);
+    let obj_from_mlir = dir.join("from-mlir.o");
+    emit(&mlir, "obj", &obj_from_mlir);
+    assert!(std::fs::metadata(&obj_from_mlir).expect("obj from mlir").len() > 0);
+
+    // .ll -> .o : parse LLVM IR and run the backend.
+    let ll = dir.join("prog.ll");
+    emit(&src, "llvm-ir", &ll);
+    let obj_from_ll = dir.join("from-ll.o");
+    emit(&ll, "obj", &obj_from_ll);
+    assert!(std::fs::metadata(&obj_from_ll).expect("obj from ll").len() > 0);
+}
+
+#[test]
+fn infers_mlir_llvm_from_the_output_extension() {
+    let (dir, src) = source("mlir-llvm-ext");
+    // No --emit: the `.mlir-llvm` extension selects the post-pipeline dump.
+    let out = dir.join("prog.mlir-llvm");
+    let output = rrc(&[&src, Path::new("-o"), &out]);
+    assert!(
+        output.status.success(),
+        "rrc -> mlir-llvm (by extension) failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = read(&out);
+    assert!(text.contains("llvm."), "mlir-llvm:\n{text}");
+    assert!(!text.contains("reussir.record.dispatch"), "still high-level:\n{text}");
+}
+
+#[test]
+fn rejects_stdout_for_file_artifacts() {
+    let (_dir, src) = source("stdout-obj");
+    let output = rrc(&[&src, Path::new("-o"), Path::new("-"), Path::new("--emit"), Path::new("obj")]);
+    assert!(!output.status.success(), "expected obj-to-stdout to be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stdout"), "stderr:\n{stderr}");
+}
+
+#[test]
+fn rejects_running_the_pipeline_backward() {
+    let (dir, _src) = source("backward");
+    // A `.mir` input cannot produce HIR (an earlier stage).
+    let mir = dir.join("prog.mir");
+    std::fs::write(&mir, "").expect("write empty mir");
+    let output = rrc(&[&mir, Path::new("-o"), &dir.join("out.hir"), Path::new("--emit"), Path::new("hir")]);
+    assert!(!output.status.success(), "expected backward pipeline to fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("only runs forward"), "stderr:\n{stderr}");
+}
