@@ -674,9 +674,14 @@ impl Emitter<'_> {
     fn constant(&self, token: &ResolvedToken) -> Value {
         match token.kind() {
             IntLit => tagged("ConstInt", int_value(token.text())),
+            // "ConstDouble" is the wire tag the Haskell differential verifier
+            // (`reussir-surface-verify`) decodes; keep it stable.
             FloatLit => tagged(
                 "ConstDouble",
-                Value::Number(Number::from_string_unchecked(token.text().to_owned())),
+                // Underscore separators are not valid JSON; strip them. The
+                // digits themselves are carried verbatim (arbitrary
+                // precision — serde_json's `arbitrary_precision` feature).
+                Value::Number(Number::from_string_unchecked(token.text().replace('_', ""))),
             ),
             StringLit => tagged("ConstString", Value::String(unescape_string(token.text()))),
             TrueKw => tagged("ConstBool", Value::Bool(true)),
@@ -686,11 +691,15 @@ impl Emitter<'_> {
     }
 }
 
+/// An integer literal as a JSON value: plain decimals are numbers (arbitrary
+/// precision); radix forms keep their spelling as a string, losslessly.
 fn int_value(text: &str) -> Value {
-    let n: i64 = text
-        .parse()
-        .expect("integer literal validated by the lexer");
-    Value::Number(n.into())
+    let plain = text.replace('_', "");
+    if plain.bytes().all(|b| b.is_ascii_digit()) {
+        Value::Number(Number::from_string_unchecked(plain))
+    } else {
+        Value::String(plain)
+    }
 }
 
 fn binary_op_name(kind: SyntaxKind) -> Option<&'static str> {

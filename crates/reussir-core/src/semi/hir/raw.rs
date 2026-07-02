@@ -6,7 +6,10 @@
 //! may mention generics (`$n`). A fully elaborated HIR has no inference
 //! holes, so the textual form does not represent them.
 
-pub use crate::full::mir::raw::{ArithOp, Cap, CmpOp};
+pub use crate::full::mir::raw::{
+    ArithOp, Cap, CmpOp, FloatLit, Integer, float_lit, float_path_segs, small_u32, small_u64,
+    small_usize,
+};
 
 /// The whole HIR program: enough to resume into monomorphization — the record
 /// declarations and trampoline roots mono needs, plus the elaborated functions.
@@ -176,8 +179,8 @@ impl Expr {
 
 #[derive(Clone, Debug)]
 pub enum Kind {
-    ConstInt(i128),
-    ConstFloat(f64),
+    ConstInt(Integer),
+    ConstFloat(FloatLit),
     ConstBool(bool),
     /// An interned string literal, as its four raw `StringToken` words.
     GlobalStr([u64; 4]),
@@ -257,7 +260,7 @@ pub enum Tree {
 #[derive(Clone, Debug)]
 pub enum Cases {
     Int {
-        cases: Vec<(i128, Tree)>,
+        cases: Vec<(Integer, Tree)>,
         default: Box<Tree>,
     },
     Bool {
@@ -276,9 +279,9 @@ pub enum Cases {
 }
 
 /// A switch-arm label (see [`crate::full::mir::raw::Label`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Label {
-    Int(i128),
+    Int(Integer),
     Ctor(usize),
     Str([u64; 4]),
     Bool(bool),
@@ -292,7 +295,7 @@ pub enum Label {
 pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
     let kind = arms
         .iter()
-        .map(|(l, _)| *l)
+        .map(|(l, _)| l)
         .find(|l| !matches!(l, Label::Wildcard));
     let cases = match kind {
         Some(Label::Bool(_)) => {

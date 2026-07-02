@@ -157,6 +157,37 @@ pub enum Cap {
 /// The four raw words of an interned `StringToken`.
 pub type StrTag = [u64; 4];
 
+pub use crate::literal::{FloatLit, Integer};
+
+/// Structural indices in the textual IR (`proj` paths, variant tags, string
+/// words, field numbers) are machine-emitted and always small; the lexer hands
+/// them over as [`Integer`]s, converted coarsely here (a failure means a
+/// printer bug or corrupt input, like the rest of the raw layer).
+pub fn small_u32(n: &Integer) -> u32 {
+    u32::try_from(n).expect("index in machine-emitted IR")
+}
+
+pub fn small_u64(n: &Integer) -> u64 {
+    u64::try_from(n).expect("word in machine-emitted IR")
+}
+
+pub fn small_usize(n: &Integer) -> usize {
+    usize::try_from(n).expect("index in machine-emitted IR")
+}
+
+/// Parse a float token's text into its exact value.
+pub fn float_lit(text: &str) -> FloatLit {
+    crate::literal::parse_float(text)
+}
+
+/// A float-shaped token inside a scrutinee path: `scrut.0.1` lexes `0.1` as
+/// one token, which is really two adjacent path indices — split it back.
+pub fn float_path_segs(text: &str) -> Vec<u32> {
+    text.split('.')
+        .map(|seg| seg.parse().expect("path segment in machine-emitted IR"))
+        .collect()
+}
+
 /// A typed expression node: every node carries its [`Ty`], so the re-intern pass
 /// never invents a type — the printed `kind : ty` annotation is read back
 /// verbatim, making the text round trip a soundness proof. The two exceptions
@@ -179,8 +210,8 @@ impl Expr {
 
 #[derive(Clone, Debug)]
 pub enum Kind {
-    ConstInt(i128),
-    ConstFloat(f64),
+    ConstInt(Integer),
+    ConstFloat(FloatLit),
     ConstBool(bool),
     /// An interned string literal, as its four raw `StringToken` words.
     GlobalStr([u64; 4]),
@@ -278,7 +309,7 @@ pub enum Tree {
 #[derive(Clone, Debug)]
 pub enum Cases {
     Int {
-        cases: Vec<(i128, Tree)>,
+        cases: Vec<(Integer, Tree)>,
         default: Box<Tree>,
     },
     Bool {
@@ -299,9 +330,9 @@ pub enum Cases {
 /// A switch-arm label, as the grammar reads it before partitioning into a typed
 /// [`Cases`]. The printer emits homogeneous labels per switch (all `#i`, all int,
 /// …), with a `_` wildcard standing for the default arm.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Label {
-    Int(i128),
+    Int(Integer),
     Ctor(usize),
     Str([u64; 4]),
     Bool(bool),
@@ -316,7 +347,7 @@ pub enum Label {
 pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
     let kind = arms
         .iter()
-        .map(|(l, _)| *l)
+        .map(|(l, _)| l)
         .find(|l| !matches!(l, Label::Wildcard));
     let cases = match kind {
         Some(Label::Bool(_)) => {

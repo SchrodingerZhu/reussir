@@ -280,7 +280,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Cases::Int { cases, default } => {
                 let mut cs = Vec::with_capacity(cases.len());
                 for (n, t) in cases {
-                    cs.push((*n, self.tree(t)));
+                    cs.push((self.tcx.alloc(n.clone()), self.tree(t)));
                 }
                 let default = self.tree_ref(default);
                 S::Int {
@@ -324,8 +324,8 @@ impl<'tcx> Builder<'_, 'tcx> {
         use mir::ExprKind as M;
         let ty = self.ty(&e.ty);
         let kind: M<'tcx> = match &*e.kind {
-            raw::Kind::ConstInt(n) => M::ConstInt(*n),
-            raw::Kind::ConstFloat(f) => M::ConstFloat(*f),
+            raw::Kind::ConstInt(n) => M::ConstInt(self.tcx.alloc(n.clone())),
+            raw::Kind::ConstFloat(f) => M::ConstFloat(self.tcx.alloc(f.clone())),
             raw::Kind::ConstBool(b) => M::ConstBool(*b),
             raw::Kind::GlobalStr(words) => M::GlobalStr(StringToken::from_words(*words)),
             raw::Kind::Var(v) => M::Var(VarId(*v)),

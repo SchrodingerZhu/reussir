@@ -11,6 +11,9 @@
 pub mod full;
 /// The shared logos lexer for the textual IR (both the MIR and HIR grammars).
 pub mod ir_lex;
+/// Arbitrary-precision numeric literals, carried exact through HIR/MIR and
+/// rounded to the target format exactly once.
+pub mod literal;
 pub mod semi;
 pub mod surface;
 pub mod utils;

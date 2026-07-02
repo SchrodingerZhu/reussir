@@ -18,6 +18,7 @@
 use lasso::{Rodeo, Spur};
 use reussir_syntax::kind::TokenKey;
 
+use crate::literal::{FloatLit, Integer};
 use crate::semi::ctxt::DefaultCap;
 use crate::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use crate::semi::ty::Ty;
@@ -189,8 +190,13 @@ pub struct ClosureExpr<'tcx> {
 #[derive(Clone, Copy, Debug)]
 pub enum ExprKind<'tcx> {
     GlobalStr(StringToken),
-    ConstInt(i128),
-    ConstFloat(f64),
+    /// An integer literal, arbitrary-precision (arena-allocated to keep the
+    /// node `Copy`); range-checked against its ground type at
+    /// monomorphization and emitted at full width by codegen.
+    ConstInt(&'tcx Integer),
+    /// A floating-point literal, still the *exact* decimal value: codegen
+    /// performs the single correctly-rounded conversion to the ground format.
+    ConstFloat(&'tcx FloatLit),
     ConstBool(bool),
     Var(VarId),
     Negate(&'tcx Expr<'tcx>),
@@ -268,7 +274,7 @@ pub enum DecisionTree<'tcx> {
 #[derive(Clone, Copy, Debug)]
 pub enum SwitchCases<'tcx> {
     Int {
-        cases: &'tcx [(i128, DecisionTree<'tcx>)],
+        cases: &'tcx [(&'tcx Integer, DecisionTree<'tcx>)],
         default: &'tcx DecisionTree<'tcx>,
     },
     Bool {

@@ -1,0 +1,21 @@
+// Out-of-range literals are diagnostics at monomorphization (once every
+// literal's type is ground), never panics or silent wraps (#290). A float
+// literal that would round to infinity is a hard error: there is no `inf`
+// literal syntax, so it can only be a mistake.
+
+// RUN: %not %rrc %s --emit mir -o - 2>&1 | %FileCheck %s
+
+pub fn a() -> i8 { 128 }
+// CHECK-DAG: integer literal `128` is out of range for `i8`
+
+pub fn b() -> u8 { -1 }
+// CHECK-DAG: integer literal `-1` is out of range for `u8`
+
+pub fn c() -> u64 { 18446744073709551616 }
+// CHECK-DAG: integer literal `18446744073709551616` is out of range for `u64`
+
+pub fn d() -> f64 { 1e400 }
+// CHECK-DAG: float literal `1e400` is out of range for `f64` (it would round to infinity)
+
+pub fn e() -> f16 { 65520.0 }
+// CHECK-DAG: float literal `65520.0` is out of range for `f16`

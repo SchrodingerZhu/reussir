@@ -65,6 +65,11 @@ strsim = "0.11"
 lalrpop = "0.22"
 lalrpop-util = "0.22"
 pprint = "0.3"
+# Arbitrary-precision integers carrying numeric literals losslessly from the
+# surface AST through HIR/MIR; rounding to the target format happens exactly
+# once, in codegen. NOTE: LGPL-3.0-only (see the licensing note in LICENSE).
+malachite-base = "0.9"
+malachite-nz = "0.9"
 # llvm-sys provides the ORC/LLJIT and target-machine C API that mlir-sys does
 # not bind. Its version tracks LLVM major.minor (22.1 -> 221), and it discovers
 # LLVM via LLVM_SYS_221_PREFIX (set by CMake).

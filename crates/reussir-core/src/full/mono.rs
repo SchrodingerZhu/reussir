@@ -49,12 +49,14 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 use crate::full::mangle::Mangler;
 use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
+use crate::literal;
 use crate::semi::ctxt::{
     DefaultCap, Elaborator, Record, RecordFields, Report, Severity, TrampolineRoot,
 };
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{FpTy, IntTy};
 use crate::surface::Span;
 
 /// Exactly the part of an [`Elaborator`] that monomorphization reads. Taking
@@ -352,6 +354,23 @@ fn ty_depth(ty: Ty<'_>) -> usize {
     }
 }
 
+/// The surface spelling of an integer type, for diagnostics.
+fn int_ty_name(ty: IntTy) -> String {
+    match ty {
+        IntTy::Signed(w) => format!("i{w}"),
+        IntTy::Unsigned(w) => format!("u{w}"),
+    }
+}
+
+/// The surface spelling of a float type, for diagnostics.
+fn fp_ty_name(ty: FpTy) -> String {
+    match ty {
+        FpTy::Ieee(w) => format!("f{w}"),
+        FpTy::BFloat16 => "bfloat16".to_string(),
+        FpTy::Float8 => "float8".to_string(),
+    }
+}
+
 /// Whether a ground type argument is a regional record. Only regional records
 /// carry a `Regional`/`Flex`/`Rigid` capability; value/shared records are
 /// `Irrelevant` and scalars carry none.
@@ -539,6 +558,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         let ty = subst_ty(self.tcx, e.ty, subst);
         self.note_records(ty);
         let kind = self.lower_kind(&e.kind, subst);
+        self.check_literal_range(&kind, ty, e.span);
         mir::Expr {
             id: self.ids.fresh(),
             kind,
@@ -547,16 +567,66 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         }
     }
 
+    /// A numeric literal is arbitrary-precision until here; now that its type
+    /// is ground, reject values the type cannot hold. Integers must be in
+    /// range; a float that would round to infinity is an error (there is no
+    /// literal syntax for `inf`, so it can only be a mistake). Checked on the
+    /// *lowered* kind so folded negations (`-128 : i8`) see the signed value.
+    fn check_literal_range(
+        &mut self,
+        kind: &mir::ExprKind<'tcx>,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+    ) {
+        match *kind {
+            mir::ExprKind::ConstInt(n) => {
+                if let TyKind::Int(int_ty) = *ty.kind()
+                    && !literal::int_fits(n, int_ty)
+                {
+                    self.error(
+                        span,
+                        format!(
+                            "integer literal `{n}` is out of range for `{}`",
+                            int_ty_name(int_ty)
+                        ),
+                    );
+                }
+            }
+            mir::ExprKind::ConstFloat(f) => {
+                if let TyKind::Fp(fp) = *ty.kind()
+                    && let Some((exp_bits, mant_bits)) = literal::ieee_params(fp)
+                    && f.to_ieee_bits(exp_bits, mant_bits).is_err()
+                {
+                    self.error(
+                        span,
+                        format!(
+                            "float literal `{f}` is out of range for `{}` (it would round to infinity)",
+                            fp_ty_name(fp)
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn lower_kind(&mut self, kind: &ExprKind<'tcx>, subst: &Subst<'tcx>) -> mir::ExprKind<'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
-            ExprKind::ConstInt(n) => M::ConstInt(*n),
-            ExprKind::ConstFloat(f) => M::ConstFloat(*f),
+            ExprKind::ConstInt(n) => M::ConstInt(n),
+            ExprKind::ConstFloat(f) => M::ConstFloat(f),
             ExprKind::ConstBool(b) => M::ConstBool(*b),
             ExprKind::Var(v) => M::Var(*v),
             ExprKind::Poison => M::Poison,
-            ExprKind::Negate(e) => M::Negate(self.lower_ref(e, subst)),
+            // Negation of a literal folds into the constant, so `-128 : i8`
+            // (and `-9223372036854775808 : i64`) is a single in-range value
+            // by the time the range check above sees it.
+            ExprKind::Negate(e) => match &e.kind {
+                ExprKind::ConstInt(n) => M::ConstInt(self.tcx.alloc(-(*n).clone())),
+                ExprKind::ConstFloat(f) => M::ConstFloat(self.tcx.alloc(f.neg())),
+                _ => M::Negate(self.lower_ref(e, subst)),
+            },
             ExprKind::Not(e) => M::Not(self.lower_ref(e, subst)),
             ExprKind::Arith(l, op, r) => {
                 M::Arith(self.lower_ref(l, subst), *op, self.lower_ref(r, subst))
@@ -818,6 +888,71 @@ mod tests {
             .iter()
             .map(|f| full.symbol(f.symbol).to_string())
             .collect()
+    }
+
+    /// Elaborate (asserting success) and monomorphize, returning the mono
+    /// diagnostics' messages.
+    fn mono_reports(source: &str) -> Vec<String> {
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (_, reports) = monomorphize(&elab.mono_input());
+            reports.into_iter().map(|r| r.message).collect()
+        })
+    }
+
+    /// Literals are arbitrary-precision end to end: extremes that the old
+    /// `i64`-pinned parse panicked on (a full-range `u64`, `i64::MIN`) now
+    /// survive, and folded negation makes `-128 : i8` a single in-range value.
+    #[test]
+    fn extreme_literals_fit_their_types() {
+        with_full(
+            "pub fn big() -> u64 { 18446744073709551615 } \
+             pub fn min() -> i64 { -9223372036854775808 } \
+             pub fn neg() -> i8 { -128 } \
+             pub fn hex() -> u32 { 0xFFFF_FFFF } \
+             pub fn bin() -> u8 { 0b1111_1111 }",
+            |_| (),
+        );
+    }
+
+    #[test]
+    fn out_of_range_literals_are_diagnosed_not_panics() {
+        let r = mono_reports("pub fn f() -> i8 { 128 }");
+        assert!(
+            r.iter().any(|m| m.contains("out of range for `i8`")),
+            "{r:?}"
+        );
+        let r = mono_reports("pub fn f() -> u8 { -1 }");
+        assert!(
+            r.iter().any(|m| m.contains("out of range for `u8`")),
+            "{r:?}"
+        );
+        let r = mono_reports("pub fn f() -> u64 { 18446744073709551616 }");
+        assert!(
+            r.iter().any(|m| m.contains("out of range for `u64`")),
+            "{r:?}"
+        );
+        let r = mono_reports("pub fn f() -> f64 { 1e400 }");
+        assert!(
+            r.iter()
+                .any(|m| m.contains("out of range for `f64`") && m.contains("infinity")),
+            "{r:?}"
+        );
+        let r = mono_reports("pub fn f() -> f16 { 65520.0 }");
+        assert!(
+            r.iter().any(|m| m.contains("out of range for `f16`")),
+            "{r:?}"
+        );
+        // Well inside the range: no diagnostics.
+        assert!(mono_reports("pub fn f() -> f16 { 65504.0 }").is_empty());
     }
 
     /// **Resumability**: serialize the elaborated HIR, parse it back into a

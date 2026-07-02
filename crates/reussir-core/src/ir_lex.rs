@@ -7,6 +7,8 @@
 
 use logos::Logos;
 
+use crate::literal::Integer;
+
 /// A lexed token. `'a` is the input lifetime ([`Token::Ident`] borrows it).
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\r\n]+")]
@@ -178,12 +180,20 @@ pub enum Token<'a> {
     /// `?<id>` — an unsolved inference hole (HIR only).
     #[regex(r"\?[0-9]+", |l| l.slice()[1..].parse().ok())]
     Hole(u32),
-    /// A non-negative integer literal.
-    #[regex(r"[0-9]+", |l| l.slice().parse().ok())]
-    Int(i128),
-    /// A floating-point literal.
-    #[regex(r"[0-9]+\.[0-9]+", |l| l.slice().parse().ok())]
-    Float(f64),
+    /// An integer literal, arbitrary precision (constants print at full
+    /// width). A leading `-` is part of the token when directly adjacent —
+    /// negative constants exist in MIR via literal-negation folding, and the
+    /// printer always spaces binary operators (`a - 1`), so adjacency is
+    /// unambiguous in machine-emitted text.
+    #[regex(r"-?[0-9]+", |l| l.slice().parse().ok())]
+    Int(Integer),
+    /// A floating-point literal, kept as its raw text: the grammar parses it
+    /// into an exact [`crate::literal::FloatLit`] where a float value is
+    /// expected, and *splits* it where it is really two adjacent scrutinee
+    /// path indices (`scrut.0.1` lexes `0.1` as one float-shaped token).
+    #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?", |l| l.slice())]
+    #[regex(r"-?[0-9]+[eE][+-]?[0-9]+", |l| l.slice())]
+    Float(&'a str),
     /// A bare identifier (symbol bodies after `@`, source names, paths). Matches
     /// Unicode XID like the surface lexer, so source identifiers round-trip.
     #[regex(r"[\p{XID_Start}_]\p{XID_Continue}*", |l| l.slice())]

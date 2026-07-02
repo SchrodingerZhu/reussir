@@ -32,6 +32,10 @@ stumpalo.workspace = true
 logos.workspace = true
 lalrpop-util.workspace = true
 pprint.workspace = true
+# Arbitrary-precision numeric literals (`literal` module): values stay exact
+# through surface/HIR/MIR; the one rounding to the target format is in codegen.
+malachite-base.workspace = true
+malachite-nz.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }
 # Backends for utils::bitset's small-set-optimized VarId live-sets: a dense

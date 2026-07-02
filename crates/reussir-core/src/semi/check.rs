@@ -193,12 +193,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Const::ConstInt(i) => {
                 let hole = self.infer.new_hole_ty();
                 self.register_bound(self.builtins.integral, hole, span);
-                self.mk_expr(ExprKind::ConstInt(*i as i128), hole, span)
+                self.mk_expr(ExprKind::ConstInt(self.tcx.alloc(i.clone())), hole, span)
             }
-            Const::ConstDouble(f) => {
+            Const::ConstFloat(f) => {
                 let hole = self.infer.new_hole_ty();
                 self.register_bound(self.builtins.floating_point, hole, span);
-                self.mk_expr(ExprKind::ConstFloat(*f), hole, span)
+                self.mk_expr(ExprKind::ConstFloat(self.tcx.alloc(f.clone())), hole, span)
             }
             Const::ConstString(s) => {
                 let token = self.strings.allocate(s);
