@@ -25,12 +25,16 @@
 //! * **regional (`[regional]`) records** — construction of region-allocated
 //!   `flex` boxes (`reussir.rc.create … region`), `region-run` scopes
 //!   (`reussir.region.run`/`region.yield`), calls into `regional` functions
-//!   (threading the implicit region handle), and projection of their scalar /
-//!   by-value / `[shared]` members (capability-aware borrow/project/load).
+//!   (threading the implicit region handle), projection of their scalar /
+//!   by-value / `[shared]` members (capability-aware borrow/project/load), and
+//!   mutation of a `[field]` link (`c->f := …` — project the `nullable<rc<…>>`
+//!   slot to a writable `field` reference and store), with the `Nullable`
+//!   constructor lowering to `reussir.nullable.create`.
 //!
-//! Regional `[field]` links (projection and assignment), a non-`[field]` member
-//! that is itself a regional record, enums/`match`, closures, and strings are not
-//! yet lowered and surface as an explicit [`LoweringError`] rather than wrong code.
+//! Reading a `[field]` link back (which needs `match`/`nullable.dispatch`), a
+//! non-`[field]` member that is itself a regional record, enums/`match`,
+//! closures, and strings are not yet lowered and surface as an explicit
+//! [`LoweringError`] rather than wrong code.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
 //! [`mir::Symbol`](reussir_core::full::mir::Symbol) (mono did the mangling), so
@@ -489,6 +493,99 @@ mod tests {
         assert!(mlir.contains("reussir.ref.load"), "{mlir}");
         // The reference into the region-local record carries `flex` capability.
         assert!(mlir.contains("ref<") && mlir.contains("flex"), "{mlir}");
+    }
+
+    #[test]
+    fn lowers_regional_field_link_assignment() {
+        // Assigning through a mutable `[field]` link on a `flex` regional record:
+        // the record's `[field]` member lowers to a `nullable<rc<…>>` slot; the
+        // assignment borrows the record at `flex`, projects the slot to a writable
+        // `field`-capability reference, builds the `Nullable::NonNull{..}` value
+        // (`reussir.nullable.create`), and stores it (`reussir.ref.store`).
+        let src = r#"
+            struct [regional] Cell { v: i64, next: [field] Cell }
+            regional fn set(c: [flex] Cell, x: [flex] Cell) -> i64 {
+                c->next := Nullable::NonNull{x};
+                c.v
+            }
+        "#;
+        let mlir = lower_source(src);
+        // The `[field]` member is a nullable rc link in the record's layout.
+        assert!(mlir.contains("!reussir.nullable<"), "{mlir}");
+        // Projecting the `[field]` slot out of a `flex` parent yields a writable
+        // `field`-capability reference.
+        assert!(mlir.contains("field>"), "{mlir}");
+        assert!(mlir.contains("reussir.nullable.create"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.project"), "{mlir}");
+        assert!(mlir.contains("reussir.ref.store"), "{mlir}");
+    }
+
+    #[test]
+    fn rejects_nullable_over_a_non_pointer_element() {
+        // The frontend's pointer-like check for a `Nullable` inner is
+        // conservative and passes a `[value]` record; that record lowers to an
+        // inline (non-pointer) type, which cannot sit behind a `nullable`. Lower
+        // it to an explicit error rather than a malformed `nullable<record<…>>`.
+        let src = r#"
+            struct [value] Pair { a: i64 }
+            fn wrap(p: Pair) -> Nullable<Pair> { Nullable::NonNull{ p } }
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let err = lower_program(&context, tcx, &full, None, None)
+                .expect_err("a nullable over a non-pointer element must not lower");
+            assert!(
+                err.to_string().contains("does not lower to a pointer"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn lowers_regional_field_construction_and_self_link() {
+        // The canonical loop-back shape, now that a `[field]` slot's null is
+        // colored `flex`: construct a `flex` `Cell` whose `[field]` `next` is
+        // `Nullable::Null` (a null nullable), then link it to itself
+        // (`c->next := Nullable::NonNull{c}`) and read a scalar back. Exercises
+        // `[field]` construction (null + record-with-nullable-member layout) and
+        // assignment together, all the way through the lowering pipeline.
+        let src = r#"
+            struct [regional] Cell { v: i64, next: [field] Cell }
+            regional fn loop_back(seed: i64) -> i64 {
+                let c = Cell { v: seed, next: Nullable::Null };
+                c->next := Nullable::NonNull{c};
+                c.v
+            }
+            pub fn run(n: i64) -> i64 { regional { loop_back(n) } }
+        "#;
+        let context = reussir_backend::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let mut module =
+                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+            let printed = module.as_operation().to_string();
+            // The null field and the self-link both build nullable rc values.
+            assert!(printed.contains("reussir.nullable.create"), "{printed}");
+            reussir_backend::pipeline::run_lowering_pipeline(
+                &context,
+                &mut module,
+                &reussir_backend::pipeline::LoweringOptions::default(),
+            )
+            .expect("pipeline lowers the [field] module to LLVM");
+        });
     }
 
     #[test]
