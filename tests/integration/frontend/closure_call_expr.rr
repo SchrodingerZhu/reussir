@@ -1,23 +1,16 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 // --- Test 1: chained call (make_adder(5)(37)) ---
 fn make_adder(n : i32) -> i32 -> i32 {
     |x : i32| x + n
 }
 
-// CHECK-DAG: fn test_chained(v0 (n): i32) -> i32 {
-// CHECK-NEXT-DAG:     closure_call(make_adder(v0) : (i32) -> i32, 37.0 : i32) : i32
-// CHECK-NEXT-DAG: }
 fn test_chained(n : i32) -> i32 {
     make_adder(n)(37)
 }
 
 // --- Test 2: immediate lambda call ---
-// CHECK-DAG: fn test_immediate(v0 (x): i32) -> i32 {
-// CHECK-NEXT-DAG:     closure_call(closure[](v1 : i32) {
-// CHECK-NEXT-DAG:         (v1 + 1.0 : i32) : i32
-// CHECK-NEXT-DAG:     } : (i32) -> i32, v0) : i32
-// CHECK-NEXT-DAG: }
 fn test_immediate(x : i32) -> i32 {
     (|y: i32| y + 1)(x)
 }
@@ -27,9 +20,42 @@ struct HasClosure {
     transform: i32 -> i32
 }
 
-// CHECK-DAG: fn test_field_call(v0 (s): HasClosure, v1 (x): i32) -> i32 {
-// CHECK-NEXT-DAG:     closure_call(v0.0 : (i32) -> i32, v1) : i32
-// CHECK-NEXT-DAG: }
 fn test_field_call(s : HasClosure, x : i32) -> i32 {
     s.transform(x)
 }
+
+// CHECK: [shared] struct #HasClosure { "transform": (i32) -> i32 };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #make_adder(v0 (n): i32) -> (i32) -> i32 {
+// CHECK-NEXT:     closure[v0: i32](v1: i32) { (v1 : i32 + v0 : i32) : i32 } : (i32) -> i32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test_chained(v0 (n): i32) -> i32 {
+// CHECK-NEXT:     apply(#make_adder(v0 : i32) : (i32) -> i32, 37 : i32) : i32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test_immediate(v0 (x): i32) -> i32 {
+// CHECK-NEXT:     apply(closure[](v1: i32) { (v1 : i32 + 1 : i32) : i32 } : (i32) -> i32, v0 : i32) : i32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test_field_call(v0 (s): #HasClosure, v1 (x): i32) -> i32 {
+// CHECK-NEXT:     apply(proj(v0 : #HasClosure, 0) : (i32) -> i32, v1 : i32) : i32
+// CHECK-NEXT: }
+
+// FULL: record @_RC10HasClosure : shared struct HasClosure { "transform": (i32) -> i32 };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC10make_adder(v0 (n): i32) -> (i32) -> i32 {
+// FULL-NEXT:     closure[v0: i32](v1: i32) { (v1 : i32 + v0 : i32) : i32 } : (i32) -> i32
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC12test_chained(v0 (n): i32) -> i32 {
+// FULL-NEXT:     apply(@_RC10make_adder(v0 : i32) : (i32) -> i32, 37 : i32) : i32
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC14test_immediate(v0 (x): i32) -> i32 {
+// FULL-NEXT:     apply(closure[](v1: i32) { (v1 : i32 + 1 : i32) : i32 } : (i32) -> i32, v0 : i32) : i32
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC15test_field_call(v0 (s): HasClosure, v1 (x): i32) -> i32 {
+// FULL-NEXT:     apply(proj(v0 : HasClosure, 0) : (i32) -> i32, v1 : i32) : i32
+// FULL-NEXT: }

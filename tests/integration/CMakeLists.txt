@@ -40,6 +40,7 @@ endif()
 set(rustc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rustc${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_elab_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-elab${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_compiler_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-compiler${CMAKE_EXECUTABLE_SUFFIX})
+set(reussir_rrc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_repl_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-repl${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_parser_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-parser${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
@@ -88,7 +89,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
-  DEPENDS reussir-opt reussir-rt reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser reussir-syntax reussir-surface-verify)
+  DEPENDS reussir-opt reussir-rt reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser reussir-syntax reussir-surface-verify rrc)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer

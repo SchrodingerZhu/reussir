@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 enum Option<T> {
     Some(T),
@@ -24,31 +24,66 @@ fn map_to_none(x : Option<i32>) -> Option<i32> {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK:      fn none_val() -> Option<i32> {
-// CHECK-NEXT:     Option<i32>[1](Option::None<i32>() : Option::None<i32>) : Option<i32>
-// CHECK-NEXT: }
-// CHECK:      fn map_to_none(v0 (x): Option<i32>) -> Option<i32> {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 Option<i32>[1](Option::None<i32>() : Option::None<i32>) : Option<i32>
+// CHECK: [shared] enum #Option<$0> { Some($0), None() };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #is_some(v0 (x): #Option::<i32>) -> bool {
+// CHECK-NEXT:     match v0 : #Option::<i32> {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => true : bool
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 Option<i32>[1](Option::None<i32>() : Option::None<i32>) : Option<i32>
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 => false : bool
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : bool
 // CHECK-NEXT: }
-// CHECK:      fn is_some(v0 (x): Option<i32>) -> bool {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 1.0 : bool
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #none_val() -> #Option::<i32> {
+// CHECK-NEXT:     #Option::<i32>#1() : #Option::<i32>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #map_to_none(v0 (x): #Option::<i32>) -> #Option::<i32> {
+// CHECK-NEXT:     match v0 : #Option::<i32> {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => #Option::<i32>#1() : #Option::<i32>
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 0.0 : bool
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 => #Option::<i32>#1() : #Option::<i32>
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : #Option::<i32>
 // CHECK-NEXT: }
+
+// FULL: record @_RIC6OptionlE : shared enum Option::<i32> { @_RNvIC6OptionlE4Some Some(i32), @_RNvIC6OptionlE4None None() };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC11map_to_none(v0 (x): Option::<i32>) -> Option::<i32> {
+// FULL-NEXT:     match v0 : Option::<i32> {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 => @_RIC6OptionlE::#1() : Option::<i32>
+// FULL-NEXT:             }
+// FULL-NEXT:             #1 => {
+// FULL-NEXT:                 => @_RIC6OptionlE::#1() : Option::<i32>
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : Option::<i32>
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC7is_some(v0 (x): Option::<i32>) -> bool {
+// FULL-NEXT:     match v0 : Option::<i32> {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 => true : bool
+// FULL-NEXT:             }
+// FULL-NEXT:             #1 => {
+// FULL-NEXT:                 => false : bool
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : bool
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC8none_val() -> Option::<i32> {
+// FULL-NEXT:     @_RIC6OptionlE::#1() : Option::<i32>
+// FULL-NEXT: }

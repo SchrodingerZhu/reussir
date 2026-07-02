@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 fn negate(x : bool) -> bool {
     match x {
@@ -8,32 +8,28 @@ fn negate(x : bool) -> bool {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn negate(v0 (x): bool) -> bool {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
+// CHECK: fn #negate(v0 (x): bool) -> bool {
+// CHECK-NEXT:     match v0 : bool {
+// CHECK-NEXT:         switch scrut {
 // CHECK-NEXT:             true => {
-// CHECK-NEXT:                 0.0 : bool
+// CHECK-NEXT:                 => false : bool
 // CHECK-NEXT:             }
 // CHECK-NEXT:             false => {
-// CHECK-NEXT:                 1.0 : bool
+// CHECK-NEXT:                 => true : bool
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : bool
 // CHECK-NEXT: }
 
-// FULL:      ;; Elaborated Full Functions
-// FULL-NEXT: fn _RC6negate(x: bool) -> bool {
-// FULL-NEXT:     {
-// FULL-NEXT:         match v0 {
-// FULL-NEXT:             switch (0) {
-// FULL-NEXT:                 true => {
-// FULL-NEXT:                     0.0 : bool
-// FULL-NEXT:                 }
-// FULL-NEXT:                 false => {
-// FULL-NEXT:                     1.0 : bool
-// FULL-NEXT:                 }
+// FULL: fn @_RC6negate(v0 (x): bool) -> bool {
+// FULL-NEXT:     match v0 : bool {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             true => {
+// FULL-NEXT:                 => false : bool
+// FULL-NEXT:             }
+// FULL-NEXT:             false => {
+// FULL-NEXT:                 => true : bool
 // FULL-NEXT:             }
 // FULL-NEXT:         }
-// FULL-NEXT:     }
+// FULL-NEXT:     } : bool
 // FULL-NEXT: }

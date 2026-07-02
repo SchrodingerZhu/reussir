@@ -1,15 +1,8 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+
 enum List<T> {
     Nil,
     Cons(T, List<T>)
 }
 
-// CHECK-DAG:      enum [shared] List<T@0>{
-// CHECK-NEXT-DAG:     Nil,
-// CHECK-NEXT-DAG:     Cons
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: enum_variant [value] List::Nil<T@0>()
-// CHECK-DAG: enum_variant [value] List::Cons<T@0>(T0, List<T0>)
-
-
+// CHECK: [shared] enum #List<$0> { Nil(), Cons($0, #List::<$0>) };

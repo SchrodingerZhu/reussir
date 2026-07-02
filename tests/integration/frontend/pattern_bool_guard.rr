@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 fn test(x : bool, y : i32) -> i32 {
     match x {
@@ -9,21 +9,36 @@ fn test(x : bool, y : i32) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn test(v0 (x): bool, v1 (y): i32) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
+// CHECK: fn #test(v0 (x): bool, v1 (y): i32) -> i32 {
+// CHECK-NEXT:     match v0 : bool {
+// CHECK-NEXT:         switch scrut {
 // CHECK-NEXT:             true => {
-// CHECK-NEXT:                 if (v1 > 0.0 : i32) : bool {
-// CHECK-NEXT:                     v1
-// CHECK-NEXT:                 }
-// CHECK-NEXT:                 otherwise {
-// CHECK-NEXT:                     0.0 : i32
+// CHECK-NEXT:                 if (v1 : i32 > 0 : i32) : bool {
+// CHECK-NEXT:                     => v1 : i32
+// CHECK-NEXT:                 } else {
+// CHECK-NEXT:                     => 0 : i32
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
 // CHECK-NEXT:             false => {
-// CHECK-NEXT:                 1.0 : i32
+// CHECK-NEXT:                 => 1 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
+
+// FULL: fn @_RC4test(v0 (x): bool, v1 (y): i32) -> i32 {
+// FULL-NEXT:     match v0 : bool {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             true => {
+// FULL-NEXT:                 if (v1 : i32 > 0 : i32) : bool {
+// FULL-NEXT:                     => v1 : i32
+// FULL-NEXT:                 } else {
+// FULL-NEXT:                     => 0 : i32
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:             false => {
+// FULL-NEXT:                 => 1 : i32
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : i32
+// FULL-NEXT: }
