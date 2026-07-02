@@ -88,6 +88,11 @@ pub struct ReplSession<'a, 'tcx> {
     interner: Arc<MultiThreadedTokenInterner>,
     pub(crate) elab: Elaborator<'a, 'tcx>,
     context: &'a Context,
+    /// Ground record shapes harvested from every input's monomorphized
+    /// program; the value walker reflects results through these.
+    shapes: crate::reflect::ShapeTable<'tcx>,
+    /// Printer hooks consulted before the structural fallback.
+    pub printers: crate::reflect::PrinterRegistry,
     /// Tracked JIT modules, one per successfully added input. Each handle
     /// borrows the [`OrcJit`] (owned by [`run`]'s scope, outliving the
     /// session), so releasing every tracker before the LLJIT is disposed —
@@ -119,6 +124,8 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             context,
             jit,
             emitted: FxHashSet::default(),
+            shapes: crate::reflect::ShapeTable::default(),
+            printers: crate::reflect::PrinterRegistry::default(),
             modules: Vec::new(),
             counter: 0,
             opt: config.opt,
@@ -180,7 +187,13 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                         // evicts the module and rolls the elaborator back,
                         // leaving the session exactly as before the input.
                         Ok(pending) => {
-                            match crate::value::call_and_render(self.jit, &export, ty) {
+                            match crate::value::call_and_render(
+                                self.jit,
+                                &export,
+                                ty,
+                                &self.shapes,
+                                &self.printers,
+                            ) {
                                 Ok(value) => {
                                     self.commit(pending);
                                     self.counter += 1;
@@ -256,6 +269,18 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             return Err(Outcome::Reports(reports));
         }
         crate::externalize::externalize(&mut program, &self.emitted);
+
+        // Remember every ground record shape this input introduced — the
+        // value walker reflects results through them. (Harvested before the
+        // empty-module early return: a record declaration compiles nothing
+        // but its shape must still be known.)
+        {
+            // Split the borrow: `render_ty` reads the elaborator only.
+            let elab = &self.elab;
+            crate::reflect::harvest(&mut self.shapes, &program, |ty| {
+                Self::render_ty_with(elab, ty)
+            });
+        }
 
         // Nothing new to compile (e.g. a record declaration, or a generic
         // function with no instantiations yet).
@@ -339,6 +364,10 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
 
     /// Render a ground Semi type for display (`i64`, `f64`, `List::<i64>`).
     pub(crate) fn render_ty(&self, ty: Ty<'tcx>) -> String {
+        Self::render_ty_with(&self.elab, ty)
+    }
+
+    fn render_ty_with(elab: &Elaborator<'a, 'tcx>, ty: Ty<'tcx>) -> String {
         match *ty.kind() {
             TyKind::Int(reussir_core::semi::ty::IntTy::Signed(w)) => format!("i{w}"),
             TyKind::Int(reussir_core::semi::ty::IntTy::Unsigned(w)) => format!("u{w}"),
@@ -349,18 +378,30 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Str => "str".to_string(),
             TyKind::Unit => "()".to_string(),
             TyKind::Bottom => "!".to_string(),
-            TyKind::Nullable(inner) => format!("Nullable<{}>", self.render_ty(inner)),
+            TyKind::Nullable(inner) => {
+                format!("Nullable<{}>", Self::render_ty_with(elab, inner))
+            }
             TyKind::Record { def, args, .. } => {
-                let mut out = self.elab.defs.path(def).display(self.elab.resolver);
+                let mut out = elab.defs.path(def).display(elab.resolver);
                 if !args.is_empty() {
-                    let args: Vec<String> = args.iter().map(|&a| self.render_ty(a)).collect();
+                    let args: Vec<String> = args
+                        .iter()
+                        .map(|&a| Self::render_ty_with(elab, a))
+                        .collect();
                     out.push_str(&format!("<{}>", args.join(", ")));
                 }
                 out
             }
             TyKind::Closure { params, ret } => {
-                let params: Vec<String> = params.iter().map(|&p| self.render_ty(p)).collect();
-                format!("({}) -> {}", params.join(", "), self.render_ty(ret))
+                let params: Vec<String> = params
+                    .iter()
+                    .map(|&p| Self::render_ty_with(elab, p))
+                    .collect();
+                format!(
+                    "({}) -> {}",
+                    params.join(", "),
+                    Self::render_ty_with(elab, ret)
+                )
             }
             TyKind::Generic(_) | TyKind::Hole(_) => "_".to_string(),
         }
