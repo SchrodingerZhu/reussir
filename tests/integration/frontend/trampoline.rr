@@ -1,7 +1,20 @@
-// RUN: %reussir-elab --mode semi %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 fn foo<T : Num>(x : T) -> i32 {
     x as i32 + 1
 }
 
 extern "C" trampoline "bar" = foo<i32>;
+
+// CHECK: extern "C" trampoline "bar" = #foo::<i32>;
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #foo<$0>(v0 (x): $0) -> i32 {
+// CHECK-NEXT:     ((v0 : $0 as i32) : i32 + 1 : i32) : i32
+// CHECK-NEXT: }
+
+// FULL: fn @_RIC3foolE(v0 (x): i32) -> i32 {
+// FULL-NEXT:     ((v0 : i32 as i32) : i32 + 1 : i32) : i32
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: extern "C" trampoline "bar" = @_RIC3foolE;

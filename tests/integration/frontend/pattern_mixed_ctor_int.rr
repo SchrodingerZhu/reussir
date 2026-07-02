@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 enum Result {
     Ok(i32),
@@ -15,62 +15,60 @@ fn test(x : Result) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn test(v0 (x): Result) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 switch (0, 0) {
+// CHECK: [shared] enum #Result { Ok(i32), Err(i32) };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test(v0 (x): #Result) -> i32 {
+// CHECK-NEXT:     match v0 : #Result {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 switch scrut.0 {
 // CHECK-NEXT:                     0 => {
-// CHECK-NEXT:                         1.0 : i32
+// CHECK-NEXT:                         => 1 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                     _ => {
-// CHECK-NEXT:                         pattern var v1 (0, 0)
-// CHECK-NEXT:                         v1
+// CHECK-NEXT:                         v1=scrut.0 => v1 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 switch (0, 0) {
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 switch scrut.0 {
 // CHECK-NEXT:                     0 => {
-// CHECK-NEXT:                         2.0 : i32
+// CHECK-NEXT:                         => 2 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                     _ => {
-// CHECK-NEXT:                         3.0 : i32
+// CHECK-NEXT:                         => 3 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
 
-// FULL:      ;; Elaborated Full Functions
-// FULL-NEXT: fn _RC4test(x: Rc<_RC6Result, Shared>) -> i32 {
-// FULL-NEXT:     {
-// FULL-NEXT:         match v0 {
-// FULL-NEXT:             switch (0) {
-// FULL-NEXT:                 ctor@0 => {
-// FULL-NEXT:                     switch (0, 0) {
-// FULL-NEXT:                         0 => {
-// FULL-NEXT:                             1.0 : i32
-// FULL-NEXT:                         }
-// FULL-NEXT:                         _ => {
-// FULL-NEXT:                             pattern var v1 (0, 0)
-// FULL-NEXT:                             v1
-// FULL-NEXT:                         }
+// FULL: record @_RC6Result : shared enum Result { @_RNvC6Result2Ok Ok(i32), @_RNvC6Result3Err Err(i32) };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC4test(v0 (x): Result) -> i32 {
+// FULL-NEXT:     match v0 : Result {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 switch scrut.0 {
+// FULL-NEXT:                     0 => {
+// FULL-NEXT:                         => 1 : i32
+// FULL-NEXT:                     }
+// FULL-NEXT:                     _ => {
+// FULL-NEXT:                         v1=scrut.0 => v1 : i32
 // FULL-NEXT:                     }
 // FULL-NEXT:                 }
-// FULL-NEXT:                 ctor@1 => {
-// FULL-NEXT:                     switch (0, 0) {
-// FULL-NEXT:                         0 => {
-// FULL-NEXT:                             2.0 : i32
-// FULL-NEXT:                         }
-// FULL-NEXT:                         _ => {
-// FULL-NEXT:                             3.0 : i32
-// FULL-NEXT:                         }
+// FULL-NEXT:             }
+// FULL-NEXT:             #1 => {
+// FULL-NEXT:                 switch scrut.0 {
+// FULL-NEXT:                     0 => {
+// FULL-NEXT:                         => 2 : i32
+// FULL-NEXT:                     }
+// FULL-NEXT:                     _ => {
+// FULL-NEXT:                         => 3 : i32
 // FULL-NEXT:                     }
 // FULL-NEXT:                 }
 // FULL-NEXT:             }
 // FULL-NEXT:         }
-// FULL-NEXT:     }
+// FULL-NEXT:     } : i32
 // FULL-NEXT: }

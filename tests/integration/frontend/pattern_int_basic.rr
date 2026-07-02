@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 fn classify(x : i32) -> i32 {
     match x {
@@ -9,38 +9,34 @@ fn classify(x : i32) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn classify(v0 (x): i32) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
+// CHECK: fn #classify(v0 (x): i32) -> i32 {
+// CHECK-NEXT:     match v0 : i32 {
+// CHECK-NEXT:         switch scrut {
 // CHECK-NEXT:             0 => {
-// CHECK-NEXT:                 1.0 : i32
+// CHECK-NEXT:                 => 1 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:             1 => {
-// CHECK-NEXT:                 2.0 : i32
+// CHECK-NEXT:                 => 2 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:             _ => {
-// CHECK-NEXT:                 3.0 : i32
+// CHECK-NEXT:                 => 3 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
 
-// FULL:      ;; Elaborated Full Functions
-// FULL-NEXT: fn _RC8classify(x: i32) -> i32 {
-// FULL-NEXT:     {
-// FULL-NEXT:         match v0 {
-// FULL-NEXT:             switch (0) {
-// FULL-NEXT:                 0 => {
-// FULL-NEXT:                     1.0 : i32
-// FULL-NEXT:                 }
-// FULL-NEXT:                 1 => {
-// FULL-NEXT:                     2.0 : i32
-// FULL-NEXT:                 }
-// FULL-NEXT:                 _ => {
-// FULL-NEXT:                     3.0 : i32
-// FULL-NEXT:                 }
+// FULL: fn @_RC8classify(v0 (x): i32) -> i32 {
+// FULL-NEXT:     match v0 : i32 {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             0 => {
+// FULL-NEXT:                 => 1 : i32
+// FULL-NEXT:             }
+// FULL-NEXT:             1 => {
+// FULL-NEXT:                 => 2 : i32
+// FULL-NEXT:             }
+// FULL-NEXT:             _ => {
+// FULL-NEXT:                 => 3 : i32
 // FULL-NEXT:             }
 // FULL-NEXT:         }
-// FULL-NEXT:     }
+// FULL-NEXT:     } : i32
 // FULL-NEXT: }

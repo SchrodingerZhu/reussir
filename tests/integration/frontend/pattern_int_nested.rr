@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 enum Wrapper {
     Val(i32),
@@ -15,32 +15,52 @@ fn test(x : Wrapper) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Records
-// CHECK-NEXT: enum [shared] Wrapper{
-// CHECK-NEXT:     Val,
-// CHECK-NEXT:     None
-// CHECK-NEXT: }
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn test(v0 (x): Wrapper) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 switch (0, 0) {
+// CHECK: [shared] enum #Wrapper { Val(i32), None() };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test(v0 (x): #Wrapper) -> i32 {
+// CHECK-NEXT:     match v0 : #Wrapper {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 switch scrut.0 {
 // CHECK-NEXT:                     0 => {
-// CHECK-NEXT:                         100.0 : i32
+// CHECK-NEXT:                         => 100 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                     1 => {
-// CHECK-NEXT:                         200.0 : i32
+// CHECK-NEXT:                         => 200 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                     _ => {
-// CHECK-NEXT:                         pattern var v1 (0, 0)
-// CHECK-NEXT:                         v1
+// CHECK-NEXT:                         v1=scrut.0 => v1 : i32
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 0.0 : i32
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 => 0 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
+
+// FULL: record @_RC7Wrapper : shared enum Wrapper { @_RNvC7Wrapper3Val Val(i32), @_RNvC7Wrapper4None None() };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC4test(v0 (x): Wrapper) -> i32 {
+// FULL-NEXT:     match v0 : Wrapper {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 switch scrut.0 {
+// FULL-NEXT:                     0 => {
+// FULL-NEXT:                         => 100 : i32
+// FULL-NEXT:                     }
+// FULL-NEXT:                     1 => {
+// FULL-NEXT:                         => 200 : i32
+// FULL-NEXT:                     }
+// FULL-NEXT:                     _ => {
+// FULL-NEXT:                         v1=scrut.0 => v1 : i32
+// FULL-NEXT:                     }
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:             #1 => {
+// FULL-NEXT:                 => 0 : i32
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : i32
+// FULL-NEXT: }

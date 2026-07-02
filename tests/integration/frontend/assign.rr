@@ -1,5 +1,6 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s --check-prefix=SEMI
-// RUN: %reussir-elab --mode full %s | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
+
 struct [regional] DLLink<T> {
     val: T,
     next: [field] DLLink<T>,
@@ -45,14 +46,39 @@ fn foo() -> DLLink<i32> {
 // SEMI-DAG: run_region
 
 // Full elaboration checks
-// FULL-DAG: struct _RIC6DLLinklE (aka DLLink<i32>)
 
-// FULL-DAG: regional fn _RIC23push_back_assuming_taillE<i32>(cursor: Rc<_RIC6DLLinklE, Flex>, elem: i32) -> unit
-// FULL-DAG: v2.2 = nonnull{v0} : Nullable<Rc<_RIC6DLLinklE, Flex>> : unit
-// FULL-DAG: v0.1 = nonnull{v2} : Nullable<Rc<_RIC6DLLinklE, Flex>> : unit
+// CHECK: [regional] struct #DLLink<$0> { "val": $0, "next": field Nullable<[regional] #DLLink::<$0>>, "prev": field Nullable<[regional] #DLLink::<$0>> };
+// CHECK-EMPTY:
+// CHECK-NEXT: regional fn #new<$1>(v0 (val): $1) -> [flex] #DLLink::<$1> {
+// CHECK-NEXT:     #DLLink::<$1>{v0 : $1, Null : Nullable<[flex] #DLLink::<$1>>, Null : Nullable<[flex] #DLLink::<$1>>} : [flex] #DLLink::<$1>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: regional fn #push_back_assuming_tail<$2>(v0 (cursor): [flex] #DLLink::<$2>, v1 (elem): $2) -> () {
+// CHECK-NEXT:     let v2 (new_node) = regional #new::<$2>(v1 : $2) : [flex] #DLLink::<$2>;
+// CHECK-NEXT:     assign(v2 : [flex] #DLLink::<$2>, 2, NonNull(v0 : [flex] #DLLink::<$2>) : Nullable<[flex] #DLLink::<$2>>) : ();
+// CHECK-NEXT:     assign(v0 : [flex] #DLLink::<$2>, 1, NonNull(v2 : [flex] #DLLink::<$2>) : Nullable<[flex] #DLLink::<$2>>) : ()
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #foo() -> [rigid] #DLLink::<i32> {
+// CHECK-NEXT:     region { { let v0 (a) = regional #new::<i32>(1 : i32) : [flex] #DLLink::<i32>;
+// CHECK-NEXT:     regional #push_back_assuming_tail::<i32>(v0 : [flex] #DLLink::<i32>, 2 : i32) : ();
+// CHECK-NEXT:     v0 : [flex] #DLLink::<i32> } } : [rigid] #DLLink::<i32>
+// CHECK-NEXT: }
 
-// FULL-DAG: regional fn _RIC3newlE<i32>(val: i32) -> Rc<_RIC6DLLinklE, Flex>
-// FULL-DAG: rc_wrap(compound
-
-// FULL-DAG: fn _RC3foo() -> Rc<_RIC6DLLinklE, Rigid>
-// FULL-DAG: run_region
+// FULL: record @_RIC6DLLinklE : regional struct DLLink::<i32> { "val": i32, "next": field Nullable<[regional] DLLink::<i32>>, "prev": field Nullable<[regional] DLLink::<i32>> };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC3foo() -> [rigid] DLLink::<i32> {
+// FULL-NEXT:     region { { let v0 (a) = regional @_RIC3newlE(1 : i32) : [flex] DLLink::<i32>;
+// FULL-NEXT:     regional @_RIC23push_back_assuming_taillE(v0 : [flex] DLLink::<i32>, 2 : i32) : ();
+// FULL-NEXT:     v0 : [flex] DLLink::<i32> } } : [rigid] DLLink::<i32>
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: regional fn @_RIC23push_back_assuming_taillE(v0 (cursor): [flex] DLLink::<i32>, v1 (elem): i32) -> () {
+// FULL-NEXT:     let v2 (new_node) = regional @_RIC3newlE(v1 : i32) : [flex] DLLink::<i32>;
+// FULL-NEXT:     assign(v2 : [flex] DLLink::<i32>, 2, NonNull(v0 : [flex] DLLink::<i32>) : Nullable<[flex] DLLink::<i32>>) : ();
+// FULL-NEXT:     assign(v0 : [flex] DLLink::<i32>, 1, NonNull(v2 : [flex] DLLink::<i32>) : Nullable<[flex] DLLink::<i32>>) : ()
+// FULL-NEXT: }
+// FULL-EMPTY:
+// FULL-NEXT: regional fn @_RIC3newlE(v0 (val): i32) -> [flex] DLLink::<i32> {
+// FULL-NEXT:     @_RIC6DLLinklE{v0 : i32, Null : Nullable<[flex] DLLink::<i32>>, Null : Nullable<[flex] DLLink::<i32>>} : [flex] DLLink::<i32>
+// FULL-NEXT: }

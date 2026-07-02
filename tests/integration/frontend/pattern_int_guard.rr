@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 fn test(x : i32, flag : bool) -> i32 {
     match x {
@@ -9,22 +9,36 @@ fn test(x : i32, flag : bool) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn test(v0 (x): i32, v1 (flag): bool) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
+// CHECK: fn #test(v0 (x): i32, v1 (flag): bool) -> i32 {
+// CHECK-NEXT:     match v0 : i32 {
+// CHECK-NEXT:         switch scrut {
 // CHECK-NEXT:             0 => {
-// CHECK-NEXT:                 100.0 : i32
+// CHECK-NEXT:                 => 100 : i32
 // CHECK-NEXT:             }
 // CHECK-NEXT:             _ => {
-// CHECK-NEXT:                 if v1 {
-// CHECK-NEXT:                     pattern var v2 (0)
-// CHECK-NEXT:                     v2
-// CHECK-NEXT:                 }
-// CHECK-NEXT:                 otherwise {
-// CHECK-NEXT:                     0.0 : i32
+// CHECK-NEXT:                 v2=scrut if v1 : bool {
+// CHECK-NEXT:                     => v2 : i32
+// CHECK-NEXT:                 } else {
+// CHECK-NEXT:                     => 0 : i32
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
+
+// FULL: fn @_RC4test(v0 (x): i32, v1 (flag): bool) -> i32 {
+// FULL-NEXT:     match v0 : i32 {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             0 => {
+// FULL-NEXT:                 => 100 : i32
+// FULL-NEXT:             }
+// FULL-NEXT:             _ => {
+// FULL-NEXT:                 v2=scrut if v1 : bool {
+// FULL-NEXT:                     => v2 : i32
+// FULL-NEXT:                 } else {
+// FULL-NEXT:                     => 0 : i32
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : i32
+// FULL-NEXT: }

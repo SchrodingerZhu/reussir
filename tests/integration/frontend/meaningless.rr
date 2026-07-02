@@ -1,4 +1,6 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
+
 enum Foo {
     Bar(Foo),
     Baz,
@@ -15,63 +17,91 @@ fn foo(x : Foo, flag: bool) -> Foo {
         Foo::Baz => Foo::Baz{}
     }
 }
-// CHECK:      ;; Instantiated Generics
-// CHECK:      ;; Elaborated Records
-// CHECK-NEXT: enum_variant [value] Foo::Baz()
-// CHECK:      enum_variant [value] Foo::Bar(Foo)
-// CHECK:      enum [shared] Foo{
-// CHECK-NEXT:     Bar,
-// CHECK-NEXT:     Baz,
-// CHECK-NEXT:     Qux
-// CHECK-NEXT: }
-// CHECK:      enum_variant [value] Foo::Qux(Foo, Foo)
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn foo(v0 (x): Foo, v1 (flag): bool) -> Foo {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 if v1 {
-// CHECK-NEXT:                     v0
-// CHECK-NEXT:                 }
-// CHECK-NEXT:                 otherwise {
-// CHECK-NEXT:                     pattern var v2 (0, 0)
-// CHECK-NEXT:                     foo(v2, v1) : Foo
+
+// CHECK: [shared] enum #Foo { Bar(#Foo), Baz(), Qux(#Foo, #Foo) };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #foo(v0 (x): #Foo, v1 (flag): bool) -> #Foo {
+// CHECK-NEXT:     match v0 : #Foo {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 if v1 : bool {
+// CHECK-NEXT:                     => v0 : #Foo
+// CHECK-NEXT:                 } else {
+// CHECK-NEXT:                     v5=scrut.0 => #foo(v5 : #Foo, v1 : bool) : #Foo
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 if v1 {
-// CHECK-NEXT:                     v0
-// CHECK-NEXT:                 }
-// CHECK-NEXT:                 otherwise {
-// CHECK-NEXT:                     Foo[1](Foo::Baz() : Foo::Baz) : Foo
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 if v1 : bool {
+// CHECK-NEXT:                     => v0 : #Foo
+// CHECK-NEXT:                 } else {
+// CHECK-NEXT:                     => #Foo#1() : #Foo
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@2 => {
-// CHECK-NEXT:                 switch (0, 1) {
-// CHECK-NEXT:                     ctor@0 => {
-// CHECK-NEXT:                         if v1 {
-// CHECK-NEXT:                             v0
-// CHECK-NEXT:                         }
-// CHECK-NEXT:                         otherwise {
-// CHECK-NEXT:                             pattern var v2 (0, 1, 0)
-// CHECK-NEXT:                             v2
+// CHECK-NEXT:             #2 => {
+// CHECK-NEXT:                 switch scrut.1 {
+// CHECK-NEXT:                     #0 => {
+// CHECK-NEXT:                         if v1 : bool {
+// CHECK-NEXT:                             => v0 : #Foo
+// CHECK-NEXT:                         } else {
+// CHECK-NEXT:                             v3=scrut.1.0 => v3 : #Foo
 // CHECK-NEXT:                         }
 // CHECK-NEXT:                     }
-// CHECK-NEXT:                     ctor@1 => {
-// CHECK-NEXT:                         if v1 {
-// CHECK-NEXT:                             v0
-// CHECK-NEXT:                         }
-// CHECK-NEXT:                         otherwise {
-// CHECK-NEXT:                             pattern var v2 (0, 0)
-// CHECK-NEXT:                             v2
+// CHECK-NEXT:                     #1 => {
+// CHECK-NEXT:                         if v1 : bool {
+// CHECK-NEXT:                             => v0 : #Foo
+// CHECK-NEXT:                         } else {
+// CHECK-NEXT:                             v4=scrut.0 => v4 : #Foo
 // CHECK-NEXT:                         }
 // CHECK-NEXT:                     }
-// CHECK-NEXT:                     ctor@2 => {
-// CHECK-NEXT:                         pattern var v2 (0, 0)
-// CHECK-NEXT:                         v2
+// CHECK-NEXT:                     #2 => {
+// CHECK-NEXT:                         v2=scrut.0 => v2 : #Foo
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : #Foo
 // CHECK-NEXT: }
+
+// FULL: record @_RC3Foo : shared enum Foo { @_RNvC3Foo3Bar Bar(Foo), @_RNvC3Foo3Baz Baz(), @_RNvC3Foo3Qux Qux(Foo, Foo) };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC3foo(v0 (x): Foo, v1 (flag): bool) -> Foo {
+// FULL-NEXT:     match v0 : Foo {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 if v1 : bool {
+// FULL-NEXT:                     => v0 : Foo
+// FULL-NEXT:                 } else {
+// FULL-NEXT:                     v5=scrut.0 => @_RC3foo(v5 : Foo, v1 : bool) : Foo
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:             #1 => {
+// FULL-NEXT:                 if v1 : bool {
+// FULL-NEXT:                     => v0 : Foo
+// FULL-NEXT:                 } else {
+// FULL-NEXT:                     => @_RC3Foo::#1() : Foo
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:             #2 => {
+// FULL-NEXT:                 switch scrut.1 {
+// FULL-NEXT:                     #0 => {
+// FULL-NEXT:                         if v1 : bool {
+// FULL-NEXT:                             => v0 : Foo
+// FULL-NEXT:                         } else {
+// FULL-NEXT:                             v3=scrut.1.0 => v3 : Foo
+// FULL-NEXT:                         }
+// FULL-NEXT:                     }
+// FULL-NEXT:                     #1 => {
+// FULL-NEXT:                         if v1 : bool {
+// FULL-NEXT:                             => v0 : Foo
+// FULL-NEXT:                         } else {
+// FULL-NEXT:                             v4=scrut.0 => v4 : Foo
+// FULL-NEXT:                         }
+// FULL-NEXT:                     }
+// FULL-NEXT:                     #2 => {
+// FULL-NEXT:                         v2=scrut.0 => v2 : Foo
+// FULL-NEXT:                     }
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : Foo
+// FULL-NEXT: }

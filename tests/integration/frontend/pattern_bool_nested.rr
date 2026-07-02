@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-elab --mode full %s
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
 
 enum Pair {
     MkPair(bool, bool)
@@ -14,34 +14,68 @@ fn test(x : Pair) -> i32 {
     }
 }
 
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn test(v0 (x): Pair) -> i32 {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 switch (0, 0) {
+// CHECK: [shared] enum #Pair { MkPair(bool, bool) };
+// CHECK-EMPTY:
+// CHECK-NEXT: fn #test(v0 (x): #Pair) -> i32 {
+// CHECK-NEXT:     match v0 : #Pair {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 switch scrut.0 {
 // CHECK-NEXT:                     true => {
-// CHECK-NEXT:                         switch (0, 1) {
+// CHECK-NEXT:                         switch scrut.1 {
 // CHECK-NEXT:                             true => {
-// CHECK-NEXT:                                 1.0 : i32
+// CHECK-NEXT:                                 => 1 : i32
 // CHECK-NEXT:                             }
 // CHECK-NEXT:                             false => {
-// CHECK-NEXT:                                 2.0 : i32
+// CHECK-NEXT:                                 => 2 : i32
 // CHECK-NEXT:                             }
 // CHECK-NEXT:                         }
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                     false => {
-// CHECK-NEXT:                         switch (0, 1) {
+// CHECK-NEXT:                         switch scrut.1 {
 // CHECK-NEXT:                             true => {
-// CHECK-NEXT:                                 3.0 : i32
+// CHECK-NEXT:                                 => 3 : i32
 // CHECK-NEXT:                             }
 // CHECK-NEXT:                             false => {
-// CHECK-NEXT:                                 4.0 : i32
+// CHECK-NEXT:                                 => 4 : i32
 // CHECK-NEXT:                             }
 // CHECK-NEXT:                         }
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : i32
 // CHECK-NEXT: }
+
+// FULL: record @_RC4Pair : shared enum Pair { @_RNvC4Pair6MkPair MkPair(bool, bool) };
+// FULL-EMPTY:
+// FULL-NEXT: fn @_RC4test(v0 (x): Pair) -> i32 {
+// FULL-NEXT:     match v0 : Pair {
+// FULL-NEXT:         switch scrut {
+// FULL-NEXT:             #0 => {
+// FULL-NEXT:                 switch scrut.0 {
+// FULL-NEXT:                     true => {
+// FULL-NEXT:                         switch scrut.1 {
+// FULL-NEXT:                             true => {
+// FULL-NEXT:                                 => 1 : i32
+// FULL-NEXT:                             }
+// FULL-NEXT:                             false => {
+// FULL-NEXT:                                 => 2 : i32
+// FULL-NEXT:                             }
+// FULL-NEXT:                         }
+// FULL-NEXT:                     }
+// FULL-NEXT:                     false => {
+// FULL-NEXT:                         switch scrut.1 {
+// FULL-NEXT:                             true => {
+// FULL-NEXT:                                 => 3 : i32
+// FULL-NEXT:                             }
+// FULL-NEXT:                             false => {
+// FULL-NEXT:                                 => 4 : i32
+// FULL-NEXT:                             }
+// FULL-NEXT:                         }
+// FULL-NEXT:                     }
+// FULL-NEXT:                 }
+// FULL-NEXT:             }
+// FULL-NEXT:         }
+// FULL-NEXT:     } : i32
+// FULL-NEXT: }
