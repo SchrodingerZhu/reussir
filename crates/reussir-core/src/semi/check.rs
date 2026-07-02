@@ -31,6 +31,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // generics; the body may add more (e.g. a generic assigned into a link).
         self.regional_generics = proto.regional_generics.clone();
 
+        // A flex value is region-local and cannot be materialized, so it cannot
+        // escape its region across a function boundary. A `regional fn` shares its
+        // caller's region (it takes the region as an implicit parameter), so flex
+        // may cross its boundary; a plain function has no such region, so a flex
+        // parameter or return is rejected. This also rejects declaring a `[flex]`
+        // return whose body can only be a frozen (`rigid`) region-run result.
+        if !proto.is_regional {
+            if self.is_flex(proto.return_ty) {
+                self.error(
+                    span,
+                    "a non-regional function cannot return a flex value: a flex \
+                     value cannot escape its region",
+                );
+            }
+            for (name, ty) in &proto.params {
+                if self.is_flex(*ty) {
+                    let name = self.sym(*name);
+                    self.error(
+                        span,
+                        format!(
+                            "a non-regional function cannot take flex parameter \
+                             `{name}`: a flex value cannot escape its region"
+                        ),
+                    );
+                }
+            }
+        }
+
         let mut params = Vec::new();
         for (name, ty) in &proto.params {
             let var = self.vars.fresh(*name, *ty, None);
@@ -83,6 +111,38 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 span,
                 format!("type mismatch: expected `{e:?}`, found `{f:?}`"),
             );
+            return;
+        }
+        // `unify` reconciles structure but not flexivity coloring, so check it
+        // here at the head (peeling `Nullable`, e.g. a `[field]` link). Two
+        // colorings are compatible when one refines to the other in the
+        // [refinement tree](crate::semi::ty::Flexivity); the incompatible cases
+        // are the siblings — `Flex` versus `Rigid`. Rejecting them is what stops a
+        // frozen `rigid` value being stored into a flex `[field]` link, or a
+        // frozen `region { }` result satisfying a `[flex]` return. An `Unknown`
+        // head (a non-record, or a not-yet-solved hole such as a `Nullable::Null`
+        // element) is the tree root and compatible with either, so it simply
+        // takes the expected coloring.
+        if let (Some(f), Some(e)) = (self.head_flexivity(found), self.head_flexivity(expected))
+            && !f.compatible(e)
+        {
+            self.error(
+                span,
+                format!(
+                    "flexivity mismatch: a `{f:?}` regional value cannot be used where \
+                     `{e:?}` is required (one does not refine to the other)"
+                ),
+            );
+        }
+    }
+
+    /// The flexivity coloring at the head of `ty`, peeling a `Nullable` wrapper
+    /// (a `[field]` link is a `Nullable<Record>`). `None` for a non-record head.
+    fn head_flexivity(&mut self, ty: Ty<'tcx>) -> Option<crate::semi::ty::Flexivity> {
+        match self.infer.shallow_resolve(ty).kind() {
+            TyKind::Record { flex, .. } => Some(*flex),
+            TyKind::Nullable(inner) => self.head_flexivity(*inner),
+            _ => None,
         }
     }
 
@@ -598,10 +658,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // A mutable field's type is already the nullable link type.
         let src = self.check_expr(src, field_ty);
         // The assigned value must be a `Nullable<R>` whose element `R` is a
-        // regional record — only a regional value belongs in a flex record's
-        // mutable link. If `R` is concrete it must be regional here; if `R` is a
-        // generic, record the requirement for the monomorphization call-boundary
-        // check (the same `regional_generics` channel as a `[flex] T` parameter).
+        // regional record — only a regional value belongs in a mutable link. Its
+        // *flexivity* (a frozen `rigid` value cannot go into a flex `[field]`
+        // link) is enforced by the checking boundary above: `check_expr` unified
+        // `src` against the link's flex slot type. If `R` is a generic, record the
+        // requirement for the monomorphization call-boundary check (the same
+        // `regional_generics` channel as a `[flex] T` parameter).
         let resolved = self.infer.shallow_resolve(src.ty);
         if let TyKind::Nullable(inner) = resolved.kind() {
             let inner = self.infer.shallow_resolve(*inner);
@@ -695,7 +757,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             _ => return None,
         };
-        let field_ty = self.infer.instantiate_ty(decl_ty, &inst);
+        let field_ty = self.field_member_ty(decl_ty, mutable, &inst);
         Some((idx as u32, field_ty, mutable))
     }
 
@@ -931,14 +993,50 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match fields {
             Some(RecordFields::Named(fs)) => fs
                 .iter()
-                .map(|(n, t, _)| (Some(*n), self.infer.instantiate_ty(*t, inst)))
+                .map(|(n, t, is_field)| (Some(*n), self.field_member_ty(*t, *is_field, inst)))
                 .collect(),
             Some(RecordFields::Unnamed(fs)) => fs
                 .iter()
-                .map(|(t, _)| (None, self.infer.instantiate_ty(*t, inst)))
+                .map(|(t, is_field)| (None, self.field_member_ty(*t, *is_field, inst)))
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The *expected* type of a struct member when constructing or mutating the
+    /// struct — the target a field argument or assignment source is checked
+    /// against. A plain member is its (instantiated) declared type. A mutable
+    /// `[field]` link — always a `Nullable<Record>` — points at a region-local
+    /// value, so its slot element is `Flex`: it lives in a flex regional record
+    /// (a fresh construction is born flex; assignment requires a flex target).
+    /// This flex expectation is what colors an otherwise-unknown value stored
+    /// through it — e.g. a standalone `Nullable::Null` has an unconstrained
+    /// element, and checking it against this flex slot solves that hole to `flex`
+    /// rather than the record's default `Regional`. (A concrete `rigid` value
+    /// meeting this flex slot is a flexivity mismatch, caught by [`expect`].)
+    fn field_member_ty(
+        &mut self,
+        decl_ty: Ty<'tcx>,
+        is_field: bool,
+        inst: &Instantiation<'tcx>,
+    ) -> Ty<'tcx> {
+        let ty = self.infer.instantiate_ty(decl_ty, inst);
+        if is_field { self.flex_link_ty(ty) } else { ty }
+    }
+
+    /// Color a `[field]` link's slot element `Flex`. The link is a
+    /// `Nullable<Record>`; this refines a concrete pointee record's coloring and
+    /// leaves a generic (or any other) element untouched (a `[flex] T` requirement
+    /// is tracked through the `regional_generics` channel instead).
+    fn flex_link_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        use crate::semi::ty::Flexivity;
+        if let TyKind::Nullable(inner) = ty.kind()
+            && let TyKind::Record { def, args, .. } = self.infer.shallow_resolve(*inner).kind()
+        {
+            let flexed = self.tcx.mk_record(*def, args, Flexivity::Flex);
+            return self.tcx.mk_nullable(flexed);
+        }
+        ty
     }
 
     fn record_ty(
