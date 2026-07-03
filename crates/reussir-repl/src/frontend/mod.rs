@@ -7,4 +7,5 @@
 //! interactive frontend on a real terminal.
 
 pub mod plain;
+pub mod stderr_capture;
 pub mod tui;

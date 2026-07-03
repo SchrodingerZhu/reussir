@@ -1,0 +1,17 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror -Onone 2>&1 | %FileCheck %s
+
+// 16-bit floats render through exact f32 widening in the layout walker.
+// Pinned at -Onone: TPDE cannot compile bfloat (that failure path is the
+// TUI's stderr-capture scenario instead).
+
+1.5 as bfloat16
+// CHECK: 1.5 : bf16
+
+2.25 as f16
+// CHECK: 2.25 : f16
+
+// A stored value below the format's precision prints as what the bits
+// actually hold, not the source literal.
+0.1 as bfloat16
+// CHECK: 0.10009765625 : bf16

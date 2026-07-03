@@ -2084,6 +2084,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "half",
+ "libc",
  "melior",
  "palc",
  "ratatui",

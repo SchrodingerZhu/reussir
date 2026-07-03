@@ -93,6 +93,7 @@ dirs = "6"
 # IEEE 754 half-precision conversion for the REPL's f16 printing (bf16 is a
 # two-line manual widening; f16 needs the real rebias/subnormal handling).
 half = "2"
+libc = "0.2"
 # The REPL's interactive terminal UI: ratatui renders it, ratatui-textarea is
 # the multiline input editor (smart-Enter submission lives in the REPL).
 # `unstable-rendered-line-info` provides `Paragraph::line_count`, which the

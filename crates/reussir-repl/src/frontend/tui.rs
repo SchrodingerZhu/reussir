@@ -30,10 +30,17 @@ use reussir_syntax::diagnostics::{self, SourceMap};
 
 use reussir_jit::OptLevel;
 
+use crate::frontend::stderr_capture::StderrCapture;
 use crate::session::{self, Config, Exit, Outcome, ReplSession};
 
 /// Run the TUI: owns terminal setup/teardown and the `:clear` session loop.
 pub fn run(config: Config) -> Result<(), String> {
+    // Capture raw stderr before `ratatui::init`, so the panic hooks chain
+    // correctly (terminal restore, then stderr restore, then the message):
+    // native backend logging (TPDE's spdlog, LLVM) writes straight to fd 2
+    // and would otherwise smear across the raw-mode screen.
+    let capture = StderrCapture::install()
+        .map_err(|e| format!("failed to capture stderr for the TUI: {e}"))?;
     // `ratatui::init` enters the alternate screen + raw mode and installs a
     // panic hook that restores the terminal.
     let terminal = ratatui::init();
@@ -41,7 +48,7 @@ pub fn run(config: Config) -> Result<(), String> {
         std::io::stdout(),
         ratatui::crossterm::event::EnableBracketedPaste
     );
-    let mut tui = Tui::new(terminal, config);
+    let mut tui = Tui::new(terminal, config, capture);
     tui.load_history();
 
     let result = loop {
@@ -65,6 +72,13 @@ pub fn run(config: Config) -> Result<(), String> {
         ratatui::crossterm::event::DisableBracketedPaste
     );
     ratatui::restore();
+    // Dropping the capture restores the real stderr; anything still queued
+    // (a backend line during teardown) goes to it verbatim.
+    let trailing = tui.capture.drain();
+    drop(tui);
+    for line in trailing {
+        eprintln!("{line}");
+    }
     result
 }
 
@@ -87,10 +101,13 @@ struct Tui {
     /// Jupyter-style `Out[n]` numbering for evaluated values; resets with
     /// the session on `:clear`.
     out_counter: usize,
+    /// Raw fd-2 capture (see [`crate::frontend::stderr_capture`]); drained
+    /// into the scrollback after every evaluation.
+    capture: StderrCapture,
 }
 
 impl Tui {
-    fn new(terminal: ratatui::DefaultTerminal, config: Config) -> Self {
+    fn new(terminal: ratatui::DefaultTerminal, config: Config, capture: StderrCapture) -> Self {
         let mut tui = Tui {
             terminal,
             config,
@@ -113,6 +130,7 @@ impl Tui {
             interrupts: 0,
             busy: false,
             out_counter: 0,
+            capture,
         };
         tui.reset_textarea();
         tui
@@ -264,6 +282,12 @@ impl Tui {
         }
         let outcome = session.eval(&text);
         self.busy = false;
+        // Backend/native logging during the evaluation was captured off
+        // fd 2; surface it in the scrollback (dim) instead of letting it
+        // smear across the raw-mode screen.
+        for line in self.capture.drain() {
+            self.push_line(Line::from(line.dark_gray()));
+        }
         // Keep the restart config in step with `:set opt`, so a `:clear`
         // rebuilds the session at the level the user chose, not the CLI's.
         self.config.opt = session.opt;
