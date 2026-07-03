@@ -23,20 +23,38 @@ use reussir_jit::OrcJit;
 
 use crate::reflect::{self, PrinterRegistry, ShapeTable};
 
-/// An owned `__ReplBox` kept alive past its evaluation (a global binding),
-/// with the dec companion that eventually releases it.
+/// An owned reference to an evaluated `__ReplBox` — a host-side smart
+/// pointer over the shared rc box. `Clone` retains, `Drop` releases through
+/// the dec companion; otherwise move-only, so every reference has exactly
+/// one releasing owner (a binding's box lives in the session's
+/// `GlobalBinding` and dies with it — rebinding included — with no manual
+/// bookkeeping).
 pub struct BoundBox {
-    pub boxed: *const u8,
-    pub dec: extern "C" fn(*const u8),
-}
-
-/// Calls the `_dec` companion on drop, releasing the displayed box.
-struct DecGuard {
-    dec: extern "C" fn(*const u8),
     boxed: *const u8,
+    dec: extern "C" fn(*const u8),
 }
 
-impl Drop for DecGuard {
+impl BoundBox {
+    /// The raw box pointer, for passing to wrapper calls (which retain per
+    /// reference they consume — see [`call_boxed`]) and for walking.
+    pub fn as_ptr(&self) -> *const u8 {
+        self.boxed
+    }
+}
+
+impl Clone for BoundBox {
+    fn clone(&self) -> Self {
+        // SAFETY: `self` holds a live reference; the retain mirrors the
+        // generated `rc.inc` (see `retain_box`).
+        unsafe { retain_box(self.boxed) };
+        BoundBox {
+            boxed: self.boxed,
+            dec: self.dec,
+        }
+    }
+}
+
+impl Drop for BoundBox {
     fn drop(&mut self) {
         (self.dec)(self.boxed);
     }
@@ -130,24 +148,18 @@ fn call_and_walk<'tcx>(
     if boxed.is_null() {
         return Err("the REPL wrapper returned a null box (this is a bug)".to_string());
     }
+    // Owning from here on: any early return below releases through Drop.
     let bound = BoundBox { boxed, dec };
 
     // The box payload is the `{ value: T }` compound; its sole member's
     // inline cell sits at offset 0, so the payload address *is* the inline
     // representation of `T` the walker expects.
-    // SAFETY: `boxed` is a live box of `box_ty`'s layout, owned above.
+    // SAFETY: `bound` owns a live box of `box_ty`'s layout.
     let rendered = unsafe {
-        reflect::shared_box_payload(boxed, box_ty, shapes)
-            .and_then(|payload| reflect::render_value(payload, ty, shapes, printers))
+        reflect::shared_box_payload(bound.as_ptr(), box_ty, shapes)
+            .and_then(|payload| reflect::render_value(payload, ty, shapes, printers))?
     };
-    match rendered {
-        Ok(rendered) => Ok((rendered, bound)),
-        Err(error) => {
-            // Release before surfacing the walker failure.
-            (bound.dec)(bound.boxed);
-            Err(error)
-        }
-    }
+    Ok((rendered, bound))
 }
 
 /// Look up `export` in the JIT, call it (passing the live bindings' boxes),
@@ -169,11 +181,8 @@ pub fn call_and_render<'tcx>(
         unsafe { call_unit(address, args) };
         return Ok("()".to_string());
     }
-    let (rendered, bound) = call_and_walk(jit, export, ty, box_ty, shapes, printers, args)?;
-    let _guard = DecGuard {
-        dec: bound.dec,
-        boxed: bound.boxed,
-    };
+    // The evaluated box drops (releases) here; only the rendering survives.
+    let (rendered, _bound) = call_and_walk(jit, export, ty, box_ty, shapes, printers, args)?;
     Ok(rendered)
 }
 

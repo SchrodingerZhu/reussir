@@ -86,19 +86,14 @@ where
 }
 
 /// One global `let` binding: an owned `__ReplBox<T>` kept alive between
-/// inputs, plus its dec companion for release on rebinding or session drop.
+/// inputs. The box releases itself ([`crate::value::BoundBox`]'s `Drop`) on
+/// rebinding and on session drop — while the JIT (borrowed by the session,
+/// so it strictly outlives it) still has the dec companion materialized.
 struct GlobalBinding<'tcx> {
     name: reussir_syntax::kind::TokenKey,
     display: String,
     ty: Ty<'tcx>,
-    boxed: *const u8,
-    dec: extern "C" fn(*const u8),
-}
-
-impl Drop for ReplSession<'_, '_> {
-    fn drop(&mut self) {
-        self.release_bindings();
-    }
+    boxed: crate::value::BoundBox,
 }
 
 /// A module added to the JIT whose input is not yet permanent.
@@ -272,7 +267,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                 self.tcx
                                     .mk_record(self.repl_box, &[ty], Flexivity::Irrelevant);
                             let args: Vec<*const u8> =
-                                self.bindings.iter().map(|b| b.boxed).collect();
+                                self.bindings.iter().map(|b| b.boxed.as_ptr()).collect();
                             let result = if binder.is_some() {
                                 crate::value::call_and_bind(
                                     self.jit,
@@ -365,17 +360,16 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         name: reussir_syntax::kind::TokenKey,
         display: String,
         ty: Ty<'tcx>,
-        bound: crate::value::BoundBox,
+        boxed: crate::value::BoundBox,
     ) {
         let entry = GlobalBinding {
             name,
             display,
             ty,
-            boxed: bound.boxed,
-            dec: bound.dec,
+            boxed,
         };
         if let Some(existing) = self.bindings.iter_mut().find(|b| b.name == name) {
-            (existing.dec)(existing.boxed);
+            // The overwrite drops the old entry's box, releasing it.
             *existing = entry;
         } else {
             self.bindings.push(entry);
@@ -395,7 +389,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             // SAFETY: the session owns one reference to each binding's box;
             // it is live until `register_binding`/`Drop` release it.
             let value = unsafe {
-                crate::reflect::shared_box_payload(b.boxed, box_ty, &self.shapes).and_then(
+                crate::reflect::shared_box_payload(b.boxed.as_ptr(), box_ty, &self.shapes).and_then(
                     |payload| {
                         crate::reflect::render_value(payload, b.ty, &self.shapes, &self.printers)
                     },
@@ -559,16 +553,6 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             .filter(|r| !self.elab.sym(r.name).starts_with("__"))
             .count();
         functions + records
-    }
-
-    /// Release every global binding's box. Runs in `Drop`, while the JIT
-    /// (borrowed, so it outlives the session) still has the dec companions
-    /// materialized: the allocator is process-global, so without this a
-    /// `:clear` would leak the bindings for the process lifetime.
-    fn release_bindings(&mut self) {
-        for binding in self.bindings.drain(..) {
-            (binding.dec)(binding.boxed);
-        }
     }
 
     /// Render a ground Semi type for display (`i64`, `f64`, `List::<i64>`).
