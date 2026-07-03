@@ -423,10 +423,27 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// function, instantiate its generics to a substitution θ, check `argᵢ ⇐
     /// ⌈paramᵢ⌉θ`, and return `R = ⌈return_ty⌉θ`. A regional callee outside a region,
     /// an unknown name, or an arity mismatch is a diagnostic (unknown name ⇒ poison).
-    /// Note: this resolves *functions* only — a closure-valued variable is not callable
-    /// here (see `infer_closure_call`).
+    /// A bare `name` that binds a local closure value is redirected to a closure
+    /// application (`closure_apply`) — the parser cannot tell the two apart.
     fn infer_func_call(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         let fname = self.sym(fc.name.basename);
+        // The parser emits a `FuncCall` for every bare-name application `f(x)` —
+        // it cannot tell a `fn` from a closure-valued local. A name that binds a
+        // local value is a closure application (a local binding shadows a
+        // same-named function, matching `infer_var`'s var-first precedence).
+        if fc.name.segments.is_empty()
+            && let Some((id, ty)) = self.vars.lookup(fc.name.basename)
+        {
+            self.record_use(fc.name.basename);
+            if !fc.ty_args.is_empty() {
+                self.error(
+                    span,
+                    format!("`{fname}` is a local value and cannot take type arguments"),
+                );
+            }
+            let callee = self.mk_expr(ExprKind::Var(id), ty, span);
+            return self.closure_apply(callee, &fc.args, span);
+        }
         let Some(def) = self.defs.resolve_function(fc.name.basename) else {
             let hint = self.function_suggestion(fc.name.basename);
             self.error(span, format!("unknown function `{fname}`{hint}"));
@@ -479,6 +496,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let callee = self.infer_expr(callee);
+        self.closure_apply(callee, args, span)
+    }
+
+    /// Apply an already-synthesized `callee` (a closure value) to `args`, shared
+    /// by [`infer_closure_call`](Self::infer_closure_call) — where the callee is
+    /// a first-class expression — and [`infer_func_call`](Self::infer_func_call),
+    /// where a bare name turned out to be a local closure binding rather than a
+    /// function. See `infer_closure_call` for the partial/full-application rules.
+    fn closure_apply(
+        &mut self,
+        callee: Expr<'tcx>,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
         let (params, ret) = match callee.ty.kind() {
             TyKind::Closure { params, ret } => (params.to_vec(), *ret),
             _ => {

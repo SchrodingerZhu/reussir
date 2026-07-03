@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -o %t.o --relocation-mode pic
+// RUN: %rrc %s -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/closure_multiplicity.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
