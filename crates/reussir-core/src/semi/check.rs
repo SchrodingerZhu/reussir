@@ -112,7 +112,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let f = self.infer.resolve(found);
             self.error(
                 span,
-                format!("type mismatch: expected `{e:?}`, found `{f:?}`"),
+                format!(
+                    "type mismatch: expected `{}`, found `{}`",
+                    self.ty_display(e),
+                    self.ty_display(f)
+                ),
             );
             return;
         }
@@ -751,7 +755,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut indices = Vec::new();
         for acc in accs {
             let TyKind::Record { def, args, flex } = cur.kind() else {
-                self.error(span, format!("cannot access a field of `{cur:?}`"));
+                let shown = self.infer.resolve(cur);
+                self.error(
+                    span,
+                    format!("cannot access a field of `{}`", self.ty_display(shown)),
+                );
                 return self.poison(span);
             };
             let Some((idx, field_ty, _)) = self.resolve_field(*def, args, *flex, acc) else {

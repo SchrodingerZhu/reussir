@@ -314,7 +314,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.check_nullable_pat(ctor, span, ty);
         }
         let TyKind::Record { def, args, .. } = ty.kind() else {
-            self.error(span, format!("cannot match constructor against `{ty:?}`"));
+            let shown = self.infer.resolve(ty);
+            self.error(
+                span,
+                format!(
+                    "cannot match constructor against `{}`",
+                    self.ty_display(shown)
+                ),
+            );
             return Pat::Wild;
         };
         // The enum is named by the path qualifier (`Enum::Variant`), resolved to
@@ -407,9 +414,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 elem
             }
             _ => {
+                let shown = self.infer.resolve(ty);
                 self.error(
                     span,
-                    format!("cannot match a nullable pattern against `{ty:?}`"),
+                    format!(
+                        "cannot match a nullable pattern against `{}`",
+                        self.ty_display(shown)
+                    ),
                 );
                 return Pat::Wild;
             }
