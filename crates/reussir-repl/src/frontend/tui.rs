@@ -667,7 +667,7 @@ fn strip_ansi(line: &str) -> String {
             // OSC: `ESC ]` ... BEL (or ESC \\).
             Some(']') => {
                 chars.next();
-                while let Some(f) = chars.next() {
+                for f in chars.by_ref() {
                     if f == '\x07' || f == '\x1b' {
                         break;
                     }

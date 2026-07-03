@@ -31,7 +31,7 @@ pub use fallback::OutputCapture;
 #[cfg(unix)]
 mod unix {
     use std::io::Read;
-    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::fd::FromRawFd;
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::{Arc, Mutex};
 
