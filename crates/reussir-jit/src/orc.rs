@@ -112,17 +112,23 @@ pub struct OrcJit {
 /// needs when a module was added but materialization then failed. Dropping
 /// the handle instead releases only the tracker: the module stays in the
 /// session permanently (its resources fold into the dylib default).
+///
+/// The `'jit` lifetime borrows the owning [`OrcJit`]: the tracker points
+/// into that engine's `ExecutionSession`, so a handle released (dropped or
+/// removed) after the engine's disposal would be a use-after-free. The
+/// borrow makes that ordering a compile error.
 #[derive(Debug)]
-pub struct ModuleHandle {
+pub struct ModuleHandle<'jit> {
     tracker: LLVMOrcResourceTrackerRef,
+    jit: std::marker::PhantomData<&'jit OrcJit>,
 }
 
 // Resource trackers are part of the execution session, which is internally
 // synchronized (same rationale as `OrcJit` itself).
-unsafe impl Send for ModuleHandle {}
-unsafe impl Sync for ModuleHandle {}
+unsafe impl Send for ModuleHandle<'_> {}
+unsafe impl Sync for ModuleHandle<'_> {}
 
-impl Drop for ModuleHandle {
+impl Drop for ModuleHandle<'_> {
     fn drop(&mut self) {
         unsafe { LLVMOrcReleaseResourceTracker(self.tracker) }
     }
@@ -273,7 +279,7 @@ impl OrcJit {
     /// Like [`OrcJit::add_ir_module`], but scopes the module's resources to a
     /// returned [`ModuleHandle`] so it can later be removed with
     /// [`OrcJit::remove_module`].
-    pub fn add_ir_module_tracked(&self, name: &str, ir: &str) -> Result<ModuleHandle, String> {
+    pub fn add_ir_module_tracked(&self, name: &str, ir: &str) -> Result<ModuleHandle<'_>, String> {
         self.tracked(|tracker| self.add_ir_module_at(name, ir, tracker))
     }
 
@@ -339,7 +345,7 @@ impl OrcJit {
         &self,
         module: &Module,
         opt: OptLevel,
-    ) -> Result<ModuleHandle, String> {
+    ) -> Result<ModuleHandle<'_>, String> {
         self.tracked(|tracker| self.add_module_at(module, opt, tracker))
     }
 
@@ -387,13 +393,16 @@ impl OrcJit {
     fn tracked(
         &self,
         add: impl FnOnce(LLVMOrcResourceTrackerRef) -> Result<(), String>,
-    ) -> Result<ModuleHandle, String> {
+    ) -> Result<ModuleHandle<'_>, String> {
         let tracker = unsafe {
             let dylib = LLVMOrcLLJITGetMainJITDylib(self.jit);
             LLVMOrcJITDylibCreateResourceTracker(dylib)
         };
         match add(tracker) {
-            Ok(()) => Ok(ModuleHandle { tracker }),
+            Ok(()) => Ok(ModuleHandle {
+                tracker,
+                jit: std::marker::PhantomData,
+            }),
             Err(message) => {
                 unsafe { LLVMOrcReleaseResourceTracker(tracker) };
                 Err(message)
@@ -406,7 +415,7 @@ impl OrcJit {
     /// modules that called into the removed module keeps its (now dangling)
     /// resolutions, so this is intended for modules whose symbols were never
     /// successfully materialized (the REPL failure-recovery path).
-    pub fn remove_module(&self, handle: ModuleHandle) -> Result<(), String> {
+    pub fn remove_module(&self, handle: ModuleHandle<'_>) -> Result<(), String> {
         // The handle's Drop releases the tracker reference after removal.
         check_error(unsafe { LLVMOrcResourceTrackerRemove(handle.tracker) })
     }

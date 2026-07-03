@@ -8,6 +8,7 @@ use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
 
 use super::ctxt::{Elaborator, RecordFields};
+use super::fulfill::{collect_holes, ty_has_hole};
 use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -1195,14 +1196,47 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     // ----- zonking -----
 
-    /// Resolve every type in an expression tree against the solved holes.
+    /// Resolve every type in an expression tree against the solved holes,
+    /// reporting any residual hole as an ambiguity error.
+    ///
+    /// Zonking is the inference boundary: bidirectional checking legitimately
+    /// leaves a hole unsolved when nothing constrains it (e.g. the element
+    /// type of a bare `Nullable::Null`), so a survivor here is a *user* error
+    /// asking for an annotation — never something later passes should see.
+    /// Downstream of zonking, HIR types are hole-free or errors were
+    /// reported; monomorphization's `subst_ty` panic on a hole is a genuine
+    /// ICE, not a reachable diagnostic.
     pub(super) fn zonk_expr(&mut self, mut e: Expr<'tcx>) -> Expr<'tcx> {
-        e.ty = self.infer.resolve(e.ty);
-        e.kind = self.zonk_kind(e.kind);
+        // Children first: a hole shared along a spine (`if c { Nullable::Null }
+        // else { x }`) is reported at the innermost expression that exhibits
+        // it — where the annotation belongs — and suppressed on the ancestors.
+        e.kind = self.zonk_kind(e.kind, e.span);
+        e.ty = self.zonk_ty(e.ty, e.span);
         e
     }
 
-    fn zonk_kind(&mut self, kind: ExprKind<'tcx>) -> ExprKind<'tcx> {
+    /// Resolve one type; report its not-yet-reported holes against `span`
+    /// (the expression the type belongs to). See [`Elaborator::zonk_expr`].
+    fn zonk_ty(&mut self, ty: Ty<'tcx>, span: Option<Span>) -> Ty<'tcx> {
+        let ty = self.infer.resolve(ty);
+        if ty_has_hole(ty) {
+            let mut holes = Vec::new();
+            collect_holes(ty, &mut holes);
+            let mut fresh = false;
+            for hole in holes {
+                fresh |= self.reported_holes.insert(hole);
+            }
+            if fresh {
+                self.error(
+                    span,
+                    "cannot infer the type of this expression; add a type annotation",
+                );
+            }
+        }
+        ty
+    }
+
+    fn zonk_kind(&mut self, kind: ExprKind<'tcx>, span: Option<Span>) -> ExprKind<'tcx> {
         use ExprKind::*;
         let zb = |s: &mut Self, e: Box<Expr<'tcx>>| Box::new(s.zonk_expr(*e));
         match kind {
@@ -1211,7 +1245,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Arith(l, op, r) => Arith(zb(self, l), op, zb(self, r)),
             Cmp(l, op, r) => Cmp(zb(self, l), op, zb(self, r)),
             Cast(e, t) => {
-                let t = self.infer.resolve(t);
+                let t = self.zonk_ty(t, span);
                 Cast(zb(self, e), t)
             }
             If(c, t, f) => If(zb(self, c), zb(self, t), zb(self, f)),
@@ -1237,7 +1271,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 regional,
             } => FuncCall {
                 target,
-                ty_args: ty_args.into_iter().map(|t| self.infer.resolve(t)).collect(),
+                ty_args: ty_args.into_iter().map(|t| self.zonk_ty(t, span)).collect(),
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
                 regional,
             },
@@ -1247,7 +1281,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 args,
             } => CompoundCall {
                 target,
-                ty_args: ty_args.into_iter().map(|t| self.infer.resolve(t)).collect(),
+                ty_args: ty_args.into_iter().map(|t| self.zonk_ty(t, span)).collect(),
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
             },
             VariantCall {
@@ -1257,7 +1291,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 args,
             } => VariantCall {
                 target,
-                ty_args: ty_args.into_iter().map(|t| self.infer.resolve(t)).collect(),
+                ty_args: ty_args.into_iter().map(|t| self.zonk_ty(t, span)).collect(),
                 variant,
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
             },
@@ -1270,12 +1304,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 captures: c
                     .captures
                     .into_iter()
-                    .map(|(v, t)| (v, self.infer.resolve(t)))
+                    .map(|(v, t)| (v, self.zonk_ty(t, span)))
                     .collect(),
                 params: c
                     .params
                     .into_iter()
-                    .map(|(v, t)| (v, self.infer.resolve(t)))
+                    .map(|(v, t)| (v, self.zonk_ty(t, span)))
                     .collect(),
                 body: zb(self, c.body),
             }),

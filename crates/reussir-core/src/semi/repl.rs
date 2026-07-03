@@ -13,7 +13,6 @@
 use reussir_syntax::kind::TokenKey;
 
 use crate::semi::ctxt::{Checkpoint, Elaborator, FuncProto, Report, Severity, TrampolineRoot};
-use crate::semi::fulfill::{expr_has_hole, ty_has_hole};
 use crate::semi::hir::Function;
 use crate::semi::ty::Ty;
 use crate::surface::{self, Visibility};
@@ -29,8 +28,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// warnings. Numeric inference holes are defaulted REPL-style
     /// ([`default_numeric_holes`](Elaborator::default_numeric_holes)); a hole
     /// that survives defaulting — e.g. a bare `Nullable::Null` — is rejected
-    /// with an annotation hint rather than left to panic in
-    /// monomorphization.
+    /// by the zonk-time ambiguity check with an annotation hint.
     pub fn try_repl_expr(
         &mut self,
         name: TokenKey,
@@ -40,21 +38,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let cp = self.checkpoint();
         let span = Some(expr.span());
 
-        let def = match self.defs.declare_function(name) {
-            Some(def) => def,
-            None => {
-                // Defensive: the driver allocates a fresh `__repl_expr_N` per
-                // input, so a clash means a driver bug, not user error.
-                self.error(span, format!("`{}` is already defined", self.sym(name)));
-                return Err(self.take_reports_and_rollback(&cp));
-            }
-        };
-
         // Check the expression as a nullary, non-regional function body with
         // a hole return type; inference solves the hole to the expression's
         // type.
         self.enter_function(&[]);
-        self.regional_generics = Vec::new();
+        self.regional_generics.clear();
         let ret = self.infer.new_hole_ty();
         let body = self.check_expr(expr, ret);
         self.default_numeric_holes();
@@ -62,14 +50,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let body = self.zonk_expr(body);
         let return_ty = self.infer.resolve(ret);
 
-        // A residual hole would panic in monomorphization (`subst_ty`);
-        // reject it here with an actionable message instead.
-        if ty_has_hole(return_ty) || expr_has_hole(&body) {
-            self.error(
-                span,
-                "cannot infer the type of this expression; add a type annotation",
-            );
-        }
         // The wrapper is an ordinary (non-regional) function, so its result
         // must not be region-local (mirrors the check_function boundary rule).
         if self.is_flex(return_ty) {
@@ -86,9 +66,24 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return Err(new);
         }
 
-        // Accept: register the prototype (later inputs may call the wrapper),
-        // the elaborated body, and the trampoline root that seeds
-        // monomorphization and names the exported C entry.
+        // Accept: declare the wrapper and register its prototype (later
+        // inputs may call it), the elaborated body, and the trampoline root
+        // that seeds monomorphization and names the exported C entry.
+        //
+        // Declaring only now — after the body checked — keeps the "every
+        // resolvable def has a prototype" invariant the call paths index by
+        // (`self.functions[&def]`). Today no surface input can name the
+        // wrapper anyway (a leading `_` cannot start an identifier), but the
+        // invariant should hold structurally, not by lexical accident.
+        let def = match self.defs.declare_function(name) {
+            Some(def) => def,
+            None => {
+                // Defensive: the driver allocates a fresh `__repl_expr_N` per
+                // input, so a clash means a driver bug, not user error.
+                self.error(span, format!("`{}` is already defined", self.sym(name)));
+                return Err(self.take_reports_and_rollback(&cp));
+            }
+        };
         self.functions.insert(
             def,
             FuncProto {
@@ -242,6 +237,24 @@ mod tests {
             assert_eq!(s.elab.elaborated.len(), 0);
             s.counter = 0;
             s.eval("42").expect("session still usable");
+        });
+    }
+
+    #[test]
+    fn clashing_wrapper_names_are_a_clean_error() {
+        session(|s, _| {
+            s.eval("1").expect("first use of the name");
+            // A driver bug reusing an export name must surface as a report
+            // (and roll back), not corrupt the session.
+            s.counter = 0;
+            let errs = s.eval("2").expect_err("name already taken");
+            assert!(
+                errs.iter().any(|r| r.message.contains("already defined")),
+                "{errs:#?}"
+            );
+            assert_eq!(s.elab.elaborated.len(), 1, "clashing input rolled back");
+            s.counter = 1;
+            s.eval("2").expect("session still usable");
         });
     }
 

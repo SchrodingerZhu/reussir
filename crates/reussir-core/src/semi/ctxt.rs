@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, GenericId, HoleId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::frecency::Frecency;
 use crate::utils::fuzzy::FuzzyIndex;
@@ -257,6 +257,10 @@ pub struct Elaborator<'a, 'tcx> {
     /// [`Function`]. See [`FuncProto::regional_generics`].
     pub regional_generics: Vec<GenericId>,
     pub fulfill: FulfillCtxt<'tcx>,
+    /// Holes already reported as ambiguous for the current function, so each
+    /// yields exactly one diagnostic — from `resolve_obligations` when a bound
+    /// on it can't be resolved, else from zonking (see `zonk_ty`).
+    pub(super) reported_holes: rustc_hash::FxHashSet<HoleId>,
     expr_counter: u32,
 }
 
@@ -306,6 +310,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             inside_region: false,
             regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
+            reported_holes: rustc_hash::FxHashSet::default(),
             expr_counter: 0,
         }
     }
@@ -454,6 +459,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.generic_names.clear();
         self.inside_region = false;
         self.fulfill = FulfillCtxt::default();
+        self.reported_holes.clear();
         for (name, id) in generics {
             self.generic_names.insert(*name, *id);
         }
@@ -468,6 +474,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// monotonic (`strings`, `frecency`, `expr_counter`, the type arena) is
     /// deliberately left to grow — stale entries are unreachable once the
     /// defs that referenced them are retracted.
+    ///
+    /// Any *future* accumulated state must be added here: notably, once
+    /// user-defined traits/impls land, `traits` stops being fixed at
+    /// construction and a rejected batch's impls must roll back too.
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             defs: self.defs.len(),
@@ -551,19 +561,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .iter()
             .map(|(func, span)| self.scan_function(func, *span))
             .collect();
-        for ((rec, _), def) in records.iter().zip(&record_defs) {
-            if let Some(def) = def {
-                self.populate_record(rec, *def);
-            }
-        }
-        for ((func, span), def) in functions.iter().zip(&function_defs) {
-            if let Some(def) = def {
-                self.check_function(func, *def, *span);
-            }
-        }
-        for (tramp, span) in &trampolines {
+        records
+            .iter()
+            .zip(record_defs)
+            .filter_map(|((rec, _), def)| Some((rec, def?)))
+            .for_each(|(rec, def)| {
+                self.populate_record(rec, def);
+            });
+        functions
+            .iter()
+            .zip(function_defs)
+            .filter_map(|((func, span), def)| Some((func, *span, def?)))
+            .for_each(|(func, span, def)| {
+                self.check_function(func, def, span);
+            });
+        trampolines.iter().for_each(|(tramp, span)| {
             self.collect_trampoline(tramp, *span);
-        }
+        });
     }
 
     fn scan_record(&mut self, rec: &surface::Record, span: Option<Span>) -> Option<DefId> {

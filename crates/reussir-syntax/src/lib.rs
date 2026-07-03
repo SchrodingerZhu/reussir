@@ -109,16 +109,16 @@ pub struct ReplParse {
 /// `enum`, `mod`, `extern`, and `pub` start items, and `regional` does iff
 /// the next token is `fn` (otherwise it is a `regional { ... }` expression);
 /// everything else is an expression. No backtracking: errors are reported
-/// against the chosen route. Since the language has no reserved identifiers,
-/// an expression *headed* by a variable literally named like an item keyword
-/// misroutes to items; accepted as a documented limitation.
+/// against the chosen route. The routing is exact — every item-starting
+/// token is a hard keyword (the lexer never classifies `fn`, `struct`, etc.
+/// as identifiers), so no expression can begin with one.
 pub fn parse_repl(
     source: &str,
     interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
 ) -> ReplParse {
-    let kind_cell = std::cell::Cell::new(ReplInputKind::Expr);
+    let mut kind = ReplInputKind::Expr;
     let parse = parse_impl(source, interner, |p| {
-        let kind = match p.current() {
+        kind = match p.current() {
             SyntaxKind::FnKw
             | SyntaxKind::StructKw
             | SyntaxKind::EnumKw
@@ -128,21 +128,17 @@ pub fn parse_repl(
             SyntaxKind::RegionalKw if p.nth(1) == SyntaxKind::FnKw => ReplInputKind::Items,
             _ => ReplInputKind::Expr,
         };
-        kind_cell.set(kind);
         match kind {
             ReplInputKind::Items => p.source_file(),
             ReplInputKind::Expr => p.repl_expr_seq(),
         }
     });
-    ReplParse {
-        parse,
-        kind: kind_cell.get(),
-    }
+    ReplParse { parse, kind }
 }
 
 /// The shared parse pipeline: lex, run `entry` on the parser, then build the
 /// lossless tree with `interner` (which becomes the tree's resolver).
-fn parse_impl<I>(source: &str, interner: I, entry: impl FnOnce(&mut parser::Parser)) -> Parse
+fn parse_impl<I>(source: &str, mut interner: I, entry: impl FnOnce(&mut parser::Parser)) -> Parse
 where
     I: cstree::interning::Interner<kind::TokenKey> + kind::Resolver<kind::TokenKey> + 'static,
 {
@@ -170,7 +166,6 @@ where
     // the first message is the most informative one.
     errors.dedup_by_key(|e| e.span.0);
 
-    let mut interner = interner;
     let green = parser::sink::Sink::new(source, &all_tokens, events, &mut interner).finish();
     let root = kind::SyntaxNode::new_root_with_resolver(green, interner);
     Parse { root, errors }

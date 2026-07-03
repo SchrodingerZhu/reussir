@@ -136,6 +136,30 @@ mod tests {
     }
 
     #[test]
+    fn residual_holes_are_ambiguity_errors_in_batch_mode() {
+        with_tcx(|tcx| {
+            // Nothing constrains the element type of a bare `Nullable::Null`
+            // (no obligation is registered, so there is no bound to fail
+            // either): a legitimate inference outcome, not an ICE. Zonking
+            // must report it instead of handing monomorphization a type
+            // `subst_ty` would panic on.
+            let source = "fn f() -> i64 { let x = Nullable::Null; 42 }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            let ambiguous: Vec<_> = elab
+                .reports
+                .iter()
+                .filter(|r| r.message.contains("cannot infer"))
+                .collect();
+            // Exactly one report, at the offending expression — not one per
+            // enclosing node that shares the hole.
+            assert_eq!(ambiguous.len(), 1, "reports: {:#?}", elab.reports);
+        });
+    }
+
+    #[test]
     fn duplicate_definitions_are_rejected_without_clobbering() {
         with_tcx(|tcx| {
             let source = "struct P { x: i32, y: i32 }\n\
