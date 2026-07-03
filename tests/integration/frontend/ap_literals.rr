@@ -51,6 +51,13 @@ pub fn tenthb() -> bfloat16 { 0.1 }
 pub fn f16max() -> f16 { 65504.0 }
 // LL-DAG: ret half 0xH7BFF
 
+// IEEE signed zero: an exact decimal has no negative zero, so `-0.0` is NOT
+// folded into a constant — it stays a runtime negation, and the sign survives
+// to the emitted code (folding in the decimal domain would yield +0.0 and
+// flip the sign of `1.0 / -0.0`).
+pub fn negzero() -> f64 { -0.0 }
+// LL-DAG: ret double -0.000000e+00
+
 // Single rounding, not double: this decimal sits just above the f32 tie at
 // 1 + 2^-24, but *below* f64 resolution. Rounding through f64 first would
 // collapse onto the tie and then round to even (1.0); rounding the exact

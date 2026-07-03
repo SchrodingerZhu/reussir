@@ -40,8 +40,10 @@ pub enum RawToken {
     Ident(IdentClass),
 
     // Decimal, hex, octal, and binary integers, with `_` digit separators
-    // (which cannot lead: a radix run needs at least one real digit, so `0x_`
-    // falls back to `0` + ident rather than lexing as an empty literal).
+    // (which cannot lead: a radix run needs at least one real digit). A
+    // digit-less prefix like `0x`/`0x_` is a lex error — logos does not
+    // backtrack to the shorter `0` match — reported as "invalid numeric
+    // literal" (see `tokenize`'s error classification).
     #[regex(r"[0-9][0-9_]*")]
     #[regex(r"0[xX]_*[0-9a-fA-F][0-9a-fA-F_]*")]
     #[regex(r"0[oO]_*[0-7][0-7_]*")]

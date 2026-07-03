@@ -621,10 +621,16 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             ExprKind::Poison => M::Poison,
             // Negation of a literal folds into the constant, so `-128 : i8`
             // (and `-9223372036854775808 : i64`) is a single in-range value
-            // by the time the range check above sees it.
+            // by the time the range check above sees it. The exception is
+            // `-0.0`: an exact decimal has no negative zero (IEEE signed zero
+            // is a binary-format artifact), so it stays a runtime negation —
+            // folding it would turn `-0.0` into `+0.0` and flip, e.g., the
+            // sign of `1.0 / -0.0`.
             ExprKind::Negate(e) => match &e.kind {
                 ExprKind::ConstInt(n) => M::ConstInt(self.tcx.alloc(-(*n).clone())),
-                ExprKind::ConstFloat(f) => M::ConstFloat(self.tcx.alloc(f.neg())),
+                ExprKind::ConstFloat(f) if *f.mantissa() != 0 => {
+                    M::ConstFloat(self.tcx.alloc(f.neg()))
+                }
                 _ => M::Negate(self.lower_ref(e, subst)),
             },
             ExprKind::Not(e) => M::Not(self.lower_ref(e, subst)),
@@ -921,6 +927,35 @@ mod tests {
              pub fn bin() -> u8 { 0b1111_1111 }",
             |_| (),
         );
+    }
+
+    /// `-0.0` must stay a *runtime* negation: `FloatLit` is an exact decimal
+    /// with no signed zero, so folding it would produce `+0.0` and flip, e.g.,
+    /// the sign of `1.0 / -0.0`. Non-zero literals do fold.
+    #[test]
+    fn negative_zero_is_not_folded() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(
+                "pub fn nz() -> f64 { -0.0 } \
+                 pub fn nn() -> f64 { -1.5 }",
+            );
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let (mir, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "{reports:#?}");
+            let text = MirPrinter::new(&elab.defs, elab.resolver).program(&mir);
+            assert!(
+                text.contains("-(0.0 : f64)"),
+                "-0.0 must stay a runtime negation:\n{text}"
+            );
+            assert!(
+                text.contains("-1.5 : f64") && !text.contains("-(1.5"),
+                "non-zero literals must fold:\n{text}"
+            );
+        });
     }
 
     #[test]
