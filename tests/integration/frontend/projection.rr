@@ -1,63 +1,40 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: struct _RIC3BoxIC3BoxmEE (aka Box<Box<u32>>){
-// CHECK-NEXT-DAG: val: _RIC3BoxmE
-// CHECK-NEXT-DAG: }
+// CHECK: record @_RIC3BoxIC3BoxmEE : value struct Box::<Box::<u32>> { "val": Box::<u32> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC3BoxIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEEE : value struct Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>> { "val": RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC3BoxmE : value struct Box::<u32> { "val": u32 };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxIC3BoxIC3BoxmEEE : shared struct RcBox::<Box::<Box::<u32>>> { "val": Box::<Box::<u32>> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEE : shared struct RcBox::<RcBox::<Box::<Box::<u32>>>> { "val": RcBox::<Box::<Box::<u32>>> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEE : shared struct RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>> { "val": RcBox::<RcBox::<Box::<Box::<u32>>>> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxIC5RcBoxIC5RcBoxmEEE : shared struct RcBox::<RcBox::<RcBox::<u32>>> { "val": RcBox::<RcBox::<u32>> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxIC5RcBoxmEE : shared struct RcBox::<RcBox::<u32>> { "val": RcBox::<u32> };
+// CHECK-EMPTY:
+// CHECK: record @_RIC5RcBoxmE : shared struct RcBox::<u32> { "val": u32 };
+// CHECK-EMPTY:
+// CHECK: pub fn @_RC10rc_project(v0 (rc): RcBox::<u32>) -> u32 {
+// CHECK-NEXT: proj(v0 : RcBox::<u32>, 0) : u32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: pub fn @_RC11mixed_chain(v0 (rc): Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>>) -> u32 {
+// CHECK-NEXT: proj(v0 : Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>>, 0, 0, 0, 0, 0, 0) : u32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: pub fn @_RC18rc_project_chained(v0 (rc): RcBox::<RcBox::<u32>>) -> u32 {
+// CHECK-NEXT: proj(v0 : RcBox::<RcBox::<u32>>, 0, 0) : u32
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: pub fn @_RC20rc_project_chained_2(v0 (rc): RcBox::<RcBox::<RcBox::<u32>>>) -> u32 {
+// CHECK-NEXT: proj(v0 : RcBox::<RcBox::<RcBox::<u32>>>, 0, 0, 0) : u32
+// CHECK-NEXT: }
 
-// CHECK-DAG: struct _RIC5RcBoxmE (aka RcBox<u32>){
-// CHECK-NEXT-DAG: val: u32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RC5Point (aka Point){
-// CHECK-NEXT-DAG: x: u64,
-// CHECK-NEXT-DAG: y: u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC3BoxIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEEE (aka Box<RcBox<RcBox<RcBox<Box<Box<u32>>>>>>){
-// CHECK-NEXT-DAG: val: _RIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC3BoxmE (aka Box<u32>){
-// CHECK-NEXT-DAG: val: u32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEE (aka RcBox<RcBox<RcBox<Box<Box<u32>>>>>){
-// CHECK-NEXT-DAG: val: _RIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEE (aka RcBox<RcBox<Box<Box<u32>>>>){
-// CHECK-NEXT-DAG: val: _RIC5RcBoxIC3BoxIC3BoxmEEE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxIC3BoxIC3BoxmEEE (aka RcBox<Box<Box<u32>>>){
-// CHECK-NEXT-DAG: val: _RIC3BoxIC3BoxmEE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxIC5RcBoxIC5RcBoxmEEE (aka RcBox<RcBox<RcBox<u32>>>){
-// CHECK-NEXT-DAG: val: _RIC5RcBoxIC5RcBoxmEE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxIC5RcBoxmEE (aka RcBox<RcBox<u32>>){
-// CHECK-NEXT-DAG: val: _RIC5RcBoxmE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: pub fn _RC18rc_project_chained(rc: Rc<_RIC5RcBoxIC5RcBoxmEE, Shared>) -> u32 {
-// CHECK-NEXT-DAG: v0.0.0 : u32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: pub fn _RC20rc_project_chained_2(rc: Rc<_RIC5RcBoxIC5RcBoxIC5RcBoxmEEE, Shared>) -> u32 {
-// CHECK-NEXT-DAG: v0.0.0.0 : u32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: pub fn _RC11mixed_chain(rc: _RIC3BoxIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEEE) -> u32 {
-// CHECK-NEXT-DAG: v0.0.0.0.0.0.0 : u32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: pub fn _RC10rc_project(rc: Rc<_RIC5RcBoxmE, Shared>) -> u32 {
-// CHECK-NEXT-DAG: v0.0 : u32
-// CHECK-NEXT-DAG: }
 struct [value] Point {
     x : u64,
     y : u64

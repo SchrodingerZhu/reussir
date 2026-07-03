@@ -1,42 +1,22 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: enum _RIC6OptionlE (aka Option<i32>){
-// CHECK-NEXT-DAG: _RINvC6Option4SomelE,
-// CHECK-NEXT-DAG: _RINvC6Option4NonelE
-// CHECK-NEXT-DAG: }
+// CHECK: record @_RIC6OptionlE : value enum Option::<i32> { @_RNvIC6OptionlE4Some Some(i32), @_RNvIC6OptionlE4None None() };
+// CHECK-EMPTY:
+// CHECK: record @_RIC8RcOptionlE : shared enum RcOption::<i32> { @_RNvIC8RcOptionlE4Some Some(i32), @_RNvIC8RcOptionlE4None None() };
+// CHECK-EMPTY:
+// CHECK: fn @_RC3bar() -> RcOption::<i32> {
+// CHECK-NEXT: @_RIC8RcOptionlE::#1() : RcOption::<i32>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC3baz() -> RcOption::<i32> {
+// CHECK-NEXT: @_RIC8RcOptionlE::#0(1 : i32) : RcOption::<i32>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC3foo() -> Option::<i32> {
+// CHECK-NEXT: @_RIC6OptionlE::#1() : Option::<i32>
+// CHECK-NEXT: }
 
-// CHECK-DAG: enum_variant _RINvC6Option4SomelE (aka Option::Some<i32>){
-// CHECK-NEXT-DAG: [0]: i32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: enum _RIC8RcOptionlE (aka RcOption<i32>){
-// CHECK-NEXT-DAG: _RINvC8RcOption4SomelE,
-// CHECK-NEXT-DAG: _RINvC8RcOption4NonelE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: enum_variant _RINvC6Option4NonelE (aka Option::None<i32>){
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: enum_variant _RINvC8RcOption4SomelE (aka RcOption::Some<i32>){
-// CHECK-NEXT-DAG: [0]: i32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: enum_variant _RINvC8RcOption4NonelE (aka RcOption::None<i32>){
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3baz() -> Rc<_RIC8RcOptionlE, Shared> {
-// CHECK-NEXT-DAG: rc_wrap(variant[0](compound(1.0 : i32) : _RINvC8RcOption4SomelE) : _RIC8RcOptionlE) : Rc<_RIC8RcOptionlE, Shared>
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3foo() -> _RIC6OptionlE {
-// CHECK-NEXT-DAG: variant[1](compound() : _RINvC6Option4NonelE) : _RIC6OptionlE
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3bar() -> Rc<_RIC8RcOptionlE, Shared> {
-// CHECK-NEXT-DAG: rc_wrap(variant[1](compound() : _RINvC8RcOption4NonelE) : _RIC8RcOptionlE) : Rc<_RIC8RcOptionlE, Shared>
-// CHECK-NEXT-DAG: }
 enum [value] Option<T> {
     Some(T),
     None

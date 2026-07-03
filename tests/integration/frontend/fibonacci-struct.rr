@@ -1,31 +1,28 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: struct _RC6Matrix (aka Matrix){
-// CHECK-NEXT-DAG: m00: u64,
-// CHECK-NEXT-DAG: m01: u64,
-// CHECK-NEXT-DAG: m10: u64,
-// CHECK-NEXT-DAG: m11: u64
-// CHECK-NEXT-DAG: }
+// CHECK: record @_RC6Matrix : value struct Matrix { "m00": u64, "m01": u64, "m10": u64, "m11": u64 };
+// CHECK-EMPTY:
+// CHECK: fn @_RC26fibonacci_logarithmic_impl(v0 (n): u64, v1 (a): Matrix, v2 (b): Matrix) -> u64 {
+// CHECK-NEXT: if (v0 : u64 == 0 : u64) : bool then {
+// CHECK-NEXT: proj(v1 : Matrix, 1) : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: if ((v0 : u64 % 2 : u64) : u64 == 1 : u64) : bool then {
+// CHECK-NEXT: @_RC26fibonacci_logarithmic_impl((v0 : u64 / 2 : u64) : u64, @_RC6matmul(v1 : Matrix, v2 : Matrix) : Matrix, @_RC6matmul(v2 : Matrix, v2 : Matrix) : Matrix) : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: @_RC26fibonacci_logarithmic_impl((v0 : u64 / 2 : u64) : u64, v1 : Matrix, @_RC6matmul(v2 : Matrix, v2 : Matrix) : Matrix) : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC6matmul(v0 (a): Matrix, v1 (b): Matrix) -> Matrix {
+// CHECK-NEXT: let v2 (m00) = ((proj(v0 : Matrix, 0) : u64 * proj(v1 : Matrix, 0) : u64) : u64 + (proj(v0 : Matrix, 1) : u64 * proj(v1 : Matrix, 2) : u64) : u64) : u64;
+// CHECK-NEXT: let v3 (m01) = ((proj(v0 : Matrix, 0) : u64 * proj(v1 : Matrix, 1) : u64) : u64 + (proj(v0 : Matrix, 1) : u64 * proj(v1 : Matrix, 3) : u64) : u64) : u64;
+// CHECK-NEXT: let v4 (m10) = ((proj(v0 : Matrix, 2) : u64 * proj(v1 : Matrix, 0) : u64) : u64 + (proj(v0 : Matrix, 3) : u64 * proj(v1 : Matrix, 2) : u64) : u64) : u64;
+// CHECK-NEXT: let v5 (m11) = ((proj(v0 : Matrix, 2) : u64 * proj(v1 : Matrix, 1) : u64) : u64 + (proj(v0 : Matrix, 3) : u64 * proj(v1 : Matrix, 3) : u64) : u64) : u64;
+// CHECK-NEXT: @_RC6Matrix{v2 : u64, v3 : u64, v4 : u64, v5 : u64} : Matrix
+// CHECK-NEXT: }
 
-// CHECK-DAG: fn _RC26fibonacci_logarithmic_impl(n: u64, a: _RC6Matrix, b: _RC6Matrix) -> u64 {
-// CHECK-NEXT-DAG: if (v0 == 0.0 : u64) : bool then
-// CHECK-NEXT-DAG: v1.1 : u64
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: if ((v0 % 2.0 : u64) : u64 == 1.0 : u64) : bool then
-// CHECK-NEXT-DAG: _RC26fibonacci_logarithmic_impl((v0 / 2.0 : u64) : u64, _RC6matmul(v1, v2) : _RC6Matrix, _RC6matmul(v2, v2) : _RC6Matrix) : u64
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: _RC26fibonacci_logarithmic_impl((v0 / 2.0 : u64) : u64, v1, _RC6matmul(v2, v2) : _RC6Matrix) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC6matmul(a: _RC6Matrix, b: _RC6Matrix) -> _RC6Matrix {
-// CHECK-NEXT-DAG: let v2 (m00) : u64 = ((v0.0 : u64 * v1.0 : u64) : u64 + (v0.1 : u64 * v1.2 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v3 (m01) : u64 = ((v0.0 : u64 * v1.1 : u64) : u64 + (v0.1 : u64 * v1.3 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v4 (m10) : u64 = ((v0.2 : u64 * v1.0 : u64) : u64 + (v0.3 : u64 * v1.2 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v5 (m11) : u64 = ((v0.2 : u64 * v1.1 : u64) : u64 + (v0.3 : u64 * v1.3 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: compound(v2, v3, v4, v5) : _RC6Matrix
-// CHECK-NEXT-DAG: }
 struct [value] Matrix {
     m00: u64, 
     m01: u64,

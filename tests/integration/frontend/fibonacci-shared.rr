@@ -1,6 +1,6 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s -o %t.o
 // RUN: %cc %t.o %S/fibonacci.c -o %t.exe \
 // RUN:    -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
@@ -53,42 +53,43 @@ fn fibonacci<T : Integral>(n : T) -> T {
 extern "C" trampoline "fibonacci_ffi" = fibonacci<u64>;
 
 // --- MLIR ownership checks ---
-
-// matmul: both RC matrix params are dec'd before creating the result
-// CHECK-MLIR-LABEL: func.func @"_RIC6matmulyE"(%0 :
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR-NEXT:  reussir.rc.dec (%1 :
-// CHECK-MLIR:       reussir.record.compound
-// CHECK-MLIR:       reussir.rc.create
-// CHECK-MLIR:       func.return
-
-// fibonacci<u64>: no RC ops, just create matrices and call impl
-// CHECK-MLIR-LABEL: func.func @"_RIC9fibonacciyE"
-// CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR-NOT:   reussir.rc.dec
-// CHECK-MLIR:       func.return
+// rrc emits the monomorphized functions in the order: impl, matmul, fibonacci.
 
 // fibonacci_logarithmic_impl: n==0 branch decs both a and b; else branches inc b
-// CHECK-MLIR-LABEL: func.func @"_RIC26fibonacci_logarithmic_implyE"(%0 : i64, %1 :
-// n==0 true branch: borrow a, load field, dec both b and a
+// CHECK-MLIR-LABEL: func.func private @_RIC26fibonacci_logarithmic_implyE(%arg0: i64, %arg1:
+// n==0 true branch: dec b, borrow a, load field, dec a
 // CHECK-MLIR:       scf.if
-// CHECK-MLIR:       reussir.rc.dec (%2 :
-// CHECK-MLIR:       reussir.rc.borrow (%1 :
+// CHECK-MLIR:       reussir.rc.dec(%arg2 :
+// CHECK-MLIR:       reussir.rc.borrow(%arg1 :
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR-NEXT:  reussir.rc.dec (%1 :
+// CHECK-MLIR-NEXT:  reussir.rc.dec(%arg1 :
 // CHECK-MLIR:       scf.yield
 // n%2==1 branch: inc b before first matmul, inc b before second matmul
 // CHECK-MLIR:       } else {
 // CHECK-MLIR:       scf.if
-// CHECK-MLIR:       reussir.rc.inc (%2 :
-// CHECK-MLIR:       func.call @"_RIC6matmulyE"(%1, %2)
-// CHECK-MLIR:       reussir.rc.inc (%2 :
-// CHECK-MLIR:       func.call @"_RIC6matmulyE"(%2, %2)
-// CHECK-MLIR:       func.call @"_RIC26fibonacci_logarithmic_implyE"
+// CHECK-MLIR:       reussir.rc.inc(%arg2 :
+// CHECK-MLIR:       func.call @_RIC6matmulyE(%arg1, %arg2)
+// CHECK-MLIR:       reussir.rc.inc(%arg2 :
+// CHECK-MLIR:       func.call @_RIC6matmulyE(%arg2, %arg2)
+// CHECK-MLIR:       func.call @_RIC26fibonacci_logarithmic_implyE
 // CHECK-MLIR:       scf.yield
 // n%2==0 branch: inc b, matmul(b,b), pass a directly to recursive call
 // CHECK-MLIR:       } else {
-// CHECK-MLIR:       reussir.rc.inc (%2 :
-// CHECK-MLIR:       func.call @"_RIC6matmulyE"(%2, %2)
-// CHECK-MLIR:       func.call @"_RIC26fibonacci_logarithmic_implyE"({{%[0-9]+}}, %1, {{%[0-9]+}})
+// CHECK-MLIR:       reussir.rc.inc(%arg2 :
+// CHECK-MLIR:       func.call @_RIC6matmulyE(%arg2, %arg2)
+// CHECK-MLIR:       func.call @_RIC26fibonacci_logarithmic_implyE({{%[0-9]+}}, %arg1, {{%[0-9]+}})
+
+// matmul: both RC matrix params are dec'd before creating the result
+// CHECK-MLIR-LABEL: func.func private @_RIC6matmulyE(%arg0:
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg1 :
+// CHECK-MLIR:       reussir.record.compound
+// CHECK-MLIR:       reussir.rc.create
+// CHECK-MLIR:       return
+
+// fibonacci<u64>: no RC ops, just create matrices and call impl
+// CHECK-MLIR-LABEL: func.func private @_RIC9fibonacciyE
+// CHECK-MLIR-NOT:   reussir.rc.inc
+// CHECK-MLIR-NOT:   reussir.rc.dec
+// CHECK-MLIR:       return
