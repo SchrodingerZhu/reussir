@@ -215,13 +215,19 @@ mod tests {
     #[test]
     fn plain_regional_member_is_rigid_on_both_sides() {
         check(
-            "struct [regional] Inner { v: u64 } \
-             struct [regional] Outer { inner: Inner, tag: u64 } \
-             fn mk_inner(v: u64) -> Inner { regional { Inner { v: v } } } \
-             fn take(v: u64) -> Inner { \
-                 let o = regional { Outer { inner: mk_inner(v), tag: v } }; \
-                 o.inner \
-             }",
+            r#"
+            struct [regional] Inner { v: u64 }
+            struct [regional] Outer { inner: Inner, tag: u64 }
+
+            fn mk_inner(v: u64) -> Inner {
+                regional { Inner { v: v } }
+            }
+
+            fn take(v: u64) -> Inner {
+                let o = regional { Outer { inner: mk_inner(v), tag: v } };
+                o.inner
+            }
+            "#,
             |elab, _| {
                 let body = function(elab, "take").body.as_ref().unwrap();
                 // The projected member is a frozen view.
@@ -237,11 +243,14 @@ mod tests {
     #[test]
     fn rejects_flex_value_in_plain_regional_member() {
         with_tcx(|tcx| {
-            let source = "struct [regional] Inner { v: u64 } \
-                          struct [regional] Outer { inner: Inner, tag: u64 } \
-                          regional fn mk(v: u64) -> [flex] Outer { \
-                              Outer { inner: Inner { v: v }, tag: v } \
-                          }";
+            let source = r#"
+                struct [regional] Inner { v: u64 }
+                struct [regional] Outer { inner: Inner, tag: u64 }
+
+                regional fn mk(v: u64) -> [flex] Outer {
+                    Outer { inner: Inner { v: v }, tag: v }
+                }
+            "#;
             let parse = reussir_syntax::parse(source);
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
