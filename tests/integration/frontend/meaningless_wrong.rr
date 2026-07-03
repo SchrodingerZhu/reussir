@@ -1,4 +1,4 @@
-// RUN: %not %reussir-elab --mode semi %s 2>&1 | %FileCheck %s
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
 enum Foo {
     Bar(Foo),
     Baz,
