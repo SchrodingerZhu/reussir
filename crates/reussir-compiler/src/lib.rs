@@ -58,6 +58,8 @@ pub enum RelocMode {
     Pic,
     /// Non-PIC.
     Static,
+    /// Dynamic, but not position-independent (LLVM's `dynamic-no-pic`).
+    DynamicNoPic,
 }
 
 /// Which machine to emit for. A `None` field falls back to the native host —
@@ -113,6 +115,7 @@ fn reloc(mode: RelocMode) -> LLVMRelocMode {
         RelocMode::Default => LLVMRelocMode::LLVMRelocDefault,
         RelocMode::Pic => LLVMRelocMode::LLVMRelocPIC,
         RelocMode::Static => LLVMRelocMode::LLVMRelocStatic,
+        RelocMode::DynamicNoPic => LLVMRelocMode::LLVMRelocDynamicNoPic,
     }
 }
 
@@ -283,7 +286,18 @@ unsafe fn emit(
     out_path: &Path,
 ) -> Result<(), String> {
     unsafe {
-        // LLVM IR text needs no target machine.
+        // Stamp the module with the target triple and data layout so the emitted
+        // object's ABI matches the target (and so `%cc` can link it). The IR-text
+        // path needs this too: it carries the target as `target triple`/`target
+        // datalayout` lines, which downstream tools (and `%FileCheck`) rely on.
+        LLVMSetTarget(llvm_module, machine.triple.as_ptr());
+        let target_data = LLVMCreateTargetDataLayout(machine.machine);
+        // `LLVMSetModuleDataLayout` copies the layout into the module, so the
+        // target-data handle is ours to dispose.
+        LLVMSetModuleDataLayout(llvm_module, target_data);
+        LLVMDisposeTargetData(target_data);
+
+        // LLVM IR text needs no target-machine emission — just print the module.
         if kind == OutputKind::LlvmIr {
             let s = LLVMPrintModuleToString(llvm_module);
             let text = c_str(s);
@@ -291,15 +305,6 @@ unsafe fn emit(
             return std::fs::write(out_path, text)
                 .map_err(|e| format!("failed to write {}: {e}", out_path.display()));
         }
-
-        // Stamp the module with the target triple and data layout so the emitted
-        // object's ABI matches the target (and so `%cc` can link it).
-        LLVMSetTarget(llvm_module, machine.triple.as_ptr());
-        let target_data = LLVMCreateTargetDataLayout(machine.machine);
-        // `LLVMSetModuleDataLayout` copies the layout into the module, so the
-        // target-data handle is ours to dispose.
-        LLVMSetModuleDataLayout(llvm_module, target_data);
-        LLVMDisposeTargetData(target_data);
 
         let file_type = match kind {
             OutputKind::Object => LLVMCodeGenFileType::LLVMObjectFile,
