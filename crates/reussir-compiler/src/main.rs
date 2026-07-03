@@ -13,6 +13,7 @@
 //! fed back in isolation. Exit 0 on success, 1 on a compile error, 2 on a usage
 //! or I/O error.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -31,8 +32,9 @@ use reussir_core::full::mono::{MonoInput, monomorphize};
 use reussir_core::semi::resolve::DefTable;
 use reussir_core::semi::hir;
 use reussir_core::semi::ty::TyCtxt;
-use reussir_core::semi::{Report, Severity, elaborate};
+use reussir_core::semi::{elaborate, render_reports};
 use reussir_core::{in_arena, surface};
+use reussir_syntax::diagnostics;
 use reussir_syntax::kind::{Resolver, TokenKey};
 
 /// A stage on the compilation chain, ordered from source to object so a target
@@ -239,23 +241,6 @@ fn write_text(path: &Path, text: &str) -> Result<(), String> {
     }
 }
 
-/// Prints `reports` to stderr, each labelled with its severity, and returns
-/// whether any was an error. Warnings alone do not fail the compile.
-fn report_diagnostics(name: &str, reports: &[Report]) -> bool {
-    let mut had_error = false;
-    for report in reports {
-        let label = match report.severity {
-            Severity::Error => {
-                had_error = true;
-                "error"
-            }
-            Severity::Warning => "warning",
-        };
-        eprintln!("{name}: {label}: {}", report.message);
-    }
-    had_error
-}
-
 /// What the front (arena-scoped) leg produces: a text dump for `hir`/`mir`, or an
 /// MLIR module for `mlir` and anything past it. The module borrows the MLIR
 /// context, not the type arena, so it outlives the [`in_arena`] scope.
@@ -418,14 +403,21 @@ fn frontend<'c, 'tcx>(
         Stage::Rr => {
             let parse = reussir_syntax::parse(source);
             if !parse.ok() {
-                for err in &parse.errors {
-                    eprintln!("{name}: error: {err:?}");
-                }
+                let map = diagnostics::SourceMap::new(source);
+                let color = std::io::stderr().is_terminal();
+                let _ = diagnostics::render_errors(
+                    name,
+                    source,
+                    &map,
+                    &parse.errors,
+                    color,
+                    std::io::stderr().lock(),
+                );
                 return Err(String::new());
             }
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
-            if report_diagnostics(name, &elab.reports) {
+            if render_reports(name, source, &elab.reports) {
                 return Err(String::new());
             }
             if target == Stage::Hir {
@@ -437,7 +429,7 @@ fn frontend<'c, 'tcx>(
                 return Ok(Produced::Text(text));
             }
             let (full, reports) = monomorphize(&elab.mono_input());
-            if report_diagnostics(name, &reports) {
+            if render_reports(name, source, &reports) {
                 return Err(String::new());
             }
             finish_mir(
@@ -472,7 +464,7 @@ fn frontend<'c, 'tcx>(
                 trampolines: &parsed.trampolines,
             };
             let (full, reports) = monomorphize(&input);
-            if report_diagnostics(name, &reports) {
+            if render_reports(name, source, &reports) {
                 return Err(String::new());
             }
             // A re-parsed IR carries no original source, so debug locations would

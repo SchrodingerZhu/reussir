@@ -174,7 +174,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut arm_spans = Vec::with_capacity(arms.len());
         for (i, (pat, body)) in arms.iter().enumerate() {
             let mark = self.vars.mark();
-            let p = self.check_pat(&pat.kind(), scrut_ty);
+            let p = self.check_pat(&pat.kind(), Some(pat.span()), scrut_ty);
             let guard = pat.guard().map(|g| {
                 let bool_ty = self.tcx.mk_bool();
                 self.check_expr(&g, bool_ty)
@@ -236,8 +236,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     // ----- pattern type-checking -----
 
     /// Type-check a surface pattern against `ty`, allocating binders into the
-    /// current scope, and return the typed [`Pat`].
-    fn check_pat(&mut self, kind: &PatternKind, ty: Ty<'tcx>) -> Pat {
+    /// current scope, and return the typed [`Pat`]. `span` is the pattern's
+    /// source span, used to blame any error; nested sub-patterns (a constructor's
+    /// arguments) carry no span of their own, so they reuse the enclosing
+    /// pattern's — coarse, but still traced to source.
+    fn check_pat(&mut self, kind: &PatternKind, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
         let ty = self.infer.shallow_resolve(ty);
         match kind {
             PatternKind::Wildcard => Pat::Wild,
@@ -245,12 +248,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let var = self.vars.fresh(*name, ty, None);
                 Pat::Bind(var)
             }
-            PatternKind::Const(c) => self.check_const_pat(c, ty),
-            PatternKind::Ctor(ctor) => self.check_ctor_pat(ctor, ty),
+            PatternKind::Const(c) => self.check_const_pat(c, span, ty),
+            PatternKind::Ctor(ctor) => self.check_ctor_pat(ctor, span, ty),
         }
     }
 
-    fn check_const_pat(&mut self, c: &Const, ty: Ty<'tcx>) -> Pat {
+    fn check_const_pat(&mut self, c: &Const, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
         let ctor = match c {
             Const::ConstInt(i) => {
                 // The literal must be *some* integer, but its width/signedness
@@ -260,7 +263,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 // the `Integral` bound on the column type, exactly as an integer
                 // literal *expression* does; the eventual int-switch lowering
                 // reads the column's real type to pick the signed/unsigned cast.
-                self.register_bound(self.builtins.integral, ty, None);
+                self.register_bound(self.builtins.integral, ty, span);
                 Ctor::Int(*i as i128)
             }
             Const::ConstBool(b) => {
@@ -274,7 +277,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Ctor::Str(self.strings.allocate(s))
             }
             Const::ConstDouble(_) => {
-                self.error(None, "floating-point patterns are not supported");
+                self.error(span, "floating-point patterns are not supported");
                 return Pat::Wild;
             }
         };
@@ -284,10 +287,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    fn check_ctor_pat(&mut self, ctor: &surface::CtorPat, ty: Ty<'tcx>) -> Pat {
+    fn check_ctor_pat(&mut self, ctor: &surface::CtorPat, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
         let ty = self.infer.shallow_resolve(ty);
         let TyKind::Record { def, args, .. } = ty.kind() else {
-            self.error(None, format!("cannot match constructor against `{ty:?}`"));
+            self.error(span, format!("cannot match constructor against `{ty:?}`"));
             return Pat::Wild;
         };
         // The enum is named by the path qualifier (`Enum::Variant`), resolved to
@@ -301,22 +304,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
                 None => {
                     let hint = self.record_suggestion(seg);
-                    self.error(None, format!("unknown enum `{}`{hint}", self.sym(seg)));
+                    self.error(span, format!("unknown enum `{}`{hint}", self.sym(seg)));
                     return Pat::Wild;
                 }
             },
             None => *def,
         };
         let Some(record) = self.records.get(&enum_def).cloned() else {
-            self.error(None, "unknown enum".to_string());
+            self.error(span, "unknown enum".to_string());
             return Pat::Wild;
         };
         let Some(RecordFields::Variants(variants)) = &record.fields else {
-            self.error(None, "not an enum".to_string());
+            self.error(span, "not an enum".to_string());
             return Pat::Wild;
         };
         let Some(vidx) = variants.iter().position(|v| v.name == want) else {
-            self.error(None, format!("no variant `{}`", self.sym(want)));
+            self.error(span, format!("no variant `{}`", self.sym(want)));
             return Pat::Wild;
         };
 
@@ -325,7 +328,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             || (!ctor.has_ellipsis && ctor.args.len() != payload.len())
         {
             self.error(
-                None,
+                span,
                 format!(
                     "variant `{}` has {} field(s), but the pattern binds {}",
                     self.sym(want),
@@ -349,7 +352,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .map(|(i, decl)| {
                 let field_ty = self.infer.instantiate_ty(*decl, &inst);
                 match ctor.args.get(i) {
-                    Some(arg) => self.check_pat(&arg.kind, field_ty),
+                    Some(arg) => self.check_pat(&arg.kind, span, field_ty),
                     None => Pat::Wild,
                 }
             })

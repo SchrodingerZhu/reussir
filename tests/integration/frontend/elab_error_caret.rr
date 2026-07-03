@@ -1,0 +1,17 @@
+// Elaboration errors are traced back to source: rendered with an ariadne caret
+// that underlines the offending span, not a bare message. This also exercises
+// the pattern-span threading — a floating-point pattern is span-less in the
+// checker until its enclosing pattern's span is threaded through.
+// RUN: %not %rrc %s --emit mir -o - 2>&1 | %FileCheck %s
+
+pub fn f(x: f64) -> i32 {
+    match x {
+        1.5 => 1,
+        _ => 0
+    }
+}
+
+// The message heads the report and annotates the underlined source line.
+// CHECK: floating-point patterns are not supported
+// CHECK: elab_error_caret.rr:9:9
+// CHECK: 1.5 => 1

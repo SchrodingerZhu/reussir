@@ -15,4 +15,6 @@ fn foo(x : Foo, flag: bool) -> Foo {
     }
 }
 
-// CHECK: Non-exhaustive pattern match
+// The diagnostic is rendered with a source caret pointing at the `match`.
+// CHECK: non-exhaustive patterns in `match`
+// CHECK: meaningless_wrong.rr:9:5
