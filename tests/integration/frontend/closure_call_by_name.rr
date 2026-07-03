@@ -1,0 +1,26 @@
+// A bare-name call `f(x)` where `f` is a closure-valued binding (a parameter or
+// a `let`) must elaborate as a closure application, not fail with "unknown
+// function `f`". The parser emits a `FuncCall` for every bare-name application,
+// so the checker disambiguates: a name that binds a local value is a closure
+// application (a local binding shadows a same-named function).
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+
+// Closure passed as a parameter, then applied by name.
+fn run_it(g : i32 -> i32, x : i32) -> i32 {
+    g(x)
+}
+
+// Closure bound by `let`, then applied by name.
+pub fn use_local(x : i32) -> i32 {
+    let h = |y : i32| y * 2;
+    h(x)
+}
+
+extern "C" trampoline "use_local_ffi" = use_local;
+
+// Each call lowers to a closure application (HIR `apply`), not a function call.
+// CHECK-LABEL: fn #run_it(
+// CHECK:       apply(v0
+// CHECK-LABEL: fn #use_local(
+// CHECK:       closure[]
+// CHECK:       apply(v2
