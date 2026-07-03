@@ -16,5 +16,5 @@ pub fn go(x : i32) -> i32 {
 extern "C" trampoline "go_ffi" = go;
 
 // The member is a bare closure (a shared capability member), never `rc<closure>`.
-// CHECK-MLIR:     reussir.record<compound "_RC5Boxed" {!reussir.closure<(i32) -> i32>}>
+// CHECK-MLIR: !reussir.record<compound "_RC5Boxed" {!reussir.closure<(i32) -> i32>}>
 // CHECK-MLIR-NOT: compound "_RC5Boxed" {!reussir.rc<!reussir.closure
