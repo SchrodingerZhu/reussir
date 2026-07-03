@@ -43,8 +43,8 @@ pub struct Report {
 /// Render `reports` to stderr with source-caret context and return whether any
 /// was an error (warnings alone do not fail a compile). A report the middle-end
 /// could not trace back to a span — an internal/whole-program error — prints as
-/// a plain line. Both frontend drivers (`rrc`, `reussir-elab`) funnel through
-/// here so parse and elaboration diagnostics render identically.
+/// a plain line. The frontend driver (`rrc`) funnels through here so parse and
+/// elaboration diagnostics render identically.
 pub fn render_reports(name: &str, source: &str, reports: &[Report]) -> bool {
     use std::io::IsTerminal;
 

@@ -1,8 +1,8 @@
 //! A readable, **round-trippable** textual rendering of the Full (MIR) program.
 //!
-//! This is the `reussir-elab --mode full` output and the *serialization*
-//! direction of the textual IR: a Rust-ish dump of each ground function keyed by
-//! its v0 symbol. The spelling is a contract — the lalrpop grammar (the
+//! This is the `rrc --emit mir` output and the *serialization* direction of
+//! the textual IR: a Rust-ish dump of each ground function keyed by its v0
+//! symbol. The spelling is a contract — the lalrpop grammar (the
 //! deserializer) mirrors it, and round-trip tests gate the two against each
 //! other.
 //!
