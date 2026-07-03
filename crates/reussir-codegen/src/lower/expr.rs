@@ -2060,15 +2060,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         inc: bool,
     ) -> Result<()> {
         let loc = self.loc();
+        let i1 = IntegerType::new(self.context, 1).into();
         let flag = self.append(
             block,
-            builders::nullable_check(self.context, val, loc),
+            dialect::nullable_check(self.context, i1, val, loc).into(),
         );
         let then_block = Block::new(&[]);
         let inner_mlir = self.tys.mlir_ty(inner)?;
         let unwrapped = self.append(
             &then_block,
-            builders::nullable_coerce(val, inner_mlir, loc),
+            dialect::nullable_coerce(self.context, inner_mlir, val, loc).into(),
         );
         if inc {
             self.emit_inc(&then_block, unwrapped, inner)?;
