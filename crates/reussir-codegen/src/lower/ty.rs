@@ -142,14 +142,18 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         }
     }
 
-    /// Lower a type as it appears *as a record member*. A record-typed member is
-    /// named by its bare element type, never an `rc` pointer: the dialect boxes a
-    /// member whose element capability is `shared`/`regional` to a pointer on its
-    /// own (a `!reussir.rc<…>` member is rejected — "use capability instead"). A
-    /// scalar or `[value]` record member is the same as [`mlir_ty`](Self::mlir_ty).
+    /// Lower a type as it appears *as a record member*. A managed member is named
+    /// by its bare element type, never an `rc` pointer: the dialect boxes a member
+    /// whose element capability is `shared`/`regional` to a pointer on its own (a
+    /// `!reussir.rc<…>` member is rejected — "use capability instead"). This holds
+    /// for a `shared`/`regional` record member (its inner record type) and for a
+    /// closure member (its bare `closure` type — a closure is a shared `rc` value
+    /// just like a shared record). A scalar or `[value]` record member is the same
+    /// as [`mlir_ty`](Self::mlir_ty).
     fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Record { .. } => self.record_inner_of(ty),
+            TyKind::Closure { params, ret } => self.closure_inner(params, ret),
             _ => self.mlir_ty(ty),
         }
     }
@@ -325,6 +329,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// the remaining parameters once captures have been applied). A unit return is
     /// a closure with no output type.
     pub(super) fn closure_type(&self, inputs: &[Ty<'tcx>], ret: Ty<'tcx>) -> Result<Type<'c>> {
+        Ok(self.rc_type(self.closure_inner(inputs, ret)?))
+    }
+
+    /// `!reussir.closure<(inputs) -> ret>` — the *bare* closure type, without the
+    /// `rc` box. A closure is a shared `rc` value, so as a standalone value it is
+    /// wrapped by [`closure_type`](Self::closure_type); as a record member it
+    /// appears bare (a shared capability member the dialect boxes), the same way
+    /// a `shared` record member is named by its inner type — see
+    /// [`member_ty`](Self::member_ty).
+    fn closure_inner(&self, inputs: &[Ty<'tcx>], ret: Ty<'tcx>) -> Result<Type<'c>> {
         let input_tys = inputs
             .iter()
             .map(|&t| self.mlir_ty(t))
@@ -334,7 +348,7 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         } else {
             Some(self.mlir_ty(ret)?)
         };
-        Ok(self.rc_type(closure(self.context, &input_tys, output)))
+        Ok(closure(self.context, &input_tys, output))
     }
 
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,

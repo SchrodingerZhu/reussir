@@ -1,0 +1,20 @@
+// A closure stored in a record must lower to a *capability* member — a bare
+// `!reussir.closure<…>` the dialect boxes — not an explicit `!reussir.rc<…>`
+// member (the record verifier rejects Rc/Ref members: "use capability
+// instead"). Regression for the codegen emitting `rc<closure>` record members.
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
+
+struct [shared] Boxed {
+    f : i32 -> i32
+}
+
+pub fn go(x : i32) -> i32 {
+    let b = Boxed { f: |y : i32| y + 1 };
+    (b.f)(x)
+}
+
+extern "C" trampoline "go_ffi" = go;
+
+// The member is a bare closure (a shared capability member), never `rc<closure>`.
+// CHECK-MLIR:     reussir.record<compound "_RC5Boxed" {!reussir.closure<(i32) -> i32>}>
+// CHECK-MLIR-NOT: compound "_RC5Boxed" {!reussir.rc<!reussir.closure
