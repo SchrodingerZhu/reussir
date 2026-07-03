@@ -53,12 +53,18 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                 let funcs: Vec<_> = elab
                     .elaborated
                     .iter()
-                    .filter(|f| !elab.sym(f.name).starts_with("__repl_"))
+                    .filter(|f| !elab.sym(f.name).starts_with("__"))
                     .cloned()
+                    .collect();
+                let records = elab
+                    .records
+                    .iter()
+                    .filter(|(_, r)| !elab.sym(r.name).starts_with("__"))
+                    .map(|(k, v)| (*k, v.clone()))
                     .collect();
                 let text = Printer::new(&elab.defs, elab.resolver).program(
                     &funcs,
-                    &elab.records,
+                    &records,
                     &elab.trampolines,
                 );
                 Outcome::Text(text)

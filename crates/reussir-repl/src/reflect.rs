@@ -195,6 +195,22 @@ pub fn inline_size_align<'tcx>(
     }
 }
 
+/// The payload address inside a **shared** rc box (`{ count: usize, T }`,
+/// payload at `align_to(usize, align(T))`). Used by the value caller to
+/// reach the `__ReplBox` payload without walking the box as a record.
+///
+/// # Safety
+///
+/// `boxed` must point at a live shared rc box of `box_ty`'s layout.
+pub unsafe fn shared_box_payload<'tcx>(
+    boxed: *const u8,
+    box_ty: Ty<'tcx>,
+    shapes: &ShapeTable<'tcx>,
+) -> Result<*const u8, String> {
+    let inner = inline_size_align(box_ty, shapes)?;
+    Ok(unsafe { boxed.add(align_to(WORD, inner.align) as usize) })
+}
+
 /// Sequential (C-style) layout of a member list: total size/align.
 fn compound_size_align<'tcx>(
     fields: &[FieldShape<'tcx>],
@@ -372,6 +388,21 @@ impl<'tcx> Walker<'_, 'tcx> {
                 TyKind::Fp(FpTy::Ieee(64)) => {
                     out.push_str(&crate::value::render_float(
                         addr.cast::<f64>().read_unaligned(),
+                    ));
+                }
+                // 16-bit floats widen to f32 exactly (bf16 is a truncated
+                // f32; f16 widening is value-exact), so the printed decimal
+                // is the true stored value.
+                TyKind::Fp(FpTy::Ieee(16)) => {
+                    let bits = addr.cast::<u16>().read_unaligned();
+                    out.push_str(&crate::value::render_float(
+                        half::f16::from_bits(bits).to_f32() as f64,
+                    ));
+                }
+                TyKind::Fp(FpTy::BFloat16) => {
+                    let bits = addr.cast::<u16>().read_unaligned();
+                    out.push_str(&crate::value::render_float(
+                        f32::from_bits((bits as u32) << 16) as f64,
                     ));
                 }
                 TyKind::Unit => out.push_str("()"),

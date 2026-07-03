@@ -387,7 +387,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             TyKind::Bool => out.push_str("bool"),
             TyKind::Str => out.push_str("str"),
             TyKind::Unit => out.push_str("unit"),
-            TyKind::Bottom => out.push_str("!"),
+            TyKind::Bottom => out.push('!'),
             TyKind::Generic(g) => out.push_str(
                 self.generics
                     .get(g.0 as usize)

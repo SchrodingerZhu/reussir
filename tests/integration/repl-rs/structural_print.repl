@@ -68,3 +68,13 @@ struct [value] V { a: i32, b: bool }
 
 V { a: 7, b: true }
 // CHECK: V { a: 7, b: true } : V
+
+// Displayed results are released through the synthesized dec companions
+// (`__repl_expr_N_dec` consuming the `__ReplBox`); repeated managed results
+// would corrupt the allocator on a double free and abort the session.
+range(10)
+// CHECK: List<i64>::Cons(10,
+range(10)
+// CHECK: List<i64>::Cons(10,
+40 + 2
+// CHECK: 42 : i64
