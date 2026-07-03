@@ -30,6 +30,11 @@ struct Cli {
     /// Input file for line-by-line execution (script mode).
     #[arg(short = 'i', long = "input")]
     input: Option<PathBuf>,
+
+    /// Use the plain line-based prompt even on a capable terminal
+    /// (implied by `TERM=dumb`, script mode, and piped stdin/stdout).
+    #[arg(long = "no-tui")]
+    no_tui: bool,
 }
 
 fn parse_log_level(level: &str) -> Result<tracing::Level, String> {
@@ -71,7 +76,12 @@ fn run(cli: &Cli) -> Result<(), String> {
     };
 
     // Mode selection: a script file or piped stdin drive the plain
-    // line-based frontend; a real terminal gets the TUI.
+    // line-based frontend; a real terminal gets the TUI unless opted out
+    // (`--no-tui`) or incapable (`TERM=dumb` — set by e.g. Emacs shells on
+    // every platform; an *unset* TERM stays on the TUI, since Windows
+    // terminals conventionally don't set it at all). The plain fallback on
+    // a terminal keeps its line prompts.
+    let mut interactive = false;
     let mut lines: Box<dyn BufRead> = match &cli.input {
         Some(path) => {
             let file = std::fs::File::open(path)
@@ -79,17 +89,30 @@ fn run(cli: &Cli) -> Result<(), String> {
             Box::new(BufReader::new(file))
         }
         None => {
-            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            let on_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            let dumb = matches!(std::env::var("TERM").as_deref(), Ok("dumb"));
+            if on_terminal && !dumb && !cli.no_tui {
                 return tui::run(config);
             }
+            interactive = on_terminal;
             Box::new(BufReader::new(std::io::stdin()))
         }
     };
 
+    if interactive {
+        println!(
+            "Reussir REPL v{} (Rust pipeline)",
+            env!("CARGO_PKG_VERSION")
+        );
+        println!("Type :help for available commands, :q to quit");
+    }
+
     // Each `:clear` tears the whole session (arena, elaborator, JIT) down
     // and starts a fresh one; the input stream carries on where it was.
     loop {
-        let exit = session::run(config, |session| plain::drive(session, &mut lines, false))?;
+        let exit = session::run(config, |session| {
+            plain::drive(session, &mut lines, interactive)
+        })?;
         match exit {
             Exit::Quit => return Ok(()),
             Exit::Clear => {

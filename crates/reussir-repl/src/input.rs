@@ -2,11 +2,12 @@
 //!
 //! The TUI submits on Enter only when the buffer looks like a complete
 //! input; otherwise Enter inserts a newline and the user keeps typing. An
-//! input is *incomplete* when its delimiters are unbalanced-open or its last
-//! lexical element is unterminated — the cheap, purely lexical part of the
-//! judgment. (A balanced-but-ill-formed input counts as complete: submitting
-//! surfaces the parse error, which beats trapping the user in multiline
-//! mode.)
+//! input is *incomplete* when its delimiters are unbalanced-open, it ends in
+//! an operator or separator that can only continue, or its last lexical
+//! element is unterminated — the cheap, purely lexical part of the judgment.
+//! (A balanced-but-ill-formed input counts as complete: submitting surfaces
+//! the parse error, which beats trapping the user in multiline mode. This is
+//! a coarse guess by design; Ctrl+J force-submits past it.)
 
 use reussir_syntax::kind::SyntaxKind;
 use reussir_syntax::lexer;
@@ -27,6 +28,39 @@ pub fn is_incomplete(source: &str) -> bool {
         return true;
     }
 
+    // A trailing infix/prefix operator or separator can only continue: no
+    // valid input ends in one, so this cannot trap the user in multiline
+    // mode (and Ctrl+J force-submits regardless).
+    use SyntaxKind::*;
+    if let Some(last) = tokens.iter().rev().find(|t| !t.kind.is_trivia())
+        && matches!(
+            last.kind,
+            Plus | Minus
+                | Star
+                | Slash
+                | Percent
+                | Bang
+                | EqEq
+                | BangEq
+                | LAngle
+                | RAngle
+                | LtEq
+                | GtEq
+                | AmpAmp
+                | PipePipe
+                | Eq
+                | ColonEq
+                | Comma
+                | Dot
+                | Arrow
+                | FatArrow
+                | PathSep
+                | Colon
+        )
+    {
+        return true;
+    }
+
     // An unterminated string or block comment lexes as an error whose span
     // reaches the end of the input.
     let end = source.len() as u32;
@@ -43,6 +77,18 @@ mod tests {
         assert!(is_incomplete("f(1,"));
         assert!(is_incomplete("match x {\n  1 => 2,"));
         assert!(is_incomplete("/* comment"));
+    }
+
+    #[test]
+    fn trailing_operators_continue() {
+        assert!(is_incomplete("1 +"));
+        assert!(is_incomplete("let a ="));
+        assert!(is_incomplete("x =="));
+        assert!(is_incomplete("f(1),"));
+        assert!(is_incomplete("Foo::"));
+        assert!(is_incomplete("x."));
+        assert!(is_incomplete("fn f(x: i64) ->"));
+        assert!(is_incomplete("let x: "));
     }
 
     #[test]

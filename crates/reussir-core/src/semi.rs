@@ -30,7 +30,9 @@ pub mod repl;
 pub mod resolve;
 pub mod ty_eval;
 
-pub use ctxt::{Checkpoint, DefaultCap, Elaborator, Report, Severity, render_reports};
+pub use ctxt::{
+    Checkpoint, DefaultCap, Elaborator, Report, Severity, render_reports, render_reports_to,
+};
 
 use reussir_syntax::kind::{Resolver, TokenKey};
 

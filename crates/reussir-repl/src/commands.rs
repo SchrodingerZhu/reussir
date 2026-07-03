@@ -16,7 +16,17 @@ Available commands:
   :clear                Reset the session (definitions and compiled code)
 
 Multiline input: wrap in `:{` and `}:` lines.
-Input is parsed as definitions (fn/struct/enum/...) or as an expression.";
+Input is parsed as definitions (fn/struct/enum/...) or as an expression.
+
+TUI keys:
+  Enter                 Submit (inserts a newline while the input is incomplete)
+  Alt+Enter             Insert a newline
+  Ctrl+J                Force-submit the buffer as is
+  Ctrl+U / Ctrl+R       Undo / redo in the editor
+  Up / Down             Browse history (on the first/last line)
+  PgUp / PgDn           Scroll the output
+  Ctrl+C                Clear the buffer (twice on empty: quit)
+  Ctrl+D                Quit (on an empty buffer)";
 
 /// Dispatch `command` (the input with the leading `:` stripped).
 pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {

@@ -33,3 +33,4 @@ ratatui-textarea.workspace = true
 rustc-hash.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+dirs.workspace = true

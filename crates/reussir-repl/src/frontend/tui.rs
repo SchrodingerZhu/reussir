@@ -22,10 +22,10 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, Input, TextArea};
 
-use reussir_core::semi::{Report, Severity};
+use reussir_core::semi::{Report, Severity, render_reports_to};
 use reussir_syntax::diagnostics::{self, SourceMap};
 
 use reussir_jit::OptLevel;
@@ -282,7 +282,7 @@ impl Tui {
                 }
             }
             Outcome::Definitions { count, warnings } => {
-                self.render_reports(warnings);
+                self.render_reports(warnings, input);
                 for _ in 0..*count {
                     self.push_line(Line::from("Definition added.".green()));
                 }
@@ -292,7 +292,7 @@ impl Tui {
                 ty,
                 warnings,
             } => {
-                self.render_reports(warnings);
+                self.render_reports(warnings, input);
                 self.out_counter += 1;
                 let title = format!("Out[{}]", self.out_counter);
                 let content = if ty == "()" {
@@ -318,7 +318,7 @@ impl Tui {
                     self.push_line(Line::from(line.to_string().red()));
                 }
             }
-            Outcome::Reports(reports) => self.render_reports(reports),
+            Outcome::Reports(reports) => self.render_reports(reports, input),
             Outcome::Backend(message) => {
                 self.push_line(Line::from(format!("error: {message}").red()));
             }
@@ -326,13 +326,26 @@ impl Tui {
         None
     }
 
-    fn render_reports(&mut self, reports: &[Report]) {
+    /// Render elaboration/mono reports with the shared ariadne caret
+    /// renderer (the same one `rrc` and the plain frontend use), one report
+    /// at a time so each block can be styled by its severity.
+    fn render_reports(&mut self, reports: &[Report], input: &str) {
         for report in reports {
-            let line = match report.severity {
-                Severity::Error => Line::from(format!("error: {}", report.message).red()),
-                Severity::Warning => Line::from(format!("warning: {}", report.message).yellow()),
+            let mut rendered = Vec::new();
+            let _ = render_reports_to(
+                "<repl>",
+                input,
+                std::slice::from_ref(report),
+                false,
+                &mut rendered,
+            );
+            let style = match report.severity {
+                Severity::Error => Style::default().fg(Color::Red),
+                Severity::Warning => Style::default().fg(Color::Yellow),
             };
-            self.push_line(line);
+            for line in String::from_utf8_lossy(&rendered).lines() {
+                self.push_line(Line::from(Span::styled(line.to_string(), style)));
+            }
         }
     }
 
@@ -374,10 +387,14 @@ impl Tui {
     }
 
     fn history_path() -> Option<PathBuf> {
-        let base = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-        Some(base.join("reussir").join("rrepl_history"))
+        // XDG_DATA_HOME/~/.local/share on Linux, %LOCALAPPDATA% on Windows
+        // (a HOME-based fallback would silently disable history there),
+        // ~/Library/Application Support on macOS.
+        Some(
+            dirs::data_local_dir()?
+                .join("reussir")
+                .join("rrepl_history"),
+        )
     }
 
     fn load_history(&mut self) {
@@ -497,15 +514,16 @@ impl Tui {
             .areas(frame.area());
 
             // Scrollback pinned to the bottom, offset by the scroll position.
-            let total = scrollback.len() as u16;
+            // Long lines wrap, so the pinning math must count *visual* rows —
+            // `line_count` applies the paragraph's own wrapping rules.
+            let paragraph =
+                Paragraph::new(Text::from(scrollback.clone())).wrap(Wrap { trim: false });
+            let total = paragraph.line_count(output_area.width) as u16;
             let view = output_area.height;
             let max_up = total.saturating_sub(view);
             *scroll_up = (*scroll_up).min(max_up);
             let offset = max_up - *scroll_up;
-            frame.render_widget(
-                Paragraph::new(Text::from(scrollback.clone())).scroll((offset, 0)),
-                output_area,
-            );
+            frame.render_widget(paragraph.scroll((offset, 0)), output_area);
 
             frame.render_widget(textarea, input_area);
 
