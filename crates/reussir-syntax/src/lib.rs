@@ -23,6 +23,12 @@ pub(crate) mod parser;
 use diagnostics::{ParseError, SourceMap};
 use kind::{ResolvedNode, SyntaxKind};
 
+// The shared-interner types [`parse_with_interner`] / [`parse_repl`] take, so
+// downstream crates don't need a direct cstree dependency. `Interner` is the
+// trait carrying `get_or_intern` (e.g. for a REPL driver interning synthetic
+// names); its `Resolver` counterpart is re-exported from [`kind`].
+pub use cstree::interning::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
+
 /// The result of parsing: a lossless syntax tree (always produced, even in
 /// the presence of errors) plus collected diagnostics.
 pub struct Parse {
@@ -61,6 +67,104 @@ impl Parse {
 
 /// Parse a whole source file.
 pub fn parse(source: &str) -> Parse {
+    parse_impl(source, lasso::Rodeo::<kind::TokenKey>::new(), |p| {
+        p.source_file()
+    })
+}
+
+/// Parse a whole source file, interning token text into a caller-supplied
+/// shared interner.
+///
+/// [`TokenKey`](kind::TokenKey)s are stable across every parse that shares the
+/// interner, so typed-AST keys from one parse resolve correctly against
+/// another's — the property a REPL session needs to elaborate many small
+/// inputs against one accumulated program. The session keeps one `Arc` clone
+/// as the long-lived [`kind::Resolver`]; each parse's tree holds another.
+pub fn parse_with_interner(
+    source: &str,
+    interner: std::sync::Arc<MultiThreadedTokenInterner>,
+) -> Parse {
+    parse_impl(source, interner, |p| p.source_file())
+}
+
+/// How [`parse_repl`] routed an input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplInputKind {
+    /// Top-level items; the tree root is a `SourceFile`.
+    Items,
+    /// An expression sequence (`e1; e2; ...`); the tree root is a
+    /// `BlockExpr`.
+    Expr,
+}
+
+/// The result of parsing one REPL input.
+pub struct ReplParse {
+    pub parse: Parse,
+    pub kind: ReplInputKind,
+}
+
+/// Parse one REPL input as either top-level items or an expression sequence.
+///
+/// The route is decided by the first tokens, no backtracking: errors are
+/// reported against the chosen route. Items are recognized by an item prefix
+/// — `fn`/`struct`/`enum`/`mod` followed by the item's name, `extern`
+/// followed by its ABI string, `pub` followed by an item form, `regional`
+/// followed by `fn` — and everything else is an expression. One token of
+/// lookahead past the head keyword is needed because keyword tokens are
+/// contextual in identifier positions ([`SyntaxKind::is_ident_like`]): a
+/// variable named `fn` may head an expression (`fn + 1`). The one ambiguous
+/// prefix is an item keyword followed by `as` — `fn as i64` is a cast of a
+/// variable named `fn` — which routes to expressions, so an item literally
+/// named `as` cannot be entered at the REPL.
+pub fn parse_repl(
+    source: &str,
+    interner: std::sync::Arc<MultiThreadedTokenInterner>,
+) -> ReplParse {
+    let mut kind = ReplInputKind::Expr;
+    let parse = parse_impl(source, interner, |p| {
+        kind = repl_route(p);
+        match kind {
+            ReplInputKind::Items => p.source_file(),
+            ReplInputKind::Expr => p.repl_expr_seq(),
+        }
+    });
+    ReplParse { parse, kind }
+}
+
+/// The [`parse_repl`] routing decision; see its docs for the rationale.
+fn repl_route(p: &parser::Parser) -> ReplInputKind {
+    use SyntaxKind::*;
+    let starts_item = match p.current() {
+        // `fn f`, `struct P`, ... — the keyword is an item head iff its
+        // name follows; a keyword-named variable is followed by an operator
+        // (`fn + 1`) or nothing. `as` is the exception: `fn as i64` is a
+        // cast of a variable named `fn`.
+        FnKw | StructKw | EnumKw | ModKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
+        // `extern "C" trampoline ...` — a string cannot follow a variable.
+        ExternKw => p.nth(1) == StringLit,
+        // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
+        PubKw => matches!(
+            p.nth(1),
+            RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw
+        ),
+        // `regional fn` is an item; any other `regional ...` is a region
+        // expression.
+        RegionalKw => p.nth(1) == FnKw,
+        _ => false,
+    };
+    if starts_item {
+        ReplInputKind::Items
+    } else {
+        ReplInputKind::Expr
+    }
+}
+
+/// The shared parse pipeline: lex, run `entry` on the parser, then build the
+/// lossless tree with `interner` (which becomes the tree's resolver).
+fn parse_impl<I>(source: &str, mut interner: I, entry: impl FnOnce(&mut parser::Parser)) -> Parse
+where
+    I: cstree::interning::Interner<kind::TokenKey> + kind::Resolver<kind::TokenKey> + 'static,
+{
     let (all_tokens, lex_errors) = lexer::tokenize(source);
     let significant: Vec<lexer::Token> = all_tokens
         .iter()
@@ -69,7 +173,7 @@ pub fn parse(source: &str) -> Parse {
         .collect();
 
     let mut p = parser::Parser::new(source, significant);
-    p.source_file();
+    entry(&mut p);
     let (events, parse_errors) = p.finish();
 
     let mut errors: Vec<ParseError> = lex_errors
@@ -85,7 +189,6 @@ pub fn parse(source: &str) -> Parse {
     // the first message is the most informative one.
     errors.dedup_by_key(|e| e.span.0);
 
-    let mut interner: lasso::Rodeo = lasso::Rodeo::new();
     let green = parser::sink::Sink::new(source, &all_tokens, events, &mut interner).finish();
     let root = kind::SyntaxNode::new_root_with_resolver(green, interner);
     Parse { root, errors }
@@ -111,6 +214,118 @@ mod tests {
     fn json_of(source: &str) -> serde_json::Value {
         let map = SourceMap::new(source);
         parse_ok(source).to_json(&map)
+    }
+
+    #[test]
+    fn shared_interner_keeps_token_keys_stable_across_parses() {
+        use cstree::interning::Resolver;
+
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let a = parse_with_interner("fn foo() -> i32 { 1 }", interner.clone());
+        let b = parse_with_interner("fn bar() -> i32 { foo() }", interner.clone());
+        assert!(a.ok() && b.ok());
+
+        // The `foo` token in parse B resolves through parse A's resolver (and
+        // the session interner) to the same text, i.e. the keys share one
+        // key space.
+        let key_in_a = token_key_of(&a, "foo").expect("foo in a");
+        let key_in_b = token_key_of(&b, "foo").expect("foo in b");
+        assert_eq!(key_in_a, key_in_b);
+        assert_eq!(interner.try_resolve(key_in_b), Some("foo"));
+    }
+
+    /// The key of the first token with the given text.
+    fn token_key_of(parse: &Parse, text: &str) -> Option<kind::TokenKey> {
+        parse
+            .root
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.text() == text)
+            .and_then(|t| t.text_key())
+    }
+
+    #[test]
+    fn repl_routes_items_and_expressions() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let items = [
+            "fn f() -> i32 { 1 }",
+            "struct P { x: i32 }",
+            "enum E { A, B }",
+            "pub fn g() -> i32 { 2 }",
+            "mod m;",
+            "extern \"C\" trampoline \"f_ffi\" = f;",
+            "regional fn h(c: [flex] L<i32>) { c->v := 1 }",
+            // Several items in one input.
+            "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }",
+        ];
+        for source in items {
+            let rp = parse_repl(source, interner.clone());
+            assert_eq!(rp.kind, ReplInputKind::Items, "{source}");
+            assert!(rp.parse.ok(), "{source}: {:#?}", rp.parse.errors);
+            assert_eq!(rp.parse.root.kind(), SyntaxKind::SourceFile);
+        }
+
+        let exprs = [
+            "42",
+            "1 + 2",
+            "f(1, 2)",
+            "let a = 10; let b = 20; a + b",
+            "if true { 1 } else { 0 }",
+            "{ let x = 1; x }",
+            "|x: i32| x + 1",
+            // `regional` NOT followed by `fn` is a regional expression.
+            "regional { Cell { value: 1 } }",
+            // Keyword tokens are contextual in identifier positions, so a
+            // keyword-named variable may head an expression; the name
+            // lookahead keeps these off the items route.
+            "fn + 1",
+            "struct(2)",
+            "mod.field",
+            "pub * 2",
+            "extern == 3",
+            // The documented `as` ambiguity resolves toward the cast.
+            "fn as i64",
+            // A bare keyword-named variable (nothing follows).
+            "enum",
+        ];
+        for source in exprs {
+            let rp = parse_repl(source, interner.clone());
+            assert_eq!(rp.kind, ReplInputKind::Expr, "{source}");
+            assert!(rp.parse.ok(), "{source}: {:#?}", rp.parse.errors);
+            assert_eq!(rp.parse.root.kind(), SyntaxKind::BlockExpr);
+            assert_eq!(rp.parse.root.text(), source);
+        }
+    }
+
+    #[test]
+    fn repl_expr_seq_reports_trailing_garbage() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        let rp = parse_repl("1 + 2 3", interner);
+        assert_eq!(rp.kind, ReplInputKind::Expr);
+        assert!(!rp.parse.ok());
+        // Lossless even under recovery.
+        assert_eq!(rp.parse.root.text(), "1 + 2 3");
+    }
+
+    #[test]
+    fn repl_expr_seq_recovers_at_semicolons() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        // An error inside one expression resynchronizes at the `;`: the
+        // expression's own diagnostic is the only one (no misleading
+        // "expected `;`"), and the rest of the sequence still parses.
+        let rp = parse_repl("1 + ; 2 + 3", interner);
+        assert_eq!(rp.kind, ReplInputKind::Expr);
+        assert_eq!(rp.parse.errors.len(), 1, "{:#?}", rp.parse.errors);
+        assert_eq!(rp.parse.root.text(), "1 + ; 2 + 3");
+        // The recovered tail is a real expression node, not error debris.
+        let tail = rp
+            .parse
+            .root
+            .children()
+            .filter(|c| c.kind() != SyntaxKind::ErrorNode)
+            .last()
+            .expect("expression after the error");
+        assert_eq!(tail.text(), "2 + 3");
     }
 
     #[test]

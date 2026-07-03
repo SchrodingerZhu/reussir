@@ -8,7 +8,7 @@ use crate::semi::infer::InferCtxt;
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
-use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyCtxt, TyKind};
+use crate::semi::ty::{DefId, Flexivity, GenericId, HoleId, Ty, TyCtxt, TyKind};
 use crate::surface::{self, Span};
 use crate::utils::frecency::Frecency;
 use crate::utils::fuzzy::FuzzyIndex;
@@ -257,7 +257,22 @@ pub struct Elaborator<'a, 'tcx> {
     /// [`Function`]. See [`FuncProto::regional_generics`].
     pub regional_generics: Vec<GenericId>,
     pub fulfill: FulfillCtxt<'tcx>,
+    /// Holes already reported as ambiguous for the current function, so each
+    /// yields exactly one diagnostic — from `resolve_obligations` when a bound
+    /// on it can't be resolved, else from zonking (see `zonk_ty`).
+    pub(super) reported_holes: rustc_hash::FxHashSet<HoleId>,
     expr_counter: u32,
+}
+
+/// A checkpoint of the elaborator's accumulated state; see
+/// [`Elaborator::checkpoint`].
+#[derive(Clone, Copy, Debug)]
+pub struct Checkpoint {
+    pub(super) defs: usize,
+    pub(super) generics: usize,
+    pub(super) trampolines: usize,
+    pub(super) elaborated: usize,
+    pub(super) reports: usize,
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -295,6 +310,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             inside_region: false,
             regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
+            reported_holes: rustc_hash::FxHashSet::default(),
             expr_counter: 0,
         }
     }
@@ -443,12 +459,75 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.generic_names.clear();
         self.inside_region = false;
         self.fulfill = FulfillCtxt::default();
+        self.reported_holes.clear();
         for (name, id) in generics {
             self.generic_names.insert(*name, *id);
         }
     }
 
     // ----- driver -----
+
+    /// A snapshot of the elaborator's accumulated (append-only) state, taken
+    /// with [`Elaborator::checkpoint`] and restored with
+    /// [`Elaborator::rollback`]. Everything a [`run`](Elaborator::run) call
+    /// appends is covered; state that is content-addressed or purely
+    /// monotonic (`strings`, `frecency`, `expr_counter`, the type arena) is
+    /// deliberately left to grow — stale entries are unreachable once the
+    /// defs that referenced them are retracted.
+    ///
+    /// Any *future* accumulated state must be added here: notably, once
+    /// user-defined traits/impls land, `traits` stops being fixed at
+    /// construction and a rejected batch's impls must roll back too.
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            defs: self.defs.len(),
+            generics: self.generics.len(),
+            trampolines: self.trampolines.len(),
+            elaborated: self.elaborated.len(),
+            reports: self.reports.len(),
+        }
+    }
+
+    /// Restore the accumulated state to `cp`. Per-function working state is
+    /// reset by `enter_function` on the next check, so it needs no restoring.
+    pub fn rollback(&mut self, cp: &Checkpoint) {
+        self.defs.truncate(cp.defs);
+        // `records`/`functions` are keyed by the dense DefId space, and the
+        // passes only ever insert under DefIds declared in the same run, so
+        // retracting every id past the checkpoint restores both maps.
+        let live = cp.defs as u32;
+        self.records.retain(|def, _| def.0 < live);
+        self.functions.retain(|def, _| def.0 < live);
+        self.generics.truncate(cp.generics);
+        self.trampolines.truncate(cp.trampolines);
+        self.elaborated.truncate(cp.elaborated);
+        self.reports.truncate(cp.reports);
+    }
+
+    /// Incrementally elaborate one batch of items against the accumulated
+    /// program, atomically: on any error the elaborator is rolled back to its
+    /// state before the call and the batch's reports are returned as `Err`;
+    /// on success the batch's warnings (if any) are returned as `Ok` and the
+    /// items stay. Duplicate definitions are rejected (the existing "defined
+    /// more than once" path), never replaced — a REPL session's items are
+    /// immutable once accepted.
+    ///
+    /// Forward references *within* the batch work exactly as in batch mode;
+    /// references to previously accepted items resolve through the persistent
+    /// [`DefTable`].
+    pub fn try_extend(&mut self, program: &surface::Program) -> Result<Vec<Report>, Vec<Report>> {
+        let cp = self.checkpoint();
+        self.run(program);
+        // Split the batch's reports off first: the caller renders them either
+        // way, and `has_errors` should keep reflecting only accepted state.
+        let new = self.reports.split_off(cp.reports);
+        if new.iter().any(|r| r.severity == Severity::Error) {
+            self.rollback(&cp);
+            Err(new)
+        } else {
+            Ok(new)
+        }
+    }
 
     /// Run the three collection passes over a program: scan record stubs and
     /// function prototypes, populate record fields, then check function bodies.
@@ -470,24 +549,38 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 surface::StmtKind::Mod(..) => {}
             }
         }
-        for (rec, span) in &records {
-            self.scan_record(rec, *span);
-        }
-        for (func, span) in &functions {
-            self.scan_function(func, *span);
-        }
-        for (rec, _) in &records {
-            self.populate_record(rec);
-        }
-        for (func, span) in &functions {
-            self.check_function(func, *span);
-        }
-        for (tramp, span) in &trampolines {
+        // The later passes are keyed by the DefId each scan returned — never by
+        // re-resolving the name — so an item whose declaration failed (e.g. a
+        // duplicate) is skipped instead of clobbering the previously declared
+        // item's fields or checking a body against the wrong prototype.
+        let record_defs: Vec<Option<DefId>> = records
+            .iter()
+            .map(|(rec, span)| self.scan_record(rec, *span))
+            .collect();
+        let function_defs: Vec<Option<DefId>> = functions
+            .iter()
+            .map(|(func, span)| self.scan_function(func, *span))
+            .collect();
+        records
+            .iter()
+            .zip(record_defs)
+            .filter_map(|((rec, _), def)| Some((rec, def?)))
+            .for_each(|(rec, def)| {
+                self.populate_record(rec, def);
+            });
+        functions
+            .iter()
+            .zip(function_defs)
+            .filter_map(|((func, span), def)| Some((func, *span, def?)))
+            .for_each(|(func, span, def)| {
+                self.check_function(func, def, span);
+            });
+        trampolines.iter().for_each(|(tramp, span)| {
             self.collect_trampoline(tramp, *span);
-        }
+        });
     }
 
-    fn scan_record(&mut self, rec: &surface::Record, span: Option<Span>) {
+    fn scan_record(&mut self, rec: &surface::Record, span: Option<Span>) -> Option<DefId> {
         let ty_params = self.collect_generics(&rec.ty_params, span);
         let default_cap = match rec.default_cap {
             surface::Capability::Value => DefaultCap::Value,
@@ -507,7 +600,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 span,
                 format!("record `{}` is defined more than once", self.sym(name)),
             );
-            return;
+            return None;
         };
         let record = Record {
             def,
@@ -520,9 +613,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             span,
         };
         self.records.insert(def, record);
+        Some(def)
     }
 
-    fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) {
+    fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) -> Option<DefId> {
         let generics = self.collect_generics(&func.generics, span);
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
@@ -555,7 +649,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 span,
                 format!("function `{}` is defined more than once", self.sym(name)),
             );
-            return;
+            return None;
         };
         let proto = FuncProto {
             def,
@@ -569,6 +663,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             span,
         };
         self.functions.insert(def, proto);
+        Some(def)
     }
 
     /// Allocate generics for a list of `(name, bounds)` declarations.
@@ -587,10 +682,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect()
     }
 
-    fn populate_record(&mut self, rec: &surface::Record) {
-        let Some(def) = self.defs.resolve_record(rec.name) else {
-            return;
-        };
+    fn populate_record(&mut self, rec: &surface::Record, def: DefId) {
         let Some(record) = self.records.get(&def) else {
             return;
         };

@@ -17,7 +17,7 @@
 //! concrete types and super-trait subsumption for in-scope generics.
 
 use crate::semi::traits::{Obligation, TraitRef};
-use crate::semi::ty::TyKind;
+use crate::semi::ty::{FpTy, HoleId, IntTy, TyKind};
 use crate::surface::Span;
 
 use super::ctxt::Elaborator;
@@ -112,6 +112,52 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         for p in pending {
             self.error(p.span, "type annotations needed: cannot resolve a bound");
+            // The unresolved bound is the root cause; suppress the zonk-time
+            // "cannot infer" report for the holes it is stuck on, so each
+            // hole yields exactly one diagnostic.
+            let Obligation::Trait(tref) = &p.obligation;
+            let self_ty = self.infer.resolve(tref.self_ty());
+            let mut holes = Vec::new();
+            collect_holes(self_ty, &mut holes);
+            self.reported_holes.extend(holes);
+        }
+    }
+
+    /// REPL defaulting: solve numeric holes that only literal/arithmetic
+    /// bounds constrain. A hole pending a `FloatingPoint` obligation defaults
+    /// to `f64`; a hole pending `Integral` or `Num` defaults to `i64` (the
+    /// generalization of GHCi-style defaulting the old REPL applied to the
+    /// root type only). Obligations stay registered — the subsequent
+    /// [`resolve_obligations`](Elaborator::resolve_obligations) discharges
+    /// them against the now-solved types, and still errors on genuinely
+    /// conflicting bounds.
+    ///
+    /// Order matters: a hole can carry both `Num` (from arithmetic) and
+    /// `FloatingPoint` (from a float literal), e.g. `1.5 * 2`; the float
+    /// default must win, so `FloatingPoint` holes are solved first.
+    pub(super) fn default_numeric_holes(&mut self) {
+        let f64_ty = self.tcx.mk_fp(FpTy::Ieee(64));
+        let i64_ty = self.tcx.mk_int(IntTy::Signed(64));
+        let passes = [
+            (self.builtins.floating_point, f64_ty),
+            (self.builtins.integral, i64_ty),
+            (self.builtins.num, i64_ty),
+        ];
+        for (want, default) in passes {
+            self.fulfill
+                .pending
+                .iter()
+                .filter_map(|p| {
+                    let Obligation::Trait(tref) = &p.obligation;
+                    (tref.trait_id == want).then(|| tref.self_ty())
+                })
+                .for_each(|ty| {
+                    let ty = self.infer.shallow_resolve(ty);
+                    if matches!(ty.kind(), TyKind::Hole(_)) {
+                        // Unifying a hole with a ground type cannot fail.
+                        let _ = self.infer.unify(ty, default);
+                    }
+                });
         }
     }
 
@@ -213,7 +259,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// Does `ty` contain an unsolved inference hole anywhere in its structure?
 /// `ty` is expected to be deeply resolved (`InferCtxt::resolve`), so a remaining
 /// `Hole` is an unsolved variable, not an indirection.
-fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
+pub(super) fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
     match ty.kind() {
         TyKind::Hole(_) => true,
         TyKind::Record { args, .. } => args.iter().any(|a| ty_has_hole(*a)),
@@ -222,6 +268,23 @@ fn ty_has_hole(ty: crate::semi::ty::Ty<'_>) -> bool {
         }
         TyKind::Nullable(inner) => ty_has_hole(*inner),
         _ => false,
+    }
+}
+
+/// Collect every hole in a deeply-resolved type, in structural order.
+/// Companion to [`ty_has_hole`]; used to report each hole once (see
+/// `Elaborator::zonk_ty` and the unresolved-bound path of
+/// [`Elaborator::resolve_obligations`]).
+pub(super) fn collect_holes(ty: crate::semi::ty::Ty<'_>, out: &mut Vec<HoleId>) {
+    match ty.kind() {
+        TyKind::Hole(h) => out.push(*h),
+        TyKind::Record { args, .. } => args.iter().for_each(|a| collect_holes(*a, out)),
+        TyKind::Closure { params, ret } => {
+            params.iter().for_each(|p| collect_holes(*p, out));
+            collect_holes(*ret, out);
+        }
+        TyKind::Nullable(inner) => collect_holes(*inner, out),
+        _ => {}
     }
 }
 
