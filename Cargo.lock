@@ -1263,6 +1263,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "reussir-repl"
+version = "0.1.0"
+dependencies = [
+ "melior",
+ "palc",
+ "reussir-backend",
+ "reussir-codegen",
+ "reussir-core",
+ "reussir-jit",
+ "reussir-syntax",
+ "rustc-hash",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "reussir-rt"
 version = "0.1.0"
 dependencies = [

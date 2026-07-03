@@ -114,9 +114,11 @@ pub struct OrcJit {
 /// session permanently (its resources fold into the dylib default).
 ///
 /// The `'jit` lifetime borrows the owning [`OrcJit`]: the tracker points
-/// into that engine's `ExecutionSession`, so a handle released (dropped or
-/// removed) after the engine's disposal would be a use-after-free. The
-/// borrow makes that ordering a compile error.
+/// into that engine's `ExecutionSession`, so every handle must be released
+/// (dropped or removed) before the engine is disposed — a late release
+/// would be a use-after-free, and `LLVMOrcDisposeLLJIT` itself deadlocks
+/// while tracker references are still live. The borrow turns both into a
+/// compile error.
 #[derive(Debug)]
 pub struct ModuleHandle<'jit> {
     tracker: LLVMOrcResourceTrackerRef,

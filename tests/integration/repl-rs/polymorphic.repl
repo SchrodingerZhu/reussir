@@ -1,0 +1,24 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// A generic definition compiles nothing until it is instantiated; each use
+// at a new type monomorphizes a fresh instance from the maintained HIR.
+
+fn poly_add<T : Num>(x : T) -> T { x + x }
+// CHECK: Definition added.
+
+poly_add(127)
+// CHECK: 254 : i64
+
+poly_add(127.0)
+// CHECK: 254.0 : f64
+
+poly_add(2.5) + poly_add(0.5)
+// CHECK: 6.0 : f64
+
+// Generic calling generic, instantiated on the fly across inputs.
+fn quad<T : Num>(x : T) -> T { poly_add(poly_add(x)) }
+// CHECK: Definition added.
+
+quad(11)
+// CHECK: 44 : i64
