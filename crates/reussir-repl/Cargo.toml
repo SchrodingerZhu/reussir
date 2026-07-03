@@ -36,7 +36,7 @@ tracing-subscriber.workspace = true
 dirs.workspace = true
 half.workspace = true
 
-# fd-level stderr capture while the TUI owns the screen (unix; see
-# frontend/stderr_capture.rs).
+# fd-level stdout+stderr capture while the TUI owns the screen (unix; see
+# frontend/output_capture.rs).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

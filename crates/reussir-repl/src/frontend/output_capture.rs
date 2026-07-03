@@ -65,14 +65,41 @@ mod unix {
                 return Err(std::io::Error::last_os_error());
             }
             let (read_end, write_end) = (fds[0], fds[1]);
+            // Any failure below must undo everything done so far: close
+            // both pipe ends and the saved dups, and put back a
+            // partially-redirected fd — leaving fd 1 pointing at a
+            // reader-less pipe would black-hole (then deadlock) the
+            // process's output.
+            let fail = |saved_out: i32, saved_err: i32, redirected_out: bool| {
+                let err = std::io::Error::last_os_error();
+                unsafe {
+                    if redirected_out && saved_out >= 0 {
+                        libc::dup2(saved_out, 1);
+                    }
+                    if saved_out >= 0 {
+                        libc::close(saved_out);
+                    }
+                    if saved_err >= 0 {
+                        libc::close(saved_err);
+                    }
+                    libc::close(read_end);
+                    libc::close(write_end);
+                }
+                Err(err)
+            };
             let saved_out = unsafe { libc::dup(1) };
+            if saved_out < 0 {
+                return fail(-1, -1, false);
+            }
             let saved_err = unsafe { libc::dup(2) };
-            if saved_out < 0
-                || saved_err < 0
-                || unsafe { libc::dup2(write_end, 1) } < 0
-                || unsafe { libc::dup2(write_end, 2) } < 0
-            {
-                return Err(std::io::Error::last_os_error());
+            if saved_err < 0 {
+                return fail(saved_out, -1, false);
+            }
+            if unsafe { libc::dup2(write_end, 1) } < 0 {
+                return fail(saved_out, saved_err, false);
+            }
+            if unsafe { libc::dup2(write_end, 2) } < 0 {
+                return fail(saved_out, saved_err, true);
             }
             // fds 1 and 2 now both *are* the pipe's write end; drop the
             // original so the reader sees EOF once both are restored.

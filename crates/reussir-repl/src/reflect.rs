@@ -161,13 +161,19 @@ pub fn inline_size_align<'tcx>(
     };
     match *ty.kind() {
         TyKind::Bool => scalar(1),
-        TyKind::Int(IntTy::Signed(w) | IntTy::Unsigned(w)) => match w {
-            8 => scalar(1),
-            16 => scalar(2),
-            32 => scalar(4),
-            64 => scalar(8),
-            other => Err(format!("unsupported integer width i{other}")),
-        },
+        TyKind::Int(int) => {
+            let (prefix, width) = match int {
+                IntTy::Signed(w) => ("i", w),
+                IntTy::Unsigned(w) => ("u", w),
+            };
+            match width {
+                8 => scalar(1),
+                16 => scalar(2),
+                32 => scalar(4),
+                64 => scalar(8),
+                other => Err(format!("unsupported integer width {prefix}{other}")),
+            }
+        }
         TyKind::Fp(FpTy::Ieee(16) | FpTy::BFloat16) => scalar(2),
         TyKind::Fp(FpTy::Ieee(32)) => scalar(4),
         TyKind::Fp(FpTy::Ieee(64)) => scalar(8),
