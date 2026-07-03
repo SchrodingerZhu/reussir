@@ -1,4 +1,5 @@
-// RUN: %reussir-repl -i %s -lerror -Onone | %FileCheck %s
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
 
 // Test multiline function definition
 :{

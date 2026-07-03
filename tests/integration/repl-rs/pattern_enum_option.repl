@@ -1,4 +1,5 @@
-// RUN: %reussir-repl -i %s -lerror -Oaggressive | %FileCheck %s
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
 
 // Test: pattern matching on a shallow Option-like enum with nested int patterns
 
