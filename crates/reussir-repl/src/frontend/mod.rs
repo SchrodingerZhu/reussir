@@ -6,6 +6,6 @@
 //! stdin, and as the fallback interactive mode; the ratatui TUI is the
 //! interactive frontend on a real terminal.
 
+pub mod output_capture;
 pub mod plain;
-pub mod stderr_capture;
 pub mod tui;

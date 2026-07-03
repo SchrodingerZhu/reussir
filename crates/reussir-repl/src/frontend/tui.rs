@@ -30,24 +30,21 @@ use reussir_syntax::diagnostics::{self, SourceMap};
 
 use reussir_jit::OptLevel;
 
-use crate::frontend::stderr_capture::StderrCapture;
+use crate::frontend::output_capture::OutputCapture;
 use crate::session::{self, Config, Exit, Outcome, ReplSession};
 
 /// Run the TUI: owns terminal setup/teardown and the `:clear` session loop.
 pub fn run(config: Config) -> Result<(), String> {
-    // Capture raw stderr before `ratatui::init`, so the panic hooks chain
-    // correctly (terminal restore, then stderr restore, then the message):
-    // native backend logging (TPDE's spdlog, LLVM) writes straight to fd 2
-    // and would otherwise smear across the raw-mode screen.
-    let capture = StderrCapture::install()
-        .map_err(|e| format!("failed to capture stderr for the TUI: {e}"))?;
-    // `ratatui::init` enters the alternate screen + raw mode and installs a
-    // panic hook that restores the terminal.
-    let terminal = ratatui::init();
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        ratatui::crossterm::event::EnableBracketedPaste
-    );
+    // Capture the process's raw stdout+stderr before terminal setup, so the
+    // panic hooks chain correctly (terminal restore, then fd restore, then
+    // the message). Native backend logging writes straight to those fds —
+    // TPDE's spdlog to stdout, LLVM to stderr — and would otherwise smear
+    // across the raw-mode screen; the TUI itself draws to `/dev/tty`
+    // (see `init_terminal`), so the standard fds belong exclusively to the
+    // program's output.
+    let capture = OutputCapture::install()
+        .map_err(|e| format!("failed to capture process output for the TUI: {e}"))?;
+    let terminal = init_terminal()?;
     let mut tui = Tui::new(terminal, config, capture);
     tui.load_history();
 
@@ -67,13 +64,9 @@ pub fn run(config: Config) -> Result<(), String> {
     };
 
     tui.save_history();
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        ratatui::crossterm::event::DisableBracketedPaste
-    );
-    ratatui::restore();
-    // Dropping the capture restores the real stderr; anything still queued
-    // (a backend line during teardown) goes to it verbatim.
+    restore_terminal(&mut tui.terminal);
+    // Dropping the capture restores the real fds; anything still queued (a
+    // backend line during teardown) goes to the real stderr verbatim.
     let trailing = tui.capture.drain();
     drop(tui);
     for line in trailing {
@@ -82,8 +75,76 @@ pub fn run(config: Config) -> Result<(), String> {
     result
 }
 
+/// The TUI draws to `/dev/tty` on Unix so fd 1 and fd 2 stay free for
+/// [`OutputCapture`]; elsewhere it draws to stdout as usual (no capture).
+#[cfg(unix)]
+type TuiTerminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::fs::File>>;
+#[cfg(not(unix))]
+type TuiTerminal = ratatui::DefaultTerminal;
+
+#[cfg(unix)]
+fn init_terminal() -> Result<TuiTerminal, String> {
+    use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+    use ratatui::crossterm::terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    };
+
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|e| format!("cannot open /dev/tty for the TUI: {e}"))?;
+    enable_raw_mode().map_err(|e| e.to_string())?;
+    ratatui::crossterm::execute!(tty, EnterAlternateScreen, EnableBracketedPaste)
+        .map_err(|e| e.to_string())?;
+    // Terminal restore runs FIRST on panic; the capture's hook (installed
+    // earlier, so chained after) then restores the fds, and the default
+    // hook prints the message to the real stderr.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            let _ = ratatui::crossterm::execute!(tty, LeaveAlternateScreen, DisableBracketedPaste);
+        }
+        previous(info);
+    }));
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(tty)).map_err(|e| e.to_string())
+}
+
+#[cfg(unix)]
+fn restore_terminal(terminal: &mut TuiTerminal) {
+    use ratatui::crossterm::event::DisableBracketedPaste;
+    use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+
+    let _ = disable_raw_mode();
+    let _ = ratatui::crossterm::execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    );
+}
+
+#[cfg(not(unix))]
+fn init_terminal() -> Result<TuiTerminal, String> {
+    let terminal = ratatui::init();
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::EnableBracketedPaste
+    );
+    Ok(terminal)
+}
+
+#[cfg(not(unix))]
+fn restore_terminal(_terminal: &mut TuiTerminal) {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableBracketedPaste
+    );
+    ratatui::restore();
+}
+
 struct Tui {
-    terminal: ratatui::DefaultTerminal,
+    terminal: TuiTerminal,
     config: Config,
     scrollback: Vec<Line<'static>>,
     /// Lines scrolled up from the bottom (0 = stick to newest output).
@@ -101,13 +162,13 @@ struct Tui {
     /// Jupyter-style `Out[n]` numbering for evaluated values; resets with
     /// the session on `:clear`.
     out_counter: usize,
-    /// Raw fd-2 capture (see [`crate::frontend::stderr_capture`]); drained
-    /// into the scrollback after every evaluation.
-    capture: StderrCapture,
+    /// Raw fd 1+2 capture (see [`crate::frontend::output_capture`]);
+    /// drained into the scrollback after every evaluation.
+    capture: OutputCapture,
 }
 
 impl Tui {
-    fn new(terminal: ratatui::DefaultTerminal, config: Config, capture: StderrCapture) -> Self {
+    fn new(terminal: TuiTerminal, config: Config, capture: OutputCapture) -> Self {
         let mut tui = Tui {
             terminal,
             config,
@@ -283,10 +344,17 @@ impl Tui {
         let outcome = session.eval(&text);
         self.busy = false;
         // Backend/native logging during the evaluation was captured off
-        // fd 2; surface it in the scrollback (dim) instead of letting it
-        // smear across the raw-mode screen.
+        // the standard fds; surface it in the scrollback (dim) instead of
+        // letting it smear across the raw-mode screen. The reader thread
+        // needs a scheduling quantum to move flushed pipe data into the
+        // buffer — one short sleep keeps the lines attached to *this*
+        // outcome rather than surfacing on the next input (imperceptible
+        // next to the evaluation itself).
+        std::thread::sleep(std::time::Duration::from_millis(25));
         for line in self.capture.drain() {
-            self.push_line(Line::from(line.dark_gray()));
+            // Native loggers emit ANSI color codes; inside a ratatui cell
+            // they would render as literal `[2m` noise.
+            self.push_line(Line::from(strip_ansi(&line).dark_gray()));
         }
         // Keep the restart config in step with `:set opt`, so a `:clear`
         // rebuilds the session at the level the user chose, not the CLI's.
@@ -574,6 +642,45 @@ impl Tui {
         })?;
         Ok(())
     }
+}
+
+/// Drop ANSI escape sequences (CSI/OSC/two-byte) from a captured native log
+/// line; ratatui cells render them as literal text.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI: `ESC [` params, ends at an alphabetic final byte.
+            Some('[') => {
+                chars.next();
+                for f in chars.by_ref() {
+                    if f.is_ascii_alphabetic() || f == '~' {
+                        break;
+                    }
+                }
+            }
+            // OSC: `ESC ]` ... BEL (or ESC \\).
+            Some(']') => {
+                chars.next();
+                while let Some(f) = chars.next() {
+                    if f == '\x07' || f == '\x1b' {
+                        break;
+                    }
+                }
+            }
+            // Two-byte escapes (ESC c, ESC =, ...).
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
+    out
 }
 
 // History entries are one line each; embedded newlines/backslashes escaped.
