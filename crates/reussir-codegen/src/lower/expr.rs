@@ -98,10 +98,17 @@ enum Anchor<'c, 'b, 'tcx> {
     /// A dispatch arm's narrowed reference to a variant's case payload. The case
     /// payload compound has no MIR [`Ty`], so its fields are projected through
     /// the variant's own field-type list rather than the record layout.
+    ///
+    /// `whole` is the *un-narrowed* enum value that was dispatched at this path —
+    /// the [`Cursor`] `resolve` produced before the borrow. A binding (or nested
+    /// switch) that names the whole switched value resolves to this path with an
+    /// empty suffix, and gets `whole` back rather than a projection into the case
+    /// payload (which has no field for "the value itself").
     Case {
         reference: Value<'c, 'b>,
         variant: &'tcx mir::VariantDef<'tcx>,
         cap: ReussirCapability,
+        whole: Cursor<'c, 'b, 'tcx>,
     },
 }
 
@@ -156,6 +163,7 @@ impl<'c, 'b, 'tcx> Env<'c, 'b, 'tcx> {
 /// The state threaded through a field-projection walk: either a loaded value or a
 /// borrowed reference into a record, each tagged with its ground MIR type so the
 /// next step can consult the record layout and pick the right op.
+#[derive(Clone, Copy)]
 enum Cursor<'c, 'b, 'tcx> {
     /// A loaded SSA value of record or scalar type `ty`. For a `[value]` record
     /// this is the inline aggregate; for a `[shared]`/`[regional]` record it is
@@ -1038,7 +1046,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         result_ty: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         let loc = self.loc();
-        let (variant_ref, enum_ty, cap) = self.resolve_variant_ref(block, env, path)?;
+        // Resolve the enum once: `whole` is the un-narrowed value at this path
+        // (kept in each arm's `Case` anchor for a whole-value binding), and the
+        // variant reference feeds the dispatch.
+        let whole = self.resolve(block, env, path)?;
+        let (variant_ref, enum_ty, cap) = self.resolve_variant_ref(block, whole)?;
         let variants = match self.tys.record_of(enum_ty).map(|r| r.layout) {
             Some(mir::RecordLayout::Variant(variants)) => variants,
             _ => return err("match scrutinee is not an enum"),
@@ -1071,6 +1083,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                         reference: arg,
                         variant,
                         cap,
+                        whole,
                     },
                 ));
                 let value = self.lower_tree(&arm_block, scope, root_idx, subtree, result_ty)?;
@@ -1428,19 +1441,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         Ok((self.load_cursor(block, cursor)?, ty))
     }
 
-    /// Resolve the scrutinee sub-value at `path` to a `!reussir.ref` to a variant
-    /// record, ready to feed `reussir.record.dispatch`: a boxed enum is borrowed,
-    /// an inline `[value]` enum is spilled, and a value already reached by
-    /// reference is used as-is. Returns the reference, the enum's MIR type, and
+    /// Turn an already-resolved enum [`Cursor`] into a `!reussir.ref` to its
+    /// variant record, ready to feed `reussir.record.dispatch`: a boxed enum is
+    /// borrowed, an inline `[value]` enum is spilled, and a value already reached
+    /// by reference is used as-is. Returns the reference, the enum's MIR type, and
     /// the reference capability (which the arm payload references inherit).
     fn resolve_variant_ref<'b>(
         &self,
         block: &'b Block<'c>,
-        env: &Env<'c, 'b, 'tcx>,
-        path: &[u32],
+        cursor: Cursor<'c, 'b, 'tcx>,
     ) -> Result<(Value<'c, 'b>, Ty<'tcx>, ReussirCapability)> {
         let loc = self.loc();
-        match self.resolve(block, env, path)? {
+        match cursor {
             Cursor::Ref { val, ty, cap } => Ok((val, ty, cap)),
             Cursor::Value { val, ty } => {
                 let inner = self.tys.record_inner_of(ty)?;
@@ -1493,10 +1505,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 reference,
                 variant,
                 cap,
+                whole,
             } => {
-                let (first, rest) = suffix
-                    .split_first()
-                    .ok_or_else(|| LoweringError("variant anchor resolved to a whole case".into()))?;
+                // Naming the whole switched value (empty suffix): the case payload
+                // has no field for "the value itself", so hand back the enum value
+                // the dispatch narrowed, exactly as the un-switched anchor would.
+                let Some((first, rest)) = suffix.split_first() else {
+                    return Ok(whole);
+                };
                 let mut cursor = self.project_variant_field(block, reference, variant, cap, *first)?;
                 for &idx in rest {
                     cursor = self.project_one(block, cursor, idx)?;

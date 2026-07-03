@@ -1,5 +1,5 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
-// RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
+
 enum List<T> {
     Nil,
     Cons(T, List<T>)
@@ -10,9 +10,11 @@ enum Option<T> {
     Some(T)
 }
 
-// Return the last element of a list (as Option), consuming the list.
-// Tests returning a newly created RC value from one branch and a
-// non-RC value from another, with proper reconciliation.
+// Return the last element of a list (as Option), consuming the list. The third
+// arm binds the whole tail (`xs`) at a path that a *nested* dispatch already
+// narrowed — a regression that used to fail lowering with "variant anchor
+// resolved to a whole case". The binding must resolve to the un-narrowed tail
+// value the dispatch was handed, not a projection into the case payload.
 fn last(list : List<i32>) -> Option<i32> {
     match list {
         List::Nil => Option::None {},
@@ -21,29 +23,31 @@ fn last(list : List<i32>) -> Option<i32> {
     }
 }
 
+extern "C" trampoline "last_ffi" = last;
+
 // --- MLIR ownership checks ---
-// last(%0=list): match with nested pattern (flattened DT)
-// CHECK-MLIR-LABEL: func.func @"_RC4last"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// last(list): borrow, then dispatch on the outer List.
+// CHECK-MLIR-LABEL: func.func private @_RC4last(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
-// Nil: dec list, return None
+// Nil arm: dec the list, build None.
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
-// Cons: intermediate dispatch on tail (no inc for lookup)
+// Cons arm: project + load the tail, then dispatch on it (an intermediate
+// lookup — no inc for the borrowed tail here).
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
-// CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.borrow
+// CHECK-MLIR:       %[[TAIL:.+]] = reussir.ref.load
+// CHECK-MLIR:       reussir.rc.borrow(%[[TAIL]]
 // CHECK-MLIR:       reussir.record.dispatch
-// Cons(x, Nil): load x (i32), dec list, return Some(x)
+// Cons(x, Nil): dec the list, return Some(x).
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// Cons(_, xs): reload xs from shared ref, inc xs, dec list, recurse
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// Cons(_, xs): the whole-tail binding resolves to the loaded tail — inc it
+// (borrow-extract), dec the list, and recurse on that same value.
 // CHECK-MLIR:       [1] ->
-// CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC4last"
+// CHECK-MLIR:       reussir.rc.inc(%[[TAIL]]
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       func.call @_RC4last(%[[TAIL]])
