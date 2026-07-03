@@ -70,7 +70,15 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                 Outcome::Text(text)
             }
             Some("compiled") => {
-                let mut symbols: Vec<&str> = session.emitted.iter().map(String::as_str).collect();
+                // The per-expression wrappers and dec companions are driver
+                // plumbing; a session's dump would otherwise drown the user's
+                // functions in them.
+                let mut symbols: Vec<&str> = session
+                    .emitted
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|s| !s.contains("__repl_"))
+                    .collect();
                 symbols.sort_unstable();
                 let mut out = String::from("=== Compiled Functions ===\n");
                 for symbol in symbols {
