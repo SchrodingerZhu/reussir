@@ -155,6 +155,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
 
     fn const_int(&mut self, n: i128) -> Expr<'tcx> {
         let ty = self.i64();
+        let n = self.tcx.alloc(crate::literal::Integer::from(n));
         self.mk(ExprKind::ConstInt(n), ty)
     }
 

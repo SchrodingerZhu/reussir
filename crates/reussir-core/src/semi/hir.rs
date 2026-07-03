@@ -5,6 +5,7 @@
 
 use reussir_syntax::kind::TokenKey;
 
+use crate::literal::{FloatLit, Integer};
 use crate::semi::ty::{DefId, GenericId, Ty};
 use crate::surface::Span;
 use crate::utils::string::StringToken;
@@ -86,9 +87,12 @@ pub enum ExprKind<'tcx> {
     /// An interned string literal.
     GlobalStr(StringToken),
     /// An integer literal (its type is a `Num`-bounded hole until solved).
-    ConstInt(i128),
-    /// A floating-point literal.
-    ConstFloat(f64),
+    /// Arbitrary-precision: range-checked against its ground type at
+    /// monomorphization, never truncated before.
+    ConstInt(&'tcx Integer),
+    /// A floating-point literal, exact ([`crate::literal::FloatLit`]): rounded
+    /// to its ground format only in codegen.
+    ConstFloat(&'tcx FloatLit),
     ConstBool(bool),
     Negate(Box<Expr<'tcx>>),
     Not(Box<Expr<'tcx>>),
@@ -177,7 +181,7 @@ pub enum DecisionTree<'tcx> {
 #[derive(Clone, Debug)]
 pub enum SwitchCases<'tcx> {
     Int {
-        cases: Vec<(i128, DecisionTree<'tcx>)>,
+        cases: Vec<(&'tcx Integer, DecisionTree<'tcx>)>,
         default: Box<DecisionTree<'tcx>>,
     },
     Bool {

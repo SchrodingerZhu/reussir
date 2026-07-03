@@ -21,6 +21,8 @@
 use reussir_syntax::ast::unescape_string;
 use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind, TokenKey};
 use smallvec::{SmallVec, smallvec};
+
+use crate::literal::{self, FloatLit, Integer};
 // Bare names resolve to `SyntaxKind` variants (used pervasively in matches).
 // A handful of variant names collide with surface AST *types* defined in this
 // module; for those the local type wins for the bare name (a glob import has
@@ -125,11 +127,13 @@ pub enum FpType {
 }
 
 /// A literal constant. String literals are *decoded* (escapes resolved), so they
-/// are owned rather than an interned token key.
+/// are owned rather than an interned token key. Numeric literals are *exact*
+/// ([`crate::literal`]): carried arbitrary-precision and rounded to their
+/// ground type only at the end of the pipeline.
 #[derive(Clone, Debug)]
 pub enum Const {
-    ConstInt(i64),
-    ConstDouble(f64),
+    ConstInt(Integer),
+    ConstFloat(FloatLit),
     ConstString(String),
     ConstBool(bool),
 }
@@ -302,13 +306,8 @@ fn access_segs_of(node: &ResolvedNode) -> SmallVec<[Access; 2]> {
 
 fn constant(token: &ResolvedToken) -> Const {
     match token.kind() {
-        IntLit => Const::ConstInt(int_value(token.text())),
-        FloatLit => Const::ConstDouble(
-            token
-                .text()
-                .parse()
-                .expect("float literal validated by lexer"),
-        ),
+        IntLit => Const::ConstInt(literal::parse_int(token.text())),
+        FloatLit => Const::ConstFloat(literal::parse_float(token.text())),
         StringLit => Const::ConstString(unescape_string(token.text())),
         TrueKw => Const::ConstBool(true),
         FalseKw => Const::ConstBool(false),
@@ -316,9 +315,10 @@ fn constant(token: &ResolvedToken) -> Const {
     }
 }
 
+/// A tuple-access index. An index beyond `i64` can never name a field, so
+/// saturate rather than panic and let field resolution report it.
 fn int_value(text: &str) -> i64 {
-    text.parse()
-        .expect("integer literal validated by the lexer")
+    i64::try_from(&literal::parse_int(text)).unwrap_or(i64::MAX)
 }
 
 fn binary_op(kind: SyntaxKind) -> Option<BinOp> {

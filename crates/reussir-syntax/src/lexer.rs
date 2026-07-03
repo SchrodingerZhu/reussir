@@ -4,8 +4,9 @@
 //!
 //! * identifiers follow Unicode XID rules (`XID_Start` then `XID_Continue*`),
 //! * `//` line comments and (non-nesting) `/* ... */` block comments,
-//! * integers are plain digit runs; floats are digit runs with a fraction
-//!   and/or exponent (`1.5`, `1e3`, `2.5e-7`),
+//! * integers are digit runs — decimal, or `0x`/`0o`/`0b` radix literals —
+//!   with `_` separators (`1_000`, `0xFF_FF`); floats are decimal digit runs
+//!   with a fraction and/or exponent (`1.5`, `1e3`, `2.5e-7`, `1_0.5`),
 //! * strings are double-quoted with backslash escapes (validated here,
 //!   decoded in [`crate::ast`]).
 //!
@@ -38,12 +39,21 @@ pub enum RawToken {
     #[regex(r"\p{XID_Start}\p{XID_Continue}*", classify_ident)]
     Ident(IdentClass),
 
-    #[regex(r"[0-9]+")]
+    // Decimal, hex, octal, and binary integers, with `_` digit separators
+    // (which cannot lead: a radix run needs at least one real digit). A
+    // digit-less prefix like `0x`/`0x_` is a lex error — logos does not
+    // backtrack to the shorter `0` match — reported as "invalid numeric
+    // literal" (see `tokenize`'s error classification).
+    #[regex(r"[0-9][0-9_]*")]
+    #[regex(r"0[xX]_*[0-9a-fA-F][0-9a-fA-F_]*")]
+    #[regex(r"0[oO]_*[0-7][0-7_]*")]
+    #[regex(r"0[bB]_*[01][01_]*")]
     Int,
     // A float needs a fractional part, an exponent, or both; a bare digit
-    // run is an integer.
-    #[regex(r"[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?")]
-    #[regex(r"[0-9]+[eE][+-]?[0-9]+")]
+    // run is an integer. Fraction and exponent digits also take `_`
+    // separators (never leading).
+    #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?")]
+    #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*")]
     Float,
 
     #[token("\"", lex_string)]
@@ -294,6 +304,9 @@ pub fn tokenize(source: &str) -> (Vec<Token>, Vec<LexError>) {
                     "unterminated string literal"
                 } else if slice.starts_with("/*") {
                     "unterminated block comment"
+                } else if slice.starts_with(|c: char| c.is_ascii_digit()) {
+                    // e.g. a radix prefix with no digits (`0x`, `0b_`).
+                    "invalid numeric literal"
                 } else {
                     "unrecognized character"
                 };
@@ -348,6 +361,31 @@ mod tests {
         assert_eq!(kinds("1e3 2.5e-7"), vec![K::FloatLit, K::FloatLit]);
         // A dot after an integer is an access, not a float.
         assert_eq!(kinds("1.foo"), vec![K::IntLit, K::Dot, K::Ident]);
+    }
+
+    #[test]
+    fn radix_literals_and_separators() {
+        assert_eq!(kinds("0xFF 0o777 0b1010"), vec![K::IntLit; 3]);
+        assert_eq!(kinds("0Xff_ff 0O7_7 0B1_0"), vec![K::IntLit; 3]);
+        assert_eq!(kinds("1_000_000 1_"), vec![K::IntLit, K::IntLit]);
+        assert_eq!(kinds("1_000.5 1_0e1_0"), vec![K::FloatLit, K::FloatLit]);
+        // A separator cannot lead a literal.
+        assert_eq!(kinds("_1"), vec![K::Underscore, K::IntLit]);
+        // A radix prefix with no digits is a lex error (logos does not
+        // backtrack to the shorter `0` match), reported as such.
+        for src in ["0x", "0x_", "0b2"] {
+            let (tokens, errors) = tokenize(src);
+            assert_eq!(errors.len(), 1, "`{src}`: {errors:?}");
+            assert_eq!(errors[0].message, "invalid numeric literal", "`{src}`");
+            assert_eq!(tokens[0].kind, K::ErrorToken, "`{src}`");
+        }
+        // A digit outside the radix ends the literal (`0b12` is `0b1`, `2`).
+        assert_eq!(kinds("0b12"), vec![K::IntLit, K::IntLit]);
+        // `1._5` is not a float: a fraction cannot start with a separator.
+        assert_eq!(
+            kinds("1._5"),
+            vec![K::IntLit, K::Dot, K::Underscore, K::IntLit]
+        );
     }
 
     #[test]

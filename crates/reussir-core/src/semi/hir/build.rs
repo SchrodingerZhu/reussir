@@ -278,8 +278,8 @@ impl<'tcx> Builder<'_, 'tcx> {
     fn expr(&mut self, e: &raw::Expr) -> Expr<'tcx> {
         let ty = self.ty(&e.ty);
         let kind: ExprKind<'tcx> = match &*e.kind {
-            raw::Kind::ConstInt(n) => ExprKind::ConstInt(*n),
-            raw::Kind::ConstFloat(f) => ExprKind::ConstFloat(*f),
+            raw::Kind::ConstInt(n) => ExprKind::ConstInt(self.tcx.alloc(n.clone())),
+            raw::Kind::ConstFloat(f) => ExprKind::ConstFloat(self.tcx.alloc(f.clone())),
             raw::Kind::ConstBool(b) => ExprKind::ConstBool(*b),
             raw::Kind::GlobalStr(words) => ExprKind::GlobalStr(StringToken::from_words(*words)),
             raw::Kind::Var(v) => ExprKind::Var(VarId(*v)),
@@ -428,7 +428,10 @@ impl<'tcx> Builder<'_, 'tcx> {
     fn cases(&mut self, c: &raw::Cases) -> SwitchCases<'tcx> {
         match c {
             raw::Cases::Int { cases, default } => {
-                let cases = cases.iter().map(|(n, t)| (*n, self.tree(t))).collect();
+                let cases = cases
+                    .iter()
+                    .map(|(n, t)| (self.tcx.alloc(n.clone()), self.tree(t)))
+                    .collect();
                 SwitchCases::Int {
                     cases,
                     default: Box::new(self.tree(default)),
@@ -550,6 +553,31 @@ mod tests {
         roundtrip(
             "enum Opt { None, Some(i32) } \
              pub fn unwrap(o: Opt) -> i32 { match o { Opt::None => 0, Opt::Some(x) => x } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_nested_scrutinee_paths() {
+        // A nested pattern produces depth-2 scrutinee paths (`scrut.1.0`),
+        // whose adjacent indices lex as one float-shaped token — the grammar
+        // must split it back (regression: this used to fail to re-parse).
+        roundtrip(
+            "enum L { C(i32, L), N } \
+             pub fn two(l: L) -> i32 { \
+             match l { L::C(x, L::C(y, N)) => x + y, L::C(x, t) => x, L::N => 0 } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_extreme_and_radix_literals() {
+        // Arbitrary-precision literals survive the text round trip at full
+        // width; radix forms normalize to decimal; floats stay exact decimals.
+        roundtrip(
+            "pub fn big() -> u64 { 18446744073709551615 } \
+             pub fn hex() -> u32 { 0xDEAD_BEEF } \
+             pub fn neg() -> i64 { -9223372036854775808 } \
+             pub fn tenth() -> f64 { 0.1 } \
+             pub fn tiny() -> f64 { 2.5e-300 }",
         );
     }
 

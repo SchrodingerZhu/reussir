@@ -292,7 +292,7 @@ impl Render<'_> {
         match e.kind {
             GlobalStr(s) => text(str_lit(s.words())),
             ConstInt(n) => text(format!("{n}")),
-            ConstFloat(f) => text(float_lit(f)),
+            ConstFloat(f) => text(f.to_string()),
             ConstBool(b) => text(format!("{b}")),
             Var(v) => var(v),
             Poison => text("poison"),
@@ -515,19 +515,6 @@ fn cap_name(c: Flexivity) -> &'static str {
 /// round-trips faithfully.
 fn str_lit(w: [u64; 4]) -> String {
     format!("str#{}#{}#{}#{}", w[0], w[1], w[2], w[3])
-}
-
-/// Print a float so it re-lexes as a `Token::Float`. `f64`'s `Display` renders a
-/// finite value in plain decimal (never exponent notation), but drops the point
-/// for integral values (`1.0` -> `1`) — which would otherwise re-lex as an
-/// integer — so a missing `.`/`e` means an integral value that needs `.0`.
-fn float_lit(f: f64) -> String {
-    let s = format!("{f}");
-    if s.contains(['.', 'e', 'E']) {
-        s
-    } else {
-        format!("{s}.0")
-    }
 }
 
 fn arith_sym(op: ArithOp) -> &'static str {

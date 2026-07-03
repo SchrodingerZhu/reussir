@@ -6,6 +6,7 @@
 
 use crate::full::mir::raw as raw;
 use crate::ir_lex::{Token, LexError};
+use crate::literal::{FloatLit, Integer};
 
 grammar<'input>;
 
@@ -117,7 +118,7 @@ Expr: raw::Expr = {
 
 Atom: raw::Kind = {
     <n:"int"> => raw::Kind::ConstInt(n),
-    <f:"float"> => raw::Kind::ConstFloat(f),
+    <f:"float"> => raw::Kind::ConstFloat(raw::float_lit(f)),
     "true" => raw::Kind::ConstBool(true),
     "false" => raw::Kind::ConstBool(false),
     <w:StrWords> => raw::Kind::GlobalStr(w),
@@ -130,14 +131,14 @@ Atom: raw::Kind = {
     "(" <e:Expr> "as" <t:Ty> ")" => raw::Kind::Cast(e, t),
     "region" "{" <e:Expr> "}" => raw::Kind::RegionRun(e),
     "proj" "(" <base:Expr> <idxs:("," <"int">)*> ")"
-        => raw::Kind::Proj(base, idxs.into_iter().map(|n| n as u32).collect()),
+        => raw::Kind::Proj(base, idxs.iter().map(raw::small_u32).collect()),
     "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
-        => raw::Kind::Assign(dst, field as u32, src),
+        => raw::Kind::Assign(dst, raw::small_u32(&field), src),
     <r:"regional"?> "@" <symbol:Sym> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Call { regional: r.is_some(), symbol, args },
     "@" <symbol:Sym> "{" <args:Comma<Expr>> "}" => raw::Kind::Ctor { symbol, args },
     "@" <symbol:Sym> "::" "#" <v:"int"> "(" <args:Comma<Expr>> ")"
-        => raw::Kind::Variant { symbol, variant: v as usize, args },
+        => raw::Kind::Variant { symbol, variant: raw::small_usize(&v), args },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
@@ -165,7 +166,7 @@ Tree: raw::Tree = {
 Arm: (raw::Label, raw::Tree) = <l:Label> "=>" "{" <t:Tree> "}" => (l, t);
 
 Label: raw::Label = {
-    "#" <n:"int"> => raw::Label::Ctor(n as usize),
+    "#" <n:"int"> => raw::Label::Ctor(raw::small_usize(&n)),
     <n:"int"> => raw::Label::Int(n),
     "_" => raw::Label::Wildcard,
     "true" => raw::Label::Bool(true),
@@ -175,8 +176,14 @@ Label: raw::Label = {
     "Null" => raw::Label::Null,
 };
 
-PatRef: raw::Path = "scrut" <idxs:("." <"int">)*>
-    => idxs.into_iter().map(|n| n as u32).collect();
+PatRef: raw::Path = "scrut" <segs:PathSeg*> => segs.into_iter().flatten().collect();
+
+// One `.`-led path step. Two adjacent numeric indices (`.0.1`) lex as a single
+// float-shaped token, split back into their segments here.
+PathSeg: Vec<u32> = {
+    "." <n:"int"> => vec![raw::small_u32(&n)],
+    "." <f:"float"> => raw::float_path_segs(f),
+};
 
 Bindings: Vec<raw::Binding> = <Binding*>;
 
@@ -184,7 +191,7 @@ Binding: raw::Binding = <v:"var"> "=" <p:PatRef> => (v, p);
 
 // A string-literal tag: all four `StringToken` words, `#`-separated.
 StrWords: raw::StrTag = "str" "#" <w0:"int"> "#" <w1:"int"> "#" <w2:"int"> "#" <w3:"int">
-    => [w0 as u64, w1 as u64, w2 as u64, w3 as u64];
+    => [raw::small_u64(&w0), raw::small_u64(&w1), raw::small_u64(&w2), raw::small_u64(&w3)];
 
 ArithOp: raw::ArithOp = {
     "+" => raw::ArithOp::Add,
@@ -224,8 +231,8 @@ extern {
     type Error = LexError;
 
     enum Token<'input> {
-        "int" => Token::Int(<i128>),
-        "float" => Token::Float(<f64>),
+        "int" => Token::Int(<Integer>),
+        "float" => Token::Float(<&'input str>),
         "var" => Token::Var(<u32>),
         "ints" => Token::IntS(<u16>),
         "intu" => Token::IntU(<u16>),

@@ -44,6 +44,7 @@
 //! `bindings` therefore tell code generation where in the scrutinee to read each
 //! bound variable.
 
+use crate::literal::Integer;
 use crate::semi::infer::Instantiation;
 use crate::semi::ty::{Ty, TyKind};
 use crate::surface::{self, Const, PatternKind, Span};
@@ -54,15 +55,17 @@ use super::hir::{DecisionTree, Expr, ExprKind, PatVarRef, SwitchCases, VarId};
 
 /// A head constructor: what a (refutable) pattern tests for at an occurrence.
 #[derive(Clone, PartialEq, Eq, Debug)]
-enum Ctor {
+enum Ctor<'tcx> {
     /// An enum variant, by index into the enum's variant list.
     Variant(usize),
-    Int(i128),
+    /// An integer key, arbitrary-precision (the scrutinee type bounds its
+    /// range, checked like any literal at monomorphization).
+    Int(&'tcx Integer),
     Bool(bool),
     Str(StringToken),
 }
 
-impl Ctor {
+impl Ctor<'_> {
     fn family(&self) -> Family {
         match self {
             Ctor::Variant(_) => Family::Variant,
@@ -91,16 +94,19 @@ enum Family {
 /// A type-checked pattern. Variable bindings carry the [`VarId`] allocated for
 /// them during checking; their occurrence is filled in while compiling.
 #[derive(Clone, Debug)]
-enum Pat {
+enum Pat<'tcx> {
     /// Matches anything, binds nothing (`_`).
     Wild,
     /// Matches anything, binds the value at this occurrence to `VarId`.
     Bind(VarId),
     /// Matches `ctor` and recurses into its fields.
-    Ctor { ctor: Ctor, fields: Vec<Pat> },
+    Ctor {
+        ctor: Ctor<'tcx>,
+        fields: Vec<Pat<'tcx>>,
+    },
 }
 
-impl Pat {
+impl Pat<'_> {
     fn is_ctor(&self) -> bool {
         matches!(self, Pat::Ctor { .. })
     }
@@ -118,7 +124,7 @@ struct Column<'tcx> {
 #[derive(Clone)]
 struct Row<'tcx> {
     /// One pattern per column, in column order.
-    pats: Vec<Pat>,
+    pats: Vec<Pat<'tcx>>,
     /// Bindings discovered in columns already consumed by specialization.
     bindings: Vec<(VarId, PatVarRef)>,
     guard: Option<Expr<'tcx>>,
@@ -240,7 +246,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// source span, used to blame any error; nested sub-patterns (a constructor's
     /// arguments) carry no span of their own, so they reuse the enclosing
     /// pattern's — coarse, but still traced to source.
-    fn check_pat(&mut self, kind: &PatternKind, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
+    fn check_pat(&mut self, kind: &PatternKind, span: Option<Span>, ty: Ty<'tcx>) -> Pat<'tcx> {
         let ty = self.infer.shallow_resolve(ty);
         match kind {
             PatternKind::Wildcard => Pat::Wild,
@@ -253,7 +259,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    fn check_const_pat(&mut self, c: &Const, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
+    fn check_const_pat(&mut self, c: &Const, span: Option<Span>, ty: Ty<'tcx>) -> Pat<'tcx> {
         let ctor = match c {
             Const::ConstInt(i) => {
                 // The literal must be *some* integer, but its width/signedness
@@ -264,7 +270,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 // literal *expression* does; the eventual int-switch lowering
                 // reads the column's real type to pick the signed/unsigned cast.
                 self.register_bound(self.builtins.integral, ty, span);
-                Ctor::Int(*i as i128)
+                Ctor::Int(self.tcx.alloc(i.clone()))
             }
             Const::ConstBool(b) => {
                 let want = self.tcx.mk_bool();
@@ -276,7 +282,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let _ = self.infer.unify(ty, want);
                 Ctor::Str(self.strings.allocate(s))
             }
-            Const::ConstDouble(_) => {
+            Const::ConstFloat(_) => {
                 self.error(span, "floating-point patterns are not supported");
                 return Pat::Wild;
             }
@@ -287,7 +293,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    fn check_ctor_pat(&mut self, ctor: &surface::CtorPat, span: Option<Span>, ty: Ty<'tcx>) -> Pat {
+    fn check_ctor_pat(
+        &mut self,
+        ctor: &surface::CtorPat,
+        span: Option<Span>,
+        ty: Ty<'tcx>,
+    ) -> Pat<'tcx> {
         let ty = self.infer.shallow_resolve(ty);
         let TyKind::Record { def, args, .. } = ty.kind() else {
             self.error(span, format!("cannot match constructor against `{ty:?}`"));
@@ -505,7 +516,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         for row in &m.rows {
             // What the field columns become, and whether this row's column-`j`
             // pattern bound the whole value.
-            let (sub, bind): (Vec<Pat>, Option<(VarId, PatVarRef)>) = match &row.pats[j] {
+            let (sub, bind): (Vec<Pat<'tcx>>, Option<(VarId, PatVarRef)>) = match &row.pats[j] {
                 Pat::Ctor {
                     ctor: Ctor::Variant(w),
                     fields,
@@ -537,7 +548,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &self,
         m: &Matrix<'tcx>,
         j: usize,
-        c: &Ctor,
+        c: &Ctor<'tcx>,
         occ: &PatVarRef,
     ) -> Matrix<'tcx> {
         let cols = cols_without(&m.cols, j);
@@ -569,7 +580,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// The distinct integer literals tested in column `j`, in first-seen order.
-    fn column_ints(&self, m: &Matrix<'tcx>, j: usize) -> Vec<i128> {
+    fn column_ints(&self, m: &Matrix<'tcx>, j: usize) -> Vec<&'tcx Integer> {
         let mut seen = Vec::new();
         for row in &m.rows {
             if let Pat::Ctor {

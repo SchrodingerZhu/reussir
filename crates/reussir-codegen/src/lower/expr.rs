@@ -24,8 +24,8 @@ use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
 use reussir_backend::melior::ir::attribute::{
-    Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, FloatAttribute, IntegerAttribute,
-    StringAttribute, TypeAttribute,
+    Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
+    TypeAttribute,
 };
 use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType};
 use reussir_backend::melior::ir::{
@@ -34,6 +34,7 @@ use reussir_backend::melior::ir::{
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
+use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
 use reussir_core::surface::{Span, Visibility};
@@ -416,12 +417,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         use ExprKind::*;
         let loc = self.loc();
         match &e.kind {
-            ConstInt(n) => {
-                let attr = IntegerAttribute::new(self.tys.mlir_ty(e.ty)?, *n as i64).into();
-                Ok(Some(
-                    self.append(block, arith::constant(self.context, attr, loc)),
-                ))
-            }
+            // Emitted at full width via the textual APInt path — the value
+            // was range-checked against `e.ty` at monomorphization.
+            ConstInt(n) => Ok(Some(self.wide_int_constant(block, n, e.ty)?)),
             ConstBool(b) => {
                 let i1 = IntegerType::new(self.context, 1).into();
                 let attr = IntegerAttribute::new(i1, i64::from(*b)).into();
@@ -429,8 +427,28 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     self.append(block, arith::constant(self.context, attr, loc)),
                 ))
             }
+            // The single decimal→binary rounding in the pipeline: the exact
+            // literal is rounded into the target format host-side (no Rust
+            // float involved, so bf16/f16 work like f32/f64) and the bits are
+            // emitted through MLIR's hexadecimal form, which is exact.
             ConstFloat(f) => {
-                let attr = FloatAttribute::new(self.context, self.tys.mlir_ty(e.ty)?, *f).into();
+                let fp = match *e.ty.kind() {
+                    TyKind::Fp(fp) => fp,
+                    _ => return err("float literal with a non-float type"),
+                };
+                let (exp_bits, mant_bits) = literal::ieee_params(fp).ok_or_else(|| {
+                    LoweringError(format!("`{fp:?}` has no settled encoding").into())
+                })?;
+                let bits = f.to_ieee_bits(exp_bits, mant_bits).map_err(|_| {
+                    // Unreachable after the mono range check; keep it an error.
+                    LoweringError(format!("float literal `{f}` overflows its type").into())
+                })?;
+                let mlir_ty = self.tys.mlir_ty(e.ty)?;
+                let digits = ((1 + exp_bits + mant_bits) as usize).div_ceil(4);
+                let text = format!("0x{bits:0digits$X} : {mlir_ty}");
+                let attr = Attribute::parse(self.context, &text).ok_or_else(|| {
+                    LoweringError(format!("could not build float constant `{text}`").into())
+                })?;
                 Ok(Some(
                     self.append(block, arith::constant(self.context, attr, loc)),
                 ))
@@ -1121,8 +1139,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// * width > 64 — an `index` cannot hold the scrutinee and the keys may exceed
     ///   `i64`, so a full-width `scf.if` compare-chain first reduces the keys to a
     ///   compact selector in `[0, cases.len()]` (case `i` → `i`, no match → the
-    ///   default), and the switch dispatches on that. (Reachable once the frontend
-    ///   types integers wider than 64 bits — it rejects `i128` today.)
+    ///   default), and the switch dispatches on that. (Keys are arbitrary
+    ///   precision end to end; this arm becomes reachable once the surface
+    ///   grows `i128`/`u128` type names.)
     #[allow(clippy::too_many_arguments)]
     fn int_switch<'b>(
         &self,
@@ -1130,7 +1149,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         env: &mut Env<'c, 'b, 'tcx>,
         root_idx: usize,
         path: &[u32],
-        cases: &'tcx [(i128, DecisionTree<'tcx>)],
+        cases: &'tcx [(&'tcx Integer, DecisionTree<'tcx>)],
         default: &'tcx DecisionTree<'tcx>,
         result_ty: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
@@ -1166,7 +1185,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 arith::index_castui(scrut_val, index_ty, loc)
             };
             let arg = self.append(block, cast);
-            (arg, cases.iter().map(|(key, _)| *key as i64).collect::<Vec<_>>())
+            // The key fits its (≤64-bit) scrutinee type, so its two's
+            // complement low word is the exact case value.
+            (
+                arg,
+                cases
+                    .iter()
+                    .map(|(key, _)| literal::low_u64(key) as i64)
+                    .collect::<Vec<_>>(),
+            )
         };
         let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
         let op = block.append_operation(scf::index_switch(
@@ -1194,7 +1221,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         block: &'b Block<'c>,
         scrut_val: Value<'c, 'b>,
         scrut_ty: Ty<'tcx>,
-        cases: &'tcx [(i128, DecisionTree<'tcx>)],
+        cases: &'tcx [(&'tcx Integer, DecisionTree<'tcx>)],
         idx: i64,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
@@ -1203,7 +1230,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             // Every key was ruled out: select the default's slot.
             return Ok(self.index_const(block, idx));
         };
-        let key_val = self.wide_int_constant(block, *key, scrut_ty)?;
+        let key_val = self.wide_int_constant(block, key, scrut_ty)?;
         let eq = self.append(
             block,
             arith::cmpi(self.context, CmpiPredicate::Eq, scrut_val, key_val, loc),
@@ -1235,13 +1262,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         )
     }
 
-    /// Materialize an integer constant of `ty` holding `key`. melior's
-    /// `IntegerAttribute::new` takes only an `i64`, so a key wider than that is
-    /// built by parsing its textual attribute form (`<value> : iN`).
+    /// Materialize an integer constant of `ty` holding `key`, at any width.
+    /// melior's `IntegerAttribute::new` takes only an `i64`, so the constant is
+    /// built by parsing its textual attribute form (`<value> : iN`), which
+    /// goes through MLIR's arbitrary-precision APInt.
     fn wide_int_constant<'b>(
         &self,
         block: &'b Block<'c>,
-        key: i128,
+        key: &Integer,
         ty: Ty<'tcx>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
