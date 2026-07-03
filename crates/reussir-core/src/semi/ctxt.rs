@@ -48,6 +48,20 @@ pub struct Report {
 pub fn render_reports(name: &str, source: &str, reports: &[Report]) -> bool {
     use std::io::IsTerminal;
 
+    let color = std::io::stderr().is_terminal();
+    render_reports_to(name, source, reports, color, std::io::stderr().lock())
+}
+
+/// Writer-taking variant of [`render_reports`], for frontends that own their
+/// display (e.g. the REPL TUI renders into a buffer and styles the lines
+/// itself — stderr would be invisible in the alternate screen).
+pub fn render_reports_to(
+    name: &str,
+    source: &str,
+    reports: &[Report],
+    color: bool,
+    out: impl std::io::Write,
+) -> bool {
     use reussir_syntax::diagnostics::{self, Diagnostic, Severity as RenderSeverity, SourceMap};
 
     let had_error = reports
@@ -69,8 +83,7 @@ pub fn render_reports(name: &str, source: &str, reports: &[Report]) -> bool {
         })
         .collect();
     let map = SourceMap::new(source);
-    let color = std::io::stderr().is_terminal();
-    let _ = diagnostics::render(name, source, &map, &diags, color, std::io::stderr().lock());
+    let _ = diagnostics::render(name, source, &map, &diags, color, out);
     had_error
 }
 

@@ -116,10 +116,7 @@ pub struct ReplParse {
 /// prefix is an item keyword followed by `as` — `fn as i64` is a cast of a
 /// variable named `fn` — which routes to expressions, so an item literally
 /// named `as` cannot be entered at the REPL.
-pub fn parse_repl(
-    source: &str,
-    interner: std::sync::Arc<MultiThreadedTokenInterner>,
-) -> ReplParse {
+pub fn parse_repl(source: &str, interner: std::sync::Arc<MultiThreadedTokenInterner>) -> ReplParse {
     let mut kind = ReplInputKind::Expr;
     let parse = parse_impl(source, interner, |p| {
         kind = repl_route(p);

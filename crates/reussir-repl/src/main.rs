@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use reussir_jit::OptLevel;
-use reussir_repl::frontend::plain;
+use reussir_repl::frontend::{plain, tui};
 use reussir_repl::session::{self, Config, Exit};
 
 /// Reussir REPL (Rust pipeline).
@@ -30,6 +30,11 @@ struct Cli {
     /// Input file for line-by-line execution (script mode).
     #[arg(short = 'i', long = "input")]
     input: Option<PathBuf>,
+
+    /// Use the plain line-based prompt even on a capable terminal
+    /// (implied by `TERM=dumb`, script mode, and piped stdin/stdout).
+    #[arg(long = "no-tui")]
+    no_tui: bool,
 }
 
 fn parse_log_level(level: &str) -> Result<tracing::Level, String> {
@@ -70,15 +75,27 @@ fn run(cli: &Cli) -> Result<(), String> {
         opt: resolve_opt(cli)?,
     };
 
-    let (mut lines, interactive): (Box<dyn BufRead>, bool) = match &cli.input {
+    // Mode selection: a script file or piped stdin drive the plain
+    // line-based frontend; a real terminal gets the TUI unless opted out
+    // (`--no-tui`) or incapable (`TERM=dumb` — set by e.g. Emacs shells on
+    // every platform; an *unset* TERM stays on the TUI, since Windows
+    // terminals conventionally don't set it at all). The plain fallback on
+    // a terminal keeps its line prompts.
+    let mut interactive = false;
+    let mut lines: Box<dyn BufRead> = match &cli.input {
         Some(path) => {
             let file = std::fs::File::open(path)
                 .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-            (Box::new(BufReader::new(file)), false)
+            Box::new(BufReader::new(file))
         }
         None => {
-            let interactive = std::io::stdin().is_terminal();
-            (Box::new(BufReader::new(std::io::stdin())), interactive)
+            let on_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            let dumb = matches!(std::env::var("TERM").as_deref(), Ok("dumb"));
+            if on_terminal && !dumb && !cli.no_tui {
+                return tui::run(config);
+            }
+            interactive = on_terminal;
+            Box::new(BufReader::new(std::io::stdin()))
         }
     };
 

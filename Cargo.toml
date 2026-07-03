@@ -86,6 +86,18 @@ stacker = "0.1.21"
 tracing = "0.1"
 # Log-level plumbing for the REPL binary's `-l` flag.
 tracing-subscriber = "0.3"
+# Platform data directories for the REPL's persisted history
+# (XDG_DATA_HOME/~/.local/share on Linux, %LOCALAPPDATA% on Windows,
+# ~/Library/Application Support on macOS).
+dirs = "6"
+# The REPL's interactive terminal UI: ratatui renders it, ratatui-textarea is
+# the multiline input editor (smart-Enter submission lives in the REPL).
+# `unstable-rendered-line-info` provides `Paragraph::line_count`, which the
+# REPL TUI's scrollback pinning needs to count post-wrap visual rows with the
+# paragraph's own wrapping rules (hand-computed row counts would drift from
+# ratatui's word wrapping).
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+ratatui-textarea = "0.9"
 
 [profile.release]
 lto = "thin"

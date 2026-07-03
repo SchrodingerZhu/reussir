@@ -288,6 +288,7 @@ impl SyntaxKind {
             Bang => "`!`",
             Pipe => "`|`",
             Underscore => "`_`",
+            Eof => "the end of the input",
             ErrorToken => "invalid input",
             _ => "a syntax node",
         }

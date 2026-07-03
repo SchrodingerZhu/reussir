@@ -25,5 +25,6 @@
 pub mod commands;
 pub mod externalize;
 pub mod frontend;
+pub mod input;
 pub mod session;
 pub mod value;

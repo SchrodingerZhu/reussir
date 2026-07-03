@@ -324,6 +324,19 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         }
     }
 
+    /// Number of accepted user definitions — functions and records, the
+    /// synthetic `__repl_expr_N` wrappers excluded; shown in the TUI status
+    /// line.
+    pub fn definition_count(&self) -> usize {
+        let functions = self
+            .elab
+            .elaborated
+            .iter()
+            .filter(|f| !self.elab.sym(f.name).starts_with("__repl_"))
+            .count();
+        functions + self.elab.records.len()
+    }
+
     /// Render a ground Semi type for display (`i64`, `f64`, `List::<i64>`).
     pub(crate) fn render_ty(&self, ty: Ty<'tcx>) -> String {
         match *ty.kind() {
