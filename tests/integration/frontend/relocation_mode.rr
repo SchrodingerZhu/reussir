@@ -1,10 +1,10 @@
-// RUN: %reussir-compiler --help | %FileCheck %s --check-prefix=HELP
-// RUN: %reussir-compiler %s -o %t.pic.ll -t llvm-ir --relocation-mode pic
-// RUN: %reussir-compiler %s -o %t.dynamic.ll -t llvm-ir --relocation-mode dynamic-no-pic
-// RUN: %not %reussir-compiler %s -o %t.invalid.ll -t llvm-ir --relocation-mode invalid 2>&1 | %FileCheck %s --check-prefix=ERR
+// RUN: %rrc --help | %FileCheck %s --check-prefix=HELP
+// RUN: %rrc %s -o %t.pic.ll --emit llvm-ir --relocation-mode pic
+// RUN: %rrc %s -o %t.dynamic.ll --emit llvm-ir --relocation-mode dynamic-no-pic
+// RUN: %not %rrc %s -o %t.invalid.ll --emit llvm-ir --relocation-mode invalid 2>&1 | %FileCheck %s --check-prefix=ERR
 
-// HELP: --relocation-mode ARG
-// ERR: Unknown relocation mode: invalid
+// HELP: --relocation-mode <RELOCATION_MODE>
+// ERR: unknown --relocation-mode `invalid`
 
 pub fn relocation_mode_test(x : u32) -> u32 {
     x

@@ -1,10 +1,10 @@
-// RUN: %reussir-compiler %s -o %t.ll -t llvm-ir --target-triple x86_64-unknown-linux-gnu
+// RUN: %rrc %s -o %t.ll --emit llvm-ir --target-triple x86_64-unknown-linux-gnu
 // RUN: %FileCheck %s --check-prefix=LLVM < %t.ll
 
 // LLVM: target triple = "x86_64-unknown-linux-gnu"
 
 // Also verify native compilation still works
-// RUN: %reussir-compiler %s -o %t.native.ll -t llvm-ir
+// RUN: %rrc %s -o %t.native.ll --emit llvm-ir
 
 pub fn target_test(x : u32) -> u32 {
     x

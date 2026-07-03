@@ -125,7 +125,7 @@ struct Cli {
     #[arg(short = 'O', long = "opt", default_value = "default")]
     opt: String,
 
-    /// Relocation model: `default`, `pic`, or `static`.
+    /// Relocation model: `default`, `pic`, `static`, or `dynamic-no-pic`.
     #[arg(long = "relocation-mode", default_value = "default")]
     relocation_mode: String,
 
@@ -210,6 +210,7 @@ fn parse_reloc(s: &str) -> Result<RelocMode, String> {
         "default" => Ok(RelocMode::Default),
         "pic" => Ok(RelocMode::Pic),
         "static" => Ok(RelocMode::Static),
+        "dynamic-no-pic" => Ok(RelocMode::DynamicNoPic),
         other => Err(format!("unknown --relocation-mode `{other}`")),
     }
 }
@@ -263,7 +264,23 @@ fn init_tracing(verbose: bool) {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // `palc` surfaces `--help` as a parse *error* rendered to stderr with a
+    // non-zero exit. Restore the usual CLI convention: help goes to stdout and
+    // exits 0 (a `--help | grep …` pipeline must not fail). Other parse errors
+    // stay on stderr with the usage exit code (2).
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => match err.try_into_help() {
+            Ok(help) => {
+                println!("{help}");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
     init_tracing(cli.verbose);
     match run(&cli) {
         Ok(true) => ExitCode::SUCCESS,
