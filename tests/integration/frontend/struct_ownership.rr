@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 
 struct [value] ValueBox<T> {
@@ -15,17 +15,17 @@ fn consume(x : ValueBox<RcBox>) {
     let x_ = x
 }
 
-// CHECK-MLIR-LABEL: func.func @"_RC12multiplicity"
-// CHECK-MLIR: %{{[0-9]+}} = reussir.ref.spilled (%{{[0-9]+}} : !_RIC8ValueBoxC5RcBoxE) : !reussir.ref<!_RIC8ValueBoxC5RcBoxE normal>
-// CHECK-MLIR-NEXT: reussir.ref.acquire (%{{[0-9]+}} : !reussir.ref<!_RIC8ValueBoxC5RcBoxE normal>)
-// CHECK-MLIR-NEXT: func.call @"_RC7consume"
-// CHECK-MLIR-NEXT: func.return %{{[0-9]+}} : !_RIC8ValueBoxC5RcBoxE
+// CHECK-MLIR-LABEL: func.func @_RC12multiplicity
+// CHECK-MLIR: %{{[0-9]+}} = reussir.ref.spilled(%arg0 : {{.*}}) : !reussir.ref<{{.*}}>
+// CHECK-MLIR-NEXT: reussir.ref.acquire(%{{[0-9]+}} : !reussir.ref<{{.*}}>)
+// CHECK-MLIR-NEXT: call @_RC7consume
+// CHECK-MLIR-NEXT: return %arg0 : {{.*}}
 pub fn multiplicity(x : ValueBox<RcBox>) -> ValueBox<RcBox> {
     consume(x);
     x
 }
 
-// CHECK-MLIR-LABEL: func.func @"_RC7consume"
-// CHECK-MLIR: %{{[0-9]+}} = reussir.ref.spilled (%{{[0-9]+}} : !_RIC8ValueBoxC5RcBoxE) : !reussir.ref<!_RIC8ValueBoxC5RcBoxE normal>
-// CHECK-MLIR-NEXT: reussir.ref.drop (%{{[0-9]+}} : !reussir.ref<!_RIC8ValueBoxC5RcBoxE normal>)
-// CHECK-MLIR-NEXT: func.return
+// CHECK-MLIR-LABEL: func.func private @_RC7consume
+// CHECK-MLIR: %{{[0-9]+}} = reussir.ref.spilled(%arg0 : {{.*}}) : !reussir.ref<{{.*}}>
+// CHECK-MLIR-NEXT: reussir.ref.drop(%{{[0-9]+}} : !reussir.ref<{{.*}}>)
+// CHECK-MLIR-NEXT: return

@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum Tree {
     Leaf(i32),
@@ -16,25 +16,25 @@ fn tree_sum(t : Tree) -> i32 {
 }
 
 // --- MLIR ownership checks ---
-// tree_sum(%0=t): match on tree
-// CHECK-MLIR-LABEL: func.func @"_RC8tree_sum"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// tree_sum(%arg0=t): match on tree
+// CHECK-MLIR-LABEL: func.func private @_RC8tree_sum(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Leaf(x): x is i32, no inc needed, dec scrutinee
 // CHECK-MLIR:       [0] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.scf.yield
 // Node(l, r): both children are RC, both need inc, then dec scrutinee
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC8tree_sum"
-// CHECK-MLIR:       func.call @"_RC8tree_sum"
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       call @_RC8tree_sum
+// CHECK-MLIR:       call @_RC8tree_sum

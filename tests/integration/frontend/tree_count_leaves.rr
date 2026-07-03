@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum Tree {
     Leaf(i32),
@@ -16,23 +16,23 @@ fn count_leaves(t : Tree) -> i32 {
 }
 
 // --- MLIR ownership checks ---
-// CHECK-MLIR-LABEL: func.func @"_RC12count_leaves"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC12count_leaves(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Leaf(_): ignore value, dec scrutinee, return 1
 // CHECK-MLIR:       [0] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant 1 : i32
 // CHECK-MLIR:       reussir.scf.yield
 // Node(l, r): inc both children, dec scrutinee, recurse on both
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC12count_leaves"
-// CHECK-MLIR:       func.call @"_RC12count_leaves"
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       call @_RC12count_leaves
+// CHECK-MLIR:       call @_RC12count_leaves

@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum List<T> {
     Nil,
@@ -17,59 +17,47 @@ pub fn reverse(list : List<i32>) -> List<i32> {
     reverse_impl(list, List::Nil {})
 }
 
-// CHECK:      ;; Instantiated Generics
-// CHECK-NEXT: Generic @0 should be instantiated to:
-// CHECK-NEXT: i32
-// CHECK:      ;; Elaborated Records
-// CHECK-NEXT: enum [shared] List<T@0>{
-// CHECK-NEXT:     Nil,
-// CHECK-NEXT:     Cons
-// CHECK-NEXT: }
-// CHECK:      enum_variant [value] List::Nil<T@0>()
-// CHECK:      enum_variant [value] List::Cons<T@0>(T0, List<T0>)
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn reverse_impl(v0 (list): List<i32>, v1 (acc): List<i32>) -> List<i32> {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 v1
+// CHECK:      [shared] enum #List<$0> { Nil(), Cons($0, #List::<$0>) };
+// CHECK:      fn #reverse_impl(v0 (list): #List::<i32>, v1 (acc): #List::<i32>) -> #List::<i32> {
+// CHECK-NEXT:     match v0 : #List::<i32> {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => v1 : #List::<i32>
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 pattern var v2 (0, 1)
-// CHECK-NEXT:                 pattern var v3 (0, 0)
-// CHECK-NEXT:                 reverse_impl(v2, List<i32>[1](List::Cons<i32>(v3, v1) : List::Cons<i32>) : List<i32>) : List<i32>
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 v2=scrut.0 v3=scrut.1 => #reverse_impl(v3 : #List::<i32>, #List::<i32>#1(v2 : i32, v1 : #List::<i32>) : #List::<i32>) : #List::<i32>
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
 // CHECK-NEXT:     }
 // CHECK-NEXT: }
-// CHECK:      pub fn reverse(v0 (list): List<i32>) -> List<i32> {
-// CHECK-NEXT:     reverse_impl(v0, List<i32>[0](List::Nil<i32>() : List::Nil<i32>) : List<i32>) : List<i32>
+// CHECK:      pub fn #reverse(v0 (list): #List::<i32>) -> #List::<i32> {
+// CHECK-NEXT:     #reverse_impl(v0 : #List::<i32>, #List::<i32>#0() : #List::<i32>) : #List::<i32>
 // CHECK-NEXT: }
 
 // --- MLIR ownership checks for reverse_impl ---
 // reverse_impl(%0=list, %1=acc): match on list via borrow+dispatch
-// CHECK-MLIR-LABEL: func.func @"_RC12reverse_impl"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC12reverse_impl(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil branch: dec scrutinee (list), yield acc
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       reussir.scf.yield %1 :
-// Cons branch: load tail (xs), inc xs, load head (x), dec scrutinee, build new cons, call
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       reussir.scf.yield %arg1 :
+// Cons branch: load head (x) then tail (xs), inc xs, dec scrutinee, build new cons, call
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // CHECK-MLIR:       reussir.rc.create
-// CHECK-MLIR:       func.call @"_RC12reverse_impl"
+// CHECK-MLIR:       call @_RC12reverse_impl
 
 // reverse: no RC ops, just create Nil and call reverse_impl
-// CHECK-MLIR-LABEL: func.func @"_RC7reverse"
+// CHECK-MLIR-LABEL: func.func @_RC7reverse
 // CHECK-MLIR-NOT:   reussir.rc.inc
 // CHECK-MLIR-NOT:   reussir.rc.dec
-// CHECK-MLIR:       func.return
+// CHECK-MLIR:       return

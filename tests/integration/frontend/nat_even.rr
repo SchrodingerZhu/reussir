@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum Nat {
     Zero,
@@ -14,29 +14,20 @@ fn even(n : Nat) -> bool {
     }
 }
 
-// CHECK:      ;; Instantiated Generics
-// CHECK:      ;; Elaborated Records
-// CHECK-NEXT: enum [shared] Nat{
-// CHECK-NEXT:     Zero,
-// CHECK-NEXT:     Succ
-// CHECK-NEXT: }
-// CHECK:      enum_variant [value] Nat::Succ(Nat)
-// CHECK:      enum_variant [value] Nat::Zero()
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: fn even(v0 (n): Nat) -> bool {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 1.0 : bool
+// CHECK:      [shared] enum #Nat { Zero(), Succ(#Nat) };
+// CHECK:      fn #even(v0 (n): #Nat) -> bool {
+// CHECK-NEXT:     match v0 : #Nat {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => true : bool
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 switch (0, 0) {
-// CHECK-NEXT:                     ctor@0 => {
-// CHECK-NEXT:                         0.0 : bool
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 switch scrut.0 {
+// CHECK-NEXT:                     #0 => {
+// CHECK-NEXT:                         => false : bool
 // CHECK-NEXT:                     }
-// CHECK-NEXT:                     ctor@1 => {
-// CHECK-NEXT:                         pattern var v1 (0, 0, 0)
-// CHECK-NEXT:                         even(v1) : bool
+// CHECK-NEXT:                     #1 => {
+// CHECK-NEXT:                         v1=scrut.0.0 => #even(v1 : #Nat) : bool
 // CHECK-NEXT:                     }
 // CHECK-NEXT:                 }
 // CHECK-NEXT:             }
@@ -46,13 +37,13 @@ fn even(n : Nat) -> bool {
 
 // --- MLIR ownership checks for even (nested DT, flattened) ---
 // even(%0=n): match on n via borrow+dispatch
-// CHECK-MLIR-LABEL: func.func @"_RC4even"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC4even(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Zero branch: dec scrutinee, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       arith.constant 1 : i1
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       arith.constant true
 // CHECK-MLIR:       reussir.scf.yield
 // Succ branch: intermediate lookup (no inc needed), nested dispatch
 // CHECK-MLIR:       [1] ->
@@ -63,13 +54,13 @@ fn even(n : Nat) -> bool {
 // CHECK-MLIR:       reussir.record.dispatch
 // Succ(Zero): dec base scrutinee, yield false
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       arith.constant 0 : i1
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       arith.constant false
 // CHECK-MLIR:       reussir.scf.yield
 // Succ(Succ(m)): load deepest binding, inc it, dec base scrutinee, call even
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC4even"
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       call @_RC4even
