@@ -415,8 +415,13 @@ impl OrcJit {
     /// modules that called into the removed module keeps its (now dangling)
     /// resolutions, so this is intended for modules whose symbols were never
     /// successfully materialized (the REPL failure-recovery path).
-    pub fn remove_module(&self, handle: ModuleHandle<'_>) -> Result<(), String> {
-        // The handle's Drop releases the tracker reference after removal.
+    ///
+    /// Borrows rather than consumes the handle so a failed removal leaves it
+    /// intact (dropping it then would fold the module into the session
+    /// permanently). Dropping the handle after a successful removal — or
+    /// removing twice, which reports an error — is fine: the drop releases
+    /// only this reference to the (now defunct) tracker.
+    pub fn remove_module(&self, handle: &ModuleHandle<'_>) -> Result<(), String> {
         check_error(unsafe { LLVMOrcResourceTrackerRemove(handle.tracker) })
     }
 
@@ -605,7 +610,7 @@ mod tests {
         let handle = jit
             .add_ir_module_tracked("first", "define i32 @answer() { ret i32 1 }")
             .expect("tracked add");
-        jit.remove_module(handle).expect("remove");
+        jit.remove_module(&handle).expect("remove");
 
         // The name is free again; a fresh definition materializes fine.
         jit.add_ir_module("second", "define i32 @answer() { ret i32 42 }")

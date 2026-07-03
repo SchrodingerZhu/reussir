@@ -105,35 +105,58 @@ pub struct ReplParse {
 
 /// Parse one REPL input as either top-level items or an expression sequence.
 ///
-/// The route is decided by the first significant token — `fn`, `struct`,
-/// `enum`, `mod`, `extern`, and `pub` start items, and `regional` does iff
-/// the next token is `fn` (otherwise it is a `regional { ... }` expression);
-/// everything else is an expression. No backtracking: errors are reported
-/// against the chosen route. The routing is exact — every item-starting
-/// token is a hard keyword (the lexer never classifies `fn`, `struct`, etc.
-/// as identifiers), so no expression can begin with one.
+/// The route is decided by the first tokens, no backtracking: errors are
+/// reported against the chosen route. Items are recognized by an item prefix
+/// — `fn`/`struct`/`enum`/`mod` followed by the item's name, `extern`
+/// followed by its ABI string, `pub` followed by an item form, `regional`
+/// followed by `fn` — and everything else is an expression. One token of
+/// lookahead past the head keyword is needed because keyword tokens are
+/// contextual in identifier positions ([`SyntaxKind::is_ident_like`]): a
+/// variable named `fn` may head an expression (`fn + 1`). The one ambiguous
+/// prefix is an item keyword followed by `as` — `fn as i64` is a cast of a
+/// variable named `fn` — which routes to expressions, so an item literally
+/// named `as` cannot be entered at the REPL.
 pub fn parse_repl(
     source: &str,
     interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
 ) -> ReplParse {
     let mut kind = ReplInputKind::Expr;
     let parse = parse_impl(source, interner, |p| {
-        kind = match p.current() {
-            SyntaxKind::FnKw
-            | SyntaxKind::StructKw
-            | SyntaxKind::EnumKw
-            | SyntaxKind::ModKw
-            | SyntaxKind::ExternKw
-            | SyntaxKind::PubKw => ReplInputKind::Items,
-            SyntaxKind::RegionalKw if p.nth(1) == SyntaxKind::FnKw => ReplInputKind::Items,
-            _ => ReplInputKind::Expr,
-        };
+        kind = repl_route(p);
         match kind {
             ReplInputKind::Items => p.source_file(),
             ReplInputKind::Expr => p.repl_expr_seq(),
         }
     });
     ReplParse { parse, kind }
+}
+
+/// The [`parse_repl`] routing decision; see its docs for the rationale.
+fn repl_route(p: &parser::Parser) -> ReplInputKind {
+    use SyntaxKind::*;
+    let starts_item = match p.current() {
+        // `fn f`, `struct P`, ... — the keyword is an item head iff its
+        // name follows; a keyword-named variable is followed by an operator
+        // (`fn + 1`) or nothing. `as` is the exception: `fn as i64` is a
+        // cast of a variable named `fn`.
+        FnKw | StructKw | EnumKw | ModKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
+        // `extern "C" trampoline ...` — a string cannot follow a variable.
+        ExternKw => p.nth(1) == StringLit,
+        // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
+        PubKw => matches!(
+            p.nth(1),
+            RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw
+        ),
+        // `regional fn` is an item; any other `regional ...` is a region
+        // expression.
+        RegionalKw => p.nth(1) == FnKw,
+        _ => false,
+    };
+    if starts_item {
+        ReplInputKind::Items
+    } else {
+        ReplInputKind::Expr
+    }
 }
 
 /// The shared parse pipeline: lex, run `entry` on the parser, then build the
@@ -252,6 +275,18 @@ mod tests {
             "|x: i32| x + 1",
             // `regional` NOT followed by `fn` is a regional expression.
             "regional { Cell { value: 1 } }",
+            // Keyword tokens are contextual in identifier positions, so a
+            // keyword-named variable may head an expression; the name
+            // lookahead keeps these off the items route.
+            "fn + 1",
+            "struct(2)",
+            "mod.field",
+            "pub * 2",
+            "extern == 3",
+            // The documented `as` ambiguity resolves toward the cast.
+            "fn as i64",
+            // A bare keyword-named variable (nothing follows).
+            "enum",
         ];
         for source in exprs {
             let rp = parse_repl(source, interner.clone());
