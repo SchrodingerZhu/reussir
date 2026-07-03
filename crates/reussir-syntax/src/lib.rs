@@ -82,7 +82,7 @@ pub fn parse(source: &str) -> Parse {
 /// as the long-lived [`kind::Resolver`]; each parse's tree holds another.
 pub fn parse_with_interner(
     source: &str,
-    interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
+    interner: std::sync::Arc<MultiThreadedTokenInterner>,
 ) -> Parse {
     parse_impl(source, interner, |p| p.source_file())
 }
@@ -118,7 +118,7 @@ pub struct ReplParse {
 /// named `as` cannot be entered at the REPL.
 pub fn parse_repl(
     source: &str,
-    interner: std::sync::Arc<cstree::interning::MultiThreadedTokenInterner>,
+    interner: std::sync::Arc<MultiThreadedTokenInterner>,
 ) -> ReplParse {
     let mut kind = ReplInputKind::Expr;
     let parse = parse_impl(source, interner, |p| {
@@ -305,6 +305,27 @@ mod tests {
         assert!(!rp.parse.ok());
         // Lossless even under recovery.
         assert_eq!(rp.parse.root.text(), "1 + 2 3");
+    }
+
+    #[test]
+    fn repl_expr_seq_recovers_at_semicolons() {
+        let interner = std::sync::Arc::new(new_threaded_interner());
+        // An error inside one expression resynchronizes at the `;`: the
+        // expression's own diagnostic is the only one (no misleading
+        // "expected `;`"), and the rest of the sequence still parses.
+        let rp = parse_repl("1 + ; 2 + 3", interner);
+        assert_eq!(rp.kind, ReplInputKind::Expr);
+        assert_eq!(rp.parse.errors.len(), 1, "{:#?}", rp.parse.errors);
+        assert_eq!(rp.parse.root.text(), "1 + ; 2 + 3");
+        // The recovered tail is a real expression node, not error debris.
+        let tail = rp
+            .parse
+            .root
+            .children()
+            .filter(|c| c.kind() != SyntaxKind::ErrorNode)
+            .last()
+            .expect("expression after the error");
+        assert_eq!(tail.text(), "2 + 3");
     }
 
     #[test]
