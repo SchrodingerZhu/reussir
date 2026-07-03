@@ -1,0 +1,17 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+struct [value] Point { x : i64, y : i64 }
+// CHECK: Definition added.
+
+{ let p = Point { x : 1, y : 2 } ; p.x }
+// CHECK: 1 : i64
+
+struct RcWrapper<T> { value : T }
+// CHECK: Definition added.
+
+fn wrap<T>(value : T) -> RcWrapper<T> { RcWrapper { value: value } }
+// CHECK: Definition added.
+
+wrap(Point { x : 1, y : 2 }).value.y
+// CHECK: 2 : i64

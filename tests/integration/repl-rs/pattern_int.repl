@@ -1,0 +1,48 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Test: integer constant patterns, wildcard, and variable binding
+
+:{
+fn classify(x: i32) -> i32 {
+    match x {
+        0 => 10,
+        1 => 20,
+        2 => 30,
+        _ => 0
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn bind_or_zero(x: i32) -> i32 {
+    match x {
+        0 => 0,
+        1 => 0,
+        y => y
+    }
+}
+}:
+// CHECK: Definition added.
+
+classify(0)
+// CHECK: 10 : i32
+
+classify(1)
+// CHECK: 20 : i32
+
+classify(2)
+// CHECK: 30 : i32
+
+classify(99)
+// CHECK: 0 : i32
+
+bind_or_zero(0)
+// CHECK: 0 : i32
+
+bind_or_zero(1)
+// CHECK: 0 : i32
+
+bind_or_zero(42)
+// CHECK: 42 : i32

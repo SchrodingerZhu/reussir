@@ -1,0 +1,44 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Test: integer pattern matching with guards
+
+:{
+fn clamp(x: i32) -> i32 {
+    match x {
+        n if n < 0 => 0,
+        n if n > 100 => 100,
+        n => n
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn abs_val(x: i32) -> i32 {
+    match x {
+        0 => 0,
+        n if n > 0 => n,
+        n => 0 - n
+    }
+}
+}:
+// CHECK: Definition added.
+
+clamp(-5)
+// CHECK: 0 : i32
+
+clamp(50)
+// CHECK: 50 : i32
+
+clamp(200)
+// CHECK: 100 : i32
+
+abs_val(0)
+// CHECK: 0 : i32
+
+abs_val(7)
+// CHECK: 7 : i32
+
+abs_val(-3)
+// CHECK: 3 : i32

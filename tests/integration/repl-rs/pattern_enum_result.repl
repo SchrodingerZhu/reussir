@@ -1,0 +1,52 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Test: pattern matching on Result enum with mixed constructor and integer patterns
+
+:{
+enum Result {
+    Ok(i32),
+    Err(i32)
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn get_or_default(x: Result, default: i32) -> i32 {
+    match x {
+        Result::Ok(v) => v,
+        Result::Err(_) => default
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn classify_result(x: Result) -> i32 {
+    match x {
+        Result::Ok(0) => 1,
+        Result::Ok(n) => n + 100,
+        Result::Err(0) => 2,
+        Result::Err(_) => 3
+    }
+}
+}:
+// CHECK: Definition added.
+
+get_or_default(Result::Ok{10}, 0)
+// CHECK: 10 : i32
+
+get_or_default(Result::Err{1}, 99)
+// CHECK: 99 : i32
+
+classify_result(Result::Ok{0})
+// CHECK: 1 : i32
+
+classify_result(Result::Ok{5})
+// CHECK: 105 : i32
+
+classify_result(Result::Err{0})
+// CHECK: 2 : i32
+
+classify_result(Result::Err{7})
+// CHECK: 3 : i32

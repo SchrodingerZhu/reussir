@@ -1,0 +1,23 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Test multiline function definition
+:{
+fn add(x: i64, y: i64) -> i64 {
+    x + y
+}
+}:
+// CHECK: Definition added.
+
+add(1, 2)
+// CHECK: 3 : i64
+
+// Test multiline expression
+:{
+{
+    let a = 10;
+    let b = 20;
+    a + b
+}
+}:
+// CHECK: 30 : i64

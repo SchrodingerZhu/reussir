@@ -1,0 +1,45 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+:{
+enum Nat {
+    Zero,
+    Succ(Nat)
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn fromU32(x: u32) -> Nat {
+    if x == 0 {
+        Nat::Zero
+    } else {
+        Nat::Succ{fromU32(x - 1)}
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn add(x: Nat, y: Nat) -> Nat {
+    match x {
+        Nat::Zero => y,
+        Nat::Succ(z) => add(z, Nat::Succ{y})
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn toU32(x: Nat) -> u32 {
+    match x {
+        Nat::Zero => 0,
+        Nat::Succ(y) => 1 + toU32(y)
+    }
+}
+}:
+// CHECK: Definition added.
+
+toU32(add(fromU32(6), fromU32(5)))
+
+// CHECK: 11 : u32

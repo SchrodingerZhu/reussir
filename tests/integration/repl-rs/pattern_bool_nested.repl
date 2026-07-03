@@ -1,0 +1,60 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Test: nested pattern matching on bool with multiple arguments
+
+:{
+fn both(a: bool, b: bool) -> i32 {
+    match a {
+        true => match b {
+            true => 3,
+            false => 2
+        },
+        false => match b {
+            true => 1,
+            false => 0
+        }
+    }
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn xor(a: bool, b: bool) -> bool {
+    match a {
+        true => match b {
+            true => false,
+            false => true
+        },
+        false => match b {
+            true => true,
+            false => false
+        }
+    }
+}
+}:
+// CHECK: Definition added.
+
+both(true, true)
+// CHECK: 3 : i32
+
+both(true, false)
+// CHECK: 2 : i32
+
+both(false, true)
+// CHECK: 1 : i32
+
+both(false, false)
+// CHECK: 0 : i32
+
+xor(true, false)
+// CHECK: true : bool
+
+xor(true, true)
+// CHECK: false : bool
+
+xor(false, true)
+// CHECK: true : bool
+
+xor(false, false)
+// CHECK: false : bool
