@@ -1,0 +1,43 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+
+// Input routing corners: every item-prefix form must reach the item
+// grammar, and keyword tokens in identifier positions must not drag an
+// expression onto the items route. Each case here was (or guards against)
+// a real misrouting: `struct [value]` shipped broken once.
+
+pub fn pf(x: i64) -> i64 { x * 2 }
+// CHECK: Definition added.
+
+// A capability annotation between the keyword and the name.
+struct [value] PV { a: i64 }
+// CHECK: Definition added.
+
+enum [shared] ES { A, B(i64) }
+// CHECK: Definition added.
+
+pub struct PS { s: i64 }
+// CHECK: Definition added.
+
+// Keyword tokens are contextual in identifier positions: a variable may be
+// named like an item keyword, and the expression must not misroute.
+let fn = 1; fn + 1
+// CHECK: 2 : i64
+
+let struct = 2; struct * struct
+// CHECK: 4 : i64
+
+let enum = 9; enum - 2
+// CHECK: 7 : i64
+
+// `regional` heads an item only when `fn` follows; braces make a region
+// expression.
+regional { 1 + 1 }
+// CHECK: 2 : i64
+
+// Definitions and expressions keep composing after the routing corners.
+ES::B{pf(3)}
+// CHECK: ES::B(6) : ES
+
+PV { a: 5 }
+// CHECK: PV { a: 5 } : PV

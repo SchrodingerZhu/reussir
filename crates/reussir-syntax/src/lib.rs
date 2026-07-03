@@ -136,7 +136,12 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // name follows; a keyword-named variable is followed by an operator
         // (`fn + 1`) or nothing. `as` is the exception: `fn as i64` is a
         // cast of a variable named `fn`.
-        FnKw | StructKw | EnumKw | ModKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
+        FnKw | ModKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
+        // Records may also carry a capability annotation before the name:
+        // `struct [value] V { ... }`.
+        StructKw | EnumKw => {
+            (p.nth(1).is_ident_like() && p.nth(1) != AsKw) || p.nth(1) == LBracket
+        }
         // `extern "C" trampoline ...` — a string cannot follow a variable.
         ExternKw => p.nth(1) == StringLit,
         // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
@@ -252,6 +257,9 @@ mod tests {
             "mod m;",
             "extern \"C\" trampoline \"f_ffi\" = f;",
             "regional fn h(c: [flex] L<i32>) { c->v := 1 }",
+            // A capability annotation may precede the record name.
+            "struct [value] V { a: i32 }",
+            "enum [shared] E { A, B }",
             // Several items in one input.
             "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }",
         ];

@@ -1,0 +1,46 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+
+// The `:command` surface, driven end-to-end in script mode.
+
+fn pf(x: i64) -> i64 { x * 2 }
+// CHECK: Definition added.
+
+pf(2)
+// CHECK: 4 : i64
+
+// `:type` elaborates without evaluating (and rolls back).
+:type pf(40)
+// CHECK: pf(40) : i64
+
+// The compiled dump shows the user's mangled symbols, not the
+// per-expression `__repl_expr_N` wrappers or their dec companions.
+:dump compiled
+// CHECK: === Compiled Functions ===
+// CHECK-NOT: __repl_
+// CHECK: pf
+
+// `:set opt` re-levels later inputs; bad levels and commands are clean
+// diagnostics, not session errors.
+:set opt none
+// CHECK: optimization level set to none
+
+pf(10)
+// CHECK: 20 : i64
+
+:set opt bogus
+// CHECK: unknown level `bogus`
+
+:unknown
+// CHECK: Unknown command: :unknown
+
+// `:clear` releases every definition: the name is immediately reusable at
+// a *different* signature, and the fresh session evaluates.
+:clear
+// CHECK: Context cleared
+
+fn pf() -> i64 { 99 }
+// CHECK: Definition added.
+
+pf()
+// CHECK: 99 : i64

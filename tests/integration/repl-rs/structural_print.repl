@@ -1,0 +1,80 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// Structural printing: results are reflected through the host-side layout
+// mirror (records, recursive enums, nullables, nesting).
+
+struct P { x: i64, y: f64 }
+// CHECK: Definition added.
+
+P { x: 42, y: 2.5 }
+// CHECK: P { x: 42, y: 2.5 } : P
+
+:{
+enum Nat {
+    Zero,
+    Succ(Nat)
+}
+}:
+// CHECK: Definition added.
+
+:{
+fn fromU32(x: u32) -> Nat {
+    if x == 0 {
+        Nat::Zero
+    } else {
+        Nat::Succ{fromU32(x - 1)}
+    }
+}
+}:
+// CHECK: Definition added.
+
+fromU32(3)
+// CHECK: Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero))) : Nat
+
+:{
+enum List<T> { Nil, Cons(T, List<T>) }
+}:
+// CHECK: Definition added.
+
+:{
+fn range(n: i64) -> List<i64> {
+    if n == 0 { List::Nil } else { List::Cons{n, range(n - 1)} }
+}
+}:
+// CHECK: Definition added.
+
+range(3)
+// CHECK: List<i64>::Cons(3, List<i64>::Cons(2, List<i64>::Cons(1, List<i64>::Nil))) : List<i64>
+
+// A generic enum instantiated at a second type, on the fly.
+:{
+fn halves(n: i64) -> List<f64> {
+    if n == 0 { List::Nil } else { List::Cons{n as f64 / 2.0, halves(n - 1)} }
+}
+}:
+// CHECK: Definition added.
+
+halves(2)
+// CHECK: List<f64>::Cons(1.0, List<f64>::Cons(0.5, List<f64>::Nil)) : List<f64>
+
+// Nullable unwraps to the inner value (or Null).
+Nullable::NonNull{P { x: 1, y: 0.5 }}
+// CHECK: P { x: 1, y: 0.5 } : Nullable<P>
+
+// Value records nest inline; a struct with an unnamed (tuple) field.
+struct [value] V { a: i32, b: bool }
+// CHECK: Definition added.
+
+V { a: 7, b: true }
+// CHECK: V { a: 7, b: true } : V
+
+// Displayed results are released through the synthesized dec companions
+// (`__repl_expr_N_dec` consuming the `__ReplBox`); repeated managed results
+// would corrupt the allocator on a double free and abort the session.
+range(10)
+// CHECK: List<i64>::Cons(10,
+range(10)
+// CHECK: List<i64>::Cons(10,
+40 + 2
+// CHECK: 42 : i64

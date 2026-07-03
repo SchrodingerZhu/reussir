@@ -11,7 +11,7 @@ use rustc_hash::FxHashSet;
 use reussir_backend::pipeline::{self, LoweringOptions};
 use reussir_codegen::lower::lower_program;
 use reussir_core::full::mono::monomorphize;
-use reussir_core::semi::ty::{Ty, TyCtxt, TyKind};
+use reussir_core::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use reussir_core::semi::{Checkpoint, Elaborator, Report, Severity};
 use reussir_core::{in_arena, surface};
 use reussir_jit::{ModuleHandle, OptLevel, OrcJit};
@@ -88,6 +88,15 @@ pub struct ReplSession<'a, 'tcx> {
     interner: Arc<MultiThreadedTokenInterner>,
     pub(crate) elab: Elaborator<'a, 'tcx>,
     context: &'a Context,
+    /// The session's boxing prelude record (`__ReplBox<T>`); every
+    /// expression result crosses the C ABI wrapped in one (see
+    /// `reussir_core::semi::repl`).
+    repl_box: DefId,
+    /// Ground record shapes harvested from every input's monomorphized
+    /// program; the value walker reflects results through these.
+    shapes: crate::reflect::ShapeTable<'tcx>,
+    /// Printer hooks consulted before the structural fallback.
+    pub printers: crate::reflect::PrinterRegistry,
     /// Tracked JIT modules, one per successfully added input. Each handle
     /// borrows the [`OrcJit`] (owned by [`run`]'s scope, outliving the
     /// session), so releasing every tracker before the LLJIT is disposed —
@@ -112,13 +121,25 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         jit: &'a OrcJit,
         config: Config,
     ) -> Self {
+        let mut interning = interner.clone();
+        let box_name = Interner::get_or_intern(&mut interning, "__ReplBox");
+        let box_param = Interner::get_or_intern(&mut interning, "T");
+        let box_field = Interner::get_or_intern(&mut interning, "value");
+        let mut elab = Elaborator::new(tcx, interner);
+        // Before the first checkpoint, so no rollback can ever retract it.
+        let repl_box = elab
+            .install_repl_box(box_name, box_param, box_field)
+            .expect("fresh session");
         ReplSession {
             tcx,
             interner: interner.clone(),
-            elab: Elaborator::new(tcx, interner),
+            elab,
+            repl_box,
             context,
             jit,
             emitted: FxHashSet::default(),
+            shapes: crate::reflect::ShapeTable::default(),
+            printers: crate::reflect::PrinterRegistry::default(),
             modules: Vec::new(),
             counter: 0,
             opt: config.opt,
@@ -171,7 +192,12 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                 let expr = surface::repl_expr(&parsed.parse.root);
                 let export = format!("__repl_expr_{}", self.counter);
                 let name = Interner::get_or_intern(&mut self.interner.clone(), &export);
-                match self.elab.try_repl_expr(name, &export, &expr) {
+                let dec_name =
+                    Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
+                match self
+                    .elab
+                    .try_repl_expr(name, dec_name, &export, &expr, self.repl_box)
+                {
                     Err(reports) => Outcome::Reports(reports),
                     Ok((ty, warnings)) => match self.compile_new(&cp) {
                         Err(outcome) => outcome,
@@ -180,7 +206,17 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                         // evicts the module and rolls the elaborator back,
                         // leaving the session exactly as before the input.
                         Ok(pending) => {
-                            match crate::value::call_and_render(self.jit, &export, ty) {
+                            let box_ty =
+                                self.tcx
+                                    .mk_record(self.repl_box, &[ty], Flexivity::Irrelevant);
+                            match crate::value::call_and_render(
+                                self.jit,
+                                &export,
+                                ty,
+                                box_ty,
+                                &self.shapes,
+                                &self.printers,
+                            ) {
                                 Ok(value) => {
                                     self.commit(pending);
                                     self.counter += 1;
@@ -192,11 +228,13 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                     // input's call graph instead of every
                                     // historical expression's. The wrapper's
                                     // HIR stays behind as dead code.
-                                    let retired = self.elab.trampolines.pop();
-                                    debug_assert_eq!(
-                                        retired.as_ref().map(|t| t.name.as_str()),
-                                        Some(export.as_str()),
-                                        "the wrapper's root must be the last registered"
+                                    let before = self.elab.trampolines.len();
+                                    self.elab
+                                        .trampolines
+                                        .retain(|t| !t.name.starts_with(&export));
+                                    debug_assert!(
+                                        self.elab.trampolines.len() < before,
+                                        "the wrapper's roots must be registered"
                                     );
                                     Outcome::Value {
                                         value,
@@ -232,7 +270,10 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         let expr = surface::repl_expr(&parsed.parse.root);
         let cp = self.elab.checkpoint();
         let name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe");
-        let result = self.elab.try_repl_expr(name, "__repl_type_probe", &expr);
+        let dec_name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe_dec");
+        let result =
+            self.elab
+                .try_repl_expr(name, dec_name, "__repl_type_probe", &expr, self.repl_box);
         match result {
             Ok((ty, _)) => {
                 let rendered = self.render_ty(ty);
@@ -256,6 +297,18 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             return Err(Outcome::Reports(reports));
         }
         crate::externalize::externalize(&mut program, &self.emitted);
+
+        // Remember every ground record shape this input introduced — the
+        // value walker reflects results through them. (Harvested before the
+        // empty-module early return: a record declaration compiles nothing
+        // but its shape must still be known.)
+        {
+            // Split the borrow: `render_ty` reads the elaborator only.
+            let elab = &self.elab;
+            crate::reflect::harvest(&mut self.shapes, &program, |ty| {
+                Self::render_ty_with(elab, ty)
+            });
+        }
 
         // Nothing new to compile (e.g. a record declaration, or a generic
         // function with no instantiations yet).
@@ -324,21 +377,33 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         }
     }
 
-    /// Number of accepted user definitions — functions and records, the
-    /// synthetic `__repl_expr_N` wrappers excluded; shown in the TUI status
+    /// Number of accepted user definitions — functions and records; the
+    /// synthetic `__repl_expr_N` wrappers, their dec companions, and the
+    /// `__ReplBox` prelude are excluded (`__` names are unspellable, so the
+    /// prefix test cannot hide a user definition). Shown in the TUI status
     /// line.
     pub fn definition_count(&self) -> usize {
         let functions = self
             .elab
             .elaborated
             .iter()
-            .filter(|f| !self.elab.sym(f.name).starts_with("__repl_"))
+            .filter(|f| !self.elab.sym(f.name).starts_with("__"))
             .count();
-        functions + self.elab.records.len()
+        let records = self
+            .elab
+            .records
+            .values()
+            .filter(|r| !self.elab.sym(r.name).starts_with("__"))
+            .count();
+        functions + records
     }
 
     /// Render a ground Semi type for display (`i64`, `f64`, `List::<i64>`).
     pub(crate) fn render_ty(&self, ty: Ty<'tcx>) -> String {
+        Self::render_ty_with(&self.elab, ty)
+    }
+
+    fn render_ty_with(elab: &Elaborator<'a, 'tcx>, ty: Ty<'tcx>) -> String {
         match *ty.kind() {
             TyKind::Int(reussir_core::semi::ty::IntTy::Signed(w)) => format!("i{w}"),
             TyKind::Int(reussir_core::semi::ty::IntTy::Unsigned(w)) => format!("u{w}"),
@@ -349,18 +414,30 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Str => "str".to_string(),
             TyKind::Unit => "()".to_string(),
             TyKind::Bottom => "!".to_string(),
-            TyKind::Nullable(inner) => format!("Nullable<{}>", self.render_ty(inner)),
+            TyKind::Nullable(inner) => {
+                format!("Nullable<{}>", Self::render_ty_with(elab, inner))
+            }
             TyKind::Record { def, args, .. } => {
-                let mut out = self.elab.defs.path(def).display(self.elab.resolver);
+                let mut out = elab.defs.path(def).display(elab.resolver);
                 if !args.is_empty() {
-                    let args: Vec<String> = args.iter().map(|&a| self.render_ty(a)).collect();
+                    let args: Vec<String> = args
+                        .iter()
+                        .map(|&a| Self::render_ty_with(elab, a))
+                        .collect();
                     out.push_str(&format!("<{}>", args.join(", ")));
                 }
                 out
             }
             TyKind::Closure { params, ret } => {
-                let params: Vec<String> = params.iter().map(|&p| self.render_ty(p)).collect();
-                format!("({}) -> {}", params.join(", "), self.render_ty(ret))
+                let params: Vec<String> = params
+                    .iter()
+                    .map(|&p| Self::render_ty_with(elab, p))
+                    .collect();
+                format!(
+                    "({}) -> {}",
+                    params.join(", "),
+                    Self::render_ty_with(elab, ret)
+                )
             }
             TyKind::Generic(_) | TyKind::Hole(_) => "_".to_string(),
         }

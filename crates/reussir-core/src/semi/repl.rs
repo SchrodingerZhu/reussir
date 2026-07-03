@@ -4,17 +4,33 @@
 //! A REPL driver keeps one persistent [`Elaborator`] for the whole session
 //! (see [`Elaborator::try_extend`]) and calls [`Elaborator::try_repl_expr`]
 //! for every expression input. On success the accumulated program gains a
-//! private `fn __repl_expr_N() -> T { <expr> }` plus a
-//! [`TrampolineRoot`](super::ctxt::TrampolineRoot) exporting the same name,
-//! so monomorphization roots the wrapper and codegen emits a host-callable
-//! `extern "C"` entry for it. On any error the elaborator rolls back
-//! atomically, exactly like `try_extend`.
+//! private wrapper `fn __repl_expr_N() -> __ReplBox<T> { __ReplBox { value:
+//! <expr> } }` plus a dec companion `fn __repl_expr_N_dec(b: __ReplBox<T>)
+//! { }`, each with a C-ABI [`TrampolineRoot`](super::ctxt::TrampolineRoot),
+//! so monomorphization roots them and codegen emits host-callable entries.
+//! On any error the elaborator rolls back atomically, exactly like
+//! `try_extend`.
+//!
+//! **Why box:** [`Elaborator::install_repl_box`] plants a session prelude
+//! `struct [shared] __ReplBox<T> { value: T }` (the name is unspellable —
+//! an identifier cannot start with `_` — so user code can never collide
+//! with or name it). Wrapping every result in it makes every expression
+//! cross the C ABI as *one* pointer to a shared rc box: scalars, value
+//! records, enums, closures and nullables all take the same host call
+//! shape, value aggregates get a stable heap address for the layout
+//! walker, and releasing the *box* releases the whole result — the dec
+//! companion is an empty *consuming* function, so the ownership pass
+//! synthesizes the type-correct recursive drop; no hand-written drop glue
+//! exists anywhere. A unit result skips the box (nothing to show or free).
 
 use reussir_syntax::kind::TokenKey;
 
-use crate::semi::ctxt::{Checkpoint, Elaborator, FuncProto, Report, Severity, TrampolineRoot};
-use crate::semi::hir::Function;
-use crate::semi::ty::Ty;
+use crate::semi::ctxt::{
+    Checkpoint, DefaultCap, Elaborator, FuncProto, Record, RecordFields, Report, Severity,
+    TrampolineRoot,
+};
+use crate::semi::hir::{Expr, ExprKind, Function, VarId};
+use crate::semi::ty::{DefId, Flexivity, Ty, TyKind};
 use crate::surface::{self, Visibility};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -32,8 +48,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub fn try_repl_expr(
         &mut self,
         name: TokenKey,
+        dec_name: TokenKey,
         export: &str,
         expr: &surface::Expr,
+        repl_box: DefId,
     ) -> Result<(Ty<'tcx>, Vec<Report>), Vec<Report>> {
         let cp = self.checkpoint();
         let span = Some(expr.span());
@@ -84,6 +102,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return Err(self.take_reports_and_rollback(&cp));
             }
         };
+        // Box the result (module docs): the wrapper returns
+        // `__ReplBox<T> { value: <expr> }` so every expression crosses the
+        // C ABI as one shared-box pointer. Unit has nothing to show or
+        // free and skips the box.
+        let boxed = !matches!(return_ty.kind(), TyKind::Unit);
+        let (body, wrapper_ty) = if boxed {
+            // A shared record's coloring is `Irrelevant` (only regional
+            // records carry Flex/Rigid), matching `record_ty`.
+            let box_ty = self
+                .tcx
+                .mk_record(repl_box, &[return_ty], Flexivity::Irrelevant);
+            let body = Expr {
+                kind: ExprKind::CompoundCall {
+                    target: repl_box,
+                    ty_args: vec![return_ty],
+                    args: vec![body],
+                },
+                ty: box_ty,
+                span,
+                id: self.fresh_expr_id(),
+            };
+            (body, box_ty)
+        } else {
+            (body, return_ty)
+        };
         self.functions.insert(
             def,
             FuncProto {
@@ -93,7 +136,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 generics: Vec::new(),
                 regional_generics: Vec::new(),
                 params: Vec::new(),
-                return_ty,
+                return_ty: wrapper_ty,
                 is_regional: false,
                 span,
             },
@@ -105,7 +148,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             generics: Vec::new(),
             regional_generics: std::mem::take(&mut self.regional_generics),
             params: Vec::new(),
-            return_ty,
+            return_ty: wrapper_ty,
             is_regional: false,
             body: Some(body),
             span,
@@ -116,7 +159,89 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             target: def,
             ty_args: Vec::new(),
         });
+
+        // The dec companion: an empty function *consuming* the box. The
+        // ownership pass drops the unused parameter, which is exactly the
+        // type-correct recursive release of the whole displayed result —
+        // the host calls it once the value walker is done.
+        if boxed {
+            let Some(dec_def) = self.defs.declare_function(dec_name) else {
+                self.error(span, format!("`{}` is already defined", self.sym(dec_name)));
+                return Err(self.take_reports_and_rollback(&cp));
+            };
+            self.functions.insert(
+                dec_def,
+                FuncProto {
+                    def: dec_def,
+                    name: dec_name,
+                    visibility: Visibility::Private,
+                    generics: Vec::new(),
+                    regional_generics: Vec::new(),
+                    params: vec![(dec_name, wrapper_ty)],
+                    return_ty: self.tcx.mk_unit(),
+                    is_regional: false,
+                    span,
+                },
+            );
+            let dec_body = Expr {
+                kind: ExprKind::Seq(Vec::new()),
+                ty: self.tcx.mk_unit(),
+                span,
+                id: self.fresh_expr_id(),
+            };
+            self.elaborated.push(Function {
+                def: dec_def,
+                name: dec_name,
+                visibility: Visibility::Private,
+                generics: Vec::new(),
+                regional_generics: Vec::new(),
+                params: vec![(dec_name, VarId(0), wrapper_ty)],
+                return_ty: self.tcx.mk_unit(),
+                is_regional: false,
+                body: Some(dec_body),
+                span,
+            });
+            self.trampolines.push(TrampolineRoot {
+                name: format!("{export}_dec"),
+                abi: "C".to_string(),
+                target: dec_def,
+                ty_args: Vec::new(),
+            });
+        }
         Ok((return_ty, new))
+    }
+
+    /// Install the REPL's boxing prelude — `struct [shared] __ReplBox<T>
+    /// { value: T }` (see the module docs) — under the given interned keys.
+    /// Call once per session, **before** the first checkpoint, so the record
+    /// is never retracted by a rollback. `None` if `name` is taken (a
+    /// driver bug: the name is unspellable).
+    pub fn install_repl_box(
+        &mut self,
+        name: TokenKey,
+        ty_param: TokenKey,
+        field: TokenKey,
+    ) -> Option<DefId> {
+        let def = self.defs.declare_record(name)?;
+        let generic = self.fresh_generic(ty_param, Vec::new());
+        self.records.insert(
+            def,
+            Record {
+                def,
+                name,
+                ty_params: vec![(ty_param, generic)],
+                kind: surface::RecordKind::StructKind,
+                default_cap: DefaultCap::Shared,
+                fields: Some(RecordFields::Named(vec![(
+                    field,
+                    self.tcx.mk_generic(generic),
+                    false,
+                )])),
+                regional_generics: Vec::new(),
+                span: None,
+            },
+        );
+        Some(def)
     }
 
     /// Split off the reports added since `cp`, then roll back.
@@ -138,11 +263,12 @@ mod tests {
     use crate::surface;
     use crate::with_tcx;
 
-    /// A REPL-session harness: one shared interner, one elaborator, a
-    /// counter for `__repl_expr_N` names.
+    /// A REPL-session harness: one shared interner, one elaborator (with
+    /// the boxing prelude installed), a counter for `__repl_expr_N` names.
     struct Session<'a, 'tcx> {
         interner: Arc<MultiThreadedTokenInterner>,
         elab: Elaborator<'a, 'tcx>,
+        repl_box: crate::semi::ty::DefId,
         counter: usize,
     }
 
@@ -164,8 +290,10 @@ mod tests {
             let export = format!("__repl_expr_{}", self.counter);
             self.counter += 1;
             let key = Interner::get_or_intern(&mut self.interner.clone(), &export);
+            let dec_key =
+                Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
             self.elab
-                .try_repl_expr(key, &export, &expr)
+                .try_repl_expr(key, dec_key, &export, &expr, self.repl_box)
                 .map(|(ty, _)| ty)
         }
     }
@@ -177,9 +305,18 @@ mod tests {
             // the same shape a real REPL driver uses.
             let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
                 &interner;
+            let mut interning = interner.clone();
+            let box_name = Interner::get_or_intern(&mut interning, "__ReplBox");
+            let box_param = Interner::get_or_intern(&mut interning, "T");
+            let box_field = Interner::get_or_intern(&mut interning, "value");
+            let mut elab = Elaborator::new(tcx, resolver);
+            let repl_box = elab
+                .install_repl_box(box_name, box_param, box_field)
+                .expect("fresh session");
             let mut s = Session {
                 interner: interner.clone(),
-                elab: Elaborator::new(tcx, resolver),
+                elab,
+                repl_box,
                 counter: 0,
             };
             f(&mut s, tcx)
@@ -252,7 +389,8 @@ mod tests {
                 errs.iter().any(|r| r.message.contains("already defined")),
                 "{errs:#?}"
             );
-            assert_eq!(s.elab.elaborated.len(), 1, "clashing input rolled back");
+            // Wrapper + dec companion from the surviving first input.
+            assert_eq!(s.elab.elaborated.len(), 2, "clashing input rolled back");
             s.counter = 1;
             s.eval("2").expect("session still usable");
         });
@@ -262,15 +400,24 @@ mod tests {
     fn registers_the_wrapper_and_trampoline() {
         session(|s, _| {
             s.eval("40 + 2").unwrap();
-            assert_eq!(s.elab.elaborated.len(), 1);
+            // The wrapper and its dec companion, each with a trampoline.
+            assert_eq!(s.elab.elaborated.len(), 2);
             let f = &s.elab.elaborated[0];
             assert_eq!(s.elab.sym(f.name), "__repl_expr_0");
             assert!(f.generics.is_empty() && f.params.is_empty());
-            assert_eq!(s.elab.trampolines.len(), 1);
+            // The wrapper returns the box, not the bare expression type.
+            assert!(matches!(f.return_ty.kind(), TyKind::Record { .. }));
+            let dec = &s.elab.elaborated[1];
+            assert_eq!(s.elab.sym(dec.name), "__repl_expr_0_dec");
+            assert_eq!(dec.params.len(), 1, "dec consumes the box");
+            assert_eq!(dec.params[0].2, f.return_ty);
+            assert_eq!(s.elab.trampolines.len(), 2);
             let t = &s.elab.trampolines[0];
             assert_eq!(t.name, "__repl_expr_0");
             assert_eq!(t.abi, "C");
             assert_eq!(t.target, f.def);
+            assert_eq!(s.elab.trampolines[1].name, "__repl_expr_0_dec");
+            assert_eq!(s.elab.trampolines[1].target, dec.def);
         });
     }
 
@@ -287,7 +434,8 @@ mod tests {
             // instantiations of `poly_add` and both expression trampolines.
             let (program, reports) = monomorphize(&s.elab.mono_input());
             assert!(reports.is_empty(), "{reports:#?}");
-            assert_eq!(program.trampolines.len(), 2);
+            // Two expressions × (wrapper + dec companion).
+            assert_eq!(program.trampolines.len(), 4);
             let names: Vec<&str> = program
                 .functions
                 .iter()

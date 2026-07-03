@@ -53,18 +53,42 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                 let funcs: Vec<_> = elab
                     .elaborated
                     .iter()
-                    .filter(|f| !elab.sym(f.name).starts_with("__repl_"))
+                    .filter(|f| !elab.sym(f.name).starts_with("__"))
                     .cloned()
+                    .collect();
+                let records = elab
+                    .records
+                    .iter()
+                    .filter(|(_, r)| !elab.sym(r.name).starts_with("__"))
+                    .map(|(k, v)| (*k, v.clone()))
                     .collect();
                 let text = Printer::new(&elab.defs, elab.resolver).program(
                     &funcs,
-                    &elab.records,
+                    &records,
                     &elab.trampolines,
                 );
                 Outcome::Text(text)
             }
             Some("compiled") => {
-                let mut symbols: Vec<&str> = session.emitted.iter().map(String::as_str).collect();
+                // The per-expression wrappers and dec companions are driver
+                // plumbing; a session's dump would otherwise drown the user's
+                // functions in them. Match the synthetic *prefix* (raw
+                // exports and their `_RC<len>`-mangled forms), not a
+                // substring — a user identifier may legally contain
+                // `__repl_` mid-name.
+                fn synthetic(sym: &str) -> bool {
+                    let tail = sym
+                        .strip_prefix("_RC")
+                        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+                        .unwrap_or(sym);
+                    tail.trim_start_matches('_').starts_with("repl_") && tail.starts_with("__")
+                }
+                let mut symbols: Vec<&str> = session
+                    .emitted
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|s| !synthetic(s))
+                    .collect();
                 symbols.sort_unstable();
                 let mut out = String::from("=== Compiled Functions ===\n");
                 for symbol in symbols {
