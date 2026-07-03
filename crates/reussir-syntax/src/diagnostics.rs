@@ -4,8 +4,8 @@
 //! through one path: a caller lowers each into a [`Diagnostic`] (a byte-offset
 //! span, a [`Severity`], and a message) and hands the batch to [`render`], which
 //! draws a source-caret report. A spanless diagnostic — one the compiler could
-//! not trace back to a source location — falls back to a plain `severity:
-//! message` line.
+//! not trace back to a source location — falls back to a plain
+//! `{file_name}: severity: message` line.
 
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 
@@ -92,8 +92,8 @@ impl SourceMap {
 /// A diagnostic with a span draws an `ariadne` source-caret report; the `ariadne`
 /// cache holds the single source file and spans are converted to character
 /// offsets, which is what [`ariadne::Source`] indexes by. A spanless diagnostic
-/// is written as a plain `severity: message` line — the compiler could not trace
-/// it back to source, so there is nothing to point at.
+/// is written as a plain `{file_name}: severity: message` line — the compiler
+/// could not trace it back to source, so there is nothing to point at.
 pub fn render(
     file_name: &str,
     source: &str,
