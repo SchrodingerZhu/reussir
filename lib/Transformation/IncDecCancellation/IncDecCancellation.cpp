@@ -106,12 +106,26 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
         // increment.
         break;
       }
-      // If encounter any of the following, there is a chance that nested
-      // operation may demand rc management. Hence, we abort the cancellation.
-      if (llvm::isa<mlir::CallableOpInterface>(next) ||
-          llvm::isa<mlir::RegionBranchOpInterface>(next) ||
-          llvm::isa<ReussirClosureApplyOp>(next) ||
-          llvm::isa<ReussirClosureEvalOp>(next))
+      // A call *site* (`mlir::CallOpInterface`, e.g. `func.call`) is opaque: it
+      // may consume the incremented value (a closure application lowers to a
+      // `func.call` that takes ownership of its closure), so cancelling across it
+      // could drop a live reference. Guard on the call-site interface — *not*
+      // `CallableOpInterface`, which is the call *target* (`func.func`) and never
+      // appears mid-block. A control-flow op with regions is likewise opaque.
+      if (llvm::isa<mlir::CallOpInterface>(next) ||
+          llvm::isa<mlir::RegionBranchOpInterface>(next))
+        break;
+      // `closure.apply`/`closure.eval` consume/mutate only their own closure
+      // operand, so they are risky only when that operand may alias the
+      // incremented pointer; an application of an unrelated closure is harmless
+      // and does not block the cancellation.
+      if (auto applyOp = llvm::dyn_cast<ReussirClosureApplyOp>(next);
+          applyOp && aliasAnalysis.alias(op.getRcPtr(), applyOp.getClosure()) !=
+                         mlir::AliasResult::NoAlias)
+        break;
+      if (auto evalOp = llvm::dyn_cast<ReussirClosureEvalOp>(next);
+          evalOp && aliasAnalysis.alias(op.getRcPtr(), evalOp.getClosure()) !=
+                        mlir::AliasResult::NoAlias)
         break;
       next = next->getNextNode();
     }
