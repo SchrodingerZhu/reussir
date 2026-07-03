@@ -15,4 +15,6 @@ fn test() -> Matrix<u64> {
     regional {Matrix{ m00 : 0 }}
 }
 
-// CHECK: does not implement `Integral`
+// The diagnostic names the mistyped link slot and points at the literal.
+// CHECK: `Nullable(Int(Unsigned(64)))` does not implement `Integral`
+// CHECK: invalid_record.rr:15:29
