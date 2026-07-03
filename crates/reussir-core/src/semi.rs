@@ -208,6 +208,100 @@ mod tests {
         });
     }
 
+    /// A non-`[field]` regional-record member holds an already-*frozen* value:
+    /// the member's expected type is `Rigid`-refined (`rigid_member_ty`), so a
+    /// projection reads a `Rigid` value out, and construction accepts a frozen
+    /// argument.
+    #[test]
+    fn plain_regional_member_is_rigid_on_both_sides() {
+        check(
+            r#"
+            struct [regional] Inner { v: u64 }
+            struct [regional] Outer { inner: Inner, tag: u64 }
+
+            fn mk_inner(v: u64) -> Inner {
+                regional { Inner { v: v } }
+            }
+
+            fn take(v: u64) -> Inner {
+                let o = regional { Outer { inner: mk_inner(v), tag: v } };
+                o.inner
+            }
+            "#,
+            |elab, _| {
+                let body = function(elab, "take").body.as_ref().unwrap();
+                // The projected member is a frozen view.
+                assert_eq!(body.ty.flexivity(), Some(Flexivity::Rigid));
+            },
+        );
+    }
+
+    /// A `[field]` link projects at the *base's* view: `Flex` (writable)
+    /// through a flex base, `Rigid` (a frozen view) through a rigid base —
+    /// after the region freezes, `x.f` must not hand out a mutable coloring
+    /// (mirrors `getProjectedType`, where only a flex reference projects a
+    /// flex link).
+    #[test]
+    fn field_link_takes_the_bases_view() {
+        check(
+            r#"
+            struct [regional] Cell { v: u64, next: [field] Cell }
+
+            regional fn mk(v: u64) -> [flex] Cell {
+                Cell { v: v, next: Nullable::Null }
+            }
+
+            fn frozen_view(v: u64) -> Nullable<Cell> {
+                let c = regional { mk(v) };
+                c.next
+            }
+
+            regional fn flex_view(c: [flex] Cell) -> [flex] Nullable<Cell> {
+                c.next
+            }
+            "#,
+            |elab, _| {
+                let link_flex = |name: &str| {
+                    let body = function(elab, name).body.as_ref().unwrap();
+                    let TyKind::Nullable(inner) = body.ty.kind() else {
+                        panic!("{name}: expected a nullable link, got {:?}", body.ty);
+                    };
+                    inner.flexivity()
+                };
+                assert_eq!(link_flex("frozen_view"), Some(Flexivity::Rigid));
+                assert_eq!(link_flex("flex_view"), Some(Flexivity::Flex));
+            },
+        );
+    }
+
+    /// Storing a still-live `Flex` value into a plain (non-`[field]`) regional
+    /// member is a flexivity mismatch at elaboration — the member requires a
+    /// frozen value (the backend types the slot `rc<_, rigid>`); previously
+    /// this leaked through and died as an MLIR verifier error.
+    #[test]
+    fn rejects_flex_value_in_plain_regional_member() {
+        with_tcx(|tcx| {
+            let source = r#"
+                struct [regional] Inner { v: u64 }
+                struct [regional] Outer { inner: Inner, tag: u64 }
+
+                regional fn mk(v: u64) -> [flex] Outer {
+                    Outer { inner: Inner { v: v }, tag: v }
+                }
+            "#;
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("flexivity mismatch")),
+                "expected a flexivity mismatch: {:#?}",
+                elab.reports
+            );
+        });
+    }
+
     #[test]
     fn rejects_regional_call_outside_region() {
         with_tcx(|tcx| {

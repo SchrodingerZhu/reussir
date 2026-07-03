@@ -4,7 +4,7 @@ use reussir_syntax::kind::TokenKey;
 
 use crate::semi::infer::Instantiation;
 use crate::semi::traits::{Obligation, TraitId, TraitRef};
-use crate::semi::ty::{DefId, GenericId, Ty, TyKind};
+use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
 
 use super::ctxt::{Elaborator, RecordFields};
@@ -648,7 +648,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(span, "assignment target must be a flex record");
             return self.poison(span);
         };
-        let Some((idx, field_ty, mutable)) = self.resolve_field(*def, args, acc) else {
+        // The target was just checked to be `Flex`, so the link's slot is seen
+        // at its flex (writable) coloring.
+        let Some((idx, field_ty, mutable)) = self.resolve_field(*def, args, Flexivity::Flex, acc)
+        else {
             self.error(span, "no such field on assignment target");
             return self.poison(span);
         };
@@ -713,11 +716,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut cur = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
-            let TyKind::Record { def, args, .. } = cur.kind() else {
+            let TyKind::Record { def, args, flex } = cur.kind() else {
                 self.error(span, format!("cannot access a field of `{cur:?}`"));
                 return self.poison(span);
             };
-            let Some((idx, field_ty, _)) = self.resolve_field(*def, args, acc) else {
+            let Some((idx, field_ty, _)) = self.resolve_field(*def, args, *flex, acc) else {
                 self.error(span, "no such field");
                 return self.poison(span);
             };
@@ -728,11 +731,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// Resolve an access on a record type to `(field index, field type, mutable)`.
-    /// The field type is instantiated with the record's type arguments.
+    /// The field type is instantiated with the record's type arguments and
+    /// colored as seen through a base of flexivity `base_flex`
+    /// ([`Self::field_member_ty`]).
     fn resolve_field(
         &mut self,
         record_def: DefId,
         args: &[Ty<'tcx>],
+        base_flex: Flexivity,
         acc: &surface::Access,
     ) -> Option<(u32, Ty<'tcx>, bool)> {
         let record = self.records.get(&record_def)?;
@@ -757,7 +763,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             _ => return None,
         };
-        let field_ty = self.field_member_ty(decl_ty, mutable, &inst);
+        let field_ty = self.field_member_ty(decl_ty, mutable, base_flex, &inst);
         Some((idx as u32, field_ty, mutable))
     }
 
@@ -990,51 +996,102 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         fields: &Option<RecordFields<'tcx>>,
         inst: &Instantiation<'tcx>,
     ) -> Vec<(Option<TokenKey>, Ty<'tcx>)> {
+        // Construction site: a freshly-built record is born flex, so its
+        // `[field]` link slots are seen at their writable (flex) coloring.
+        let base_flex = Flexivity::Flex;
         match fields {
             Some(RecordFields::Named(fs)) => fs
                 .iter()
-                .map(|(n, t, is_field)| (Some(*n), self.field_member_ty(*t, *is_field, inst)))
+                .map(|(n, t, is_field)| {
+                    (
+                        Some(*n),
+                        self.field_member_ty(*t, *is_field, base_flex, inst),
+                    )
+                })
                 .collect(),
             Some(RecordFields::Unnamed(fs)) => fs
                 .iter()
-                .map(|(t, is_field)| (None, self.field_member_ty(*t, *is_field, inst)))
+                .map(|(t, is_field)| (None, self.field_member_ty(*t, *is_field, base_flex, inst)))
                 .collect(),
             _ => Vec::new(),
         }
     }
 
-    /// The *expected* type of a struct member when constructing or mutating the
-    /// struct — the target a field argument or assignment source is checked
-    /// against. A plain member is its (instantiated) declared type. A mutable
-    /// `[field]` link — always a `Nullable<Record>` — points at a region-local
-    /// value, so its slot element is `Flex`: it lives in a flex regional record
-    /// (a fresh construction is born flex; assignment requires a flex target).
-    /// This flex expectation is what colors an otherwise-unknown value stored
-    /// through it — e.g. a standalone `Nullable::Null` has an unconstrained
-    /// element, and checking it against this flex slot solves that hole to `flex`
-    /// rather than the record's default `Regional`. (A concrete `rigid` value
-    /// meeting this flex slot is a flexivity mismatch, caught by [`expect`].)
+    /// The type of a struct member as seen through a base of flexivity
+    /// `base_flex` — the target a field argument or assignment source is
+    /// checked against, and the type a projection reads out. A plain member
+    /// is its (instantiated) declared type, except a plain *regional-record*
+    /// member, whose coloring refines to `Rigid` ([`Self::rigid_member_ty`]:
+    /// the slot holds a frozen value). A mutable `[field]` link — always a
+    /// `Nullable<Record>` — takes the base's view ([`Self::field_link_ty`]):
+    /// `Flex` (writable) through a flex base, `Rigid` (a frozen view)
+    /// through anything else. Construction and assignment sites pass `Flex`
+    /// (a fresh record is born flex; assignment requires a flex target), so
+    /// the flex expectation there is what colors an otherwise-unknown value
+    /// stored through the link — e.g. a standalone `Nullable::Null` has an
+    /// unconstrained element, and checking it against the flex slot solves
+    /// that hole to `flex` rather than the record's default `Regional`. (A
+    /// concrete `rigid` value meeting the flex slot is a flexivity mismatch,
+    /// caught by [`expect`].)
     fn field_member_ty(
         &mut self,
         decl_ty: Ty<'tcx>,
         is_field: bool,
+        base_flex: Flexivity,
         inst: &Instantiation<'tcx>,
     ) -> Ty<'tcx> {
         let ty = self.infer.instantiate_ty(decl_ty, inst);
-        if is_field { self.flex_link_ty(ty) } else { ty }
+        if is_field {
+            self.field_link_ty(ty, base_flex)
+        } else {
+            self.rigid_member_ty(ty)
+        }
     }
 
-    /// Color a `[field]` link's slot element `Flex`. The link is a
-    /// `Nullable<Record>`; this refines a concrete pointee record's coloring and
-    /// leaves a generic (or any other) element untouched (a `[flex] T` requirement
-    /// is tracked through the `regional_generics` channel instead).
-    fn flex_link_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+    /// Color a non-`[field]` regional-record member `Rigid` — the counterpart
+    /// of [`Self::flex_link_ty`]. Such a member holds an already-*frozen*
+    /// value: it can only be written at construction (there is no assignment
+    /// path to it), and the backend types its slot `rc<_, rigid>` on both
+    /// sides (`getProjectedType`). Refining here makes both uses line up:
+    /// a constructor argument is checked against the `Rigid` expectation
+    /// (storing a still-live `Flex` value is a flexivity mismatch, caught by
+    /// [`Self::expect`] — freeze it in its own `regional { }` first), and a
+    /// projection reads a `Rigid` value out. Members with a concrete coloring
+    /// and non-regional types pass through untouched.
+    fn rigid_member_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        use crate::semi::ty::Flexivity;
+        if let TyKind::Record {
+            def,
+            args,
+            flex: Flexivity::Regional,
+        } = ty.kind()
+        {
+            return self.tcx.mk_record(*def, args, Flexivity::Rigid);
+        }
+        ty
+    }
+
+    /// Color a `[field]` link's slot element with the base's view: `Flex`
+    /// (writable) through a flex base, `Rigid` through anything else — after
+    /// the region freezes, `x.f` on the rigid `x` reads a frozen
+    /// `Nullable<rigid>` view (mirroring the dialect's `getProjectedType`,
+    /// where only a flex reference projects a flex link). The link is a
+    /// `Nullable<Record>`; this refines a concrete pointee record's coloring
+    /// and leaves a generic (or any other) element untouched (a `[flex] T`
+    /// requirement is tracked through the `regional_generics` channel
+    /// instead).
+    fn field_link_ty(&mut self, ty: Ty<'tcx>, base_flex: Flexivity) -> Ty<'tcx> {
         use crate::semi::ty::Flexivity;
         if let TyKind::Nullable(inner) = ty.kind()
             && let TyKind::Record { def, args, .. } = self.infer.shallow_resolve(*inner).kind()
         {
-            let flexed = self.tcx.mk_record(*def, args, Flexivity::Flex);
-            return self.tcx.mk_nullable(flexed);
+            let colored = if base_flex == Flexivity::Flex {
+                Flexivity::Flex
+            } else {
+                Flexivity::Rigid
+            };
+            let element = self.tcx.mk_record(*def, args, colored);
+            return self.tcx.mk_nullable(element);
         }
         ty
     }
