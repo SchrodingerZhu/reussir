@@ -8,10 +8,6 @@ description = "Core language representation for Reussir"
 [lib]
 name = "reussir_core"
 
-[[bin]]
-name = "reussir-elab"
-path = "src/bin/reussir-elab.rs"
-
 [build-dependencies]
 # Generates the textual-IR parsers from the `*/grammar.lalrpop` files
 # (`full/mir/`, `semi/hir/`) at build time.
@@ -31,8 +27,6 @@ atuin-nucleo-matcher.workspace = true
 strsim.workspace = true
 smallvec.workspace = true
 stumpalo.workspace = true
-# CLI argument parsing for the `reussir-elab` driver.
-palc.workspace = true
 # Textual-IR round trip: the logos lexer feeds the lalrpop-generated parser;
 # pprint is the algebraic (Wadler-style) pretty-printer that emits the IR.
 logos.workspace = true
