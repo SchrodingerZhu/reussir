@@ -401,6 +401,21 @@ impl Tui {
                 };
                 self.push_boxed(&title, content);
             }
+            Outcome::Binding {
+                name,
+                value,
+                ty,
+                warnings,
+            } => {
+                self.render_reports(warnings, input);
+                // A binding cell is titled by its name instead of `Out[n]`.
+                let content = vec![
+                    Span::styled(value.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(" : "),
+                    Span::styled(ty.clone(), Style::default().fg(Color::Magenta)),
+                ];
+                self.push_boxed(name, content);
+            }
             Outcome::ParseErrors(errors) => {
                 let map = SourceMap::new(input);
                 let mut rendered = Vec::new();

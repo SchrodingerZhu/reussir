@@ -111,6 +111,15 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
                 println!("{value} : {ty}");
             }
         }
+        Outcome::Binding {
+            name,
+            value,
+            ty,
+            warnings,
+        } => {
+            render_reports("<repl>", input, warnings);
+            println!("{name} = {value} : {ty}");
+        }
         Outcome::ParseErrors(errors) => {
             let map = SourceMap::new(input);
             let _ =

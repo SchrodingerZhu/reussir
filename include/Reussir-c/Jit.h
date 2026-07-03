@@ -42,9 +42,19 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
 // data layout and target triple on it. Returns NULL if TPDE support was not
 // compiled in or compilation fails; otherwise the caller owns the returned
 // memory buffer (e.g. hands it to `LLVMOrcLLJITAddObjectFile`).
+//
+// `stripInvariantGroupBarriers` (nonzero = on) rewrites the module IN PLACE
+// before compiling, replacing the `llvm.launder.invariant.group` /
+// `llvm.strip.invariant.group` barrier intrinsics — which TPDE has no
+// lowering for — with their pointer operand (always conservative-correct:
+// they are pure optimizer fences). Callers that go on to reuse the module
+// with the real LLVM backend should pass 0 to keep its invariant-group
+// information, at the price of TPDE failing on modules that carry the
+// barriers (e.g. shared-record member projections).
 LLVMMemoryBufferRef reussirTpdeCompileToObject(LLVMModuleRef module,
                                                const char *dataLayout,
-                                               const char *triple);
+                                               const char *triple,
+                                               int stripInvariantGroupBarriers);
 
 #ifdef __cplusplus
 }

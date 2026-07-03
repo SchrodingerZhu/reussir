@@ -10,6 +10,7 @@
 
 #include <llvm-c/Core.h>
 
+#include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -64,11 +65,41 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
   mpm.run(m, mam);
 }
 
-LLVMMemoryBufferRef reussirTpdeCompileToObject(LLVMModuleRef module,
-                                               const char *dataLayout,
-                                               const char *triple) {
+namespace {
+/// TPDE has no lowering for the invariant.group barrier intrinsics the
+/// frozen/shared payload loads carry (`llvm.launder.invariant.group`,
+/// `llvm.strip.invariant.group`). Both are pure optimizer fences that
+/// return their pointer operand, so replacing the call with the operand is
+/// always conservative-correct — required for e.g. a REPL wrapper that
+/// projects a global binding's value out of its shared box.
+void stripInvariantGroupBarriers(llvm::Module &m) {
+  llvm::SmallVector<llvm::IntrinsicInst *> barriers;
+  for (llvm::Function &f : m)
+    for (llvm::BasicBlock &bb : f)
+      for (llvm::Instruction &inst : bb)
+        if (auto *intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&inst))
+          if (intrinsic->getIntrinsicID() ==
+                  llvm::Intrinsic::launder_invariant_group ||
+              intrinsic->getIntrinsicID() ==
+                  llvm::Intrinsic::strip_invariant_group)
+            barriers.push_back(intrinsic);
+  for (llvm::IntrinsicInst *barrier : barriers) {
+    barrier->replaceAllUsesWith(barrier->getArgOperand(0));
+    barrier->eraseFromParent();
+  }
+}
+} // namespace
+
+LLVMMemoryBufferRef
+reussirTpdeCompileToObject(LLVMModuleRef module, const char *dataLayout,
+                           const char *triple,
+                           int stripInvariantGroupBarriersFlag) {
 #ifdef REUSSIR_HAS_TPDE
   llvm::Module &m = *llvm::unwrap(module);
+  // Caller-guarded: the rewrite mutates the (borrowed) module, so callers
+  // that may reuse it with the real LLVM backend keep it intact.
+  if (stripInvariantGroupBarriersFlag)
+    stripInvariantGroupBarriers(m);
 
   // TPDE compiles directly from the module, so it must carry the host data
   // layout and triple (the freshly translated module may have neither).
@@ -93,6 +124,7 @@ LLVMMemoryBufferRef reussirTpdeCompileToObject(LLVMModuleRef module,
   (void)module;
   (void)dataLayout;
   (void)triple;
+  (void)stripInvariantGroupBarriersFlag;
   return nullptr;
 #endif
 }

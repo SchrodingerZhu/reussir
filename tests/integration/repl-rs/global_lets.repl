@@ -1,0 +1,63 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+// RUN: %rrepl -i %s -lerror -Onone 2>&1 | %FileCheck %s
+
+// Global `let` bindings: a single top-level `let` binds its (evaluated)
+// value for every later input. Multi-statement inputs keep block semantics.
+
+let x = 40
+// CHECK: x = 40 : i64
+
+x + 2
+// CHECK: 42 : i64
+
+// A binding's right-hand side sees earlier bindings.
+let y = x * 2
+// CHECK: y = 80 : i64
+
+// Rebinding overwrites (the old value is released); uses see the new value.
+let x = 100
+// CHECK: x = 100 : i64
+
+x + y
+// CHECK: 180 : i64
+
+// Managed values bind, project, and rebind with balanced refcounts.
+struct P { a: i64, b: f64 }
+// CHECK: Definition added.
+
+let p = P { a: 7, b: 0.5 }
+// CHECK: p = P { a: 7, b: 0.5 } : P
+
+p
+// CHECK: P { a: 7, b: 0.5 } : P
+
+p.a + x
+// CHECK: 107 : i64
+
+let p = P { a: 9, b: 1.5 }
+// CHECK: p = P { a: 9, b: 1.5 } : P
+
+:dump bindings
+// CHECK: === Global Bindings ===
+// CHECK: x : i64 = 100
+// CHECK: y : i64 = 80
+// CHECK: p : P = P { a: 9, b: 1.5 }
+
+// A `let` ascription is honored.
+let z: f32 = 1.5
+// CHECK: z = 1.5 : f32
+
+// Sequences are NOT bindings: block semantics, nothing registered.
+let q = 5; q + 1
+// CHECK: 6 : i64
+
+:type x + y
+// CHECK: x + y : i64
+
+// `:clear` releases the bindings with the session.
+:clear
+// CHECK: Context cleared
+
+x
+// CHECK: unknown variable `x`

@@ -33,6 +33,24 @@ use crate::semi::hir::{Expr, ExprKind, Function, VarId};
 use crate::semi::ty::{DefId, Flexivity, Ty, TyKind};
 use crate::surface::{self, Visibility};
 
+/// One REPL expression evaluation request (see
+/// [`Elaborator::try_repl_expr`]).
+pub struct ReplExprRequest<'a, 'tcx> {
+    /// The interned wrapper name (`__repl_expr_N`).
+    pub name: TokenKey,
+    /// The interned dec-companion name (`__repl_expr_N_dec`).
+    pub dec_name: TokenKey,
+    /// The exported C symbol (conventionally the wrapper name's text).
+    pub export: &'a str,
+    /// A `let` ascription to check the expression against, if any.
+    pub ascription: Option<&'a (surface::Type, bool)>,
+    /// The session's live global bindings (name, *value* type), in the
+    /// order the host passes their boxes on every call.
+    pub bindings: &'a [(TokenKey, Ty<'tcx>)],
+    /// The `__ReplBox` prelude record ([`Elaborator::install_repl_box`]).
+    pub repl_box: DefId,
+}
+
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Elaborate one REPL expression as the synthetic nullary function
     /// `name`, registering a C-ABI trampoline root that exports `export`
@@ -47,21 +65,60 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// by the zonk-time ambiguity check with an annotation hint.
     pub fn try_repl_expr(
         &mut self,
-        name: TokenKey,
-        dec_name: TokenKey,
-        export: &str,
+        request: &ReplExprRequest<'_, 'tcx>,
         expr: &surface::Expr,
-        repl_box: DefId,
     ) -> Result<(Ty<'tcx>, Vec<Report>), Vec<Report>> {
+        let &ReplExprRequest {
+            name,
+            dec_name,
+            export,
+            ascription,
+            bindings,
+            repl_box,
+        } = request;
         let cp = self.checkpoint();
         let span = Some(expr.span());
 
-        // Check the expression as a nullary, non-regional function body with
-        // a hole return type; inference solves the hole to the expression's
-        // type.
+        // Check the expression as a non-regional function body; the return
+        // type is the `let` ascription when the driver passes one, else a
+        // hole that inference solves to the expression's type.
         self.enter_function(&[]);
         self.regional_generics.clear();
-        let ret = self.infer.new_hole_ty();
+
+        // Pre-seed the session's global `let` bindings: each becomes a
+        // wrapper parameter `g` holding the binding's `__ReplBox<T>`,
+        // immediately shadowed (same user-visible name) by the projected
+        // payload, so the checked expression resolves the bare name to the
+        // value. The host passes every live binding's box on each call —
+        // an unused parameter is simply dropped by the ownership pass,
+        // balancing the host-side retain.
+        struct Seeded<'tcx> {
+            name: TokenKey,
+            param: VarId,
+            box_ty: Ty<'tcx>,
+            value: VarId,
+            value_ty: Ty<'tcx>,
+        }
+        let seeded: Vec<Seeded<'tcx>> = bindings
+            .iter()
+            .map(|&(bname, bty)| {
+                let box_ty = self.tcx.mk_record(repl_box, &[bty], Flexivity::Irrelevant);
+                let param = self.vars.fresh(bname, box_ty, None);
+                let value = self.vars.fresh(bname, bty, None);
+                Seeded {
+                    name: bname,
+                    param,
+                    box_ty,
+                    value,
+                    value_ty: bty,
+                }
+            })
+            .collect();
+
+        let ret = match ascription {
+            Some((ty, flex)) => self.eval_type_flex(ty, *flex),
+            None => self.infer.new_hole_ty(),
+        };
         let body = self.check_expr(expr, ret);
         self.default_numeric_holes();
         self.resolve_obligations();
@@ -107,6 +164,38 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // C ABI as one shared-box pointer. Unit has nothing to show or
         // free and skips the box.
         let boxed = !matches!(return_ty.kind(), TyKind::Unit);
+        // The binding prologue: `let x = g.value` per seeded binding, in
+        // front of the (boxed) user expression.
+        let params: Vec<(TokenKey, VarId, Ty<'tcx>)> =
+            seeded.iter().map(|b| (b.name, b.param, b.box_ty)).collect();
+        let prologue: Vec<Expr<'tcx>> = seeded
+            .iter()
+            .map(|b| {
+                let base = Expr {
+                    kind: ExprKind::Var(b.param),
+                    ty: b.box_ty,
+                    span,
+                    id: self.fresh_expr_id(),
+                };
+                let projected = Expr {
+                    kind: ExprKind::Proj(Box::new(base), vec![0]),
+                    ty: b.value_ty,
+                    span,
+                    id: self.fresh_expr_id(),
+                };
+                Expr {
+                    kind: ExprKind::Let {
+                        var: b.value,
+                        name: b.name,
+                        span,
+                        value: Box::new(projected),
+                    },
+                    ty: self.tcx.mk_unit(),
+                    span,
+                    id: self.fresh_expr_id(),
+                }
+            })
+            .collect();
         let (body, wrapper_ty) = if boxed {
             // A shared record's coloring is `Irrelevant` (only regional
             // records carry Flex/Rigid), matching `record_ty`.
@@ -127,6 +216,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         } else {
             (body, return_ty)
         };
+        let body = if prologue.is_empty() {
+            body
+        } else {
+            let ty = body.ty;
+            let mut stmts = prologue;
+            stmts.push(body);
+            Expr {
+                kind: ExprKind::Seq(stmts),
+                ty,
+                span,
+                id: self.fresh_expr_id(),
+            }
+        };
         self.functions.insert(
             def,
             FuncProto {
@@ -135,7 +237,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 visibility: Visibility::Private,
                 generics: Vec::new(),
                 regional_generics: Vec::new(),
-                params: Vec::new(),
+                params: params.iter().map(|&(n, _, t)| (n, t)).collect(),
                 return_ty: wrapper_ty,
                 is_regional: false,
                 span,
@@ -147,7 +249,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             visibility: Visibility::Private,
             generics: Vec::new(),
             regional_generics: std::mem::take(&mut self.regional_generics),
-            params: Vec::new(),
+            params,
             return_ty: wrapper_ty,
             is_regional: false,
             body: Some(body),
@@ -258,6 +360,7 @@ mod tests {
 
     use reussir_syntax::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
 
+    use crate::semi::repl::ReplExprRequest;
     use crate::semi::ty::{FpTy, IntTy, Ty, TyCtxt, TyKind};
     use crate::semi::{Elaborator, Report};
     use crate::surface;
@@ -293,7 +396,17 @@ mod tests {
             let dec_key =
                 Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
             self.elab
-                .try_repl_expr(key, dec_key, &export, &expr, self.repl_box)
+                .try_repl_expr(
+                    &ReplExprRequest {
+                        name: key,
+                        dec_name: dec_key,
+                        export: &export,
+                        ascription: None,
+                        bindings: &[],
+                        repl_box: self.repl_box,
+                    },
+                    &expr,
+                )
                 .map(|(ty, _)| ty)
         }
     }
@@ -418,6 +531,80 @@ mod tests {
             assert_eq!(t.target, f.def);
             assert_eq!(s.elab.trampolines[1].name, "__repl_expr_0_dec");
             assert_eq!(s.elab.trampolines[1].target, dec.def);
+        });
+    }
+
+    #[test]
+    fn global_bindings_become_wrapper_parameters() {
+        use crate::full::mono::monomorphize;
+
+        session(|s, tcx| {
+            // Bind `x` by evaluating an ordinary expression first (the
+            // driver stores its box), then check an expression referencing
+            // it: the wrapper takes the binding's box as a parameter and
+            // projects the value in a prologue.
+            let x_ty = s.eval("41").expect("bind rhs");
+            let x_key = Interner::get_or_intern(&mut s.interner.clone(), "x");
+
+            let p = reussir_syntax::parse_repl("x + 1", s.interner.clone());
+            assert!(p.parse.ok());
+            let expr = surface::repl_expr(&p.parse.root);
+            let key = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_1");
+            let dec = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_1_dec");
+            let (ty, _) = s
+                .elab
+                .try_repl_expr(
+                    &ReplExprRequest {
+                        name: key,
+                        dec_name: dec,
+                        export: "__repl_expr_1",
+                        ascription: None,
+                        bindings: &[(x_key, x_ty)],
+                        repl_box: s.repl_box,
+                    },
+                    &expr,
+                )
+                .expect("binding resolves");
+            assert_eq!(ty, tcx.mk_int(IntTy::Signed(64)));
+
+            // The wrapper's sole parameter is the binding's box.
+            let wrapper = s
+                .elab
+                .elaborated
+                .iter()
+                .find(|f| s.elab.sym(f.name) == "__repl_expr_1")
+                .expect("wrapper");
+            assert_eq!(wrapper.params.len(), 1);
+            assert!(matches!(wrapper.params[0].2.kind(), TyKind::Record { .. }));
+
+            // An unknown name still errors cleanly.
+            let p = reussir_syntax::parse_repl("y + 1", s.interner.clone());
+            let expr = surface::repl_expr(&p.parse.root);
+            let key = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_2");
+            let dec = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_2_dec");
+            let errs = s
+                .elab
+                .try_repl_expr(
+                    &ReplExprRequest {
+                        name: key,
+                        dec_name: dec,
+                        export: "__repl_expr_2",
+                        ascription: None,
+                        bindings: &[(x_key, x_ty)],
+                        repl_box: s.repl_box,
+                    },
+                    &expr,
+                )
+                .expect_err("unknown name");
+            assert!(
+                errs.iter().any(|r| r.message.contains("unknown")),
+                "{errs:#?}"
+            );
+
+            // The whole accumulated program (parameterized wrapper included)
+            // monomorphizes.
+            let (_, reports) = monomorphize(&s.elab.mono_input());
+            assert!(reports.is_empty(), "{reports:#?}");
         });
     }
 

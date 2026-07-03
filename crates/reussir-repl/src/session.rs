@@ -45,6 +45,14 @@ pub enum Outcome {
         ty: String,
         warnings: Vec<Report>,
     },
+    /// A global `let` was accepted: the value is now bound for later inputs
+    /// (rebinding the same name overwrites, releasing the old value).
+    Binding {
+        name: String,
+        value: String,
+        ty: String,
+        warnings: Vec<Report>,
+    },
     /// Syntax errors in the input (render against the input source).
     ParseErrors(Vec<ParseError>),
     /// Elaboration/monomorphization diagnostics (input was rolled back).
@@ -75,6 +83,17 @@ where
         let mut session = ReplSession::new(tcx, &interner, &context, &jit, config);
         drive(&mut session)
     }))
+}
+
+/// One global `let` binding: an owned `__ReplBox<T>` kept alive between
+/// inputs. The box releases itself ([`crate::value::BoundBox`]'s `Drop`) on
+/// rebinding and on session drop — while the JIT (borrowed by the session,
+/// so it strictly outlives it) still has the dec companion materialized.
+struct GlobalBinding<'jit, 'tcx> {
+    name: reussir_syntax::kind::TokenKey,
+    display: String,
+    ty: Ty<'tcx>,
+    boxed: crate::value::BoundBox<'jit>,
 }
 
 /// A module added to the JIT whose input is not yet permanent.
@@ -108,6 +127,12 @@ pub struct ReplSession<'a, 'tcx> {
     /// JIT. Later modules emit these as body-less declarations
     /// ([`crate::externalize`]); ORC resolves the calls across modules.
     pub(crate) emitted: FxHashSet<String>,
+    /// Global `let` bindings, in binding order — the order of the extra
+    /// box parameters every later wrapper takes. Rebinding overwrites in
+    /// place (the old box released); the whole list is released on session
+    /// drop (`:clear` included) while the JIT still holds the dec
+    /// companions.
+    bindings: Vec<GlobalBinding<'a, 'tcx>>,
     /// The `__repl_expr_N` counter (advanced only on success).
     counter: usize,
     pub(crate) opt: OptLevel,
@@ -138,6 +163,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             context,
             jit,
             emitted: FxHashSet::default(),
+            bindings: Vec::new(),
             shapes: crate::reflect::ShapeTable::default(),
             printers: crate::reflect::PrinterRegistry::default(),
             modules: Vec::new(),
@@ -190,15 +216,46 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             }
             ReplInputKind::Expr => {
                 let expr = surface::repl_expr(&parsed.parse.root);
+                // A single top-level `let` is a *global binding*: its value
+                // persists for later inputs. Multi-statement sequences keep
+                // ordinary block semantics.
+                let (rhs, binder) = match expr.kind() {
+                    surface::ExprKind::ExprSeq(mut exprs) if exprs.len() == 1 => {
+                        let only = exprs.pop().expect("length checked");
+                        match only.kind() {
+                            surface::ExprKind::Let(bname, ascription, value) => {
+                                (value, Some((bname, ascription)))
+                            }
+                            _ => (only, None),
+                        }
+                    }
+                    _ => (expr, None),
+                };
                 let export = format!("__repl_expr_{}", self.counter);
                 let name = Interner::get_or_intern(&mut self.interner.clone(), &export);
                 let dec_name =
                     Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
-                match self
-                    .elab
-                    .try_repl_expr(name, dec_name, &export, &expr, self.repl_box)
-                {
+                let in_scope: Vec<_> = self.bindings.iter().map(|b| (b.name, b.ty)).collect();
+                match self.elab.try_repl_expr(
+                    &reussir_core::semi::repl::ReplExprRequest {
+                        name,
+                        dec_name,
+                        export: &export,
+                        ascription: binder.as_ref().and_then(|(_, a)| a.as_ref()),
+                        bindings: &in_scope,
+                        repl_box: self.repl_box,
+                    },
+                    &rhs,
+                ) {
                     Err(reports) => Outcome::Reports(reports),
+                    Ok((ty, _)) if binder.is_some() && matches!(ty.kind(), TyKind::Unit) => {
+                        self.elab.rollback(&cp);
+                        Outcome::Reports(vec![Report {
+                            severity: Severity::Error,
+                            message: "cannot bind a unit value".to_string(),
+                            span: None,
+                        }])
+                    }
                     Ok((ty, warnings)) => match self.compile_new(&cp) {
                         Err(outcome) => outcome,
                         // The input becomes permanent only after the
@@ -209,15 +266,33 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                             let box_ty =
                                 self.tcx
                                     .mk_record(self.repl_box, &[ty], Flexivity::Irrelevant);
-                            match crate::value::call_and_render(
-                                self.jit,
-                                &export,
-                                ty,
-                                box_ty,
-                                &self.shapes,
-                                &self.printers,
-                            ) {
-                                Ok(value) => {
+                            let args: Vec<*const u8> =
+                                self.bindings.iter().map(|b| b.boxed.as_ptr()).collect();
+                            let result = if binder.is_some() {
+                                crate::value::call_and_bind(
+                                    self.jit,
+                                    &export,
+                                    ty,
+                                    box_ty,
+                                    &self.shapes,
+                                    &self.printers,
+                                    &args,
+                                )
+                                .map(|(value, bound)| (value, Some(bound)))
+                            } else {
+                                crate::value::call_and_render(
+                                    self.jit,
+                                    &export,
+                                    ty,
+                                    box_ty,
+                                    &self.shapes,
+                                    &self.printers,
+                                    &args,
+                                )
+                                .map(|value| (value, None))
+                            };
+                            match result {
+                                Ok((value, bound)) => {
                                     self.commit(pending);
                                     self.counter += 1;
                                     // The wrapper is unspellable (an identifier
@@ -227,7 +302,10 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                     // monomorphizations walk only the *new*
                                     // input's call graph instead of every
                                     // historical expression's. The wrapper's
-                                    // HIR stays behind as dead code.
+                                    // HIR stays behind as dead code. (The dec
+                                    // companion's *code* stays materialized in
+                                    // the JIT — a binding's release calls it
+                                    // long after this input.)
                                     let before = self.elab.trampolines.len();
                                     self.elab
                                         .trampolines
@@ -236,10 +314,27 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                         self.elab.trampolines.len() < before,
                                         "the wrapper's roots must be registered"
                                     );
-                                    Outcome::Value {
-                                        value,
-                                        ty: self.render_ty(ty),
-                                        warnings,
+                                    match (binder, bound) {
+                                        (Some((bname, _)), Some(bound)) => {
+                                            let display = self.elab.sym(bname.value).to_string();
+                                            self.register_binding(
+                                                bname.value,
+                                                display.clone(),
+                                                ty,
+                                                bound,
+                                            );
+                                            Outcome::Binding {
+                                                name: display,
+                                                value,
+                                                ty: self.render_ty(ty),
+                                                warnings,
+                                            }
+                                        }
+                                        _ => Outcome::Value {
+                                            value,
+                                            ty: self.render_ty(ty),
+                                            warnings,
+                                        },
                                     }
                                 }
                                 Err(message) => {
@@ -257,6 +352,59 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         }
     }
 
+    /// Install (or overwrite) a global binding. Rebinding releases the old
+    /// box and keeps the binding's position, so the wrapper-parameter order
+    /// stays stable.
+    fn register_binding(
+        &mut self,
+        name: reussir_syntax::kind::TokenKey,
+        display: String,
+        ty: Ty<'tcx>,
+        boxed: crate::value::BoundBox<'a>,
+    ) {
+        let entry = GlobalBinding {
+            name,
+            display,
+            ty,
+            boxed,
+        };
+        if let Some(existing) = self.bindings.iter_mut().find(|b| b.name == name) {
+            // The overwrite drops the old entry's box, releasing it.
+            *existing = entry;
+        } else {
+            self.bindings.push(entry);
+        }
+    }
+
+    /// Render the live global bindings (`:dump bindings`).
+    pub(crate) fn render_bindings(&self) -> String {
+        if self.bindings.is_empty() {
+            return "no global bindings".to_string();
+        }
+        let mut out = String::from("=== Global Bindings ===");
+        for b in &self.bindings {
+            let box_ty = self
+                .tcx
+                .mk_record(self.repl_box, &[b.ty], Flexivity::Irrelevant);
+            // SAFETY: the session owns one reference to each binding's box;
+            // it is live until `register_binding`/`Drop` release it.
+            let value = unsafe {
+                crate::reflect::shared_box_payload(b.boxed.as_ptr(), box_ty, &self.shapes).and_then(
+                    |payload| {
+                        crate::reflect::render_value(payload, b.ty, &self.shapes, &self.printers)
+                    },
+                )
+            }
+            .unwrap_or_else(|e| format!("<{e}>"));
+            out.push_str(&format!(
+                "\n - {} : {} = {value}",
+                b.display,
+                self.render_ty(b.ty)
+            ));
+        }
+        out
+    }
+
     /// Check an expression's type without compiling or executing it
     /// (`:type`). Elaborator state is always rolled back.
     pub(crate) fn type_of(&mut self, source: &str) -> Outcome {
@@ -271,9 +419,18 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         let cp = self.elab.checkpoint();
         let name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe");
         let dec_name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe_dec");
-        let result =
-            self.elab
-                .try_repl_expr(name, dec_name, "__repl_type_probe", &expr, self.repl_box);
+        let in_scope: Vec<_> = self.bindings.iter().map(|b| (b.name, b.ty)).collect();
+        let result = self.elab.try_repl_expr(
+            &reussir_core::semi::repl::ReplExprRequest {
+                name,
+                dec_name,
+                export: "__repl_type_probe",
+                ascription: None,
+                bindings: &in_scope,
+                repl_box: self.repl_box,
+            },
+            &expr,
+        );
         match result {
             Ok((ty, _)) => {
                 let rendered = self.render_ty(ty);

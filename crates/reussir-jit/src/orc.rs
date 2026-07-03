@@ -54,6 +54,7 @@ unsafe extern "C" {
         module: LLVMModuleRef,
         data_layout: *const c_char,
         triple: *const c_char,
+        strip_invariant_group_barriers: c_int,
     ) -> LLVMMemoryBufferRef;
     fn reussirHasTPDE() -> c_int;
 }
@@ -444,7 +445,12 @@ impl OrcJit {
             let data_layout = LLVMOrcLLJITGetDataLayoutStr(self.jit);
             let triple = LLVMGetDefaultTargetTriple();
             tracing::debug!("compiling module to an object with TPDE");
-            let buffer = reussirTpdeCompileToObject(module, data_layout, triple);
+            // Strip the invariant-group barrier intrinsics (which TPDE
+            // cannot compile — e.g. shared-record member projections carry
+            // them) — the JIT owns this module copy and disposes it right
+            // after, so the in-place rewrite is free here. Callers reusing
+            // a module with the LLVM backend would pass 0 instead.
+            let buffer = reussirTpdeCompileToObject(module, data_layout, triple, 1);
             LLVMDisposeMessage(triple);
             if buffer.is_null() {
                 tracing::error!("TPDE compilation failed");
