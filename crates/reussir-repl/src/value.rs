@@ -29,12 +29,19 @@ use crate::reflect::{self, PrinterRegistry, ShapeTable};
 /// one releasing owner (a binding's box lives in the session's
 /// `GlobalBinding` and dies with it — rebinding included — with no manual
 /// bookkeeping).
-pub struct BoundBox {
+///
+/// The `'jit` borrow ties the reference to the engine whose materialized
+/// dec-companion code `Drop` calls (mirroring
+/// [`ModuleHandle`](reussir_jit::ModuleHandle)): releasing after engine
+/// disposal would be a use-after-free, and the borrow makes it a compile
+/// error instead of a discipline.
+pub struct BoundBox<'jit> {
     boxed: *const u8,
     dec: extern "C" fn(*const u8),
+    jit: std::marker::PhantomData<&'jit OrcJit>,
 }
 
-impl BoundBox {
+impl BoundBox<'_> {
     /// The raw box pointer, for passing to wrapper calls (which retain per
     /// reference they consume — see [`call_boxed`]) and for walking.
     pub fn as_ptr(&self) -> *const u8 {
@@ -42,7 +49,7 @@ impl BoundBox {
     }
 }
 
-impl Clone for BoundBox {
+impl Clone for BoundBox<'_> {
     fn clone(&self) -> Self {
         // SAFETY: `self` holds a live reference; the retain mirrors the
         // generated `rc.inc` (see `retain_box`).
@@ -50,11 +57,12 @@ impl Clone for BoundBox {
         BoundBox {
             boxed: self.boxed,
             dec: self.dec,
+            jit: std::marker::PhantomData,
         }
     }
 }
 
-impl Drop for BoundBox {
+impl Drop for BoundBox<'_> {
     fn drop(&mut self) {
         (self.dec)(self.boxed);
     }
@@ -126,15 +134,15 @@ unsafe fn call_unit(address: usize, args: &[*const u8]) {
 
 /// Call the wrapper (passing the live bindings' boxes) and return the
 /// evaluated box plus its rendering, WITHOUT releasing it — the `let` path.
-fn call_and_walk<'tcx>(
-    jit: &OrcJit,
+fn call_and_walk<'jit, 'tcx>(
+    jit: &'jit OrcJit,
     export: &str,
     ty: Ty<'tcx>,
     box_ty: Ty<'tcx>,
     shapes: &ShapeTable<'tcx>,
     printers: &PrinterRegistry,
     args: &[*const u8],
-) -> Result<(String, BoundBox), String> {
+) -> Result<(String, BoundBox<'jit>), String> {
     let address = jit.lookup(export)? as usize;
     // Resolve the dec companion *before* calling the wrapper, so a missing
     // symbol cannot strand an already-allocated box.
@@ -149,7 +157,11 @@ fn call_and_walk<'tcx>(
         return Err("the REPL wrapper returned a null box (this is a bug)".to_string());
     }
     // Owning from here on: any early return below releases through Drop.
-    let bound = BoundBox { boxed, dec };
+    let bound = BoundBox {
+        boxed,
+        dec,
+        jit: std::marker::PhantomData,
+    };
 
     // The box payload is the `{ value: T }` compound; its sole member's
     // inline cell sits at offset 0, so the payload address *is* the inline
@@ -189,15 +201,15 @@ pub fn call_and_render<'tcx>(
 /// [`call_and_render`], but keep the evaluated box alive and hand it to the
 /// caller — the global-`let` path. The caller owns the release (rebinding
 /// or session drop). Unit values are rejected upstream.
-pub fn call_and_bind<'tcx>(
-    jit: &OrcJit,
+pub fn call_and_bind<'jit, 'tcx>(
+    jit: &'jit OrcJit,
     export: &str,
     ty: Ty<'tcx>,
     box_ty: Ty<'tcx>,
     shapes: &ShapeTable<'tcx>,
     printers: &PrinterRegistry,
     args: &[*const u8],
-) -> Result<(String, BoundBox), String> {
+) -> Result<(String, BoundBox<'jit>), String> {
     call_and_walk(jit, export, ty, box_ty, shapes, printers, args)
 }
 

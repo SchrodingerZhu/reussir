@@ -89,11 +89,11 @@ where
 /// inputs. The box releases itself ([`crate::value::BoundBox`]'s `Drop`) on
 /// rebinding and on session drop — while the JIT (borrowed by the session,
 /// so it strictly outlives it) still has the dec companion materialized.
-struct GlobalBinding<'tcx> {
+struct GlobalBinding<'jit, 'tcx> {
     name: reussir_syntax::kind::TokenKey,
     display: String,
     ty: Ty<'tcx>,
-    boxed: crate::value::BoundBox,
+    boxed: crate::value::BoundBox<'jit>,
 }
 
 /// A module added to the JIT whose input is not yet permanent.
@@ -132,7 +132,7 @@ pub struct ReplSession<'a, 'tcx> {
     /// place (the old box released); the whole list is released on session
     /// drop (`:clear` included) while the JIT still holds the dec
     /// companions.
-    bindings: Vec<GlobalBinding<'tcx>>,
+    bindings: Vec<GlobalBinding<'a, 'tcx>>,
     /// The `__repl_expr_N` counter (advanced only on success).
     counter: usize,
     pub(crate) opt: OptLevel,
@@ -360,7 +360,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         name: reussir_syntax::kind::TokenKey,
         display: String,
         ty: Ty<'tcx>,
-        boxed: crate::value::BoundBox,
+        boxed: crate::value::BoundBox<'a>,
     ) {
         let entry = GlobalBinding {
             name,
