@@ -1,40 +1,45 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 // RUN: %cc %t.o %S/fibonacci.c -o %t.exe
 // RUN: %t.exe
 
-// CHECK-DAG: pub fn _RC14fibonacci_iter(n: u64) -> u64 {
-// CHECK-NEXT-DAG: _RC19fibonacci_iter_impl(v0, 0.0 : u64, 1.0 : u64) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC26fibonacci_logarithmic_impl(n: u64, a00: u64, a01: u64, a10: u64, a11: u64, b00: u64, b01: u64, b10: u64, b11: u64) -> u64 {
-// CHECK-NEXT-DAG: if (v0 == 0.0 : u64) : bool then
-// CHECK-NEXT-DAG: v2
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: if ((v0 % 2.0 : u64) : u64 == 1.0 : u64) : bool then
-// CHECK-NEXT-DAG: let v9 (na00) : u64 = ((v1 * v5) : u64 + (v2 * v7) : u64) : u64 in
-// CHECK-NEXT-DAG: let v10 (na01) : u64 = ((v1 * v6) : u64 + (v2 * v8) : u64) : u64 in
-// CHECK-NEXT-DAG: let v11 (na10) : u64 = ((v3 * v5) : u64 + (v4 * v7) : u64) : u64 in
-// CHECK-NEXT-DAG: let v12 (na11) : u64 = ((v3 * v6) : u64 + (v4 * v8) : u64) : u64 in
-// CHECK-NEXT-DAG: _RC26fibonacci_logarithmic_impl((v0 / 2.0 : u64) : u64, v9, v10, v11, v12, ((v5 * v5) : u64 + (v6 * v7) : u64) : u64, ((v5 * v6) : u64 + (v6 * v8) : u64) : u64, ((v7 * v5) : u64 + (v8 * v7) : u64) : u64, ((v7 * v6) : u64 + (v8 * v8) : u64) : u64) : u64
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: _RC26fibonacci_logarithmic_impl((v0 / 2.0 : u64) : u64, v1, v2, v3, v4, ((v5 * v5) : u64 + (v6 * v7) : u64) : u64, ((v5 * v6) : u64 + (v6 * v8) : u64) : u64, ((v7 * v5) : u64 + (v8 * v7) : u64) : u64, ((v7 * v6) : u64 + (v8 * v8) : u64) : u64) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: pub fn _RC9fibonacci(n: u64) -> u64 {
-// CHECK-NEXT-DAG: if (v0 <= 1.0 : u64) : bool then
-// CHECK-NEXT-DAG: v0
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: (_RC9fibonacci((v0 - 1.0 : u64) : u64) : u64 + _RC9fibonacci((v0 - 2.0 : u64) : u64) : u64) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC19fibonacci_iter_impl(n: u64, acc0: u64, acc1: u64) -> u64 {
-// CHECK-NEXT-DAG: if (v0 == 0.0 : u64) : bool then
-// CHECK-NEXT-DAG: v1
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: _RC19fibonacci_iter_impl((v0 - 1.0 : u64) : u64, v2, (v1 + v2) : u64) : u64
-// CHECK-NEXT-DAG: }
+// CHECK: pub fn @_RC14fibonacci_iter(v0 (n): u64) -> u64 {
+// CHECK-NEXT: @_RC19fibonacci_iter_impl(v0 : u64, 0 : u64, 1 : u64) : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC19fibonacci_iter_impl(v0 (n): u64, v1 (acc0): u64, v2 (acc1): u64) -> u64 {
+// CHECK-NEXT: if (v0 : u64 == 0 : u64) : bool then {
+// CHECK-NEXT: v1 : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: @_RC19fibonacci_iter_impl((v0 : u64 - 1 : u64) : u64, v2 : u64, (v1 : u64 + v2 : u64) : u64) : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC26fibonacci_logarithmic_impl(v0 (n): u64, v1 (a00): u64, v2 (a01): u64, v3 (a10): u64, v4 (a11): u64, v5 (b00): u64, v6 (b01): u64, v7 (b10): u64, v8 (b11): u64) -> u64 {
+// CHECK-NEXT: if (v0 : u64 == 0 : u64) : bool then {
+// CHECK-NEXT: v2 : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: if ((v0 : u64 % 2 : u64) : u64 == 1 : u64) : bool then {
+// CHECK-NEXT: let v9 (na00) = ((v1 : u64 * v5 : u64) : u64 + (v2 : u64 * v7 : u64) : u64) : u64;
+// CHECK-NEXT: let v10 (na01) = ((v1 : u64 * v6 : u64) : u64 + (v2 : u64 * v8 : u64) : u64) : u64;
+// CHECK-NEXT: let v11 (na10) = ((v3 : u64 * v5 : u64) : u64 + (v4 : u64 * v7 : u64) : u64) : u64;
+// CHECK-NEXT: let v12 (na11) = ((v3 : u64 * v6 : u64) : u64 + (v4 : u64 * v8 : u64) : u64) : u64;
+// CHECK-NEXT: @_RC26fibonacci_logarithmic_impl((v0 : u64 / 2 : u64) : u64, v9 : u64, v10 : u64, v11 : u64, v12 : u64, ((v5 : u64 * v5 : u64) : u64 + (v6 : u64 * v7 : u64) : u64) : u64, ((v5 : u64 * v6 : u64) : u64 + (v6 : u64 * v8 : u64) : u64) : u64, ((v7 : u64 * v5 : u64) : u64 + (v8 : u64 * v7 : u64) : u64) : u64, ((v7 : u64 * v6 : u64) : u64 + (v8 : u64 * v8 : u64) : u64) : u64) : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: @_RC26fibonacci_logarithmic_impl((v0 : u64 / 2 : u64) : u64, v1 : u64, v2 : u64, v3 : u64, v4 : u64, ((v5 : u64 * v5 : u64) : u64 + (v6 : u64 * v7 : u64) : u64) : u64, ((v5 : u64 * v6 : u64) : u64 + (v6 : u64 * v8 : u64) : u64) : u64, ((v7 : u64 * v5 : u64) : u64 + (v8 : u64 * v7 : u64) : u64) : u64, ((v7 : u64 * v6 : u64) : u64 + (v8 : u64 * v8 : u64) : u64) : u64) : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: pub fn @_RC9fibonacci(v0 (n): u64) -> u64 {
+// CHECK-NEXT: if (v0 : u64 <= 1 : u64) : bool then {
+// CHECK-NEXT: v0 : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: (@_RC9fibonacci((v0 : u64 - 1 : u64) : u64) : u64 + @_RC9fibonacci((v0 : u64 - 2 : u64) : u64) : u64) : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: extern "C" trampoline "fibonacci_ffi" = @_RC9fibonacci;
 pub fn fibonacci(n: u64) -> u64 {
     if n <= 1 {
         n

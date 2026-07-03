@@ -1,39 +1,37 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 // RUN: %cc %t.o %S/fibonacci.c -o %t.exe
 // RUN: %t.exe
 
-// CHECK-DAG: struct _RIC6MatrixyE (aka Matrix<u64>){
-// CHECK-NEXT-DAG: m00: u64,
-// CHECK-NEXT-DAG: m01: u64,
-// CHECK-NEXT-DAG: m10: u64,
-// CHECK-NEXT-DAG: m11: u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RIC9fibonacciyE<u64>(n: u64) -> u64 {
-// CHECK-NEXT-DAG: let v1 (x) : _RIC6MatrixyE = compound(0.0 : u64, 1.0 : u64, 1.0 : u64, 1.0 : u64) : _RIC6MatrixyE in
-// CHECK-NEXT-DAG: let v2 (eye) : _RIC6MatrixyE = compound(1.0 : u64, 0.0 : u64, 0.0 : u64, 1.0 : u64) : _RIC6MatrixyE in
-// CHECK-NEXT-DAG: _RIC26fibonacci_logarithmic_implyE(v0, v2, v1) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RIC26fibonacci_logarithmic_implyE<u64>(n: u64, a: _RIC6MatrixyE, b: _RIC6MatrixyE) -> u64 {
-// CHECK-NEXT-DAG: if (v0 == 0.0 : u64) : bool then
-// CHECK-NEXT-DAG: v1.1 : u64
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: if ((v0 % 2.0 : u64) : u64 == 1.0 : u64) : bool then
-// CHECK-NEXT-DAG: _RIC26fibonacci_logarithmic_implyE((v0 / 2.0 : u64) : u64, _RIC6matmulyE(v1, v2) : _RIC6MatrixyE, _RIC6matmulyE(v2, v2) : _RIC6MatrixyE) : u64
-// CHECK-NEXT-DAG: else
-// CHECK-NEXT-DAG: _RIC26fibonacci_logarithmic_implyE((v0 / 2.0 : u64) : u64, v1, _RIC6matmulyE(v2, v2) : _RIC6MatrixyE) : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RIC6matmulyE<u64>(a: _RIC6MatrixyE, b: _RIC6MatrixyE) -> _RIC6MatrixyE {
-// CHECK-NEXT-DAG: let v2 (m00) : u64 = ((v0.0 : u64 * v1.0 : u64) : u64 + (v0.1 : u64 * v1.2 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v3 (m01) : u64 = ((v0.0 : u64 * v1.1 : u64) : u64 + (v0.1 : u64 * v1.3 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v4 (m10) : u64 = ((v0.2 : u64 * v1.0 : u64) : u64 + (v0.3 : u64 * v1.2 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: let v5 (m11) : u64 = ((v0.2 : u64 * v1.1 : u64) : u64 + (v0.3 : u64 * v1.3 : u64) : u64) : u64 in
-// CHECK-NEXT-DAG: compound(v2, v3, v4, v5) : _RIC6MatrixyE
-// CHECK-NEXT-DAG: }
+// CHECK: record @_RIC6MatrixyE : value struct Matrix::<u64> { "m00": u64, "m01": u64, "m10": u64, "m11": u64 };
+// CHECK-EMPTY:
+// CHECK: fn @_RIC26fibonacci_logarithmic_implyE(v0 (n): u64, v1 (a): Matrix::<u64>, v2 (b): Matrix::<u64>) -> u64 {
+// CHECK-NEXT: if (v0 : u64 == 0 : u64) : bool then {
+// CHECK-NEXT: proj(v1 : Matrix::<u64>, 1) : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: if ((v0 : u64 % 2 : u64) : u64 == 1 : u64) : bool then {
+// CHECK-NEXT: @_RIC26fibonacci_logarithmic_implyE((v0 : u64 / 2 : u64) : u64, @_RIC6matmulyE(v1 : Matrix::<u64>, v2 : Matrix::<u64>) : Matrix::<u64>, @_RIC6matmulyE(v2 : Matrix::<u64>, v2 : Matrix::<u64>) : Matrix::<u64>) : u64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: @_RIC26fibonacci_logarithmic_implyE((v0 : u64 / 2 : u64) : u64, v1 : Matrix::<u64>, @_RIC6matmulyE(v2 : Matrix::<u64>, v2 : Matrix::<u64>) : Matrix::<u64>) : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: } : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RIC6matmulyE(v0 (a): Matrix::<u64>, v1 (b): Matrix::<u64>) -> Matrix::<u64> {
+// CHECK-NEXT: let v2 (m00) = ((proj(v0 : Matrix::<u64>, 0) : u64 * proj(v1 : Matrix::<u64>, 0) : u64) : u64 + (proj(v0 : Matrix::<u64>, 1) : u64 * proj(v1 : Matrix::<u64>, 2) : u64) : u64) : u64;
+// CHECK-NEXT: let v3 (m01) = ((proj(v0 : Matrix::<u64>, 0) : u64 * proj(v1 : Matrix::<u64>, 1) : u64) : u64 + (proj(v0 : Matrix::<u64>, 1) : u64 * proj(v1 : Matrix::<u64>, 3) : u64) : u64) : u64;
+// CHECK-NEXT: let v4 (m10) = ((proj(v0 : Matrix::<u64>, 2) : u64 * proj(v1 : Matrix::<u64>, 0) : u64) : u64 + (proj(v0 : Matrix::<u64>, 3) : u64 * proj(v1 : Matrix::<u64>, 2) : u64) : u64) : u64;
+// CHECK-NEXT: let v5 (m11) = ((proj(v0 : Matrix::<u64>, 2) : u64 * proj(v1 : Matrix::<u64>, 1) : u64) : u64 + (proj(v0 : Matrix::<u64>, 3) : u64 * proj(v1 : Matrix::<u64>, 3) : u64) : u64) : u64;
+// CHECK-NEXT: @_RIC6MatrixyE{v2 : u64, v3 : u64, v4 : u64, v5 : u64} : Matrix::<u64>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RIC9fibonacciyE(v0 (n): u64) -> u64 {
+// CHECK-NEXT: let v1 (x) = @_RIC6MatrixyE{0 : u64, 1 : u64, 1 : u64, 1 : u64} : Matrix::<u64>;
+// CHECK-NEXT: let v2 (eye) = @_RIC6MatrixyE{1 : u64, 0 : u64, 0 : u64, 1 : u64} : Matrix::<u64>;
+// CHECK-NEXT: @_RIC26fibonacci_logarithmic_implyE(v0 : u64, v2 : Matrix::<u64>, v1 : Matrix::<u64>) : u64
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: extern "C" trampoline "fibonacci_ffi" = @_RIC9fibonacciyE;
 struct [value] Matrix<T : Num> {
     m00: T, 
     m01: T,

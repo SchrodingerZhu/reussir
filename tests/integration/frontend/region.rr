@@ -1,27 +1,25 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: struct _RIC4CellyE (aka Cell<u64>){
-// CHECK-NEXT-DAG: value: u64
-// CHECK-NEXT-DAG: }
+// CHECK: record @_RIC4CellyE : regional struct Cell::<u64> { "value": u64 };
+// CHECK-EMPTY:
+// CHECK: fn @_RC11freeze_cell() -> [rigid] Cell::<u64> {
+// CHECK-NEXT: region { @_RIC4CellyE{1 : u64} : [flex] Cell::<u64> } : [rigid] Cell::<u64>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: regional fn @_RC17regional_function(v0 (x): u64) -> [flex] Cell::<u64> {
+// CHECK-NEXT: @_RIC4CellyE{v0 : u64} : [flex] Cell::<u64>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC25freeze_cell_with_let_expr() -> [rigid] Cell::<u64> {
+// CHECK-NEXT: region { { let v0 (x) = regional @_RC17regional_function(42 : u64) : [flex] Cell::<u64>;
+// CHECK-NEXT: v0 : [flex] Cell::<u64> } } : [rigid] Cell::<u64>
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+// CHECK: fn @_RC7trivial() -> u64 {
+// CHECK-NEXT: region { 1 : u64 } : u64
+// CHECK-NEXT: }
 
-// CHECK-DAG: regional fn _RC17regional_function(x: u64) -> Rc<_RIC4CellyE, Flex> {
-// CHECK-NEXT-DAG: rc_wrap(compound(v0) : _RIC4CellyE) : Rc<_RIC4CellyE, Flex>
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC25freeze_cell_with_let_expr() -> Rc<_RIC4CellyE, Rigid> {
-// CHECK-NEXT-DAG: run_region{let v0 (x) : Rc<_RIC4CellyE, Flex> = _RC17regional_function[regional](42.0 : u64) : Rc<_RIC4CellyE, Flex> in
-// CHECK-NEXT-DAG: v0} : Rc<_RIC4CellyE, Rigid>
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC7trivial() -> u64 {
-// CHECK-NEXT-DAG: run_region{1.0 : u64} : u64
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC11freeze_cell() -> Rc<_RIC4CellyE, Rigid> {
-// CHECK-NEXT-DAG: run_region{rc_wrap(compound(1.0 : u64) : _RIC4CellyE) : Rc<_RIC4CellyE, Flex>} : Rc<_RIC4CellyE, Rigid>
-// CHECK-NEXT-DAG: }
 fn trivial() -> u64 {
     regional {
         1

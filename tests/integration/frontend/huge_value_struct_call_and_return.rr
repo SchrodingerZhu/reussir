@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -o %t.o
+// RUN: %rrc %s -o %t.o
 // RUN: %cc %t.o %S/huge_value_struct_call_and_return.c -o %t.exe
 // RUN: %t.exe
 
