@@ -72,14 +72,14 @@ where
     let context = reussir_backend::context();
     let jit = OrcJit::with_runtime()?;
     Ok(in_arena(|tcx| {
-        let mut session = ReplSession::new(tcx, &interner, &context, jit, config);
+        let mut session = ReplSession::new(tcx, &interner, &context, &jit, config);
         drive(&mut session)
     }))
 }
 
 /// A module added to the JIT whose input is not yet permanent.
-struct PendingModule {
-    handle: ModuleHandle,
+struct PendingModule<'jit> {
+    handle: ModuleHandle<'jit>,
     symbols: Vec<String>,
 }
 
@@ -88,14 +88,13 @@ pub struct ReplSession<'a, 'tcx> {
     interner: Arc<MultiThreadedTokenInterner>,
     pub(crate) elab: Elaborator<'a, 'tcx>,
     context: &'a Context,
-    /// Tracked JIT modules, one per successfully added input.
-    ///
-    /// Declared before `jit`: fields drop in declaration order, and every
-    /// `ModuleHandle` (an ORC resource tracker) must be released before
-    /// `LLVMOrcDisposeLLJIT` ends the execution session — disposing the
-    /// LLJIT with live tracker references deadlocks.
-    modules: Vec<ModuleHandle>,
-    jit: OrcJit,
+    /// Tracked JIT modules, one per successfully added input. Each handle
+    /// borrows the [`OrcJit`] (owned by [`run`]'s scope, outliving the
+    /// session), so releasing every tracker before the LLJIT is disposed —
+    /// disposal with live tracker references deadlocks — is enforced by the
+    /// borrow rather than by drop order.
+    modules: Vec<ModuleHandle<'a>>,
+    jit: &'a OrcJit,
     /// Mangled symbols (and trampoline exports) already materialized in the
     /// JIT. Later modules emit these as body-less declarations
     /// ([`crate::externalize`]); ORC resolves the calls across modules.
@@ -110,7 +109,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         tcx: &'a TyCtxt<'tcx>,
         interner: &'a Arc<MultiThreadedTokenInterner>,
         context: &'a Context,
-        jit: OrcJit,
+        jit: &'a OrcJit,
         config: Config,
     ) -> Self {
         ReplSession {
@@ -181,7 +180,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                         // evicts the module and rolls the elaborator back,
                         // leaving the session exactly as before the input.
                         Ok(pending) => {
-                            match crate::value::call_and_render(&self.jit, &export, ty) {
+                            match crate::value::call_and_render(self.jit, &export, ty) {
                                 Ok(value) => {
                                     self.commit(pending);
                                     self.counter += 1;
@@ -193,7 +192,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                 }
                                 Err(message) => {
                                     if let Some(pending) = pending {
-                                        let _ = self.jit.remove_module(pending.handle);
+                                        let _ = self.jit.remove_module(&pending.handle);
                                     }
                                     self.elab.rollback(&cp);
                                     Outcome::Backend(message)
@@ -236,7 +235,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
     /// `cp` — nothing reaches the JIT from a failed input. On success the
     /// caller decides when the module is permanent (see [`Self::commit`]):
     /// definitions immediately, expressions only after the value call.
-    fn compile_new(&mut self, cp: &Checkpoint) -> Result<Option<PendingModule>, Outcome> {
+    fn compile_new(&mut self, cp: &Checkpoint) -> Result<Option<PendingModule<'a>>, Outcome> {
         let (mut program, reports) = monomorphize(&self.elab.mono_input());
         if reports.iter().any(|r| r.severity == Severity::Error) {
             self.elab.rollback(cp);
@@ -299,7 +298,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
 
     /// Make a compiled module permanent: keep its tracker and record its
     /// symbols so later modules declare rather than redefine them.
-    fn commit(&mut self, pending: Option<PendingModule>) {
+    fn commit(&mut self, pending: Option<PendingModule<'a>>) {
         if let Some(pending) = pending {
             self.modules.push(pending.handle);
             self.emitted.extend(pending.symbols);

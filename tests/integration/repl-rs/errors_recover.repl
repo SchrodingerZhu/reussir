@@ -17,7 +17,7 @@ Nullable::Null
 
 // A parse error:
 fn broken( { 2 }
-// CHECK: error
+// CHECK: expected a parameter name
 
 // The session still evaluates:
 40 + 2
