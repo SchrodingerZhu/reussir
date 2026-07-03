@@ -12,6 +12,7 @@ Available commands:
   :type <expr>          Show the type of an expression (no evaluation)
   :dump context         Pretty-print the accumulated definitions (HIR)
   :dump compiled        List JIT-compiled symbols
+  :dump bindings        List global `let` bindings and their current values
   :set opt <level>      Set the optimization level (none, default, aggressive, size, tpde)
   :clear                Reset the session (definitions and compiled code)
 
@@ -99,7 +100,10 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                 out.pop();
                 Outcome::Text(out)
             }
-            _ => Outcome::Text("usage: :dump context | :dump compiled".to_string()),
+            Some("bindings") => Outcome::Text(session.render_bindings()),
+            _ => {
+                Outcome::Text("usage: :dump context | :dump compiled | :dump bindings".to_string())
+            }
         },
         Some("set") => match (words.next(), words.next()) {
             (Some("opt"), Some(level)) => match parse_opt(level) {
