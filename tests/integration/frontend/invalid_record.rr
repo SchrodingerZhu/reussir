@@ -1,11 +1,18 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %not %reussir-elab --mode full %s
+// A `[field]` link's element must be a regional record; instantiating
+// `Matrix<u64>` puts a plain `u64` behind one. rrc rejects this during
+// elaboration: the link slot types as `Nullable<u64>`, which the literal
+// argument cannot satisfy. (The instantiation-level check — a non-regional
+// type argument reaching a `[field] T` — is enforced at monomorphization and
+// unit-tested as `field_link_generic_must_be_regional`.)
 
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
 
 struct [regional] Matrix<T> {
-    m00: [field] T 
+    m00: [field] T
 }
 
 fn test() -> Matrix<u64> {
     regional {Matrix{ m00 : 0 }}
 }
+
+// CHECK: does not implement `Integral`

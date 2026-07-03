@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -o %t.ll -t llvm-ir
+// RUN: %rrc %s --emit llvm-ir -o %t.ll
 // RUN: %FileCheck %s --check-prefix=LLVM < %t.ll
 
 fn apply1(f : i32 -> i32, x : i32) -> i32 {
@@ -17,6 +17,9 @@ pub fn test_sbox_multi() -> i32 {
     a + b
 }
 
+// A null nullable token must never be blindly deallocated: releases go
+// through a null check (or a token-aware runtime call), not a direct
+// `__reussir_deallocate(null)`.
 // LLVM-LABEL: define {{.*}}@_RC15test_sbox_multi
 // LLVM-NOT: call void @__reussir_deallocate(ptr null
 // LLVM: ret i32
