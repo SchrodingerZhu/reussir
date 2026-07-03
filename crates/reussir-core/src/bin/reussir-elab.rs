@@ -66,10 +66,11 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let mode = parse_mode(&cli.mode)?;
     let (name, source) = read_input(&cli.input)?;
 
-    let map = SourceMap::new(&source);
-
     let parse = reussir_syntax::parse(&source);
     if !parse.ok() {
+        // Built only on the error path; a clean parse never needs it (elaboration
+        // diagnostics build their own map inside `render_reports`, also lazily).
+        let map = SourceMap::new(&source);
         let color = std::io::stderr().is_terminal();
         let _ = diagnostics::render_errors(
             &name,
