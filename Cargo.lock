@@ -1266,7 +1266,6 @@ dependencies = [
 name = "reussir-repl"
 version = "0.1.0"
 dependencies = [
- "ariadne",
  "melior",
  "palc",
  "reussir-backend",

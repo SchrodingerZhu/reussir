@@ -5,15 +5,15 @@
 
 // A type error in a definition body:
 fn bad() -> i32 { true }
-// CHECK: error: type mismatch
+// CHECK: type mismatch
 
 // A type error in an expression:
 1 + true
-// CHECK: error:
+// CHECK: does not implement
 
 // An expression whose type cannot be inferred:
 Nullable::Null
-// CHECK: error: cannot infer the type of this expression
+// CHECK: cannot infer the type of this expression
 
 // A parse error:
 fn broken( { 2 }

@@ -8,7 +8,7 @@ fn f(x: i64) -> i64 { x + 1 }
 // CHECK: Definition added.
 
 fn f(x: i64) -> i64 { x + 2 }
-// CHECK: error: function `f` is defined more than once
+// CHECK: function `f` is defined more than once
 
 f(1)
 // CHECK: 2 : i64
@@ -19,7 +19,7 @@ f(1)
 fn g(x: i64) -> i64 { x * 10 }
 fn f(x: i64) -> i64 { x }
 }:
-// CHECK: error: function `f` is defined more than once
+// CHECK: function `f` is defined more than once
 
 // ...so `g` was rolled back too and its name is still free.
 fn g(x: i64) -> i64 { x * 100 }

@@ -27,7 +27,6 @@ reussir-core = { path = "../reussir-core" }
 reussir-syntax = { path = "../reussir-syntax" }
 # The persistent ORC LLJIT session (links the in-process runtime).
 reussir-jit = { path = "../reussir-jit" }
-ariadne.workspace = true
 palc.workspace = true
 rustc-hash.workspace = true
 tracing.workspace = true

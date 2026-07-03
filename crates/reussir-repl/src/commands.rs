@@ -37,8 +37,17 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
         Some("dump") => match words.next() {
             Some("context") => {
                 let elab = &session.elab;
+                // Evaluated expressions leave their `__repl_expr_N` wrappers
+                // behind as (unreferencable) dead HIR; they are driver
+                // plumbing, not user context.
+                let funcs: Vec<_> = elab
+                    .elaborated
+                    .iter()
+                    .filter(|f| !elab.sym(f.name).starts_with("__repl_"))
+                    .cloned()
+                    .collect();
                 let text = Printer::new(&elab.defs, elab.resolver).program(
-                    &elab.elaborated,
+                    &funcs,
                     &elab.records,
                     &elab.trampolines,
                 );
@@ -60,6 +69,11 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
         },
         Some("set") => match (words.next(), words.next()) {
             (Some("opt"), Some(level)) => match parse_opt(level) {
+                // Same guard as the CLI's `-O tpde`: reject here rather than
+                // letting the *next* input fail with a misattributed JIT error.
+                Some(OptLevel::Tpde) if !reussir_jit::orc::has_tpde() => {
+                    Outcome::Text("TPDE support is not compiled into the backend".to_string())
+                }
                 Some(opt) => {
                     session.opt = opt;
                     Outcome::Text(format!("optimization level set to {level}"))

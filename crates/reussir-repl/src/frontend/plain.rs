@@ -9,7 +9,7 @@
 
 use std::io::{BufRead, Write};
 
-use reussir_core::semi::{Report, Severity};
+use reussir_core::semi::render_reports;
 use reussir_syntax::diagnostics::{self, SourceMap};
 
 use crate::session::{Exit, Outcome, ReplSession};
@@ -93,7 +93,7 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
         Outcome::ClearRequested => return Some(Exit::Clear),
         Outcome::Text(text) => println!("{text}"),
         Outcome::Definitions { count, warnings } => {
-            render_reports(warnings);
+            render_reports("<repl>", input, warnings);
             for _ in 0..*count {
                 println!("Definition added.");
             }
@@ -103,7 +103,7 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
             ty,
             warnings,
         } => {
-            render_reports(warnings);
+            render_reports("<repl>", input, warnings);
             // Unit results print bare, matching the established contract.
             if ty == "()" {
                 println!("()");
@@ -116,18 +116,10 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
             let _ =
                 diagnostics::render_errors("<repl>", input, &map, errors, false, std::io::stderr());
         }
-        Outcome::Reports(reports) => render_reports(reports),
+        Outcome::Reports(reports) => {
+            render_reports("<repl>", input, reports);
+        }
         Outcome::Backend(message) => eprintln!("error: {message}"),
     }
     None
-}
-
-fn render_reports(reports: &[Report]) {
-    for report in reports {
-        let severity = match report.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
-        eprintln!("{severity}: {}", report.message);
-    }
 }

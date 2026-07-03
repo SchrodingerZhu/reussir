@@ -184,6 +184,20 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                                 Ok(value) => {
                                     self.commit(pending);
                                     self.counter += 1;
+                                    // The wrapper is unspellable (an identifier
+                                    // cannot start with `_`), so no later input
+                                    // can ever reference `__repl_expr_N` again:
+                                    // retire its trampoline root so future
+                                    // monomorphizations walk only the *new*
+                                    // input's call graph instead of every
+                                    // historical expression's. The wrapper's
+                                    // HIR stays behind as dead code.
+                                    let retired = self.elab.trampolines.pop();
+                                    debug_assert_eq!(
+                                        retired.as_ref().map(|t| t.name.as_str()),
+                                        Some(export.as_str()),
+                                        "the wrapper's root must be the last registered"
+                                    );
                                     Outcome::Value {
                                         value,
                                         ty: self.render_ty(ty),
@@ -282,9 +296,14 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                 return Err(Outcome::Backend(format!("JIT error: {error}")));
             }
         };
+        // Record only what this module *defines*: externalized (body-less)
+        // declarations are already in `emitted`, and marking any other
+        // body-less function as emitted would externalize it forever without
+        // its body ever being compiled.
         let mut symbols: Vec<String> = program
             .functions
             .iter()
+            .filter(|f| f.body.is_some())
             .map(|f| program.symbol(f.symbol).to_string())
             .collect();
         symbols.extend(
