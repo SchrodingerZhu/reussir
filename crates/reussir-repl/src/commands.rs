@@ -38,7 +38,7 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
             Some("context") => {
                 let elab = &session.elab;
                 // Evaluated expressions leave their `__repl_expr_N` wrappers
-                // behind as (unreferencable) dead HIR; they are driver
+                // behind as (unreferenceable) dead HIR; they are driver
                 // plumbing, not user context.
                 let funcs: Vec<_> = elab
                     .elaborated
