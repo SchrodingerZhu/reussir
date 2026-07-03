@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum Tree {
     Leaf(i32),
@@ -16,16 +16,16 @@ fn mirror(t : Tree) -> Tree {
 }
 
 // --- MLIR ownership checks ---
-// mirror(%0=t): consuming transformation with allocation
-// CHECK-MLIR-LABEL: func.func @"_RC6mirror"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// mirror(%arg0=t): consuming transformation with allocation
+// CHECK-MLIR-LABEL: func.func private @_RC6mirror(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Leaf(x): x is i32, dec scrutinee, build new Leaf
 // CHECK-MLIR:       [0] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // CHECK-MLIR:       reussir.rc.create
@@ -33,14 +33,14 @@ fn mirror(t : Tree) -> Tree {
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // Recursive calls in swapped order: mirror(r) then mirror(l)
-// CHECK-MLIR:       func.call @"_RC6mirror"
-// CHECK-MLIR:       func.call @"_RC6mirror"
+// CHECK-MLIR:       call @_RC6mirror
+// CHECK-MLIR:       call @_RC6mirror
 // Build new Node from swapped results
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant

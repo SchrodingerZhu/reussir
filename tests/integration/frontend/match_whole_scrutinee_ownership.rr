@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -Onone -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -O none -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 
 enum Term {
@@ -46,24 +46,24 @@ fn eval2(x: Term) -> Value {
 extern "C" trampoline "eval_ffi" = eval;
 extern "C" trampoline "eval2_ffi" = eval2;
 
-// Matching on a temporary and binding the whole scrutinee must reuse ownership
-// instead of inserting an extra rc.inc for the bound root.
-// CHECK-MLIR-LABEL: func.func @"_RC5eval2"(%0 :
-// CHECK-MLIR: %[[MATCHED2:[0-9]+]] = func.call @"_RC4eval"(%{{[0-9]+}}) : (!reussir.rc<!_RC4Term shared normal>) -> (!reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %[[BORROW2:[0-9]+]] = reussir.rc.borrow (%[[MATCHED2]] : !reussir.rc<!_RC5Value shared normal>) : !reussir.ref<!_RC5Value shared normal>
-// CHECK-MLIR: %{{[0-9]+}} = reussir.record.dispatch (%[[BORROW2]] : !reussir.ref<!_RC5Value shared normal>) -> !reussir.rc<!_RC5Value shared normal> {
-// CHECK-MLIR: [0] ->{
-// CHECK-MLIR-NOT: reussir.rc.inc (%[[MATCHED2]] : !reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %[[RHS2:[0-9]+]] = func.call @"_RC4eval"(%{{[0-9]+}}) : (!reussir.rc<!_RC4Term shared normal>) -> (!reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %{{[0-9]+}} = reussir.record.compound (%[[MATCHED2]], %[[RHS2]] : !reussir.rc<!_RC5Value shared normal>, !reussir.rc<!_RC5Value shared normal>) : !_RNvC5Value4VApp
-
 // Matching on a variable must not eagerly dec the matched root before a catch-all
 // branch consumes that same root in the result construction.
-// CHECK-MLIR-LABEL: func.func @"_RC4eval"(%0 :
-// CHECK-MLIR: %[[MATCHED1:[0-9]+]] = func.call @"_RC4eval"(%{{[0-9]+}}) : (!reussir.rc<!_RC4Term shared normal>) -> (!reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %[[BORROW1:[0-9]+]] = reussir.rc.borrow (%[[MATCHED1]] : !reussir.rc<!_RC5Value shared normal>) : !reussir.ref<!_RC5Value shared normal>
-// CHECK-MLIR: %{{[0-9]+}} = reussir.record.dispatch (%[[BORROW1]] : !reussir.ref<!_RC5Value shared normal>) -> !reussir.rc<!_RC5Value shared normal> {
-// CHECK-MLIR: [0] ->{
-// CHECK-MLIR-NOT: reussir.rc.dec (%[[MATCHED1]] : !reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %[[RHS1:[0-9]+]] = func.call @"_RC4eval"(%{{[0-9]+}}) : (!reussir.rc<!_RC4Term shared normal>) -> (!reussir.rc<!_RC5Value shared normal>)
-// CHECK-MLIR: %{{[0-9]+}} = reussir.record.compound (%[[MATCHED1]], %[[RHS1]] : !reussir.rc<!_RC5Value shared normal>, !reussir.rc<!_RC5Value shared normal>) : !_RNvC5Value4VApp
+// CHECK-MLIR-LABEL: func.func private @_RC4eval(%arg0
+// CHECK-MLIR: %[[MATCHED1:[0-9]+]] = func.call @_RC4eval(%{{[0-9]+}})
+// CHECK-MLIR: %[[BORROW1:[0-9]+]] = reussir.rc.borrow(%[[MATCHED1]]
+// CHECK-MLIR: %{{[0-9]+}} = reussir.record.dispatch(%[[BORROW1]]
+// CHECK-MLIR: [0] ->
+// CHECK-MLIR-NOT: reussir.rc.dec(%[[MATCHED1]]
+// CHECK-MLIR: %[[RHS1:[0-9]+]] = func.call @_RC4eval(%{{[0-9]+}})
+// CHECK-MLIR: %{{[0-9]+}} = reussir.record.compound(%[[MATCHED1]], %[[RHS1]]
+
+// Matching on a temporary and binding the whole scrutinee must reuse ownership
+// instead of inserting an extra rc.inc for the bound root.
+// CHECK-MLIR-LABEL: func.func private @_RC5eval2(%arg0
+// CHECK-MLIR: %[[MATCHED2:[0-9]+]] = func.call @_RC4eval(%{{[0-9]+}})
+// CHECK-MLIR: %[[BORROW2:[0-9]+]] = reussir.rc.borrow(%[[MATCHED2]]
+// CHECK-MLIR: %{{[0-9]+}} = reussir.record.dispatch(%[[BORROW2]]
+// CHECK-MLIR: [0] ->
+// CHECK-MLIR-NOT: reussir.rc.inc(%[[MATCHED2]]
+// CHECK-MLIR: %[[RHS2:[0-9]+]] = func.call @_RC4eval(%{{[0-9]+}})
+// CHECK-MLIR: %{{[0-9]+}} = reussir.record.compound(%[[MATCHED2]], %[[RHS2]]

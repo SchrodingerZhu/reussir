@@ -1,5 +1,5 @@
-// RUN: %reussir-compiler %s -t llvm-ir -o %t.ll --opt-level aggressive
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit llvm-ir -o %t.ll -O aggressive
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %reussir-opt %t.mlir \
 // RUN:   --reussir-rc-create-fusion \
 // RUN:   --reussir-trmc-recursion-analysis | %FileCheck %s --check-prefix=CHECK-TRMC
@@ -15,7 +15,7 @@ fn inc1(list : List<i32>) -> List<i32> {
     }
 }
 
-// CHECK-TRMC-LABEL: func.func @_RC4inc1(
+// CHECK-TRMC-LABEL: func.func private @_RC4inc1(
 // CHECK-TRMC: %[[NEW:.+]], %[[TAILHOLE:.+]] = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 1>
 // CHECK-TRMC: func.call @_RC4inc1.trmc(%{{.+}}, %[[TAILHOLE]]) : (!reussir.rc<!reussir.record<variant
 // CHECK-TRMC: scf.yield %[[NEW]] : !reussir.rc<!reussir.record<variant

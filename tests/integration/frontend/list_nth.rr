@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum List<T> {
     Nil,
@@ -28,26 +28,26 @@ fn nth(list : List<i32>, n : i32) -> Option<i32> {
 
 // --- MLIR ownership checks ---
 // nth(%0=list, %1=n): consuming traversal with index
-// CHECK-MLIR-LABEL: func.func @"_RC3nth"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC3nth(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec list, return None
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
-// Cons(x, xs): extract fields, check index
+// Cons(x, xs): extract fields (head then tail), inc tail, dec list, check index
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // n==0 branch: dec xs, return Some(x)
 // CHECK-MLIR:       reussir.rc.dec
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // CHECK-MLIR:       reussir.rc.create
 // n!=0 branch: recurse with xs and n-1
-// CHECK-MLIR:       func.call @"_RC3nth"
+// CHECK-MLIR:       call @_RC3nth

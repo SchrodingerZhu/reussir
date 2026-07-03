@@ -1,4 +1,4 @@
-// RUN: %reussir-compiler %s -Onone -t mlir -o %t.mlir
+// RUN: %rrc %s -O none --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 
 enum Tree {
@@ -21,12 +21,12 @@ fn g(t: Tree, z: Tree) -> Tree {
 
 extern "C" trampoline "g_ffi" = g;
 
-// CHECK-MLIR-LABEL: func.func @"_RC1g"(%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC1g(%arg0:
 // CHECK-MLIR: reussir.record.dispatch
 // CHECK-MLIR: [0] ->
-// CHECK-MLIR: reussir.rc.dec (%0 :
-// CHECK-MLIR: reussir.scf.yield %1 :
+// CHECK-MLIR: reussir.rc.dec(%arg0 :
+// CHECK-MLIR: reussir.scf.yield %arg1 :
 // CHECK-MLIR: [1] ->
-// CHECK-MLIR-DAG: reussir.rc.dec (%0 :
-// CHECK-MLIR-DAG: reussir.rc.dec (%1 :
+// CHECK-MLIR-DAG: reussir.rc.dec(%arg0 :
+// CHECK-MLIR-DAG: reussir.rc.dec(%arg1 :
 // CHECK-MLIR: reussir.scf.yield

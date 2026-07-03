@@ -1,5 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
-// RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
 enum List<T> {
     Nil,
     Cons(T, List<T>)
@@ -17,12 +16,12 @@ fn length(list : List<i32>) -> i32 {
 
 // --- MLIR ownership checks ---
 // length(%0=list): consuming structural traversal
-// CHECK-MLIR-LABEL: func.func @"_RC6length"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC6length(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0 :
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec list, yield 0
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       arith.constant 0 : i32
 // CHECK-MLIR:       reussir.scf.yield
 // Cons(_, xs): load xs (RC), inc xs, dec list, recurse
@@ -30,5 +29,5 @@ fn length(list : List<i32>) -> i32 {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC6length"
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
+// CHECK-MLIR:       call @_RC6length

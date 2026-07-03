@@ -1,5 +1,5 @@
-// RUN: %reussir-elab --mode semi %s | %FileCheck %s
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum List<T> {
     Nil,
@@ -20,65 +20,55 @@ pub fn empty2(list : List<i32>) -> bool {
     }
 }
 
-// CHECK:      ;; Instantiated Generics
-// CHECK-NEXT: Generic @0 should be instantiated to:
-// CHECK-NEXT: i32
-// CHECK:      ;; Elaborated Records
-// CHECK-NEXT: enum [shared] List<T@0>{
-// CHECK-NEXT:     Nil,
-// CHECK-NEXT:     Cons
-// CHECK-NEXT: }
-// CHECK:      enum_variant [value] List::Nil<T@0>()
-// CHECK:      enum_variant [value] List::Cons<T@0>(T0, List<T0>)
-// CHECK:      ;; Elaborated Functions
-// CHECK-NEXT: pub fn empty2(v0 (list): List<i32>) -> bool {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 1.0 : bool
+// CHECK:      [shared] enum #List<$0> { Nil(), Cons($0, #List::<$0>) };
+// CHECK:      pub fn #empty1(v0 (list): #List::<i32>) -> bool {
+// CHECK-NEXT:     match v0 : #List::<i32> {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => true : bool
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 0.0 : bool
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 => false : bool
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : bool
 // CHECK-NEXT: }
-// CHECK:      pub fn empty1(v0 (list): List<i32>) -> bool {
-// CHECK-NEXT:     match v0 {
-// CHECK-NEXT:         switch (0) {
-// CHECK-NEXT:             ctor@0 => {
-// CHECK-NEXT:                 1.0 : bool
+// CHECK:      pub fn #empty2(v0 (list): #List::<i32>) -> bool {
+// CHECK-NEXT:     match v0 : #List::<i32> {
+// CHECK-NEXT:         switch scrut {
+// CHECK-NEXT:             #0 => {
+// CHECK-NEXT:                 => true : bool
 // CHECK-NEXT:             }
-// CHECK-NEXT:             ctor@1 => {
-// CHECK-NEXT:                 0.0 : bool
+// CHECK-NEXT:             #1 => {
+// CHECK-NEXT:                 => false : bool
 // CHECK-NEXT:             }
 // CHECK-NEXT:         }
-// CHECK-NEXT:     }
+// CHECK-NEXT:     } : bool
 // CHECK-NEXT: }
 
 // --- MLIR ownership checks: both branches dec the list, no inc needed ---
 // empty1: match with wildcard
-// CHECK-MLIR-LABEL: func.func @"_RC6empty1"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func @_RC6empty1(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec scrutinee, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       arith.constant 1 : i1
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       arith.constant true
 // Cons: dec scrutinee, yield false (no pattern bindings extracted)
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       arith.constant 0 : i1
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       arith.constant false
 
 // empty2: match with explicit Cons(..)
-// CHECK-MLIR-LABEL: func.func @"_RC6empty2"(%0 :
+// CHECK-MLIR-LABEL: func.func @_RC6empty2(%arg0
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0
 // Cons: dec, yield false (no pattern bindings extracted)
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       arith.constant 0 : i1
+// CHECK-MLIR:       reussir.rc.dec(%arg0
+// CHECK-MLIR:       arith.constant false

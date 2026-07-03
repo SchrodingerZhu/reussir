@@ -1,5 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
-// RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
 enum List<T> {
     Nil,
     Cons(T, List<T>)
@@ -17,22 +16,22 @@ fn append(a : List<i32>, b : List<i32>) -> List<i32> {
 
 // --- MLIR ownership checks ---
 // append(%0=a, %1=b): consuming first list, passing through second
-// CHECK-MLIR-LABEL: func.func @"_RC6append"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC6append(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0 :
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec a, yield b (ownership of b transfers to caller)
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       reussir.scf.yield %1 :
-// Cons(x, xs): load xs, inc xs, load x, dec a, build Cons{x, append(xs, b)}
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
+// CHECK-MLIR:       reussir.scf.yield %arg1 :
+// Cons(x, xs): load x, load xs, inc xs, dec a, build Cons{x, append(xs, b)}
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC6append"
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
+// CHECK-MLIR:       call @_RC6append
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // CHECK-MLIR:       reussir.rc.create

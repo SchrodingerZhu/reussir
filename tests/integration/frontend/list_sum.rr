@@ -1,5 +1,4 @@
-// RUN: %reussir-compiler %s -t mlir -o %t.mlir
-// RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=CHECK-MLIR
 enum List<T> {
     Nil,
     Cons(T, List<T>)
@@ -16,20 +15,20 @@ fn sum(list : List<i32>) -> i32 {
 
 // --- MLIR ownership checks ---
 // sum(%0=list): consuming traversal returning primitive
-// CHECK-MLIR-LABEL: func.func @"_RC3sum"(%0 :
-// CHECK-MLIR:       reussir.rc.borrow (%0 :
+// CHECK-MLIR-LABEL: func.func private @_RC3sum(%arg0
+// CHECK-MLIR:       reussir.rc.borrow(%arg0 :
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec list, yield 0
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec (%0 :
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       arith.constant 0 : i32
 // CHECK-MLIR:       reussir.scf.yield
-// Cons: load xs (RC), inc xs, load x (i32), dec list, recurse
+// Cons: load x (i32), load xs (RC), inc xs, dec list, recurse
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
-// CHECK-MLIR:       reussir.rc.dec (%0 :
-// CHECK-MLIR:       func.call @"_RC3sum"
+// CHECK-MLIR:       reussir.rc.inc
+// CHECK-MLIR:       reussir.rc.dec(%arg0 :
+// CHECK-MLIR:       call @_RC3sum
