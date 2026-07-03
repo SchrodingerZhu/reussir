@@ -1,0 +1,15 @@
+// A non-`[field]` regional member holds a *frozen* value — storing a
+// still-live flex value into one is a flexivity mismatch at elaboration
+// (previously this leaked through the frontend and died as an MLIR verifier
+// error in the backend). Mutable intra-region links must use `[field]`.
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+struct [regional] Inner { v: u64 }
+struct [regional] Outer { inner: Inner, tag: u64 }
+
+regional fn mk(v: u64) -> [flex] Outer {
+    Outer { inner: Inner { v: v }, tag: v + 1 }
+}
+// CHECK: flexivity mismatch: a `Flex` regional value cannot be used where `Rigid` is required
+// CHECK: regional_member_flex_rejected.rr:12:20

@@ -36,7 +36,7 @@ use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
-use reussir_core::semi::ty::{IntTy, Ty, TyCtxt, TyKind};
+use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
 use reussir_core::surface::{Span, Visibility};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use smallvec::SmallVec;
@@ -1741,12 +1741,24 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 is_link: true,
             })
         } else if self.tys.is_regional_record(field_ty) {
-            // A non-`[field]` regional member would be a frozen (`rigid`) link, but
-            // it is not projectable yet: elaboration leaves such a member's
-            // flexivity unrefined (`Regional`), so the loaded value has no concrete
-            // `flex`/`rigid` coloring to project further through. Error explicitly
-            // here rather than surface a confusing "unrefined flexivity" downstream.
-            err("projection of a non-`[field]` regional record member not yet implemented")
+            // A non-`[field]` regional member is a frozen link: the dialect
+            // projects it to `rc<inner, rigid>` unconditionally
+            // (`getProjectedType`, lib/IR/ReussirTypes.cpp) — exactly the
+            // shared-member shape, at `rigid` capability. The record *layout*
+            // keeps the member's unrefined `Regional` coloring, so refine the
+            // loaded cursor's type to `Rigid` here, matching the coloring
+            // elaboration gives the projection expression itself.
+            let TyKind::Record { def, args, .. } = *field_ty.kind() else {
+                return err("regional member is not a record type");
+            };
+            let rigid_ty = self.tcx.mk_record(def, args, Flexivity::Rigid);
+            let inner = self.tys.record_inner_of(field_ty)?;
+            Ok(ProjectedMember {
+                field_ty: rigid_ty,
+                elem_ty: self.tys.rc_type_with_cap(inner, ReussirCapability::Rigid),
+                proj_cap: ref_cap,
+                is_link: true,
+            })
         } else {
             Ok(ProjectedMember {
                 field_ty,

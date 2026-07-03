@@ -1,0 +1,47 @@
+// Projection of a non-`[field]` regional record member (issue #290). Such a
+// member holds an already-*frozen* value: the slot is typed `rc<_, rigid>` on
+// both sides, so construction takes a previously frozen graph (freeze in its
+// own `regional { }` first) and projection reads a frozen view back out. The
+// executable harness checks the values *and* the rc bookkeeping survive a
+// cross-region composition (member graph frozen in one region, parent in
+// another).
+
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/regional_member_projection.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+struct [regional] Inner { v: u64 }
+struct [regional] Outer { inner: Inner, tag: u64 }
+
+fn mk_inner(v: u64) -> Inner {
+    regional { Inner { v: v } }
+}
+
+// MIR-DAG: record @_RC5Outer : regional struct Outer { "inner": [regional] Inner, "tag": u64 };
+
+// A frozen member composed into a new region's object, then projected through
+// (a two-step path down to the scalar).
+pub fn read_both(v: u64) -> u64 {
+    let i = mk_inner(v);
+    let o = regional { Outer { inner: i, tag: v + 1 } };
+    o.inner.v + o.tag
+}
+// MIR-DAG: proj(v2 : [rigid] Outer, 0, 0) : u64
+
+// Projection that *stops at* the member: the loaded rc<_, rigid> value
+// escapes the parent (exercises the ownership pass's dup on the projected
+// link and the later drop of both graphs).
+pub fn take_inner(v: u64) -> Inner {
+    let o = regional { Outer { inner: mk_inner(v), tag: v + 1 } };
+    o.inner
+}
+// MIR-DAG: proj(v1 : [rigid] Outer, 0) : [rigid] Inner
+
+pub fn use_inner(v: u64) -> u64 {
+    let i = take_inner(v);
+    i.v
+}
+
+extern "C" trampoline "read_both_ffi" = read_both;
+extern "C" trampoline "use_inner_ffi" = use_inner;

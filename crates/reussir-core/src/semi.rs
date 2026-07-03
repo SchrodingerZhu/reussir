@@ -208,6 +208,53 @@ mod tests {
         });
     }
 
+    /// A non-`[field]` regional-record member holds an already-*frozen* value:
+    /// the member's expected type is `Rigid`-refined (`rigid_member_ty`), so a
+    /// projection reads a `Rigid` value out, and construction accepts a frozen
+    /// argument.
+    #[test]
+    fn plain_regional_member_is_rigid_on_both_sides() {
+        check(
+            "struct [regional] Inner { v: u64 } \
+             struct [regional] Outer { inner: Inner, tag: u64 } \
+             fn mk_inner(v: u64) -> Inner { regional { Inner { v: v } } } \
+             fn take(v: u64) -> Inner { \
+                 let o = regional { Outer { inner: mk_inner(v), tag: v } }; \
+                 o.inner \
+             }",
+            |elab, _| {
+                let body = function(elab, "take").body.as_ref().unwrap();
+                // The projected member is a frozen view.
+                assert_eq!(body.ty.flexivity(), Some(Flexivity::Rigid));
+            },
+        );
+    }
+
+    /// Storing a still-live `Flex` value into a plain (non-`[field]`) regional
+    /// member is a flexivity mismatch at elaboration — the member requires a
+    /// frozen value (the backend types the slot `rc<_, rigid>`); previously
+    /// this leaked through and died as an MLIR verifier error.
+    #[test]
+    fn rejects_flex_value_in_plain_regional_member() {
+        with_tcx(|tcx| {
+            let source = "struct [regional] Inner { v: u64 } \
+                          struct [regional] Outer { inner: Inner, tag: u64 } \
+                          regional fn mk(v: u64) -> [flex] Outer { \
+                              Outer { inner: Inner { v: v }, tag: v } \
+                          }";
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("flexivity mismatch")),
+                "expected a flexivity mismatch: {:#?}",
+                elab.reports
+            );
+        });
+    }
+
     #[test]
     fn rejects_regional_call_outside_region() {
         with_tcx(|tcx| {

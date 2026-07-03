@@ -1003,17 +1003,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// The *expected* type of a struct member when constructing or mutating the
-    /// struct — the target a field argument or assignment source is checked
-    /// against. A plain member is its (instantiated) declared type. A mutable
-    /// `[field]` link — always a `Nullable<Record>` — points at a region-local
-    /// value, so its slot element is `Flex`: it lives in a flex regional record
-    /// (a fresh construction is born flex; assignment requires a flex target).
-    /// This flex expectation is what colors an otherwise-unknown value stored
-    /// through it — e.g. a standalone `Nullable::Null` has an unconstrained
-    /// element, and checking it against this flex slot solves that hole to `flex`
-    /// rather than the record's default `Regional`. (A concrete `rigid` value
-    /// meeting this flex slot is a flexivity mismatch, caught by [`expect`].)
+    /// The type of a struct member as seen through the struct — the target a
+    /// field argument or assignment source is checked against, and the type a
+    /// projection reads out. A plain member is its (instantiated) declared
+    /// type, except a plain *regional-record* member, whose coloring refines
+    /// to `Rigid` ([`Self::rigid_member_ty`]: the slot holds a frozen value).
+    /// A mutable `[field]` link — always a `Nullable<Record>` — points at a
+    /// region-local value, so its slot element is `Flex`: it lives in a flex
+    /// regional record (a fresh construction is born flex; assignment
+    /// requires a flex target). This flex expectation is what colors an
+    /// otherwise-unknown value stored through it — e.g. a standalone
+    /// `Nullable::Null` has an unconstrained element, and checking it against
+    /// this flex slot solves that hole to `flex` rather than the record's
+    /// default `Regional`. (A concrete `rigid` value meeting this flex slot
+    /// is a flexivity mismatch, caught by [`expect`].)
     fn field_member_ty(
         &mut self,
         decl_ty: Ty<'tcx>,
@@ -1021,7 +1024,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         inst: &Instantiation<'tcx>,
     ) -> Ty<'tcx> {
         let ty = self.infer.instantiate_ty(decl_ty, inst);
-        if is_field { self.flex_link_ty(ty) } else { ty }
+        if is_field {
+            self.flex_link_ty(ty)
+        } else {
+            self.rigid_member_ty(ty)
+        }
+    }
+
+    /// Color a non-`[field]` regional-record member `Rigid` — the counterpart
+    /// of [`Self::flex_link_ty`]. Such a member holds an already-*frozen*
+    /// value: it can only be written at construction (there is no assignment
+    /// path to it), and the backend types its slot `rc<_, rigid>` on both
+    /// sides (`getProjectedType`). Refining here makes both uses line up:
+    /// a constructor argument is checked against the `Rigid` expectation
+    /// (storing a still-live `Flex` value is a flexivity mismatch, caught by
+    /// [`Self::expect`] — freeze it in its own `regional { }` first), and a
+    /// projection reads a `Rigid` value out. Members with a concrete coloring
+    /// and non-regional types pass through untouched.
+    fn rigid_member_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        use crate::semi::ty::Flexivity;
+        if let TyKind::Record {
+            def,
+            args,
+            flex: Flexivity::Regional,
+        } = ty.kind()
+        {
+            return self.tcx.mk_record(*def, args, Flexivity::Rigid);
+        }
+        ty
     }
 
     /// Color a `[field]` link's slot element `Flex`. The link is a
