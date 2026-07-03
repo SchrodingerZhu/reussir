@@ -343,6 +343,87 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.resolver.resolve(key)
     }
 
+    /// Render `ty` the way the surface spells it, for diagnostics: `i32`,
+    /// `bool`, `Cell<u64>`, `[rigid] Node`, `Nullable<Data>`,
+    /// `(i32, i32) -> i32`. A generic prints its declared name; an unsolved
+    /// inference hole prints `_` — pass a *deeply resolved* type
+    /// (`InferCtxt::resolve`) so solved holes show their solutions. The
+    /// `Debug` form (`Int(Signed(32))`) is for compiler logs only and must
+    /// not reach user-facing reports.
+    pub fn ty_display(&self, ty: Ty<'tcx>) -> String {
+        let mut out = String::new();
+        self.push_ty_display(&mut out, ty);
+        out
+    }
+
+    fn push_ty_display(&self, out: &mut String, ty: Ty<'tcx>) {
+        use crate::semi::ty::{FpTy, IntTy};
+        use std::fmt::Write as _;
+        match *ty.kind() {
+            TyKind::Int(IntTy::Signed(w)) => {
+                let _ = write!(out, "i{w}");
+            }
+            TyKind::Int(IntTy::Unsigned(w)) => {
+                let _ = write!(out, "u{w}");
+            }
+            TyKind::Fp(FpTy::Ieee(w)) => {
+                let _ = write!(out, "f{w}");
+            }
+            TyKind::Fp(FpTy::BFloat16) => out.push_str("bfloat16"),
+            TyKind::Fp(FpTy::Float8) => out.push_str("float8"),
+            TyKind::Bool => out.push_str("bool"),
+            TyKind::Str => out.push_str("str"),
+            TyKind::Unit => out.push_str("unit"),
+            TyKind::Bottom => out.push_str("!"),
+            TyKind::Generic(g) => out.push_str(
+                self.generics
+                    .get(g.0 as usize)
+                    .map_or("_", |info| self.resolver.resolve(info.name)),
+            ),
+            TyKind::Hole(_) => out.push('_'),
+            TyKind::Nullable(inner) => {
+                out.push_str("Nullable<");
+                self.push_ty_display(out, inner);
+                out.push('>');
+            }
+            TyKind::Record { def, args, flex } => {
+                match flex {
+                    Flexivity::Flex => out.push_str("[flex] "),
+                    Flexivity::Rigid => out.push_str("[rigid] "),
+                    Flexivity::Regional => out.push_str("[regional] "),
+                    Flexivity::Irrelevant => {}
+                }
+                out.push_str(&self.defs.path(def).display(self.resolver));
+                if !args.is_empty() {
+                    out.push('<');
+                    for (i, &arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        self.push_ty_display(out, arg);
+                    }
+                    out.push('>');
+                }
+            }
+            TyKind::Closure { params, ret } => {
+                if let [single] = params {
+                    self.push_ty_display(out, *single);
+                } else {
+                    out.push('(');
+                    for (i, &p) in params.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        self.push_ty_display(out, p);
+                    }
+                    out.push(')');
+                }
+                out.push_str(" -> ");
+                self.push_ty_display(out, ret);
+            }
+        }
+    }
+
     /// Record one successful resolution of `name`, feeding the frecency model
     /// that ranks future "did you mean" suggestions.
     pub(super) fn record_use(&mut self, name: TokenKey) {

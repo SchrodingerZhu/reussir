@@ -248,7 +248,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     Ok(_) => Discharge::Solved,
                     Err(_) => {
                         let name = &self.traits.trait_def(tref.trait_id).name;
-                        Discharge::Failed(format!("`{self_ty:?}` does not implement `{name}`"))
+                        Discharge::Failed(format!(
+                            "`{}` does not implement `{name}`",
+                            self.ty_display(self_ty)
+                        ))
                     }
                 }
             }

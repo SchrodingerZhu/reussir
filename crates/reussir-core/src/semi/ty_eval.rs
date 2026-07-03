@@ -107,7 +107,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     if is_concretely_non_pointer(inner) {
                         self.error(
                             Some(span),
-                            format!("`Nullable` inner type `{inner:?}` is not a pointer-like type"),
+                            format!(
+                                "`Nullable` inner type `{}` is not a pointer-like type",
+                                self.ty_display(inner)
+                            ),
                         );
                     }
                     self.tcx.mk_nullable(inner)

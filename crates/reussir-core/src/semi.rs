@@ -340,6 +340,59 @@ mod tests {
         });
     }
 
+    /// Diagnostics spell types the way the surface does (`i32`, `bool`,
+    /// `Nullable<Cell<u64>>`, `[rigid] …`), never the internal `Debug` form
+    /// (`Int(Signed(32))`).
+    #[test]
+    fn diagnostics_render_types_in_surface_syntax() {
+        let messages = |source: &str| {
+            with_tcx(|tcx| {
+                let parse = reussir_syntax::parse(source);
+                assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+                let prog = surface::program(&parse.root);
+                let elab = elaborate(tcx, &prog, parse.resolver());
+                assert!(elab.has_errors(), "expected an error");
+                elab.reports
+                    .iter()
+                    .map(|r| r.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        };
+
+        let m = messages("fn bad() -> i32 { true }");
+        assert!(
+            m.contains("expected `i32`, found `bool`"),
+            "surface spelling expected: {m}"
+        );
+
+        let m = messages(
+            r#"
+            struct [regional] Cell<T> { v: T }
+            fn f(c: Cell<u64>) -> bool { c }
+            "#,
+        );
+        assert!(
+            m.contains("expected `bool`, found `[rigid] Cell<u64>`"),
+            "record spelling expected: {m}"
+        );
+
+        let m = messages(
+            r#"
+            struct [regional] Matrix<T> { m00: [field] T }
+            fn test() -> Matrix<u64> { regional { Matrix { m00: 0 } } }
+            "#,
+        );
+        assert!(
+            m.contains("`Nullable<u64>` does not implement `Integral`"),
+            "nullable spelling expected: {m}"
+        );
+        assert!(
+            !m.contains("Int(") && !m.contains("Unsigned("),
+            "no Debug leakage: {m}"
+        );
+    }
+
     /// A non-`[field]` regional-record member holds an already-*frozen* value:
     /// the member's expected type is `Rigid`-refined (`rigid_member_ty`), so a
     /// projection reads a `Rigid` value out, and construction accepts a frozen
