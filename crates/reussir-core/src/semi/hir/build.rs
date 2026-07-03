@@ -557,6 +557,22 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_a_nullable_match() {
+        roundtrip(
+            r#"
+            struct RcBox<T> { value: T }
+
+            pub fn unwrap_or(n: Nullable<RcBox<i32>>, d: i32) -> i32 {
+                match n {
+                    Nullable::NonNull(b) => b.value,
+                    Nullable::Null => d
+                }
+            }
+            "#,
+        );
+    }
+
+    #[test]
     fn roundtrips_nested_scrutinee_paths() {
         // A nested pattern produces depth-2 scrutinee paths (`scrut.1.0`),
         // whose adjacent indices lex as one float-shaped token — the grammar

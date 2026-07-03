@@ -1,30 +1,11 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// Nullable in value position: constructed (`NonNull`/`Null`), returned from
+// functions, and read out of a `[field]` link (projection through a rigid
+// base yields the frozen `Nullable<[rigid] _>` view). Dispatch on nullables
+// is covered by `nullable_match.rr`.
 
-// CHECK-DAG: struct _RC4Data (aka Data){
-// CHECK-NEXT-DAG: value: u64
-// CHECK-NEXT-DAG: }
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: struct _RC6RegBox (aka RegBox){
-// CHECK-NEXT-DAG: value: [field] _RC4Data
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: struct _RIC5RcBoxlE (aka RcBox<i32>){
-// CHECK-NEXT-DAG: value: i32
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3baz(reg: Rc<_RC6RegBox, Rigid>) -> Nullable<Rc<_RC4Data, Rigid>> {
-// CHECK-NEXT-DAG: v0.0 : Nullable<Rc<_RC4Data, Regional>>
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3foo() -> Nullable<Rc<_RIC5RcBoxlE, Shared>> {
-// CHECK-NEXT-DAG: nonnull{rc_wrap(compound(1.0 : i32) : _RIC5RcBoxlE) : Rc<_RIC5RcBoxlE, Shared>} : Nullable<Rc<_RIC5RcBoxlE, Shared>>
-// CHECK-NEXT-DAG: }
-
-// CHECK-DAG: fn _RC3bar() -> Nullable<Rc<_RIC5RcBoxdE, Shared>> {
-// CHECK-NEXT-DAG: null : Nullable<Rc<_RIC5RcBoxdE, Shared>>
-// CHECK-NEXT-DAG: }
 struct RcBox<T> {
     value: T
 }
@@ -49,4 +30,20 @@ fn baz(reg : RegBox) -> Nullable<Data> {
     reg.value
 }
 
+// CHECK-DAG: record @_RC4Data : regional struct Data { "value": u64 };
+// CHECK-DAG: record @_RC6RegBox : regional struct RegBox { "value": field Nullable<[regional] Data> };
+// CHECK-DAG: record @_RIC5RcBoxlE : shared struct RcBox::<i32> { "value": i32 };
 
+// CHECK: fn @_RC3bar() -> Nullable<RcBox::<f64>> {
+// CHECK-NEXT: Null : Nullable<RcBox::<f64>>
+// CHECK-NEXT: }
+
+// An unannotated regional parameter is pinned rigid; the `[field]` link
+// projects at the base's (frozen) view.
+// CHECK: fn @_RC3baz(v0 (reg): [rigid] RegBox) -> Nullable<[rigid] Data> {
+// CHECK-NEXT: proj(v0 : [rigid] RegBox, 0) : Nullable<[rigid] Data>
+// CHECK-NEXT: }
+
+// CHECK: fn @_RC3foo() -> Nullable<RcBox::<i32>> {
+// CHECK-NEXT: NonNull(@_RIC5RcBoxlE{1 : i32} : RcBox::<i32>) : Nullable<RcBox::<i32>>
+// CHECK-NEXT: }

@@ -63,6 +63,11 @@ enum Ctor<'tcx> {
     Int(&'tcx Integer),
     Bool(bool),
     Str(StringToken),
+    /// The non-null case of a `Nullable<T>` scrutinee, with one field: the
+    /// unwrapped `T`.
+    NonNull,
+    /// The null case of a `Nullable<T>` scrutinee (no fields).
+    Null,
 }
 
 impl Ctor<'_> {
@@ -72,6 +77,7 @@ impl Ctor<'_> {
             Ctor::Int(_) => Family::Int,
             Ctor::Bool(_) => Family::Bool,
             Ctor::Str(_) => Family::Str,
+            Ctor::NonNull | Ctor::Null => Family::Nullable,
         }
     }
 }
@@ -85,6 +91,8 @@ enum Family {
     Variant,
     /// A closed two-case family (`true` / `false`).
     Bool,
+    /// A closed two-case family (`NonNull` / `Null`).
+    Nullable,
     /// Open families: there are always more values than literals, so they need a
     /// default branch.
     Int,
@@ -300,6 +308,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         ty: Ty<'tcx>,
     ) -> Pat<'tcx> {
         let ty = self.infer.shallow_resolve(ty);
+        // The built-in nullable constructors, by the same qualifier convention
+        // as [`Elaborator::infer_ctor`] on the expression side.
+        if ctor.path.segments.last().map(|k| self.sym(*k)) == Some("Nullable") {
+            return self.check_nullable_pat(ctor, span, ty);
+        }
         let TyKind::Record { def, args, .. } = ty.kind() else {
             self.error(span, format!("cannot match constructor against `{ty:?}`"));
             return Pat::Wild;
@@ -371,6 +384,70 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Pat::Ctor {
             ctor: Ctor::Variant(vidx),
             fields,
+        }
+    }
+
+    /// `Nullable::NonNull(p)` / `Nullable::Null` patterns against a
+    /// `Nullable<T>` scrutinee. `NonNull` binds one sub-pattern at the element
+    /// type; `Null` binds nothing.
+    fn check_nullable_pat(
+        &mut self,
+        ctor: &surface::CtorPat,
+        span: Option<Span>,
+        ty: Ty<'tcx>,
+    ) -> Pat<'tcx> {
+        // The scrutinee must be (or become) a nullable; a still-unsolved hole
+        // is solved to `Nullable<α>` so the sub-pattern can constrain `α`.
+        let inner = match ty.kind() {
+            TyKind::Nullable(inner) => self.infer.shallow_resolve(*inner),
+            TyKind::Hole(_) => {
+                let elem = self.infer.new_hole_ty();
+                let want = self.tcx.mk_nullable(elem);
+                let _ = self.infer.unify(ty, want);
+                elem
+            }
+            _ => {
+                self.error(
+                    span,
+                    format!("cannot match a nullable pattern against `{ty:?}`"),
+                );
+                return Pat::Wild;
+            }
+        };
+        match self.sym(ctor.path.basename) {
+            "NonNull" => {
+                if ctor.args.len() != 1 {
+                    self.error(
+                        span,
+                        format!(
+                            "`Nullable::NonNull` binds exactly 1 value, but the \
+                             pattern binds {}",
+                            ctor.args.len()
+                        ),
+                    );
+                }
+                let field = match ctor.args.first() {
+                    Some(arg) => self.check_pat(&arg.kind, span, inner),
+                    None => Pat::Wild,
+                };
+                Pat::Ctor {
+                    ctor: Ctor::NonNull,
+                    fields: vec![field],
+                }
+            }
+            "Null" => {
+                if !ctor.args.is_empty() {
+                    self.error(span, "`Nullable::Null` binds no values");
+                }
+                Pat::Ctor {
+                    ctor: Ctor::Null,
+                    fields: Vec::new(),
+                }
+            }
+            other => {
+                self.error(span, format!("unknown nullable constructor `{other}`"));
+                Pat::Wild
+            }
         }
     }
 
@@ -462,6 +539,24 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let if_false = Box::new(self.compile_match(f, reached, exhaustive));
                 SwitchCases::Bool { if_true, if_false }
             }
+            // Closed two-case family. The non-null case exposes one field —
+            // the unwrapped element — at the *same* occurrence as the switch
+            // itself: the textual-IR arms carry no field index and the
+            // codegen dispatch rebinds the scrutinee's path to the unwrapped
+            // pointer (unwrapping is a pointer no-op), matching the reference.
+            Family::Nullable => {
+                let inner = match self.infer.shallow_resolve(col_ty).kind() {
+                    TyKind::Nullable(inner) => self.infer.shallow_resolve(*inner),
+                    // A non-nullable column type means the pattern arm already
+                    // errored in `check_nullable_pat`; recover with Bottom.
+                    _ => self.tcx.mk(TyKind::Bottom),
+                };
+                let nn = self.specialize_nonnull(&m, j, &occ, inner);
+                let non_null = Box::new(self.compile_match(nn, reached, exhaustive));
+                let nl = self.specialize_scalar(&m, j, &Ctor::Null, &occ);
+                let null = Box::new(self.compile_match(nl, reached, exhaustive));
+                SwitchCases::Nullable { non_null, null }
+            }
             // Open: one case per literal, plus a default for everything else.
             Family::Int => {
                 let mut cases = Vec::new();
@@ -528,6 +623,56 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
             let mut pats = row.pats[..j].to_vec();
             pats.extend(sub);
+            pats.extend_from_slice(&row.pats[j + 1..]);
+            let mut bindings = row.bindings.clone();
+            bindings.extend(bind);
+            rows.push(Row {
+                pats,
+                bindings,
+                guard: row.guard.clone(),
+                body: row.body.clone(),
+                arm: row.arm,
+            });
+        }
+        Matrix { cols, rows }
+    }
+
+    /// `S(NonNull, P)`: keep the rows that can match the non-null case,
+    /// expanding the single unwrapped-element field into a fresh column at the
+    /// *same* occurrence `occ` (see the `Family::Nullable` arm — unwrapping a
+    /// non-null is a pointer no-op, so the payload occupies the scrutinee's
+    /// own path, unlike a variant's `occ ++ [i]` fields).
+    fn specialize_nonnull(
+        &self,
+        m: &Matrix<'tcx>,
+        j: usize,
+        occ: &PatVarRef,
+        inner: Ty<'tcx>,
+    ) -> Matrix<'tcx> {
+        let mut cols = m.cols[..j].to_vec();
+        cols.push(Column {
+            occ: occ.clone(),
+            ty: inner,
+        });
+        cols.extend_from_slice(&m.cols[j + 1..]);
+
+        let mut rows = Vec::new();
+        for row in &m.rows {
+            let (sub, bind): (Pat<'tcx>, Option<(VarId, PatVarRef)>) = match &row.pats[j] {
+                Pat::Ctor {
+                    ctor: Ctor::NonNull,
+                    fields,
+                } => (fields[0].clone(), None),
+                // A `Null` pattern cannot match this case.
+                Pat::Ctor { .. } => continue,
+                Pat::Wild => (Pat::Wild, None),
+                // Binding the whole nullable: within the non-null case the
+                // nullable and its unwrapped element are the same pointer, so
+                // the binder's occurrence stays `occ` like everything else.
+                Pat::Bind(var) => (Pat::Wild, Some((*var, occ.clone()))),
+            };
+            let mut pats = row.pats[..j].to_vec();
+            pats.push(sub);
             pats.extend_from_slice(&row.pats[j + 1..]);
             let mut bindings = row.bindings.clone();
             bindings.extend(bind);

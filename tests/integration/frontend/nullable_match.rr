@@ -1,0 +1,83 @@
+// Nullable-pattern dispatch (#290): `match` on a `Nullable<T>` lowers to
+// `reussir.nullable.dispatch`, with the unwrapped payload bound at the
+// scrutinee's own occurrence. The harness executes dispatch over shared
+// values, over frozen regional `[field]` links (including a nested match on
+// the unwrapped payload's own link), and the null-guarded refcounting of a
+// nullable that is bound and dropped without being matched.
+
+// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/nullable_match.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+struct RcBox<T> { value: T }
+
+fn wrap(v: i32) -> Nullable<RcBox<i32>> {
+    Nullable::NonNull { RcBox { value: v } }
+}
+
+fn empty() -> Nullable<RcBox<i32>> {
+    Nullable::Null
+}
+
+pub fn read_wrapped(v: i32) -> i32 {
+    match wrap(v) {
+        Nullable::NonNull(b) => b.value,
+        Nullable::Null => -1
+    }
+}
+// MIR: fn @_RC12read_wrapped
+// MIR: switch scrut {
+// MIR-NEXT: NonNull => {
+// MIR-NEXT: v{{[0-9]+}}=scrut =>
+
+pub fn read_empty() -> i32 {
+    match empty() {
+        Nullable::NonNull(b) => b.value,
+        Nullable::Null => -1
+    }
+}
+
+// A nullable bound but never matched: dropped through a null check, never a
+// blind deallocation.
+pub fn drop_unmatched(v: i32) -> i32 {
+    let n = wrap(v);
+    let e = empty();
+    7
+}
+
+struct [regional] Cell { v: u64, next: [field] Cell }
+
+regional fn mk2(v: u64) -> [flex] Cell {
+    let tail : [flex] Cell = Cell { v: v + 1, next: Nullable::Null };
+    let head : [flex] Cell = Cell { v: v, next: Nullable::Null };
+    head->next := Nullable::NonNull { tail };
+    head
+}
+
+// Match on a frozen `[field]` link; the payload projects further.
+pub fn second(v: u64) -> u64 {
+    let c = regional { mk2(v) };
+    match c.next {
+        Nullable::NonNull(inner) => inner.v,
+        Nullable::Null => 0
+    }
+}
+
+// A nested nullable match on the unwrapped payload's own link.
+pub fn end_of_list(v: u64) -> u64 {
+    let c = regional { mk2(v) };
+    match c.next {
+        Nullable::NonNull(inner) => match inner.next {
+            Nullable::NonNull(deeper) => deeper.v,
+            Nullable::Null => inner.v + 100
+        },
+        Nullable::Null => 0
+    }
+}
+
+extern "C" trampoline "read_wrapped_ffi" = read_wrapped;
+extern "C" trampoline "read_empty_ffi" = read_empty;
+extern "C" trampoline "drop_unmatched_ffi" = drop_unmatched;
+extern "C" trampoline "second_ffi" = second;
+extern "C" trampoline "end_of_list_ffi" = end_of_list;

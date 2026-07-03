@@ -1028,8 +1028,83 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             SwitchCases::Int { cases, default } => {
                 self.int_switch(block, env, root_idx, path, cases, default, result_ty)
             }
-            SwitchCases::Nullable { .. } => err("nullable-pattern match lowering not yet implemented"),
+            SwitchCases::Nullable { non_null, null } => {
+                self.nullable_switch(block, env, root_idx, path, non_null, null, result_ty)
+            }
             SwitchCases::String { .. } => err("string-pattern match lowering not yet implemented"),
+        }
+    }
+
+    /// Lower a nullable `Switch` to `reussir.nullable.dispatch`: the non-null
+    /// region's block receives the unwrapped pointer as its argument, anchored
+    /// at the switch's *own* path (the payload occupies the scrutinee's
+    /// occurrence — see the `Family::Nullable` compilation in
+    /// `semi::pattern`); the null region receives nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn nullable_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        non_null: &'tcx DecisionTree<'tcx>,
+        null: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, root_idx, path)?;
+        let TyKind::Nullable(inner) = *scrut_ty.kind() else {
+            return err("nullable match on a non-nullable scrutinee");
+        };
+        let unit = is_unit(result_ty);
+        let result_type = if unit {
+            None
+        } else {
+            Some(self.tys.mlir_ty(result_ty)?)
+        };
+
+        // Non-null region: the block argument is the unwrapped pointer,
+        // pushed as a fresh anchor at `path` so bindings (and any deeper
+        // projections) in the sub-tree resolve to it.
+        let inner_mlir = self.tys.mlir_ty(inner)?;
+        let non_null_block = Block::new(&[(inner_mlir, loc)]);
+        let arg: Value<'c, '_> = non_null_block
+            .argument(0)
+            .map_err(|e| LoweringError(format!("missing dispatch block argument: {e}").into()))?
+            .into();
+        let anchor_path = SmallVec::<[u32; 4]>::from_slice(path);
+        env.subscope(|scope| {
+            scope
+                .anchors
+                .push((anchor_path, Anchor::Root { val: arg, ty: inner }));
+            let value = self.lower_tree(&non_null_block, scope, root_idx, non_null, result_ty)?;
+            non_null_block.append_operation(builders::scf_yield(value, loc));
+            Ok::<_, LoweringError>(())
+        })?;
+        let non_null_region = Region::new();
+        non_null_region.append_block(non_null_block);
+
+        // Null region: no argument, no new anchor.
+        let null_block = Block::new(&[]);
+        env.subscope(|scope| {
+            let value = self.lower_tree(&null_block, scope, root_idx, null, result_ty)?;
+            null_block.append_operation(builders::scf_yield(value, loc));
+            Ok::<_, LoweringError>(())
+        })?;
+        let null_region = Region::new();
+        null_region.append_block(null_block);
+
+        let op = block.append_operation(builders::nullable_dispatch(
+            scrut_val,
+            result_type,
+            non_null_region,
+            null_region,
+            loc,
+        ));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
         }
     }
 
@@ -1049,7 +1124,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // Resolve the enum once: `whole` is the un-narrowed value at this path
         // (kept in each arm's `Case` anchor for a whole-value binding), and the
         // variant reference feeds the dispatch.
-        let whole = self.resolve(block, env, path)?;
+        let whole = self.resolve(block, env, root_idx, path)?;
         let (variant_ref, enum_ty, cap) = self.resolve_variant_ref(block, whole)?;
         let variants = match self.tys.record_of(enum_ty).map(|r| r.layout) {
             Some(mir::RecordLayout::Variant(variants)) => variants,
@@ -1124,7 +1199,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         result_ty: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         let loc = self.loc();
-        let (cond, _) = self.resolve_loaded(block, env, path)?;
+        let (cond, _) = self.resolve_loaded(block, env, root_idx, path)?;
         let unit = is_unit(result_ty);
         let result_tys = if unit {
             Vec::new()
@@ -1167,7 +1242,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         result_ty: Ty<'tcx>,
     ) -> Result<Option<Value<'c, 'b>>> {
         let loc = self.loc();
-        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, path)?;
+        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, root_idx, path)?;
         let width = match scrut_ty.kind() {
             TyKind::Int(IntTy::Signed(w) | IntTy::Unsigned(w)) => *w,
             _ => return err("integer match on a non-integer scrutinee"),
@@ -1386,11 +1461,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         bindings: &'tcx [(VarId, &'tcx [u32])],
     ) -> Result<()> {
         for &(var, path) in bindings {
-            let (val, ty) = if path.is_empty() {
-                self.root_anchor(env, root_idx)?
-            } else {
-                self.resolve_loaded(block, env, path)?
-            };
+            // An empty path goes through `resolve` like everything else: a
+            // dispatch may have re-anchored the root's own path (a nullable
+            // switch on the scrutinee binds its unwrapped payload there), and
+            // the latest anchor must win over the raw root.
+            let (val, ty) = self.resolve_loaded(block, env, root_idx, path)?;
             self.bind_var_ty(var, ty);
             env.vars.insert(var, val);
         }
@@ -1414,27 +1489,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// The root scrutinee value and type of the enclosing match (its `[]` anchor).
-    fn root_anchor<'b>(
-        &self,
-        env: &Env<'c, 'b, 'tcx>,
-        root_idx: usize,
-    ) -> Result<(Value<'c, 'b>, Ty<'tcx>)> {
-        match env.anchors.get(root_idx) {
-            Some((_, Anchor::Root { val, ty })) => Ok((*val, *ty)),
-            _ => err("match root anchor missing"),
-        }
-    }
-
     /// Resolve the scrutinee sub-value at `path` to a loaded SSA value and its MIR
     /// type, projecting from the nearest anchor (see [`resolve`](Self::resolve)).
     fn resolve_loaded<'b>(
         &self,
         block: &'b Block<'c>,
         env: &Env<'c, 'b, 'tcx>,
+        root_idx: usize,
         path: &[u32],
     ) -> Result<(Value<'c, 'b>, Ty<'tcx>)> {
-        let cursor = self.resolve(block, env, path)?;
+        let cursor = self.resolve(block, env, root_idx, path)?;
         let ty = match &cursor {
             Cursor::Value { ty, .. } | Cursor::Ref { ty, .. } => *ty,
         };
@@ -1479,10 +1543,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         block: &'b Block<'c>,
         env: &Env<'c, 'b, 'tcx>,
+        root_idx: usize,
         path: &[u32],
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let mut best: Option<(usize, usize)> = None;
-        for (i, (anchor_path, _)) in env.anchors.iter().enumerate() {
+        // Only this match's anchors are candidates: `path` is relative to the
+        // root at `root_idx`, while earlier anchors belong to *enclosing*
+        // matches whose paths live in a different coordinate space (a nested
+        // match's `[1]` must not hit an outer switch's `[1]` anchor).
+        for (i, (anchor_path, _)) in env.anchors.iter().enumerate().skip(root_idx) {
             if anchor_path.len() <= path.len() && path[..anchor_path.len()] == anchor_path[..] {
                 let take = best.is_none_or(|(_, len)| anchor_path.len() >= len);
                 if take {
@@ -1950,6 +2019,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             let reference = self.spill(block, val, ty)?;
             block.append_operation(dialect::ref_acquire(self.context, reference, loc).into());
             Ok(())
+        } else if let TyKind::Nullable(inner) = *ty.kind() {
+            self.emit_rc_nullable(block, val, inner, true)
         } else {
             err("reference-count increment on an unsupported type")
         }
@@ -1970,9 +2041,50 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             let reference = self.spill(block, val, ty)?;
             block.append_operation(dialect::ref_drop(self.context, reference, loc).into());
             Ok(())
+        } else if let TyKind::Nullable(inner) = *ty.kind() {
+            self.emit_rc_nullable(block, val, inner, false)
         } else {
             err("reference-count decrement on an unsupported type")
         }
+    }
+
+    /// Null-guarded refcount op on a `Nullable<inner>` value: `rc.inc`/`rc.dec`
+    /// reject a nullable operand and do not null-check, so the pointer is
+    /// checked, unwrapped (`nullable.coerce`), and counted only when non-null —
+    /// a null link is a no-op, never a deallocation (issue 213).
+    fn emit_rc_nullable<'b>(
+        &self,
+        block: &'b Block<'c>,
+        val: Value<'c, 'b>,
+        inner: Ty<'tcx>,
+        inc: bool,
+    ) -> Result<()> {
+        let loc = self.loc();
+        let i1 = IntegerType::new(self.context, 1).into();
+        let flag = self.append(
+            block,
+            dialect::nullable_check(self.context, i1, val, loc).into(),
+        );
+        let then_block = Block::new(&[]);
+        let inner_mlir = self.tys.mlir_ty(inner)?;
+        let unwrapped = self.append(
+            &then_block,
+            dialect::nullable_coerce(self.context, inner_mlir, val, loc).into(),
+        );
+        if inc {
+            self.emit_inc(&then_block, unwrapped, inner)?;
+        } else {
+            self.emit_dec(&then_block, unwrapped, inner)?;
+        }
+        then_block.append_operation(scf::r#yield(&[], loc));
+        let then_region = Region::new();
+        then_region.append_block(then_block);
+        let else_block = Block::new(&[]);
+        else_block.append_operation(scf::r#yield(&[], loc));
+        let else_region = Region::new();
+        else_region.append_block(else_block);
+        block.append_operation(scf::r#if(flag, &[], then_region, else_region, loc));
+        Ok(())
     }
 
     /// Spill a value to a fresh stack slot and return an (unspecified-capability)

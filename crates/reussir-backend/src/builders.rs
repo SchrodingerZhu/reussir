@@ -203,6 +203,30 @@ pub fn nullable_create<'c>(
         .expect("valid reussir.nullable.create")
 }
 
+/// `reussir.nullable.dispatch (%v : nullable<…>) (-> <result_type>)?` — the
+/// two-region null dispatch: the first (non-null) region's block takes the
+/// unwrapped pointer as its argument, the second (null) region's block takes
+/// none; both terminate with `reussir.scf.yield` ([`scf_yield`]).
+///
+/// Built raw like [`region_run`]: the op's result is `Optional`, which
+/// melior's generated builder cannot express (`nullable.check`/`coerce` have
+/// required results and use their generated builders directly).
+pub fn nullable_dispatch<'c>(
+    nullable: Value<'c, '_>,
+    result_type: Option<Type<'c>>,
+    non_null: Region<'c>,
+    null: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.nullable.dispatch", location)
+        .add_operands(&[nullable])
+        .add_regions_vec(vec![non_null, null]);
+    if let Some(result_type) = result_type {
+        builder = builder.add_results(&[result_type]);
+    }
+    builder.build().expect("valid reussir.nullable.dispatch")
+}
+
 /// `reussir.region.run (-> <result_type>)? { <body> }` — execute a region scope.
 ///
 /// The body region's single block takes a `!reussir.region` argument (the arena

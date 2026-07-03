@@ -368,6 +368,67 @@ mod tests {
         );
     }
 
+    /// A nullable match dispatches on the two built-in constructors; the
+    /// `NonNull` payload binder gets the element type, and the whole match
+    /// unifies as usual.
+    #[test]
+    fn nullable_patterns_type_and_dispatch() {
+        check(
+            r#"
+            struct RcBox<T> { value: T }
+
+            fn unwrap_or(n: Nullable<RcBox<i32>>, d: i32) -> i32 {
+                match n {
+                    Nullable::NonNull(b) => b.value,
+                    Nullable::Null => d
+                }
+            }
+            "#,
+            |elab, tcx| {
+                let body = function(elab, "unwrap_or").body.as_ref().unwrap();
+                assert_eq!(body.ty, tcx.mk_int(IntTy::Signed(32)));
+                // The match compiled to a nullable switch.
+                let hir::ExprKind::Match(_, tree) = &body.kind else {
+                    panic!("expected a match body, got {:?}", body.kind);
+                };
+                let hir::DecisionTree::Switch { cases, .. } = tree else {
+                    panic!("expected a switch, got {tree:?}");
+                };
+                assert!(
+                    matches!(cases, hir::SwitchCases::Nullable { .. }),
+                    "expected a nullable switch"
+                );
+            },
+        );
+    }
+
+    /// Omitting the `Null` arm is a non-exhaustive match, like any other
+    /// missing case of a closed family.
+    #[test]
+    fn nullable_match_missing_null_arm_is_non_exhaustive() {
+        with_tcx(|tcx| {
+            let source = r#"
+                struct RcBox<T> { value: T }
+
+                fn oops(n: Nullable<RcBox<i32>>) -> i32 {
+                    match n {
+                        Nullable::NonNull(b) => b.value
+                    }
+                }
+            "#;
+            let parse = reussir_syntax::parse(source);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("non-exhaustive")),
+                "expected a non-exhaustive diagnostic: {:#?}",
+                elab.reports
+            );
+        });
+    }
+
     /// A `[field]` link projects at the *base's* view: `Flex` (writable)
     /// through a flex base, `Rigid` (a frozen view) through a rigid base —
     /// after the region freezes, `x.f` must not hand out a mutable coloring
