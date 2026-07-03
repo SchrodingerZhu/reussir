@@ -113,9 +113,16 @@ pub fn render(
             )?;
             continue;
         };
-        // Clamp to a non-empty range so a zero-width span still shows a caret.
+        // Clamp to a non-empty, in-bounds range: a zero-width span still
+        // shows a caret, and an end-of-input span (one past the last
+        // character, e.g. an unexpected-EOF parse error) pulls back onto the
+        // last character — out of bounds, ariadne would render the frame
+        // with no source line at all.
         let (start, end) = source_map.char_span(bytes);
-        let span = (file_name, start as usize..end.max(start + 1) as usize);
+        let len = source.chars().count() as u32;
+        let start = start.min(len.saturating_sub(1));
+        let end = end.clamp(start + 1, len.max(start + 1));
+        let span = (file_name, start as usize..end as usize);
         // The message heads the report (a greppable summary line) and annotates
         // the underlined span, so the caret line stands on its own.
         Report::build(diag.severity.report_kind(), span.clone())
