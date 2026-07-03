@@ -104,7 +104,10 @@ pub fn render(
 ) -> std::io::Result<()> {
     let cache = (file_name, Source::from(source));
     for diag in diagnostics {
-        let Some(bytes) = diag.span else {
+        // An empty source has no line to anchor a caret on; treat every
+        // span as absent rather than hand ariadne an out-of-bounds range.
+        let span = if source.is_empty() { None } else { diag.span };
+        let Some(bytes) = span else {
             writeln!(
                 out,
                 "{file_name}: {}: {}",

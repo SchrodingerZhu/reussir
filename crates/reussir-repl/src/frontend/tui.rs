@@ -457,6 +457,12 @@ impl Tui {
     }
 
     fn push_line(&mut self, line: Line<'static>) {
+        // Cap the scrollback so a long session cannot grow without bound;
+        // drop in chunks to amortize the shift.
+        const CAP: usize = 10_000;
+        if self.scrollback.len() >= CAP {
+            self.scrollback.drain(..CAP / 10);
+        }
         self.scrollback.push(line);
         self.scroll_up = 0;
     }

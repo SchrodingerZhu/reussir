@@ -61,10 +61,15 @@ pub fn is_incomplete(source: &str) -> bool {
         return true;
     }
 
-    // An unterminated string or block comment lexes as an error whose span
-    // reaches the end of the input.
+    // An unterminated string or block comment can only continue. Other
+    // lexical errors reaching the end of the input (an unrecognized
+    // character, a malformed number) can never be completed by more input —
+    // treating them as incomplete would trap the user in multiline mode, so
+    // they submit and surface the error instead.
     let end = source.len() as u32;
-    errors.iter().any(|e| e.span.1 >= end)
+    errors
+        .iter()
+        .any(|e| e.span.1 >= end && e.message.starts_with("unterminated"))
 }
 
 #[cfg(test)]
@@ -89,6 +94,14 @@ mod tests {
         assert!(is_incomplete("x."));
         assert!(is_incomplete("fn f(x: i64) ->"));
         assert!(is_incomplete("let x: "));
+    }
+
+    #[test]
+    fn uncompletable_lex_errors_submit() {
+        // No amount of further input fixes these; submitting surfaces the
+        // error instead of trapping the user in multiline mode.
+        assert!(!is_incomplete("1 + $"));
+        assert!(!is_incomplete("0x"));
     }
 
     #[test]
