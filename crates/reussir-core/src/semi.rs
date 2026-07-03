@@ -236,6 +236,44 @@ mod tests {
         );
     }
 
+    /// A `[field]` link projects at the *base's* view: `Flex` (writable)
+    /// through a flex base, `Rigid` (a frozen view) through a rigid base —
+    /// after the region freezes, `x.f` must not hand out a mutable coloring
+    /// (mirrors `getProjectedType`, where only a flex reference projects a
+    /// flex link).
+    #[test]
+    fn field_link_takes_the_bases_view() {
+        check(
+            r#"
+            struct [regional] Cell { v: u64, next: [field] Cell }
+
+            regional fn mk(v: u64) -> [flex] Cell {
+                Cell { v: v, next: Nullable::Null }
+            }
+
+            fn frozen_view(v: u64) -> Nullable<Cell> {
+                let c = regional { mk(v) };
+                c.next
+            }
+
+            regional fn flex_view(c: [flex] Cell) -> [flex] Nullable<Cell> {
+                c.next
+            }
+            "#,
+            |elab, _| {
+                let link_flex = |name: &str| {
+                    let body = function(elab, name).body.as_ref().unwrap();
+                    let TyKind::Nullable(inner) = body.ty.kind() else {
+                        panic!("{name}: expected a nullable link, got {:?}", body.ty);
+                    };
+                    inner.flexivity()
+                };
+                assert_eq!(link_flex("frozen_view"), Some(Flexivity::Rigid));
+                assert_eq!(link_flex("flex_view"), Some(Flexivity::Flex));
+            },
+        );
+    }
+
     /// Storing a still-live `Flex` value into a plain (non-`[field]`) regional
     /// member is a flexivity mismatch at elaboration — the member requires a
     /// frozen value (the backend types the slot `rc<_, rigid>`); previously
