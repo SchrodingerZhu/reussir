@@ -90,12 +90,16 @@ void stripInvariantGroupBarriers(llvm::Module &m) {
 }
 } // namespace
 
-LLVMMemoryBufferRef reussirTpdeCompileToObject(LLVMModuleRef module,
-                                               const char *dataLayout,
-                                               const char *triple) {
+LLVMMemoryBufferRef
+reussirTpdeCompileToObject(LLVMModuleRef module, const char *dataLayout,
+                           const char *triple,
+                           int stripInvariantGroupBarriersFlag) {
 #ifdef REUSSIR_HAS_TPDE
   llvm::Module &m = *llvm::unwrap(module);
-  stripInvariantGroupBarriers(m);
+  // Caller-guarded: the rewrite mutates the (borrowed) module, so callers
+  // that may reuse it with the real LLVM backend keep it intact.
+  if (stripInvariantGroupBarriersFlag)
+    stripInvariantGroupBarriers(m);
 
   // TPDE compiles directly from the module, so it must carry the host data
   // layout and triple (the freshly translated module may have neither).
@@ -120,6 +124,7 @@ LLVMMemoryBufferRef reussirTpdeCompileToObject(LLVMModuleRef module,
   (void)module;
   (void)dataLayout;
   (void)triple;
+  (void)stripInvariantGroupBarriersFlag;
   return nullptr;
 #endif
 }
