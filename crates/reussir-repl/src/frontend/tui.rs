@@ -28,6 +28,8 @@ use ratatui_textarea::{CursorMove, Input, TextArea};
 use reussir_core::semi::{Report, Severity};
 use reussir_syntax::diagnostics::{self, SourceMap};
 
+use reussir_jit::OptLevel;
+
 use crate::session::{self, Config, Exit, Outcome, ReplSession};
 
 /// Run the TUI: owns terminal setup/teardown and the `:clear` session loop.
@@ -50,6 +52,7 @@ pub fn run(config: Config) -> Result<(), String> {
         match exit {
             Exit::Quit => break Ok(()),
             Exit::Clear => {
+                tui.out_counter = 0;
                 tui.push_line(Line::from("Context cleared".italic()));
                 continue;
             }
@@ -81,6 +84,9 @@ struct Tui {
     interrupts: u8,
     /// Evaluating flag rendered in the status line during `eval`.
     busy: bool,
+    /// Jupyter-style `Out[n]` numbering for evaluated values; resets with
+    /// the session on `:clear`.
+    out_counter: usize,
 }
 
 impl Tui {
@@ -106,6 +112,7 @@ impl Tui {
             stash: Vec::new(),
             interrupts: 0,
             busy: false,
+            out_counter: 0,
         };
         tui.reset_textarea();
         tui
@@ -116,7 +123,8 @@ impl Tui {
     fn drive(&mut self, session: &mut ReplSession<'_, '_>) -> Exit {
         loop {
             let defs = session.definition_count();
-            if self.draw(defs).is_err() {
+            let opt = session.opt;
+            if self.draw(defs, opt).is_err() {
                 return Exit::Quit;
             }
             match event::read() {
@@ -252,10 +260,13 @@ impl Tui {
         // commands are instant and skip the flash.
         if !text.trim_start().starts_with(':') {
             self.busy = true;
-            let _ = self.draw(session.definition_count());
+            let _ = self.draw(session.definition_count(), session.opt);
         }
         let outcome = session.eval(&text);
         self.busy = false;
+        // Keep the restart config in step with `:set opt`, so a `:clear`
+        // rebuilds the session at the level the user chose, not the CLI's.
+        self.config.opt = session.opt;
 
         self.render_outcome(&outcome, &text)
     }
@@ -282,15 +293,21 @@ impl Tui {
                 warnings,
             } => {
                 self.render_reports(warnings);
-                if ty == "()" {
-                    self.push_line(Line::from("()".bold()));
+                self.out_counter += 1;
+                let title = format!("Out[{}]", self.out_counter);
+                let content = if ty == "()" {
+                    vec![Span::styled(
+                        "()".to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )]
                 } else {
-                    self.push_line(Line::from(vec![
+                    vec![
                         Span::styled(value.clone(), Style::default().add_modifier(Modifier::BOLD)),
                         Span::raw(" : "),
                         Span::styled(ty.clone(), Style::default().fg(Color::Magenta)),
-                    ]));
-                }
+                    ]
+                };
+                self.push_boxed(&title, content);
             }
             Outcome::ParseErrors(errors) => {
                 let map = SourceMap::new(input);
@@ -427,11 +444,45 @@ impl Tui {
         self.scroll_up = 0;
     }
 
-    fn draw(&mut self, defs: usize) -> std::io::Result<()> {
+    /// Render a one-line result in a titled box (a Jupyter-style output
+    /// cell):
+    ///
+    /// ```text
+    /// ╭─ Out[1] ─╮
+    /// │ 42 : i64 │
+    /// ╰──────────╯
+    /// ```
+    fn push_boxed(&mut self, title: &str, content: Vec<Span<'static>>) {
+        let border = Style::default().fg(Color::DarkGray);
+        let content_w: usize = content.iter().map(|s| s.content.chars().count()).sum();
+        let head_w = title.chars().count() + 3; // "─ <title> "
+        let inner_w = (content_w + 2).max(head_w + 1);
+
+        self.push_line(Line::from(vec![
+            Span::styled("╭─ ", border),
+            Span::styled(
+                title.to_string(),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {}╮", "─".repeat(inner_w - head_w)), border),
+        ]));
+        let mut mid = vec![Span::styled("│ ", border)];
+        mid.extend(content);
+        mid.push(Span::styled(
+            format!("{}│", " ".repeat(inner_w - content_w - 1)),
+            border,
+        ));
+        self.push_line(Line::from(mid));
+        self.push_line(Line::from(Span::styled(
+            format!("╰{}╯", "─".repeat(inner_w)),
+            border,
+        )));
+    }
+
+    fn draw(&mut self, defs: usize, opt: OptLevel) -> std::io::Result<()> {
         let scrollback = &self.scrollback;
         let scroll_up = &mut self.scroll_up;
         let textarea = &self.textarea;
-        let opt = self.config.opt;
         let busy = self.busy;
 
         self.terminal.draw(|frame| {
