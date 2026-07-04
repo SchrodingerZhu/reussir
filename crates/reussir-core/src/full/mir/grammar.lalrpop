@@ -186,6 +186,8 @@ Atom: raw::Kind = {
     "@" <symbol:Sym> "{" <args:Comma<Expr>> "}" => raw::Kind::Ctor { symbol, args },
     "@" <symbol:Sym> "::" "#" <v:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Variant { symbol, variant: raw::small_usize(&v), args },
+    "intrinsic" "#" <family:"ident"> "#" <name:"ident"> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::Intrinsic { family: family.to_string(), name: name.to_string(), imm: raw::small_u32(&imm), args },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
@@ -314,6 +316,7 @@ extern {
         "flex" => Token::Flex,
         "rigid" => Token::Rigid,
         "proj" => Token::Proj,
+        "intrinsic" => Token::Intrinsic,
         "assign" => Token::Assign,
         "Nullable" => Token::Nullable,
         "NonNull" => Token::NonNull,

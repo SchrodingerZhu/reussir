@@ -396,6 +396,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                     args: self.exprs(args),
                 }
             }
+            raw::Kind::Intrinsic {
+                family,
+                name,
+                imm,
+                args,
+            } => ExprKind::Intrinsic {
+                op: crate::intrinsic::IntrinsicOp::parse(family, name, *imm)
+                    .expect("known intrinsic in machine-emitted IR"),
+                args: self.exprs(args),
+            },
             raw::Kind::NullableCall(inner) => {
                 ExprKind::NullableCall(inner.as_ref().map(|x| self.boxed(x)))
             }
@@ -699,6 +709,17 @@ mod tests {
         roundtrip_with_locations(
             "enum Opt { None, Some(i64) }\n\
              pub fn g(o: Opt) -> i64 { match o { Opt::None => 0, Opt::Some(x) => { let y = x; y } } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_math_intrinsics() {
+        roundtrip(
+            "fn f(x: f64) -> bool { \
+             core::intrinsic::math::isnan(core::intrinsic::math::fma(x, x, x, 127), 0) }",
+        );
+        roundtrip_with_locations(
+            "pub fn g(x: f64) -> f64 { core::intrinsic::math::fpowi(x, 3, 1) }",
         );
     }
 

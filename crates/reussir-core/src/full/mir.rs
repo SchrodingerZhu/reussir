@@ -245,6 +245,11 @@ pub enum ExprKind<'tcx> {
     },
     /// `Nullable::NonNull{e}` (Some) or `Nullable::Null` (None).
     NullableCall(Option<&'tcx Expr<'tcx>>),
+    /// A `core::intrinsic::<family>::<fn>` call (see [`crate::intrinsic`]).
+    Intrinsic {
+        op: crate::intrinsic::IntrinsicOp,
+        args: &'tcx [Expr<'tcx>],
+    },
     Closure(ClosureExpr<'tcx>),
     ClosureCall {
         target: &'tcx Expr<'tcx>,

@@ -696,6 +696,10 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                     regional: *regional,
                 }
             }
+            ExprKind::Intrinsic { op, args } => M::Intrinsic {
+                op: *op,
+                args: self.lower_slice(args, subst),
+            },
             ExprKind::CompoundCall {
                 target,
                 ty_args,
@@ -1223,7 +1227,10 @@ mod tests {
             If(c, t, f) => vec![c, t, f],
             Let { value, .. } => vec![value],
             Seq(es) => es.iter().collect(),
-            Call { args, .. } | Ctor { args, .. } | Variant { args, .. } => args.iter().collect(),
+            Call { args, .. }
+            | Ctor { args, .. }
+            | Variant { args, .. }
+            | Intrinsic { args, .. } => args.iter().collect(),
             NullableCall(opt) => opt.into_iter().collect(),
             ClosureCall { target, args } => std::iter::once(target).chain(args.iter()).collect(),
             Closure(c) => vec![c.body],

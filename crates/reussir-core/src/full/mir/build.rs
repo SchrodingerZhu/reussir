@@ -435,6 +435,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                     args: self.expr_slice(args),
                 }
             }
+            raw::Kind::Intrinsic {
+                family,
+                name,
+                imm,
+                args,
+            } => M::Intrinsic {
+                op: crate::intrinsic::IntrinsicOp::parse(family, name, *imm)
+                    .expect("known intrinsic in machine-emitted IR"),
+                args: self.expr_slice(args),
+            },
             raw::Kind::NullableCall(inner) => {
                 M::NullableCall(inner.as_ref().map(|x| self.expr_ref(x)))
             }
@@ -634,6 +644,14 @@ mod tests {
             "pub fn fib(n: u64) -> u64 { \
              let m = n + 1; \
              if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_math_intrinsics() {
+        roundtrip(
+            "pub fn f(x: f64) -> f64 { \
+             core::intrinsic::math::sqrt(core::intrinsic::math::powf(x, 2.0, 127), 0) }",
         );
     }
 

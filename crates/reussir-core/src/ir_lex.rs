@@ -66,6 +66,8 @@ pub enum Token<'a> {
     Rigid,
     #[token("proj")]
     Proj,
+    #[token("intrinsic")]
+    Intrinsic,
     #[token("assign")]
     Assign,
     #[token("scrut")]
