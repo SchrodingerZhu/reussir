@@ -1,5 +1,6 @@
-// RUN: %reussir-elab --mode semi --package-root %S/module_nested --package-name mypkg
-// RUN: %reussir-elab --mode full --package-root %S/module_nested --package-name mypkg
-// RUN: %reussir-compiler --package-root %S/module_nested --package-name mypkg -o %t.o
-// RUN: %cc %t.o %S/module_nested/driver.c -o %t.exe
+// A nested module tree: `lib.rr` → `utils/mod.rr` → `utils/math.rr`, with
+// calls through two module levels (`utils::math::double`, `utils::offset`).
+
+// RUN: %rrc --package-root %S/module_nested --package-name mypkg -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/module_nested/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe

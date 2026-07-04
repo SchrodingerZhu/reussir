@@ -1,5 +1,6 @@
-// RUN: %not %reussir-elab --mode semi --package-root %S/module_reserved_package --package-name core 2>&1 | %FileCheck %s --check-prefix=ERR
-// RUN: %not %reussir-elab --mode full --package-root %S/module_reserved_package --package-name core 2>&1 | %FileCheck %s --check-prefix=ERR
-// RUN: %not %reussir-compiler --package-root %S/module_reserved_package --package-name core -o %t.o 2>&1 | %FileCheck %s --check-prefix=ERR
+// The package name `core` is reserved for the built-in core package
+// (`core::intrinsic::math::…`), so a user package cannot claim it.
 
-// ERR: Error: package name 'core' is reserved for the built-in core package
+// RUN: %not %rrc --package-root %S/module_reserved_package --package-name core -o %t.o 2>&1 | %FileCheck %s --check-prefix=ERR
+
+// ERR: error: package name 'core' is reserved for the built-in core package
