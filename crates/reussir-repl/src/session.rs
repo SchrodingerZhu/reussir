@@ -616,6 +616,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Fp(reussir_core::semi::ty::FpTy::Float8) => "f8".to_string(),
             TyKind::Bool => "bool".to_string(),
             TyKind::Str => "str".to_string(),
+            TyKind::Char => "char".to_string(),
             TyKind::Unit => "()".to_string(),
             TyKind::Bottom => "!".to_string(),
             TyKind::Nullable(inner) => {

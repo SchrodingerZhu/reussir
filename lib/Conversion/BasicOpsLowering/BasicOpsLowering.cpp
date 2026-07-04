@@ -2186,6 +2186,18 @@ struct ReussirStrLiteralOpConversionPattern
   }
 };
 
+struct ReussirStrCastOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirStrCastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirStrCastOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, adaptor.getGlobalStr());
+    return mlir::success();
+  }
+};
+
 struct ReussirStrLenOpConversionPattern
     : public mlir::OpConversionPattern<ReussirStrLenOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2789,8 +2801,9 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirClosureCursorOp, ReussirClosureInstantiateOp,
         ReussirClosureVtableOp, ReussirClosureCreateOp, ReussirRcFetchOp,
         ReussirRcSetOp, ReussirStrGlobalOp, ReussirStrLiteralOp,
-        ReussirStrLenOp, ReussirStrUnsafeByteAtOp, ReussirStrUnsafeStartWithOp,
-        ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
+        ReussirStrCastOp, ReussirStrLenOp, ReussirStrUnsafeByteAtOp,
+        ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirTrampolineOp,
+        ReussirTokenLaunderOp>();
   }
 };
 
@@ -2902,7 +2915,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirRcReinterpretConversionPattern, ReussirRcFetchConversionPattern,
       ReussirRcSetConversionPattern, ReussirStrGlobalOpConversionPattern,
       ReussirStrLiteralOpConversionPattern, ReussirPanicConversionPattern,
-      ReussirStrLenOpConversionPattern,
+      ReussirStrCastOpConversionPattern, ReussirStrLenOpConversionPattern,
       ReussirStrUnsafeByteAtOpConversionPattern,
       ReussirStrUnsafeStartWithOpConversionPattern,
       ReussirStrSliceOpConversionPattern, ReussirTrampolineOpConversionPattern,

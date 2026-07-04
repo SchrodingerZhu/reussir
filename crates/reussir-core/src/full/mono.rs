@@ -59,6 +59,7 @@ use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use crate::semi::ty::{FpTy, IntTy};
 use crate::surface::Span;
+use crate::utils::string::StringToken;
 
 /// Exactly the part of an [`Elaborator`] that monomorphization reads. Taking
 /// this rather than the whole elaborator lets a program **reconstructed from the
@@ -71,6 +72,7 @@ pub struct MonoInput<'a, 'tcx> {
     pub elaborated: &'a [Function<'tcx>],
     pub records: &'a FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: &'a [TrampolineRoot<'tcx>],
+    pub strings: Vec<(StringToken, String)>,
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -83,6 +85,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             elaborated: &self.elaborated,
             records: &self.records,
             trampolines: &self.trampolines,
+            strings: self.strings.entries(),
         }
     }
 }
@@ -256,6 +259,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             functions,
             records,
             trampolines,
+            string_literals: input.strings.clone(),
             symbols,
         },
         reports,
@@ -352,6 +356,7 @@ fn ty_depth(ty: Ty<'_>) -> usize {
         | TyKind::Fp(_)
         | TyKind::Bool
         | TyKind::Str
+        | TyKind::Char
         | TyKind::Unit
         | TyKind::Bottom
         | TyKind::Generic(_)
@@ -623,6 +628,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
+            ExprKind::ConstChar(c) => M::ConstChar(*c),
             ExprKind::ConstInt(n) => M::ConstInt(n),
             ExprKind::ConstFloat(f) => M::ConstFloat(f),
             ExprKind::ConstBool(b) => M::ConstBool(*b),
@@ -853,6 +859,13 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 if_true: self.lower_tree_ref(if_true, subst),
                 if_false: self.lower_tree_ref(if_false, subst),
             },
+            SwitchCases::Char { cases, default } => {
+                let lowered = self.lower_keyed(cases, subst);
+                M::Char {
+                    cases: self.tcx.alloc_slice(&lowered),
+                    default: self.lower_tree_ref(default, subst),
+                }
+            }
             SwitchCases::Ctor(arms) => {
                 let lowered: Vec<mir::DecisionTree<'tcx>> =
                     arms.iter().map(|t| self.lower_tree(t, subst)).collect();
@@ -1026,8 +1039,10 @@ mod tests {
             let text0 = MirPrinter::new(&elab.defs, elab.resolver).program(&mir0);
 
             // Serialize the HIR, parse it back, and monomorphize *that*.
+            let strings = elab.strings.entries();
             let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
                 &elab.elaborated,
+                &strings,
                 &elab.records,
                 &elab.trampolines,
             );
@@ -1039,6 +1054,7 @@ mod tests {
                 elaborated: &parsed.funcs,
                 records: &parsed.records,
                 trampolines: &parsed.trampolines,
+                strings: parsed.strings.clone(),
             };
             let (mir1, r1) = monomorphize(&input);
             assert!(r1.is_empty(), "{r1:#?}");
@@ -1118,14 +1134,17 @@ mod tests {
             );
 
             // ----- print HIR + round-trip it through the parser -----
+            let strings = elab.strings.entries();
             let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
                 &elab.elaborated,
+                &strings,
                 &elab.records,
                 &elab.trampolines,
             );
             let hir = parse_hir(tcx, &hir_text).expect("re-parse HIR");
             let hir_text2 = HirPrinter::new(&hir.defs, &hir.names).program(
                 &hir.funcs,
+                &hir.strings,
                 &hir.records,
                 &hir.trampolines,
             );
@@ -1142,6 +1161,7 @@ mod tests {
                 elaborated: &hir.funcs,
                 records: &hir.records,
                 trampolines: &hir.trampolines,
+                strings: hir.strings.clone(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
             assert!(r_resumed.is_empty(), "resumed mono reports: {r_resumed:#?}");
@@ -1196,7 +1216,8 @@ mod tests {
     fn children<'tcx>(e: &mir::Expr<'tcx>) -> Vec<&'tcx mir::Expr<'tcx>> {
         use mir::ExprKind::*;
         match e.kind {
-            GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => vec![],
+            GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
+            | Poison => vec![],
             Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],
             Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => vec![l, r],
             If(c, t, f) => vec![c, t, f],

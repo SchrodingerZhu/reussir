@@ -300,6 +300,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
             (TyKind::Bool, TyKind::Bool)
             | (TyKind::Str, TyKind::Str)
+            | (TyKind::Char, TyKind::Char)
             | (TyKind::Unit, TyKind::Unit) => Ok(()),
             (TyKind::Generic(x), TyKind::Generic(y)) if x == y => Ok(()),
 
@@ -497,6 +498,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
             (TyKind::Bool, TyKind::Bool)
             | (TyKind::Str, TyKind::Str)
+            | (TyKind::Char, TyKind::Char)
             | (TyKind::Unit, TyKind::Unit) => Ok(()),
             (TyKind::Generic(x), TyKind::Generic(y)) if x == y => Ok(()),
 

@@ -110,11 +110,12 @@ impl Builtins {
             implement(floating_point, ty, db);
         }
         // Primitive scalars are the `Send`/`Sync` leaves.
-        let scalars =
-            ints.iter()
-                .chain(&fps)
-                .copied()
-                .chain([tcx.mk_bool(), tcx.mk_str(), tcx.mk_unit()]);
+        let scalars = ints.iter().chain(&fps).copied().chain([
+            tcx.mk_bool(),
+            tcx.mk_str(),
+            tcx.mk_char(),
+            tcx.mk_unit(),
+        ]);
         for ty in scalars {
             implement(send, ty, db);
             implement(sync, ty, db);

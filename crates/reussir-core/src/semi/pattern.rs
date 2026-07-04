@@ -61,6 +61,7 @@ enum Ctor<'tcx> {
     /// An integer key, arbitrary-precision (the scrutinee type bounds its
     /// range, checked like any literal at monomorphization).
     Int(&'tcx Integer),
+    Char(u32),
     Bool(bool),
     Str(StringToken),
     /// The non-null case of a `Nullable<T>` scrutinee, with one field: the
@@ -75,6 +76,7 @@ impl Ctor<'_> {
         match self {
             Ctor::Variant(_) => Family::Variant,
             Ctor::Int(_) => Family::Int,
+            Ctor::Char(_) => Family::Char,
             Ctor::Bool(_) => Family::Bool,
             Ctor::Str(_) => Family::Str,
             Ctor::NonNull | Ctor::Null => Family::Nullable,
@@ -96,6 +98,7 @@ enum Family {
     /// Open families: there are always more values than literals, so they need a
     /// default branch.
     Int,
+    Char,
     Str,
 }
 
@@ -284,6 +287,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let want = self.tcx.mk_bool();
                 let _ = self.infer.unify(ty, want);
                 Ctor::Bool(*b)
+            }
+            Const::ConstChar(c) => {
+                let want = self.tcx.mk_char();
+                let _ = self.infer.unify(ty, want);
+                Ctor::Char(*c)
             }
             Const::ConstString(s) => {
                 let want = self.tcx.mk_str();
@@ -579,6 +587,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let default = Box::new(self.compile_match(def, reached, exhaustive));
                 SwitchCases::Int { cases, default }
             }
+            Family::Char => {
+                let mut cases = Vec::new();
+                for c in self.column_chars(&m, j) {
+                    let sub = self.specialize_scalar(&m, j, &Ctor::Char(c), &occ);
+                    cases.push((c, self.compile_match(sub, reached, exhaustive)));
+                }
+                let def = self.default_matrix(&m, j, &occ);
+                let default = Box::new(self.compile_match(def, reached, exhaustive));
+                SwitchCases::Char { cases, default }
+            }
             Family::Str => {
                 let mut cases = Vec::new();
                 for s in self.column_strs(&m, j) {
@@ -750,6 +768,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         seen
     }
 
+    /// The distinct character literals tested in column `j`, in first-seen order.
+    fn column_chars(&self, m: &Matrix<'tcx>, j: usize) -> Vec<u32> {
+        let mut seen = Vec::new();
+        for row in &m.rows {
+            if let Pat::Ctor {
+                ctor: Ctor::Char(c),
+                ..
+            } = &row.pats[j]
+                && !seen.contains(c)
+            {
+                seen.push(*c);
+            }
+        }
+        seen
+    }
+
     /// The distinct string literals tested in column `j`, in first-seen order.
     fn column_strs(&self, m: &Matrix<'tcx>, j: usize) -> Vec<StringToken> {
         let mut seen = Vec::new();
@@ -845,6 +879,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             SwitchCases::Bool { if_true, if_false } => SwitchCases::Bool {
                 if_true: Box::new(self.zonk_tree(*if_true)),
                 if_false: Box::new(self.zonk_tree(*if_false)),
+            },
+            SwitchCases::Char { cases, default } => SwitchCases::Char {
+                cases: cases
+                    .into_iter()
+                    .map(|(k, t)| (k, self.zonk_tree(t)))
+                    .collect(),
+                default: Box::new(self.zonk_tree(*default)),
             },
             SwitchCases::Ctor(ts) => {
                 SwitchCases::Ctor(ts.into_iter().map(|t| self.zonk_tree(t)).collect())

@@ -456,7 +456,9 @@ fn frontend<'c, 'tcx>(
                 } else {
                     hir::print::Printer::with_sources(&elab.defs, elab.resolver, sources)
                 };
-                let text = printer.program(&elab.elaborated, &elab.records, &elab.trampolines);
+                let strings = elab.strings.entries();
+                let text =
+                    printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
                 return Ok(Produced::Text(text));
             }
             let (full, reports) = monomorphize(&elab.mono_input());
@@ -490,7 +492,12 @@ fn frontend<'c, 'tcx>(
                     }
                     _ => hir::print::Printer::new(&parsed.defs, &parsed.names),
                 };
-                let text = printer.program(&parsed.funcs, &parsed.records, &parsed.trampolines);
+                let text = printer.program(
+                    &parsed.funcs,
+                    &parsed.strings,
+                    &parsed.records,
+                    &parsed.trampolines,
+                );
                 return Ok(Produced::Text(text));
             }
             let input = MonoInput {
@@ -500,6 +507,7 @@ fn frontend<'c, 'tcx>(
                 elaborated: &parsed.funcs,
                 records: &parsed.records,
                 trampolines: &parsed.trampolines,
+                strings: parsed.strings.clone(),
             };
             let (full, reports) = monomorphize(&input);
             match &dump_sources {

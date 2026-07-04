@@ -161,6 +161,7 @@ pub fn inline_size_align<'tcx>(
     };
     match *ty.kind() {
         TyKind::Bool => scalar(1),
+        TyKind::Char => scalar(4),
         TyKind::Int(int) => {
             let (prefix, width) = match int {
                 IntTy::Signed(w) => ("i", w),
@@ -366,6 +367,14 @@ impl<'tcx> Walker<'_, 'tcx> {
                 } else {
                     "false"
                 }),
+                TyKind::Char => {
+                    let value = addr.cast::<u32>().read_unaligned();
+                    let c = char::from_u32(value)
+                        .ok_or_else(|| format!("invalid stored char code point {value}"))?;
+                    out.push('\'');
+                    out.extend(c.escape_debug());
+                    out.push('\'');
+                }
                 TyKind::Int(IntTy::Signed(w)) => {
                     let v: i64 = match w {
                         8 => addr.cast::<i8>().read_unaligned() as i64,

@@ -16,6 +16,7 @@ pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
 
 Item: raw::Item = {
     <f:FileDecl> => raw::Item::File(f),
+    <s:StringDecl> => raw::Item::String(s),
     "record" "@" <s:Sym> ":" <cap:DefCap> <kind:RecordBody> ";"
         => raw::Item::Record(raw::RecordDecl { symbol: s, default_cap: cap, ty: kind.0, body: kind.1 }),
     <f:Func> => raw::Item::Func(f),
@@ -27,6 +28,10 @@ Item: raw::Item = {
 /// into these files; a `<bracketed>` name is a virtual file (unfetchable).
 FileDecl: raw::FileEntry = <id:"int"> "=" <name:"quoted"> ";"
     => raw::FileEntry { id: raw::small_u32(&id), name: unescape_debug_str(name).into_owned() };
+
+/// One string literal table entry: `str#w0#w1#w2#w3 = "payload";`.
+StringDecl: raw::StringEntry = <token:StrWords> "=" <payload:"quoted"> ";"
+    => raw::StringEntry { token, payload: unescape_debug_str(payload).into_owned() };
 
 /// A source span: `[start..end]`, byte offsets into the owning item's file.
 Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::small_u32(&e));
@@ -91,6 +96,7 @@ Ty: raw::Ty = {
     "f8" => raw::Ty::Float8,
     "bool" => raw::Ty::Bool,
     "str" => raw::Ty::Str,
+    "char" => raw::Ty::Char,
     "(" ")" => raw::Ty::Unit,
     "!" => raw::Ty::Bottom,
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
@@ -145,6 +151,7 @@ Atom: raw::Kind = {
     <f:"float"> => raw::Kind::ConstFloat(raw::float_lit(f)),
     "true" => raw::Kind::ConstBool(true),
     "false" => raw::Kind::ConstBool(false),
+    "char" "#" <c:"int"> => raw::Kind::ConstChar(raw::small_u32(&c)),
     <w:StrWords> => raw::Kind::GlobalStr(w),
     <v:"var"> => raw::Kind::Var(v),
     "poison" => raw::Kind::Poison,
@@ -195,6 +202,7 @@ Label: raw::Label = {
     "_" => raw::Label::Wildcard,
     "true" => raw::Label::Bool(true),
     "false" => raw::Label::Bool(false),
+    "char" "#" <c:"int"> => raw::Label::Char(raw::small_u32(&c)),
     <w:StrWords> => raw::Label::Str(w),
     "NonNull" => raw::Label::NonNull,
     "Null" => raw::Label::Null,
@@ -299,6 +307,7 @@ extern {
         "false" => Token::False,
         "bool" => Token::Bool,
         "str" => Token::Str,
+        "char" => Token::Char,
         "bf16" => Token::BF16,
         "f8" => Token::F8,
         "(" => Token::LParen,

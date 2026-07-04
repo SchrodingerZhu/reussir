@@ -23,6 +23,7 @@ use crate::semi::hir::{
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, FpTy, GenericId, IntTy, Ty, TyKind};
 use crate::surface::{RecordKind, Visibility};
+use crate::utils::string::StringToken;
 
 const IR_PRINTER: PpPrinter = PpPrinter {
     max_width: 100,
@@ -70,6 +71,7 @@ impl<'a> Printer<'a> {
     pub fn program(
         &self,
         funcs: &[Function<'_>],
+        strings: &[(StringToken, String)],
         records: &rustc_hash::FxHashMap<DefId, Record<'_>>,
         trampolines: &[TrampolineRoot<'_>],
     ) -> String {
@@ -78,6 +80,9 @@ impl<'a> Printer<'a> {
             for id in cache.ids() {
                 items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
             }
+        }
+        for (token, payload) in strings {
+            items.push(string_decl(*token, payload));
         }
         let mut recs: Vec<&Record<'_>> = records.values().collect();
         // Sort by qualified path (phase-canonical: identical across the original
@@ -269,6 +274,7 @@ impl<'a> Printer<'a> {
             TyKind::Fp(FpTy::Float8) => text("f8"),
             TyKind::Bool => text("bool"),
             TyKind::Str => text("str"),
+            TyKind::Char => text("char"),
             TyKind::Unit => text("()"),
             TyKind::Bottom => text("!"),
             TyKind::Generic(g) => text(format!("${}", g.0)),
@@ -391,6 +397,7 @@ impl<'a> Printer<'a> {
             ExprKind::ConstInt(n) => text(format!("{n}")),
             ExprKind::ConstFloat(f) => text(f.to_string()),
             ExprKind::ConstBool(b) => text(format!("{b}")),
+            ExprKind::ConstChar(c) => text(format!("char#{c}")),
             ExprKind::Var(v) => var(*v),
             ExprKind::Poison => text("poison"),
             ExprKind::Negate(x) => text("-(") + self.value(x) + text(")"),
@@ -546,6 +553,14 @@ impl<'a> Printer<'a> {
                 self.arm(text("true"), if_true),
                 self.arm(text("false"), if_false),
             ],
+            SwitchCases::Char { cases, default } => {
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(c, t)| self.arm(text(format!("char#{c}")), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
+            }
             SwitchCases::Ctor(arms) => arms
                 .iter()
                 .enumerate()
@@ -627,6 +642,10 @@ fn cap_name(c: Flexivity) -> &'static str {
 /// round-trips faithfully.
 fn str_lit(w: [u64; 4]) -> String {
     format!("str#{}#{}#{}#{}", w[0], w[1], w[2], w[3])
+}
+
+fn string_decl(token: StringToken, payload: &str) -> Doc<'static> {
+    text(format!("{} = {:?};", str_lit(token.words()), payload))
 }
 
 fn arith_sym(op: ArithOp) -> &'static str {

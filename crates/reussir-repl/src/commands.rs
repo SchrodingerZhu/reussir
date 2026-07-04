@@ -63,8 +63,10 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                     .filter(|(_, r)| !elab.sym(r.name).starts_with("__"))
                     .map(|(k, v)| (*k, v.clone()))
                     .collect();
+                let strings = elab.strings.entries();
                 let text = Printer::new(&elab.defs, elab.resolver).program(
                     &funcs,
+                    &strings,
                     &records,
                     &elab.trampolines,
                 );

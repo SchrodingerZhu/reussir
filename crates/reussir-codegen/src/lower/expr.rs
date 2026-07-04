@@ -19,7 +19,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::builders;
 use reussir_backend::dialect;
-use reussir_backend::dialect::ty::ReussirCapability;
+use reussir_backend::dialect::ty::{ReussirCapability, ReussirLifeScope};
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, scf};
@@ -38,6 +38,7 @@ use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
 use reussir_core::surface::{Span, Visibility};
+use reussir_core::utils::string::StringToken;
 use reussir_syntax::kind::{Resolver, TokenKey};
 use smallvec::SmallVec;
 
@@ -445,6 +446,13 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     self.append(block, arith::constant(self.context, attr, loc)),
                 ))
             }
+            ConstChar(c) => {
+                let i32_ty = IntegerType::new(self.context, 32).into();
+                let attr = IntegerAttribute::new(i32_ty, i64::from(*c)).into();
+                Ok(Some(
+                    self.append(block, arith::constant(self.context, attr, loc)),
+                ))
+            }
             // The single decimal→binary rounding in the pipeline: the exact
             // literal is rounded into the target format host-side (no Rust
             // float involved, so bf16/f16 work like f32/f64) and the bits are
@@ -557,9 +565,38 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
             Closure(c) => self.closure(block, env, c).map(Some),
             ClosureCall { target, args } => self.closure_call(block, env, target, args),
-            GlobalStr(_) => err("string literal lowering not yet implemented"),
+            GlobalStr(token) => self.global_str(block, e, *token).map(Some),
             Poison => err("poison expression reached lowering"),
         }
+    }
+
+    fn global_str<'b>(
+        &self,
+        block: &'b Block<'c>,
+        e: &Expr<'tcx>,
+        token: StringToken,
+    ) -> Result<Value<'c, 'b>> {
+        let ty = self.tys.mlir_ty(e.ty)?;
+        Ok(self.append(
+            block,
+            builders::str_literal(self.context, &token.mangle(), ty, self.loc()),
+        ))
+    }
+
+    fn string_payload(&self, token: StringToken) -> Result<&'p str> {
+        self.program
+            .string_literals
+            .iter()
+            .find_map(|(t, payload)| (*t == token).then_some(payload.as_str()))
+            .ok_or_else(|| {
+                LoweringError(
+                    format!(
+                        "string literal payload missing for token {:?}",
+                        token.words()
+                    )
+                    .into(),
+                )
+            })
     }
 
     /// Construct a record from its (declaration-ordered) field args.
@@ -1038,10 +1075,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             SwitchCases::Int { cases, default } => {
                 self.int_switch(block, env, root_idx, path, cases, default, result_ty)
             }
+            SwitchCases::Char { cases, default } => {
+                self.char_switch(block, env, root_idx, path, cases, default, result_ty)
+            }
             SwitchCases::Nullable { non_null, null } => {
                 self.nullable_switch(block, env, root_idx, path, non_null, null, result_ty)
             }
-            SwitchCases::String { .. } => err("string-pattern match lowering not yet implemented"),
+            SwitchCases::String { cases, default } => {
+                self.string_switch(block, env, root_idx, path, cases, default, result_ty)
+            }
         }
     }
 
@@ -1224,6 +1266,123 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let else_region = self.tree_branch_region(env, root_idx, if_false, result_ty)?;
         let op =
             block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Lower a character `Switch` to `scf.index_switch` over the 32-bit scalar.
+    #[allow(clippy::too_many_arguments)]
+    fn char_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        cases: &'tcx [(u32, DecisionTree<'tcx>)],
+        default: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, root_idx, path)?;
+        if !matches!(scrut_ty.kind(), TyKind::Char) {
+            return err("character match on a non-character scrutinee");
+        }
+        let unit = is_unit(result_ty);
+        let result_tys = if unit {
+            Vec::new()
+        } else {
+            vec![self.tys.mlir_ty(result_ty)?]
+        };
+        let mut regions = Vec::with_capacity(cases.len() + 1);
+        regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
+        for (_, subtree) in cases {
+            regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
+        }
+        let index_ty = Type::index(self.context);
+        let selector = self.append(block, arith::index_castui(scrut_val, index_ty, loc));
+        let case_values: Vec<i64> = cases.iter().map(|(c, _)| i64::from(*c)).collect();
+        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
+        let op = block.append_operation(scf::index_switch(
+            self.context,
+            selector,
+            &result_tys,
+            cases_attr,
+            regions,
+            loc,
+        ));
+        if unit {
+            Ok(None)
+        } else {
+            Ok(Some(op.result(0).unwrap().into()))
+        }
+    }
+
+    /// Lower a string `Switch` through `reussir.str.select`, then dispatch the
+    /// selected pattern index with `scf.index_switch`.
+    #[allow(clippy::too_many_arguments)]
+    fn string_switch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        path: &[u32],
+        cases: &'tcx [(StringToken, DecisionTree<'tcx>)],
+        default: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let (scrut_val, scrut_ty) = self.resolve_loaded(block, env, root_idx, path)?;
+        if !matches!(scrut_ty.kind(), TyKind::Str) {
+            return err("string match on a non-string scrutinee");
+        }
+        let local_ty = dialect::ty::str(self.context, ReussirLifeScope::Local);
+        let local = self.append(block, builders::str_cast(scrut_val, local_ty, loc));
+        let patterns: Vec<&str> = cases
+            .iter()
+            .map(|(token, _)| self.string_payload(*token))
+            .collect::<Result<_>>()?;
+        let select =
+            block.append_operation(builders::str_select(self.context, local, &patterns, loc));
+        let selected: Value<'c, '_> = select.result(0).unwrap().into();
+        let found: Value<'c, '_> = select.result(1).unwrap().into();
+
+        let unit = is_unit(result_ty);
+        let result_tys = if unit {
+            Vec::new()
+        } else {
+            vec![self.tys.mlir_ty(result_ty)?]
+        };
+
+        let then_block = Block::new(&[]);
+        let mut regions = Vec::with_capacity(cases.len() + 1);
+        regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
+        for (_, subtree) in cases {
+            regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
+        }
+        let case_values: Vec<i64> = (0..cases.len() as i64).collect();
+        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
+        let switch = then_block.append_operation(scf::index_switch(
+            self.context,
+            selected,
+            &result_tys,
+            cases_attr,
+            regions,
+            loc,
+        ));
+        if unit {
+            then_block.append_operation(scf::r#yield(&[], loc));
+        } else {
+            then_block.append_operation(scf::r#yield(&[switch.result(0).unwrap().into()], loc));
+        }
+        let then_region = Region::new();
+        then_region.append_block(then_block);
+
+        let else_region = self.tree_branch_region(env, root_idx, default, result_ty)?;
+        let op =
+            block.append_operation(scf::r#if(found, &result_tys, then_region, else_region, loc));
         if unit {
             Ok(None)
         } else {

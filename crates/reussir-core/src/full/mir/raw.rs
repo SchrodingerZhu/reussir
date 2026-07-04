@@ -24,11 +24,19 @@ pub struct FileEntry {
     pub name: String,
 }
 
+/// One string literal table entry: the stable token and the decoded UTF-8 payload.
+#[derive(Clone, Debug)]
+pub struct StringEntry {
+    pub token: StrTag,
+    pub payload: String,
+}
+
 /// A whole program: the source-file table, record instances (with their
 /// ground layout), functions, exported trampolines.
 #[derive(Clone, Debug)]
 pub struct Program {
     pub files: Vec<FileEntry>,
+    pub strings: Vec<StringEntry>,
     pub records: Vec<RecordDecl>,
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
@@ -38,6 +46,7 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub enum Item {
     File(FileEntry),
+    String(StringEntry),
     Record(RecordDecl),
     Func(Func),
     Tramp(Tramp),
@@ -97,6 +106,7 @@ impl Program {
     pub fn from_items(items: Vec<Item>) -> Program {
         let mut p = Program {
             files: Vec::new(),
+            strings: Vec::new(),
             records: Vec::new(),
             funcs: Vec::new(),
             trampolines: Vec::new(),
@@ -104,6 +114,7 @@ impl Program {
         for item in items {
             match item {
                 Item::File(f) => p.files.push(f),
+                Item::String(s) => p.strings.push(s),
                 Item::Record(r) => p.records.push(r),
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
@@ -149,6 +160,7 @@ pub enum Ty {
     Float8,
     Bool,
     Str,
+    Char,
     Unit,
     Bottom,
     Nullable(Box<Ty>),
@@ -241,6 +253,8 @@ pub enum Kind {
     ConstInt(Integer),
     ConstFloat(FloatLit),
     ConstBool(bool),
+    /// A Unicode scalar value, stored as its 32-bit code point.
+    ConstChar(u32),
     /// An interned string literal, as its four raw `StringToken` words.
     GlobalStr([u64; 4]),
     Var(u32),
@@ -344,6 +358,10 @@ pub enum Cases {
         if_true: Box<Tree>,
         if_false: Box<Tree>,
     },
+    Char {
+        cases: Vec<(u32, Tree)>,
+        default: Box<Tree>,
+    },
     Ctor(Vec<Tree>),
     Str {
         cases: Vec<([u64; 4], Tree)>,
@@ -364,6 +382,7 @@ pub enum Label {
     Ctor(usize),
     Str([u64; 4]),
     Bool(bool),
+    Char(u32),
     NonNull,
     Null,
     Wildcard,
@@ -390,6 +409,20 @@ pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
             Cases::Bool {
                 if_true: if_true.unwrap(),
                 if_false: if_false.unwrap(),
+            }
+        }
+        Some(Label::Char(_)) => {
+            let (mut cases, mut default) = (Vec::new(), None);
+            for (l, t) in arms {
+                match l {
+                    Label::Char(c) => cases.push((c, t)),
+                    Label::Wildcard => default = Some(Box::new(t)),
+                    _ => {}
+                }
+            }
+            Cases::Char {
+                cases,
+                default: default.unwrap(),
             }
         }
         Some(Label::Ctor(_)) => {

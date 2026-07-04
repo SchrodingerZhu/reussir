@@ -334,6 +334,7 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
             | TyKind::Fp(_)
             | TyKind::Bool
             | TyKind::Str
+            | TyKind::Char
             | TyKind::Unit
             | TyKind::Generic(_)
             | TyKind::Hole(_)
@@ -448,6 +449,7 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
             }
             ExprKind::GlobalStr(_)
+            | ExprKind::ConstChar(_)
             | ExprKind::ConstInt(_)
             | ExprKind::ConstFloat(_)
             | ExprKind::ConstBool(_)
@@ -561,6 +563,7 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
             }
             ExprKind::GlobalStr(_)
+            | ExprKind::ConstChar(_)
             | ExprKind::ConstInt(_)
             | ExprKind::ConstFloat(_)
             | ExprKind::ConstBool(_)
@@ -989,6 +992,12 @@ fn subtrees<'tcx>(cases: &SwitchCases<'tcx>) -> SmallVec<[&'tcx DecisionTree<'tc
         SwitchCases::Bool { if_true, if_false } => {
             v.push(if_true);
             v.push(if_false);
+        }
+        SwitchCases::Char { cases, default } => {
+            for (_, t) in cases {
+                v.push(t);
+            }
+            v.push(default);
         }
         SwitchCases::Ctor(arms) => {
             for t in arms {

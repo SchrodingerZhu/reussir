@@ -30,6 +30,8 @@
 //!   mutation of a `[field]` link (`c->f := …` — project the `nullable<rc<…>>`
 //!   slot to a writable `field` reference and store), with the `Nullable`
 //!   constructor lowering to `reussir.nullable.create`.
+//! * **strings** — global string literals and string-pattern dispatch through
+//!   the Reussir string dialect;
 //! * **closures** — a closure lowers to a shared `rc<closure<…>>` built inline
 //!   (`reussir.closure.create` with a body region; the closure-outlining pass
 //!   generates the evaluate/drop/clone functions), with captures supplied as the
@@ -39,9 +41,8 @@
 //!   and, once fully applied, evaluates with `reussir.closure.eval`; partial
 //!   application stops at the residual closure.
 //!
-//! Reading a `[field]` link back (which needs `match`/`nullable.dispatch`), a
-//! non-`[field]` member that is itself a regional record, enums/`match`, and
-//! strings are not yet lowered and surface as an explicit [`LoweringError`]
+//! Reading a `[field]` link back, a non-`[field]` member that is itself a
+//! regional record, and some enum paths are not yet lowered and surface as an explicit [`LoweringError`]
 //! rather than wrong code.
 //!
 //! Every callee/trampoline target in the MIR is already resolved to an interned
@@ -107,6 +108,14 @@ pub fn lower_program<'c, 'tcx>(
     let lowerer = Lowerer::new(context, tcx, program, source, names);
     lowerer.set_module_debug_attrs(&mut module);
     let body = module.body();
+    for (token, payload) in &program.string_literals {
+        body.append_operation(builders::str_global(
+            context,
+            &token.mangle(),
+            payload,
+            Location::unknown(context),
+        ));
+    }
     for func in &program.functions {
         body.append_operation(lowerer.function(func)?);
     }

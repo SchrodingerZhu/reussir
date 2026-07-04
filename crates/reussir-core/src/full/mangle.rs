@@ -135,6 +135,7 @@ impl<'a> Mangler<'a> {
         match *ty.kind() {
             TyKind::Bool => out.push('b'),
             TyKind::Str => out.push('e'),
+            TyKind::Char => out.push('c'),
             TyKind::Unit => out.push('u'),
             TyKind::Bottom => out.push('z'),
             TyKind::Int(int) => out.push_str(int_code(int)),
@@ -306,6 +307,7 @@ mod tests {
             let m = Mangler::new(&defs, &resolver);
             assert_eq!(m.mangle_ty(tcx.mk_bool()), "_Rb");
             assert_eq!(m.mangle_ty(tcx.mk_str()), "_Re");
+            assert_eq!(m.mangle_ty(tcx.mk_char()), "_Rc");
             assert_eq!(m.mangle_ty(tcx.mk_unit()), "_Ru");
             assert_eq!(m.mangle_ty(tcx.mk_int(IntTy::Signed(32))), "_Rl");
             assert_eq!(m.mangle_ty(tcx.mk_int(IntTy::Unsigned(64))), "_Ry");

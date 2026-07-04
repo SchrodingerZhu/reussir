@@ -149,6 +149,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 false,
                 StringAttribute::new(self.context, "bool"),
             )),
+            TyKind::Char => Some(dbg::int_type(
+                self.context,
+                mlir,
+                false,
+                StringAttribute::new(self.context, "char"),
+            )),
             TyKind::Fp(FpTy::Ieee(w)) => Some(dbg::fp_type(
                 self.context,
                 mlir,

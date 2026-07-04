@@ -82,6 +82,9 @@ impl<'a> Printer<'a> {
                 items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
             }
         }
+        for (token, payload) in &program.string_literals {
+            items.push(string_decl(*token, payload));
+        }
         for rec in &program.records {
             items.push(r.record(rec));
         }
@@ -218,6 +221,7 @@ impl Render<'_> {
             TyKind::Fp(FpTy::Float8) => text("f8"),
             TyKind::Bool => text("bool"),
             TyKind::Str => text("str"),
+            TyKind::Char => text("char"),
             TyKind::Unit => text("()"),
             TyKind::Bottom => text("!"),
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
@@ -344,6 +348,7 @@ impl Render<'_> {
             ConstInt(n) => text(format!("{n}")),
             ConstFloat(f) => text(f.to_string()),
             ConstBool(b) => text(format!("{b}")),
+            ConstChar(c) => text(format!("char#{c}")),
             Var(v) => var(v),
             Poison => text("poison"),
             Negate(x) => text("-(") + self.value(x) + text(")"),
@@ -481,6 +486,14 @@ impl Render<'_> {
                 self.arm(text("true"), if_true),
                 self.arm(text("false"), if_false),
             ],
+            mir::SwitchCases::Char { cases, default } => {
+                let mut v: Vec<Doc<'static>> = cases
+                    .iter()
+                    .map(|(c, t)| self.arm(text(format!("char#{c}")), t))
+                    .collect();
+                v.push(self.arm(text("_"), default));
+                v
+            }
             mir::SwitchCases::Ctor(arms) => arms
                 .iter()
                 .enumerate()
@@ -565,6 +578,10 @@ fn cap_name(c: Flexivity) -> &'static str {
 /// round-trips faithfully.
 fn str_lit(w: [u64; 4]) -> String {
     format!("str#{}#{}#{}#{}", w[0], w[1], w[2], w[3])
+}
+
+fn string_decl(token: crate::utils::string::StringToken, payload: &str) -> Doc<'static> {
+    text(format!("{} = {:?};", str_lit(token.words()), payload))
 }
 
 fn arith_sym(op: ArithOp) -> &'static str {

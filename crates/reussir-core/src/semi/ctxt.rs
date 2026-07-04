@@ -406,6 +406,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             TyKind::Fp(FpTy::Float8) => out.push_str("float8"),
             TyKind::Bool => out.push_str("bool"),
             TyKind::Str => out.push_str("str"),
+            TyKind::Char => out.push_str("char"),
             TyKind::Unit => out.push_str("unit"),
             TyKind::Bottom => out.push('!'),
             TyKind::Generic(g) => out.push_str(

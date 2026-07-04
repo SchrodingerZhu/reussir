@@ -92,6 +92,8 @@ pub enum Token<'a> {
     Bool,
     #[token("str")]
     Str,
+    #[token("char")]
+    Char,
     #[token("bf16")]
     BF16,
     #[token("f8")]

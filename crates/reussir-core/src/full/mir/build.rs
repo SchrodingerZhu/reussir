@@ -83,6 +83,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
+    let string_literals = string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
         symbols: Rodeo::default(),
@@ -90,7 +91,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         defs: DefTable::new(),
         ids: mir::ExprIdGen::default(),
     };
-    let program = b.program(raw);
+    let program = b.program(raw, string_literals);
     Ok(Parsed {
         program,
         defs: b.defs,
@@ -162,7 +163,11 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
-    fn program(&mut self, raw: raw::Program) -> mir::Program<'tcx> {
+    fn program(
+        &mut self,
+        raw: raw::Program,
+        string_literals: Vec<(StringToken, String)>,
+    ) -> mir::Program<'tcx> {
         let records: Vec<mir::RecordInstance<'tcx>> =
             raw.records.iter().map(|r| self.record(r)).collect();
         let trampolines: Vec<mir::Trampoline> = raw
@@ -182,6 +187,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             functions,
             records,
             trampolines,
+            string_literals,
             symbols,
         }
     }
@@ -229,6 +235,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Ty::Float8 => self.tcx.mk_fp(FpTy::Float8),
             raw::Ty::Bool => self.tcx.mk_bool(),
             raw::Ty::Str => self.tcx.mk_str(),
+            raw::Ty::Char => self.tcx.mk_char(),
             raw::Ty::Unit => self.tcx.mk_unit(),
             raw::Ty::Bottom => self.tcx.mk(TyKind::Bottom),
             raw::Ty::Nullable(inner) => {
@@ -318,6 +325,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                 if_true: self.tree_ref(if_true),
                 if_false: self.tree_ref(if_false),
             },
+            raw::Cases::Char { cases, default } => {
+                let mut cs = Vec::with_capacity(cases.len());
+                for (c, t) in cases {
+                    cs.push((*c, self.tree(t)));
+                }
+                S::Char {
+                    cases: self.tcx.alloc_slice(&cs),
+                    default: self.tree_ref(default),
+                }
+            }
             raw::Cases::Ctor(arms) => {
                 let mut v = Vec::with_capacity(arms.len());
                 for t in arms {
@@ -353,6 +370,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Kind::ConstInt(n) => M::ConstInt(self.tcx.alloc(n.clone())),
             raw::Kind::ConstFloat(f) => M::ConstFloat(self.tcx.alloc(f.clone())),
             raw::Kind::ConstBool(b) => M::ConstBool(*b),
+            raw::Kind::ConstChar(c) => M::ConstChar(*c),
             raw::Kind::GlobalStr(words) => M::GlobalStr(StringToken::from_words(*words)),
             raw::Kind::Var(v) => M::Var(VarId(*v)),
             raw::Kind::Poison => M::Poison,
@@ -673,6 +691,14 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_char_and_string_patterns() {
+        roundtrip(
+            r#"pub fn char_pick(c: char) -> i32 { match c { 'x' => 1, '\n' => 2, _ => 0 } }
+               pub fn str_pick(s: str) -> i32 { match s { "hi" => 1, "bye" => 2, _ => 0 } }"#,
+        );
+    }
+
+    #[test]
     fn roundtrips_an_int_match() {
         // Exercises an int `switch` with a `_` default arm.
         roundtrip(
@@ -710,4 +736,24 @@ mod tests {
         // must accept zero parameters.
         roundtrip("pub fn f(n: i32) -> i32 { (|| n)() }");
     }
+}
+
+fn string_entries(raw: &[raw::StringEntry]) -> Result<Vec<(StringToken, String)>, String> {
+    let mut entries = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let token = StringToken::from_words(entry.token);
+        let expected = StringToken::from_text(&entry.payload);
+        if token != expected {
+            return Err(format!(
+                "string literal token {:?} does not match payload {:?}",
+                token.words(),
+                entry.payload
+            ));
+        }
+        if !entries.iter().any(|(seen, _)| *seen == token) {
+            entries.push((token, entry.payload.clone()));
+        }
+    }
+    entries.sort_by_key(|(token, _)| token.words());
+    Ok(entries)
 }

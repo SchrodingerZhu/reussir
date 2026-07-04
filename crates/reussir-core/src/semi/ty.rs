@@ -133,6 +133,7 @@ pub enum TyKind<'tcx> {
     Fp(FpTy),
     Bool,
     Str,
+    Char,
     Unit,
     Closure {
         params: &'tcx [Ty<'tcx>],
@@ -236,6 +237,10 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn mk_str(&self) -> Ty<'tcx> {
         self.mk(TyKind::Str)
+    }
+
+    pub fn mk_char(&self) -> Ty<'tcx> {
+        self.mk(TyKind::Char)
     }
 
     pub fn mk_unit(&self) -> Ty<'tcx> {

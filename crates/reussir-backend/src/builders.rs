@@ -9,8 +9,8 @@
 
 use melior::Context;
 use melior::ir::attribute::{
-    ArrayAttribute, DenseI32ArrayAttribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute,
-    IntegerAttribute, StringAttribute,
+    ArrayAttribute, Attribute, DenseI32ArrayAttribute, DenseI64ArrayAttribute,
+    FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
 };
 use melior::ir::operation::{OperationBuilder, OperationRef};
 use melior::ir::r#type::IntegerType;
@@ -80,6 +80,80 @@ pub fn trampoline_export<'c>(
         ])
         .build()
         .expect("valid reussir.trampoline")
+}
+
+/// `reussir.str.global @<sym_name> = "payload"`.
+pub fn str_global<'c>(
+    context: &'c Context,
+    sym_name: &str,
+    payload: &str,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.global", location)
+        .add_attributes(&[
+            (
+                Identifier::new(context, "sym_name"),
+                StringAttribute::new(context, sym_name).into(),
+            ),
+            (
+                Identifier::new(context, "payload"),
+                StringAttribute::new(context, payload).into(),
+            ),
+        ])
+        .build()
+        .expect("valid reussir.str.global")
+}
+
+/// `reussir.str.literal @<sym_name> : <result_type>`.
+pub fn str_literal<'c>(
+    context: &'c Context,
+    sym_name: &str,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.literal", location)
+        .add_attributes(&[(
+            Identifier::new(context, "sym_name"),
+            FlatSymbolRefAttribute::new(context, sym_name).into(),
+        )])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.str.literal")
+}
+
+/// `reussir.str.cast (<global>) : <result_type>`.
+pub fn str_cast<'c>(
+    value: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.cast", location)
+        .add_operands(&[value])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.str.cast")
+}
+
+/// `reussir.str.select (<str>) ["..."] : (...) -> (index, i1)`.
+pub fn str_select<'c>(
+    context: &'c Context,
+    value: Value<'c, '_>,
+    patterns: &[&str],
+    location: Location<'c>,
+) -> Operation<'c> {
+    let attrs: Vec<Attribute<'c>> = patterns
+        .iter()
+        .map(|p| StringAttribute::new(context, p).into())
+        .collect();
+    OperationBuilder::new("reussir.str.select", location)
+        .add_operands(&[value])
+        .add_attributes(&[(
+            Identifier::new(context, "patterns"),
+            ArrayAttribute::new(context, &attrs).into(),
+        )])
+        .add_results(&[Type::index(context), IntegerType::new(context, 1).into()])
+        .build()
+        .expect("valid reussir.str.select")
 }
 
 /// `reussir.record.compound (<fields> : <types>) : <result_type>` — construct a

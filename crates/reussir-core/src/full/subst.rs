@@ -39,6 +39,7 @@ pub fn subst_ty<'tcx>(tcx: &TyCtxt<'tcx>, ty: Ty<'tcx>, subst: &Subst<'tcx>) -> 
         | TyKind::Fp(_)
         | TyKind::Bool
         | TyKind::Str
+        | TyKind::Char
         | TyKind::Unit
         | TyKind::Bottom => ty,
         TyKind::Hole(_) => panic!("subst: an inference hole survived zonking"),

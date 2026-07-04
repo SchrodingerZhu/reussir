@@ -19,7 +19,7 @@
 //! concern handled elsewhere.
 
 use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind, TokenKey};
-use reussir_syntax::literal::unescape_string;
+use reussir_syntax::literal::{unescape_char, unescape_string};
 use smallvec::{SmallVec, smallvec};
 
 use crate::literal::{self, FloatLit, Integer};
@@ -135,6 +135,7 @@ pub enum Const {
     ConstInt(Integer),
     ConstFloat(FloatLit),
     ConstString(String),
+    ConstChar(u32),
     ConstBool(bool),
 }
 
@@ -309,6 +310,7 @@ fn constant(token: &ResolvedToken) -> Const {
         IntLit => Const::ConstInt(literal::parse_int(token.text())),
         FloatLit => Const::ConstFloat(literal::parse_float(token.text())),
         StringLit => Const::ConstString(unescape_string(token.text())),
+        CharLit => Const::ConstChar(unescape_char(token.text()) as u32),
         TrueKw => Const::ConstBool(true),
         FalseKw => Const::ConstBool(false),
         k => unreachable!("unexpected constant token {k:?}"),
@@ -360,6 +362,7 @@ fn prim_type(text: &str) -> TypeKind {
         "float8" => fp(FpType::Float8),
         "bool" => TypeKind::TypeBool,
         "str" => TypeKind::TypeStr,
+        "char" => TypeKind::TypeChar,
         "unit" => TypeKind::TypeUnit,
         other => unreachable!("unexpected primitive type {other}"),
     }
@@ -373,6 +376,7 @@ pub enum TypeKind {
     TypeFp(FpType),
     TypeBool,
     TypeStr,
+    TypeChar,
     TypeUnit,
     /// A named type applied to arguments.
     TypeExpr(Path, SmallVec<[Type; 2]>),
