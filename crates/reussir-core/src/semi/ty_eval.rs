@@ -61,6 +61,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }),
             TypeKind::TypeBool => self.tcx.mk_bool(),
             TypeKind::TypeStr => self.tcx.mk_str(),
+            TypeKind::TypeChar => self.tcx.mk_char(),
             TypeKind::TypeUnit => self.tcx.mk_unit(),
             TypeKind::TypeArrow(args, ret) => {
                 let args: Vec<Ty> = args.iter().map(|a| self.eval_type(a)).collect();
@@ -217,6 +218,7 @@ fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
             | TyKind::Fp(_)
             | TyKind::Bool
             | TyKind::Str
+            | TyKind::Char
             | TyKind::Unit
             | TyKind::Nullable(_)
     )

@@ -394,6 +394,7 @@ fn kind_name(kind: &ExprKind<'_>) -> &'static str {
         ExprKind::GlobalStr(_) => "GlobalStr",
         ExprKind::ConstInt(_) => "ConstInt",
         ExprKind::ConstFloat(_) => "ConstFloat",
+        ExprKind::ConstChar(_) => "ConstChar",
         ExprKind::ConstBool(_) => "ConstBool",
         ExprKind::Var(_) => "Var",
         ExprKind::Negate(_) => "Negate",
@@ -518,6 +519,7 @@ impl Renderer<'_> {
         match e.kind {
             ExprKind::Var(x) => self.leaf(e.id, text(format!("var v{}", x.0))),
             ExprKind::ConstInt(n) => self.leaf(e.id, text(format!("const {n}"))),
+            ExprKind::ConstChar(c) => self.leaf(e.id, text(format!("const char#{c}"))),
             ExprKind::ConstBool(b) => self.leaf(e.id, text(format!("const {b}"))),
             ExprKind::NullableCall(None) => self.leaf(e.id, text("null")),
             ExprKind::Let { var, value, .. } => self.block(
@@ -803,6 +805,7 @@ fn interp<'tcx>(
             }
         }
         ExprKind::GlobalStr(_)
+        | ExprKind::ConstChar(_)
         | ExprKind::ConstInt(_)
         | ExprKind::ConstFloat(_)
         | ExprKind::ConstBool(_)
@@ -916,7 +919,8 @@ fn uses_var(e: &Expr<'_>, y: VarId) -> bool {
 fn children<'tcx>(e: &Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
     use ExprKind::*;
     match e.kind {
-        GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_) | Poison => vec![],
+        GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
+        | Poison => vec![],
         Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],
         Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => vec![l, r],
         If(c, t, e) => vec![c, t, e],

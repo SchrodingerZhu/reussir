@@ -2013,6 +2013,7 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "indexmap",
+ "rapidhash",
  "reussir-backend",
  "reussir-core",
  "reussir-jit",

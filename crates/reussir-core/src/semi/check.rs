@@ -216,6 +216,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let ty = self.tcx.mk_str();
                 self.mk_expr(ExprKind::GlobalStr(token), ty, span)
             }
+            Const::ConstChar(c) => {
+                let ty = self.tcx.mk_char();
+                self.mk_expr(ExprKind::ConstChar(*c), ty, span)
+            }
             Const::ConstBool(b) => {
                 let ty = self.tcx.mk_bool();
                 self.mk_expr(ExprKind::ConstBool(*b), ty, span)
@@ -1396,7 +1400,7 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
         }
         Closure(c) => free_vars(&c.body, out),
         Match(scrut, _) => free_vars(scrut, out),
-        GlobalStr(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
+        GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
     }
 }
 

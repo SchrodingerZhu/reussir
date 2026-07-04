@@ -34,6 +34,7 @@ use crate::utils::string::StringToken;
 /// [`crate::full::mono::monomorphize`] via a `MonoInput`.
 pub struct Parsed<'tcx> {
     pub funcs: Vec<Function<'tcx>>,
+    pub strings: Vec<(StringToken, String)>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
     pub defs: DefTable,
@@ -98,6 +99,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
+    let strings = raw::string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
         names: Names::default(),
@@ -110,6 +112,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     let trampolines = raw.trampolines.iter().map(|t| b.trampoline(t)).collect();
     Ok(Parsed {
         funcs,
+        strings,
         records,
         trampolines,
         defs: b.defs,
@@ -271,6 +274,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Ty::Float8 => self.tcx.mk_fp(FpTy::Float8),
             raw::Ty::Bool => self.tcx.mk_bool(),
             raw::Ty::Str => self.tcx.mk_str(),
+            raw::Ty::Char => self.tcx.mk_char(),
             raw::Ty::Unit => self.tcx.mk_unit(),
             raw::Ty::Bottom => self.tcx.mk(TyKind::Bottom),
             raw::Ty::Generic(g) => self.tcx.mk_generic(GenericId(*g)),
@@ -311,6 +315,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Kind::ConstInt(n) => ExprKind::ConstInt(self.tcx.alloc(n.clone())),
             raw::Kind::ConstFloat(f) => ExprKind::ConstFloat(self.tcx.alloc(f.clone())),
             raw::Kind::ConstBool(b) => ExprKind::ConstBool(*b),
+            raw::Kind::ConstChar(c) => ExprKind::ConstChar(*c),
             raw::Kind::GlobalStr(words) => ExprKind::GlobalStr(StringToken::from_words(*words)),
             raw::Kind::Var(v) => ExprKind::Var(VarId(*v)),
             raw::Kind::Poison => ExprKind::Poison,
@@ -476,6 +481,13 @@ impl<'tcx> Builder<'_, 'tcx> {
                 if_true: Box::new(self.tree(if_true)),
                 if_false: Box::new(self.tree(if_false)),
             },
+            raw::Cases::Char { cases, default } => {
+                let cases = cases.iter().map(|(c, t)| (*c, self.tree(t))).collect();
+                SwitchCases::Char {
+                    cases,
+                    default: Box::new(self.tree(default)),
+                }
+            }
             raw::Cases::Ctor(arms) => {
                 SwitchCases::Ctor(arms.iter().map(|t| self.tree(t)).collect())
             }
@@ -568,14 +580,17 @@ mod tests {
             let elab = elaborate(tcx, &prog, parse.resolver());
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
+            let strings = elab.strings.entries();
             let text = Printer::new(&elab.defs, elab.resolver).program(
                 &elab.elaborated,
+                &strings,
                 &elab.records,
                 &elab.trampolines,
             );
             let parsed = parse_program(tcx, &text).expect("re-parse");
             let text2 = Printer::new(&parsed.defs, &parsed.names).program(
                 &parsed.funcs,
+                &parsed.strings,
                 &parsed.records,
                 &parsed.trampolines,
             );
@@ -600,8 +615,10 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let cache = SourceCache::single("<test>", source);
+            let strings = elab.strings.entries();
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(
                 &elab.elaborated,
+                &strings,
                 &elab.records,
                 &elab.trampolines,
             );
@@ -619,6 +636,7 @@ mod tests {
             }
             let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2).program(
                 &parsed.funcs,
+                &parsed.strings,
                 &parsed.records,
                 &parsed.trampolines,
             );
@@ -644,8 +662,10 @@ mod tests {
 
             let mut cache = SourceCache::new();
             cache.add_virtual(file_name, source);
+            let strings = elab.strings.entries();
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(
                 &elab.elaborated,
+                &strings,
                 &elab.records,
                 &elab.trampolines,
             );
@@ -691,6 +711,14 @@ mod tests {
     #[test]
     fn roundtrips_a_string_literal() {
         roundtrip("pub fn greet() -> str { \"hi\" }");
+    }
+
+    #[test]
+    fn roundtrips_char_and_string_patterns() {
+        roundtrip(
+            r#"pub fn char_pick(c: char) -> i32 { match c { 'x' => 1, '\n' => 2, _ => 0 } }
+               pub fn str_pick(s: str) -> i32 { match s { "hi" => 1, "bye" => 2, _ => 0 } }"#,
+        );
     }
 
     #[test]

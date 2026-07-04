@@ -27,8 +27,9 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirRecordKind, closure, nullable, rc,
-    record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
+    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, closure, nullable,
+    rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
+    str as str_type,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -461,8 +462,9 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Fp(FpTy::BFloat16) => Ok(Type::bfloat16(context)),
         TyKind::Fp(FpTy::Float8) => err("float8 has no standard MLIR builtin type"),
         TyKind::Bool => Ok(IntegerType::new(context, 1).into()),
+        TyKind::Char => Ok(IntegerType::new(context, 32).into()),
         TyKind::Unit => err("unit has no MLIR value type"),
-        TyKind::Str => err("string type lowering not yet implemented"),
+        TyKind::Str => Ok(str_type(context, ReussirLifeScope::Global)),
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
         // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.

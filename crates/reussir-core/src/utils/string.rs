@@ -100,6 +100,17 @@ impl StringUniqifier {
         self.storage.iter().map(|(s, &token)| (s.as_str(), token))
     }
 
+    /// Return deterministic `(token, payload)` entries for textual IR and codegen.
+    pub fn entries(&self) -> Vec<(StringToken, String)> {
+        let mut entries: Vec<_> = self
+            .storage
+            .iter()
+            .map(|(s, &token)| (token, s.clone()))
+            .collect();
+        entries.sort_by_key(|(token, _)| token.words());
+        entries
+    }
+
     /// The number of distinct strings interned so far.
     pub fn len(&self) -> usize {
         self.storage.len()

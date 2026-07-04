@@ -511,3 +511,66 @@ fn runs_an_integer_match() {
         assert_eq!(run(-7), 999);
     });
 }
+
+#[test]
+fn runs_a_char_match() {
+    // Character-literal patterns lower like unsigned-integer switches: the
+    // 32-bit code point casts to `index` with one case region per literal.
+    let src = r#"
+        pub fn pick(c: char) -> i32 {
+            match c {
+                'x' => 1,
+                '\n' => 2,
+                '\u{1F600}' => 3,
+                _ => 0
+            }
+        }
+        extern "C" trampoline "pick" = pick;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("pick").expect("lookup pick");
+        let pick: extern "C" fn(u32) -> i32 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(pick('x' as u32), 1);
+        assert_eq!(pick('\n' as u32), 2);
+        assert_eq!(pick('😀' as u32), 3);
+        assert_eq!(pick('y' as u32), 0);
+        assert_eq!(pick(0), 0);
+    });
+}
+
+#[test]
+fn runs_a_string_match() {
+    // String literals and string-pattern dispatch, with the strings kept
+    // internal to the compiled code (the public ABI stays i32 → i32): `tag`
+    // returns one of four interned globals, `classify` dispatches on it via
+    // `reussir.str.select` + `scf.index_switch`. "one" vs "onefold" checks a
+    // shared prefix with different lengths; "mystery" reaches no pattern, so
+    // the select's found bit steers into the default region.
+    let src = r#"
+        fn tag(k: i32) -> str {
+            match k {
+                0 => "zero",
+                1 => "one",
+                2 => "onefold",
+                _ => "mystery"
+            }
+        }
+        pub fn classify(k: i32) -> i32 {
+            match tag(k) {
+                "zero" => 10,
+                "one" => 11,
+                "onefold" => 12,
+                _ => 99
+            }
+        }
+        extern "C" trampoline "classify" = classify;
+    "#;
+    jit_run(src, |jit| {
+        let addr = jit.lookup("classify").expect("lookup classify");
+        let classify: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(addr as usize) };
+        assert_eq!(classify(0), 10);
+        assert_eq!(classify(1), 11); // "one" does not collide with "onefold"
+        assert_eq!(classify(2), 12);
+        assert_eq!(classify(7), 99); // "mystery" misses every pattern
+    });
+}

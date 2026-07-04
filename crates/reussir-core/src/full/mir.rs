@@ -57,6 +57,7 @@ pub struct Program<'tcx> {
     pub functions: Vec<Function<'tcx>>,
     pub records: Vec<RecordInstance<'tcx>>,
     pub trampolines: Vec<Trampoline>,
+    pub string_literals: Vec<(StringToken, String)>,
     /// Interner backing every [`Symbol`] in this program.
     pub symbols: Rodeo,
 }
@@ -196,6 +197,8 @@ pub struct ClosureExpr<'tcx> {
 #[derive(Clone, Copy, Debug)]
 pub enum ExprKind<'tcx> {
     GlobalStr(StringToken),
+    /// A Unicode scalar value, stored as its 32-bit code point.
+    ConstChar(u32),
     /// An integer literal, arbitrary-precision (arena-allocated to keep the
     /// node `Copy`); range-checked against its ground type at
     /// monomorphization and emitted at full width by codegen.
@@ -286,6 +289,10 @@ pub enum SwitchCases<'tcx> {
     Bool {
         if_true: &'tcx DecisionTree<'tcx>,
         if_false: &'tcx DecisionTree<'tcx>,
+    },
+    Char {
+        cases: &'tcx [(u32, DecisionTree<'tcx>)],
+        default: &'tcx DecisionTree<'tcx>,
     },
     Ctor(&'tcx [DecisionTree<'tcx>]),
     String {

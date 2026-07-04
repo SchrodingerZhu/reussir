@@ -83,6 +83,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
+    let string_literals = raw::string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
         symbols: Rodeo::default(),
@@ -90,7 +91,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         defs: DefTable::new(),
         ids: mir::ExprIdGen::default(),
     };
-    let program = b.program(raw);
+    let program = b.program(raw, string_literals);
     Ok(Parsed {
         program,
         defs: b.defs,
@@ -162,7 +163,11 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
-    fn program(&mut self, raw: raw::Program) -> mir::Program<'tcx> {
+    fn program(
+        &mut self,
+        raw: raw::Program,
+        string_literals: Vec<(StringToken, String)>,
+    ) -> mir::Program<'tcx> {
         let records: Vec<mir::RecordInstance<'tcx>> =
             raw.records.iter().map(|r| self.record(r)).collect();
         let trampolines: Vec<mir::Trampoline> = raw
@@ -182,6 +187,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             functions,
             records,
             trampolines,
+            string_literals,
             symbols,
         }
     }
@@ -229,6 +235,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Ty::Float8 => self.tcx.mk_fp(FpTy::Float8),
             raw::Ty::Bool => self.tcx.mk_bool(),
             raw::Ty::Str => self.tcx.mk_str(),
+            raw::Ty::Char => self.tcx.mk_char(),
             raw::Ty::Unit => self.tcx.mk_unit(),
             raw::Ty::Bottom => self.tcx.mk(TyKind::Bottom),
             raw::Ty::Nullable(inner) => {
@@ -318,6 +325,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                 if_true: self.tree_ref(if_true),
                 if_false: self.tree_ref(if_false),
             },
+            raw::Cases::Char { cases, default } => {
+                let mut cs = Vec::with_capacity(cases.len());
+                for (c, t) in cases {
+                    cs.push((*c, self.tree(t)));
+                }
+                S::Char {
+                    cases: self.tcx.alloc_slice(&cs),
+                    default: self.tree_ref(default),
+                }
+            }
             raw::Cases::Ctor(arms) => {
                 let mut v = Vec::with_capacity(arms.len());
                 for t in arms {
@@ -353,6 +370,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Kind::ConstInt(n) => M::ConstInt(self.tcx.alloc(n.clone())),
             raw::Kind::ConstFloat(f) => M::ConstFloat(self.tcx.alloc(f.clone())),
             raw::Kind::ConstBool(b) => M::ConstBool(*b),
+            raw::Kind::ConstChar(c) => M::ConstChar(*c),
             raw::Kind::GlobalStr(words) => M::GlobalStr(StringToken::from_words(*words)),
             raw::Kind::Var(v) => M::Var(VarId(*v)),
             raw::Kind::Poison => M::Poison,
@@ -516,6 +534,7 @@ fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
 mod tests {
     use super::parse_program;
     use crate::full::mir::print::Printer;
+    use crate::full::mir::raw;
     use crate::full::mono::monomorphize;
     use crate::semi::elaborate;
     use crate::{surface, with_tcx};
@@ -673,6 +692,14 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_char_and_string_patterns() {
+        roundtrip(
+            r#"pub fn char_pick(c: char) -> i32 { match c { 'x' => 1, '\n' => 2, _ => 0 } }
+               pub fn str_pick(s: str) -> i32 { match s { "hi" => 1, "bye" => 2, _ => 0 } }"#,
+        );
+    }
+
+    #[test]
     fn roundtrips_an_int_match() {
         // Exercises an int `switch` with a `_` default arm.
         roundtrip(
@@ -709,5 +736,23 @@ mod tests {
         // A parameterless closure has type `() -> ret`; the closure-type grammar
         // must accept zero parameters.
         roundtrip("pub fn f(n: i32) -> i32 { (|| n)() }");
+    }
+
+    #[test]
+    #[should_panic(expected = "Unicode scalar value")]
+    fn rejects_surrogate_char_atoms() {
+        // `char#<n>` in machine-emitted IR must be a valid Unicode scalar
+        // value; U+D800 is a surrogate.
+        raw::char_scalar(&crate::literal::Integer::from(0xD800u32));
+    }
+
+    #[test]
+    fn rejects_string_table_token_mismatch() {
+        let entry = raw::StringEntry {
+            token: [0; 4],
+            payload: "hi".into(),
+        };
+        let err = raw::string_entries(&[entry]).unwrap_err();
+        assert!(err.contains("does not match payload"), "{err}");
     }
 }

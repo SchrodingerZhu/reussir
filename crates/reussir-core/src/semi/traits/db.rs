@@ -186,7 +186,12 @@ mod tests {
         with_tcx(|tcx: &TyCtxt| {
             let mut db = TraitDb::new();
             let b = Builtins::register(&mut db, tcx);
-            for ty in [tcx.mk_int(IntTy::Unsigned(64)), tcx.mk_bool(), tcx.mk_str()] {
+            for ty in [
+                tcx.mk_int(IntTy::Unsigned(64)),
+                tcx.mk_bool(),
+                tcx.mk_str(),
+                tcx.mk_char(),
+            ] {
                 assert!(db.select(&needs(b.send, ty)).is_ok());
                 assert!(db.select(&needs(b.sync, ty)).is_ok());
             }

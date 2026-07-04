@@ -87,6 +87,8 @@ pub struct ClosureExpr<'tcx> {
 pub enum ExprKind<'tcx> {
     /// An interned string literal.
     GlobalStr(StringToken),
+    /// A Unicode scalar value, stored as its 32-bit code point.
+    ConstChar(u32),
     /// An integer literal (its type is a `Num`-bounded hole until solved).
     /// Arbitrary-precision: range-checked against its ground type at
     /// monomorphization, never truncated before.
@@ -188,6 +190,10 @@ pub enum SwitchCases<'tcx> {
     Bool {
         if_true: Box<DecisionTree<'tcx>>,
         if_false: Box<DecisionTree<'tcx>>,
+    },
+    Char {
+        cases: Vec<(u32, DecisionTree<'tcx>)>,
+        default: Box<DecisionTree<'tcx>>,
     },
     /// One sub-tree per variant index of the scrutinee's enum.
     Ctor(Vec<DecisionTree<'tcx>>),
