@@ -61,8 +61,8 @@ void eraseOrReplaceDecOp(ReussirRcDecOp decOp) {
     decOp.erase();
   else {
     mlir::OpBuilder builder(decOp);
-    auto replacement = ReussirNullableCreateOp::create(builder, 
-        decOp.getLoc(), decOp.getResultTypes(), nullptr);
+    auto replacement = ReussirNullableCreateOp::create(
+        builder, decOp.getLoc(), decOp.getResultTypes(), nullptr);
     decOp.replaceAllUsesWith(replacement->getResults());
     decOp.erase();
   }
@@ -108,12 +108,29 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
       }
       // A call *site* (`mlir::CallOpInterface`, e.g. `func.call`) is opaque: it
       // may consume the incremented value (a closure application lowers to a
-      // `func.call` that takes ownership of its closure), so cancelling across it
-      // could drop a live reference. Guard on the call-site interface — *not*
-      // `CallableOpInterface`, which is the call *target* (`func.func`) and never
-      // appears mid-block. A control-flow op with regions is likewise opaque.
+      // `func.call` that takes ownership of its closure), so cancelling across
+      // it could drop a live reference. Guard on the call-site interface —
+      // *not* `CallableOpInterface`, which is the call *target* (`func.func`)
+      // and never appears mid-block. A control-flow op with regions is likewise
+      // opaque.
       if (llvm::isa<mlir::CallOpInterface>(next) ||
           llvm::isa<mlir::RegionBranchOpInterface>(next))
+        break;
+      // `reussir.ref.drop` releases every rc reachable *through* the referenced
+      // value (the first cancellation run precedes acquire/drop expansion, so
+      // it appears here unexpanded). The incremented rc may be stored inside
+      // the dropped value — e.g. a spilled `[value]` enum whose payload was
+      // just loaded — and since the reference operand never aliases the rc
+      // pointer itself, no operand alias query can prove disjointness.
+      // Cancelling across it lets the drop take the count to zero while the
+      // payload is still live. A drop of a trivially-copyable element expands
+      // to nothing and stays transparent. `reussir.region.cleanup` likewise
+      // releases the region's objects wholesale.
+      if (auto dropOp = llvm::dyn_cast<ReussirRefDropOp>(next);
+          dropOp &&
+          !isTriviallyCopyable(dropOp.getRef().getType().getElementType()))
+        break;
+      if (llvm::isa<ReussirRegionCleanupOp>(next))
         break;
       // `closure.apply`/`closure.eval` consume/mutate only their own closure
       // operand, so they are risky only when that operand may alias the

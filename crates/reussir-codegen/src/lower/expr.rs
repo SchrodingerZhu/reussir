@@ -1074,9 +1074,13 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             .into();
         let anchor_path = SmallVec::<[u32; 4]>::from_slice(path);
         env.subscope(|scope| {
-            scope
-                .anchors
-                .push((anchor_path, Anchor::Root { val: arg, ty: inner }));
+            scope.anchors.push((
+                anchor_path,
+                Anchor::Root {
+                    val: arg,
+                    ty: inner,
+                },
+            ));
             let value = self.lower_tree(&non_null_block, scope, root_idx, non_null, result_ty)?;
             non_null_block.append_operation(builders::scf_yield(value, loc));
             Ok::<_, LoweringError>(())
@@ -1208,7 +1212,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         };
         let then_region = self.tree_branch_region(env, root_idx, if_true, result_ty)?;
         let else_region = self.tree_branch_region(env, root_idx, if_false, result_ty)?;
-        let op = block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
+        let op =
+            block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
         if unit {
             Ok(None)
         } else {
@@ -1363,8 +1368,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let loc = self.loc();
         let mlir_ty = self.tys.mlir_ty(ty)?;
         let text = format!("{key} : {mlir_ty}");
-        let attr = Attribute::parse(self.context, &text)
-            .ok_or_else(|| LoweringError(format!("could not build integer constant `{text}`").into()))?;
+        let attr = Attribute::parse(self.context, &text).ok_or_else(|| {
+            LoweringError(format!("could not build integer constant `{text}`").into())
+        })?;
         Ok(self.append(block, arith::constant(self.context, attr, loc)))
     }
 
@@ -1442,7 +1448,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         };
         let then_region = self.tree_branch_region(env, root_idx, success, result_ty)?;
         let else_region = self.tree_branch_region(env, root_idx, failure, result_ty)?;
-        let op = block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
+        let op =
+            block.append_operation(scf::r#if(cond, &result_tys, then_region, else_region, loc));
         if unit {
             Ok(None)
         } else {
@@ -1483,9 +1490,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Ok(None)
         } else {
             let ty = self.tys.mlir_ty(result_ty)?;
-            Ok(Some(
-                self.append(block, builders::poison(self.context, ty, self.loc())),
-            ))
+            Ok(Some(self.append(
+                block,
+                builders::poison(self.context, ty, self.loc()),
+            )))
         }
     }
 
@@ -1522,14 +1530,21 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 let inner = self.tys.record_inner_of(ty)?;
                 if let Some(cap) = self.record_ref_cap(ty)? {
                     let ref_ty = self.tys.ref_type_with_cap(inner, cap);
-                    let reference =
-                        self.append(block, dialect::rc_borrow(self.context, ref_ty, val, loc).into());
+                    let reference = self.append(
+                        block,
+                        dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
+                    );
                     Ok((reference, ty, cap))
                 } else {
-                    let cap = ReussirCapability::Value;
-                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
-                    let reference = self
-                        .append(block, dialect::ref_spilled(self.context, ref_ty, val, loc).into());
+                    // A spilled reference is always at `unspecified` capability
+                    // (`reussir.ref.spilled` rejects anything else); the arm
+                    // payload references inherit it.
+                    let cap = ReussirCapability::Unspecified;
+                    let ref_ty = self.tys.unspecified_ref_type(inner);
+                    let reference = self.append(
+                        block,
+                        dialect::ref_spilled(self.context, ref_ty, val, loc).into(),
+                    );
                     Ok((reference, ty, cap))
                 }
             }
@@ -1582,7 +1597,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 let Some((first, rest)) = suffix.split_first() else {
                     return Ok(whole);
                 };
-                let mut cursor = self.project_variant_field(block, reference, variant, cap, *first)?;
+                let mut cursor =
+                    self.project_variant_field(block, reference, variant, cap, *first)?;
                 for &idx in rest {
                     cursor = self.project_one(block, cursor, idx)?;
                 }
@@ -1971,7 +1987,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// Increment the refcount of the temporary held in [`Env::temps`] under `id`
     /// (see [`emit_rc_before`](Self::emit_rc_before)); an unknown id is a genuine
     /// gap — a value op keyed to a temporary the walk did not record.
-    fn emit_inc_temp<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, id: ExprId) -> Result<()> {
+    fn emit_inc_temp<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        id: ExprId,
+    ) -> Result<()> {
         match (env.temps.get(&id).copied(), self.temp_ty(id)) {
             (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
             _ => err("reference-count op on an unbound temporary is not supported"),
@@ -1980,7 +2001,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Decrement the refcount of the temporary held in [`Env::temps`] under `id`
     /// (the dual of [`emit_inc_temp`](Self::emit_inc_temp)).
-    fn emit_dec_temp<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, id: ExprId) -> Result<()> {
+    fn emit_dec_temp<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        id: ExprId,
+    ) -> Result<()> {
         match (env.temps.get(&id).copied(), self.temp_ty(id)) {
             (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
             _ => err("reference-count op on an unbound temporary is not supported"),
@@ -1989,7 +2015,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Increment the refcount owned by local `v`. A value-less local (e.g. unit)
     /// holds no resource, so there is nothing to do.
-    fn emit_inc_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, v: VarId) -> Result<()> {
+    fn emit_inc_var<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        v: VarId,
+    ) -> Result<()> {
         match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_inc(block, val, ty),
             _ => Ok(()),
@@ -1997,7 +2028,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     }
 
     /// Decrement the refcount owned by local `v` (see [`emit_inc_var`](Self::emit_inc_var)).
-    fn emit_dec_var<'b>(&self, block: &'b Block<'c>, env: &Env<'c, 'b, 'tcx>, v: VarId) -> Result<()> {
+    fn emit_dec_var<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &Env<'c, 'b, 'tcx>,
+        v: VarId,
+    ) -> Result<()> {
         match (env.vars.get(&v).copied(), self.var_ty(v)) {
             (Some(val), Some(ty)) => self.emit_dec(block, val, ty),
             _ => Ok(()),
