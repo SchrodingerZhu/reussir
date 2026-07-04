@@ -14,7 +14,6 @@
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/LogicalResult.h>
-#include <llvm/Support/xxhash.h>
 #include <llvm/TargetParser/Triple.h>
 #include <mlir/Analysis/DataLayoutAnalysis.h>
 #include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>
@@ -52,6 +51,7 @@
 #include <mlir/Transforms/DialectConversion.h>
 
 #include "Reussir/Conversion/BasicOpsLowering.h"
+#include "Reussir/Conversion/Blake3Symbol.h"
 #include "Reussir/Conversion/CABISignatureConversion.h"
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirAttrs.h"
@@ -129,12 +129,9 @@ struct ReussirPanicConversionPattern
     // Get the panic message
     llvm::StringRef message = op.getMessage();
 
-    // Create a unique symbol name for the global string using xxh128
-    llvm::ArrayRef<uint8_t> messageBytes(
-        reinterpret_cast<const uint8_t *>(message.data()), message.size());
-    llvm::XXH128_hash_t hash = llvm::xxh3_128bits(messageBytes);
-    std::string globalName = "__panic_message_" + llvm::utohexstr(hash.high64) +
-                             "_" + llvm::utohexstr(hash.low64);
+    // Create a stable symbol name for the global string using BLAKE3.
+    std::string globalName =
+        mangledBlake3Symbol("REUSSIR_PANIC_MESSAGE", message);
 
     // Get or create the global string constant
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
@@ -2256,13 +2253,9 @@ struct ReussirStrUnsafeStartWithOpConversionPattern
         rewriter, loc, adaptor.getStr(), llvm::ArrayRef<int64_t>{0});
 
     // Use memcmp for all prefix lengths as LLVM optimizes it well.
-    // 1. Create global string for prefix
-    // Use hash to avoid duplicate strings (similar to PanicOp)
-    llvm::ArrayRef<uint8_t> messageBytes(
-        reinterpret_cast<const uint8_t *>(prefix.data()), prefix.size());
-    llvm::XXH128_hash_t hash = llvm::xxh3_128bits(messageBytes);
-    std::string globalName = "__str_prefix_" + llvm::utohexstr(hash.high64) +
-                             "_" + llvm::utohexstr(hash.low64);
+    // 1. Create a deduplicated global string for the prefix.
+    std::string globalName =
+        mangledBlake3Symbol("REUSSIR_STRING_PREFIX", prefix);
 
     auto existingGlobal = module.lookupSymbol<mlir::LLVM::GlobalOp>(globalName);
     if (!existingGlobal) {

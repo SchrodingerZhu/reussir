@@ -7,13 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/Conversion/Blake3Symbol.h"
 #include "Reussir/Conversion/RcDecrementExpansion.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
-#include <algorithm>
-#include <format>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/SmallVector.h>
@@ -25,9 +24,9 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
-#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
@@ -56,38 +55,12 @@ namespace {
 /// Hashing / naming
 /// =======================
 
-std::string b62encode(llvm::APInt value) {
-  const char *alphabet =
-      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  if (value.isZero())
-    return std::string(1, alphabet[0]);
-
-  std::string result;
-  while (!value.isZero()) {
-    uint64_t rem;
-    llvm::APInt::udivrem(value, 62, value, rem);
-    result.push_back(alphabet[rem]);
-  }
-  std::reverse(result.begin(), result.end());
-  return result;
-}
-
-llvm::APInt blakeHashedPattern(mlir::ArrayAttr pattern) {
-  llvm::BLAKE3 blake3;
-  for (auto attr : pattern.getValue()) {
-    if (auto s = llvm::dyn_cast<mlir::StringAttr>(attr))
-      blake3.update(s.getValue());
-  }
-  auto result = blake3.final();
-  auto data = std::bit_cast<std::array<uint64_t, 4>>(result);
-  return llvm::APInt(256, data);
-}
-
 std::string decisionFunctionName(mlir::ArrayAttr patterns) {
-  std::string hash = b62encode(blakeHashedPattern(patterns));
-  const char *sep = (hash[0] >= '0' && hash[0] <= '9') ? "_" : "";
-  return std::format("_RNvC25REUSSIR_STRING_DISPATCHER{}{}{}", hash.size(), sep,
-                     hash);
+  llvm::BLAKE3 hasher;
+  for (auto attr : patterns.getValue())
+    if (auto s = llvm::dyn_cast<mlir::StringAttr>(attr))
+      hasher.update(s.getValue());
+  return mangledBlake3Symbol("REUSSIR_STRING_DISPATCHER", blake3Words(hasher));
 }
 
 struct PatternInfo {
