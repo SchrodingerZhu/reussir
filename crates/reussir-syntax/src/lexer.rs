@@ -7,8 +7,8 @@
 //! * integers are digit runs — decimal, or `0x`/`0o`/`0b` radix literals —
 //!   with `_` separators (`1_000`, `0xFF_FF`); floats are decimal digit runs
 //!   with a fraction and/or exponent (`1.5`, `1e3`, `2.5e-7`, `1_0.5`),
-//! * strings are double-quoted with backslash escapes (validated here,
-//!   decoded in [`crate::ast`]).
+//! * strings are double-quoted and characters are single-quoted with backslash
+//!   escapes (validated here, decoded in [`crate::ast`]).
 //!
 //! Keyword policy: only the words that introduce syntactic forms become
 //! keyword tokens. Contextual words (`trampoline`, capability names like
@@ -58,6 +58,8 @@ pub enum RawToken {
 
     #[token("\"", lex_string)]
     String,
+    #[token("'", lex_char)]
+    Char,
 
     #[token("::")]
     PathSep,
@@ -186,14 +188,25 @@ fn lex_block_comment(lex: &mut logos::Lexer<RawToken>) -> bool {
 /// escapes the next character; the literal ends at the first unescaped
 /// quote. Returns `false` when the literal is unterminated.
 fn lex_string(lex: &mut logos::Lexer<RawToken>) -> bool {
+    lex_quoted(lex, b'\"').is_some()
+}
+
+/// Scan a character literal after the opening quote. The literal must decode to
+/// exactly one Unicode scalar value, represented later as a 32-bit `char`.
+fn lex_char(lex: &mut logos::Lexer<RawToken>) -> bool {
+    lex_quoted(lex, b'\'').is_some_and(|body| decoded_char_count(body) == Some(1))
+}
+
+fn lex_quoted<'a>(lex: &mut logos::Lexer<'a, RawToken>, quote: u8) -> Option<&'a str> {
     let rest = lex.remainder();
     let bytes = rest.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'"' => {
+            b if b == quote => {
+                let body = &rest[..i];
                 lex.bump(i + 1);
-                return true;
+                return Some(body);
             }
             b'\\' => {
                 if i + 1 >= bytes.len() {
@@ -205,7 +218,72 @@ fn lex_string(lex: &mut logos::Lexer<RawToken>) -> bool {
         }
     }
     lex.bump(rest.len());
-    false
+    None
+}
+
+fn decoded_char_count(mut rest: &str) -> Option<usize> {
+    const MNEMONICS: &[&str] = &[
+        "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "DLE", "DC1", "DC2", "DC3", "DC4",
+        "NAK", "SYN", "ETB", "CAN", "SUB", "ESC", "DEL", "EM", "FS", "GS", "RS", "US", "SP", "BS",
+        "HT", "LF", "VT", "FF", "CR", "SO", "SI",
+    ];
+
+    let mut count = 0;
+    while !rest.is_empty() {
+        let c = rest.chars().next()?;
+        if c != '\\' {
+            count += 1;
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        rest = &rest[1..];
+        let esc = rest.chars().next()?;
+        let consumed = match esc {
+            'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' | '"' | '\'' => esc.len_utf8(),
+            '&' => {
+                rest = &rest[esc.len_utf8()..];
+                continue;
+            }
+            'x' | 'X' => {
+                let digits = take_digits(&rest[1..], |c| c.is_ascii_hexdigit());
+                valid_code(digits, 16)?;
+                1 + digits.len()
+            }
+            'o' | 'O' => {
+                let digits = take_digits(&rest[1..], |c| ('0'..='7').contains(&c));
+                valid_code(digits, 8)?;
+                1 + digits.len()
+            }
+            c if c.is_ascii_digit() => {
+                let digits = take_digits(rest, |c| c.is_ascii_digit());
+                valid_code(digits, 10)?;
+                digits.len()
+            }
+            _ => MNEMONICS
+                .iter()
+                .find(|name| rest.starts_with(**name))?
+                .len(),
+        };
+        count += 1;
+        rest = &rest[consumed..];
+    }
+    Some(count)
+}
+
+fn take_digits(rest: &str, pred: impl Fn(char) -> bool) -> &str {
+    let end = rest
+        .char_indices()
+        .find_map(|(i, c)| (!pred(c)).then_some(i))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+fn valid_code(digits: &str, radix: u32) -> Option<()> {
+    if digits.is_empty() {
+        return None;
+    }
+    let code = u32::from_str_radix(digits, radix).ok()?;
+    char::from_u32(code).map(drop)
 }
 
 impl RawToken {
@@ -234,6 +312,7 @@ impl RawToken {
             RawToken::Int => SyntaxKind::IntLit,
             RawToken::Float => SyntaxKind::FloatLit,
             RawToken::String => SyntaxKind::StringLit,
+            RawToken::Char => SyntaxKind::CharLit,
             RawToken::PathSep => SyntaxKind::PathSep,
             RawToken::Arrow => SyntaxKind::Arrow,
             RawToken::FatArrow => SyntaxKind::FatArrow,
@@ -302,6 +381,12 @@ pub fn tokenize(source: &str) -> (Vec<Token>, Vec<LexError>) {
                 let slice = lexer.slice();
                 let message = if slice.starts_with('"') {
                     "unterminated string literal"
+                } else if slice.starts_with('\'') {
+                    if slice.ends_with('\'') && slice.len() > 1 {
+                        "invalid character literal"
+                    } else {
+                        "unterminated character literal"
+                    }
                 } else if slice.starts_with("/*") {
                     "unterminated block comment"
                 } else if slice.starts_with(|c: char| c.is_ascii_digit()) {
@@ -402,6 +487,9 @@ mod tests {
     #[test]
     fn strings_and_comments() {
         assert_eq!(kinds(r#""hello \"world\"""#), vec![K::StringLit]);
+        assert_eq!(kinds(r"'x'"), vec![K::CharLit]);
+        assert_eq!(kinds(r"'\n'"), vec![K::CharLit]);
+        assert_eq!(kinds(r"'\NUL'"), vec![K::CharLit]);
         assert_eq!(kinds("a // comment\nb"), vec![K::Ident, K::Ident]);
         assert_eq!(kinds("a /* x ** y */ b"), vec![K::Ident, K::Ident]);
     }

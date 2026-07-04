@@ -20,6 +20,7 @@ pub enum SyntaxKind {
     IntLit,
     FloatLit,
     StringLit,
+    CharLit,
 
     // ===== Tokens: hard keywords =====
     FnKw,
@@ -242,6 +243,7 @@ impl SyntaxKind {
             IntLit => "an integer literal",
             FloatLit => "a floating-point literal",
             StringLit => "a string literal",
+            CharLit => "a character literal",
             FnKw => "`fn`",
             StructKw => "`struct`",
             EnumKw => "`enum`",

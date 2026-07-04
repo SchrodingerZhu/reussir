@@ -684,6 +684,10 @@ impl Emitter<'_> {
                 Value::Number(Number::from_string_unchecked(token.text().replace('_', ""))),
             ),
             StringLit => tagged("ConstString", Value::String(unescape_string(token.text()))),
+            CharLit => tagged(
+                "ConstChar",
+                Value::Number(Number::from(unescape_char(token.text()) as u32)),
+            ),
             TrueKw => tagged("ConstBool", Value::Bool(true)),
             FalseKw => tagged("ConstBool", Value::Bool(false)),
             k => unreachable!("unexpected constant token {k:?}"),
@@ -744,6 +748,7 @@ fn prim_type(text: &str) -> Value {
         "float8" => tagged("TypeFP", tagged0("Float8")),
         "bool" => tagged0("TypeBool"),
         "str" => tagged0("TypeStr"),
+        "char" => tagged0("TypeChar"),
         "unit" => tagged0("TypeUnit"),
         other => unreachable!("unexpected primitive type {other}"),
     }
@@ -754,6 +759,28 @@ fn prim_type(text: &str) -> Value {
 /// mnemonics (`\NUL`, `\SOH`, ..., `\DEL`), and numeric escapes (`\65`,
 /// `\x41`, `\o101`).
 pub fn unescape_string(raw: &str) -> String {
+    let body = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+    unescape_body(body)
+}
+
+/// Decode a character literal (including the surrounding quotes). The lexer
+/// guarantees this is exactly one Unicode scalar value.
+pub fn unescape_char(raw: &str) -> char {
+    let body = raw
+        .strip_prefix("'")
+        .and_then(|s| s.strip_suffix("'"))
+        .unwrap_or(raw);
+    let decoded = unescape_body(body);
+    let mut chars = decoded.chars();
+    let c = chars.next().expect("non-empty character literal");
+    debug_assert!(chars.next().is_none(), "lexer accepted multi-char literal");
+    c
+}
+
+fn unescape_body(body: &str) -> String {
     const MNEMONICS: &[(&str, char)] = &[
         // Longest first so that e.g. `SOH` wins over `SO`.
         ("NUL", '\u{00}'),
@@ -792,10 +819,6 @@ pub fn unescape_string(raw: &str) -> String {
         ("SI", '\u{0F}'),
     ];
 
-    let body = raw
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(raw);
     let mut out = String::with_capacity(body.len());
     let mut rest = body;
     'outer: while let Some(idx) = rest.find('\\') {

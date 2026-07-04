@@ -316,7 +316,7 @@ impl Parser<'_> {
                 self.block_expr();
                 Some(m.complete(self, RegionalExpr))
             }
-            IntLit | FloatLit | StringLit | TrueKw | FalseKw => {
+            IntLit | FloatLit | StringLit | CharLit | TrueKw | FalseKw => {
                 let m = self.start();
                 self.bump();
                 Some(m.complete(self, LiteralExpr))

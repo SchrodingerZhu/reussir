@@ -25,7 +25,7 @@ use crate::kind::SyntaxKind::{self, *};
 
 const PRIM_TYPES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "f32", "f64", "bfloat16",
-    "float8", "bool", "str", "unit",
+    "float8", "bool", "str", "char", "unit",
 ];
 
 const CAPABILITIES: &[&str] = &["shared", "value", "flex", "rigid", "field", "regional"];
@@ -437,7 +437,7 @@ impl Parser<'_> {
                 self.bump();
                 m.complete(self, WildcardPat);
             }
-            IntLit | FloatLit | StringLit | TrueKw | FalseKw => {
+            IntLit | FloatLit | StringLit | CharLit | TrueKw | FalseKw => {
                 let m = self.start();
                 self.bump();
                 m.complete(self, ConstPat);
