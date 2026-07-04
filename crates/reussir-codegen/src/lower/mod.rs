@@ -56,6 +56,8 @@ mod ty;
 
 use std::borrow::Cow;
 
+use xxhash_rust::xxh3::xxh3_64;
+
 use reussir_backend::builders;
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::{BlockLike, Location, Module};
@@ -85,6 +87,37 @@ fn err<T>(msg: impl Into<Cow<'static, str>>) -> Result<T> {
     Err(LoweringError(msg.into()))
 }
 
+/// One codegen unit of a partitioned compilation: this unit's index and the
+/// total unit count.
+///
+/// Functions are assigned to units by a **stable** hash of their mangled
+/// symbol (xxh3 — a portable, spec-defined hash, not a std hasher, so the
+/// partition is deterministic across builds and compiler versions): a
+/// function's body is emitted only in its home unit, every other unit sees a
+/// body-less
+/// declaration the linker resolves across objects. Symbols are mangled from
+/// fully-qualified paths, so the assignment is reproducible for a given
+/// program. With more than one unit, `private` functions are promoted to
+/// external visibility — a cross-unit call must resolve at link time.
+#[derive(Clone, Copy, Debug)]
+pub struct CodegenUnit {
+    pub index: u32,
+    pub count: u32,
+}
+
+impl CodegenUnit {
+    /// Whether `symbol`'s body belongs to this unit.
+    pub fn is_home(&self, symbol: &str) -> bool {
+        self.count <= 1
+            || xxh3_64(symbol.as_bytes()) % u64::from(self.count) == u64::from(self.index)
+    }
+
+    /// Whether this partition splits the program at all (count > 1).
+    pub fn is_split(&self) -> bool {
+        self.count > 1
+    }
+}
+
 /// Build the MLIR module for a whole program in `context`.
 ///
 /// `tcx` is the type arena the program was monomorphized in; the ownership
@@ -104,8 +137,30 @@ pub fn lower_program<'c, 'tcx>(
     source: Option<&SourceCache>,
     names: Option<&dyn Resolver<TokenKey>>,
 ) -> Result<Module<'c>> {
+    lower_unit(
+        context,
+        tcx,
+        program,
+        source,
+        names,
+        CodegenUnit { index: 0, count: 1 },
+    )
+}
+
+/// Build the MLIR module for one [`CodegenUnit`] of `program`: this unit's
+/// functions with bodies, every other unit's as declarations, trampolines
+/// co-located with their targets, and the full record set (layout metadata
+/// carries no symbols, so each unit is self-contained for types).
+pub fn lower_unit<'c, 'tcx>(
+    context: &'c Context,
+    tcx: &TyCtxt<'tcx>,
+    program: &mir::Program<'tcx>,
+    source: Option<&SourceCache>,
+    names: Option<&dyn Resolver<TokenKey>>,
+    unit: CodegenUnit,
+) -> Result<Module<'c>> {
     let mut module = Module::new(Location::unknown(context));
-    let lowerer = Lowerer::new(context, tcx, program, source, names);
+    let lowerer = Lowerer::new(context, tcx, program, source, names).with_unit(unit);
     lowerer.set_module_debug_attrs(&mut module);
     let body = module.body();
     for (token, payload) in &program.string_literals {
@@ -120,6 +175,11 @@ pub fn lower_program<'c, 'tcx>(
         body.append_operation(lowerer.function(func)?);
     }
     for t in &program.trampolines {
+        // A trampoline is a body-carrying wrapper: it belongs to its target's
+        // home unit (the exported alias and the aliased body co-locate).
+        if !unit.is_home(program.symbol(t.target)) {
+            continue;
+        }
         body.append_operation(builders::trampoline_export(
             context,
             &t.abi,
@@ -278,6 +338,82 @@ mod tests {
             assert!(printed.contains("\"B\""), "{printed}");
             assert!(printed.contains("\"Nil\""), "{printed}");
             assert!(printed.contains("\"Cons\""), "{printed}");
+        });
+    }
+
+    #[test]
+    fn codegen_units_partition_every_symbol_exactly_once() {
+        let symbols = ["_RNvC1p1a", "_RNvC1p1b", "_RNvNvC1p1m1c", "_RC4main"];
+        for count in [1u32, 2, 3, 7] {
+            for sym in symbols {
+                let homes = (0..count)
+                    .filter(|&index| CodegenUnit { index, count }.is_home(sym))
+                    .count();
+                assert_eq!(
+                    homes, 1,
+                    "symbol {sym} must be home in exactly one of {count} units"
+                );
+            }
+        }
+        // The assignment is a pure function of the symbol (deterministic).
+        let unit = CodegenUnit { index: 1, count: 3 };
+        assert_eq!(unit.is_home("_RNvC1p1a"), unit.is_home("_RNvC1p1a"));
+    }
+
+    #[test]
+    fn a_partitioned_unit_declares_foreign_functions_and_defines_its_own() {
+        let src = r#"
+            fn helper(n: u64) -> u64 { n + 1 }
+            pub fn entry(n: u64) -> u64 { helper(n) }
+            extern "C" trampoline "entry" = entry;
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+
+            let count = 4;
+            let mut definitions = 0;
+            let mut trampolines = 0;
+            for index in 0..count {
+                let unit = CodegenUnit { index, count };
+                let module = lower_unit(&context, tcx, &full, None, None, unit)
+                    .expect("unit lowering succeeds");
+                assert!(
+                    module.as_operation().verify(),
+                    "unit {index} verifies:\n{}",
+                    module.as_operation()
+                );
+                let text = module.as_operation().to_string();
+                // Both symbols appear in every unit (definition or declaration)...
+                for f in &full.functions {
+                    assert!(text.contains(full.symbol(f.symbol)), "{text}");
+                    if unit.is_home(full.symbol(f.symbol)) {
+                        definitions += 1;
+                        // ...a home definition is externally visible (no
+                        // `private`, which multi-unit promotion strips)...
+                        let head = text
+                            .lines()
+                            .find(|l| l.contains(&format!("func.func @{}(", full.symbol(f.symbol))))
+                            .unwrap_or_else(|| {
+                                panic!("missing head for {}", full.symbol(f.symbol))
+                            });
+                        assert!(!head.contains("private"), "{head}");
+                    }
+                }
+                // ...and the trampoline rides with its target's home unit.
+                if text.contains("reussir.trampoline") {
+                    trampolines += 1;
+                }
+            }
+            // Every function body lands in exactly one unit.
+            assert_eq!(definitions, full.functions.len());
+            assert_eq!(trampolines, 1, "the trampoline belongs to one unit");
         });
     }
 

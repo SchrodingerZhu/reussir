@@ -26,6 +26,9 @@ license = "(Apache-2.0 OR MIT)"
 ariadne = "0.5"
 blake3 = "1"
 rapidhash = "4.4.1"
+# Portable, maintained xxh3 hash for the codegen-unit partition: a stable
+# symbol→unit assignment that is deterministic across builds and toolchains.
+xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 # Fast non-DoS-resistant hasher for interner/compiler-internal maps.
 rustc-hash = "2.1"
 # Insertion-ordered map; the lowering variable environment relies on its
