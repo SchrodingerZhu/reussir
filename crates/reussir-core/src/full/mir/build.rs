@@ -83,7 +83,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
-    let string_literals = string_entries(&raw.strings)?;
+    let string_literals = raw::string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
         symbols: Rodeo::default(),
@@ -534,6 +534,7 @@ fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
 mod tests {
     use super::parse_program;
     use crate::full::mir::print::Printer;
+    use crate::full::mir::raw;
     use crate::full::mono::monomorphize;
     use crate::semi::elaborate;
     use crate::{surface, with_tcx};
@@ -736,24 +737,22 @@ mod tests {
         // must accept zero parameters.
         roundtrip("pub fn f(n: i32) -> i32 { (|| n)() }");
     }
-}
 
-fn string_entries(raw: &[raw::StringEntry]) -> Result<Vec<(StringToken, String)>, String> {
-    let mut entries = Vec::with_capacity(raw.len());
-    for entry in raw {
-        let token = StringToken::from_words(entry.token);
-        let expected = StringToken::from_text(&entry.payload);
-        if token != expected {
-            return Err(format!(
-                "string literal token {:?} does not match payload {:?}",
-                token.words(),
-                entry.payload
-            ));
-        }
-        if !entries.iter().any(|(seen, _)| *seen == token) {
-            entries.push((token, entry.payload.clone()));
-        }
+    #[test]
+    #[should_panic(expected = "Unicode scalar value")]
+    fn rejects_surrogate_char_atoms() {
+        // `char#<n>` in machine-emitted IR must be a valid Unicode scalar
+        // value; U+D800 is a surrogate.
+        raw::char_scalar(&crate::literal::Integer::from(0xD800u32));
     }
-    entries.sort_by_key(|(token, _)| token.words());
-    Ok(entries)
+
+    #[test]
+    fn rejects_string_table_token_mismatch() {
+        let entry = raw::StringEntry {
+            token: [0; 4],
+            payload: "hi".into(),
+        };
+        let err = raw::string_entries(&[entry]).unwrap_err();
+        assert!(err.contains("does not match payload"), "{err}");
+    }
 }

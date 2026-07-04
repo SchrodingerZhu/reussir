@@ -7,8 +7,8 @@
 //! holes, so the textual form does not represent them.
 
 pub use crate::full::mir::raw::{
-    ArithOp, Cap, CmpOp, FileEntry, FloatLit, Integer, Span, StringEntry, float_lit,
-    float_path_segs, small_u32, small_u64, small_usize,
+    ArithOp, Cap, CmpOp, FileEntry, FloatLit, Integer, Span, StringEntry, char_scalar, float_lit,
+    float_path_segs, small_u32, small_u64, small_usize, string_entries,
 };
 
 /// The whole HIR program: enough to resume into monomorphization — the record

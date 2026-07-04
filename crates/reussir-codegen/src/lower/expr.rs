@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 
 use indexmap::IndexMap;
+use rapidhash::RapidHashMap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::builders;
@@ -232,6 +233,8 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     /// (directly or through a boxed field) is emitted as a memberless
     /// forward-declared composite instead of expanding forever.
     pub(super) dbg_building: RefCell<FxHashSet<mir::Symbol>>,
+    /// String-literal payloads by token, for `str.select` pattern emission.
+    string_payloads: RapidHashMap<StringToken, &'p str>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
@@ -256,6 +259,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             cur_loc: RefCell::new(Location::unknown(context)),
             cur_file: std::cell::Cell::new(FileId::ROOT),
             dbg_building: RefCell::new(FxHashSet::default()),
+            string_payloads: program
+                .string_literals
+                .iter()
+                .map(|(token, payload)| (*token, payload.as_str()))
+                .collect(),
         }
     }
 
@@ -584,19 +592,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     }
 
     fn string_payload(&self, token: StringToken) -> Result<&'p str> {
-        self.program
-            .string_literals
-            .iter()
-            .find_map(|(t, payload)| (*t == token).then_some(payload.as_str()))
-            .ok_or_else(|| {
-                LoweringError(
-                    format!(
-                        "string literal payload missing for token {:?}",
-                        token.words()
-                    )
-                    .into(),
+        self.string_payloads.get(&token).copied().ok_or_else(|| {
+            LoweringError(
+                format!(
+                    "string literal payload missing for token {:?}",
+                    token.words()
                 )
-            })
+                .into(),
+            )
+        })
     }
 
     /// Construct a record from its (declaration-ordered) field args.
@@ -1273,7 +1277,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
     }
 
-    /// Lower a character `Switch` to `scf.index_switch` over the 32-bit scalar.
+    /// Lower a character `Switch` like a ≤64-bit unsigned integer switch: the
+    /// scrutinee (a 32-bit code point) casts to `index` and each code point is
+    /// its own case value.
     #[allow(clippy::too_many_arguments)]
     fn char_switch<'b>(
         &self,
@@ -1290,38 +1296,26 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         if !matches!(scrut_ty.kind(), TyKind::Char) {
             return err("character match on a non-character scrutinee");
         }
-        let unit = is_unit(result_ty);
-        let result_tys = if unit {
-            Vec::new()
-        } else {
-            vec![self.tys.mlir_ty(result_ty)?]
-        };
-        let mut regions = Vec::with_capacity(cases.len() + 1);
-        regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
-        for (_, subtree) in cases {
-            regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
-        }
         let index_ty = Type::index(self.context);
         let selector = self.append(block, arith::index_castui(scrut_val, index_ty, loc));
         let case_values: Vec<i64> = cases.iter().map(|(c, _)| i64::from(*c)).collect();
-        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
-        let op = block.append_operation(scf::index_switch(
-            self.context,
+        self.index_switch_dispatch(
+            block,
+            env,
+            root_idx,
             selector,
-            &result_tys,
-            cases_attr,
-            regions,
-            loc,
-        ));
-        if unit {
-            Ok(None)
-        } else {
-            Ok(Some(op.result(0).unwrap().into()))
-        }
+            &case_values,
+            cases.iter().map(|(_, t)| t),
+            default,
+            result_ty,
+        )
     }
 
-    /// Lower a string `Switch` through `reussir.str.select`, then dispatch the
-    /// selected pattern index with `scf.index_switch`.
+    /// Lower a string `Switch`: `reussir.str.select` reduces the scrutinee to
+    /// the index of the first matching pattern plus a found bit, an
+    /// `arith.select` maps a miss to the slot one past the last case, and a
+    /// single `scf.index_switch` dispatches — the default tree is lowered
+    /// exactly once, as the switch's own (reachable) default region.
     #[allow(clippy::too_many_arguments)]
     fn string_switch<'b>(
         &self,
@@ -1348,41 +1342,57 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             block.append_operation(builders::str_select(self.context, local, &patterns, loc));
         let selected: Value<'c, '_> = select.result(0).unwrap().into();
         let found: Value<'c, '_> = select.result(1).unwrap().into();
+        let default_slot = self.index_const(block, cases.len() as i64);
+        let selector = self.append(block, arith::select(found, selected, default_slot, loc));
+        let case_values: Vec<i64> = (0..cases.len() as i64).collect();
+        self.index_switch_dispatch(
+            block,
+            env,
+            root_idx,
+            selector,
+            &case_values,
+            cases.iter().map(|(_, t)| t),
+            default,
+            result_ty,
+        )
+    }
 
+    /// Dispatch a decision-tree switch through one `scf.index_switch`: a
+    /// region per case (in `subtrees` order, keyed by `case_values`) and the
+    /// `default` tree as the switch's own default region, every region
+    /// terminated by `scf.yield`. Shared tail of the int/char/string switches.
+    #[allow(clippy::too_many_arguments)]
+    fn index_switch_dispatch<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        root_idx: usize,
+        selector: Value<'c, 'b>,
+        case_values: &[i64],
+        subtrees: impl Iterator<Item = &'tcx DecisionTree<'tcx>>,
+        default: &'tcx DecisionTree<'tcx>,
+        result_ty: Ty<'tcx>,
+    ) -> Result<Option<Value<'c, 'b>>> {
         let unit = is_unit(result_ty);
         let result_tys = if unit {
             Vec::new()
         } else {
             vec![self.tys.mlir_ty(result_ty)?]
         };
-
-        let then_block = Block::new(&[]);
-        let mut regions = Vec::with_capacity(cases.len() + 1);
+        let mut regions = Vec::with_capacity(case_values.len() + 1);
         regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
-        for (_, subtree) in cases {
+        for subtree in subtrees {
             regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
         }
-        let case_values: Vec<i64> = (0..cases.len() as i64).collect();
-        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
-        let switch = then_block.append_operation(scf::index_switch(
+        let cases_attr = DenseI64ArrayAttribute::new(self.context, case_values);
+        let op = block.append_operation(scf::index_switch(
             self.context,
-            selected,
+            selector,
             &result_tys,
             cases_attr,
             regions,
-            loc,
+            self.loc(),
         ));
-        if unit {
-            then_block.append_operation(scf::r#yield(&[], loc));
-        } else {
-            then_block.append_operation(scf::r#yield(&[switch.result(0).unwrap().into()], loc));
-        }
-        let then_region = Region::new();
-        then_region.append_block(then_block);
-
-        let else_region = self.tree_branch_region(env, root_idx, default, result_ty)?;
-        let op =
-            block.append_operation(scf::r#if(found, &result_tys, then_region, else_region, loc));
         if unit {
             Ok(None)
         } else {
@@ -1421,20 +1431,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             TyKind::Int(IntTy::Signed(w) | IntTy::Unsigned(w)) => *w,
             _ => return err("integer match on a non-integer scrutinee"),
         };
-        let unit = is_unit(result_ty);
-        let result_tys = if unit {
-            Vec::new()
-        } else {
-            vec![self.tys.mlir_ty(result_ty)?]
-        };
-        // The case bodies (which run once) and the default, in `scf.index_switch`
-        // region order: default first, then one region per key.
-        let mut regions = Vec::with_capacity(cases.len() + 1);
-        regions.push(self.tree_branch_region(env, root_idx, default, result_ty)?);
-        for (_, subtree) in cases {
-            regions.push(self.tree_branch_region(env, root_idx, subtree, result_ty)?);
-        }
-        let (arg, case_values) = if width > 64 {
+        let (selector, case_values) = if width > 64 {
             // Reduce the wide keys to a dense selector, then switch on that.
             let selector = self.wide_int_selector(block, scrut_val, scrut_ty, cases, 0)?;
             (selector, (0..cases.len() as i64).collect::<Vec<_>>())
@@ -1457,20 +1454,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     .collect::<Vec<_>>(),
             )
         };
-        let cases_attr = DenseI64ArrayAttribute::new(self.context, &case_values);
-        let op = block.append_operation(scf::index_switch(
-            self.context,
-            arg,
-            &result_tys,
-            cases_attr,
-            regions,
-            loc,
-        ));
-        if unit {
-            Ok(None)
-        } else {
-            Ok(Some(op.result(0).unwrap().into()))
-        }
+        self.index_switch_dispatch(
+            block,
+            env,
+            root_idx,
+            selector,
+            &case_values,
+            cases.iter().map(|(_, t)| t),
+            default,
+            result_ty,
+        )
     }
 
     /// Reduce a wide-integer switch to a dense `index` selector: a right-nested

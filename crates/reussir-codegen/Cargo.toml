@@ -15,6 +15,8 @@ reussir-core = { path = "../reussir-core" }
 reussir-backend = { path = "../reussir-backend" }
 # The fast hasher for compiler-internal maps.
 rustc-hash.workspace = true
+# Hash-keyed lookup of string-literal payloads by their 256-bit token.
+rapidhash.workspace = true
 # Insertion-ordered map backing the per-function SSA environment, so a nested
 # scope recovers by truncating back to a saved length.
 indexmap.workspace = true

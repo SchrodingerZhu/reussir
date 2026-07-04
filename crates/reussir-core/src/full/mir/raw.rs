@@ -31,6 +31,34 @@ pub struct StringEntry {
     pub payload: String,
 }
 
+/// Validate and canonicalize a parsed string-literal table: every entry's
+/// token must re-hash from its payload (they diverge only through corrupt or
+/// hand-edited IR), duplicates collapse, and the result sorts by token so the
+/// table is identical across print/parse round trips. Shared by the HIR and
+/// MIR re-intern passes.
+pub fn string_entries(
+    raw: &[StringEntry],
+) -> Result<Vec<(crate::utils::string::StringToken, String)>, String> {
+    use crate::utils::string::StringToken;
+    let mut entries: Vec<(StringToken, String)> = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let token = StringToken::from_words(entry.token);
+        let expected = StringToken::from_text(&entry.payload);
+        if token != expected {
+            return Err(format!(
+                "string literal token {:?} does not match payload {:?}",
+                token.words(),
+                entry.payload
+            ));
+        }
+        if !entries.iter().any(|(seen, _)| *seen == token) {
+            entries.push((token, entry.payload.clone()));
+        }
+    }
+    entries.sort_by_key(|(token, _)| token.words());
+    Ok(entries)
+}
+
 /// A whole program: the source-file table, record instances (with their
 /// ground layout), functions, exported trampolines.
 #[derive(Clone, Debug)]
@@ -204,6 +232,14 @@ pub fn small_u64(n: &Integer) -> u64 {
 
 pub fn small_usize(n: &Integer) -> usize {
     usize::try_from(n).expect("index in machine-emitted IR")
+}
+
+/// A character atom's code point (`char#<n>`): the `u32` must be a valid
+/// Unicode scalar value (no surrogates, ≤ U+10FFFF).
+pub fn char_scalar(n: &Integer) -> u32 {
+    let code = small_u32(n);
+    char::from_u32(code).expect("Unicode scalar value in machine-emitted IR");
+    code
 }
 
 /// Parse a float token's text into its exact value.

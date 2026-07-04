@@ -99,7 +99,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
-    let strings = string_entries(&raw.strings)?;
+    let strings = raw::string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
         names: Names::default(),
@@ -780,24 +780,4 @@ mod tests {
              regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
         );
     }
-}
-
-fn string_entries(raw: &[raw::StringEntry]) -> Result<Vec<(StringToken, String)>, String> {
-    let mut entries = Vec::with_capacity(raw.len());
-    for entry in raw {
-        let token = StringToken::from_words(entry.token);
-        let expected = StringToken::from_text(&entry.payload);
-        if token != expected {
-            return Err(format!(
-                "string literal token {:?} does not match payload {:?}",
-                token.words(),
-                entry.payload
-            ));
-        }
-        if !entries.iter().any(|(seen, _)| *seen == token) {
-            entries.push((token, entry.payload.clone()));
-        }
-    }
-    entries.sort_by_key(|(token, _)| token.words());
-    Ok(entries)
 }
