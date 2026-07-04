@@ -76,12 +76,14 @@ pub fn render(
     mut out: impl std::io::Write,
 ) -> std::io::Result<()> {
     for diag in diagnostics {
-        // An empty source has no line to anchor a caret on; treat every
-        // span as absent rather than hand ariadne an out-of-bounds range.
-        let span = if cache.source(diag.file).is_empty() {
-            None
-        } else {
-            diag.span
+        // An unavailable or empty source has no line to anchor a caret on;
+        // treat the span as absent rather than hand ariadne an out-of-bounds
+        // range.
+        let span = match diag.span {
+            Some(span) if cache.is_available(diag.file) && cache.char_len(diag.file) > 0 => {
+                Some(span)
+            }
+            _ => None,
         };
         let Some(bytes) = span else {
             writeln!(

@@ -79,7 +79,7 @@ impl<'a> Printer<'a> {
         let mut items: Vec<Doc<'static>> = Vec::new();
         if let Some(cache) = self.sources {
             for id in cache.ids() {
-                items.push(text(format!("{} = \"{}\";", id.index(), cache.name(id))));
+                items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
             }
         }
         for rec in &program.records {

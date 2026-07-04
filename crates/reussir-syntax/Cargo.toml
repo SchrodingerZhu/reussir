@@ -10,6 +10,7 @@ name = "reussir_syntax"
 
 [dependencies]
 ariadne.workspace = true
+tracing.workspace = true
 palc.workspace = true
 cstree.workspace = true
 lasso.workspace = true

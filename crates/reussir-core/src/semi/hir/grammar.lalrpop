@@ -5,9 +5,11 @@
 //! Builds the owned `semi::hir::raw` AST, which
 //! `semi::hir::build` re-interns into the HIR.
 
-use crate::semi::hir::raw as raw;
-use crate::ir_lex::{Token, LexError};
+use std::borrow::Cow;
+
+use crate::ir_lex::{LexError, Token, unescape_debug_str};
 use crate::literal::{FloatLit, Integer};
+use crate::semi::hir::raw as raw;
 
 grammar<'input>;
 
@@ -23,7 +25,7 @@ Item: raw::Item = {
 /// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
 /// into these files; a `<bracketed>` name is a virtual file (unfetchable).
 FileDecl: raw::FileEntry = <id:"int"> "=" <name:"quoted"> ";"
-    => raw::FileEntry { id: raw::small_u32(&id), name: name.to_string() };
+    => raw::FileEntry { id: raw::small_u32(&id), name: unescape_debug_str(name).into_owned() };
 
 /// A source span: `[start..end]`, byte offsets into the owning item's file.
 Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::small_u32(&e));
@@ -37,7 +39,7 @@ RecordDecl: raw::Record = {
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Struct,
-        path: path.to_string(),
+        path: path.into(),
         generics: generics.unwrap_or_default(),
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
@@ -48,7 +50,7 @@ RecordDecl: raw::Record = {
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Enum,
-        path: path.to_string(),
+        path: path.into(),
         generics: generics.unwrap_or_default(),
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
@@ -65,18 +67,18 @@ DefaultCap: raw::DefaultCap = {
 /// A compound field: an optional `name:` prefix (absent for a tuple field), an
 /// optional `field` marker (a mutable `[field]` link), and its type.
 Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
-    => raw::Member { name: n.map(|s| s.to_string()), is_field: f.is_some(), ty: t };
+    => raw::Member { name: n.map(|s| s.into()), is_field: f.is_some(), ty: t };
 
 /// An enum variant: its source name and ordered field types.
 Variant: raw::Variant =
-    <name:"ident"> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.to_string(), fields: fs };
+    <name:"ident"> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
 
 TrampDecl: raw::Tramp =
     "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:"ident"> <ta:TyArgs?> ";"
     => raw::Tramp {
-        abi: abi.to_string(),
-        name: name.to_string(),
-        target: target.to_string(),
+        abi: abi.into(),
+        name: name.into(),
+        target: target.into(),
         ty_args: ta.unwrap_or_default(),
     };
 
@@ -86,7 +88,7 @@ Func: raw::Func =
     => raw::Func {
         is_pub: p.is_some(),
         regional: r.is_some(),
-        path: path.to_string(),
+        path: path.into(),
         generics: generics.unwrap_or_default(),
         params,
         ret,
@@ -106,7 +108,7 @@ Body: Option<raw::Expr> = {
 };
 
 Param: raw::Param = <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
-    => raw::Param { var, name: name.to_string(), ty };
+    => raw::Param { var, name: name.into(), ty };
 
 // ----- types -----
 
@@ -123,7 +125,7 @@ Ty: raw::Ty = {
     <g:"generic"> => raw::Ty::Generic(g),
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     <cap:Cap> "#" <path:"ident"> <args:TyArgs?>
-        => raw::Ty::Record { cap, path: path.to_string(), args: args.unwrap_or_default() },
+        => raw::Ty::Record { cap, path: path.into(), args: args.unwrap_or_default() },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
@@ -160,7 +162,7 @@ Expr: raw::Expr = {
     <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
     "let" <sp:Span?> <var:"var"> "(" <name:"ident"> <nsp:Span?> ")" "=" <value:Expr>
         => raw::Expr::new(
-            raw::Kind::Let { var, name: name.to_string(), name_span: nsp, value },
+            raw::Kind::Let { var, name: name.into(), name_span: nsp, value },
             raw::Ty::Unit,
         ).with_span(sp),
     "{" <b:Block> "}" => b,
@@ -185,11 +187,11 @@ Atom: raw::Kind = {
     "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
         => raw::Kind::Assign(dst, raw::small_u32(&field), src),
     <r:"regional"?> "#" <path:"ident"> <ta:TyArgs?> "(" <args:Comma<Expr>> ")"
-        => raw::Kind::FuncCall { regional: r.is_some(), path: path.to_string(), ty_args: ta.unwrap_or_default(), args },
+        => raw::Kind::FuncCall { regional: r.is_some(), path: path.into(), ty_args: ta.unwrap_or_default(), args },
     "#" <path:"ident"> <ta:TyArgs?> "{" <args:Comma<Expr>> "}"
-        => raw::Kind::CompoundCall { path: path.to_string(), ty_args: ta.unwrap_or_default(), args },
+        => raw::Kind::CompoundCall { path: path.into(), ty_args: ta.unwrap_or_default(), args },
     "#" <path:"ident"> <ta:TyArgs?> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
-        => raw::Kind::VariantCall { path: path.to_string(), ty_args: ta.unwrap_or_default(), variant: raw::small_usize(&v), args },
+        => raw::Kind::VariantCall { path: path.into(), ty_args: ta.unwrap_or_default(), variant: raw::small_usize(&v), args },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
@@ -296,7 +298,7 @@ extern {
         "field" => Token::Field,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
-        "quoted" => Token::Quoted(<&'input str>),
+        "quoted" => Token::Quoted(<Cow<'input, str>>),
         "let" => Token::Let,
         "if" => Token::If,
         "then" => Token::Then,

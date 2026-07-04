@@ -478,10 +478,10 @@ fn frontend<'c, 'tcx>(
         Stage::Hir => {
             let parsed =
                 hir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
-            // The dump's file table names the original sources; refetch them
-            // from disk so spans keep resolving (missing/virtual files degrade
-            // to plain diagnostics and unknown debug locations, with a
-            // warning). An old, table-less dump has no locations at all.
+            // The dump's file table names the original sources. Rebuild the
+            // same dense ids, but delay opening paths until diagnostics or
+            // debug locations actually need source text. An old, table-less
+            // dump has no locations at all.
             let dump_sources = refetch_sources(&parsed.files);
             if target == Stage::Hir {
                 let printer = match &dump_sources {
@@ -547,10 +547,9 @@ fn frontend<'c, 'tcx>(
 }
 
 /// Rebuild a source cache from an IR dump's file table so its spans keep
-/// resolving: real paths are re-read from disk; a virtual (`<bracketed>`) or
-/// unreadable file becomes a name-only placeholder — its spans survive in the
-/// IR but degrade to plain diagnostics and unknown debug locations — with a
-/// warning naming it. `None` for a dump printed without locations.
+/// resolving: real paths are registered for lazy loading, while virtual
+/// (`<bracketed>`) entries become name-only placeholders. `None` means the dump
+/// was printed without locations.
 fn refetch_sources(files: &[String]) -> Option<SourceCache> {
     if files.is_empty() {
         return None;
@@ -559,19 +558,8 @@ fn refetch_sources(files: &[String]) -> Option<SourceCache> {
     for name in files {
         if name.starts_with('<') {
             cache.add_unavailable(name);
-            continue;
-        }
-        match std::fs::read_to_string(name) {
-            Ok(text) => {
-                cache.add_file(name, text);
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: cannot re-read source file `{name}` referenced by the IR dump \
-                     ({e}); its diagnostics and debug locations will lack source context"
-                );
-                cache.add_unavailable(name);
-            }
+        } else {
+            cache.add_lazy_file(name);
         }
     }
     Some(cache)

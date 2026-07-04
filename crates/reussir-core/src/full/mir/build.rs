@@ -579,6 +579,33 @@ mod tests {
     }
 
     #[test]
+    fn source_file_table_escapes_debug_quoted_names() {
+        use reussir_syntax::source::SourceCache;
+        let source = "fn id(x: i32) -> i32 { x }";
+        let file_name = r#"<quoted"path\name>"#;
+
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+
+            let mut cache = SourceCache::new();
+            cache.add_virtual(file_name, source);
+            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(&full);
+            assert!(
+                text.contains(r#"0 = "<quoted\"path\\name>";"#),
+                "file table was not debug-escaped:\n{text}"
+            );
+            let parsed = parse_program(tcx, &text).expect("re-parse");
+            assert_eq!(parsed.files, vec![file_name.to_string()]);
+        });
+    }
+
+    #[test]
     fn locations_survive_the_textual_round_trip() {
         roundtrip_with_locations(
             "pub fn fib(n: u64) -> u64 { \

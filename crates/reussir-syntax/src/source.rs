@@ -45,16 +45,49 @@ struct SourceFile {
     name: String,
     /// The on-disk path, when the file is real (feeds DWARF file attributes).
     path: Option<PathBuf>,
-    /// The text plus `ariadne`'s line index over it.
-    source: Source<String>,
-    /// `false` for a placeholder whose content could not be obtained (a
-    /// virtual or missing file referenced by a re-ingested IR dump): spans
-    /// into it are structurally valid but cannot resolve to source text, so
-    /// diagnostics degrade to plain lines and debug locations to `unknown`.
-    available: bool,
+    /// The file contents, or a delayed on-disk read for source tables
+    /// reconstructed from textual IR dumps.
+    state: SourceState,
     /// `byte_to_char[b]` = number of chars strictly before byte `b`; built on
     /// first use (only diagnostics need it — `ariadne` indexes by char).
     byte_to_char: OnceLock<Vec<u32>>,
+}
+
+enum SourceState {
+    Loaded(Source<String>),
+    LazyPath(OnceLock<Result<Source<String>, String>>),
+    Unavailable,
+}
+
+impl SourceFile {
+    fn source(&self) -> Option<&Source<String>> {
+        match &self.state {
+            SourceState::Loaded(source) => Some(source),
+            SourceState::LazyPath(source) => {
+                let path = self
+                    .path
+                    .as_deref()
+                    .expect("lazy source files always carry an on-disk path");
+                match source.get_or_init(|| match std::fs::read_to_string(path) {
+                    Ok(text) => Ok(Source::from(text)),
+                    Err(error) => {
+                        tracing::warn!(
+                            source = %self.name,
+                            path = %path.display(),
+                            %error,
+                            "cannot read source file on demand; diagnostics and debug locations \
+                             will lack source context"
+                        );
+                        Err(error.to_string())
+                    }
+                }) {
+                    Ok(source) => Some(source),
+                    Err(_) => None,
+                }
+            }
+            SourceState::Unavailable => None,
+        }
+    }
 }
 
 /// All source files of one compilation, in insertion order.
@@ -84,8 +117,22 @@ impl SourceCache {
         self.push(SourceFile {
             name,
             path: Some(path),
-            source: Source::from(source.into()),
-            available: true,
+            state: SourceState::Loaded(Source::from(source.into())),
+            byte_to_char: OnceLock::new(),
+        })
+    }
+
+    /// Register an on-disk file by path but delay reading it until source text
+    /// is needed. This is useful when re-ingesting HIR/MIR dumps: the file table
+    /// must keep its dense ids, but a structural reprint may never need to touch
+    /// the original source files.
+    pub fn add_lazy_file(&mut self, path: impl Into<PathBuf>) -> FileId {
+        let path = path.into();
+        let name = path.display().to_string();
+        self.push(SourceFile {
+            name,
+            path: Some(path),
+            state: SourceState::LazyPath(OnceLock::new()),
             byte_to_char: OnceLock::new(),
         })
     }
@@ -96,8 +143,7 @@ impl SourceCache {
         self.push(SourceFile {
             name: name.into(),
             path: None,
-            source: Source::from(source.into()),
-            available: true,
+            state: SourceState::Loaded(Source::from(source.into())),
             byte_to_char: OnceLock::new(),
         })
     }
@@ -110,8 +156,7 @@ impl SourceCache {
         self.push(SourceFile {
             name: name.into(),
             path: None,
-            source: Source::from(String::new()),
-            available: false,
+            state: SourceState::Unavailable,
             byte_to_char: OnceLock::new(),
         })
     }
@@ -119,7 +164,7 @@ impl SourceCache {
     /// Whether the file's content is present (see
     /// [`add_unavailable`](Self::add_unavailable)).
     pub fn is_available(&self, id: FileId) -> bool {
-        self.file(id).available
+        self.file(id).source().is_some()
     }
 
     fn push(&mut self, file: SourceFile) -> FileId {
@@ -134,7 +179,7 @@ impl SourceCache {
 
     /// The file's text.
     pub fn source(&self, id: FileId) -> &str {
-        self.file(id).source.text()
+        self.file(id).source().map_or("", Source::text)
     }
 
     /// The file's display name.
@@ -172,7 +217,10 @@ impl SourceCache {
     /// The 1-based `(line, column)` of byte `offset`, for `FileLineColLoc`
     /// debug locations (`ariadne` reports both zero-indexed).
     pub fn line_col(&self, id: FileId, offset: usize) -> (usize, usize) {
-        match self.file(id).source.get_byte_line(offset) {
+        let Some(source) = self.file(id).source() else {
+            return (1, 1);
+        };
+        match source.get_byte_line(offset) {
             Some((_, line, col)) => (line + 1, col + 1),
             None => (1, 1),
         }
@@ -182,7 +230,7 @@ impl SourceCache {
     fn char_map(&self, id: FileId) -> &[u32] {
         let file = self.file(id);
         file.byte_to_char.get_or_init(|| {
-            let text = file.source.text();
+            let text = file.source().map_or("", Source::text);
             let mut map = vec![0u32; text.len() + 1];
             let mut chars = 0u32;
             for (idx, c) in text.char_indices() {
@@ -259,7 +307,7 @@ impl ariadne::Cache<FileId> for &SourceCache {
     fn fetch(&mut self, id: &FileId) -> Result<&Source<String>, impl fmt::Debug> {
         self.files
             .get(id.index())
-            .map(|f| &f.source)
+            .and_then(SourceFile::source)
             .ok_or_else(|| format!("no file with id {id:?} in the source cache"))
     }
 
@@ -317,5 +365,45 @@ mod tests {
         assert_eq!(cache.char_span(f, (2, 3)), (1, 2));
         // Out-of-range clamps instead of panicking.
         assert_eq!(cache.char_span(f, (100, 200)), (3, 3));
+    }
+
+    #[test]
+    fn lazy_file_reads_only_when_text_is_needed() {
+        let dir =
+            std::env::temp_dir().join(format!("reussir-source-cache-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lazy.rr");
+        let source = r#"a
+bc
+"#;
+
+        let mut cache = SourceCache::new();
+        let file = cache.add_lazy_file(&path);
+        std::fs::write(&path, source).unwrap();
+        assert_eq!(cache.name(file), path.display().to_string());
+        assert_eq!(cache.basename(file), "lazy.rr");
+        assert!(cache.is_available(file));
+        assert_eq!(cache.source(file), source);
+        assert_eq!(cache.line_col(file, 2), (2, 1));
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_lazy_file_is_unavailable_without_panicking() {
+        let path = std::env::temp_dir().join(format!(
+            "reussir-source-cache-missing-{}.rr",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut cache = SourceCache::new();
+        let file = cache.add_lazy_file(&path);
+        assert!(!cache.is_available(file));
+        assert_eq!(cache.source(file), "");
+        assert_eq!(cache.line_col(file, 123), (1, 1));
+        assert_eq!(cache.char_span(file, (100, 200)), (0, 0));
     }
 }

@@ -5,6 +5,8 @@
 //! path is coarse (a lex failure means a printer bug or corrupt input, not user
 //! source). Identifiers borrow the input; widths/values are parsed eagerly.
 
+use std::borrow::Cow;
+
 use logos::Logos;
 
 use crate::literal::Integer;
@@ -203,9 +205,82 @@ pub enum Token<'a> {
     /// Unicode XID like the surface lexer, so source identifiers round-trip.
     #[regex(r"[\p{XID_Start}_]\p{XID_Continue}*", |l| l.slice())]
     Ident(&'a str),
-    /// A double-quoted string (trampoline abi / export names).
-    #[regex(r#""[^"]*""#, |l| { let s = l.slice(); &s[1..s.len() - 1] })]
-    Quoted(&'a str),
+    /// A double-quoted string body.
+    #[regex(r#""([^"\\]|\\.)*""#, |l| quoted_body(l.slice()))]
+    Quoted(Cow<'a, str>),
+}
+
+fn quoted_body(raw: &str) -> Cow<'_, str> {
+    let body = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+    Cow::Borrowed(body)
+}
+
+pub(crate) fn unescape_debug_str(raw: Cow<'_, str>) -> Cow<'_, str> {
+    if !raw.as_ref().contains('\\') {
+        return raw;
+    }
+
+    let body = raw.as_ref();
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+
+        let Some(escaped) = chars.next() else {
+            out.push('\\');
+            break;
+        };
+
+        match escaped {
+            '0' => out.push('\0'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            'u' if chars.peek() == Some(&'{') => {
+                chars.next();
+                let mut digits = String::new();
+                let mut closed = false;
+
+                for h in chars.by_ref() {
+                    if h == '}' {
+                        closed = true;
+                        break;
+                    }
+                    digits.push(h);
+                }
+
+                if closed {
+                    if let Ok(code) = u32::from_str_radix(&digits, 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                            continue;
+                        }
+                    }
+                }
+
+                out.push_str("\\u{");
+                out.push_str(&digits);
+                if closed {
+                    out.push('}');
+                }
+            }
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+
+    Cow::Owned(out)
 }
 
 /// A lexing failure: the byte span that did not match any token.
