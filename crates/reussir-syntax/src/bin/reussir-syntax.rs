@@ -11,7 +11,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use palc::Parser;
-use reussir_syntax::diagnostics::{SourceMap, render_errors};
+use reussir_syntax::diagnostics::render_errors;
+use reussir_syntax::source::{CharMap, FileId, SourceCache};
 
 /// Reussir surface syntax parser (JSON AST emitter).
 #[derive(Parser)]
@@ -34,20 +35,23 @@ struct Cli {
 }
 
 fn run(cli: &Cli) -> Result<bool, String> {
-    let (display_name, source) = if cli.input.as_os_str() == "-" {
+    let mut cache = SourceCache::new();
+    let file = if cli.input.as_os_str() == "-" {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
             .map_err(|e| format!("failed to read stdin: {e}"))?;
-        ("<stdin>".to_owned(), buf)
+        cache.add_virtual("<stdin>", buf)
     } else {
         let text = std::fs::read_to_string(&cli.input)
             .map_err(|e| format!("failed to read {}: {e}", cli.input.display()))?;
-        (cli.input.display().to_string(), text)
+        cache.add_file(&cli.input, text)
     };
+    debug_assert_eq!(file, FileId::ROOT);
+    let source = cache.source(file);
 
-    let parse = reussir_syntax::parse(&source);
-    let map = SourceMap::new(&source);
+    let parse = reussir_syntax::parse(source);
+    let map = CharMap::new(source);
 
     if !parse.errors.is_empty() {
         let color = match cli.color.as_str() {
@@ -56,11 +60,12 @@ fn run(cli: &Cli) -> Result<bool, String> {
             _ => std::io::stderr().is_terminal(),
         };
         let stderr = std::io::stderr().lock();
-        render_errors(&display_name, &source, &map, &parse.errors, color, stderr)
+        render_errors(&cache, file, &parse.errors, color, stderr)
             .map_err(|e| format!("failed to render diagnostics: {e}"))?;
         eprintln!(
-            "error: {} syntax error(s) in {display_name}",
-            parse.errors.len()
+            "error: {} syntax error(s) in {}",
+            parse.errors.len(),
+            cache.name(file)
         );
         return Ok(false);
     }

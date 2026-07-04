@@ -1,5 +1,5 @@
-// RUN: %rrc %s --emit hir -o - | %FileCheck %s
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=FULL
 
 // --- Test 1: chained call (make_adder(5)(37)) ---
 fn make_adder(n : i32) -> i32 -> i32 {

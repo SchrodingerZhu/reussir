@@ -26,7 +26,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_textarea::{CursorMove, Input, TextArea};
 
 use reussir_core::semi::{Report, Severity, render_reports_to};
-use reussir_syntax::diagnostics::{self, SourceMap};
+use reussir_syntax::diagnostics;
 
 use reussir_jit::OptLevel;
 
@@ -360,10 +360,14 @@ impl Tui {
         // rebuilds the session at the level the user chose, not the CLI's.
         self.config.opt = session.opt;
 
-        self.render_outcome(&outcome, &text)
+        self.render_outcome(&outcome, session.sources())
     }
 
-    fn render_outcome(&mut self, outcome: &Outcome, input: &str) -> Option<Exit> {
+    fn render_outcome(
+        &mut self,
+        outcome: &Outcome,
+        sources: &reussir_syntax::source::SourceCache,
+    ) -> Option<Exit> {
         match outcome {
             Outcome::Empty => {}
             Outcome::Quit => return Some(Exit::Quit),
@@ -374,7 +378,7 @@ impl Tui {
                 }
             }
             Outcome::Definitions { count, warnings } => {
-                self.render_reports(warnings, input);
+                self.render_reports(warnings, sources);
                 for _ in 0..*count {
                     self.push_line(Line::from("Definition added.".green()));
                 }
@@ -384,7 +388,7 @@ impl Tui {
                 ty,
                 warnings,
             } => {
-                self.render_reports(warnings, input);
+                self.render_reports(warnings, sources);
                 self.out_counter += 1;
                 let title = format!("Out[{}]", self.out_counter);
                 let content = if ty == "()" {
@@ -407,7 +411,7 @@ impl Tui {
                 ty,
                 warnings,
             } => {
-                self.render_reports(warnings, input);
+                self.render_reports(warnings, sources);
                 // A binding cell is titled by its name instead of `Out[n]`.
                 let content = vec![
                     Span::styled(value.clone(), Style::default().add_modifier(Modifier::BOLD)),
@@ -416,16 +420,14 @@ impl Tui {
                 ];
                 self.push_boxed(name, content);
             }
-            Outcome::ParseErrors(errors) => {
-                let map = SourceMap::new(input);
+            Outcome::ParseErrors { file, errors } => {
                 let mut rendered = Vec::new();
-                let _ =
-                    diagnostics::render_errors("<repl>", input, &map, errors, false, &mut rendered);
+                let _ = diagnostics::render_errors(sources, *file, errors, false, &mut rendered);
                 for line in String::from_utf8_lossy(&rendered).lines() {
                     self.push_line(Line::from(line.to_string().red()));
                 }
             }
-            Outcome::Reports(reports) => self.render_reports(reports, input),
+            Outcome::Reports(reports) => self.render_reports(reports, sources),
             Outcome::Backend(message) => {
                 self.push_line(Line::from(format!("error: {message}").red()));
             }
@@ -436,16 +438,14 @@ impl Tui {
     /// Render elaboration/mono reports with the shared ariadne caret
     /// renderer (the same one `rrc` and the plain frontend use), one report
     /// at a time so each block can be styled by its severity.
-    fn render_reports(&mut self, reports: &[Report], input: &str) {
+    fn render_reports(
+        &mut self,
+        reports: &[Report],
+        sources: &reussir_syntax::source::SourceCache,
+    ) {
         for report in reports {
             let mut rendered = Vec::new();
-            let _ = render_reports_to(
-                "<repl>",
-                input,
-                std::slice::from_ref(report),
-                false,
-                &mut rendered,
-            );
+            let _ = render_reports_to(sources, std::slice::from_ref(report), false, &mut rendered);
             let style = match report.severity {
                 Severity::Error => Style::default().fg(Color::Red),
                 Severity::Warning => Style::default().fg(Color::Yellow),

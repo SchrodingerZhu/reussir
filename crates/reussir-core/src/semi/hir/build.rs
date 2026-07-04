@@ -12,6 +12,7 @@
 //! representation stable as multi-file resolution arrives.
 
 use reussir_syntax::kind::{InternKey, Resolver, TokenKey};
+use reussir_syntax::source::FileId;
 use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
@@ -37,6 +38,11 @@ pub struct Parsed<'tcx> {
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
     pub defs: DefTable,
     pub names: Names,
+    /// The dump's source-file table, in id order: each file's display name.
+    /// Item/expr spans are byte offsets into these files (by [`FileId`] =
+    /// table index); a `<bracketed>` name is virtual (content not on disk).
+    /// Empty for a dump printed without locations.
+    pub files: Vec<String>,
 }
 
 /// A fresh `TokenKey` interner for source names and `#path` segments.
@@ -71,6 +77,27 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     let raw = hir_ir::ProgramParser::new()
         .parse(lex(text))
         .map_err(|e| format!("{e:?}"))?;
+    // The file table must be dense and in-order: spans index it positionally.
+    let mut files = Vec::with_capacity(raw.files.len());
+    for (i, f) in raw.files.iter().enumerate() {
+        if f.id as usize != i {
+            return Err(format!(
+                "source-file table is not dense: entry {} declares id {}",
+                i, f.id
+            ));
+        }
+        files.push(f.name.clone());
+    }
+    for f in &raw.funcs {
+        if let Some(id) = file_ref_check(&files, f.file) {
+            return Err(id);
+        }
+    }
+    for r in &raw.records {
+        if let Some(id) = file_ref_check(&files, r.file) {
+            return Err(id);
+        }
+    }
     let mut b = Builder {
         tcx,
         names: Names::default(),
@@ -87,6 +114,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         trampolines,
         defs: b.defs,
         names: b.names,
+        files,
     })
 }
 
@@ -189,7 +217,8 @@ impl<'tcx> Builder<'_, 'tcx> {
             default_cap,
             fields: Some(fields),
             regional_generics,
-            span: None,
+            span: span_of(r.span),
+            file: file_of(r.file),
         };
         (def, record)
     }
@@ -228,7 +257,8 @@ impl<'tcx> Builder<'_, 'tcx> {
             return_ty,
             is_regional: f.regional,
             body,
-            span: None,
+            span: span_of(f.span),
+            file: file_of(f.file),
         }
     }
 
@@ -298,12 +328,17 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Kind::Assign(dst, field, src) => {
                 ExprKind::Assign(self.boxed(dst), *field, self.boxed(src))
             }
-            raw::Kind::Let { var, name, value } => {
+            raw::Kind::Let {
+                var,
+                name,
+                name_span,
+                value,
+            } => {
                 let name = self.names.intern(name);
                 ExprKind::Let {
                     var: VarId(*var),
                     name,
-                    span: None,
+                    span: span_of(*name_span),
                     value: self.boxed(value),
                 }
             }
@@ -386,7 +421,7 @@ impl<'tcx> Builder<'_, 'tcx> {
         Expr {
             kind,
             ty,
-            span: None,
+            span: span_of(e.span),
             id: self.fresh_expr_id(),
         }
     }
@@ -494,6 +529,28 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
     }
 }
 
+/// A raw `[start..end]` span into the owning item's file.
+fn span_of(sp: Option<raw::Span>) -> Option<crate::surface::Span> {
+    sp.map(|(start, end)| crate::surface::Span { start, end })
+}
+
+/// A raw `in <id>` file reference; a dump printed without locations has none
+/// and everything indexes the primary file.
+fn file_of(f: Option<u32>) -> FileId {
+    f.map_or(FileId::ROOT, FileId::from_index)
+}
+
+/// Reject an `in <id>` reference past the end of the dump's file table.
+fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
+    match file {
+        Some(id) if id as usize >= files.len() => Some(format!(
+            "function references file {id}, but the source-file table has {} entr(y/ies)",
+            files.len()
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_program;
@@ -527,6 +584,65 @@ mod tests {
                 "round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
             );
         });
+    }
+
+    /// The lossless form: print WITH the source cache (file table + spans),
+    /// parse back, re-print against a cache rebuilt from the dump's own file
+    /// table, and assert text equality — so files, item locations, node
+    /// spans, and `let`-name spans all survive the trip.
+    fn roundtrip_with_locations(source: &str) {
+        use reussir_syntax::source::SourceCache;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+
+            let cache = SourceCache::single("<test>", source);
+            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(
+                &elab.elaborated,
+                &elab.records,
+                &elab.trampolines,
+            );
+            assert!(
+                text.contains("0 = \"<test>\";"),
+                "file table missing:\n{text}"
+            );
+            assert!(text.contains(" in 0"), "item location missing:\n{text}");
+            let parsed = parse_program(tcx, &text).expect("re-parse");
+            assert_eq!(parsed.files, vec!["<test>".to_string()]);
+            // Rebuild the render cache exactly as a driver would from the table.
+            let mut cache2 = SourceCache::new();
+            for name in &parsed.files {
+                cache2.add_unavailable(name);
+            }
+            let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2).program(
+                &parsed.funcs,
+                &parsed.records,
+                &parsed.trampolines,
+            );
+            assert_eq!(
+                text, text2,
+                "lossless round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
+            );
+        });
+    }
+
+    #[test]
+    fn locations_survive_the_textual_round_trip() {
+        roundtrip_with_locations(
+            "struct Pair { a: i64, b: i64 }\n\
+             pub fn f(n: i64) -> i64 { let p = Pair { a: n, b: 1 }; p.a + p.b }",
+        );
+    }
+
+    #[test]
+    fn locations_survive_for_control_flow_and_matches() {
+        roundtrip_with_locations(
+            "enum Opt { None, Some(i64) }\n\
+             pub fn g(o: Opt) -> i64 { match o { Opt::None => 0, Opt::Some(x) => { let y = x; y } } }",
+        );
     }
 
     #[test]

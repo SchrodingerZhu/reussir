@@ -12,10 +12,23 @@
 //! correct by construction. This makes the round trip value-sound, not merely
 //! text-faithful.
 
-/// A whole program: record instances (with their ground layout), functions,
-/// exported trampolines.
+/// A byte-offset span, file-local (the file is carried at the item level).
+pub type Span = (u32, u32);
+
+/// One source-file table entry: the dense id spans index by, and the file's
+/// display name (a `<bracketed>` name denotes a virtual file whose content
+/// cannot be re-read from disk).
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    pub id: u32,
+    pub name: String,
+}
+
+/// A whole program: the source-file table, record instances (with their
+/// ground layout), functions, exported trampolines.
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub files: Vec<FileEntry>,
     pub records: Vec<RecordDecl>,
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
@@ -24,6 +37,7 @@ pub struct Program {
 /// One top-level item, as the grammar yields them before partitioning.
 #[derive(Clone, Debug)]
 pub enum Item {
+    File(FileEntry),
     Record(RecordDecl),
     Func(Func),
     Tramp(Tramp),
@@ -82,12 +96,14 @@ impl Program {
     /// Partition a flat item list into a [`Program`].
     pub fn from_items(items: Vec<Item>) -> Program {
         let mut p = Program {
+            files: Vec::new(),
             records: Vec::new(),
             funcs: Vec::new(),
             trampolines: Vec::new(),
         };
         for item in items {
             match item {
+                Item::File(f) => p.files.push(f),
                 Item::Record(r) => p.records.push(r),
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
@@ -104,6 +120,9 @@ pub struct Func {
     pub symbol: String,
     pub params: Vec<Param>,
     pub ret: Ty,
+    /// The file-table id the function's spans index (`in <id>`); absent in a
+    /// hand-written dump (defaults to the table's first entry / ROOT).
+    pub file: Option<u32>,
     pub body: Option<Expr>,
 }
 
@@ -197,6 +216,9 @@ pub fn float_path_segs(text: &str) -> Vec<u32> {
 pub struct Expr {
     pub kind: Box<Kind>,
     pub ty: Ty,
+    /// The node's source span (`@start..end`), byte offsets into the owning
+    /// item's file.
+    pub span: Option<Span>,
 }
 
 impl Expr {
@@ -204,7 +226,13 @@ impl Expr {
         Expr {
             kind: Box::new(kind),
             ty,
+            span: None,
         }
+    }
+
+    pub fn with_span(mut self, span: Option<Span>) -> Expr {
+        self.span = span;
+        self
     }
 }
 

@@ -1,4 +1,4 @@
-// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 enum List<T> {

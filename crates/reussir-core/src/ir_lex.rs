@@ -131,6 +131,11 @@ pub enum Token<'a> {
     Comma,
     #[token(".")]
     Dot,
+    /// The span-range separator (`@start..end`). Longest-match beats `Dot`,
+    /// and the float regex requires a digit after its dot, so `12..34` lexes
+    /// `Int(12) DotDot Int(34)`.
+    #[token("..")]
+    DotDot,
     #[token("=")]
     Eq,
     #[token("->")]

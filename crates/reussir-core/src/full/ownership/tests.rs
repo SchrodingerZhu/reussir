@@ -366,6 +366,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
             params,
             return_ty: ret,
             body: Some(body),
+            file: reussir_syntax::source::FileId::ROOT,
         }
     }
 }

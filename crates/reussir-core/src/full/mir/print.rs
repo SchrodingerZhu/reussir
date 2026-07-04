@@ -16,6 +16,7 @@ use std::fmt::Write;
 
 use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
+use reussir_syntax::source::SourceCache;
 
 use crate::full::mir;
 use crate::semi::ctxt::DefaultCap;
@@ -36,11 +37,33 @@ const IR_PRINTER: PpPrinter = PpPrinter {
 pub struct Printer<'a> {
     defs: &'a DefTable,
     resolver: &'a dyn Resolver<TokenKey>,
+    /// When present, the dump carries source locations: the file table
+    /// (`0 = "path";`), each function's `in <file>`, and every node's
+    /// `[start..end]` span — the lossless round-trip form (`rrc --emit mir`).
+    /// Without it the dump is the bare program (human display).
+    sources: Option<&'a SourceCache>,
 }
 
 impl<'a> Printer<'a> {
     pub fn new(defs: &'a DefTable, resolver: &'a dyn Resolver<TokenKey>) -> Self {
-        Printer { defs, resolver }
+        Printer {
+            defs,
+            resolver,
+            sources: None,
+        }
+    }
+
+    /// A printer that also serializes source locations against `sources`.
+    pub fn with_sources(
+        defs: &'a DefTable,
+        resolver: &'a dyn Resolver<TokenKey>,
+        sources: &'a SourceCache,
+    ) -> Self {
+        Printer {
+            defs,
+            resolver,
+            sources: Some(sources),
+        }
     }
 
     /// Render `program`. The program owns the symbol interner, borrowed here to
@@ -50,9 +73,15 @@ impl<'a> Printer<'a> {
             symbols: &program.symbols,
             defs: self.defs,
             resolver: self.resolver,
+            sources: self.sources,
         };
 
         let mut items: Vec<Doc<'static>> = Vec::new();
+        if let Some(cache) = self.sources {
+            for id in cache.ids() {
+                items.push(text(format!("{} = \"{}\";", id.index(), cache.name(id))));
+            }
+        }
         for rec in &program.records {
             items.push(r.record(rec));
         }
@@ -88,6 +117,7 @@ struct Render<'a> {
     symbols: &'a lasso::Rodeo,
     defs: &'a DefTable,
     resolver: &'a dyn Resolver<TokenKey>,
+    sources: Option<&'a SourceCache>,
 }
 
 impl Render<'_> {
@@ -162,7 +192,12 @@ impl Render<'_> {
                 )) + self.ty(p.ty)
             })
             .collect();
-        let sig = text(head) + comma_sep(params) + text(") -> ") + self.ty(func.return_ty);
+        let loc = if self.sources.is_some() {
+            text(format!(" in {}", func.file.index()))
+        } else {
+            Doc::Null
+        };
+        let sig = text(head) + comma_sep(params) + text(") -> ") + self.ty(func.return_ty) + loc;
 
         match func.body {
             Some(body) => {
@@ -219,7 +254,12 @@ impl Render<'_> {
         match e.kind {
             mir::ExprKind::Seq(items) => {
                 let n = items.len();
-                let mut d = Doc::Null;
+                // The leading `[span]` is the `Seq`'s own (its items carry
+                // theirs inline) — the dual of the grammar's `Block` rule.
+                let mut d = match (self.sources, e.span) {
+                    (Some(_), Some(sp)) => text(format!("[{}..{}]", sp.start, sp.end)) + hardline(),
+                    _ => Doc::Null,
+                };
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
                         d = d + hardline();
@@ -246,20 +286,30 @@ impl Render<'_> {
                 name,
                 value,
             } => {
-                text("let ")
+                text("let")
+                    + self.span_doc(e.span)
+                    + text(" ")
                     + var(v)
                     + text(format!(" ({}) = ", self.resolver.resolve(name)))
                     + self.value(value)
             }
             mir::ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
-            mir::ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e.ty),
-            mir::ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, &tree), e.ty),
-            _ => self.typed(self.atom(e), e.ty),
+            mir::ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e),
+            mir::ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, &tree), e),
+            _ => self.typed(self.atom(e), e),
         }
     }
 
-    fn typed(&self, atom: Doc<'static>, ty: Ty<'_>) -> Doc<'static> {
-        atom + text(" : ") + self.ty(ty)
+    /// ` [start..end]` — a node's span suffix (locations mode only).
+    fn span_doc(&self, span: Option<crate::surface::Span>) -> Doc<'static> {
+        match (self.sources, span) {
+            (Some(_), Some(sp)) => text(format!(" [{}..{}]", sp.start, sp.end)),
+            _ => Doc::Null,
+        }
+    }
+
+    fn typed(&self, atom: Doc<'static>, e: &mir::Expr<'_>) -> Doc<'static> {
+        atom + text(" : ") + self.ty(e.ty) + self.span_doc(e.span)
     }
 
     /// `if C then { T } else { F }` — braces delimit the branches (no

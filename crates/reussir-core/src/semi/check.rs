@@ -25,6 +25,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let Some(proto) = self.functions.get(&def).cloned() else {
             return;
         };
+        // Attribute the body's reports to the function's declaration file (the
+        // package driver checks items from many files in one pass).
+        self.set_current_file(proto.file);
         self.enter_function(&proto.generics);
         // A `[regional]` function body runs inside an implicit region: its
         // parameters may already be flex and it may construct regional records
@@ -87,6 +90,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             is_regional: proto.is_regional,
             body,
             span,
+            file: proto.file,
         });
     }
 

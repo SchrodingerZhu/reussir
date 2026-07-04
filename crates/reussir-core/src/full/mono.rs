@@ -45,6 +45,7 @@ use lasso::Rodeo;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_syntax::kind::{Resolver, TokenKey};
+use reussir_syntax::source::FileId;
 
 use crate::full::mangle::Mangler;
 use crate::full::mir;
@@ -109,6 +110,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         seen: FxHashSet::default(),
         records: FxHashSet::default(),
         reports: Vec::new(),
+        cur_file: FileId::ROOT,
         ids: mir::ExprIdGen::default(),
     };
 
@@ -128,6 +130,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             // No body/prototype recorded (e.g. an item that failed to elaborate).
             continue;
         };
+        driver.cur_file = func.file;
 
         // Bind this instance's generics, then ground the signature and lower the
         // body into the MIR.
@@ -171,6 +174,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             params,
             return_ty,
             body,
+            file: func.file,
         });
     }
 
@@ -189,6 +193,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         let Some(record) = input.records.get(&def) else {
             continue;
         };
+        driver.cur_file = record.file;
         for &gid in &record.regional_generics {
             let Some(pos) = record.ty_params.iter().position(|(_, g)| *g == gid) else {
                 continue;
@@ -393,6 +398,9 @@ struct Driver<'a, 'tcx> {
     /// Ground record instances whose layout is needed (keyed flex-independently).
     records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
     reports: Vec<Report>,
+    /// The declaration file of the item currently being instantiated; stamped
+    /// onto reports so multi-file diagnostics point into the right source.
+    cur_file: FileId,
     /// Source of fresh [`mir::ExprId`] anchors for every lowered node. A single
     /// counter across the whole program: one semi expr may lower into many MIR
     /// exprs (once per instantiation), so semi ids are not reused.
@@ -421,6 +429,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             severity: Severity::Error,
             message: message.into(),
             span,
+            file: self.cur_file,
         });
     }
 

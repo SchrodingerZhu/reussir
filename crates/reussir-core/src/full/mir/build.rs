@@ -27,6 +27,11 @@ pub struct Parsed<'tcx> {
     pub program: mir::Program<'tcx>,
     pub defs: DefTable,
     pub names: Names,
+    /// The dump's source-file table, in id order: each file's display name.
+    /// Function/expr spans are byte offsets into these files (by `FileId` =
+    /// table index); a `<bracketed>` name is virtual (content not on disk).
+    /// Empty for a dump printed without locations.
+    pub files: Vec<String>,
 }
 
 /// A minimal [`Resolver`]: a fresh `TokenKey` interner for source names and
@@ -62,6 +67,22 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     let raw = ir::ProgramParser::new()
         .parse(lex(text))
         .map_err(|e| format!("{e:?}"))?;
+    // The file table must be dense and in-order: spans index it positionally.
+    let mut files = Vec::with_capacity(raw.files.len());
+    for (i, f) in raw.files.iter().enumerate() {
+        if f.id as usize != i {
+            return Err(format!(
+                "source-file table is not dense: entry {} declares id {}",
+                i, f.id
+            ));
+        }
+        files.push(f.name.clone());
+    }
+    for f in &raw.funcs {
+        if let Some(id) = file_ref_check(&files, f.file) {
+            return Err(id);
+        }
+    }
     let mut b = Builder {
         tcx,
         symbols: Rodeo::default(),
@@ -74,6 +95,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         program,
         defs: b.defs,
         names: b.names,
+        files,
     })
 }
 
@@ -191,6 +213,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             params,
             return_ty,
             body,
+            // `in <id>` when the dump carries locations; else the primary file.
+            file: f.file.map_or(reussir_syntax::source::FileId::ROOT, |i| {
+                reussir_syntax::source::FileId::from_index(i)
+            }),
         }
     }
 
@@ -428,7 +454,9 @@ impl<'tcx> Builder<'_, 'tcx> {
             id: self.ids.fresh(),
             kind,
             ty,
-            span: None,
+            span: e
+                .span
+                .map(|(start, end)| crate::surface::Span { start, end }),
         }
     }
 }
@@ -473,6 +501,17 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
     }
 }
 
+/// Reject an `in <id>` reference past the end of the dump's file table.
+fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
+    match file {
+        Some(id) if id as usize >= files.len() => Some(format!(
+            "function references file {id}, but the source-file table has {} entr(y/ies)",
+            files.len()
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_program;
@@ -501,6 +540,51 @@ mod tests {
                 "round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
             );
         });
+    }
+
+    /// The lossless form: print WITH the source cache (file table, per-fn
+    /// `in <file>`, node spans), parse back, re-print against a cache rebuilt
+    /// from the dump's own table, and assert text equality.
+    fn roundtrip_with_locations(source: &str) {
+        use reussir_syntax::source::SourceCache;
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+
+            let cache = SourceCache::single("<test>", source);
+            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(&full);
+            assert!(
+                text.contains("0 = \"<test>\";"),
+                "file table missing:\n{text}"
+            );
+            assert!(text.contains(" in 0"), "fn file reference missing:\n{text}");
+            let parsed = parse_program(tcx, &text).expect("re-parse");
+            assert_eq!(parsed.files, vec!["<test>".to_string()]);
+            let mut cache2 = SourceCache::new();
+            for name in &parsed.files {
+                cache2.add_unavailable(name);
+            }
+            let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2)
+                .program(&parsed.program);
+            assert_eq!(
+                text, text2,
+                "lossless round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
+            );
+        });
+    }
+
+    #[test]
+    fn locations_survive_the_textual_round_trip() {
+        roundtrip_with_locations(
+            "pub fn fib(n: u64) -> u64 { \
+             let m = n + 1; \
+             if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
+        );
     }
 
     #[test]

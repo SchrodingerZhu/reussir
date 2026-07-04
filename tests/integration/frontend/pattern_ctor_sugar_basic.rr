@@ -1,5 +1,5 @@
-// RUN: %rrc %s --emit hir -o - | %FileCheck %s
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=FULL
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=FULL
 
 enum Option<T> {
     Some(T),

@@ -16,6 +16,7 @@ use reussir_core::semi::{Checkpoint, Elaborator, Report, Severity};
 use reussir_core::{in_arena, surface};
 use reussir_jit::{ModuleHandle, OptLevel, OrcJit};
 use reussir_syntax::diagnostics::ParseError;
+use reussir_syntax::source::{FileId, SourceCache};
 use reussir_syntax::{
     Interner, MultiThreadedTokenInterner, ReplInputKind, new_threaded_interner, parse_repl,
 };
@@ -53,8 +54,12 @@ pub enum Outcome {
         ty: String,
         warnings: Vec<Report>,
     },
-    /// Syntax errors in the input (render against the input source).
-    ParseErrors(Vec<ParseError>),
+    /// Syntax errors in the input; `file` is the input's entry in the
+    /// session's [`SourceCache`] (render against it).
+    ParseErrors {
+        file: FileId,
+        errors: Vec<ParseError>,
+    },
     /// Elaboration/monomorphization diagnostics (input was rolled back).
     Reports(Vec<Report>),
     /// A backend (lowering/JIT) failure; the input was rolled back.
@@ -141,6 +146,12 @@ pub struct ReplSession<'a, 'tcx> {
     /// sizes and alignments (cached once — they never change per engine).
     data_layout: String,
     triple: String,
+    /// Every input of the session, as `<repl>` virtual files. The persistent
+    /// elaborator can report against an *older* input's span (e.g. a generic
+    /// defined earlier failing to monomorphize now), so all inputs stay
+    /// renderable — not just the current one. Grows monotonically; failed
+    /// inputs' entries are harmless (`:clear` starts a fresh session).
+    sources: SourceCache,
 }
 
 impl<'a, 'tcx> ReplSession<'a, 'tcx> {
@@ -176,7 +187,21 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             opt: config.opt,
             data_layout: jit.data_layout(),
             triple: jit.triple(),
+            sources: SourceCache::new(),
         }
+    }
+
+    /// The session's source cache (for rendering [`Outcome`] reports).
+    pub fn sources(&self) -> &SourceCache {
+        &self.sources
+    }
+
+    /// Register one input (or `:type` snippet) as a `<repl>` virtual file and
+    /// point the elaborator's report attribution at it.
+    fn add_input(&mut self, text: &str) -> FileId {
+        let file = self.sources.add_virtual("<repl>", text);
+        self.elab.set_current_file(file);
+        file
     }
 
     /// Evaluate one complete input (a command, definitions, or an
@@ -201,9 +226,13 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         if tokens.iter().all(|t| t.kind.is_trivia()) {
             return Outcome::Empty;
         }
+        let file = self.add_input(source);
         let parsed = parse_repl(source, self.interner.clone());
         if !parsed.parse.ok() {
-            return Outcome::ParseErrors(parsed.parse.errors);
+            return Outcome::ParseErrors {
+                file,
+                errors: parsed.parse.errors,
+            };
         }
         let cp = self.elab.checkpoint();
         match parsed.kind {
@@ -261,6 +290,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                             severity: Severity::Error,
                             message: "cannot bind a unit value".to_string(),
                             span: None,
+                            file,
                         }])
                     }
                     Ok((ty, warnings)) => match self.compile_new(&cp) {
@@ -415,9 +445,13 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
     /// Check an expression's type without compiling or executing it
     /// (`:type`). Elaborator state is always rolled back.
     pub(crate) fn type_of(&mut self, source: &str) -> Outcome {
+        let file = self.add_input(source);
         let parsed = parse_repl(source, self.interner.clone());
         if !parsed.parse.ok() {
-            return Outcome::ParseErrors(parsed.parse.errors);
+            return Outcome::ParseErrors {
+                file,
+                errors: parsed.parse.errors,
+            };
         }
         if parsed.kind != ReplInputKind::Expr {
             return Outcome::Text(":type takes an expression".to_string());

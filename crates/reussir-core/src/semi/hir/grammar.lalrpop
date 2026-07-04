@@ -14,28 +14,44 @@ grammar<'input>;
 pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
 
 Item: raw::Item = {
+    <f:FileDecl> => raw::Item::File(f),
     <r:RecordDecl> => raw::Item::Record(r),
     <t:TrampDecl> => raw::Item::Tramp(t),
     <f:Func> => raw::Item::Func(f),
 };
 
+/// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
+/// into these files; a `<bracketed>` name is a virtual file (unfetchable).
+FileDecl: raw::FileEntry = <id:"int"> "=" <name:"quoted"> ";"
+    => raw::FileEntry { id: raw::small_u32(&id), name: name.to_string() };
+
+/// A source span: `[start..end]`, byte offsets into the owning item's file.
+Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::small_u32(&e));
+
+/// An item's source location: its file-table id and its span.
+ItemLoc: (u32, Option<raw::Span>) = "in" <f:"int"> <sp:Span?> => (raw::small_u32(&f), sp);
+
 RecordDecl: raw::Record = {
-    <default_cap:DefaultCap> "struct" "#" <path:"ident"> <generics:Generics?>
+    <default_cap:DefaultCap> "struct" "#" <path:"ident"> <generics:Generics?> <loc:ItemLoc?>
     "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Struct,
         path: path.to_string(),
         generics: generics.unwrap_or_default(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
         body: raw::RecordBody::Compound(ms),
     },
-    <default_cap:DefaultCap> "enum" "#" <path:"ident"> <generics:Generics?>
+    <default_cap:DefaultCap> "enum" "#" <path:"ident"> <generics:Generics?> <loc:ItemLoc?>
     "{" <vs:Comma<Variant>> "}" ";"
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Enum,
         path: path.to_string(),
         generics: generics.unwrap_or_default(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
         body: raw::RecordBody::Variant(vs),
     },
 };
@@ -66,7 +82,7 @@ TrampDecl: raw::Tramp =
 
 Func: raw::Func =
     <p:"pub"?> <r:"regional"?> "fn" "#" <path:"ident"> <generics:Generics?>
-    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <body:Body>
+    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <loc:ItemLoc?> <body:Body>
     => raw::Func {
         is_pub: p.is_some(),
         regional: r.is_some(),
@@ -74,6 +90,8 @@ Func: raw::Func =
         generics: generics.unwrap_or_default(),
         params,
         ret,
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
         body,
     };
 
@@ -121,23 +139,30 @@ Cap: raw::Cap = {
 
 // ----- expressions -----
 
-Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
-    if rest.is_empty() {
+/// A leading `[start..end]` is the enclosing `Seq`'s own span. A single
+/// spanless expression is not wrapped (a spanless one-statement `Seq` prints
+/// indistinguishably and is normalized away — structurally, not semantically,
+/// significant).
+Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
+    if sp.is_none() && rest.is_empty() {
         first
     } else {
         let mut v = vec![first];
         v.extend(rest);
         let ty = v.last().unwrap().ty.clone();
-        raw::Expr::new(raw::Kind::Seq(v), ty)
+        raw::Expr::new(raw::Kind::Seq(v), ty).with_span(sp)
     }
 };
 
 /// Every value expression is `Atom : Ty`; `let` (always `unit`) and a braced
 /// block (a `Seq`) are the structural exceptions whose type is not printed.
 Expr: raw::Expr = {
-    <a:Atom> ":" <t:Ty> => raw::Expr::new(a, t),
-    "let" <var:"var"> "(" <name:"ident"> ")" "=" <value:Expr>
-        => raw::Expr::new(raw::Kind::Let { var, name: name.to_string(), value }, raw::Ty::Unit),
+    <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
+    "let" <sp:Span?> <var:"var"> "(" <name:"ident"> <nsp:Span?> ")" "=" <value:Expr>
+        => raw::Expr::new(
+            raw::Kind::Let { var, name: name.to_string(), name_span: nsp, value },
+            raw::Ty::Unit,
+        ).with_span(sp),
     "{" <b:Block> "}" => b,
 };
 
@@ -312,6 +337,8 @@ extern {
         ";" => Token::Semi,
         "," => Token::Comma,
         "." => Token::Dot,
+        ".." => Token::DotDot,
+        "in" => Token::In,
         "=" => Token::Eq,
         "=>" => Token::FatArrow,
         "_" => Token::Underscore,

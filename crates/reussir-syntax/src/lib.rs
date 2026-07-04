@@ -19,9 +19,11 @@ pub mod diagnostics;
 pub mod kind;
 pub mod lexer;
 pub(crate) mod parser;
+pub mod source;
 
-use diagnostics::{ParseError, SourceMap};
+use diagnostics::ParseError;
 use kind::{ResolvedNode, SyntaxKind};
+use source::CharMap;
 
 // The shared-interner types [`parse_with_interner`] / [`parse_repl`] take, so
 // downstream crates don't need a direct cstree dependency. `Interner` is the
@@ -55,7 +57,7 @@ impl Parse {
     /// call it only when [`Parse::ok`] holds. Lowering a tree
     /// that still contains error nodes panics (the recovery shape is not a
     /// valid AST).
-    pub fn to_json(&self, map: &SourceMap) -> serde_json::Value {
+    pub fn to_json(&self, map: &CharMap) -> serde_json::Value {
         assert!(
             self.ok(),
             "to_json requires an error-free parse; got {} error(s)",
@@ -139,9 +141,7 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         FnKw | ModKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
         // Records may also carry a capability annotation before the name:
         // `struct [value] V { ... }`.
-        StructKw | EnumKw => {
-            (p.nth(1).is_ident_like() && p.nth(1) != AsKw) || p.nth(1) == LBracket
-        }
+        StructKw | EnumKw => (p.nth(1).is_ident_like() && p.nth(1) != AsKw) || p.nth(1) == LBracket,
         // `extern "C" trampoline ...` — a string cannot follow a variable.
         ExternKw => p.nth(1) == StringLit,
         // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
@@ -214,7 +214,7 @@ mod tests {
     }
 
     fn json_of(source: &str) -> serde_json::Value {
-        let map = SourceMap::new(source);
+        let map = CharMap::new(source);
         parse_ok(source).to_json(&map)
     }
 

@@ -13,12 +13,21 @@ grammar<'input>;
 pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
 
 Item: raw::Item = {
+    <f:FileDecl> => raw::Item::File(f),
     "record" "@" <s:Sym> ":" <cap:DefCap> <kind:RecordBody> ";"
         => raw::Item::Record(raw::RecordDecl { symbol: s, default_cap: cap, ty: kind.0, body: kind.1 }),
     <f:Func> => raw::Item::Func(f),
     "extern" <abi:"quoted"> "trampoline" <export:"quoted"> "=" "@" <target:Sym> ";"
         => raw::Item::Tramp(raw::Tramp { abi: abi.to_string(), export: export.to_string(), target }),
 };
+
+/// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
+/// into these files; a `<bracketed>` name is a virtual file (unfetchable).
+FileDecl: raw::FileEntry = <id:"int"> "=" <name:"quoted"> ";"
+    => raw::FileEntry { id: raw::small_u32(&id), name: name.to_string() };
+
+/// A source span: `[start..end]`, byte offsets into the owning item's file.
+Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::small_u32(&e));
 
 /// The capability a record declares by default.
 DefCap: raw::DefCap = {
@@ -50,8 +59,16 @@ Sym: String = <s:"ident"> => s.to_string();
 
 Func: raw::Func =
     <p:"pub"?> <r:"regional"?> "fn" "@" <symbol:Sym>
-    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <body:Body>
-    => raw::Func { is_pub: p.is_some(), regional: r.is_some(), symbol, params, ret, body };
+    "(" <params:Comma<Param>> ")" "->" <ret:Ty> <file:("in" <"int">)?> <body:Body>
+    => raw::Func {
+        is_pub: p.is_some(),
+        regional: r.is_some(),
+        symbol,
+        params,
+        ret,
+        file: file.as_ref().map(raw::small_u32),
+        body,
+    };
 
 Body: Option<raw::Expr> = {
     "{" <b:Block> "}" => Some(b),
@@ -95,14 +112,18 @@ Cap: raw::Cap = {
 /// A block body: `;`-separated statements; a single expression is not wrapped.
 /// A multi-item block is a `Seq` typed by its last item (correct by
 /// construction, so it needs no printed annotation).
-Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
-    if rest.is_empty() {
+/// A leading `[start..end]` is the enclosing `Seq`'s own span. A single
+/// spanless expression is not wrapped (a spanless one-statement `Seq` prints
+/// indistinguishably and is normalized away — structurally, not semantically,
+/// significant).
+Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
+    if sp.is_none() && rest.is_empty() {
         first
     } else {
         let mut v = vec![first];
         v.extend(rest);
         let ty = v.last().unwrap().ty.clone();
-        raw::Expr::new(raw::Kind::Seq(v), ty)
+        raw::Expr::new(raw::Kind::Seq(v), ty).with_span(sp)
     }
 };
 
@@ -110,9 +131,10 @@ Block: raw::Expr = <first:Expr> <rest:(";" <Expr>)*> => {
 /// read back, so no type is ever invented. `let` (always `unit`) and a braced
 /// block (a `Seq`) are the two structural exceptions.
 Expr: raw::Expr = {
-    <a:Atom> ":" <t:Ty> => raw::Expr::new(a, t),
-    "let" <var:"var"> "(" <name:"ident"> ")" "=" <value:Expr>
-        => raw::Expr::new(raw::Kind::Let { var, name: name.to_string(), value }, raw::Ty::Unit),
+    <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
+    "let" <sp:Span?> <var:"var"> "(" <name:"ident"> ")" "=" <value:Expr>
+        => raw::Expr::new(raw::Kind::Let { var, name: name.to_string(), value }, raw::Ty::Unit)
+            .with_span(sp),
     "{" <b:Block> "}" => b,
 };
 
@@ -290,6 +312,8 @@ extern {
         ";" => Token::Semi,
         "," => Token::Comma,
         "." => Token::Dot,
+        ".." => Token::DotDot,
+        "in" => Token::In,
         "=" => Token::Eq,
         "=>" => Token::FatArrow,
         "_" => Token::Underscore,

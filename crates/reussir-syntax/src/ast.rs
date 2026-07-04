@@ -13,17 +13,17 @@
 
 use serde_json::{Number, Value, json};
 
-use crate::diagnostics::SourceMap;
 use crate::kind::{ResolvedNode, ResolvedToken, SyntaxKind, SyntaxKind::*};
+use crate::source::CharMap;
 
-pub fn prog_to_json(root: &ResolvedNode, map: &SourceMap) -> Value {
+pub fn prog_to_json(root: &ResolvedNode, map: &CharMap) -> Value {
     assert_eq!(root.kind(), SourceFile, "expected a SourceFile root");
     let e = Emitter { map };
     Value::Array(root.children().map(|stmt| e.stmt(stmt)).collect())
 }
 
 struct Emitter<'m> {
-    map: &'m SourceMap,
+    map: &'m CharMap,
 }
 
 // ===== small helpers =====
