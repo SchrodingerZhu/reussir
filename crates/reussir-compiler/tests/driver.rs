@@ -36,7 +36,13 @@ fn rrc(args: &[&Path]) -> Output {
 
 /// Compile `input` to `target` (`--emit target`), writing `out`; assert success.
 fn emit(input: &Path, target: &str, out: &Path) {
-    let output = rrc(&[input, Path::new("-o"), out, Path::new("--emit"), Path::new(target)]);
+    let output = rrc(&[
+        input,
+        Path::new("-o"),
+        out,
+        Path::new("--emit"),
+        Path::new(target),
+    ]);
     assert!(
         output.status.success(),
         "rrc {} -> {target} failed:\n{}",
@@ -73,12 +79,18 @@ fn dumps_hir_mir_and_mlir_from_source() {
     let mir_text = read(&mir);
     // The MIR is mangled and monomorphized.
     assert!(mir_text.contains("sum"), "mir:\n{mir_text}");
-    assert!(mir_text.contains("switch") || mir_text.contains("match"), "mir:\n{mir_text}");
+    assert!(
+        mir_text.contains("switch") || mir_text.contains("match"),
+        "mir:\n{mir_text}"
+    );
 
     let mlir = dir.path().join("prog.mlir");
     emit(&src, "mlir", &mlir);
     let mlir_text = read(&mlir);
-    assert!(mlir_text.contains("reussir.record.dispatch"), "mlir:\n{mlir_text}");
+    assert!(
+        mlir_text.contains("reussir.record.dispatch"),
+        "mlir:\n{mlir_text}"
+    );
     assert!(mlir_text.contains("func.func"), "mlir:\n{mlir_text}");
 }
 
@@ -91,7 +103,10 @@ fn dumps_mlir_llvm_and_llvm_ir_from_source() {
     let text = read(&mlir_llvm);
     // After the pipeline the module is the LLVM dialect: no reussir ops remain.
     assert!(text.contains("llvm."), "mlir-llvm:\n{text}");
-    assert!(!text.contains("reussir.record.dispatch"), "mlir-llvm still high-level:\n{text}");
+    assert!(
+        !text.contains("reussir.record.dispatch"),
+        "mlir-llvm still high-level:\n{text}"
+    );
 
     let ll = dir.path().join("prog.ll");
     emit(&src, "llvm-ir", &ll);
@@ -132,7 +147,11 @@ fn reenters_from_mir_and_matches_source_lowering() {
 
     for path in [&via_mir, &via_src] {
         let text = read(path);
-        assert!(text.contains("reussir.record.dispatch"), "{}: {text}", path.display());
+        assert!(
+            text.contains("reussir.record.dispatch"),
+            "{}: {text}",
+            path.display()
+        );
         assert!(text.contains("sum_ffi"), "{}: {text}", path.display());
     }
 }
@@ -165,7 +184,12 @@ fn reenters_from_mlir_and_llvm_ir_to_object() {
     emit(&src, "mlir", &mlir);
     let obj_from_mlir = dir.path().join("from-mlir.o");
     emit(&mlir, "obj", &obj_from_mlir);
-    assert!(std::fs::metadata(&obj_from_mlir).expect("obj from mlir").len() > 0);
+    assert!(
+        std::fs::metadata(&obj_from_mlir)
+            .expect("obj from mlir")
+            .len()
+            > 0
+    );
 
     // .ll -> .o : parse LLVM IR and run the backend.
     let ll = dir.path().join("prog.ll");
@@ -188,14 +212,26 @@ fn infers_mlir_llvm_from_the_output_extension() {
     );
     let text = read(&out);
     assert!(text.contains("llvm."), "mlir-llvm:\n{text}");
-    assert!(!text.contains("reussir.record.dispatch"), "still high-level:\n{text}");
+    assert!(
+        !text.contains("reussir.record.dispatch"),
+        "still high-level:\n{text}"
+    );
 }
 
 #[test]
 fn rejects_stdout_for_file_artifacts() {
     let (_dir, src) = source("stdout-obj");
-    let output = rrc(&[&src, Path::new("-o"), Path::new("-"), Path::new("--emit"), Path::new("obj")]);
-    assert!(!output.status.success(), "expected obj-to-stdout to be rejected");
+    let output = rrc(&[
+        &src,
+        Path::new("-o"),
+        Path::new("-"),
+        Path::new("--emit"),
+        Path::new("obj"),
+    ]);
+    assert!(
+        !output.status.success(),
+        "expected obj-to-stdout to be rejected"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("stdout"), "stderr:\n{stderr}");
 }
@@ -206,8 +242,17 @@ fn rejects_running_the_pipeline_backward() {
     // A `.mir` input cannot produce HIR (an earlier stage).
     let mir = dir.path().join("prog.mir");
     std::fs::write(&mir, "").expect("write empty mir");
-    let output = rrc(&[&mir, Path::new("-o"), &dir.path().join("out.hir"), Path::new("--emit"), Path::new("hir")]);
-    assert!(!output.status.success(), "expected backward pipeline to fail");
+    let output = rrc(&[
+        &mir,
+        Path::new("-o"),
+        &dir.path().join("out.hir"),
+        Path::new("--emit"),
+        Path::new("hir"),
+    ]);
+    assert!(
+        !output.status.success(),
+        "expected backward pipeline to fail"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("only runs forward"), "stderr:\n{stderr}");
 }

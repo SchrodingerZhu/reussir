@@ -154,6 +154,17 @@ unsafe extern "C" {
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
 
+    /// Stamps `module` with the target's layout facts before the lowering
+    /// pipeline runs: the `llvm.data_layout` string, the `llvm.target_triple`,
+    /// and the translated `dlti.dl_spec` that MLIR `DataLayout` queries read
+    /// (without it MLIR falls back to conservative defaults, understating
+    /// sizes and alignments). Returns false if `data_layout` does not parse.
+    pub fn reussirModuleAttachTargetSpec(
+        module: MlirModule,
+        data_layout: *const c_char,
+        triple: *const c_char,
+    ) -> bool;
+
     //==-- LLVM-side codegen helpers (Jit.h) --==//
 
     /// Runs the Reussir LLVM optimization pipeline on `module` in place at the

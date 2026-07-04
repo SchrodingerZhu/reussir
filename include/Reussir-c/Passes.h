@@ -91,6 +91,17 @@ void reussirFixupVariantDebugInfo(LLVMModuleRef module);
 // Reports whether TPDE support was compiled into the backend.
 int reussirHasTPDE(void);
 
+// Stamps `module` with the target's layout facts before the lowering pipeline
+// runs: the LLVM data layout string (`llvm.data_layout`), the target triple
+// (`llvm.target_triple`), and the translated DLTI spec (`dlti.dl_spec`) that
+// MLIR `DataLayout` queries read. Without the spec MLIR falls back to its
+// conservative defaults (e.g. `i64` at ABI alignment 4), so every
+// size/alignment the pipeline computes — allocation sizes, spill alignments,
+// load/store alignment annotations — understates the target. Returns false if
+// `dataLayout` does not parse.
+bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
+                                   const char *triple);
+
 #ifdef __cplusplus
 }
 #endif

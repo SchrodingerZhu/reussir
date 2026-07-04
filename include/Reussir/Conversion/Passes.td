@@ -211,6 +211,36 @@ def ReussirCompilePolymorphicFFIPass
 }
 
 //===----------------------------------------------------------------------===//
+// ConvertToLLVM
+//===----------------------------------------------------------------------===//
+def ReussirConvertToLLVMPass
+    : Pass<"reussir-convert-to-llvm", "::mlir::ModuleOp"> {
+  let summary = "interface-driven convert-to-llvm honoring the module data layout";
+  let description = [{
+    `reussir-convert-to-llvm` runs the same `ConvertToLLVMPatternInterface`
+    driven conversion as the upstream `convert-to-llvm`, but builds its
+    `LLVMTypeConverter` from the module's stamped `llvm.data_layout` — index
+    width included. The upstream pass freezes a default-options converter (a
+    64-bit index regardless of the target) before ever seeing a module, while
+    every converter Reussir builds itself derives the index width from the
+    data layout (`getReussirToLLVMOptions`); on a 32-bit-pointer target
+    (e.g. wasm32) the two disagree, and the runtime declarations
+    (`__reussir_allocate` at `i32`) no longer match the call sites the
+    conversion emits (`i64`).
+
+    The upstream `dynamic` mode is not sufficient either: it derives the
+    *index width* from `DataLayoutAnalysis`, but the converter's embedded
+    `llvm::DataLayout` — which `convertRecordType` uses to compute record
+    bodies (member padding and the pad-lift into wider integers) — stays at
+    the 64-bit default. On wasm32 a `{i32, ptr}` record then lowers as
+    `{i64, ptr}` (16 bytes) while the stamped module layout sizes its token
+    allocation at 8, corrupting the heap. Building the converter from the
+    stamped string fixes both.
+  }];
+  let dependentDialects = ["::mlir::LLVM::LLVMDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // AttachNativeTarget
 //===----------------------------------------------------------------------===//
 def ReussirAttachNativeTargetPass

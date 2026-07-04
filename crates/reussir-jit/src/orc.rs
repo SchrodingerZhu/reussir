@@ -428,6 +428,33 @@ impl OrcJit {
         check_error(unsafe { LLVMOrcResourceTrackerRemove(handle.tracker) })
     }
 
+    /// The JIT's data layout string — with [`triple`](Self::triple), what
+    /// [`reussir_backend::pipeline::attach_target_spec`] stamps on a module
+    /// before running the lowering pipeline for this engine.
+    pub fn data_layout(&self) -> String {
+        // SAFETY: the returned pointer is owned by the LLJIT and lives as long
+        // as `self`; copied out immediately.
+        unsafe {
+            std::ffi::CStr::from_ptr(LLVMOrcLLJITGetDataLayoutStr(self.jit))
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    /// The host target triple the JIT compiles for.
+    pub fn triple(&self) -> String {
+        // SAFETY: `LLVMGetDefaultTargetTriple` returns an owned message,
+        // disposed after copying.
+        unsafe {
+            let triple = LLVMGetDefaultTargetTriple();
+            let owned = std::ffi::CStr::from_ptr(triple)
+                .to_string_lossy()
+                .into_owned();
+            LLVMDisposeMessage(triple);
+            owned
+        }
+    }
+
     // Compiles a module to an object with TPDE and adds the object to the main
     // JITDylib (or to `tracker`, when non-null). Does not take ownership of
     // `module`.
