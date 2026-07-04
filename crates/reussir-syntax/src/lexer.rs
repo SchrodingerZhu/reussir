@@ -7,8 +7,10 @@
 //! * integers are digit runs — decimal, or `0x`/`0o`/`0b` radix literals —
 //!   with `_` separators (`1_000`, `0xFF_FF`); floats are decimal digit runs
 //!   with a fraction and/or exponent (`1.5`, `1e3`, `2.5e-7`, `1_0.5`),
-//! * strings are double-quoted and characters are single-quoted with backslash
-//!   escapes (validated here, decoded in [`crate::ast`]).
+//! * strings are double-quoted and characters are single-quoted, following
+//!   Rust's escape grammar (`\n`, `\xNN`, `\u{...}`, ...); the lexer scans
+//!   the token extent and both validation (here) and decoding (in the AST
+//!   emitter) go through [`crate::literal`].
 //!
 //! Keyword policy: only the words that introduce syntactic forms become
 //! keyword tokens. Contextual words (`trampoline`, capability names like
@@ -27,7 +29,22 @@ pub struct LexError {
     pub message: &'static str,
 }
 
+/// Classified lexical error. Literal and comment callbacks report the precise
+/// failure; input that matches no token pattern falls out of logos as the
+/// `Unrecognized` default and is refined by shape in [`tokenize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LexErrorKind {
+    #[default]
+    Unrecognized,
+    UnterminatedString,
+    InvalidString,
+    UnterminatedChar,
+    InvalidChar,
+    UnterminatedBlockComment,
+}
+
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
+#[logos(error = LexErrorKind)]
 pub enum RawToken {
     #[regex(r"[ \t\r\n\u{0B}\u{0C}]+")]
     Whitespace,
@@ -168,122 +185,78 @@ fn classify_ident(lex: &mut logos::Lexer<RawToken>) -> IdentClass {
     }
 }
 
-/// Scan a (non-nesting) block comment after the opening `/*`. Returns
-/// `false` (filtered error) when the comment is unterminated.
-fn lex_block_comment(lex: &mut logos::Lexer<RawToken>) -> bool {
+/// Scan a (non-nesting) block comment after the opening `/*`.
+fn lex_block_comment(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKind> {
     let rest = lex.remainder();
     match rest.find("*/") {
         Some(idx) => {
             lex.bump(idx + 2);
-            true
+            Ok(())
         }
         None => {
             lex.bump(rest.len());
-            false
+            Err(LexErrorKind::UnterminatedBlockComment)
         }
     }
 }
 
-/// Scan a string literal after the opening quote. A backslash always
-/// escapes the next character; the literal ends at the first unescaped
-/// quote. Returns `false` when the literal is unterminated.
-fn lex_string(lex: &mut logos::Lexer<RawToken>) -> bool {
-    lex_quoted(lex, b'\"').is_some()
+/// Scan a string literal after the opening quote (it may span newlines) and
+/// validate the whole token against Rust's string escape grammar.
+fn lex_string(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKind> {
+    if !scan_quoted(lex, b'\"', false) {
+        return Err(LexErrorKind::UnterminatedString);
+    }
+    match crate::literal::parse_string(lex.slice()) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(LexErrorKind::InvalidString),
+    }
 }
 
-/// Scan a character literal after the opening quote. The literal must decode to
-/// exactly one Unicode scalar value, represented later as a 32-bit `char`.
-fn lex_char(lex: &mut logos::Lexer<RawToken>) -> bool {
-    lex_quoted(lex, b'\'').is_some_and(|body| decoded_char_count(body) == Some(1))
+/// Scan a character literal after the opening quote and validate the whole
+/// token against Rust's char escape grammar (exactly one Unicode scalar
+/// value). The scan stops at a newline so a stray `'` cannot swallow the
+/// rest of the file.
+fn lex_char(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKind> {
+    if !scan_quoted(lex, b'\'', true) {
+        return Err(LexErrorKind::UnterminatedChar);
+    }
+    match crate::literal::parse_char(lex.slice()) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(LexErrorKind::InvalidChar),
+    }
 }
 
-fn lex_quoted<'a>(lex: &mut logos::Lexer<'a, RawToken>, quote: u8) -> Option<&'a str> {
-    let rest = lex.remainder();
-    let bytes = rest.as_bytes();
+/// Scan a quoted literal after its opening quote: a backslash escapes the
+/// next character, and the literal ends at the first unescaped `quote`
+/// (bumped into the token). Returns `false` when the literal is
+/// unterminated — at end of input, or at the first newline when
+/// `stop_at_newline` is set (the newline is left for the next token).
+fn scan_quoted(lex: &mut logos::Lexer<RawToken>, quote: u8, stop_at_newline: bool) -> bool {
+    let bytes = lex.remainder().as_bytes();
+    let limit = if stop_at_newline {
+        bytes
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(bytes.len())
+    } else {
+        bytes.len()
+    };
     let mut i = 0;
-    while i < bytes.len() {
+    while i < limit {
         match bytes[i] {
             b if b == quote => {
-                let body = &rest[..i];
                 lex.bump(i + 1);
-                return Some(body);
+                return true;
             }
-            b'\\' => {
-                if i + 1 >= bytes.len() {
-                    break;
-                }
-                i += 2;
-            }
+            // Skipping the escaped byte is enough even for multi-byte
+            // characters: UTF-8 continuation bytes never equal an ASCII
+            // quote or backslash, so the scan resynchronizes by itself.
+            b'\\' => i = (i + 2).min(limit),
             _ => i += 1,
         }
     }
-    lex.bump(rest.len());
-    None
-}
-
-fn decoded_char_count(mut rest: &str) -> Option<usize> {
-    const MNEMONICS: &[&str] = &[
-        "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "DLE", "DC1", "DC2", "DC3", "DC4",
-        "NAK", "SYN", "ETB", "CAN", "SUB", "ESC", "DEL", "EM", "FS", "GS", "RS", "US", "SP", "BS",
-        "HT", "LF", "VT", "FF", "CR", "SO", "SI",
-    ];
-
-    let mut count = 0;
-    while !rest.is_empty() {
-        let c = rest.chars().next()?;
-        if c != '\\' {
-            count += 1;
-            rest = &rest[c.len_utf8()..];
-            continue;
-        }
-        rest = &rest[1..];
-        let esc = rest.chars().next()?;
-        let consumed = match esc {
-            'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v' | '\\' | '"' | '\'' => esc.len_utf8(),
-            '&' => {
-                rest = &rest[esc.len_utf8()..];
-                continue;
-            }
-            'x' | 'X' => {
-                let digits = take_digits(&rest[1..], |c| c.is_ascii_hexdigit());
-                valid_code(digits, 16)?;
-                1 + digits.len()
-            }
-            'o' | 'O' => {
-                let digits = take_digits(&rest[1..], |c| ('0'..='7').contains(&c));
-                valid_code(digits, 8)?;
-                1 + digits.len()
-            }
-            c if c.is_ascii_digit() => {
-                let digits = take_digits(rest, |c| c.is_ascii_digit());
-                valid_code(digits, 10)?;
-                digits.len()
-            }
-            _ => MNEMONICS
-                .iter()
-                .find(|name| rest.starts_with(**name))?
-                .len(),
-        };
-        count += 1;
-        rest = &rest[consumed..];
-    }
-    Some(count)
-}
-
-fn take_digits(rest: &str, pred: impl Fn(char) -> bool) -> &str {
-    let end = rest
-        .char_indices()
-        .find_map(|(i, c)| (!pred(c)).then_some(i))
-        .unwrap_or(rest.len());
-    &rest[..end]
-}
-
-fn valid_code(digits: &str, radix: u32) -> Option<()> {
-    if digits.is_empty() {
-        return None;
-    }
-    let code = u32::from_str_radix(digits, radix).ok()?;
-    char::from_u32(code).map(drop)
+    lex.bump(limit);
+    false
 }
 
 impl RawToken {
@@ -362,9 +335,10 @@ impl Token {
     }
 }
 
-/// Tokenize the whole source. Lexical errors (unterminated strings or block
-/// comments, unrecognized characters) become `ErrorToken`s so the syntax
-/// tree stays lossless, and are reported in the error list.
+/// Tokenize the whole source. Lexical errors (unterminated or invalid
+/// literals, unterminated block comments, unrecognized characters) become
+/// `ErrorToken`s so the syntax tree stays lossless, and are reported in the
+/// error list.
 pub fn tokenize(source: &str) -> (Vec<Token>, Vec<LexError>) {
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -377,23 +351,21 @@ pub fn tokenize(source: &str) -> (Vec<Token>, Vec<LexError>) {
                 kind: token.syntax_kind(),
                 range,
             }),
-            Err(()) => {
-                let slice = lexer.slice();
-                let message = if slice.starts_with('"') {
-                    "unterminated string literal"
-                } else if slice.starts_with('\'') {
-                    if slice.ends_with('\'') && slice.len() > 1 {
-                        "invalid character literal"
-                    } else {
-                        "unterminated character literal"
+            Err(kind) => {
+                let message = match kind {
+                    LexErrorKind::UnterminatedString => "unterminated string literal",
+                    LexErrorKind::InvalidString => "invalid string literal",
+                    LexErrorKind::UnterminatedChar => "unterminated character literal",
+                    LexErrorKind::InvalidChar => "invalid character literal",
+                    LexErrorKind::UnterminatedBlockComment => "unterminated block comment",
+                    LexErrorKind::Unrecognized => {
+                        if lexer.slice().starts_with(|c: char| c.is_ascii_digit()) {
+                            // e.g. a radix prefix with no digits (`0x`, `0b_`).
+                            "invalid numeric literal"
+                        } else {
+                            "unrecognized character"
+                        }
                     }
-                } else if slice.starts_with("/*") {
-                    "unterminated block comment"
-                } else if slice.starts_with(|c: char| c.is_ascii_digit()) {
-                    // e.g. a radix prefix with no digits (`0x`, `0b_`).
-                    "invalid numeric literal"
-                } else {
-                    "unrecognized character"
                 };
                 errors.push(LexError {
                     span: range,
@@ -489,9 +461,46 @@ mod tests {
         assert_eq!(kinds(r#""hello \"world\"""#), vec![K::StringLit]);
         assert_eq!(kinds(r"'x'"), vec![K::CharLit]);
         assert_eq!(kinds(r"'\n'"), vec![K::CharLit]);
-        assert_eq!(kinds(r"'\NUL'"), vec![K::CharLit]);
+        assert_eq!(kinds(r"'\x41'"), vec![K::CharLit]);
+        assert_eq!(kinds(r"'\u{1F600}'"), vec![K::CharLit]);
         assert_eq!(kinds("a // comment\nb"), vec![K::Ident, K::Ident]);
         assert_eq!(kinds("a /* x ** y */ b"), vec![K::Ident, K::Ident]);
+    }
+
+    #[test]
+    fn invalid_literals_are_rejected() {
+        for (src, expected) in [
+            // Escapes follow Rust's grammar; Haskell-isms are gone.
+            (r"'\NUL'", "invalid character literal"),
+            (r"''", "invalid character literal"),
+            (r"'ab'", "invalid character literal"),
+            (r#""bad \z escape""#, "invalid string literal"),
+            // `\x` takes exactly two hex digits, capped at 0x7F.
+            (r#""\xFF""#, "invalid string literal"),
+        ] {
+            let (tokens, errors) = tokenize(src);
+            assert_eq!(errors.len(), 1, "`{src}`: {errors:?}");
+            assert_eq!(errors[0].message, expected, "`{src}`");
+            assert_eq!(tokens[0].kind, K::ErrorToken, "`{src}`");
+        }
+    }
+
+    #[test]
+    fn stray_quote_stops_at_newline() {
+        // The scan for the closing `'` is bounded by the line end, so a
+        // stray quote cannot pair with an apostrophe further down the file.
+        let (tokens, errors) = tokenize("let x = 'a;\n// don't\nb");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].message, "unterminated character literal");
+        let error = tokens.iter().find(|t| t.kind == K::ErrorToken).unwrap();
+        assert_eq!(error.text("let x = 'a;\n// don't\nb"), "'a;");
+        // The lines after the stray quote still lex normally.
+        assert_eq!(tokens.last().unwrap().kind, K::Ident);
+    }
+
+    #[test]
+    fn strings_may_span_newlines() {
+        assert_eq!(kinds("\"one\ntwo\""), vec![K::StringLit]);
     }
 
     #[test]

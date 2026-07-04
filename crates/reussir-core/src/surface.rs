@@ -18,8 +18,8 @@
 //! conversion to character or line/column positions is a diagnostics-rendering
 //! concern handled elsewhere.
 
-use reussir_syntax::ast::unescape_string;
 use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind, TokenKey};
+use reussir_syntax::literal::unescape_string;
 use smallvec::{SmallVec, smallvec};
 
 use crate::literal::{self, FloatLit, Integer};

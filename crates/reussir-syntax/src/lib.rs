@@ -18,6 +18,7 @@ pub mod ast;
 pub mod diagnostics;
 pub mod kind;
 pub mod lexer;
+pub mod literal;
 pub(crate) mod parser;
 pub mod source;
 

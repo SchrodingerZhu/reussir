@@ -56,6 +56,9 @@ ena = "0.14"
 # references, so interned `Ty<'tcx>` handles compare by pointer.
 stumpalo = { version = "0.4", features = ["std"] }
 lasso = "0.7"
+# Rust-grammar literal parsing: validates and decodes string/char literal
+# escapes (the surface language follows Rust's escape rules).
+litrs = "1"
 logos = "0.15"
 # fzf-quality fuzzy matcher (atuin's fork of helix's nucleo) used to rank
 # name-resolution suggestions; pairs with a frecency model built during tyck.
