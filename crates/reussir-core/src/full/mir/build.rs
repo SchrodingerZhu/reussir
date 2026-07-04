@@ -116,12 +116,16 @@ impl<'tcx> Builder<'_, 'tcx> {
     }
 
     /// The `DefId` for a record path, declaring it on first sight.
+    /// Multi-segment paths (`pkg::m::Cell`) split back into module + item
+    /// name, so re-prints display the same qualified path.
     fn record_def(&mut self, path: &str) -> crate::semi::ty::DefId {
-        let key = self.names.intern(path);
-        match self.defs.resolve_record(key) {
-            Some(d) => d,
-            None => self.defs.declare_record(key).expect("fresh record decl"),
+        let segs: Vec<_> = path.split("::").map(|s| self.names.intern(s)).collect();
+        if let Some(id) = self.defs.lookup_record(&segs) {
+            return id;
         }
+        let (name, module) = segs.split_last().expect("paths are never empty");
+        self.defs.set_module(module.to_vec());
+        self.defs.declare_record(*name).expect("fresh record decl")
     }
 
     /// Rebuild a record instance (symbol, nominal type, default capability, and

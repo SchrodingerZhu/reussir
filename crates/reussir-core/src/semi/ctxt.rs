@@ -89,6 +89,16 @@ pub fn render_reports_to(
     had_error
 }
 
+/// One file of a package, ready to elaborate: its id in the compilation's
+/// source cache, its module path (`[pkg]` for `lib.rr`, `[pkg, sub, …]` for
+/// submodules), and its parsed program. All files of a package must share one
+/// token interner — cross-file resolution compares interned keys.
+pub struct PackageFile<'p> {
+    pub file: FileId,
+    pub module: Vec<TokenKey>,
+    pub program: &'p surface::Program,
+}
+
 /// Per-generic metadata: its name and the trait bounds declared on it.
 #[derive(Clone, Debug)]
 pub struct GenericInfo {
@@ -463,6 +473,82 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.frecency.record(name);
     }
 
+    // ----- module-aware reference resolution -----
+
+    /// Classify a reference path's qualifier segments: the `root`/`super`
+    /// module keywords (by their interned text) or ordinary names.
+    pub(super) fn classify_segs(&self, path: &surface::Path) -> Vec<crate::semi::resolve::PathSeg> {
+        use crate::semi::resolve::PathSeg;
+        path.segments
+            .iter()
+            .map(|&k| match self.sym(k) {
+                "root" => PathSeg::Root,
+                "super" => PathSeg::Super,
+                _ => PathSeg::Name(k),
+            })
+            .collect()
+    }
+
+    /// Render a reference path as the user wrote it (`a::b::name`).
+    pub(super) fn path_display(&self, path: &surface::Path) -> String {
+        let mut out = String::new();
+        for &seg in &path.segments {
+            out.push_str(self.sym(seg));
+            out.push_str("::");
+        }
+        out.push_str(self.sym(path.basename));
+        out
+    }
+
+    /// Resolve a type reference: bare names in the current module (falling
+    /// back to the crate root), qualified paths per the module-relative rules
+    /// (see [`DefTable::resolve_record_path`]).
+    pub(super) fn resolve_record_ref(&self, path: &surface::Path) -> Option<DefId> {
+        if path.segments.is_empty() {
+            self.defs.resolve_record(path.basename)
+        } else {
+            self.defs
+                .resolve_record_path(&self.classify_segs(path), path.basename)
+        }
+    }
+
+    /// Resolve a value (function) reference; see [`Self::resolve_record_ref`].
+    pub(super) fn resolve_function_ref(&self, path: &surface::Path) -> Option<DefId> {
+        if path.segments.is_empty() {
+            self.defs.resolve_function(path.basename)
+        } else {
+            self.defs
+                .resolve_function_path(&self.classify_segs(path), path.basename)
+        }
+    }
+
+    /// Resolve a constructor path's *qualifier* as a record: for
+    /// `m::Enum::Variant` the qualifier is `m::Enum` (the basename names the
+    /// variant). `None` when the path has no qualifier.
+    pub(super) fn resolve_ctor_qualifier(&self, path: &surface::Path) -> Option<DefId> {
+        let (&enum_name, mods) = path.segments.split_last()?;
+        if mods.is_empty() {
+            self.defs.resolve_record(enum_name)
+        } else {
+            let mods_path = surface::Path {
+                basename: enum_name,
+                segments: mods.iter().copied().collect(),
+            };
+            self.defs
+                .resolve_record_path(&self.classify_segs(&mods_path), enum_name)
+        }
+    }
+
+    /// Enter `def`'s declaration scope: reports attribute to `file`, and
+    /// bare/relative references resolve against the item's own module (its
+    /// qualified path minus the item name).
+    pub(super) fn enter_item_scope(&mut self, def: DefId, file: FileId) {
+        self.set_current_file(file);
+        let path = &self.defs.path(def).0;
+        let module = path[..path.len() - 1].to_vec();
+        self.defs.set_module(module);
+    }
+
     // ----- "did you mean" suggestions -----
     //
     // Each helper fuzzy-searches the relevant namespace for the closest spelling
@@ -643,24 +729,57 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// Run the three collection passes over a program: scan record stubs and
-    /// function prototypes, populate record fields, then check function bodies.
+    /// Run the collection passes over one program in the current module (the
+    /// single-file / REPL entry): scan record stubs and function prototypes,
+    /// populate record fields, then check function bodies.
     pub fn run(&mut self, program: &surface::Program) {
+        let file = self.current_file;
+        let module = self.defs.module().to_vec();
+        self.run_files(&[(file, module, program)]);
+    }
+
+    /// Run the collection passes over a whole package — one translation unit
+    /// spanning many files, each with its own module path.
+    pub fn run_package(&mut self, files: &[PackageFile<'_>]) {
+        let files: Vec<(FileId, Vec<TokenKey>, &surface::Program)> = files
+            .iter()
+            .map(|f| (f.file, f.module.clone(), f.program))
+            .collect();
+        self.run_files(&files);
+    }
+
+    /// The shared driver: scan **all** files' record stubs and function
+    /// prototypes first (cross-file forward references and mutual recursion),
+    /// then populate record fields, check function bodies (each pass restores
+    /// the owning item's file/module scope), and collect trampoline roots per
+    /// file.
+    fn run_files(&mut self, files: &[(FileId, Vec<TokenKey>, &surface::Program)]) {
         // Project each item once — `kind()` re-walks the node and is not
-        // memoized — then run the passes over the typed collections. Record
-        // stubs and function prototypes must all exist before field types and
-        // bodies are resolved (mutual recursion / forward references).
+        // memoized — then run the passes over the typed collections, each item
+        // tagged with its file/module scope.
+        struct Scope<'p> {
+            file: FileId,
+            module: &'p [TokenKey],
+        }
         let mut records = Vec::new();
         let mut functions = Vec::new();
         let mut trampolines = Vec::new();
-        for stmt in program {
-            let span = span_of(stmt);
-            match stmt.kind() {
-                surface::StmtKind::Record(rec) => records.push((rec, span)),
-                surface::StmtKind::Function(func) => functions.push((func, span)),
-                surface::StmtKind::ExternTrampoline(t) => trampolines.push((t, span)),
-                // `mod` is a no-op while every program is one flat module.
-                surface::StmtKind::Mod(..) => {}
+        for (file, module, program) in files {
+            for stmt in *program {
+                let scope = Scope {
+                    file: *file,
+                    module,
+                };
+                let span = span_of(stmt);
+                match stmt.kind() {
+                    surface::StmtKind::Record(rec) => records.push((rec, span, scope)),
+                    surface::StmtKind::Function(func) => functions.push((func, span, scope)),
+                    surface::StmtKind::ExternTrampoline(t) => trampolines.push((t, span, scope)),
+                    // `mod` declarations drive package *discovery* (the driver
+                    // maps them to files before elaboration); here they carry
+                    // no items.
+                    surface::StmtKind::Mod(..) => {}
+                }
             }
         }
         // The later passes are keyed by the DefId each scan returned — never by
@@ -669,27 +788,37 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // item's fields or checking a body against the wrong prototype.
         let record_defs: Vec<Option<DefId>> = records
             .iter()
-            .map(|(rec, span)| self.scan_record(rec, *span))
+            .map(|(rec, span, scope)| {
+                self.set_current_file(scope.file);
+                self.defs.set_module(scope.module.to_vec());
+                self.scan_record(rec, *span)
+            })
             .collect();
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span)| self.scan_function(func, *span))
+            .map(|(func, span, scope)| {
+                self.set_current_file(scope.file);
+                self.defs.set_module(scope.module.to_vec());
+                self.scan_function(func, *span)
+            })
             .collect();
         records
             .iter()
             .zip(record_defs)
-            .filter_map(|((rec, _), def)| Some((rec, def?)))
+            .filter_map(|((rec, _, _), def)| Some((rec, def?)))
             .for_each(|(rec, def)| {
                 self.populate_record(rec, def);
             });
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
-        trampolines.iter().for_each(|(tramp, span)| {
+        trampolines.iter().for_each(|(tramp, span, scope)| {
+            self.set_current_file(scope.file);
+            self.defs.set_module(scope.module.to_vec());
             self.collect_trampoline(tramp, *span);
         });
     }
@@ -806,8 +935,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let span = record.span;
         let default_cap = record.default_cap;
         let file = record.file;
-        // Attribute field-resolution reports to the record's declaration file.
-        self.set_current_file(file);
+        // Field types resolve (and reports attribute) in the record's own
+        // declaration scope.
+        self.enter_item_scope(def, file);
         self.generic_names = ty_params.iter().map(|(n, id)| (*n, *id)).collect();
 
         // A generic at the head of a `[field]` link (`inner: [field] T`) must be
@@ -882,13 +1012,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // The target's type arguments are concrete here (no generics in scope).
         let ty_args: Vec<Ty<'tcx>> = tramp.ty_args.iter().map(|t| self.eval_type(t)).collect();
 
-        let Some(target) = self.defs.resolve_function(tramp.func.basename) else {
-            let hint = self.function_suggestion(tramp.func.basename);
+        let Some(target) = self.resolve_function_ref(&tramp.func) else {
+            let hint = if tramp.func.segments.is_empty() {
+                self.function_suggestion(tramp.func.basename)
+            } else {
+                String::new()
+            };
             self.error(
                 span,
                 format!(
                     "trampoline target function `{}` not found{hint}",
-                    self.sym(tramp.func.basename)
+                    self.path_display(&tramp.func)
                 ),
             );
             return;

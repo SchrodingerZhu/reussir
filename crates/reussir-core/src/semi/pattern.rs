@@ -324,11 +324,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return Pat::Wild;
         };
-        // The enum is named by the path qualifier (`Enum::Variant`), resolved to
-        // its def; bare `Variant` falls back to the scrutinee's own record def.
+        // The enum is named by the path qualifier (`Enum::Variant`, possibly
+        // module-qualified: `m::Enum::Variant`), resolved to its def; bare
+        // `Variant` falls back to the scrutinee's own record def.
         let want = ctor.path.basename;
         let enum_def = match ctor.path.segments.last() {
-            Some(&seg) => match self.defs.resolve_record(seg) {
+            Some(&seg) => match self.resolve_ctor_qualifier(&ctor.path) {
                 Some(d) => {
                     self.record_use(seg);
                     d

@@ -34,23 +34,23 @@ Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::
 ItemLoc: (u32, Option<raw::Span>) = "in" <f:"int"> <sp:Span?> => (raw::small_u32(&f), sp);
 
 RecordDecl: raw::Record = {
-    <default_cap:DefaultCap> "struct" "#" <path:"ident"> <generics:Generics?> <loc:ItemLoc?>
+    <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Struct,
-        path: path.into(),
+        path,
         generics: generics.unwrap_or_default(),
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
         body: raw::RecordBody::Compound(ms),
     },
-    <default_cap:DefaultCap> "enum" "#" <path:"ident"> <generics:Generics?> <loc:ItemLoc?>
+    <default_cap:DefaultCap> "enum" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <vs:Comma<Variant>> "}" ";"
     => raw::Record {
         default_cap,
         kind: raw::RecordKind::Enum,
-        path: path.into(),
+        path,
         generics: generics.unwrap_or_default(),
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
@@ -74,21 +74,21 @@ Variant: raw::Variant =
     <name:"ident"> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
 
 TrampDecl: raw::Tramp =
-    "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:"ident"> <ta:TyArgs?> ";"
+    "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:PathArgs> ";"
     => raw::Tramp {
         abi: abi.into(),
         name: name.into(),
-        target: target.into(),
-        ty_args: ta.unwrap_or_default(),
+        target: target.0,
+        ty_args: target.1,
     };
 
 Func: raw::Func =
-    <p:"pub"?> <r:"regional"?> "fn" "#" <path:"ident"> <generics:Generics?>
+    <p:"pub"?> <r:"regional"?> "fn" "#" <path:QPath> <generics:Generics?>
     "(" <params:Comma<Param>> ")" "->" <ret:Ty> <loc:ItemLoc?> <body:Body>
     => raw::Func {
         is_pub: p.is_some(),
         regional: r.is_some(),
-        path: path.into(),
+        path,
         generics: generics.unwrap_or_default(),
         params,
         ret,
@@ -98,6 +98,35 @@ Func: raw::Func =
     };
 
 Generics: Vec<raw::Generic> = "<" <CommaPlus<Generic>> ">";
+
+/// A fully-qualified item path: `a::b::Name`. Serialized with its segments
+/// joined; the rebuild pass splits them back into module + item name.
+QPath: String = <first:"ident"> <rest:("::" <"ident">)*> => {
+    let mut s = first.to_string();
+    for seg in rest {
+        s.push_str("::");
+        s.push_str(seg);
+    }
+    s
+};
+
+/// A qualified path with an optional turbofish (`a::b::f::<T, U>`), factored
+/// into one recursive production: after each `::` the next token — an
+/// identifier vs `<` — decides between another path segment and the
+/// type-argument list, which keeps the grammar LR(1).
+PathArgs: (String, Vec<raw::Ty>) = <first:"ident"> <tail:PathArgsTail> => {
+    let (rest, args) = tail;
+    (format!("{first}{rest}"), args)
+};
+
+PathArgsTail: (String, Vec<raw::Ty>) = {
+    => (String::new(), Vec::new()),
+    "::" <seg:"ident"> <tail:PathArgsTail> => {
+        let (rest, args) = tail;
+        (format!("::{seg}{rest}"), args)
+    },
+    "::" "<" <tys:CommaPlus<Ty>> ">" => (String::new(), tys),
+};
 
 Generic: raw::Generic = <r:"regional"?> <g:"generic">
     => raw::Generic { id: g, regional: r.is_some() };
@@ -124,13 +153,11 @@ Ty: raw::Ty = {
     "!" => raw::Ty::Bottom,
     <g:"generic"> => raw::Ty::Generic(g),
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
-    <cap:Cap> "#" <path:"ident"> <args:TyArgs?>
-        => raw::Ty::Record { cap, path: path.into(), args: args.unwrap_or_default() },
+    <cap:Cap> "#" <path:PathArgs>
+        => raw::Ty::Record { cap, path: path.0, args: path.1 },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
-
-TyArgs: Vec<raw::Ty> = "::" "<" <CommaPlus<Ty>> ">";
 
 Cap: raw::Cap = {
     => raw::Cap::None,
@@ -186,12 +213,12 @@ Atom: raw::Kind = {
         => raw::Kind::Proj(base, idxs.iter().map(raw::small_u32).collect()),
     "assign" "(" <dst:Expr> "," <field:"int"> "," <src:Expr> ")"
         => raw::Kind::Assign(dst, raw::small_u32(&field), src),
-    <r:"regional"?> "#" <path:"ident"> <ta:TyArgs?> "(" <args:Comma<Expr>> ")"
-        => raw::Kind::FuncCall { regional: r.is_some(), path: path.into(), ty_args: ta.unwrap_or_default(), args },
-    "#" <path:"ident"> <ta:TyArgs?> "{" <args:Comma<Expr>> "}"
-        => raw::Kind::CompoundCall { path: path.into(), ty_args: ta.unwrap_or_default(), args },
-    "#" <path:"ident"> <ta:TyArgs?> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
-        => raw::Kind::VariantCall { path: path.into(), ty_args: ta.unwrap_or_default(), variant: raw::small_usize(&v), args },
+    <r:"regional"?> "#" <path:PathArgs> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::FuncCall { regional: r.is_some(), path: path.0, ty_args: path.1, args },
+    "#" <path:PathArgs> "{" <args:Comma<Expr>> "}"
+        => raw::Kind::CompoundCall { path: path.0, ty_args: path.1, args },
+    "#" <path:PathArgs> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::VariantCall { path: path.0, ty_args: path.1, variant: raw::small_usize(&v), args },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"

@@ -92,8 +92,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk_generic(generic);
         }
 
-        // The built-in nullable type.
-        if self.sym(key) == "Nullable" {
+        // The built-in nullable type (a root builtin: never module-qualified).
+        if path.segments.is_empty() && self.sym(key) == "Nullable" {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
@@ -122,13 +122,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
-        // A user record, resolved to its def.
-        let Some(def) = self.defs.resolve_record(key) else {
-            let hint = self.record_suggestion(key);
-            self.error(
-                Some(span),
-                format!("unknown type `{}`{hint}", self.sym(key)),
-            );
+        // A user record, resolved to its def — bare in the current module, or
+        // module-qualified (`utils::math::Cell`, `root::…`, `super::…`).
+        let Some(def) = self.resolve_record_ref(path) else {
+            let hint = if path.segments.is_empty() {
+                self.record_suggestion(key)
+            } else {
+                String::new()
+            };
+            let shown = self.path_display(path);
+            self.error(Some(span), format!("unknown type `{shown}`{hint}"));
             return self.tcx.mk(TyKind::Bottom);
         };
         self.record_use(key);

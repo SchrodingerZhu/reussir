@@ -94,13 +94,29 @@ Ty: raw::Ty = {
     "(" ")" => raw::Ty::Unit,
     "!" => raw::Ty::Bottom,
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
-    <cap:Cap> <path:"ident"> <args:TyArgs?>
-        => raw::Ty::Record { cap, path: path.into(), args: args.unwrap_or_default() },
+    <cap:Cap> <path:TyPathArgs>
+        => raw::Ty::Record { cap, path: path.0, args: path.1 },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
 
-TyArgs: Vec<raw::Ty> = "::" "<" <CommaPlus<Ty>> ">";
+/// A qualified record-type path with an optional turbofish
+/// (`pkg::m::Cell::<u64>`), factored into one recursive production so the
+/// grammar stays LR(1): after each `::` the next token — an identifier vs
+/// `<` — decides between another path segment and the type-argument list.
+TyPathArgs: (String, Vec<raw::Ty>) = <first:"ident"> <tail:TyPathArgsTail> => {
+    let (rest, args) = tail;
+    (format!("{first}{rest}"), args)
+};
+
+TyPathArgsTail: (String, Vec<raw::Ty>) = {
+    => (String::new(), Vec::new()),
+    "::" <seg:"ident"> <tail:TyPathArgsTail> => {
+        let (rest, args) = tail;
+        (format!("::{seg}{rest}"), args)
+    },
+    "::" "<" <tys:CommaPlus<Ty>> ">" => (String::new(), tys),
+};
 
 Cap: raw::Cap = {
     => raw::Cap::None,
