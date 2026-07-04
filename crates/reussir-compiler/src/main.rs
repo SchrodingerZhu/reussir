@@ -29,8 +29,8 @@ use reussir_compiler::{
 };
 use reussir_core::full::mir;
 use reussir_core::full::mono::{MonoInput, monomorphize};
-use reussir_core::semi::resolve::DefTable;
 use reussir_core::semi::hir;
+use reussir_core::semi::resolve::DefTable;
 use reussir_core::semi::ty::TyCtxt;
 use reussir_core::semi::{elaborate, render_reports};
 use reussir_core::{in_arena, surface};
@@ -177,7 +177,9 @@ fn resolve_input_stage(cli: &Cli) -> Result<Stage, String> {
         })?
     };
     if !stage.is_input() {
-        return Err(format!("`{stage}` is an output-only stage; it cannot be read as input"));
+        return Err(format!(
+            "`{stage}` is an output-only stage; it cannot be read as input"
+        ));
     }
     Ok(stage)
 }
@@ -344,7 +346,16 @@ fn run(cli: &Cli) -> Result<bool, String> {
             .map(Produced::Module)
             .ok_or_else(|| format!("{name}: failed to parse MLIR module"))?,
         _ => match in_arena(|tcx| {
-            frontend(&context, tcx, input_stage, target, &name, &source, &source_map, cli)
+            frontend(
+                &context,
+                tcx,
+                input_stage,
+                target,
+                &name,
+                &source,
+                &source_map,
+                cli,
+            )
         }) {
             Ok(produced) => produced,
             Err(msg) => {
@@ -371,8 +382,11 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
 
     // MLIR → LLVM leg: the target machine's data layout feeds the polymorphic-FFI
-    // gather, which must run before the pipeline erases those ops.
+    // gather, which must run before the pipeline erases those ops, and is
+    // stamped on the module so the pipeline's MLIR `DataLayout` queries compute
+    // real target sizes and alignments.
     let machine = TargetMachine::new(&spec, opt, reloc)?;
+    pipeline::attach_target_spec(&module, machine.data_layout(), machine.triple())?;
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
@@ -392,7 +406,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Ok(true);
     }
 
-    let finalized = prepared.finish(&module).map_err(|e| format!("{name}: {e}"))?;
+    let finalized = prepared
+        .finish(&module)
+        .map_err(|e| format!("{name}: {e}"))?;
     let kind = target
         .output_kind()
         .expect("llvm-ir/asm/obj target past the mlir-llvm stage");
@@ -462,8 +478,8 @@ fn frontend<'c, 'tcx>(
             )
         }
         Stage::Hir => {
-            let parsed = hir::build::parse_program(tcx, source)
-                .map_err(|e| format!("{name}: {e}"))?;
+            let parsed =
+                hir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
             if target == Stage::Hir {
                 let text = hir::print::Printer::new(&parsed.defs, &parsed.names).program(
                     &parsed.funcs,
@@ -487,12 +503,20 @@ fn frontend<'c, 'tcx>(
             // A re-parsed IR carries no original source, so debug locations would
             // be meaningless: lower without a source map.
             finish_mir(
-                context, tcx, target, name, None, cli.debug, &full, &parsed.defs, &parsed.names,
+                context,
+                tcx,
+                target,
+                name,
+                None,
+                cli.debug,
+                &full,
+                &parsed.defs,
+                &parsed.names,
             )
         }
         Stage::Mir => {
-            let parsed = mir::build::parse_program(tcx, source)
-                .map_err(|e| format!("{name}: {e}"))?;
+            let parsed =
+                mir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
             finish_mir(
                 context,
                 tcx,

@@ -222,6 +222,13 @@ impl TargetMachine {
     pub fn data_layout(&self) -> &str {
         self.data_layout.to_str().unwrap_or("")
     }
+
+    /// The resolved target triple — with [`data_layout`](Self::data_layout),
+    /// what [`reussir_backend::pipeline::attach_target_spec`] stamps on the
+    /// module before the lowering pipeline.
+    pub fn triple(&self) -> &str {
+        self.triple.to_str().unwrap_or("")
+    }
 }
 
 impl Drop for TargetMachine {

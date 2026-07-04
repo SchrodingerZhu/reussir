@@ -72,6 +72,33 @@ impl Default for LoweringOptions {
     }
 }
 
+/// Stamps `module` with the target's layout facts — the `llvm.data_layout`
+/// string, the `llvm.target_triple`, and the translated `dlti.dl_spec` that
+/// MLIR `DataLayout` queries read. Call it before [`run_lowering_pipeline`]:
+/// without the spec MLIR falls back to conservative defaults (e.g. `i64` at
+/// ABI alignment 4), so every size and alignment the pipeline computes —
+/// allocation sizes, spill alignments, load/store alignment annotations —
+/// understates the target.
+pub fn attach_target_spec(module: &Module, data_layout: &str, triple: &str) -> Result<(), String> {
+    let data_layout = std::ffi::CString::new(data_layout)
+        .map_err(|_| "data layout contains a NUL byte".to_string())?;
+    let triple = std::ffi::CString::new(triple)
+        .map_err(|_| "target triple contains a NUL byte".to_string())?;
+    // SAFETY: `module` is live for the call, and both strings are
+    // NUL-terminated; the CAPI only reads them to build attributes.
+    let ok = unsafe {
+        sys::reussirModuleAttachTargetSpec(module.to_raw(), data_layout.as_ptr(), triple.as_ptr())
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid data layout string `{}`",
+            data_layout.to_string_lossy()
+        ))
+    }
+}
+
 // Wraps a Reussir C API pass factory result as a melior pass.
 fn pass(raw: sys::mlir_sys::MlirPass) -> Pass {
     // SAFETY: the C API returns a freshly created, owned MlirPass.

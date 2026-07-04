@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <mlir/Conversion/ConvertToLLVM/ToLLVMPass.h>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/InitAllDialects.h>
 #include <mlir/InitAllExtensions.h>
 #include <mlir/InitAllPasses.h>
-#include <mlir/Conversion/ConvertToLLVM/ToLLVMPass.h>
 #include <mlir/Pass/PassRegistry.h>
 #include <mlir/Tools/mlir-opt/MlirOptMain.h>
 
@@ -32,6 +32,9 @@ int main(int argc, char **argv) {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return reussir::createReussirSCFOpsLoweringPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return reussir::createReussirConvertToLLVMPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return reussir::createReussirRcCreateSinkPass();

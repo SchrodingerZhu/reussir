@@ -136,6 +136,11 @@ pub struct ReplSession<'a, 'tcx> {
     /// The `__repl_expr_N` counter (advanced only on success).
     counter: usize,
     pub(crate) opt: OptLevel,
+    /// The JIT's data layout and triple, stamped on every module before its
+    /// lowering pipeline so MLIR `DataLayout` queries compute real target
+    /// sizes and alignments (cached once — they never change per engine).
+    data_layout: String,
+    triple: String,
 }
 
 impl<'a, 'tcx> ReplSession<'a, 'tcx> {
@@ -169,6 +174,8 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             modules: Vec::new(),
             counter: 0,
             opt: config.opt,
+            data_layout: jit.data_layout(),
+            triple: jit.triple(),
         }
     }
 
@@ -488,6 +495,12 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             return Err(Outcome::Backend(
                 "lowering produced an invalid MLIR module (this is a bug)".to_string(),
             ));
+        }
+        if let Err(error) = pipeline::attach_target_spec(&module, &self.data_layout, &self.triple) {
+            self.elab.rollback(cp);
+            return Err(Outcome::Backend(format!(
+                "attaching the target spec failed: {error}"
+            )));
         }
         let options = LoweringOptions {
             opt: self.opt,
