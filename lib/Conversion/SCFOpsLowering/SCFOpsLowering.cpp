@@ -58,7 +58,7 @@ namespace {
 
 std::string b62encode(llvm::APInt value) {
   const char *alphabet =
-      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
   if (value.isZero())
     return std::string(1, alphabet[0]);
 

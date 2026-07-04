@@ -14,7 +14,7 @@
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/LogicalResult.h>
-#include <llvm/Support/xxhash.h>
+#include <llvm/Support/BLAKE3.h>
 #include <llvm/TargetParser/Triple.h>
 #include <mlir/Analysis/DataLayoutAnalysis.h>
 #include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>
@@ -64,6 +64,10 @@
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/TypeSize.h"
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <utility>
 
 namespace reussir {
 #define GEN_PASS_DEF_REUSSIRBASICOPSLOWERINGPASS
@@ -102,6 +106,68 @@ mlir::DataLayout getDataLayout(const mlir::LLVMTypeConverter &converter,
   return mlir::DataLayout::closest(op);
 }
 
+std::pair<uint64_t, uint64_t> divMod62Word(uint64_t carry, uint64_t word) {
+  constexpr uint64_t quotientCarry = 297528130221121800ULL;
+  constexpr uint64_t remainderCarry = 16ULL;
+  uint64_t qPart1 = carry * quotientCarry;
+  uint64_t rPart1 = carry * remainderCarry;
+  uint64_t qPart2 = word / 62;
+  uint64_t rPart2 = word % 62;
+  uint64_t rSum = rPart1 + rPart2;
+  uint64_t qAdj = rSum >= 62 ? rSum / 62 : 0;
+  uint64_t rFinal = rSum >= 62 ? rSum % 62 : rSum;
+  return {qPart1 + qPart2 + qAdj, rFinal};
+}
+
+std::pair<std::array<uint64_t, 4>, unsigned>
+divMod62(std::array<uint64_t, 4> words) {
+  auto [q0, r0] = divMod62Word(0, words[0]);
+  auto [q1, r1] = divMod62Word(r0, words[1]);
+  auto [q2, r2] = divMod62Word(r1, words[2]);
+  auto [q3, r3] = divMod62Word(r2, words[3]);
+  return {{{q0, q1, q2, q3}}, static_cast<unsigned>(r3)};
+}
+
+bool isZero(std::array<uint64_t, 4> words) {
+  return words[0] == 0 && words[1] == 0 && words[2] == 0 && words[3] == 0;
+}
+
+char b62Digit(unsigned digit) {
+  if (digit < 10)
+    return static_cast<char>('0' + digit);
+  if (digit < 36)
+    return static_cast<char>('a' + digit - 10);
+  return static_cast<char>('A' + digit - 36);
+}
+
+std::string b62Encode(std::array<uint64_t, 4> words) {
+  if (isZero(words))
+    return "0";
+  std::string out;
+  while (!isZero(words)) {
+    auto [quotient, digit] = divMod62(words);
+    out.push_back(b62Digit(digit));
+    words = quotient;
+  }
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
+std::array<uint64_t, 4> blake3Words(llvm::StringRef payload) {
+  llvm::BLAKE3 blake3;
+  blake3.update(payload);
+  auto result = blake3.final();
+  return std::bit_cast<std::array<uint64_t, 4>>(result);
+}
+
+std::string mangledBlake3Name(llvm::StringRef nameSpace,
+                              llvm::StringRef payload) {
+  std::string digits = b62Encode(blake3Words(payload));
+  const char *sep = (digits[0] >= '0' && digits[0] <= '9') ? "_" : "";
+  return "_RNvC" + std::to_string(nameSpace.size()) + nameSpace.str() +
+         std::to_string(digits.size()) + sep + digits;
+}
+
 template <typename Op>
 void addLifetimeOrInvariantOp(
     mlir::OpBuilder &rewriter, mlir::Location loc,
@@ -129,12 +195,9 @@ struct ReussirPanicConversionPattern
     // Get the panic message
     llvm::StringRef message = op.getMessage();
 
-    // Create a unique symbol name for the global string using xxh128
-    llvm::ArrayRef<uint8_t> messageBytes(
-        reinterpret_cast<const uint8_t *>(message.data()), message.size());
-    llvm::XXH128_hash_t hash = llvm::xxh3_128bits(messageBytes);
-    std::string globalName = "__panic_message_" + llvm::utohexstr(hash.high64) +
-                             "_" + llvm::utohexstr(hash.low64);
+    // Create a stable symbol name for the global string using BLAKE3.
+    std::string globalName =
+        mangledBlake3Name("REUSSIR_PANIC_MESSAGE", message);
 
     // Get or create the global string constant
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
@@ -2256,13 +2319,9 @@ struct ReussirStrUnsafeStartWithOpConversionPattern
         rewriter, loc, adaptor.getStr(), llvm::ArrayRef<int64_t>{0});
 
     // Use memcmp for all prefix lengths as LLVM optimizes it well.
-    // 1. Create global string for prefix
-    // Use hash to avoid duplicate strings (similar to PanicOp)
-    llvm::ArrayRef<uint8_t> messageBytes(
-        reinterpret_cast<const uint8_t *>(prefix.data()), prefix.size());
-    llvm::XXH128_hash_t hash = llvm::xxh3_128bits(messageBytes);
-    std::string globalName = "__str_prefix_" + llvm::utohexstr(hash.high64) +
-                             "_" + llvm::utohexstr(hash.low64);
+    // 1. Create a deduplicated global string for the prefix.
+    std::string globalName =
+        mangledBlake3Name("REUSSIR_STRING_PREFIX", prefix);
 
     auto existingGlobal = module.lookupSymbol<mlir::LLVM::GlobalOp>(globalName);
     if (!existingGlobal) {
