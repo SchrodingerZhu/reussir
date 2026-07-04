@@ -2119,6 +2119,7 @@ dependencies = [
  "ariadne",
  "cstree",
  "lasso",
+ "litrs",
  "logos",
  "palc",
  "serde_json",
