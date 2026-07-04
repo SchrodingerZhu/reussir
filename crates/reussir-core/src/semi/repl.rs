@@ -241,6 +241,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return_ty: wrapper_ty,
                 is_regional: false,
                 span,
+                file: self.current_file,
             },
         );
         self.elaborated.push(Function {
@@ -254,6 +255,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             is_regional: false,
             body: Some(body),
             span,
+            file: self.current_file,
         });
         self.trampolines.push(TrampolineRoot {
             name: export.to_string(),
@@ -283,6 +285,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     return_ty: self.tcx.mk_unit(),
                     is_regional: false,
                     span,
+                    file: self.current_file,
                 },
             );
             let dec_body = Expr {
@@ -302,6 +305,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 is_regional: false,
                 body: Some(dec_body),
                 span,
+                file: self.current_file,
             });
             self.trampolines.push(TrampolineRoot {
                 name: format!("{export}_dec"),
@@ -341,6 +345,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 )])),
                 regional_generics: Vec::new(),
                 span: None,
+                file: self.current_file,
             },
         );
         Some(def)

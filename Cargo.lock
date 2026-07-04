@@ -2123,6 +2123,7 @@ dependencies = [
  "palc",
  "serde_json",
  "stacker",
+ "tracing",
 ]
 
 [[package]]

@@ -1,13 +1,16 @@
 //! Parse error representation and user-facing rendering via [`ariadne`].
 //!
 //! Both the parser's own [`ParseError`]s and the middle-end's diagnostics render
-//! through one path: a caller lowers each into a [`Diagnostic`] (a byte-offset
-//! span, a [`Severity`], and a message) and hands the batch to [`render`], which
-//! draws a source-caret report. A spanless diagnostic — one the compiler could
-//! not trace back to a source location — falls back to a plain
+//! through one path: a caller lowers each into a [`Diagnostic`] (a file, a
+//! byte-offset span, a [`Severity`], and a message) and hands the batch to
+//! [`render`], which draws a source-caret report against the compilation's
+//! [`SourceCache`]. A spanless diagnostic — one the compiler could not trace
+//! back to a source location — falls back to a plain
 //! `{file_name}: severity: message` line.
 
-use ariadne::{Color, Config, Label, Report, ReportKind, Source};
+use ariadne::{Color, Config, Label, Report, ReportKind};
+
+use crate::source::{FileId, SourceCache};
 
 /// A parse (or lexical) error. Spans are byte offsets into the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,11 +28,12 @@ pub enum Severity {
 }
 
 /// A source-anchored diagnostic ready to render. The `span` is a byte-offset
-/// half-open range into the source, or `None` when the diagnostic cannot be
-/// pinned to a location (an internal/whole-program error) — in which case
-/// [`render`] prints it without a caret.
+/// half-open range into `file`, or `None` when the diagnostic cannot be pinned
+/// to a location (an internal/whole-program error) — in which case [`render`]
+/// prints it without a caret.
 #[derive(Debug, Clone)]
 pub struct Diagnostic<'a> {
+    pub file: FileId,
     pub span: Option<(u32, u32)>,
     pub severity: Severity,
     pub message: &'a str,
@@ -58,59 +62,34 @@ impl Severity {
     }
 }
 
-/// Maps byte offsets to character (Unicode scalar) offsets. The frontend
-/// records character offsets, so all externally visible spans go through this
-/// table.
-pub struct SourceMap {
-    /// `byte_to_char[b]` is the number of chars strictly before byte `b`.
-    byte_to_char: Vec<u32>,
-}
-
-impl SourceMap {
-    pub fn new(source: &str) -> Self {
-        let mut byte_to_char = vec![0u32; source.len() + 1];
-        let mut chars = 0u32;
-        for (idx, c) in source.char_indices() {
-            byte_to_char[idx..idx + c.len_utf8()].fill(chars);
-            chars += 1;
-        }
-        byte_to_char[source.len()] = chars;
-        Self { byte_to_char }
-    }
-
-    pub fn char_offset(&self, byte: u32) -> u32 {
-        self.byte_to_char[byte as usize]
-    }
-
-    pub fn char_span(&self, span: (u32, u32)) -> (u32, u32) {
-        (self.char_offset(span.0), self.char_offset(span.1))
-    }
-}
-
 /// Render `diagnostics` with source context to `out`.
 ///
-/// A diagnostic with a span draws an `ariadne` source-caret report; the `ariadne`
-/// cache holds the single source file and spans are converted to character
-/// offsets, which is what [`ariadne::Source`] indexes by. A spanless diagnostic
-/// is written as a plain `{file_name}: severity: message` line — the compiler
+/// A diagnostic with a span draws an `ariadne` source-caret report; `cache`
+/// serves every file of the compilation, and byte spans are converted to the
+/// character offsets [`ariadne::Source`] indexes by. A spanless diagnostic is
+/// written as a plain `{file_name}: severity: message` line — the compiler
 /// could not trace it back to source, so there is nothing to point at.
 pub fn render(
-    file_name: &str,
-    source: &str,
-    source_map: &SourceMap,
+    cache: &SourceCache,
     diagnostics: &[Diagnostic],
     color: bool,
     mut out: impl std::io::Write,
 ) -> std::io::Result<()> {
-    let cache = (file_name, Source::from(source));
     for diag in diagnostics {
-        // An empty source has no line to anchor a caret on; treat every
-        // span as absent rather than hand ariadne an out-of-bounds range.
-        let span = if source.is_empty() { None } else { diag.span };
+        // An unavailable or empty source has no line to anchor a caret on;
+        // treat the span as absent rather than hand ariadne an out-of-bounds
+        // range.
+        let span = match diag.span {
+            Some(span) if cache.is_available(diag.file) && cache.char_len(diag.file) > 0 => {
+                Some(span)
+            }
+            _ => None,
+        };
         let Some(bytes) = span else {
             writeln!(
                 out,
-                "{file_name}: {}: {}",
+                "{}: {}: {}",
+                cache.name(diag.file),
                 diag.severity.label(),
                 diag.message
             )?;
@@ -121,11 +100,11 @@ pub fn render(
         // character, e.g. an unexpected-EOF parse error) pulls back onto the
         // last character — out of bounds, ariadne would render the frame
         // with no source line at all.
-        let (start, end) = source_map.char_span(bytes);
-        let len = source.chars().count() as u32;
+        let (start, end) = cache.char_span(diag.file, bytes);
+        let len = cache.char_len(diag.file);
         let start = start.min(len.saturating_sub(1));
         let end = end.clamp(start + 1, len.max(start + 1));
-        let span = (file_name, start as usize..end as usize);
+        let span = (diag.file, start as usize..end as usize);
         // The message heads the report (a greppable summary line) and annotates
         // the underlined span, so the caret line stands on its own.
         Report::build(diag.severity.report_kind(), span.clone())
@@ -137,17 +116,17 @@ pub fn render(
                     .with_color(diag.severity.color()),
             )
             .finish()
-            .write(cache.clone(), &mut out)?;
+            .write(cache, &mut out)?;
     }
     Ok(())
 }
 
-/// Render parse `errors` with source context — a thin adapter over [`render`]
-/// that tags each as a [`Severity::Error`].
+/// Render parse `errors` — which are always local to one file — against
+/// `file`: a thin adapter over [`render`] that tags each as a
+/// [`Severity::Error`].
 pub fn render_errors(
-    file_name: &str,
-    source: &str,
-    source_map: &SourceMap,
+    cache: &SourceCache,
+    file: FileId,
     errors: &[ParseError],
     color: bool,
     out: impl std::io::Write,
@@ -155,10 +134,11 @@ pub fn render_errors(
     let diagnostics: Vec<Diagnostic> = errors
         .iter()
         .map(|e| Diagnostic {
+            file,
             span: Some(e.span),
             severity: Severity::Error,
             message: &e.message,
         })
         .collect();
-    render(file_name, source, source_map, &diagnostics, color, out)
+    render(cache, &diagnostics, color, out)
 }

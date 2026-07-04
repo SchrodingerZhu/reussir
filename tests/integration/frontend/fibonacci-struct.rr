@@ -1,4 +1,4 @@
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
 // CHECK: record @_RC6Matrix : value struct Matrix { "m00": u64, "m01": u64, "m10": u64, "m11": u64 };

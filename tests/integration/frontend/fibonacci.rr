@@ -1,4 +1,4 @@
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 // RUN: %cc %t.o %S/fibonacci.c -o %t.exe
 // RUN: %t.exe

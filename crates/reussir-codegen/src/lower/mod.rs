@@ -63,7 +63,7 @@ use reussir_core::full::mir;
 use reussir_core::semi::ty::TyCtxt;
 use reussir_syntax::kind::{Resolver, TokenKey};
 
-use crate::source::SourceMap;
+use crate::source::SourceCache;
 use expr::Lowerer;
 
 /// A construct the current lowering subset does not handle.
@@ -100,7 +100,7 @@ pub fn lower_program<'c, 'tcx>(
     context: &'c Context,
     tcx: &TyCtxt<'tcx>,
     program: &mir::Program<'tcx>,
-    source: Option<&SourceMap<'_>>,
+    source: Option<&SourceCache>,
     names: Option<&dyn Resolver<TokenKey>>,
 ) -> Result<Module<'c>> {
     let mut module = Module::new(Location::unknown(context));
@@ -166,8 +166,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let path = std::path::Path::new("add.rr");
-            let map = crate::source::SourceMap::new(path, src);
+            let mut map = crate::source::SourceCache::new();
+            map.add_file("add.rr", src);
             let module =
                 lower_program(&context, tcx, &full, Some(&map), None).expect("lowering succeeds");
             let printed = module
@@ -204,8 +204,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let path = std::path::Path::new("pt.rr");
-            let map = crate::source::SourceMap::new(path, src);
+            let mut map = crate::source::SourceCache::new();
+            map.add_file("pt.rr", src);
             let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
                 .expect("lowering succeeds");
             let printed = module
@@ -252,8 +252,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let path = std::path::Path::new("variant.rr");
-            let map = crate::source::SourceMap::new(path, src);
+            let mut map = crate::source::SourceCache::new();
+            map.add_file("variant.rr", src);
             let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
                 .expect("lowering succeeds");
             let printed = module

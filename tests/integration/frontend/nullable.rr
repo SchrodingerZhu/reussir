@@ -3,7 +3,7 @@
 // base yields the frozen `Nullable<[rigid] _>` view). Dispatch on nullables
 // is covered by `nullable_match.rr`.
 
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
 struct RcBox<T> {

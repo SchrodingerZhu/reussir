@@ -1,4 +1,4 @@
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
 // CHECK: record @_RIC6OptionlE : value enum Option::<i32> { @_RNvIC6OptionlE4Some Some(i32), @_RNvIC6OptionlE4None None() };

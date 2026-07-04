@@ -6,7 +6,7 @@
 // cross-region composition (member graph frozen in one region, parent in
 // another).
 
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
 // RUN: %rrc %s -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/regional_member_projection.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe

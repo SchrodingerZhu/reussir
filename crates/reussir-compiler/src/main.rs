@@ -23,7 +23,7 @@ use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
 use reussir_codegen::lower::lower_program;
-use reussir_codegen::source::SourceMap;
+use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::{
     OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir,
 };
@@ -155,6 +155,13 @@ struct Cli {
     #[arg(short = 'g', long = "debug")]
     debug: bool,
 
+    /// Omit source locations (the file table and `[start..end]` spans) from
+    /// `hir`/`mir` text dumps. The default dump is lossless — it round-trips
+    /// spans and file attribution — but structural readers (FileCheck tests,
+    /// quick inspection) may prefer the bare program.
+    #[arg(long = "no-source-locations")]
+    no_source_locations: bool,
+
     /// Log the lowering/backend `tracing` events (to stderr) at DEBUG level.
     /// `RUST_LOG`, if set, takes precedence over this.
     #[arg(short = 'v', long = "verbose")]
@@ -217,19 +224,23 @@ fn parse_reloc(s: &str) -> Result<RelocMode, String> {
     }
 }
 
-fn read_input(path: &PathBuf) -> Result<(String, String), String> {
+/// Read the input into a fresh source cache; the input becomes
+/// [`FileId::ROOT`].
+fn read_input(path: &PathBuf) -> Result<SourceCache, String> {
     use std::io::Read;
+    let mut cache = SourceCache::new();
     if path.as_os_str() == "-" {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
             .map_err(|e| format!("failed to read stdin: {e}"))?;
-        Ok(("<stdin>".to_owned(), buf))
+        cache.add_virtual("<stdin>", buf);
     } else {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        Ok((path.display().to_string(), text))
+        cache.add_file(path, text);
     }
+    Ok(cache)
 }
 
 /// Writes a text stage to `path`, or to stdout when it is `-`.
@@ -313,7 +324,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
     let opt = parse_opt(&cli.opt)?;
     let reloc = parse_reloc(&cli.relocation_mode)?;
-    let (name, source) = read_input(&cli.input)?;
+    let sources = read_input(&cli.input)?;
+    let name = sources.name(FileId::ROOT).to_owned();
+    let source = sources.source(FileId::ROOT);
 
     let spec = TargetSpec {
         triple: cli.target_triple.clone(),
@@ -328,7 +341,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             .output_kind()
             .ok_or_else(|| format!("cannot emit `{target}` from LLVM IR"))?;
         let machine = TargetMachine::new(&spec, opt, reloc)?;
-        let finalized = parse_llvm_ir(&name, &source)?;
+        let finalized = parse_llvm_ir(&name, source)?;
         emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
         return Ok(true);
     }
@@ -337,26 +350,13 @@ fn run(cli: &Cli) -> Result<bool, String> {
     if cli.disable_backend_multithreading {
         context.enable_multi_threading(false);
     }
-    let source_map = SourceMap::new(&cli.input, &source);
-
     // Front leg: reach an MLIR module (or a text dump for `hir`/`mir`). A `.mlir`
     // input parses directly; source/`.hir`/`.mir` run the frontend in the arena.
     let produced = match input_stage {
-        Stage::Mlir => Module::parse(&context, &source)
+        Stage::Mlir => Module::parse(&context, source)
             .map(Produced::Module)
             .ok_or_else(|| format!("{name}: failed to parse MLIR module"))?,
-        _ => match in_arena(|tcx| {
-            frontend(
-                &context,
-                tcx,
-                input_stage,
-                target,
-                &name,
-                &source,
-                &source_map,
-                cli,
-            )
-        }) {
+        _ => match in_arena(|tcx| frontend(&context, tcx, input_stage, target, &sources, cli)) {
             Ok(produced) => produced,
             Err(msg) => {
                 if !msg.is_empty() {
@@ -421,27 +421,24 @@ fn run(cli: &Cli) -> Result<bool, String> {
 ///
 /// An empty `Err` string signals diagnostics were already printed (a compile
 /// failure, exit 1) rather than a driver error (exit 2).
-#[allow(clippy::too_many_arguments)]
 fn frontend<'c, 'tcx>(
     context: &'c reussir_backend::melior::Context,
     tcx: &TyCtxt<'tcx>,
     input: Stage,
     target: Stage,
-    name: &str,
-    source: &str,
-    source_map: &SourceMap<'_>,
+    sources: &SourceCache,
     cli: &Cli,
 ) -> Result<Produced<'c>, String> {
+    let name = sources.name(FileId::ROOT);
+    let source = sources.source(FileId::ROOT);
     match input {
         Stage::Rr => {
             let parse = reussir_syntax::parse(source);
             if !parse.ok() {
-                let map = diagnostics::SourceMap::new(source);
                 let color = std::io::stderr().is_terminal();
                 let _ = diagnostics::render_errors(
-                    name,
-                    source,
-                    &map,
+                    sources,
+                    FileId::ROOT,
                     &parse.errors,
                     color,
                     std::io::stderr().lock(),
@@ -450,19 +447,20 @@ fn frontend<'c, 'tcx>(
             }
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
-            if render_reports(name, source, &elab.reports) {
+            if render_reports(sources, &elab.reports) {
                 return Err(String::new());
             }
             if target == Stage::Hir {
-                let text = hir::print::Printer::new(&elab.defs, elab.resolver).program(
-                    &elab.elaborated,
-                    &elab.records,
-                    &elab.trampolines,
-                );
+                let printer = if cli.no_source_locations {
+                    hir::print::Printer::new(&elab.defs, elab.resolver)
+                } else {
+                    hir::print::Printer::with_sources(&elab.defs, elab.resolver, sources)
+                };
+                let text = printer.program(&elab.elaborated, &elab.records, &elab.trampolines);
                 return Ok(Produced::Text(text));
             }
             let (full, reports) = monomorphize(&elab.mono_input());
-            if render_reports(name, source, &reports) {
+            if render_reports(sources, &reports) {
                 return Err(String::new());
             }
             finish_mir(
@@ -470,8 +468,8 @@ fn frontend<'c, 'tcx>(
                 tcx,
                 target,
                 name,
-                Some(source_map),
-                cli.debug,
+                Some(sources),
+                cli,
                 &full,
                 &elab.defs,
                 elab.resolver,
@@ -480,12 +478,19 @@ fn frontend<'c, 'tcx>(
         Stage::Hir => {
             let parsed =
                 hir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
+            // The dump's file table names the original sources. Rebuild the
+            // same dense ids, but delay opening paths until diagnostics or
+            // debug locations actually need source text. An old, table-less
+            // dump has no locations at all.
+            let dump_sources = refetch_sources(&parsed.files);
             if target == Stage::Hir {
-                let text = hir::print::Printer::new(&parsed.defs, &parsed.names).program(
-                    &parsed.funcs,
-                    &parsed.records,
-                    &parsed.trampolines,
-                );
+                let printer = match &dump_sources {
+                    Some(cache) if !cli.no_source_locations => {
+                        hir::print::Printer::with_sources(&parsed.defs, &parsed.names, cache)
+                    }
+                    _ => hir::print::Printer::new(&parsed.defs, &parsed.names),
+                };
+                let text = printer.program(&parsed.funcs, &parsed.records, &parsed.trampolines);
                 return Ok(Produced::Text(text));
             }
             let input = MonoInput {
@@ -497,18 +502,25 @@ fn frontend<'c, 'tcx>(
                 trampolines: &parsed.trampolines,
             };
             let (full, reports) = monomorphize(&input);
-            if render_reports(name, source, &reports) {
-                return Err(String::new());
+            match &dump_sources {
+                Some(cache) => {
+                    if render_reports(cache, &reports) {
+                        return Err(String::new());
+                    }
+                }
+                None => {
+                    if render_reports(sources, &reports) {
+                        return Err(String::new());
+                    }
+                }
             }
-            // A re-parsed IR carries no original source, so debug locations would
-            // be meaningless: lower without a source map.
             finish_mir(
                 context,
                 tcx,
                 target,
                 name,
-                None,
-                cli.debug,
+                dump_sources.as_ref(),
+                cli,
                 &full,
                 &parsed.defs,
                 &parsed.names,
@@ -517,13 +529,14 @@ fn frontend<'c, 'tcx>(
         Stage::Mir => {
             let parsed =
                 mir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
+            let dump_sources = refetch_sources(&parsed.files);
             finish_mir(
                 context,
                 tcx,
                 target,
                 name,
-                None,
-                cli.debug,
+                dump_sources.as_ref(),
+                cli,
                 &parsed.program,
                 &parsed.defs,
                 &parsed.names,
@@ -531,6 +544,25 @@ fn frontend<'c, 'tcx>(
         }
         _ => unreachable!("frontend only handles rr/hir/mir inputs"),
     }
+}
+
+/// Rebuild a source cache from an IR dump's file table so its spans keep
+/// resolving: real paths are registered for lazy loading, while virtual
+/// (`<bracketed>`) entries become name-only placeholders. `None` means the dump
+/// was printed without locations.
+fn refetch_sources(files: &[String]) -> Option<SourceCache> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut cache = SourceCache::new();
+    for name in files {
+        if name.starts_with('<') {
+            cache.add_unavailable(name);
+        } else {
+            cache.add_lazy_file(name);
+        }
+    }
+    Some(cache)
 }
 
 /// Finish the front leg from a ground MIR program: a `mir` dump, or lowering to
@@ -541,20 +573,24 @@ fn finish_mir<'c, 'tcx>(
     tcx: &TyCtxt<'tcx>,
     target: Stage,
     name: &str,
-    source_map: Option<&SourceMap<'_>>,
-    debug: bool,
+    sources: Option<&SourceCache>,
+    cli: &Cli,
     program: &mir::Program<'tcx>,
     defs: &DefTable,
     resolver: &dyn Resolver<TokenKey>,
 ) -> Result<Produced<'c>, String> {
     if target == Stage::Mir {
-        return Ok(Produced::Text(
-            mir::print::Printer::new(defs, resolver).program(program),
-        ));
+        let printer = match sources {
+            Some(cache) if !cli.no_source_locations => {
+                mir::print::Printer::with_sources(defs, resolver, cache)
+            }
+            _ => mir::print::Printer::new(defs, resolver),
+        };
+        return Ok(Produced::Text(printer.program(program)));
     }
     // Names feed variable/function debug info; only meaningful with `-g`.
-    let names = debug.then_some(resolver);
-    let module = lower_program(context, tcx, program, source_map, names)
-        .map_err(|e| format!("{name}: {e}"))?;
+    let names = cli.debug.then_some(resolver);
+    let module =
+        lower_program(context, tcx, program, sources, names).map_err(|e| format!("{name}: {e}"))?;
     Ok(Produced::Module(module))
 }

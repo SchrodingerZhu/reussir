@@ -41,7 +41,7 @@ use reussir_core::surface::{Span, Visibility};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use smallvec::SmallVec;
 
-use crate::source::SourceMap;
+use crate::source::{FileId, SourceCache};
 
 use super::ty::{TypeCtx, field_link_element, is_unit, num_class, regional_capability};
 use super::{LoweringError, Result, err};
@@ -209,7 +209,7 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     records: RecordTable<'tcx>,
     /// Resolves MIR byte spans to file/line/column; `None` lowers to `unknown`
     /// locations.
-    pub(super) source: Option<&'p SourceMap<'p>>,
+    pub(super) source: Option<&'p SourceCache>,
     /// Resolves interned source names for debug info; `Some` (with `source`)
     /// enables DWARF variable/type emission. See [`debug`](super::debug).
     pub(super) names: Option<&'p dyn Resolver<TokenKey>>,
@@ -223,6 +223,9 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     /// expression's span by [`expr`](Self::expr) (saved and restored around each
     /// node), so every op a node emits shares that node's source position.
     cur_loc: RefCell<Location<'c>>,
+    /// The file the current function's spans index (functions from different
+    /// files share one module); set by [`function`](Self::function).
+    cur_file: std::cell::Cell<FileId>,
     /// Record symbols whose debug composite is currently being built — the
     /// recursion guard for [`debug`](super::debug). A type that reaches itself
     /// (directly or through a boxed field) is emitted as a memberless
@@ -235,7 +238,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         context: &'c Context,
         tcx: &'p TyCtxt<'tcx>,
         program: &'p mir::Program<'tcx>,
-        source: Option<&'p SourceMap<'p>>,
+        source: Option<&'p SourceCache>,
         names: Option<&'p dyn Resolver<TokenKey>>,
     ) -> Self {
         Lowerer {
@@ -250,6 +253,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             var_tys: RefCell::new(FxHashMap::default()),
             temp_tys: RefCell::new(FxHashMap::default()),
             cur_loc: RefCell::new(Location::unknown(context)),
+            cur_file: std::cell::Cell::new(FileId::ROOT),
             dbg_building: RefCell::new(FxHashSet::default()),
         }
     }
@@ -265,13 +269,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         *self.cur_loc.borrow()
     }
 
-    /// Resolve a MIR span to a `FileLineColLoc`, or `unknown` without a source
-    /// map or span.
+    /// Resolve a MIR span (an offset into the current function's file) to a
+    /// `FileLineColLoc`, or `unknown` without a source cache or span — or when
+    /// the file's content could not be obtained (a re-ingested dump whose
+    /// source is virtual or missing), since offsets then resolve to nothing.
     pub(super) fn location(&self, span: Option<Span>) -> Location<'c> {
         match (self.source, span) {
-            (Some(map), Some(span)) => {
-                let (line, col) = map.span_start(span);
-                Location::new(self.context, &map.filename(), line, col)
+            (Some(cache), Some(span)) if cache.is_available(self.cur_file.get()) => {
+                let file = self.cur_file.get();
+                let (line, col) = cache.line_col(file, span.start as usize);
+                Location::new(self.context, cache.name(file), line, col)
             }
             _ => Location::unknown(self.context),
         }
@@ -293,6 +300,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Lower one MIR function to a `func.func` operation.
     pub(super) fn function(&self, func: &mir::Function<'tcx>) -> Result<Operation<'c>> {
+        // The function's spans index its own declaration file; every
+        // `location` below resolves against it.
+        self.cur_file.set(func.file);
         // The function and its entry-level ops (block args, return) take the
         // body's source position; nested nodes refine it as they are walked.
         let loc = self.location(func.body.and_then(|b| b.span));

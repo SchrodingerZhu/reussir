@@ -220,8 +220,8 @@ fn lowers_variant_debug_info_through_the_pipeline() {
         );
         let (full, reports) = monomorphize(&elab.mono_input());
         assert!(reports.is_empty(), "mono reports: {reports:#?}");
-        let path = std::path::Path::new("variant.rr");
-        let map = reussir_codegen::source::SourceMap::new(path, src);
+        let mut map = reussir_codegen::source::SourceCache::new();
+        map.add_file("variant.rr", src);
         lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
             .expect("variant lowering with debug info succeeds")
     });

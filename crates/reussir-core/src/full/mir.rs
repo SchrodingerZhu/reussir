@@ -17,6 +17,7 @@
 
 use lasso::{Rodeo, Spur};
 use reussir_syntax::kind::TokenKey;
+use reussir_syntax::source::FileId;
 
 use crate::literal::{FloatLit, Integer};
 use crate::semi::ctxt::DefaultCap;
@@ -77,6 +78,11 @@ pub struct Function<'tcx> {
     pub return_ty: Ty<'tcx>,
     /// `None` for a declared-but-undefined function.
     pub body: Option<&'tcx Expr<'tcx>>,
+    /// The file the function's spans index in the compilation's source cache
+    /// (drives per-function debug locations). Serialized in the textual MIR as
+    /// `in <id>` against the dump's source-file table, so the association
+    /// survives a dump/re-parse round trip.
+    pub file: FileId,
 }
 
 /// A function parameter: source name, local variable, and ground type.

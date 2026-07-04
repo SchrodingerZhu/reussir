@@ -4,6 +4,7 @@
 //! Pattern matches are compiled to a [`DecisionTree`].
 
 use reussir_syntax::kind::TokenKey;
+use reussir_syntax::source::FileId;
 
 use crate::literal::{FloatLit, Integer};
 use crate::semi::ty::{DefId, GenericId, Ty};
@@ -218,4 +219,7 @@ pub struct Function<'tcx> {
     pub is_regional: bool,
     pub body: Option<Expr<'tcx>>,
     pub span: Option<Span>,
+    /// The file the function is declared in; its spans (and its body's) index
+    /// that file in the compilation's source cache.
+    pub file: FileId,
 }

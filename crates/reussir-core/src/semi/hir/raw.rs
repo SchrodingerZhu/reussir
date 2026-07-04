@@ -7,14 +7,15 @@
 //! holes, so the textual form does not represent them.
 
 pub use crate::full::mir::raw::{
-    ArithOp, Cap, CmpOp, FloatLit, Integer, float_lit, float_path_segs, small_u32, small_u64,
-    small_usize,
+    ArithOp, Cap, CmpOp, FileEntry, FloatLit, Integer, Span, float_lit, float_path_segs, small_u32,
+    small_u64, small_usize,
 };
 
 /// The whole HIR program: enough to resume into monomorphization — the record
 /// declarations and trampoline roots mono needs, plus the elaborated functions.
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub files: Vec<FileEntry>,
     pub records: Vec<Record>,
     pub trampolines: Vec<Tramp>,
     pub funcs: Vec<Func>,
@@ -23,6 +24,7 @@ pub struct Program {
 /// One top-level item, as the grammar yields them before partitioning.
 #[derive(Clone, Debug)]
 pub enum Item {
+    File(FileEntry),
     Record(Record),
     Tramp(Tramp),
     Func(Func),
@@ -31,12 +33,14 @@ pub enum Item {
 impl Program {
     pub fn from_items(items: Vec<Item>) -> Program {
         let mut p = Program {
+            files: Vec::new(),
             records: Vec::new(),
             trampolines: Vec::new(),
             funcs: Vec::new(),
         };
         for item in items {
             match item {
+                Item::File(f) => p.files.push(f),
                 Item::Record(r) => p.records.push(r),
                 Item::Tramp(t) => p.trampolines.push(t),
                 Item::Func(f) => p.funcs.push(f),
@@ -56,6 +60,9 @@ pub struct Record {
     pub kind: RecordKind,
     pub path: String,
     pub generics: Vec<Generic>,
+    /// The file-table id the record's span indexes (`in <id>`).
+    pub file: Option<u32>,
+    pub span: Option<Span>,
     pub body: RecordBody,
 }
 
@@ -114,6 +121,9 @@ pub struct Func {
     pub generics: Vec<Generic>,
     pub params: Vec<Param>,
     pub ret: Ty,
+    /// The file-table id the function's spans index (`in <id>`).
+    pub file: Option<u32>,
+    pub span: Option<Span>,
     pub body: Option<Expr>,
 }
 
@@ -166,6 +176,9 @@ pub type StrTag = [u64; 4];
 pub struct Expr {
     pub kind: Box<Kind>,
     pub ty: Ty,
+    /// The node's source span (`[start..end]`), byte offsets into the owning
+    /// function's file.
+    pub span: Option<Span>,
 }
 
 impl Expr {
@@ -173,7 +186,13 @@ impl Expr {
         Expr {
             kind: Box::new(kind),
             ty,
+            span: None,
         }
+    }
+
+    pub fn with_span(mut self, span: Option<Span>) -> Expr {
+        self.span = span;
+        self
     }
 }
 
@@ -198,6 +217,8 @@ pub enum Kind {
     Let {
         var: u32,
         name: String,
+        /// The binding name's own span (distinct from the node's).
+        name_span: Option<Span>,
         value: Expr,
     },
     Seq(Vec<Expr>),

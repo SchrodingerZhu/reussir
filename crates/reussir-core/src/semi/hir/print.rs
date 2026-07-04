@@ -14,6 +14,7 @@
 
 use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
+use reussir_syntax::source::SourceCache;
 
 use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot};
 use crate::semi::hir::{
@@ -33,11 +34,34 @@ const IR_PRINTER: PpPrinter = PpPrinter {
 pub struct Printer<'a> {
     defs: &'a DefTable,
     resolver: &'a dyn Resolver<TokenKey>,
+    /// When present, the dump carries source locations: the file table
+    /// (`0 = "path";`), each item's `in <file> [span]`, and every node's
+    /// `[start..end]` span — the lossless round-trip form (`rrc --emit hir`).
+    /// Without it the dump is the bare program (human display, e.g. the
+    /// REPL's `:dump context`).
+    sources: Option<&'a SourceCache>,
 }
 
 impl<'a> Printer<'a> {
     pub fn new(defs: &'a DefTable, resolver: &'a dyn Resolver<TokenKey>) -> Self {
-        Printer { defs, resolver }
+        Printer {
+            defs,
+            resolver,
+            sources: None,
+        }
+    }
+
+    /// A printer that also serializes source locations against `sources`.
+    pub fn with_sources(
+        defs: &'a DefTable,
+        resolver: &'a dyn Resolver<TokenKey>,
+        sources: &'a SourceCache,
+    ) -> Self {
+        Printer {
+            defs,
+            resolver,
+            sources: Some(sources),
+        }
     }
 
     /// Render the resumable Semi output: record declarations, trampoline roots,
@@ -50,6 +74,11 @@ impl<'a> Printer<'a> {
         trampolines: &[TrampolineRoot<'_>],
     ) -> String {
         let mut items: Vec<Doc<'static>> = Vec::new();
+        if let Some(cache) = self.sources {
+            for id in cache.ids() {
+                items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
+            }
+        }
         let mut recs: Vec<&Record<'_>> = records.values().collect();
         // Sort by qualified path (phase-canonical: identical across the original
         // elaboration and a reparse, unlike the session-local `DefId`).
@@ -115,7 +144,8 @@ impl<'a> Printer<'a> {
             RecordKind::EnumKind => "enum #",
         };
         let head = text(format!("{cap}{kind}{}", self.path(r.def)))
-            + self.generics_binder(&r.ty_params, &r.regional_generics);
+            + self.generics_binder(&r.ty_params, &r.regional_generics)
+            + self.item_loc(r.file, r.span);
         head + text(" { ") + self.record_body(r) + text(" };")
     }
 
@@ -193,13 +223,38 @@ impl<'a> Printer<'a> {
                 text(format!("v{} ({}): ", var.0, self.resolver.resolve(*name))) + self.ty(*ty)
             })
             .collect();
-        sig = sig + text("(") + comma_sep(params) + text(") -> ") + self.ty(f.return_ty);
+        sig = sig
+            + text("(")
+            + comma_sep(params)
+            + text(") -> ")
+            + self.ty(f.return_ty)
+            + self.item_loc(f.file, f.span);
 
         match &f.body {
             Some(body) => {
                 sig + text(" {") + indent(hardline() + self.expr(body)) + hardline() + text("}")
             }
             None => sig + text(";"),
+        }
+    }
+
+    /// ` in <file> [span]` — an item's source location (locations mode only).
+    fn item_loc(
+        &self,
+        file: reussir_syntax::source::FileId,
+        span: Option<crate::surface::Span>,
+    ) -> Doc<'static> {
+        if self.sources.is_none() {
+            return Doc::Null;
+        }
+        text(format!(" in {}", file.index())) + self.span_doc(span)
+    }
+
+    /// ` [start..end]` — a node's span suffix (locations mode only).
+    fn span_doc(&self, span: Option<crate::surface::Span>) -> Doc<'static> {
+        match (self.sources, span) {
+            (Some(_), Some(sp)) => text(format!(" [{}..{}]", sp.start, sp.end)),
+            _ => Doc::Null,
         }
     }
 
@@ -257,7 +312,12 @@ impl<'a> Printer<'a> {
         match &e.kind {
             ExprKind::Seq(items) => {
                 let n = items.len();
-                let mut d = Doc::Null;
+                // The leading `[span]` is the `Seq`'s own (its items carry
+                // theirs inline) — the dual of the grammar's `Block` rule.
+                let mut d = match (self.sources, e.span) {
+                    (Some(_), Some(sp)) => text(format!("[{}..{}]", sp.start, sp.end)) + hardline(),
+                    _ => Doc::Null,
+                };
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
                         d = d + hardline();
@@ -280,23 +340,27 @@ impl<'a> Printer<'a> {
             ExprKind::Let {
                 var: v,
                 name,
+                span: name_span,
                 value,
-                ..
             } => {
-                text("let ")
+                text("let")
+                    + self.span_doc(e.span)
+                    + text(" ")
                     + var(*v)
-                    + text(format!(" ({}) = ", self.resolver.resolve(*name)))
+                    + text(format!(" ({}", self.resolver.resolve(*name)))
+                    + self.span_doc(*name_span)
+                    + text(") = ")
                     + self.value(value)
             }
             ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),
-            ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e.ty),
-            ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, tree), e.ty),
-            _ => self.typed(self.atom(e), e.ty),
+            ExprKind::If(c, t, f) => self.typed(self.render_if(c, t, f), e),
+            ExprKind::Match(scrut, tree) => self.typed(self.render_match(scrut, tree), e),
+            _ => self.typed(self.atom(e), e),
         }
     }
 
-    fn typed(&self, atom: Doc<'static>, ty: Ty<'_>) -> Doc<'static> {
-        atom + text(" : ") + self.ty(ty)
+    fn typed(&self, atom: Doc<'static>, e: &Expr<'_>) -> Doc<'static> {
+        atom + text(" : ") + self.ty(e.ty) + self.span_doc(e.span)
     }
 
     fn render_if(&self, c: &Expr<'_>, t: &Expr<'_>, f: &Expr<'_>) -> Doc<'static> {

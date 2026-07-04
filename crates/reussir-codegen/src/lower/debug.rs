@@ -61,13 +61,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
     /// Set the module-level debug attributes the conversion pass reads (the
     /// source file's basename and directory). No-op unless debug info is enabled.
+    ///
+    /// These name the *compile unit's* file — the crate root
+    /// ([`crate::source::FileId::ROOT`], the primary input). Per-op line
+    /// locations carry their own per-function file names via `FileLineColLoc`.
     pub(super) fn set_module_debug_attrs(&self, module: &mut Module<'c>) {
         if !self.debug_enabled() {
             return;
         }
         let Some(source) = self.source else { return };
-        let basename = StringAttribute::new(self.context, &source.basename());
-        let directory = StringAttribute::new(self.context, &source.directory());
+        let root = crate::source::FileId::ROOT;
+        let basename = StringAttribute::new(self.context, &source.basename(root));
+        let directory = StringAttribute::new(self.context, &source.directory(root));
         let mut op = module.as_operation_mut();
         op.set_attribute("reussir.dbg.file_basename", basename.into());
         op.set_attribute("reussir.dbg.file_directory", directory.into());

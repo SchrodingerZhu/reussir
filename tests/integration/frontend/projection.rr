@@ -1,4 +1,4 @@
-// RUN: %rrc %s --emit mir -o - | %FileCheck %s
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
 // CHECK: record @_RIC3BoxIC3BoxmEE : value struct Box::<Box::<u32>> { "val": Box::<u32> };

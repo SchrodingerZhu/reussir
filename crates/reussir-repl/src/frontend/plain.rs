@@ -10,7 +10,8 @@
 use std::io::{BufRead, Write};
 
 use reussir_core::semi::render_reports;
-use reussir_syntax::diagnostics::{self, SourceMap};
+use reussir_syntax::diagnostics;
+use reussir_syntax::source::SourceCache;
 
 use crate::session::{Exit, Outcome, ReplSession};
 
@@ -29,7 +30,7 @@ pub fn drive(
             continue;
         }
         let outcome = session.eval(&input);
-        if let Some(exit) = render(&outcome, &input) {
+        if let Some(exit) = render(&outcome, session.sources()) {
             return exit;
         }
     }
@@ -86,14 +87,14 @@ fn prompt(text: &str, interactive: bool) {
 
 /// Render one outcome (stdout for results, stderr for diagnostics).
 /// `Some(exit)` when the outcome ends the drive loop.
-pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
+pub fn render(outcome: &Outcome, sources: &SourceCache) -> Option<Exit> {
     match outcome {
         Outcome::Empty => {}
         Outcome::Quit => return Some(Exit::Quit),
         Outcome::ClearRequested => return Some(Exit::Clear),
         Outcome::Text(text) => println!("{text}"),
         Outcome::Definitions { count, warnings } => {
-            render_reports("<repl>", input, warnings);
+            render_reports(sources, warnings);
             for _ in 0..*count {
                 println!("Definition added.");
             }
@@ -103,7 +104,7 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
             ty,
             warnings,
         } => {
-            render_reports("<repl>", input, warnings);
+            render_reports(sources, warnings);
             // Unit results print bare, matching the established contract.
             if ty == "()" {
                 println!("()");
@@ -117,16 +118,14 @@ pub fn render(outcome: &Outcome, input: &str) -> Option<Exit> {
             ty,
             warnings,
         } => {
-            render_reports("<repl>", input, warnings);
+            render_reports(sources, warnings);
             println!("{name} = {value} : {ty}");
         }
-        Outcome::ParseErrors(errors) => {
-            let map = SourceMap::new(input);
-            let _ =
-                diagnostics::render_errors("<repl>", input, &map, errors, false, std::io::stderr());
+        Outcome::ParseErrors { file, errors } => {
+            let _ = diagnostics::render_errors(sources, *file, errors, false, std::io::stderr());
         }
         Outcome::Reports(reports) => {
-            render_reports("<repl>", input, reports);
+            render_reports(sources, reports);
         }
         Outcome::Backend(message) => eprintln!("error: {message}"),
     }

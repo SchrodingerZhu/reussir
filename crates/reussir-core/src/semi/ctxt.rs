@@ -2,6 +2,7 @@
 //! the scan/collect driver.
 
 use reussir_syntax::kind::{Resolver, TokenKey};
+use reussir_syntax::source::{FileId, SourceCache};
 use rustc_hash::FxHashMap;
 
 use crate::semi::infer::InferCtxt;
@@ -32,12 +33,15 @@ pub enum Severity {
     Warning,
 }
 
-/// A diagnostic.
+/// A diagnostic. The `span` indexes `file`'s text in the compilation's
+/// [`SourceCache`]; items never straddle files, so one file id per report is
+/// exact.
 #[derive(Clone, Debug)]
 pub struct Report {
     pub severity: Severity,
     pub message: String,
     pub span: Option<Span>,
+    pub file: FileId,
 }
 
 /// Render `reports` to stderr with source-caret context and return whether any
@@ -45,35 +49,34 @@ pub struct Report {
 /// could not trace back to a span — an internal/whole-program error — prints as
 /// a plain line. The frontend driver (`rrc`) funnels through here so parse and
 /// elaboration diagnostics render identically.
-pub fn render_reports(name: &str, source: &str, reports: &[Report]) -> bool {
+pub fn render_reports(cache: &SourceCache, reports: &[Report]) -> bool {
     use std::io::IsTerminal;
 
     let color = std::io::stderr().is_terminal();
-    render_reports_to(name, source, reports, color, std::io::stderr().lock())
+    render_reports_to(cache, reports, color, std::io::stderr().lock())
 }
 
 /// Writer-taking variant of [`render_reports`], for frontends that own their
 /// display (e.g. the REPL TUI renders into a buffer and styles the lines
 /// itself — stderr would be invisible in the alternate screen).
 pub fn render_reports_to(
-    name: &str,
-    source: &str,
+    cache: &SourceCache,
     reports: &[Report],
     color: bool,
     out: impl std::io::Write,
 ) -> bool {
-    use reussir_syntax::diagnostics::{self, Diagnostic, Severity as RenderSeverity, SourceMap};
+    use reussir_syntax::diagnostics::{self, Diagnostic, Severity as RenderSeverity};
 
     let had_error = reports
         .iter()
         .any(|r| matches!(r.severity, Severity::Error));
-    // The happy path carries no reports; skip building the byte→char map.
     if reports.is_empty() {
         return had_error;
     }
     let diags: Vec<Diagnostic> = reports
         .iter()
         .map(|r| Diagnostic {
+            file: r.file,
             span: r.span.map(|s| (s.start, s.end)),
             severity: match r.severity {
                 Severity::Error => RenderSeverity::Error,
@@ -82,8 +85,7 @@ pub fn render_reports_to(
             message: &r.message,
         })
         .collect();
-    let map = SourceMap::new(source);
-    let _ = diagnostics::render(name, source, &map, &diags, color, out);
+    let _ = diagnostics::render(cache, &diags, color, out);
     had_error
 }
 
@@ -124,6 +126,8 @@ pub struct Record<'tcx> {
     /// monomorphization call boundary, like a function's `regional_generics`.
     pub regional_generics: Vec<GenericId>,
     pub span: Option<Span>,
+    /// The file the record is declared in (spans index it).
+    pub file: FileId,
 }
 
 /// A collected function prototype (signature only).
@@ -144,6 +148,8 @@ pub struct FuncProto<'tcx> {
     pub return_ty: Ty<'tcx>,
     pub is_regional: bool,
     pub span: Option<Span>,
+    /// The file the function is declared in (spans index it).
+    pub file: FileId,
 }
 
 /// Records the generic at the head of a `[flex]`-annotated type (peeling
@@ -258,6 +264,11 @@ pub struct Elaborator<'a, 'tcx> {
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
     pub reports: Vec<Report>,
+    /// The file whose items are currently being processed; stamped onto every
+    /// report and declared item. The driver sets it per input file
+    /// ([`Elaborator::set_current_file`]); the check passes restore it per item
+    /// from the item's own declaration file.
+    pub current_file: FileId,
 
     // ----- per-function working state (reset by `enter_function`) -----
     pub infer: InferCtxt<'a, 'tcx>,
@@ -317,6 +328,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             strings: StringUniqifier::new(),
             elaborated: Vec::new(),
             reports: Vec::new(),
+            current_file: FileId::ROOT,
             infer: InferCtxt::new(tcx),
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
@@ -330,11 +342,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     // ----- diagnostics -----
 
+    /// Switch the file whose items are being processed. Reports and item
+    /// declarations from here on are attributed to `file`.
+    pub fn set_current_file(&mut self, file: FileId) {
+        self.current_file = file;
+    }
+
     pub fn error(&mut self, span: Option<Span>, message: impl Into<String>) {
         self.reports.push(Report {
             severity: Severity::Error,
             message: message.into(),
             span,
+            file: self.current_file,
         });
     }
 
@@ -343,6 +362,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             severity: Severity::Warning,
             message: message.into(),
             span,
+            file: self.current_file,
         });
     }
 
@@ -705,6 +725,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             fields: None,
             regional_generics: Vec::new(),
             span,
+            file: self.current_file,
         };
         self.records.insert(def, record);
         Some(def)
@@ -755,6 +776,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return_ty,
             is_regional: func.is_regional,
             span,
+            file: self.current_file,
         };
         self.functions.insert(def, proto);
         Some(def)
@@ -783,6 +805,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let ty_params = record.ty_params.clone();
         let span = record.span;
         let default_cap = record.default_cap;
+        let file = record.file;
+        // Attribute field-resolution reports to the record's declaration file.
+        self.set_current_file(file);
         self.generic_names = ty_params.iter().map(|(n, id)| (*n, *id)).collect();
 
         // A generic at the head of a `[field]` link (`inner: [field] T`) must be
