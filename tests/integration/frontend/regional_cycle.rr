@@ -1,0 +1,92 @@
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/regional_cycle.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// Cyclic graph inside a region: `[field]` link assignment closes a ring, the
+// region freezes it to a rigid strongly-connected component, and the frozen
+// cycle is traversed (link reads through `Nullable` dispatch) and dropped.
+// Plain reference counting cannot collect a cycle, so dropping the ring
+// exercises the region scanner's SCC handling — the companion sanitizer/e2e
+// test checks the drop is leak-free under ASan/LSan.
+
+struct [regional] Node {
+    val: u64,
+    next: [field] Node
+}
+
+regional fn new_node(v: u64) -> [flex] Node {
+    Node { val: v, next: Nullable::Null {} }
+}
+
+// A minimal ring: 1 -> 2 -> 3 -> back to 1.
+regional fn make_ring3() -> [flex] Node {
+    let a = new_node(1);
+    let b = new_node(2);
+    let c = new_node(3);
+    a->next := Nullable::NonNull{b};
+    b->next := Nullable::NonNull{c};
+    c->next := Nullable::NonNull{a};
+    a
+}
+
+// Prepend nodes k, k-1, .., 1 in front of `head`.
+regional fn chain(k: u64, head: [flex] Node) -> [flex] Node {
+    if k == 0 {
+        head
+    } else {
+        let m = new_node(k);
+        m->next := Nullable::NonNull{head};
+        chain(k - 1, m)
+    }
+}
+
+// A ring of n nodes valued 1..n (one larger strongly-connected component).
+regional fn make_ring_n(n: u64) -> [flex] Node {
+    let last = new_node(n);
+    let head = chain(n - 1, last);
+    last->next := Nullable::NonNull{head};
+    head
+}
+
+fn freeze_ring3() -> Node {
+    regional { make_ring3() }
+}
+
+fn freeze_ring_n(n: u64) -> Node {
+    regional { make_ring_n(n) }
+}
+
+// Walk k links through the frozen cycle, summing the values passed.
+fn walk(n: Node, k: u64, acc: u64) -> u64 {
+    if k == 0 {
+        acc
+    } else {
+        match n.next {
+            Nullable::NonNull(m) => walk(m, k - 1, acc + n.val),
+            Nullable::Null => acc
+        }
+    }
+}
+
+// rounds full laps of the 3-ring: expect rounds * (1+2+3).
+pub fn ring3_sum(rounds: u64) -> u64 {
+    let ring = freeze_ring3();
+    walk(ring, rounds * 3, 0)
+}
+
+// rounds full laps of an n-ring: expect rounds * n*(n+1)/2.
+pub fn ring_n_sum(n: u64, rounds: u64) -> u64 {
+    let ring = freeze_ring_n(n);
+    walk(ring, rounds * n, 0)
+}
+
+// Freeze a cycle and drop it immediately after one read: the whole SCC must
+// be reclaimed even though every node still holds a reference to the next.
+pub fn make_and_drop(n: u64) -> u64 {
+    let ring = freeze_ring_n(n);
+    ring.val
+}
+
+extern "C" trampoline "ring3_sum_ffi" = ring3_sum;
+extern "C" trampoline "ring_n_sum_ffi" = ring_n_sum;
+extern "C" trampoline "make_and_drop_ffi" = make_and_drop;
