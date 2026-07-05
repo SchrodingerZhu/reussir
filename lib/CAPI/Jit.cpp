@@ -65,6 +65,7 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
   mpm.run(m, mam);
 }
 
+#ifdef REUSSIR_HAS_TPDE
 namespace {
 /// TPDE has no lowering for the invariant.group barrier intrinsics the
 /// frozen/shared payload loads carry (`llvm.launder.invariant.group`,
@@ -89,6 +90,7 @@ void stripInvariantGroupBarriers(llvm::Module &m) {
   }
 }
 } // namespace
+#endif // REUSSIR_HAS_TPDE
 
 LLVMMemoryBufferRef
 reussirTpdeCompileToObject(LLVMModuleRef module, const char *dataLayout,
