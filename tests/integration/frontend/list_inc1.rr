@@ -16,19 +16,21 @@ fn inc1(list : List<i32>) -> List<i32> {
 }
 
 // CHECK-TRMC-LABEL: func.func private @_RC4inc1(
-// CHECK-TRMC: %[[NEW:.+]], %[[TAILHOLE:.+]] = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 1>
-// CHECK-TRMC: func.call @_RC4inc1.trmc(%{{.+}}, %[[TAILHOLE]]) : (!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: scf.yield %[[NEW]] : !reussir.rc<!reussir.record<variant
+// CHECK-TRMC: %[[EMPTY:.+]] = reussir.cctx.empty : !reussir.cctx<!reussir.rc<!reussir.record<variant
+// CHECK-TRMC: %[[RES:.+]] = call @_RC4inc1.trmc(%{{.+}}, %[[EMPTY]])
+// CHECK-TRMC: return %[[RES]]
 
 // CHECK-TRMC-LABEL: func.func private @_RC4inc1.trmc(
 // CHECK-TRMC-SAME: %[[LIST:.+]]: !reussir.rc<!reussir.record<variant
-// CHECK-TRMC-SAME: %[[OUTARG:.+]]: !reussir.hole<!reussir.rc<!reussir.record<variant
-// CHECK-TRMC-SAME: {llvm.noalias, llvm.nonnull, llvm.noundef}) attributes {llvm.linkage = #llvm.linkage<internal>}
+// CHECK-TRMC-SAME: %[[CTX:.+]]: !reussir.cctx<!reussir.rc<!reussir.record<variant
+// CHECK-TRMC-SAME: {llvm.noundef})
+// CHECK-TRMC-SAME: attributes {llvm.linkage = #llvm.linkage<internal>}
 // CHECK-TRMC: reussir.record.dispatch
+// CHECK-TRMC: reussir.cctx.apply(%[[CTX]] : !reussir.cctx<!reussir.rc<!reussir.record<variant
 // CHECK-TRMC: %[[NEW:.+]], %[[TAILHOLE:.+]] = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 1 : index}>
 // CHECK-TRMC-SAME: : (i32, !reussir.rc<!reussir.record<variant
 // CHECK-TRMC-SAME: -> (!reussir.rc<!reussir.record<variant
 // CHECK-TRMC-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: reussir.hole.store(%[[OUTARG]] : !reussir.hole<!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: func.call @_RC4inc1.trmc(%{{.+}}, %[[TAILHOLE]]) : (!reussir.rc<!reussir.record<variant
-// CHECK-TRMC-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant
+// CHECK-TRMC: %[[EXT:.+]] = reussir.cctx.extend(%[[CTX]] : !reussir.cctx<{{.+}}) plug(%[[NEW]] : {{.+}}) hole(%[[TAILHOLE]] : {{.+}})
+// CHECK-TRMC: %[[TAIL:.+]] = func.call @_RC4inc1.trmc(%{{.+}}, %[[EXT]])
+// CHECK-TRMC: reussir.scf.yield %[[TAIL]]

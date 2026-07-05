@@ -23,20 +23,30 @@ fn quote(v : Value) -> Term {
     }
 }
 
+// The wrapper enters the helper through the empty context.
 // CHECK-TRMC-LABEL: func.func private @_RC5quote(
-// CHECK-TRMC: %[[NEW:.+]], %[[HOLES:.+]]:2 = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 0, 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 1 : index}>
-// CHECK-TRMC: func.call @_RC5quote.trmc(%{{.+}}, %[[HOLES]]#0) : (!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: func.call @_RC5quote.trmc(%{{.+}}, %[[HOLES]]#1) : (!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: reussir.scf.yield %[[NEW]] : !reussir.rc<!reussir.record<variant
+// CHECK-TRMC: %[[EMPTY:.+]] = reussir.cctx.empty : !reussir.cctx<!reussir.rc<!reussir.record<variant
+// CHECK-TRMC: %[[RES:.+]] = call @_RC5quote.trmc(%{{.+}}, %[[EMPTY]])
+// CHECK-TRMC: return %[[RES]]
 
+// Both recursive fields of `Term::App` become holes: the first child
+// recurses through a fresh single-node context rooted at the new
+// constructor, and the second (designated) child extends the incoming
+// context and becomes the tail call.
 // CHECK-TRMC-LABEL: func.func private @_RC5quote.trmc(
 // CHECK-TRMC-SAME: %[[VALUE:.+]]: !reussir.rc<!reussir.record<variant
-// CHECK-TRMC-SAME: %[[OUTARG:.+]]: !reussir.hole<!reussir.rc<!reussir.record<variant
-// CHECK-TRMC-SAME: {llvm.noalias, llvm.nonnull, llvm.noundef}) attributes {llvm.linkage = #llvm.linkage<internal>}
-// CHECK-TRMC: %[[NEW2:.+]], %[[HOLES2:.+]]:2 = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 0, 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 1 : index}>
-// CHECK-TRMC: reussir.hole.store(%[[OUTARG]] : !reussir.hole<!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: func.call @_RC5quote.trmc(%{{.+}}, %[[HOLES2]]#0) : (!reussir.rc<!reussir.record<variant
-// CHECK-TRMC: func.call @_RC5quote.trmc(%{{.+}}, %[[HOLES2]]#1) : (!reussir.rc<!reussir.record<variant
+// CHECK-TRMC-SAME: %[[CTX:.+]]: !reussir.cctx<!reussir.rc<!reussir.record<variant
+// CHECK-TRMC-SAME: {llvm.noundef})
+// CHECK-TRMC-SAME: attributes {llvm.linkage = #llvm.linkage<internal>}
+// CHECK-TRMC: %[[NEW:.+]], %[[HOLES:.+]]:2 = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 0, 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 1 : index}>
+// CHECK-TRMC: %[[SUBEMPTY:.+]] = reussir.cctx.empty
+// CHECK-TRMC: %[[SUB:.+]] = reussir.cctx.extend(%[[SUBEMPTY]] : !reussir.cctx<{{.+}}) plug(%[[NEW]] : {{.+}}) hole(%[[HOLES]]#0 : {{.+}})
+// CHECK-TRMC: func.call @_RC5quote.trmc(%{{.+}}, %[[SUB]])
+// CHECK-TRMC: %[[EXT:.+]] = reussir.cctx.extend(%[[CTX]] : !reussir.cctx<{{.+}}) plug(%[[NEW]] : {{.+}}) hole(%[[HOLES]]#1 : {{.+}})
+// CHECK-TRMC: %[[TAIL:.+]] = func.call @_RC5quote.trmc(%{{.+}}, %[[EXT]])
 
-// CHECK-LLVM-LABEL: define internal fastcc void @_RC5quote.trmc(
-// CHECK-LLVM-NOT: tail call ptr @_RC5quote(
+// The helper survives LLVM optimization as a value-returning loop: the
+// designated child is tail-recursion-eliminated; only the first child
+// remains a true recursive call, and nothing calls back into the wrapper.
+// CHECK-LLVM-LABEL: define internal fastcc ptr @_RC5quote.trmc(
+// CHECK-LLVM-NOT: call ptr @_RC5quote(

@@ -569,54 +569,87 @@ struct ReussirRefStoreConversionPattern
   }
 };
 
-struct ReussirHoleCreateConversionPattern
-    : public mlir::OpConversionPattern<ReussirHoleCreateOp> {
+//===----------------------------------------------------------------------===//
+// Constructor contexts lower to a {root, hole} pointer pair with a null hole
+// denoting the empty context. Extend and apply are compiled branch-free: the
+// store that plugs the hole is steered to the per-module scratch word when
+// the context is empty (the value lands in the root/result select instead),
+// mirroring the special-pointer-tag scratch steering.
+//===----------------------------------------------------------------------===//
+
+struct ReussirCctxEmptyConversionPattern
+    : public mlir::OpConversionPattern<ReussirCctxEmptyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirHoleCreateOp op, OpAdaptor adaptor,
+  matchAndRewrite(ReussirCctxEmptyOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto structTy = getTypeConverter()->convertType(op.getCtx().getType());
+    rewriter.replaceOpWithNewOp<mlir::LLVM::ZeroOp>(op, structTy);
+    return mlir::success();
+  }
+};
+
+struct ReussirCctxExtendConversionPattern
+    : public mlir::OpConversionPattern<ReussirCctxExtendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCctxExtendOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
-    auto converter =
-        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
-    auto valueType =
-        converter->convertType(op.getHole().getType().getElementType());
-    auto llvmPtrType = converter->convertType(op.getHole().getType());
-    auto dataLayout = getDataLayout(*converter, op.getOperation());
-    auto alignment = dataLayout.getTypePreferredAlignment(valueType);
-    auto arraySize = mlir::arith::ConstantOp::create(
-        rewriter, loc, rewriter.getIntegerAttr(converter->getIndexType(), 1));
-    auto allocaOp = mlir::LLVM::AllocaOp::create(
-        rewriter, loc, llvmPtrType, valueType, arraySize, alignment);
-    rewriter.replaceOp(op, allocaOp);
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto structTy = getTypeConverter()->convertType(op.getNewCtx().getType());
+
+    mlir::Value root = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getCtx(), llvm::ArrayRef<int64_t>{0});
+    mlir::Value hole = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getCtx(), llvm::ArrayRef<int64_t>{1});
+    mlir::Value null = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrTy);
+    mlir::Value isEmpty = mlir::LLVM::ICmpOp::create(
+        rewriter, loc, mlir::LLVM::ICmpPredicate::eq, hole, null);
+    mlir::Value scratch = tagScratchAddr(
+        op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
+    mlir::Value addr =
+        mlir::LLVM::SelectOp::create(rewriter, loc, isEmpty, scratch, hole);
+    mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getRcPtr(), addr);
+    mlir::Value newRoot = mlir::LLVM::SelectOp::create(
+        rewriter, loc, isEmpty, adaptor.getRcPtr(), root);
+
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, structTy);
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, newRoot,
+                                               llvm::ArrayRef<int64_t>{0});
+    result = mlir::LLVM::InsertValueOp::create(
+        rewriter, loc, result, adaptor.getHole(), llvm::ArrayRef<int64_t>{1});
+    rewriter.replaceOp(op, result);
     return mlir::success();
   }
 };
 
-struct ReussirHoleLoadConversionPattern
-    : public mlir::OpConversionPattern<ReussirHoleLoadOp> {
+struct ReussirCctxApplyConversionPattern
+    : public mlir::OpConversionPattern<ReussirCctxApplyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirHoleLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(ReussirCctxApplyOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    auto llvmValueType =
-        getTypeConverter()->convertType(op.getValue().getType());
-    rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, llvmValueType,
-                                                    adaptor.getHole());
-    return mlir::success();
-  }
-};
+    mlir::Location loc = op.getLoc();
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
 
-struct ReussirHoleStoreConversionPattern
-    : public mlir::OpConversionPattern<ReussirHoleStoreOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  mlir::LogicalResult
-  matchAndRewrite(ReussirHoleStoreOp op, OpAdaptor adaptor,
-                  mlir::ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, adaptor.getValue(),
-                                                     adaptor.getHole());
+    mlir::Value root = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getCtx(), llvm::ArrayRef<int64_t>{0});
+    mlir::Value hole = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getCtx(), llvm::ArrayRef<int64_t>{1});
+    mlir::Value null = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrTy);
+    mlir::Value isEmpty = mlir::LLVM::ICmpOp::create(
+        rewriter, loc, mlir::LLVM::ICmpPredicate::eq, hole, null);
+    mlir::Value scratch = tagScratchAddr(
+        op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
+    mlir::Value addr =
+        mlir::LLVM::SelectOp::create(rewriter, loc, isEmpty, scratch, hole);
+    mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getValue(), addr);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::SelectOp>(
+        op, isEmpty, adaptor.getValue(), root);
     return mlir::success();
   }
 };
@@ -3052,8 +3085,8 @@ struct ReussirConvertToLLVMPatternInterface
         patterns.getContext(), target, typeConverter, patterns);
     populateBasicOpsLoweringToLLVMConversionPatterns(typeConverter, patterns);
     target.addIllegalOp<
-        ReussirPanicOp, ReussirExpectOp, ReussirHoleCreateOp, ReussirHoleLoadOp,
-        ReussirHoleStoreOp, ReussirTokenAllocOp, ReussirTokenFreeOp,
+        ReussirPanicOp, ReussirExpectOp, ReussirCctxEmptyOp, ReussirCctxExtendOp,
+        ReussirCctxApplyOp, ReussirTokenAllocOp, ReussirTokenFreeOp,
         ReussirTokenReinterpretOp, ReussirTokenReallocOp, ReussirRefLoadOp,
         ReussirRefStoreOp, ReussirRefSpilledOp, ReussirRefToMemrefOp,
         ReussirRefFromMemrefOp, ReussirRefDiffOp, ReussirRefCmpOp,
@@ -3145,8 +3178,9 @@ void registerReussirBasicOpsLoweringInterface(mlir::DialectRegistry &registry) {
 void populateBasicOpsLoweringToLLVMConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
   patterns.add<
-      ReussirExpectConversionPattern, ReussirHoleCreateConversionPattern,
-      ReussirHoleLoadConversionPattern, ReussirHoleStoreConversionPattern,
+      ReussirExpectConversionPattern,
+      ReussirCctxEmptyConversionPattern, ReussirCctxExtendConversionPattern,
+      ReussirCctxApplyConversionPattern,
       ReussirTokenAllocConversionPattern, ReussirTokenFreeConversionPattern,
       ReussirTokenReinterpretConversionPattern,
       ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,
