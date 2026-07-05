@@ -6,7 +6,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
   
   // Test function that accepts a closure and applies an argument to it
   // CHECK-LABEL: define ptr @apply_to_closure(ptr %0, i32 %1) {
-  // CHECK: %3 = getelementptr { i64, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %3 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %4 = load ptr, ptr %3, align 8
   // CHECK: %5 = ptrtoint ptr %4 to i64
   // CHECK: %6 = sub i64 0, %5
@@ -26,7 +26,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
   // Test function that applies multiple arguments to a closure
   // CHECK-LABEL: define ptr @apply_multiple_args(ptr %0, i32 %1, i64 %2) {
-  // CHECK: %4 = getelementptr { i64, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %4 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %5 = load ptr, ptr %4, align 8
   // CHECK: %6 = ptrtoint ptr %5 to i64
   // CHECK: %7 = sub i64 0, %6
@@ -38,7 +38,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
   // CHECK: %12 = add nuw i64 %11, 4
   // CHECK: %13 = inttoptr i64 %12 to ptr
   // CHECK: store ptr %13, ptr %4, align 8
-  // CHECK: %14 = getelementptr { i64, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %14 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %15 = load ptr, ptr %14, align 8
   // CHECK: %16 = ptrtoint ptr %15 to i64
   // CHECK: %17 = sub i64 0, %16
@@ -59,7 +59,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
   // Test function that applies an argument to a closure with no return value
   // CHECK-LABEL: define ptr @apply_void_closure(ptr %0, i32 %1) {
-  // CHECK: %3 = getelementptr { i64, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %3 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %4 = load ptr, ptr %3, align 8
   // CHECK: %5 = ptrtoint ptr %4 to i64
   // CHECK: %6 = sub i64 0, %5
@@ -79,7 +79,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
   // Test function that applies a small type (i8) to verify alignment handling
   // CHECK-LABEL: define ptr @apply_small_type(ptr %0, i8 %1) {
-  // CHECK: %3 = getelementptr { i64, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %3 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %4 = load ptr, ptr %3, align 8
   // CHECK: store i8 %1, ptr %4, align 1
   // CHECK: %5 = ptrtoint ptr %4 to i64

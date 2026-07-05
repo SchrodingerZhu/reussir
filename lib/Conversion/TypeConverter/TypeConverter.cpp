@@ -96,8 +96,12 @@ convertRecordType(mlir::LLVMTypeConverter &converter,
 
   llvm::SmallVector<mlir::Type> members;
   if (type.getKind() == reussir::RecordKind::variant) {
-    // The discriminant is the record's minimal-width tag type; the payload
-    // lands at its natural alignment boundary after it.
+    // A fused-header variant is `{i32 count slot, i32 tag, payload}` — the
+    // rc box overlays its refcount on field 0. Value variants carry just
+    // their minimal-width tag; either way the payload lands at its natural
+    // alignment boundary after the header.
+    if (type.hasFusedHeader())
+      members.push_back(mlir::IntegerType::get(type.getContext(), 32));
     members.push_back(type.getTagType());
     auto [size, _unused, representative] =
         type.getElementRegionLayoutInfo(dataLayout);
@@ -221,7 +225,12 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
     return converter.convertType(type.getPtrTy());
   });
 
-  converter.addConversion([&converter](RcBoxType type) {
+  converter.addConversion([&converter](RcBoxType type) -> mlir::Type {
+    // A box of a fused-header variant IS the variant record: its refcount
+    // lives in the record's leading count slot.
+    if (auto recordTy = llvm::dyn_cast<RecordType>(type.getElementType());
+        recordTy && recordTy.hasFusedHeader() && !type.isRegional())
+      return converter.convertType(recordTy);
     llvm::SmallVector<mlir::Type> members;
     auto ptrTy = mlir::LLVM::LLVMPointerType::get(type.getContext());
     if (type.isRegional()) {
@@ -229,7 +238,7 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
       members.push_back(ptrTy);
       members.push_back(ptrTy);
     } else
-      members.push_back(converter.getIndexType());
+      members.push_back(mlir::IntegerType::get(type.getContext(), 32));
     members.push_back(converter.convertType(type.getElementType()));
     return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
   });

@@ -13,20 +13,20 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 }
 
 // CHECK: llvm.func @test_closure_uniqify_with_input(%[[INPUT:.*]]: !llvm.ptr) -> !llvm.ptr {
-// CHECK:   %[[GEP_REFCNT:.*]] = llvm.getelementptr %[[INPUT]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i64, struct<(ptr, ptr)>)>
-// CHECK:   %[[REFCNT:.*]] = llvm.load %[[GEP_REFCNT]] : !llvm.ptr -> i64
-// CHECK:   %[[ONE:.*]] = llvm.mlir.constant(1 : i64) : i64
-// CHECK:   %[[IS_UNIQUE:.*]] = llvm.icmp "eq" %[[REFCNT]], %[[ONE]] : i64
+// CHECK:   %[[GEP_REFCNT:.*]] = llvm.getelementptr %[[INPUT]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, struct<(ptr, ptr)>)>
+// CHECK:   %[[REFCNT:.*]] = llvm.load %[[GEP_REFCNT]] : !llvm.ptr -> i32
+// CHECK:   %[[ONE:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK:   %[[IS_UNIQUE:.*]] = llvm.icmp "eq" %[[REFCNT]], %[[ONE]] : i32
 // CHECK:   llvm.cond_br %[[IS_UNIQUE]], ^[[THEN:bb[0-9]+]], ^[[ELSE:bb[0-9]+]]
 // CHECK: ^[[THEN]]:  // pred: ^bb0
 // CHECK:   llvm.br ^[[JOIN:bb[0-9]+]](%[[INPUT]] : !llvm.ptr)
 // CHECK: ^[[ELSE]]:  // pred: ^bb0
-// CHECK:   %[[GEP_VTABLE:.*]] = llvm.getelementptr %[[INPUT]][0, 1, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i64, struct<(ptr, ptr)>)>
+// CHECK:   %[[GEP_VTABLE:.*]] = llvm.getelementptr %[[INPUT]][0, 1, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, struct<(ptr, ptr)>)>
 // CHECK:   %[[VTABLE:.*]] = llvm.load %[[GEP_VTABLE]] invariant_group : !llvm.ptr -> !llvm.ptr
 // CHECK:   %[[GEP_CLONE:.*]] = llvm.getelementptr %[[VTABLE]][0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(ptr, ptr, ptr)>
 // CHECK:   %[[CLONE_FUNC:.*]] = llvm.load %[[GEP_CLONE]] invariant_group : !llvm.ptr -> !llvm.ptr
 // CHECK:   %[[CLONED:.*]] = llvm.call %[[CLONE_FUNC]](%[[INPUT]]) : !llvm.ptr, (!llvm.ptr) -> !llvm.ptr
-// CHECK:   %[[GEP_VTABLE2:.*]] = llvm.getelementptr %[[INPUT]][0, 1, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i64, struct<(ptr, ptr)>)>
+// CHECK:   %[[GEP_VTABLE2:.*]] = llvm.getelementptr %[[INPUT]][0, 1, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, struct<(ptr, ptr)>)>
 // CHECK:   %[[VTABLE2:.*]] = llvm.load %[[GEP_VTABLE2]] invariant_group : !llvm.ptr -> !llvm.ptr
 // CHECK:   %[[GEP_DROP:.*]] = llvm.getelementptr %[[VTABLE2]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(ptr, ptr, ptr)>
 // CHECK:   %[[DROP_FUNC:.*]] = llvm.load %[[GEP_DROP]] invariant_group : !llvm.ptr -> !llvm.ptr

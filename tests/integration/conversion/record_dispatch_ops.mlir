@@ -89,9 +89,9 @@ module {
 }
 
 // CHECK-LABEL: define i32 @test_option_unwrap_or_default(ptr %0)
-// CHECK: getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: load i8, ptr
-// CHECK: zext i8
+// CHECK: getelementptr %Option, ptr %0, i32 0, i32 1
+// CHECK: load i32, ptr
+// CHECK: zext i32
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label
@@ -102,9 +102,9 @@ module {
 // CHECK: ret i32
 
 // CHECK-LABEL: define i32 @test_result_unwrap_or_error_code(ptr %0)
-// CHECK: getelementptr %Result, ptr %0, i32 0, i32 0
-// CHECK: load i8, ptr
-// CHECK: zext i8
+// CHECK: getelementptr %Result, ptr %0, i32 0, i32 1
+// CHECK: load i32, ptr
+// CHECK: zext i32
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label
@@ -115,9 +115,9 @@ module {
 // CHECK: ret i32
 
 // CHECK-LABEL: define void @test_void_dispatch_with_side_effects(ptr %0)
-// CHECK: getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: load i8, ptr
-// CHECK: zext i8
+// CHECK: getelementptr %Option, ptr %0, i32 0, i32 1
+// CHECK: load i32, ptr
+// CHECK: zext i32
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label

@@ -21,8 +21,8 @@
 
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> }  {
   func.func @test_rc_dec_expansion(%arg0: !reussir.rc<!list>) {
-    %token = reussir.rc.dec (%arg0 : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 32>>
-    reussir.token.free (%token :  !reussir.nullable<!reussir.token<align: 8, size: 32>>)
+    %token = reussir.rc.dec (%arg0 : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 24>>
+    reussir.token.free (%token :  !reussir.nullable<!reussir.token<align: 8, size: 24>>)
     return
   }
 }

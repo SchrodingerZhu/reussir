@@ -54,9 +54,9 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
     %field1 = reussir.ref.load (%field1_ref : !reussir.ref<i64>) : i64
     %c = reussir.record.compound(%field0, %field1 : i32, i64) : !cons
     %v = reussir.record.variant [0] (%c : !cons) : !list
-    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list>) : !reussir.token<align: 8, size: 32>
-    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 32>) : !reussir.token<align: 8, size: 32>
-    %new = reussir.rc.create value(%v : !list) token(%token : !reussir.token<align: 8, size: 32>) skip_rc : !reussir.rc<!list>
+    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list>) : !reussir.token<align: 8, size: 24>
+    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 24>) : !reussir.token<align: 8, size: 24>
+    %new = reussir.rc.create value(%v : !list) token(%token : !reussir.token<align: 8, size: 24>) skip_rc : !reussir.rc<!list>
     return %new : !reussir.rc<!list>
   }
 
@@ -69,9 +69,9 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
     %field1 = reussir.ref.load (%field1_ref : !reussir.ref<i64>) : i64
     %c = reussir.record.compound(%field0, %field1 : i32, i64) : !cons
     %v = reussir.record.variant [0] (%c : !cons) : !list_alt
-    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list_alt>) : !reussir.token<align: 8, size: 32>
-    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 32>) : !reussir.token<align: 8, size: 32>
-    %new = reussir.rc.create value(%v : !list_alt) token(%token : !reussir.token<align: 8, size: 32>) skip_rc : !reussir.rc<!list_alt>
+    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list_alt>) : !reussir.token<align: 8, size: 24>
+    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 24>) : !reussir.token<align: 8, size: 24>
+    %new = reussir.rc.create value(%v : !list_alt) token(%token : !reussir.token<align: 8, size: 24>) skip_rc : !reussir.rc<!list_alt>
     return %new : !reussir.rc<!list_alt>
   }
 
@@ -84,9 +84,9 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
     %field1 = reussir.ref.load (%field1_ref : !reussir.ref<i64>) : i64
     %c = reussir.record.compound(%field0, %field1 : i32, i64) : !cons
     %v = reussir.record.variant [0] (%c : !cons) : !list_alt
-    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list_clone>) : !reussir.token<align: 8, size: 32>
-    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 32>) : !reussir.token<align: 8, size: 32>
-    %new = reussir.rc.create value(%v : !list_alt) token(%token : !reussir.token<align: 8, size: 32>) skip_rc : !reussir.rc<!list_alt>
+    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!list_clone>) : !reussir.token<align: 8, size: 24>
+    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 24>) : !reussir.token<align: 8, size: 24>
+    %new = reussir.rc.create value(%v : !list_alt) token(%token : !reussir.token<align: 8, size: 24>) skip_rc : !reussir.rc<!list_alt>
     return %new : !reussir.rc<!list_alt>
   }
 
@@ -99,9 +99,9 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
     %field1 = reussir.ref.load (%field1_ref : !reussir.ref<i64>) : i64
     %c = reussir.record.compound(%field0, %field1, %tail : i32, i64, !reussir.rc<!list_alt>) : !triple_cons
     %v = reussir.record.variant [0] (%c : !triple_cons) : !triple
-    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!triple_clone>) : !reussir.token<align: 8, size: 40>
-    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 40>) : !reussir.token<align: 8, size: 40>
-    %new = reussir.rc.create value(%v : !triple) token(%token : !reussir.token<align: 8, size: 40>) skip_rc : !reussir.rc<!triple>
+    %token0 = reussir.rc.reinterpret (%rc : !reussir.rc<!triple_clone>) : !reussir.token<align: 8, size: 32>
+    %token = reussir.token.launder (%token0 : !reussir.token<align: 8, size: 32>) : !reussir.token<align: 8, size: 32>
+    %new = reussir.rc.create value(%v : !triple) token(%token : !reussir.token<align: 8, size: 32>) skip_rc : !reussir.rc<!triple>
     return %new : !reussir.rc<!triple>
   }
 }
@@ -109,28 +109,30 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK-LABEL: define ptr @mk_compound
 // CHECK-NOT: alloca %"List::Cons"
 // CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate(i64 8, i64 24)
-// CHECK: %[[COUNT:.*]] = getelementptr { i64, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 0
-// CHECK: store i64 1, ptr %[[COUNT]], align 8
-// CHECK: %[[PAYLOAD:.*]] = getelementptr { i64, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 1
+// CHECK: %[[COUNT:.*]] = getelementptr { i32, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 0
+// CHECK: %[[PAYLOAD:.*]] = getelementptr { i32, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 1
 // CHECK: %[[FIELD0:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 0
 // CHECK: store i32 %0, ptr %[[FIELD0]], align 4, !invariant.group
 // CHECK: %[[FIELD1:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 1
 // CHECK: store i64 %1, ptr %[[FIELD1]], align 8, !invariant.group
+// CHECK: store i32 1, ptr %[[COUNT]], align 4
 
 // CHECK-LABEL: define ptr @mk_variant
 // CHECK-NOT: alloca %List
 // CHECK-NOT: alloca %"List::Cons"
-// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate(i64 8, i64 32)
-// CHECK: %[[COUNT:.*]] = getelementptr { i64, %List }, ptr %[[ALLOC]], i32 0, i32 0
-// CHECK: store i64 1, ptr %[[COUNT]], align 8
-// CHECK: %[[VARIANT:.*]] = getelementptr { i64, %List }, ptr %[[ALLOC]], i32 0, i32 1
-// CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[TAGPTR]], align 1
-// CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
+// The box IS the fused-header variant: the count overlays field 0 and is
+// stored after the element is initialized.
+// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate(i64 8, i64 24)
+// CHECK: %[[COUNT:.*]] = getelementptr %List, ptr %[[ALLOC]], i32 0, i32 0
+// CHECK: %[[VARIANT:.*]] = getelementptr %List, ptr %[[ALLOC]], i32 0, i32 0
+// CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[TAGPTR]], align 4
+// CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 2
 // CHECK: %[[FIELD0:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 0
 // CHECK: store i32 %0, ptr %[[FIELD0]], align 4, !invariant.group
 // CHECK: %[[FIELD1:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 1
 // CHECK: store i64 %1, ptr %[[FIELD1]], align 8, !invariant.group
+// CHECK: store i32 1, ptr %[[COUNT]], align 4
 
 // FUSION-LABEL: func.func @reuse_compound
 // FUSION: reussir.rc.create_compound
@@ -154,43 +156,43 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
 // CHECK-LABEL: define ptr @reuse_compound
 // CHECK: call void @llvm.assume
-// CHECK: %[[PAYLOAD:.*]] = getelementptr { i64, %"List::Cons" }, ptr %{{.*}}, i32 0, i32 1
+// CHECK: %[[PAYLOAD:.*]] = getelementptr { i32, %"List::Cons" }, ptr %{{.*}}, i32 0, i32 1
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD]]
 // CHECK: ret ptr
 
 // CHECK-LABEL: define ptr @reuse_variant
 // CHECK: call void @llvm.assume
-// CHECK: %[[VARIANT:.*]] = getelementptr { i64, %List }, ptr %{{.*}}, i32 0, i32 1
-// CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[TAGPTR]], align 1
-// CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
+// CHECK: %[[VARIANT:.*]] = getelementptr %List, ptr %{{.*}}, i32 0, i32 0
+// CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[TAGPTR]], align 4
+// CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 2
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD]]
 // CHECK: ret ptr
 
 // CHECK-LABEL: define ptr @reuse_variant_other_tag
 // CHECK: call void @llvm.assume
-// CHECK: %[[VARIANT2:.*]] = getelementptr { i64, %ListAlt }, ptr %{{.*}}, i32 0, i32 1
-// CHECK: %[[TAGPTR2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[TAGPTR2]], align 1
-// CHECK: %[[PAYLOAD2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 1
+// CHECK: %[[VARIANT2:.*]] = getelementptr %ListAlt, ptr %{{.*}}, i32 0, i32 0
+// CHECK: %[[TAGPTR2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[TAGPTR2]], align 4
+// CHECK: %[[PAYLOAD2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 2
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD2]]
 // CHECK: ret ptr
 
 // CHECK-LABEL: define ptr @reuse_variant_other_type
 // CHECK: call void @llvm.assume
-// CHECK: %[[VARIANT3:.*]] = getelementptr { i64, %ListAlt }, ptr %{{.*}}, i32 0, i32 1
-// CHECK: %[[TAGPTR3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[TAGPTR3]], align 1
-// CHECK: %[[PAYLOAD3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 1
+// CHECK: %[[VARIANT3:.*]] = getelementptr %ListAlt, ptr %{{.*}}, i32 0, i32 0
+// CHECK: %[[TAGPTR3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[TAGPTR3]], align 4
+// CHECK: %[[PAYLOAD3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 2
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD3]]
 // CHECK: ret ptr
 
 // CHECK-LABEL: define ptr @reuse_variant_prefix
 // CHECK: call void @llvm.assume
-// CHECK: %[[VARIANT4:.*]] = getelementptr { i64, %Triple }, ptr %{{.*}}, i32 0, i32 1
-// CHECK: %[[TAGPTR4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[TAGPTR4]], align 1
-// CHECK: %[[PAYLOAD4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 1
+// CHECK: %[[VARIANT4:.*]] = getelementptr %Triple, ptr %{{.*}}, i32 0, i32 0
+// CHECK: %[[TAGPTR4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[TAGPTR4]], align 4
+// CHECK: %[[PAYLOAD4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 2
 // CHECK-NOT: getelementptr %"Triple::Cons", ptr %[[PAYLOAD4]], i32 0, i32 0
 // CHECK-NOT: getelementptr %"Triple::Cons", ptr %[[PAYLOAD4]], i32 0, i32 1
 // CHECK: %[[FIELD24:.*]] = getelementptr %"Triple::Cons", ptr %[[PAYLOAD4]], i32 0, i32 2

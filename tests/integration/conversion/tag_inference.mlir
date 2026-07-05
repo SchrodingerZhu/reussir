@@ -13,8 +13,8 @@ module {
     ) {
         %ref = reussir.rc.borrow(%rc : !reussir.rc<!list>) : !reussir.ref<!list>
         %ref_ = reussir.record.coerce [1] (%ref : !reussir.ref<!list>) : !reussir.ref<!list_cons>
-        %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 32>>
-        reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 32>>)
+        %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 24>>
+        reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 24>>)
         return
     }
 
@@ -27,16 +27,16 @@ module {
             // CHECK-SAME: variant[0]
             [0] -> {
                 ^bb0(%nil_ref : !reussir.ref<!list_nil>):
-                    %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 32>>
-                    reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 32>>)
+                    %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 24>>
+                    reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 24>>)
                     reussir.scf.yield
             }
             // CHECK-LABEL: reussir.ref.drop
             // CHECK-SAME: variant[1]
             [1] -> {
                 ^bb0(%cons_ref : !reussir.ref<!list_cons>):
-                    %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 32>>
-                    reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 32>>)
+                    %token = reussir.rc.dec (%rc : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 24>>
+                    reussir.token.free (%token : !reussir.nullable<!reussir.token<align: 8, size: 24>>)
                     reussir.scf.yield
             }
         }

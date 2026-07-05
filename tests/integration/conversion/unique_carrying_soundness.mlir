@@ -14,7 +14,7 @@
 !consty = !reussir.record<compound "list.cons" [value] {i64, !reussir.record<variant "list" incomplete>}>
 !listty = !reussir.record<variant "list" {!consty, !nilty}>
 !rclist = !reussir.rc<!listty>
-!tk = !reussir.token<align: 8, size: 32>
+!tk = !reussir.token<align: 8, size: 24>
 
 module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>, #dlti.dl_entry<!llvm.ptr, dense<64> : vector<4xi64>>, #dlti.dl_entry<"dlti.endianness", "little">>, llvm.data_layout = "e-m:e-i64:64-n8:16:32:64-S128"} {
   // Completeness: results flowing through dispatch arms (a fresh create in

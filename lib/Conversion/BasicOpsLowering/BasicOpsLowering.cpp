@@ -139,13 +139,10 @@ TagEncoding specialPtrTagEncoding(mlir::Operation *op) {
 // sized to the target's index width. Loads and increments through a tagged
 // value land here and observe a well-formed shared box header carrying the
 // immediate's own tag; the refcount stays pinned because `rc.set` never
-// writes it (see above). Records read their tag at the minimal width
-// (i8/i16/i32) from the same offset; on a little-endian target that read
-// sees the low bytes of the full-width tag word stored here, so one
-// index-wide dummy serves every tag width.
+// writes it (see above). The dummy mirrors the fused box header exactly:
+// an i32 count and the i32 tag sharing one 8-byte word.
 mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
                                  uint64_t tag, TagEncoding encoding,
-                                 mlir::IntegerType indexTy,
                                  mlir::OpBuilder &builder) {
   // Content-addressed v0 name, like every other lowering-generated global
   // (namespace + the decimal tag as payload).
@@ -155,14 +152,15 @@ mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
   if (!global) {
     mlir::OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(module.getBody());
-    auto arrTy = mlir::LLVM::LLVMArrayType::get(indexTy, 2);
-    uint64_t refCount = encoding == TagEncoding::Immortal
-                            ? immortalRefCount(indexTy.getWidth())
-                            : 2;
+    // The fused box header: {i32 count, i32 tag} in one 8-byte word.
+    auto countTy = mlir::IntegerType::get(module.getContext(), 32);
+    auto arrTy = mlir::LLVM::LLVMArrayType::get(countTy, 2);
+    uint64_t refCount =
+        encoding == TagEncoding::Immortal ? immortalRefCount(32) : 2;
     auto init = mlir::DenseElementsAttr::get(
-        mlir::RankedTensorType::get({2}, indexTy),
-        llvm::ArrayRef<llvm::APInt>{llvm::APInt(indexTy.getWidth(), refCount),
-                                    llvm::APInt(indexTy.getWidth(), tag)});
+        mlir::RankedTensorType::get({2}, countTy),
+        llvm::ArrayRef<llvm::APInt>{llvm::APInt(32, refCount),
+                                    llvm::APInt(32, tag)});
     global = mlir::LLVM::GlobalOp::create(
         builder, loc, arrTy,
         /*isConstant=*/false, mlir::LLVM::Linkage::Internal, name, init);
@@ -451,9 +449,14 @@ struct ReussirRcFetchConversionPattern
     // hits the dummy box's refcount, which is pinned >= 2 — exactly what
     // routes the expanded decrement to its shared branch and answers
     // `is_unique` with false (see the special-pointer-tag notes above).
-    mlir::Value loaded =
-        mlir::LLVM::LoadOp::create(rewriter, loc, indexTy, adaptor.getRcPtr());
-    rewriter.replaceOp(op, loaded);
+    mlir::Value loaded = mlir::LLVM::LoadOp::create(
+        rewriter, loc, rewriter.getI32Type(), adaptor.getRcPtr());
+    mlir::Value widened =
+        llvm::cast<mlir::IntegerType>(indexTy).getWidth() > 32
+            ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, loaded)
+                  .getResult()
+            : loaded;
+    rewriter.replaceOp(op, widened);
     return mlir::success();
   }
 };
@@ -466,6 +469,13 @@ struct ReussirRcSetConversionPattern
   matchAndRewrite(ReussirRcSetOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Value addr = adaptor.getRcPtr();
+    mlir::Value narrowCount =
+        adaptor.getRefCount().getType().getIntOrFloatBitWidth() > 32
+            ? mlir::LLVM::TruncOp::create(rewriter, op.getLoc(),
+                                          rewriter.getI32Type(),
+                                          adaptor.getRefCount())
+                  .getResult()
+            : adaptor.getRefCount();
     // `rc.set` is the one store that can lower a refcount, so it must not
     // reach the dummy box (its count would eventually decay to 1 and send an
     // immediate down the unique branch). Steer a recognized-immediate access
@@ -483,12 +493,11 @@ struct ReussirRcSetConversionPattern
         mlir::Value top = topByteOf(addr, op.getLoc(), rewriter);
         tagged = isTaggedImmediate(top, op.getLoc(), rewriter);
       } else {
-        tagged = isImmortalCount(adaptor.getRefCount(), op.getLoc(), rewriter);
+        tagged = isImmortalCount(narrowCount, op.getLoc(), rewriter);
       }
       addr = guardedAddr(op, tagged, addr, op.getLoc(), rewriter);
     }
-    rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, adaptor.getRefCount(),
-                                                     addr);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, narrowCount, addr);
     return mlir::success();
   }
 };
@@ -859,17 +868,21 @@ struct ReussirRecordVariantConversionPattern
         rewriter, loc, ptrType, llvmStructType, one, alignment);
     addLifetimeOrInvariantOp<mlir::LLVM::LifetimeStartOp>(
         rewriter, loc, llvmStructType, allocaOp, *converter, op.getOperation());
-    // Get a pointer to the tag field (index 0) and store the tag
+    // Store the tag (past the count slot for fused-header variants).
+    bool fused = recordType.hasFusedHeader();
+    int32_t tagField = fused ? 1 : 0;
+    int32_t valueField = fused ? 2 : 1;
     auto tagPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, ptrType, llvmStructType, allocaOp,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, tagField});
     mlir::LLVM::StoreOp::create(rewriter, loc, tag, tagPtr);
 
-    // Get a pointer to the value field (index 1) and store the value
-    if (llvmStructType.getSubelementIndexMap()->size() > 1) {
+    // Store the payload value when the variant has one.
+    if (llvmStructType.getSubelementIndexMap()->size() >
+        static_cast<size_t>(valueField)) {
       auto valuePtr = mlir::LLVM::GEPOp::create(
           rewriter, loc, ptrType, llvmStructType, allocaOp,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, valueField});
       mlir::LLVM::StoreOp::create(rewriter, loc, value, valuePtr);
     }
     // Load the complete struct from the allocated space
@@ -1112,12 +1125,13 @@ struct ReussirRecordTagConversionPattern
     // Get the index type for the result
     auto indexType = converter->getIndexType();
 
-    // Create GEP operation to get the tag field pointer (index 0, 0)
-    // For variant records, the tag is always at the first field
+    // The discriminant field: past the count slot for fused-header
+    // variants, first field otherwise.
+    int32_t tagField = recordType.hasFusedHeader() ? 1 : 0;
     auto tagPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     auto tagPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, tagPtrType, elementType, refPtr,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, tagField});
 
     // Load the tag value at the record's minimal tag width and widen it to
     // the op's index result. Under the special-pointer-tag scheme a tagged
@@ -1230,22 +1244,18 @@ struct ReussirRcIncConversionPattern
     // dummy could actually be grown past wrap-around within a program's
     // lifetime: there the increment's store is steered to the scratch word
     // instead (the load stays plain, so nothing on the read path changes).
-    auto indexType =
-        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
-            ->getIndexType();
+    auto countType = rewriter.getI32Type();
     TagEncoding encoding = specialPtrTagEncoding(op);
-    bool steerNarrowImmortal =
-        encoding == TagEncoding::Immortal &&
-        llvm::cast<mlir::IntegerType>(indexType).getWidth() < 64 &&
-        rcPtrTy.mayCarrySpecialPointerTag();
+    bool steerNarrowImmortal = encoding == TagEncoding::Immortal &&
+                               rcPtrTy.mayCarrySpecialPointerTag();
     auto one = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
+        rewriter, op.getLoc(), mlir::IntegerAttr::get(countType, 1));
     mlir::Value oldRefCnt;
     if (rcPtrTy.getAtomicKind() == AtomicKind::normal) {
-      oldRefCnt = mlir::LLVM::LoadOp::create(rewriter, op.getLoc(), indexType,
+      oldRefCnt = mlir::LLVM::LoadOp::create(rewriter, op.getLoc(), countType,
                                              refcntPtr);
       auto newRefCnt = mlir::arith::AddIOp::create(rewriter, op.getLoc(),
-                                                   indexType, oldRefCnt, one);
+                                                   countType, oldRefCnt, one);
       mlir::Value storeAddr = refcntPtr;
       if (steerNarrowImmortal) {
         mlir::Value immortal =
@@ -1274,7 +1284,19 @@ struct RcCreateStorageInfo {
   mlir::Value token;
   mlir::Value elementPtr;
   bool regional;
+  // Non-null when the pattern must store the refcount AFTER initializing the
+  // element: with a fused header a whole-value store would clobber the
+  // count slot it overlays.
+  mlir::Value countPtr;
 };
+
+// Stores `1` (i32) to a box's refcount slot.
+void storeInitialRcCount(mlir::Value countPtr, mlir::Location loc,
+                         mlir::ConversionPatternRewriter &rewriter) {
+  auto one = mlir::arith::ConstantOp::create(
+      rewriter, loc, mlir::IntegerAttr::get(rewriter.getI32Type(), 1));
+  mlir::LLVM::StoreOp::create(rewriter, loc, one, countPtr);
+}
 
 template <typename OpT, typename AdaptorT>
 mlir::FailureOr<RcCreateStorageInfo>
@@ -1287,24 +1309,20 @@ initializeRcCreateStorage(OpT op, AdaptorT adaptor,
     return op->emitError("TODO: atomic rc create"), mlir::failure();
 
   auto convertedBoxType = typeConverter->convertType(rcBoxType);
-  auto indexType = static_cast<const mlir::LLVMTypeConverter *>(typeConverter)
-                       ->getIndexType();
   auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
   auto token = adaptor.getToken();
 
   if (!rcBoxType.isRegional()) {
-    if (!op.getSkipRc()) {
-      auto one = mlir::arith::ConstantOp::create(
-          rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
-      auto refcntPtr = mlir::LLVM::GEPOp::create(
+    mlir::Value countPtr;
+    if (!op.getSkipRc())
+      countPtr = mlir::LLVM::GEPOp::create(
           rewriter, op.getLoc(), llvmPtrType, convertedBoxType, token,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-      mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), one, refcntPtr);
-    }
     auto elementPtr = mlir::LLVM::GEPOp::create(
         rewriter, op.getLoc(), llvmPtrType, convertedBoxType, token,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
-    return RcCreateStorageInfo{token, elementPtr, false};
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{
+            0, static_cast<int32_t>(rcBoxType.getElementIndex())});
+    return RcCreateStorageInfo{token, elementPtr, false, countPtr};
   }
 
   if (!op.getToken())
@@ -1342,7 +1360,7 @@ initializeRcCreateStorage(OpT op, AdaptorT adaptor,
       mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), vtable, vtablePtr);
   vtableStore.setInvariantGroup(true);
   mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), token, regionPtr);
-  return RcCreateStorageInfo{token, elementPtr, true};
+  return RcCreateStorageInfo{token, elementPtr, true, /*countPtr=*/{}};
 }
 } // namespace
 
@@ -1361,6 +1379,8 @@ struct ReussirRcCreateOpConversionPattern
         rewriter, op.getLoc(), adaptor.getValue(), storage->elementPtr);
     if (!storage->regional)
       objectStore.setInvariantGroup(true);
+    if (storage->countPtr)
+      storeInitialRcCount(storage->countPtr, op.getLoc(), rewriter);
     rewriter.replaceOp(op, storage->token);
     return mlir::success();
   }
@@ -1407,6 +1427,8 @@ struct ReussirRcCreateCompoundOpConversionPattern
           mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), field, fieldPtr);
       store.setInvariantGroup(true);
     }
+    if (storage->countPtr)
+      storeInitialRcCount(storage->countPtr, op.getLoc(), rewriter);
     rewriter.replaceOp(op, results);
     return mlir::success();
   }
@@ -1434,7 +1456,7 @@ struct ReussirRcTaggedConversionPattern
     TagEncoding encoding = specialPtrTagEncoding(op);
     auto dummy =
         tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
-                    op.getTag().getZExtValue(), encoding, indexTy, rewriter);
+                    op.getTag().getZExtValue(), encoding, rewriter);
     mlir::Value base = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrTy,
                                                        dummy.getSymName());
     if (encoding != TagEncoding::TBI) {
@@ -1479,23 +1501,28 @@ struct ReussirRcCreateVariantOpConversionPattern
     if (!llvmVariantType)
       return op.emitOpError("failed to convert record type to LLVM type");
 
+    bool fused = op.getRecordType().hasFusedHeader();
+    int32_t tagField = fused ? 1 : 0;
+    int32_t payloadField = fused ? 2 : 1;
     auto tag = mlir::arith::ConstantOp::create(
         rewriter, op.getLoc(),
         mlir::IntegerAttr::get(op.getRecordType().getTagType(),
                                op.getTag().getZExtValue()));
     auto tagPtr = mlir::LLVM::GEPOp::create(
         rewriter, op.getLoc(), llvmPtrType, llvmVariantType,
-        storage->elementPtr, llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+        storage->elementPtr, llvm::ArrayRef<mlir::LLVM::GEPArg>{0, tagField});
     auto tagStore =
         mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), tag, tagPtr);
     tagStore.setInvariantGroup(true);
 
     llvm::SmallVector<mlir::Value> results;
     results.push_back(storage->token);
-    if (llvmVariantType.getSubelementIndexMap()->size() > 1) {
+    if (llvmVariantType.getSubelementIndexMap()->size() >
+        static_cast<size_t>(payloadField)) {
       auto payloadPtr = mlir::LLVM::GEPOp::create(
           rewriter, op.getLoc(), llvmPtrType, llvmVariantType,
-          storage->elementPtr, llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+          storage->elementPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, payloadField});
       if (op.getValue()) {
         auto payloadStore = mlir::LLVM::StoreOp::create(
             rewriter, op.getLoc(), adaptor.getValue(), payloadPtr);
@@ -1529,6 +1556,8 @@ struct ReussirRcCreateVariantOpConversionPattern
       }
     }
 
+    if (storage->countPtr)
+      storeInitialRcCount(storage->countPtr, op.getLoc(), rewriter);
     rewriter.replaceOp(op, results);
     return mlir::success();
   }
@@ -1586,18 +1615,22 @@ struct ReussirRecordCoerceConversionPattern
     RefType refType = op.getVariant().getType();
     auto elementType = llvm::cast<mlir::LLVM::LLVMStructType>(
         converter->convertType(refType.getElementType()));
+    auto variantRecord =
+        llvm::cast<RecordType>(refType.getElementType());
+    int32_t payloadField = variantRecord.hasFusedHeader() ? 2 : 1;
     bool variantHasNonZeroChild =
-        elementType.getSubelementIndexMap()->size() > 1;
+        elementType.getSubelementIndexMap()->size() >
+        static_cast<size_t>(payloadField);
 
     // Get the result type (should be a pointer type after conversion)
     mlir::Type resultType = converter->convertType(op.getCoerced().getType());
 
-    // Create GEP operation to get the value field pointer (index 0, 1)
-    // For variant records, the value is at the second field (index 1)
+    // The payload field follows the header (count slot + tag for fused
+    // variants, just the tag otherwise).
     if (variantHasNonZeroChild)
       rewriter.replaceOpWithNewOp<mlir::LLVM::GEPOp>(
           op, resultType, elementType, variantPtr,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, payloadField});
     else
       rewriter.replaceOpWithNewOp<mlir::ub::PoisonOp>(op, resultType);
     return mlir::success();
@@ -1773,9 +1806,7 @@ struct ReussirClosureCreateOpConversionPattern
     auto refcntPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedRcBoxType, tokenPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-    auto one = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, 1));
-    mlir::LLVM::StoreOp::create(rewriter, loc, one, refcntPtr);
+    storeInitialRcCount(refcntPtr, loc, rewriter);
 
     // 2. Assign vtable (GEP[0, 1, 0]) to address of the vtable
     auto vtablePtrSlot = mlir::LLVM::GEPOp::create(
@@ -1929,12 +1960,13 @@ struct ReussirRcIsUniqueOpConversionPattern
     // No guard for tagged immediates: the load reads the dummy box's
     // refcount, pinned above the unique/shared decision point, so
     // uniqueness is naturally false there.
+    auto countType = rewriter.getI32Type();
     auto refcnt =
-        mlir::LLVM::LoadOp::create(rewriter, loc, indexType, refcntPtr);
+        mlir::LLVM::LoadOp::create(rewriter, loc, countType, refcntPtr);
     if (outCount)
       *outCount = refcnt;
     auto one = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, 1));
+        rewriter, loc, mlir::IntegerAttr::get(countType, 1));
     mlir::Value isOne = mlir::arith::CmpIOp::create(
         rewriter, loc, mlir::arith::CmpIPredicate::eq, refcnt, one);
     return isOne;

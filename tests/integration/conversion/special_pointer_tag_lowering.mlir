@@ -14,7 +14,7 @@
 !rclist = !reussir.rc<!list>
 
 // CHECK-DAG: @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2 = internal global i64 0
-// CHECK-DAG: @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX = internal global [2 x i64] [i64 2, i64 1]
+// CHECK-DAG: @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX = internal global [2 x i32] [i32 2, i32 1]
 module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
 
   // Immediate materialization: dummy address | (tag + 1) << 56, no
@@ -32,8 +32,9 @@ module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.
   // CHECK-LABEL: define i64 @fetch(ptr %0)
   // CHECK-NOT: lshr
   // CHECK-NOT: select
-  // CHECK: %[[CNT:.+]] = load i64, ptr
-  // CHECK: ret i64 %[[CNT]]
+  // CHECK: %[[CNT:.+]] = load i32, ptr
+  // CHECK: %[[CNTW:.+]] = zext i32 %[[CNT]] to i64
+  // CHECK: ret i64 %[[CNTW]]
   func.func @fetch(%rc: !rclist) -> index {
     %cnt = reussir.rc.fetch (%rc : !rclist) : index
     return %cnt : index
@@ -44,8 +45,8 @@ module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.
   // CHECK-LABEL: define i64 @tag(ptr %0)
   // CHECK-NOT: lshr
   // CHECK-NOT: select
-  // CHECK: %[[TAG:.+]] = load i8, ptr
-  // CHECK: %[[WIDE:.+]] = zext i8 %[[TAG]] to i64
+  // CHECK: %[[TAG:.+]] = load i32, ptr
+  // CHECK: %[[WIDE:.+]] = zext i32 %[[TAG]] to i64
   // CHECK: ret i64 %[[WIDE]]
   func.func @tag(%ref: !reussir.ref<!list shared>) -> index {
     %tag = reussir.record.tag(%ref : !reussir.ref<!list shared>) : index
@@ -55,11 +56,12 @@ module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.
   // The decrementing store: a tagged access is steered to the scratch word
   // so the dummy refcount can never decay below 2.
   // CHECK-LABEL: define void @set(ptr %0, i64 %1)
+  // CHECK: %[[NARROW:.+]] = trunc i64 %1 to i32
   // CHECK: %[[INT:.+]] = ptrtoint ptr %0 to i64
   // CHECK: %[[TOP:.+]] = lshr i64 %[[INT]], 56
   // CHECK: %[[ISTAG:.+]] = icmp ne i64 %[[TOP]], 0
   // CHECK: %[[ADDR:.+]] = select i1 %[[ISTAG]], ptr @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2, ptr %0
-  // CHECK: store i64 %1, ptr %[[ADDR]]
+  // CHECK: store i32 %[[NARROW]], ptr %[[ADDR]]
   func.func @set(%rc: !rclist, %v: index) {
     reussir.rc.set(%rc : !rclist, %v : index)
     return

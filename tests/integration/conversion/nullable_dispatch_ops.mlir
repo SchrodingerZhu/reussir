@@ -78,7 +78,7 @@ module {
 // CHECK-LABEL: define i32 @test_nullable_unwrap_or_default(ptr %0)
 // CHECK: icmp ne ptr %0, null
 // CHECK: br i1
-// CHECK: getelementptr { i64, i32 }, ptr %0, i32 0, i32 1
+// CHECK: getelementptr { i32, i32 }, ptr %0, i32 0, i32 1
 // CHECK: load i32, ptr
 // CHECK: phi i32 [ 0
 // CHECK: ret i32
@@ -99,7 +99,7 @@ module {
 // CHECK-LABEL: define void @test_void_nullable_dispatch(ptr %0)
 // CHECK: icmp ne ptr %0, null
 // CHECK: br i1
-// CHECK: getelementptr { i64, i32 }, ptr %0, i32 0, i32 1
+// CHECK: getelementptr { i32, i32 }, ptr %0, i32 0, i32 1
 // CHECK: load i32, ptr
 // CHECK: mul i32
 // CHECK: ret void

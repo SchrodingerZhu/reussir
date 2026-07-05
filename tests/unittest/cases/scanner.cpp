@@ -13,7 +13,7 @@ TEST_F(ReussirTest, SimpleRecordScanner) {
         mlir::DataLayout dataLayout = mlir::DataLayout(module);
         type.emitScannerInstructions(buffer, dataLayout, {});
         llvm::SmallVector<int32_t> expected = {
-            scanner::advance(16), scanner::field(), scanner::end()};
+            scanner::advance(8), scanner::field(), scanner::end()};
         EXPECT_EQ(buffer, expected);
       });
 }
@@ -36,7 +36,7 @@ TEST_F(ReussirTest, NestedRecordScanner) {
         mlir::DataLayout dataLayout = mlir::DataLayout(module);
         type.emitScannerInstructions(buffer, dataLayout, {});
         llvm::SmallVector<int32_t> expected = {
-            scanner::advance(24), scanner::field(), scanner::advance(24),
+            scanner::advance(24), scanner::field(), scanner::advance(16),
             scanner::field(), scanner::end()};
         EXPECT_EQ(buffer, expected);
       });
@@ -64,23 +64,25 @@ TEST_F(ReussirTest, VariantRecordScanner) {
         mlir::DataLayout dataLayout = mlir::DataLayout(module);
         type.emitScannerInstructions(buffer, dataLayout, {});
         llvm::SmallVector<int32_t> expected = {
-            scanner::variant(),
+            // Fused header: advance past the i32 count slot to the i32 tag,
+            // then read the 4-byte tag.
+            scanner::advance(4), scanner::variant(4),
             // skip table
             scanner::skip(5), scanner::skip(8), scanner::skip(9),
             scanner::skip(12), scanner::skip(13),
             // first variant
-            scanner::advance(16), scanner::field(), scanner::advance(48),
+            scanner::advance(12), scanner::field(), scanner::advance(32),
             scanner::skip(14),
             // second variant
-            scanner::advance(64), scanner::skip(12),
+            scanner::advance(44), scanner::skip(12),
             // third variant
-            scanner::advance(24), scanner::field(), scanner::advance(40),
+            scanner::advance(12), scanner::field(), scanner::advance(32),
             scanner::skip(8),
             // fourth variant
-            scanner::advance(64), scanner::skip(6),
+            scanner::advance(44), scanner::skip(6),
             // fifth variant
-            scanner::advance(16), scanner::field(), scanner::advance(32),
-            scanner::field(), scanner::advance(16),
+            scanner::advance(28), scanner::field(), scanner::advance(8),
+            scanner::field(), scanner::advance(8),
             // final end
             scanner::end()};
         EXPECT_EQ(buffer, expected);
