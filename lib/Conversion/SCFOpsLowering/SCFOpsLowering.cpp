@@ -737,14 +737,25 @@ struct ReussirTokenEnsureOpRewritePattern
       if (auto scfIf = mlir::dyn_cast_if_present<mlir::scf::IfOp>(
               op.getNullableToken().getDefiningOp()))
         if (scfIf->getAttr(kExpandedDecrementAttr)) {
+          // Trace the *matching result* of the expanded decrement — an
+          // escaped nested token rides along as an extra result, and
+          // rebuilding it from result 0's box would alias two creates onto
+          // one allocation. When the traced operand is not a direct
+          // reinterpret (e.g. it is a nested decrement's result), keep the
+          // dispatched payload argument, which is always correct.
+          unsigned resultIndex =
+              llvm::cast<mlir::OpResult>(op.getNullableToken())
+                  .getResultNumber();
           auto thenYieldOp = mlir::dyn_cast_if_present<mlir::scf::YieldOp>(
               scfIf.getThenRegion().back().getTerminator());
           auto nullCreateOp =
               mlir::dyn_cast_if_present<reussir::ReussirNullableCreateOp>(
-                  thenYieldOp->getOperands()[0].getDefiningOp());
+                  thenYieldOp->getOperands()[resultIndex].getDefiningOp());
           auto reinterpretOp =
-              mlir::dyn_cast_if_present<reussir::ReussirRcReinterpretOp>(
-                  nullCreateOp.getPtr().getDefiningOp());
+              nullCreateOp
+                  ? mlir::dyn_cast_if_present<reussir::ReussirRcReinterpretOp>(
+                        nullCreateOp.getPtr().getDefiningOp())
+                  : nullptr;
           // it is safe since RC must dominate this path
           if (reinterpretOp)
             tokenSrc = reussir::ReussirRcReinterpretOp::create(rewriter, 
