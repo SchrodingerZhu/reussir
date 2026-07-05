@@ -109,6 +109,12 @@ unsafe extern "C" {
     pub fn reussirCreateInferVariantTagPass() -> MlirPass;
     pub fn reussirCreateSCFOpsLoweringPass() -> MlirPass;
     pub fn reussirCreateRcCreateSinkPass() -> MlirPass;
+
+    /// Encodes nullary variants of shared rc-boxed enums as tagged pointer
+    /// immediates (top byte = tag + 1) and stamps the module so the LLVM
+    /// lowering guards refcount/tag accesses. Only added when the scheme is
+    /// enabled (aarch64 targets / TBI by default).
+    pub fn reussirCreateSpecialPointerTagPass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;

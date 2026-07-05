@@ -3,6 +3,7 @@ add_subdirectory(RcCreateFusion)
 add_subdirectory(InferVariantTag)
 add_subdirectory(IncDecCancellation)
 add_subdirectory(TokenReuse)
+add_subdirectory(SpecialPointerTag)
 add_subdirectory(InvariantGroupAnalysis)
 add_subdirectory(UniqueCarryingRecursionAnalysis)
 add_subdirectory(TRMCRecursionAnalysis)
@@ -13,6 +14,7 @@ set(REUSSIR_TRANSFORMATION_AGGREGATE_LIBS
   MLIRReussirInferVariantTag
   MLIRReussirIncDecCancellation
   MLIRReussirTokenReuse
+  MLIRReussirSpecialPointerTag
   MLIRReussirInvariantGroupAnalysis
   MLIRReussirUniqueCarryingRecursionAnalysis
   MLIRReussirTRMCRecursionAnalysis

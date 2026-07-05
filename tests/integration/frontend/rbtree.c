@@ -13,6 +13,19 @@ typedef struct rc_list {
 #define LIST_NIL 0
 #define LIST_CONS 1
 
+/*
+ * Special pointer tag (aarch64 default): a nullary variant may be encoded as
+ * an unboxed immediate — a pointer whose top byte is `tag + 1` (the low bits
+ * point at a compiler-internal dummy box, so on-target dereferences still
+ * see the right tag under TBI). Portable foreign code should decode the tag
+ * from the pointer itself without dereferencing. A zero top byte means an
+ * ordinary RC box (also the layout with --disable-special-pointer-tag).
+ */
+static inline int64_t list_tag(const rc_list_t *p) {
+    uint64_t top = (uint64_t)(uintptr_t)p >> 56;
+    return top != 0 ? (int64_t)(top - 1) : p->tag;
+}
+
 extern rc_list_t *make_tree_to_list_ffi(int32_t size);
 
 int main(void) {
@@ -20,7 +33,7 @@ int main(void) {
     rc_list_t *p = make_tree_to_list_ffi(n);
 
     for (int32_t i = 0; i < n; ++i) {
-        if (p->tag != LIST_CONS) {
+        if (list_tag(p) != LIST_CONS) {
             fprintf(stderr, "FAIL: expected Cons at index %d, got Nil\n", (int)i);
             abort();
         }
@@ -31,8 +44,8 @@ int main(void) {
         p = p->tail;
     }
 
-    if (p->tag != LIST_NIL) {
-        fprintf(stderr, "FAIL: expected Nil terminator, got tag=%ld\n", (long)p->tag);
+    if (list_tag(p) != LIST_NIL) {
+        fprintf(stderr, "FAIL: expected Nil terminator, got tag=%ld\n", (long)list_tag(p));
         abort();
     }
 

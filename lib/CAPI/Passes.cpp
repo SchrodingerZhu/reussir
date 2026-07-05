@@ -78,6 +78,10 @@ MlirPass reussirCreateInferVariantTagPass(void) {
 MlirPass reussirCreateSCFOpsLoweringPass(void) {
   return wrapOwned(reussir::createReussirSCFOpsLoweringPass());
 }
+MlirPass reussirCreateSpecialPointerTagPass(void) {
+  return wrapOwned(reussir::createReussirSpecialPointerTagPass());
+}
+
 MlirPass reussirCreateRcCreateSinkPass(void) {
   return wrapOwned(reussir::createReussirRcCreateSinkPass());
 }

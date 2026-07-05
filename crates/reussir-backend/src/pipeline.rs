@@ -56,6 +56,13 @@ pub struct LoweringOptions {
     pub opt: OptLevel,
     /// Allow the token-reuse pass to reuse tokens across function calls.
     pub reuse_token_across_call: bool,
+    /// Encode nullary variants of rc-boxed enums as tagged pointer
+    /// immediates (top byte = tag + 1, no allocation). Sound only where a
+    /// stray dereference of such a value cannot be architecturally masked —
+    /// the driver enables it for aarch64 targets (TBI) and `rrc` exposes
+    /// `--disable-special-pointer-tag` to opt out. Changes the C ABI of
+    /// returned enum values: a non-zero top byte is an immediate.
+    pub special_pointer_tag: bool,
     /// Run the invariant-group analysis pass.
     pub enable_invariant_analysis: bool,
 }
@@ -65,6 +72,9 @@ impl Default for LoweringOptions {
         Self {
             opt: OptLevel::Default,
             reuse_token_across_call: false,
+            // Off by default: only target-aware drivers (rrc) turn it on, so
+            // embedders (REPL/JIT, tests) keep the boxed layout untouched.
+            special_pointer_tag: false,
             // Off by default, mirroring the C++ `createLoweringPipeline`
             // (`enableInvariantAnalysis = false`).
             enable_invariant_analysis: false,
@@ -153,12 +163,21 @@ pub fn run_lowering_pipeline(
         opt = ?options.opt,
         reuse_token_across_call = options.reuse_token_across_call,
         enable_invariant_analysis = options.enable_invariant_analysis,
+        special_pointer_tag = options.special_pointer_tag,
     )
     .entered();
 
     let manager = PassManager::new(context);
 
     lowering_pipeline!(manager,
+        // Nullary variants of shared rc-boxed enums become tagged pointer
+        // immediates. Must run before any uniqueness/token pass so no
+        // provenance or allocation token is ever attached to a rewritten
+        // construction.
+        if options.special_pointer_tag => {
+            module: sys::reussirCreateSpecialPointerTagPass();
+        }
+
         // Optimization-only prologue.
         if options.opt.runs_optimization() => {
             if options.opt == OptLevel::Aggressive => {

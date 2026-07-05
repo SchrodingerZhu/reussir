@@ -41,9 +41,9 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
 
-// The `DataLayoutTypeInterface` no longer carries `getPreferredAlignment`, so the
-// generated declarations omit it; this elides our out-of-line definitions to
-// match.
+// The `DataLayoutTypeInterface` no longer carries `getPreferredAlignment`, so
+// the generated declarations omit it; this elides our out-of-line definitions
+// to match.
 #define MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(...)
 
 #define GET_TYPEDEF_CLASSES
@@ -184,8 +184,7 @@ bool isNonNullPointerType(mlir::Type type) {
     return false;
   return llvm::TypeSwitch<mlir::Type, bool>(type)
       .Case<TokenType, RcType, RecordType, RawPtrType, RefType, HoleType,
-            ClosureType, ViewType>(
-          [](auto) { return true; })
+            ClosureType, ViewType>([](auto) { return true; })
       .Default([](mlir::Type) { return false; });
 }
 //===----------------------------------------------------------------------===//
@@ -749,6 +748,26 @@ RcBoxType RcType::getInnerBoxType() const {
   return RcBoxType::get(getContext(), getEleTy(), isFlexOrRigid);
 }
 
+bool RcType::mayCarrySpecialPointerTag() const {
+  // Plain shared boxes only: the frontend leaves their capability
+  // `unspecified` (regional flavors are the annotated ones), and every other
+  // capability has a different header or lifecycle.
+  if (getCapability() != Capability::shared &&
+      getCapability() != Capability::unspecified)
+    return false;
+  auto variantType = llvm::dyn_cast<RecordType>(getElementType());
+  if (!variantType || !variantType.isVariant() || !variantType.getComplete())
+    return false;
+  for (auto [idx, member] : llvm::enumerate(variantType.getMembers())) {
+    if (idx + 1 > 0xFF)
+      break;
+    auto arm = llvm::dyn_cast<RecordType>(member);
+    if (arm && arm.isCompound() && arm.getMembers().empty())
+      return true;
+  }
+  return false;
+}
+
 //===----------------------------------------------------------------------===//
 // RcType DataLayoutInterface
 //===----------------------------------------------------------------------===//
@@ -962,7 +981,8 @@ ArrayType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
 
 ArrayType ArrayType::dropFront() const {
   assert(getShape().size() > 1 && "cannot drop the last array extent");
-  return ArrayType::get(getContext(), getShape().drop_front(), getElementType());
+  return ArrayType::get(getContext(), getShape().drop_front(),
+                        getElementType());
 }
 
 ArrayType ArrayType::cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape,
@@ -977,9 +997,8 @@ mlir::Type ArrayType::parse(mlir::AsmParser &parser) {
       mlir::failed(parseShapeAndElementType(parser, shape, elementType)) ||
       parser.parseGreater())
     return {};
-  return ArrayType::getChecked(
-      parser.getEncodedSourceLoc(parser.getNameLoc()), parser.getContext(),
-      shape, elementType);
+  return ArrayType::getChecked(parser.getEncodedSourceLoc(parser.getNameLoc()),
+                               parser.getContext(), shape, elementType);
 }
 
 void ArrayType::print(mlir::AsmPrinter &printer) const {
@@ -1035,9 +1054,9 @@ mlir::Type ViewType::parse(mlir::AsmParser &parser) {
       parser.parseGreater())
     return {};
 
-  auto arrayType = ArrayType::getChecked(
-      parser.getEncodedSourceLoc(parser.getNameLoc()), parser.getContext(),
-      shape, elementType);
+  auto arrayType =
+      ArrayType::getChecked(parser.getEncodedSourceLoc(parser.getNameLoc()),
+                            parser.getContext(), shape, elementType);
   if (!arrayType)
     return {};
   return ViewType::get(parser.getContext(), isMutable, arrayType);

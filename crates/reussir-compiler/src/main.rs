@@ -155,6 +155,16 @@ struct Cli {
     #[arg(short = 'g', long = "debug")]
     debug: bool,
 
+    /// Keep nullary enum variants heap-boxed instead of encoding them as
+    /// tagged pointer immediates. The tagged encoding (top byte = tag + 1,
+    /// no allocation, no reference counting) is on by default for aarch64
+    /// targets, where TBI (top-byte ignore) additionally guarantees a stray
+    /// data access through such a value is architecturally masked. Note the
+    /// FFI contract: a returned enum value with a non-zero top byte is an
+    /// immediate, not a box.
+    #[arg(long = "disable-special-pointer-tag")]
+    disable_special_pointer_tag: bool,
+
     /// Omit source locations (the file table and `[start..end]` spans) from
     /// `hir`/`mir` text dumps. The default dump is lossless — it round-trips
     /// spans and file attribution — but structural readers (FileCheck tests,
@@ -390,6 +400,12 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
+        // Tagged nullary-variant immediates default on where the target's
+        // pointer semantics cover them (aarch64: TBI ignores the top byte on
+        // data access); other targets keep the boxed layout until an
+        // equivalent (e.g. x86 LAM) is wired up.
+        special_pointer_tag: machine.triple().starts_with("aarch64")
+            && !cli.disable_special_pointer_tag,
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);

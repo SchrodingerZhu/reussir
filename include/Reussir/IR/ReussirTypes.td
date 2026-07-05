@@ -230,6 +230,12 @@ def ReussirRcType
              getCapability() == Capability::rigid;
     }
     RcBoxType getInnerBoxType() const;
+    /// Whether values of this type may be special-pointer-tag immediates
+    /// (see `reussir.rc.tagged`): a shared-capability box of a complete
+    /// variant record with at least one nullary arm whose `tag + 1` fits the
+    /// top byte. Refcount/tag accesses on such values must be guarded when
+    /// the scheme is enabled.
+    bool mayCarrySpecialPointerTag() const;
   }];
 }
 //===----------------------------------------------------------------------===//

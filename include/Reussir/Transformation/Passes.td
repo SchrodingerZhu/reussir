@@ -16,6 +16,23 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
+// SpecialPointerTag
+//===----------------------------------------------------------------------===//
+def ReussirSpecialPointerTagPass
+    : Pass<"reussir-special-pointer-tag", "::mlir::ModuleOp"> {
+  let summary = "encode nullary variants as tagged pointer immediates";
+  let description = [{
+    `reussir-special-pointer-tag` rewrites nullary variant constructions of
+    shared rc-boxed enums into `reussir.rc.tagged` immediates (top byte =
+    tag + 1, low bits = a per-tag dummy box, no allocation) and stamps the
+    module so the LLVM lowering steers refcount stores away from the dummy
+    box on taggable types. Only added to the pipeline for targets with TBI,
+    which the encoding hard-depends on (aarch64 by default).
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // RcCreateSink
 //===----------------------------------------------------------------------===//
 def ReussirRcCreateSinkPass
