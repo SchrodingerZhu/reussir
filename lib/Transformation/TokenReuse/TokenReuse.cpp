@@ -228,6 +228,126 @@ getDfsOrder(const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder,
   return 0;
 }
 
+// A member decrement expands *inside* its owner's expanded decrement: the
+// owner's unique branch releases its fields, so a pattern-destructured child
+// box dies — and yields its reuse token — two regions deep. That token's SSA
+// value cannot be named after the owner's join, so the matcher can only free
+// it, while a same-shaped create right below the join allocates fresh
+// memory. Escape such tokens by widening the enclosing expanded decrement:
+// the region holding the trapped producer yields the token through an extra
+// result, every sibling region yields a null nullable, and the token becomes
+// matchable at the owner's level. Iterating to a fixed point bubbles tokens
+// out of arbitrarily deep member chains one join at a time.
+bool isEscapableTokenResult(mlir::OpResult result) {
+  if (!result.use_empty())
+    return false;
+  auto nullableType = mlir::dyn_cast<NullableType>(result.getType());
+  return nullableType && mlir::isa<TokenType>(nullableType.getPtrTy());
+}
+
+// The rc value an expanded decrement's token result came from. Result 0 is
+// the decrement's own box (recoverable from its refcount condition); an
+// escaped result traces through the home region's yield to the trapped
+// producer it was widened from. Null when the chain is unrecognizable —
+// scoring then works on the token type alone.
+mlir::TypedValue<RcType> expandedDecProducerRc(mlir::scf::IfOp scfIf,
+                                               unsigned resultIndex) {
+  if (resultIndex == 0) {
+    auto expectOp = dyn_cast_or_null<ReussirExpectOp>(
+        scfIf.getCondition().getDefiningOp());
+    if (!expectOp)
+      return nullptr;
+    auto cmp = dyn_cast_or_null<mlir::arith::CmpIOp>(
+        expectOp.getCondition().getDefiningOp());
+    if (!cmp)
+      return nullptr;
+    auto rcFetch = llvm::dyn_cast_if_present<ReussirRcFetchOp>(
+        cmp.getLhs().getDefiningOp());
+    return rcFetch ? rcFetch.getRcPtr() : nullptr;
+  }
+  for (mlir::Region &region : scfIf->getRegions()) {
+    if (region.empty())
+      continue;
+    mlir::Value yielded =
+        region.front().getTerminator()->getOperand(resultIndex);
+    auto inner =
+        dyn_cast_or_null<mlir::scf::IfOp>(yielded.getDefiningOp());
+    if (inner && inner->hasAttr(kExpandedDecrementAttr))
+      return expandedDecProducerRc(
+          inner, llvm::cast<mlir::OpResult>(yielded).getResultNumber());
+  }
+  return nullptr;
+}
+
+bool escapeTrappedTokensOnce(mlir::func::FuncOp func) {
+  llvm::SmallVector<mlir::scf::IfOp> worklist;
+  func.walk([&](mlir::scf::IfOp op) {
+    if (op->hasAttr(kExpandedDecrementAttr))
+      worklist.push_back(op);
+  });
+  for (mlir::scf::IfOp outer : worklist) {
+    // Trapped producers: expanded decrements sitting directly in one of the
+    // outer decrement's blocks, with unconsumed token results.
+    llvm::SmallVector<mlir::Value> escaped;
+    mlir::Block *homeBlock = nullptr;
+    for (mlir::Region &region : outer->getRegions()) {
+      for (mlir::Operation &op : region.front()) {
+        auto inner = llvm::dyn_cast<mlir::scf::IfOp>(op);
+        if (!inner || !inner->hasAttr(kExpandedDecrementAttr))
+          continue;
+        for (mlir::OpResult result : inner.getResults())
+          if (isEscapableTokenResult(result)) {
+            if (homeBlock && homeBlock != &region.front())
+              continue; // one home region per widening round; rare
+            homeBlock = &region.front();
+            escaped.push_back(result);
+          }
+      }
+    }
+    if (escaped.empty())
+      continue;
+
+    mlir::OpBuilder builder(outer);
+    llvm::SmallVector<mlir::Type> resultTypes(outer.getResultTypes().begin(),
+                                              outer.getResultTypes().end());
+    for (mlir::Value token : escaped)
+      resultTypes.push_back(token.getType());
+    auto widened = mlir::scf::IfOp::create(
+        builder, outer.getLoc(), resultTypes, outer.getCondition(),
+        /*addThenRegion=*/true, /*addElseRegion=*/true);
+    widened->setAttrs(outer->getAttrs());
+    widened.getThenRegion().takeBody(outer.getThenRegion());
+    widened.getElseRegion().takeBody(outer.getElseRegion());
+
+    for (mlir::Region &region : widened->getRegions()) {
+      mlir::Operation *yield = region.front().getTerminator();
+      llvm::SmallVector<mlir::Value> operands(yield->getOperands());
+      if (&region.front() == homeBlock) {
+        operands.append(escaped.begin(), escaped.end());
+      } else {
+        builder.setInsertionPoint(yield);
+        for (mlir::Value token : escaped)
+          operands.push_back(ReussirNullableCreateOp::create(
+              builder, outer.getLoc(), token.getType(), nullptr));
+      }
+      builder.setInsertionPoint(yield);
+      mlir::scf::YieldOp::create(builder, yield->getLoc(), operands);
+      yield->erase();
+    }
+
+    for (auto [index, oldResult] : llvm::enumerate(outer.getResults()))
+      oldResult.replaceAllUsesWith(widened.getResult(index));
+    outer.erase();
+    return true;
+  }
+  return false;
+}
+
+void escapeTrappedTokens(mlir::func::FuncOp func) {
+  while (escapeTrappedTokensOnce(func)) {
+  }
+}
+
 struct Reuse {
   mlir::Value token;
   bool realloc;
@@ -295,8 +415,10 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
           availableTokens = intersection;
         }
         if (auto scfIf = dyn_cast<mlir::scf::IfOp>(op))
-          if (scfIf->hasAttr(kExpandedDecrementAttr) && scfIf->use_empty())
-            availableTokens = availableTokens.insert(scfIf.getResult(0));
+          if (scfIf->hasAttr(kExpandedDecrementAttr))
+            for (mlir::OpResult result : scfIf.getResults())
+              if (isEscapableTokenResult(result))
+                availableTokens = availableTokens.insert(result);
       }
 
       if (auto producer = dyn_cast<TokenProducer>(op)) {
@@ -343,27 +465,17 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
             if (auto scfIf = dyn_cast_or_null<mlir::scf::IfOp>(
                     tokenVal.getDefiningOp())) {
               if (scfIf->hasAttr(kExpandedDecrementAttr)) {
-                auto nullableType =
-                    dyn_cast<NullableType>(scfIf.getResult(0).getType());
+                auto nullableType = dyn_cast<NullableType>(tokenVal.getType());
                 if (!nullableType)
                   continue;
                 auto producedType =
                     dyn_cast<TokenType>(nullableType.getPtrTy());
                 if (!producedType)
                   continue;
-                mlir::Value condition = scfIf.getCondition();
-                auto expectOp = dyn_cast_or_null<ReussirExpectOp>(
-                    condition.getDefiningOp());
-                if (!expectOp)
-                  continue;
-                auto cmp = dyn_cast_or_null<mlir::arith::CmpIOp>(
-                    expectOp.getCondition().getDefiningOp());
-                if (!cmp)
-                  continue;
-                auto rcFetch = llvm::dyn_cast_if_present<ReussirRcFetchOp>(
-                    cmp.getLhs().getDefiningOp());
                 mlir::TypedValue<RcType> producerRc =
-                    rcFetch ? rcFetch.getRcPtr() : nullptr;
+                    expandedDecProducerRc(scfIf, llvm::cast<mlir::OpResult>(
+                                                     tokenVal)
+                                                     .getResultNumber());
                 int score = hueristic(producedType, producerRc, acceptor,
                                       aliasAnalyzer);
                 if (score >= 0 && (score > bestScore ||
@@ -413,6 +525,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
   }
 
   void runOnOperation() override {
+    escapeTrappedTokens(getOperation());
+
     llvm::SmallVector<Reuse> reuses;
     llvm::SmallVector<Free> frees;
     mlir::AliasAnalysis aliasAnalyzer(getOperation());
@@ -468,10 +582,12 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
           free.token.use_empty()) {
         if (!sunkTokens.insert(free.token).second)
           continue; // already sunk via an earlier record of this token
+        unsigned index =
+            llvm::cast<mlir::OpResult>(free.token).getResultNumber();
         mlir::Operation *thenYield =
             scfIf.getThenRegion().back().getTerminator();
         auto nonNull = llvm::dyn_cast_if_present<ReussirNullableCreateOp>(
-            thenYield->getOperand(0).getDefiningOp());
+            thenYield->getOperand(index).getDefiningOp());
         if (nonNull && nonNull.getPtr()) {
           rewriter.setInsertionPoint(thenYield);
           ReussirTokenFreeOp::create(rewriter, thenYield->getLoc(),
