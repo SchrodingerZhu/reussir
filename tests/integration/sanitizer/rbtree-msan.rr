@@ -1,5 +1,5 @@
 // REQUIRES: msan
-// RUN: %reussir-compiler %S/../frontend/rbtree2.rr -o %t.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %rrc %S/../frontend/rbtree2.rr -o %t.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
 // RUN: %cc %msan_flags -c -x ir %t.ll -o %t.o
 // RUN: %cc %msan_flags %t.o %S/rbtree2-harness.c %reussir_rt_msan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
 // RUN: %msan_env %t.exe

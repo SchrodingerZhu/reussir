@@ -1,5 +1,5 @@
 // REQUIRES: lsan
-// RUN: %reussir-compiler %S/../frontend/rbtree.rr -o %t.ll -t llvm-ir --relocation-mode pic
+// RUN: %rrc %S/../frontend/rbtree.rr -o %t.ll -t llvm-ir --relocation-mode pic
 // RUN: %cc %lsan_flags -c -x ir %t.ll -o %t.o
 // RUN: %cc %lsan_flags %t.o %S/rbtree-harness.c %reussir_rt_lsan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
 // RUN: %lsan_env %not --crash %t.exe

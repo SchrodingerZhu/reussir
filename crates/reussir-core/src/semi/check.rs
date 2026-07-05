@@ -1018,9 +1018,28 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         // Named arguments are matched by field name (an interned key compare);
-        // positional by order.
-        let named = args.iter().any(|(f, _)| f.is_some());
-        let arg_fields: Vec<Option<TokenKey>> = args.iter().map(|(f, _)| *f).collect();
+        // positional by order. Field shorthand auto-forwards: a bare in-scope
+        // variable whose name matches a field acts as that named argument, so
+        // `Point { y, x }` is order-independent and composes with explicit
+        // named arguments (`Point { x, y: 10 }`).
+        let arg_fields: Vec<Option<TokenKey>> = args
+            .iter()
+            .map(|(f, e)| {
+                f.or_else(|| match e.kind() {
+                    surface::ExprKind::Var(path)
+                        if path.segments.is_empty()
+                            && field_tys
+                                .iter()
+                                .any(|(fname, _)| *fname == Some(path.basename))
+                            && self.vars.lookup(path.basename).is_some() =>
+                    {
+                        Some(path.basename)
+                    }
+                    _ => None,
+                })
+            })
+            .collect();
+        let named = arg_fields.iter().any(|f| f.is_some());
         let mut out = Vec::new();
         if named {
             for (fname, fty) in field_tys {
