@@ -65,7 +65,7 @@ enum Stage {
 /// CLI surface for [`NullaryVariantEncoding`], with the extra
 /// `arch-dependent` value that resolves per target triple.
 #[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
-enum NullaryVariantEncodingArg {
+enum VariantEncoding {
     /// Best encoding the target supports: TBI on aarch64 (LAM and friends
     /// may follow), the arch-independent form elsewhere.
     ArchDependent,
@@ -76,19 +76,19 @@ enum NullaryVariantEncodingArg {
     Boxed,
 }
 
-impl NullaryVariantEncodingArg {
+impl VariantEncoding {
     /// Resolves the CLI choice against the target `triple`.
     fn resolve(self, triple: &str) -> NullaryVariantEncoding {
         match self {
-            NullaryVariantEncodingArg::ArchDependent => {
+            VariantEncoding::ArchDependent => {
                 if triple.starts_with("aarch64") {
                     NullaryVariantEncoding::Tbi
                 } else {
                     NullaryVariantEncoding::Immortal
                 }
             }
-            NullaryVariantEncodingArg::ArchIndependent => NullaryVariantEncoding::Immortal,
-            NullaryVariantEncodingArg::Boxed => NullaryVariantEncoding::Boxed,
+            VariantEncoding::ArchIndependent => NullaryVariantEncoding::Immortal,
+            VariantEncoding::Boxed => NullaryVariantEncoding::Boxed,
         }
     }
 }
@@ -196,8 +196,8 @@ struct Cli {
     /// itself, with an immortal refcount — foreign code sees a
     /// layout-compatible box. `boxed` keeps the legacy heap-boxed layout.
     #[arg(long = "nullary-variant-encoding", value_enum,
-          default_value_t = NullaryVariantEncodingArg::ArchDependent)]
-    nullary_variant_encoding: NullaryVariantEncodingArg,
+          default_value_t = VariantEncoding::ArchDependent)]
+    nullary_variant_encoding: VariantEncoding,
 
     /// Omit source locations (the file table and `[start..end]` spans) from
     /// `hir`/`mir` text dumps. The default dump is lossless — it round-trips
