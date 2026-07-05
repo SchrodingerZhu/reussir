@@ -15,6 +15,8 @@
 #include "Reussir/IR/ReussirTypes.h"
 
 #include <bit>
+#include <optional>
+#include <tuple>
 #include <cstddef>
 #include <functional>
 #pragma GCC diagnostic push
@@ -196,6 +198,60 @@ int hueristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
                                                                           : -1;
 }
 
+// The (token type, producing rc value) pair behind an available token, for
+// both producer shapes the matcher understands: a `reussir.rc.dec` that
+// yields its box as a nullable token, and an *expanded* decrement (an
+// `scf.if` tagged kExpandedDecrementAttr whose condition tests the fetched
+// refcount of the decremented box).
+struct ProducedToken {
+  TokenType type{};
+  mlir::TypedValue<RcType> rc{};
+};
+std::optional<ProducedToken> describeToken(mlir::Value tokenVal) {
+  if (auto producer =
+          dyn_cast_or_null<TokenProducer>(tokenVal.getDefiningOp())) {
+    ReussirRcDecOp dec = dyn_cast<ReussirRcDecOp>(producer.getOperation());
+    return ProducedToken{producer.getTokenType(),
+                         dec ? dec.getRcPtr() : nullptr};
+  }
+  if (auto scfIf =
+          dyn_cast_or_null<mlir::scf::IfOp>(tokenVal.getDefiningOp())) {
+    if (!scfIf->hasAttr(kExpandedDecrementAttr))
+      return std::nullopt;
+    auto nullableType = dyn_cast<NullableType>(scfIf.getResult(0).getType());
+    if (!nullableType)
+      return std::nullopt;
+    auto producedType = dyn_cast<TokenType>(nullableType.getPtrTy());
+    if (!producedType)
+      return std::nullopt;
+    auto expectOp = dyn_cast_or_null<ReussirExpectOp>(
+        scfIf.getCondition().getDefiningOp());
+    if (!expectOp)
+      return std::nullopt;
+    auto cmp = dyn_cast_or_null<mlir::arith::CmpIOp>(
+        expectOp.getCondition().getDefiningOp());
+    if (!cmp)
+      return std::nullopt;
+    auto rcFetch = llvm::dyn_cast_if_present<ReussirRcFetchOp>(
+        cmp.getLhs().getDefiningOp());
+    return ProducedToken{producedType, rcFetch ? rcFetch.getRcPtr() : nullptr};
+  }
+  return std::nullopt;
+}
+
+// The nominal type domain of a producer/consumer: the rc element type. Two
+// dead boxes of the same record are interchangeable in every respect; a
+// same-domain reuse is exactly the in-place update Koka's reuse analysis
+// aims for. Null when the shape is unknown.
+mlir::Type producerDomain(const ProducedToken &produced) {
+  return produced.rc ? produced.rc.getType().getElementType() : mlir::Type{};
+}
+mlir::Type acceptorDomain(TokenAcceptor acceptor) {
+  if (auto create = dyn_cast<ReussirRcCreateOp>(acceptor.getOperation()))
+    return create.getRcPtr().getType().getElementType();
+  return {};
+}
+
 struct ValueHash {
   uint64_t operator()(mlir::Value v) const {
     void *ptr = v.getAsOpaquePointer();
@@ -239,6 +295,110 @@ struct Free {
 };
 struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
   using Base::Base;
+
+  // Same-nominal-type bias strategy (the `domain-bias` option).
+  enum class DomainBias { None, Lookahead, TwoPhase };
+  // Which matches the current walk may form: everything admissible, or only
+  // same-domain pairs (the first walk of the two-phase strategy).
+  enum class MatchMode { Full, DomainOnly };
+
+  DomainBias biasKind = DomainBias::None;
+  MatchMode mode = MatchMode::Full;
+  // Cross-walk state for the two-phase strategy: pairs formed in the
+  // domain-only walk stay fixed and are *replayed* by the fallback walk when
+  // it reaches each assigned acceptor. Consumption must stay path-local:
+  // sibling branches of an scf.if each see the token as available (they are
+  // mutually exclusive), so phase one may assign one token to an acceptor in
+  // every sibling arm, and the replay erases it from each arm's own
+  // availability copy. `reservedTokens` keeps the fallback matcher from
+  // handing a phase-one token to an *earlier* unassigned acceptor, which
+  // would double-consume it along the path to its reserved consumer.
+  llvm::DenseMap<mlir::Operation *, mlir::Value> phaseOneAssignments;
+  llvm::DenseSet<mlir::Value> reservedTokens;
+
+  struct Candidate {
+    mlir::Value token{};
+    int score = -1;
+    bool realloc = false;
+    bool sameDomain = false;
+  };
+
+  // The best admissible token for `acceptor` under the current mode and bias,
+  // ignoring `exclude`. Ranking: with a domain bias, same-domain first, then
+  // the locality/size score, then recency (DFS order); without, the original
+  // score-then-recency ranking.
+  Candidate pickBest(const ValueSet &availableTokens, TokenAcceptor acceptor,
+                     mlir::AliasAnalysis &aliasAnalyzer,
+                     const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder,
+                     MatchMode mode, mlir::Value exclude) {
+    mlir::Type consumerDomain = acceptorDomain(acceptor);
+    Candidate best;
+    for (auto tokenVal : availableTokens) {
+      if (tokenVal == exclude)
+        continue;
+      // A token reserved by the domain-only walk belongs to its downstream
+      // consumer; the fallback walk must not hand it out again.
+      if (mode == MatchMode::Full && reservedTokens.contains(tokenVal))
+        continue;
+      auto produced = describeToken(tokenVal);
+      if (!produced)
+        continue;
+      int score =
+          hueristic(produced->type, produced->rc, acceptor, aliasAnalyzer);
+      if (score < 0)
+        continue;
+      mlir::Type domain = producerDomain(*produced);
+      bool sameDomain = domain && consumerDomain && domain == consumerDomain;
+      if (mode == MatchMode::DomainOnly && !sameDomain)
+        continue;
+      bool better;
+      if (!best.token) {
+        better = true;
+      } else if (biasKind == DomainBias::None) {
+        better = score > best.score ||
+                 (score == best.score &&
+                  getDfsOrder(dfsOrder, tokenVal) >
+                      getDfsOrder(dfsOrder, best.token));
+      } else {
+        better = std::tuple(sameDomain, score,
+                            getDfsOrder(dfsOrder, tokenVal)) >
+                 std::tuple(best.sameDomain, best.score,
+                            getDfsOrder(dfsOrder, best.token));
+      }
+      if (better)
+        best = Candidate{tokenVal, score, score == 0, sameDomain};
+    }
+    return best;
+  }
+
+  // Whether a later acceptor in the same block wants a token of `domain`.
+  // Conservative and block-local: stops at anything that kills or may
+  // conditionally consume the token (loops, region-bearing ops, and calls
+  // when reuse does not cross calls) — mirroring the walk's own barriers.
+  bool blockHasLaterSameDomainConsumer(mlir::Operation *from,
+                                       mlir::Type domain) {
+    for (mlir::Operation *op = from->getNextNode(); op;
+         op = op->getNextNode()) {
+      if (isa<mlir::LoopLikeOpInterface>(*op) || op->getNumRegions() > 0)
+        return false;
+      if (isa<mlir::CallOpInterface>(*op) && !reuseAcrossCall) {
+        mlir::func::CallOp funcCall = llvm::dyn_cast<mlir::func::CallOp>(*op);
+        if (!funcCall ||
+            !funcCall.getCallee().starts_with("core::intrinsic::"))
+          return false;
+      }
+      if (auto acceptor = dyn_cast<TokenAcceptor>(op)) {
+        auto alloc = llvm::dyn_cast_if_present<ReussirTokenAllocOp>(
+            acceptor.getToken().getDefiningOp());
+        if (alloc && alloc.getToken().hasOneUse() &&
+            !phaseOneAssignments.contains(op) &&
+            acceptorDomain(acceptor) == domain)
+          return true;
+      }
+    }
+    return false;
+  }
+
   ValueSet oneShotTokenReuse(
       mlir::Region &region, ValueSet availableTokens,
       llvm::SmallVectorImpl<Reuse> &reuses, llvm::SmallVectorImpl<Free> &frees,
@@ -317,71 +477,42 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
 
         auto allocOp = llvm::dyn_cast_if_present<ReussirTokenAllocOp>(
             acceptor.getToken().getDefiningOp());
-        if (allocOp && allocOp.getToken().hasOneUse()) {
-          int bestScore = -1;
-          mlir::Value bestToken{};
-          bool bestRealloc = false;
+        auto preAssigned = phaseOneAssignments.find(acceptor.getOperation());
+        if (allocOp && allocOp.getToken().hasOneUse() &&
+            preAssigned != phaseOneAssignments.end() &&
+            mode == MatchMode::Full) {
+          // Replay a phase-one pair: consume the reserved token along this
+          // path (the reuse itself was already recorded by phase one).
+          availableTokens = availableTokens.erase(preAssigned->second);
+        } else if (allocOp && allocOp.getToken().hasOneUse() &&
+                   preAssigned == phaseOneAssignments.end()) {
+          Candidate best =
+              pickBest(availableTokens, acceptor, aliasAnalyzer, dfsOrder,
+                       mode, /*exclude=*/{});
 
-          for (auto tokenVal : availableTokens) {
-            if (auto producer =
-                    dyn_cast_or_null<TokenProducer>(tokenVal.getDefiningOp())) {
-              ReussirRcDecOp producerAsDec =
-                  dyn_cast<ReussirRcDecOp>(producer.getOperation());
-              mlir::TypedValue<RcType> producerRc =
-                  producerAsDec ? producerAsDec.getRcPtr() : nullptr;
-              int score = hueristic(producer.getTokenType(), producerRc,
-                                    acceptor, aliasAnalyzer);
-              if (score >= 0 && (score > bestScore ||
-                                 (score == bestScore && bestToken &&
-                                  getDfsOrder(dfsOrder, tokenVal) >
-                                      getDfsOrder(dfsOrder, bestToken)))) {
-                bestScore = score;
-                bestToken = tokenVal;
-                bestRealloc = (score == 0);
-              }
-            }
-            if (auto scfIf = dyn_cast_or_null<mlir::scf::IfOp>(
-                    tokenVal.getDefiningOp())) {
-              if (scfIf->hasAttr(kExpandedDecrementAttr)) {
-                auto nullableType =
-                    dyn_cast<NullableType>(scfIf.getResult(0).getType());
-                if (!nullableType)
-                  continue;
-                auto producedType =
-                    dyn_cast<TokenType>(nullableType.getPtrTy());
-                if (!producedType)
-                  continue;
-                mlir::Value condition = scfIf.getCondition();
-                auto expectOp = dyn_cast_or_null<ReussirExpectOp>(
-                    condition.getDefiningOp());
-                if (!expectOp)
-                  continue;
-                auto cmp = dyn_cast_or_null<mlir::arith::CmpIOp>(
-                    expectOp.getCondition().getDefiningOp());
-                if (!cmp)
-                  continue;
-                auto rcFetch = llvm::dyn_cast_if_present<ReussirRcFetchOp>(
-                    cmp.getLhs().getDefiningOp());
-                mlir::TypedValue<RcType> producerRc =
-                    rcFetch ? rcFetch.getRcPtr() : nullptr;
-                int score = hueristic(producedType, producerRc, acceptor,
-                                      aliasAnalyzer);
-                if (score >= 0 && (score > bestScore ||
-                                   (score == bestScore && bestToken &&
-                                    getDfsOrder(dfsOrder, tokenVal) >
-                                        getDfsOrder(dfsOrder, bestToken)))) {
-                  bestScore = score;
-                  bestToken = tokenVal;
-                  bestRealloc = (score == 0);
-                }
-              }
-            }
+          // Lookahead bias: giving this token to a cross-domain consumer
+          // starves any same-domain consumer further down the block, and a
+          // same-domain reuse is strictly better (in-place update, no
+          // realloc, hot cache line). Skip the assignment once and reselect
+          // without the token; the downstream consumer picks it up when the
+          // walk reaches it.
+          if (best.token && !best.sameDomain &&
+              biasKind == DomainBias::Lookahead) {
+            mlir::Type tokenDomain;
+            if (auto produced = describeToken(best.token))
+              tokenDomain = producerDomain(*produced);
+            if (tokenDomain && blockHasLaterSameDomainConsumer(&op, tokenDomain))
+              best = pickBest(availableTokens, acceptor, aliasAnalyzer,
+                              dfsOrder, mode, /*exclude=*/best.token);
           }
 
-          if (bestToken) {
-            mlir::Value selectedToken = bestToken;
-            availableTokens = availableTokens.erase(bestToken);
-            reuses.push_back({selectedToken, bestRealloc, acceptor});
+          if (best.token) {
+            availableTokens = availableTokens.erase(best.token);
+            reuses.push_back({best.token, best.realloc, acceptor});
+            if (mode == MatchMode::DomainOnly) {
+              phaseOneAssignments[acceptor.getOperation()] = best.token;
+              reservedTokens.insert(best.token);
+            }
           }
         }
         // ReussirClosureCreateOp is a kind of acceptor.
@@ -413,6 +544,20 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
   }
 
   void runOnOperation() override {
+    if (domainBias != "none" && domainBias != "lookahead" &&
+        domainBias != "two-phase") {
+      getOperation()->emitError()
+          << "invalid domain-bias '" << domainBias
+          << "'; expected 'none', 'lookahead' or 'two-phase'";
+      return signalPassFailure();
+    }
+    biasKind = domainBias == "lookahead"    ? DomainBias::Lookahead
+               : domainBias == "two-phase" ? DomainBias::TwoPhase
+                                           : DomainBias::None;
+    mode = MatchMode::Full;
+    phaseOneAssignments.clear();
+    reservedTokens.clear();
+
     llvm::SmallVector<Reuse> reuses;
     llvm::SmallVector<Free> frees;
     mlir::AliasAnalysis aliasAnalyzer(getOperation());
@@ -424,6 +569,21 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
     unsigned counter = 0;
     getOperation()->walk<mlir::WalkOrder::PreOrder>(
         [&](mlir::Operation *op) { dfsOrder[op] = counter++; });
+
+    // Two-phase bias: a first walk forms only same-domain pairs — the
+    // matches worth protecting — so a cross-domain consumer earlier in
+    // program order can no longer starve a same-domain consumer behind it.
+    // The second (normal) walk matches what remains around the fixed pairs;
+    // the first walk's frees are discarded, the fallback walk re-derives
+    // the full free set with phase-one consumptions out of availability.
+    if (biasKind == DomainBias::TwoPhase) {
+      mode = MatchMode::DomainOnly;
+      llvm::SmallVector<Free> discardedFrees;
+      for (auto &region : getOperation()->getRegions())
+        oneShotTokenReuse(region, {}, reuses, discardedFrees, aliasAnalyzer,
+                          domInfo, dfsOrder);
+      mode = MatchMode::Full;
+    }
 
     for (auto &region : getOperation()->getRegions()) {
       oneShotTokenReuse(region, {}, reuses, frees, aliasAnalyzer, domInfo,

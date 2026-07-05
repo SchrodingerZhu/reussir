@@ -105,6 +105,12 @@ def ReussirTokenReusePass
   let options = [
     Option<"reuseAcrossCall", "reuse-across-call", "bool", /*default=*/"false",
         "allow token reuse across function calls (may increase peak heap usage)">,
+    Option<"domainBias", "domain-bias", "std::string", /*default=*/"\"none\"",
+        "same-nominal-type bias in the token matcher: 'none' (pure "
+        "size/locality scoring), 'lookahead' (skip a cross-domain assignment "
+        "once when a later same-domain consumer in the block would take the "
+        "token), or 'two-phase' (match same-domain pairs first, then fall "
+        "back)">,
   ];
 
   let dependentDialects = ["::reussir::ReussirDialect"];
