@@ -69,6 +69,43 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 use crate::source::SourceCache;
 use expr::Lowerer;
 
+/// How lowered functions map to LLVM linkage.
+///
+/// The JIT and the AOT compiler need opposite defaults. The REPL adds modules
+/// to one ORC session incrementally and re-declares previously emitted
+/// functions, so every definition must stay externally visible for
+/// cross-module resolution. An AOT object wants the opposite: symbols as
+/// narrow as possible so LLVM can discard, inline, and devirtualize freely,
+/// and so separately compiled units agree on which definitions may collide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkagePolicy {
+    /// Every definition keeps external linkage (the pre-policy behavior).
+    Jit,
+    /// Ahead-of-time linkage, mirroring rustc's model:
+    /// - monomorphized generic instances (`_RI…` symbols) are `linkonce_odr`
+    ///   when `dedup_instances` holds — any other compilation unit may emit
+    ///   the same instance and the linker keeps one — and plain external
+    ///   otherwise (COFF, where `linkonce_odr` definitions need comdat
+    ///   support we do not emit yet);
+    /// - private non-generic functions are `internal`;
+    /// - `pub` non-generic functions and trampolines stay strong external —
+    ///   they are the object's ABI surface.
+    Aot { dedup_instances: bool },
+}
+
+impl LinkagePolicy {
+    /// The AOT policy for a target triple (`None` = native host).
+    pub fn aot_for_triple(triple: Option<&str>) -> Self {
+        let coff = match triple {
+            Some(t) => t.contains("windows") || t.contains("uefi"),
+            None => cfg!(windows),
+        };
+        LinkagePolicy::Aot {
+            dedup_instances: !coff,
+        }
+    }
+}
+
 /// A construct the current lowering subset does not handle.
 #[derive(Debug, Clone)]
 pub struct LoweringError(pub Cow<'static, str>);
@@ -136,6 +173,7 @@ pub fn lower_program<'c, 'tcx>(
     program: &mir::Program<'tcx>,
     source: Option<&SourceCache>,
     names: Option<&dyn Resolver<TokenKey>>,
+    linkage: LinkagePolicy,
 ) -> Result<Module<'c>> {
     lower_unit(
         context,
@@ -144,6 +182,7 @@ pub fn lower_program<'c, 'tcx>(
         source,
         names,
         CodegenUnit { index: 0, count: 1 },
+        linkage,
     )
 }
 
@@ -158,9 +197,10 @@ pub fn lower_unit<'c, 'tcx>(
     source: Option<&SourceCache>,
     names: Option<&dyn Resolver<TokenKey>>,
     unit: CodegenUnit,
+    linkage: LinkagePolicy,
 ) -> Result<Module<'c>> {
     let mut module = Module::new(Location::unknown(context));
-    let lowerer = Lowerer::new(context, tcx, program, source, names).with_unit(unit);
+    let lowerer = Lowerer::new(context, tcx, program, source, names, linkage).with_unit(unit);
     lowerer.set_module_debug_attrs(&mut module);
     let body = module.body();
     for (token, payload) in &program.string_literals {
@@ -212,7 +252,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             assert!(
                 module.as_operation().verify(),
                 "module verifies:\n{}",
@@ -238,7 +278,7 @@ mod tests {
             let mut map = crate::source::SourceCache::new();
             map.add_file("add.rr", src);
             let module =
-                lower_program(&context, tcx, &full, Some(&map), None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, Some(&map), None, LinkagePolicy::Jit).expect("lowering succeeds");
             let printed = module
                 .as_operation()
                 .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
@@ -275,7 +315,7 @@ mod tests {
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut map = crate::source::SourceCache::new();
             map.add_file("pt.rr", src);
-            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
+            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()), LinkagePolicy::Jit)
                 .expect("lowering succeeds");
             let printed = module
                 .as_operation()
@@ -323,7 +363,7 @@ mod tests {
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut map = crate::source::SourceCache::new();
             map.add_file("variant.rr", src);
-            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()))
+            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()), LinkagePolicy::Jit)
                 .expect("lowering succeeds");
             let printed = module
                 .as_operation()
@@ -382,8 +422,21 @@ mod tests {
             let mut trampolines = 0;
             for index in 0..count {
                 let unit = CodegenUnit { index, count };
-                let module = lower_unit(&context, tcx, &full, None, None, unit)
-                    .expect("unit lowering succeeds");
+                // AOT policy on purpose: a partitioned build must keep every
+                // home definition externally linkable (no `internal`), which
+                // the policy guarantees via the same `is_split` promotion.
+                let module = lower_unit(
+                    &context,
+                    tcx,
+                    &full,
+                    None,
+                    None,
+                    unit,
+                    LinkagePolicy::Aot {
+                        dedup_instances: true,
+                    },
+                )
+                .expect("unit lowering succeeds");
                 assert!(
                     module.as_operation().verify(),
                     "unit {index} verifies:\n{}",
@@ -619,7 +672,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -692,7 +745,7 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let err = lower_program(&context, tcx, &full, None, None)
+            let err = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit)
                 .expect_err("a nullable over a non-pointer element must not lower");
             assert!(
                 err.to_string().contains("does not lower to a pointer"),
@@ -728,7 +781,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The null field and the self-link both build nullable rc values.
             assert!(printed.contains("reussir.nullable.create"), "{printed}");
@@ -757,7 +810,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -819,7 +872,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The frozen `rigid` box is dropped with a direct reference-count
             // decrement, not spilled and dropped as an inline record.
@@ -863,7 +916,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The reused frozen box is retained with a direct reference-count
             // increment, and dropped (by the callees / at last use) with a
@@ -940,7 +993,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -1003,7 +1056,7 @@ mod tests {
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit).expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,

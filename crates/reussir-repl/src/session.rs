@@ -9,7 +9,7 @@ use melior::ir::operation::OperationLike as _;
 use rustc_hash::FxHashSet;
 
 use reussir_backend::pipeline::{self, LoweringOptions};
-use reussir_codegen::lower::lower_program;
+use reussir_codegen::lower::{LinkagePolicy, lower_program};
 use reussir_core::full::mono::monomorphize;
 use reussir_core::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use reussir_core::semi::{Checkpoint, Elaborator, Report, Severity};
@@ -514,7 +514,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             return Ok(None);
         }
 
-        let mut module = match lower_program(self.context, self.tcx, &program, None, None) {
+        let mut module = match lower_program(self.context, self.tcx, &program, None, None, LinkagePolicy::Jit) {
             Ok(module) => module,
             Err(error) => {
                 self.elab.rollback(cp);

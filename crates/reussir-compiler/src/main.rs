@@ -22,7 +22,7 @@ use palc::Parser;
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, LoweringOptions, NullaryVariantEncoding, OptLevel};
-use reussir_codegen::lower::{CodegenUnit, lower_program, lower_unit};
+use reussir_codegen::lower::{CodegenUnit, LinkagePolicy, lower_program, lower_unit};
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
 use reussir_compiler::{
@@ -865,6 +865,9 @@ fn finish_mir<'c, 'tcx>(
     }
     // Names feed variable/function debug info; only meaningful with `-g`.
     let names = cli.debug.then_some(resolver);
+    // AOT linkage: internal / linkonce_odr definitions per the policy; the
+    // trampolines and pub functions stay the object's external ABI surface.
+    let linkage = LinkagePolicy::aot_for_triple(cli.target_triple.as_deref());
     if cli.codegen_units > 1 {
         let mut units = Vec::with_capacity(cli.codegen_units as usize);
         for index in 0..cli.codegen_units {
@@ -872,13 +875,13 @@ fn finish_mir<'c, 'tcx>(
                 index,
                 count: cli.codegen_units,
             };
-            let module = lower_unit(context, tcx, program, sources, names, unit)
+            let module = lower_unit(context, tcx, program, sources, names, unit, linkage)
                 .map_err(|e| format!("{name}: {e}"))?;
             units.push(module);
         }
         return Ok(Produced::Units(units));
     }
-    let module =
-        lower_program(context, tcx, program, sources, names).map_err(|e| format!("{name}: {e}"))?;
+    let module = lower_program(context, tcx, program, sources, names, linkage)
+        .map_err(|e| format!("{name}: {e}"))?;
     Ok(Produced::Module(module))
 }

@@ -16,7 +16,7 @@ enum Value {
     VApp(Value, Value)
 }
 
-fn quote(v : Value) -> Term {
+pub fn quote(v : Value) -> Term {
     match v {
         Value::VVar(i) => Term::Var{i},
         Value::VApp(v1, v2) => Term::App{quote(v1), quote(v2)}
@@ -24,7 +24,7 @@ fn quote(v : Value) -> Term {
 }
 
 // The wrapper enters the helper through the empty context.
-// CHECK-TRMC-LABEL: func.func private @_RC5quote(
+// CHECK-TRMC-LABEL: func.func @_RC5quote(
 // CHECK-TRMC: %[[EMPTY:.+]] = reussir.cctx.empty : !reussir.cctx<!reussir.rc<!reussir.record<variant
 // CHECK-TRMC: %[[RES:.+]] = call @_RC5quote.trmc(%{{.+}}, %[[EMPTY]])
 // CHECK-TRMC: return %[[RES]]
