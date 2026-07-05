@@ -31,7 +31,8 @@ pub mod resolve;
 pub mod ty_eval;
 
 pub use ctxt::{
-    Checkpoint, DefaultCap, Elaborator, Report, Severity, render_reports, render_reports_to,
+    Checkpoint, DefaultCap, Elaborator, PackageFile, Report, Severity, render_reports,
+    render_reports_to,
 };
 
 use reussir_syntax::kind::{Resolver, TokenKey};
@@ -49,6 +50,21 @@ pub fn elaborate<'a, 'tcx>(
 ) -> Elaborator<'a, 'tcx> {
     let mut elab = Elaborator::new(tcx, resolver);
     elab.run(program);
+    elab
+}
+
+/// Elaborate a whole package — one translation unit spanning many files, each
+/// under its own module path. All items are declared before any is resolved,
+/// so cross-file references work in any order. Every file must have been
+/// parsed with **one shared interner** (`resolver` resolves its keys):
+/// cross-file resolution compares interned keys.
+pub fn elaborate_package<'a, 'tcx>(
+    tcx: &'a TyCtxt<'tcx>,
+    files: &[PackageFile<'_>],
+    resolver: &'a dyn Resolver<TokenKey>,
+) -> Elaborator<'a, 'tcx> {
+    let mut elab = Elaborator::new(tcx, resolver);
+    elab.run_package(files);
     elab
 }
 
@@ -73,6 +89,181 @@ mod tests {
             );
             f(&elab, tcx);
         });
+    }
+
+    /// Parse a set of `(module path, source)` files with one shared interner
+    /// and elaborate them as a package rooted at `pkg`.
+    fn check_package(
+        pkg: &str,
+        files: &[(&[&str], &str)],
+        f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>, &TyCtxt<'tcx>),
+    ) {
+        use std::sync::Arc;
+
+        use reussir_syntax::Interner;
+        use reussir_syntax::source::FileId;
+
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let pkg_key = Interner::get_or_intern(&mut keys, pkg);
+            let parses: Vec<_> = files
+                .iter()
+                .map(|(_, src)| {
+                    let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                    assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                    p
+                })
+                .collect();
+            let programs: Vec<surface::Program> =
+                parses.iter().map(|p| surface::program(&p.root)).collect();
+            let pkg_files: Vec<PackageFile> = files
+                .iter()
+                .zip(&programs)
+                .enumerate()
+                .map(|(i, ((module, _), program))| {
+                    let mut path = vec![pkg_key];
+                    path.extend(
+                        module
+                            .iter()
+                            .map(|seg| Interner::get_or_intern(&mut keys, seg)),
+                    );
+                    PackageFile {
+                        file: FileId::from_index(i as u32),
+                        module: path,
+                        program,
+                    }
+                })
+                .collect();
+            let elab = elaborate_package(tcx, &pkg_files, &interner);
+            f(&elab, tcx);
+        });
+    }
+
+    #[test]
+    fn package_elaboration_resolves_across_modules() {
+        // The reference `module_basic` shape: `lib.rr` calls `math::add`.
+        check_package(
+            "mylib",
+            &[
+                (
+                    &[],
+                    r#"
+                        mod math;
+                        pub fn entry(n: u64) -> u64 { math::add(n, 10) }
+                        extern "C" trampoline "entry_ffi" = entry;
+                    "#,
+                ),
+                (&["math"], r#"pub fn add(a: u64, b: u64) -> u64 { a + b }"#),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+                // Module paths drive the v0 mangling: nested `Nv` wrappers.
+                let (full, reports) = crate::full::mono::monomorphize(&elab.mono_input());
+                assert!(reports.is_empty(), "mono reports: {reports:#?}");
+                let symbols: Vec<&str> = full
+                    .functions
+                    .iter()
+                    .map(|f| full.symbol(f.symbol))
+                    .collect();
+                assert!(symbols.contains(&"_RNvC5mylib5entry"), "{symbols:?}");
+                assert!(symbols.contains(&"_RNvNvC5mylib4math3add"), "{symbols:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn package_relative_paths_resolve_root_and_super() {
+        // The reference `module_relative_paths` shape, exercising `super::`,
+        // `super::super::`, `root::`, and cross-module record types.
+        check_package(
+            "mypkg",
+            &[
+                (
+                    &[],
+                    r#"
+                        mod models;
+                        mod utils;
+                        pub fn entry(n: u64) -> u64 {
+                            root::utils::nested::compute(n) + root::models::seed()
+                        }
+                    "#,
+                ),
+                (
+                    &["models"],
+                    r#"
+                        pub fn seed() -> u64 { 3 }
+                        pub fn scale(x: u64, k: u64) -> u64 { x * k }
+                        pub struct Wrap { v: u64 }
+                    "#,
+                ),
+                (
+                    &["utils"],
+                    r#"
+                        mod math;
+                        mod nested;
+                        pub fn offset() -> u64 { 4 }
+                    "#,
+                ),
+                (
+                    &["utils", "math"],
+                    r#"
+                        pub fn scaled_offset(x: u64) -> u64 {
+                            root::models::scale(super::offset(), x)
+                        }
+                    "#,
+                ),
+                (
+                    &["utils", "nested"],
+                    r#"
+                        pub fn compute(x: u64) -> u64 {
+                            let w = super::super::models::Wrap { v: x };
+                            super::math::scaled_offset(w.v) + super::super::models::seed()
+                        }
+                    "#,
+                ),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            },
+        );
+    }
+
+    #[test]
+    fn same_item_name_in_two_modules_stays_distinct() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod b;\npub fn go() -> u64 { a::f() + b::f() }"),
+                (&["a"], "pub fn f() -> u64 { 1 }\npub struct S { v: u64 }"),
+                (&["b"], "pub fn f() -> u64 { 2 }\npub struct S { v: bool }"),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+                let (full, reports) = crate::full::mono::monomorphize(&elab.mono_input());
+                assert!(reports.is_empty(), "mono reports: {reports:#?}");
+                let symbols: Vec<&str> = full
+                    .functions
+                    .iter()
+                    .map(|f| full.symbol(f.symbol))
+                    .collect();
+                assert!(symbols.contains(&"_RNvNvC1p1a1f"), "{symbols:?}");
+                assert!(symbols.contains(&"_RNvNvC1p1b1f"), "{symbols:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn unresolved_cross_module_reference_reports_the_full_path() {
+        check_package(
+            "p",
+            &[(&[], "pub fn go() -> u64 { missing::f() }")],
+            |elab, _| {
+                assert!(elab.has_errors());
+                let msg = &elab.reports[0].message;
+                assert!(msg.contains("unknown function `missing::f`"), "{msg}");
+            },
+        );
     }
 
     #[test]

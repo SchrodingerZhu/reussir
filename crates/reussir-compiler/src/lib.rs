@@ -11,6 +11,8 @@
 //! the polymorphic-FFI gather), run the lowering pipeline, finalize, then hand
 //! the [`Finalized`] module to [`emit_to_file`].
 
+pub mod package;
+
 use std::ffi::{CString, c_char};
 use std::path::Path;
 

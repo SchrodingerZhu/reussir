@@ -137,19 +137,27 @@ impl<'tcx> Builder<'_, 'tcx> {
     }
 
     /// Resolve-or-declare a function path to a stable `DefId` (shared by the
-    /// definition and its call sites, in any order).
+    /// definition and its call sites, in any order). Multi-segment paths
+    /// (`pkg::m::f`) split back into module + item name, so mangling sees the
+    /// same segments the original elaboration produced.
     fn function_def(&mut self, path: &str) -> DefId {
-        let key = self.names.intern(path);
-        self.defs
-            .resolve_function(key)
-            .unwrap_or_else(|| self.defs.declare_function(key).expect("fresh fn decl"))
+        let segs: Vec<_> = path.split("::").map(|s| self.names.intern(s)).collect();
+        if let Some(id) = self.defs.lookup_function(&segs) {
+            return id;
+        }
+        let (name, module) = segs.split_last().expect("paths are never empty");
+        self.defs.set_module(module.to_vec());
+        self.defs.declare_function(*name).expect("fresh fn decl")
     }
 
     fn record_def(&mut self, path: &str) -> DefId {
-        let key = self.names.intern(path);
-        self.defs
-            .resolve_record(key)
-            .unwrap_or_else(|| self.defs.declare_record(key).expect("fresh record decl"))
+        let segs: Vec<_> = path.split("::").map(|s| self.names.intern(s)).collect();
+        if let Some(id) = self.defs.lookup_record(&segs) {
+            return id;
+        }
+        let (name, module) = segs.split_last().expect("paths are never empty");
+        self.defs.set_module(module.to_vec());
+        self.defs.declare_record(*name).expect("fresh record decl")
     }
 
     /// Rebuild a generic binder list (`ty_params`) and its regional subset from

@@ -20,6 +20,7 @@
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/Support/MathExtras.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/TypeSize.h>
 #include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
@@ -459,9 +460,26 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
     if (auto fused =
             llvm::dyn_cast_if_present<mlir::FusedLocWith<DBGSubprogramAttr>>(
                 funcLoc)) {
+      // The subprogram's own file: a multi-file translation unit stamps each
+      // function's `FileLineColLoc` with its declaration file, which may not
+      // be the compile unit's (the module attribute names the crate root).
+      // Deriving the `DIFile` from the location keeps `decl_file` correct;
+      // the module-level file remains the fallback for a function whose
+      // location carries no file (e.g. re-ingested IR with missing sources).
+      mlir::LLVM::DIFileAttr funcFileAttr = llvmDIFileAttr;
+      for (mlir::Location loc : fused.getLocations()) {
+        if (auto flc = llvm::dyn_cast<mlir::FileLineColLoc>(loc)) {
+          llvm::StringRef file = flc.getFilename().getValue();
+          if (!file.empty())
+            funcFileAttr = mlir::LLVM::DIFileAttr::get(
+                context, llvm::sys::path::filename(file),
+                llvm::sys::path::parent_path(file));
+          break;
+        }
+      }
 
       auto subprogram = translateDBGAttrToLLVM<mlir::LLVM::DISubprogramAttr>(
-          moduleOp, fused.getMetadata(), llvmDIFileAttr, dbgCompileUnitAttr,
+          moduleOp, fused.getMetadata(), funcFileAttr, dbgCompileUnitAttr,
           funcOp, nullptr, funcLoc);
       if (subprogram) {
         auto updated =
@@ -479,7 +497,7 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
           if (auto funcArgAttr = mlir::dyn_cast<DBGFuncArgAttr>(argAttr)) {
             auto translated =
                 translateDBGAttrToLLVM<mlir::LLVM::DILocalVariableAttr>(
-                    moduleOp, funcArgAttr, llvmDIFileAttr, dbgCompileUnitAttr,
+                    moduleOp, funcArgAttr, funcFileAttr, dbgCompileUnitAttr,
                     funcOp, subprogram, updatedFuncLoc);
             if (translated && idx < funcOp.getNumArguments()) {
               auto argValue = funcOp.getArgument(idx);
@@ -494,9 +512,9 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
               // covered by the function prologue: a debugger setting a breakpoint
               // on the function skips to the first body statement, by which point
               // the argument has been stored and is inspectable.
-              mlir::Location prologueLoc =
-                  mlir::FileLineColLoc::get(context, fileBasename.getValue(),
-                                            /*line=*/0, /*column=*/0);
+              mlir::Location prologueLoc = mlir::FileLineColLoc::get(
+                  context, funcFileAttr.getName().getValue(),
+                  /*line=*/0, /*column=*/0);
               spillAndDeclare(builder, prologueLoc, context, argValue,
                               translated,
                               boxedExpr(moduleOp, funcArgAttr.getDbgType()));
@@ -530,7 +548,7 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
           return;
         mlir::Attribute meta = innerFused.getMetadata();
         auto localVar = translateDBGAttrToLLVM<mlir::LLVM::DILocalVariableAttr>(
-            moduleOp, meta, llvmDIFileAttr, dbgCompileUnitAttr, funcOp,
+            moduleOp, meta, funcFileAttr, dbgCompileUnitAttr, funcOp,
             subprogram, op->getLoc());
         if (!localVar)
           return;

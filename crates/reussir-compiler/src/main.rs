@@ -24,6 +24,7 @@ use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::lower_program;
 use reussir_codegen::source::{FileId, SourceCache};
+use reussir_compiler::package;
 use reussir_compiler::{
     OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir,
 };
@@ -133,8 +134,21 @@ impl Stage {
 #[derive(Parser)]
 #[command(name = "rrc", version)]
 struct Cli {
-    /// Input file (`-` reads Reussir source from stdin).
-    input: PathBuf,
+    /// Input file (`-` reads Reussir source from stdin). Omitted in package
+    /// mode (`--package-root`/`--package-name`).
+    input: Option<PathBuf>,
+
+    /// Compile a whole package rooted at this directory: `lib.rr` is the
+    /// crate root and `mod` declarations discover the other files. Requires
+    /// `--package-name`; replaces the input file.
+    #[arg(long = "package-root")]
+    package_root: Option<PathBuf>,
+
+    /// The package's name — the first segment of every item's module path
+    /// (and of its mangled symbols). `core` is reserved for the built-in core
+    /// package.
+    #[arg(long = "package-name")]
+    package_name: Option<String>,
 
     /// Output file (`-` writes a text dump — `hir`/`mir`/`mlir`/`mlir-llvm` — to
     /// stdout). The target stage is inferred from its extension unless `--emit`
@@ -214,16 +228,16 @@ struct Cli {
 
 /// The stage the input enters at: `--from` if given, else the extension. `-`
 /// (stdin) has no extension, so it defaults to source.
-fn resolve_input_stage(cli: &Cli) -> Result<Stage, String> {
+fn resolve_input_stage(cli: &Cli, input: &Path) -> Result<Stage, String> {
     let stage = if let Some(from) = cli.from {
         from
-    } else if cli.input.as_os_str() == "-" {
+    } else if input.as_os_str() == "-" {
         Stage::Rr
     } else {
-        Stage::from_extension(&cli.input).ok_or_else(|| {
+        Stage::from_extension(input).ok_or_else(|| {
             format!(
                 "cannot infer the input stage of `{}`; pass --from",
-                cli.input.display()
+                input.display()
             )
         })?
     };
@@ -352,13 +366,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<bool, String> {
-    let input_stage = resolve_input_stage(cli)?;
+    let package = match (&cli.package_root, &cli.package_name) {
+        (Some(root), Some(name)) => Some((root.clone(), name.clone())),
+        (None, None) => None,
+        _ => return Err("--package-root and --package-name must be given together".into()),
+    };
     let target = resolve_target(cli)?;
-    if target < input_stage {
-        return Err(format!(
-            "cannot emit `{target}` from a `{input_stage}` input: the pipeline only runs forward"
-        ));
-    }
     // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj` go through the
     // file-based LLVM emitter, so `-o -` would write a file literally named `-`.
     if cli.output.as_os_str() == "-" && target.output_kind().is_some() {
@@ -368,15 +381,73 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
     let opt = parse_opt(&cli.opt)?;
     let reloc = parse_reloc(&cli.relocation_mode)?;
-    let sources = read_input(&cli.input)?;
-    let name = sources.name(FileId::ROOT).to_owned();
-    let source = sources.source(FileId::ROOT);
-
     let spec = TargetSpec {
         triple: cli.target_triple.clone(),
         cpu: cli.target_cpu.clone(),
         features: cli.target_features.clone(),
     };
+
+    // Package mode: discover the files from `lib.rr`'s `mod` declarations and
+    // elaborate the whole package as one translation unit.
+    if let Some((root, pkg_name)) = package {
+        if cli.input.is_some() {
+            return Err(
+                "give either an input file or --package-root/--package-name, not both".into(),
+            );
+        }
+        if cli.from.is_some_and(|f| f != Stage::Rr) {
+            return Err("a package is always Reussir source; --from does not apply".into());
+        }
+        let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+        let pkg = match package::load_package(&root, &pkg_name, &interner) {
+            Ok(pkg) => pkg,
+            Err(package::PackageError::Message(msg)) => return Err(msg),
+            Err(package::PackageError::ParseErrors {
+                cache,
+                file,
+                errors,
+            }) => {
+                let color = std::io::stderr().is_terminal();
+                let _ = diagnostics::render_errors(
+                    &cache,
+                    file,
+                    &errors,
+                    color,
+                    std::io::stderr().lock(),
+                );
+                return Ok(false);
+            }
+        };
+        let name = pkg.cache.name(FileId::ROOT).to_owned();
+        let context = reussir_backend::context();
+        if cli.disable_backend_multithreading {
+            context.enable_multi_threading(false);
+        }
+        let produced =
+            match in_arena(|tcx| frontend_package(&context, tcx, target, &pkg, &interner, cli)) {
+                Ok(produced) => produced,
+                Err(msg) => {
+                    if !msg.is_empty() {
+                        eprintln!("{msg}");
+                    }
+                    return Ok(false);
+                }
+            };
+        return backend(cli, &context, produced, target, opt, reloc, &spec, &name);
+    }
+
+    let Some(input) = &cli.input else {
+        return Err("no input file (or --package-root/--package-name) given".into());
+    };
+    let input_stage = resolve_input_stage(cli, input)?;
+    if target < input_stage {
+        return Err(format!(
+            "cannot emit `{target}` from a `{input_stage}` input: the pipeline only runs forward"
+        ));
+    }
+    let sources = read_input(input)?;
+    let name = sources.name(FileId::ROOT).to_owned();
+    let source = sources.source(FileId::ROOT);
 
     // A `.ll` input skips the whole MLIR front: parse the IR and run the LLVM
     // backend straight to the requested artifact.
@@ -410,7 +481,22 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         },
     };
+    backend(cli, &context, produced, target, opt, reloc, &spec, &name)
+}
 
+/// The shared back leg from a produced text/module: write a text dump, or run
+/// the MLIR lowering pipeline and emit the requested artifact.
+#[allow(clippy::too_many_arguments)]
+fn backend(
+    cli: &Cli,
+    context: &reussir_backend::melior::Context,
+    produced: Produced<'_>,
+    target: Stage,
+    opt: OptLevel,
+    reloc: RelocMode,
+    spec: &TargetSpec,
+    name: &str,
+) -> Result<bool, String> {
     let mut module = match produced {
         Produced::Text(text) => {
             write_text(&cli.output, &text)?;
@@ -429,7 +515,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     // gather, which must run before the pipeline erases those ops, and is
     // stamped on the module so the pipeline's MLIR `DataLayout` queries compute
     // real target sizes and alignments.
-    let machine = TargetMachine::new(&spec, opt, reloc)?;
+    let machine = TargetMachine::new(spec, opt, reloc)?;
     pipeline::attach_target_spec(&module, machine.data_layout(), machine.triple())?;
     let options = LoweringOptions {
         opt,
@@ -440,7 +526,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let optimize_ffi = !matches!(opt, OptLevel::None);
     let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
         .map_err(|e| format!("{name}: {e}"))?;
-    pipeline::run_lowering_pipeline(&context, &mut module, &options)
+    pipeline::run_lowering_pipeline(context, &mut module, &options)
         .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
 
     // After the pipeline the module is the LLVM dialect; dump it before it is
@@ -459,6 +545,73 @@ fn run(cli: &Cli) -> Result<bool, String> {
         .expect("llvm-ir/asm/obj target past the mlir-llvm stage");
     emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
     Ok(true)
+}
+
+/// The arena-scoped front leg for package mode: elaborate every discovered
+/// file as one translation unit, then continue exactly as the single-file
+/// source path does.
+///
+/// An empty `Err` string signals diagnostics were already printed (a compile
+/// failure, exit 1) rather than a driver error (exit 2).
+fn frontend_package<'c, 'tcx>(
+    context: &'c reussir_backend::melior::Context,
+    tcx: &TyCtxt<'tcx>,
+    target: Stage,
+    pkg: &package::PackageSource,
+    interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
+    cli: &Cli,
+) -> Result<Produced<'c>, String> {
+    use reussir_core::semi::{PackageFile, elaborate_package};
+
+    let name = pkg.cache.name(FileId::ROOT);
+    let programs: Vec<surface::Program> = pkg
+        .files
+        .iter()
+        .map(|f| surface::program(&f.parse.root))
+        .collect();
+    let mut keys = interner.clone();
+    let files: Vec<PackageFile> = pkg
+        .files
+        .iter()
+        .zip(&programs)
+        .map(|(f, program)| PackageFile {
+            file: f.file,
+            module: f
+                .module
+                .iter()
+                .map(|seg| reussir_syntax::Interner::get_or_intern(&mut keys, seg))
+                .collect(),
+            program,
+        })
+        .collect();
+    let elab = elaborate_package(tcx, &files, interner);
+    if render_reports(&pkg.cache, &elab.reports) {
+        return Err(String::new());
+    }
+    if target == Stage::Hir {
+        let printer = if cli.no_source_locations {
+            hir::print::Printer::new(&elab.defs, elab.resolver)
+        } else {
+            hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
+        };
+        let text = printer.program(&elab.elaborated, &elab.records, &elab.trampolines);
+        return Ok(Produced::Text(text));
+    }
+    let (full, reports) = monomorphize(&elab.mono_input());
+    if render_reports(&pkg.cache, &reports) {
+        return Err(String::new());
+    }
+    finish_mir(
+        context,
+        tcx,
+        target,
+        name,
+        Some(&pkg.cache),
+        cli,
+        &full,
+        &elab.defs,
+        elab.resolver,
+    )
 }
 
 /// The arena-scoped front leg for a source/`.hir`/`.mir` input: run the frontend

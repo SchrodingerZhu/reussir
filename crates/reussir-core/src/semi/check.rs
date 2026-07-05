@@ -25,9 +25,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let Some(proto) = self.functions.get(&def).cloned() else {
             return;
         };
-        // Attribute the body's reports to the function's declaration file (the
-        // package driver checks items from many files in one pass).
-        self.set_current_file(proto.file);
+        // The body's references resolve (and its reports attribute) in the
+        // function's own declaration scope — the package driver checks items
+        // from many files/modules in one pass.
+        self.enter_item_scope(def, proto.file);
         self.enter_function(&proto.generics);
         // A `[regional]` function body runs inside an implicit region: its
         // parameters may already be flex and it may construct regional records
@@ -459,9 +460,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let callee = self.mk_expr(ExprKind::Var(id), ty, span);
             return self.closure_apply(callee, &fc.args, span);
         }
-        let Some(def) = self.defs.resolve_function(fc.name.basename) else {
-            let hint = self.function_suggestion(fc.name.basename);
-            self.error(span, format!("unknown function `{fname}`{hint}"));
+        let Some(def) = self.resolve_function_ref(&fc.name) else {
+            let hint = if fc.name.segments.is_empty() {
+                self.function_suggestion(fc.name.basename)
+            } else {
+                String::new()
+            };
+            let shown = self.path_display(&fc.name);
+            self.error(span, format!("unknown function `{shown}`{hint}"));
             return self.poison(span);
         };
         self.record_use(fc.name.basename);
@@ -824,9 +830,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.infer_ctor(&cc.name, &cc.ty_args, &cc.args, span)
     }
 
-    /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`], a
-    /// qualified `Enum::Variant` → [`Self::infer_variant`], otherwise a struct name →
-    /// [`Self::infer_struct`].
+    /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`]; a
+    /// qualified path whose qualifier resolves to an enum (`Enum::Variant`,
+    /// `m::Enum::Variant`) → [`Self::infer_variant`]; otherwise a struct —
+    /// bare (`Foo`) or module-qualified (`m::Foo`) — → [`Self::infer_struct_def`].
     fn infer_ctor(
         &mut self,
         path: &surface::Path,
@@ -839,11 +846,26 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if qualifier.map(|k| self.sym(k)) == Some("Nullable") {
             return self.infer_nullable(self.sym(path.basename), args, span);
         }
-        // An enum variant: `Enum::Variant`.
         if let Some(enum_key) = qualifier {
-            return self.infer_variant(enum_key, path.basename, ty_args, args, span);
+            // The qualifier resolving to an enum wins (`Enum::Variant`); a
+            // qualifier that is a module path instead falls through to a
+            // module-qualified struct constructor (`m::Foo{…}`).
+            if let Some(def) = self.resolve_ctor_qualifier(path)
+                && matches!(self.records[&def].fields, Some(RecordFields::Variants(_)))
+            {
+                self.record_use(enum_key);
+                return self.infer_variant(def, enum_key, path.basename, ty_args, args, span);
+            }
+            let Some(def) = self.resolve_record_ref(path) else {
+                let hint = self.record_suggestion(enum_key);
+                let shown = self.path_display(path);
+                self.error(span, format!("unknown constructor `{shown}`{hint}"));
+                return self.poison(span);
+            };
+            self.record_use(path.basename);
+            return self.infer_struct_def(def, path.basename, ty_args, args, span);
         }
-        // A struct constructor.
+        // A bare struct constructor.
         self.infer_struct(path.basename, ty_args, args, span)
     }
 
@@ -897,6 +919,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.poison(span);
         };
         self.record_use(name);
+        self.infer_struct_def(def, name, ty_args, args, span)
+    }
+
+    /// The resolved-def core of [`Self::infer_struct`] (shared with the
+    /// module-qualified constructor path).
+    fn infer_struct_def(
+        &mut self,
+        def: DefId,
+        name: TokenKey,
+        ty_args: &[Option<surface::Type>],
+        args: &[(Option<TokenKey>, surface::Expr)],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
         let record = self.records[&def].clone();
         if matches!(record.fields, Some(RecordFields::Variants(_))) {
             self.error(
@@ -938,21 +973,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// regional enum outside a region is a diagnostic.
     fn infer_variant(
         &mut self,
+        def: DefId,
         enum_name: TokenKey,
         variant: TokenKey,
         ty_args: &[Option<surface::Type>],
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(def) = self.defs.resolve_record(enum_name) else {
-            let hint = self.record_suggestion(enum_name);
-            self.error(
-                span,
-                format!("unknown enum `{}`{hint}", self.sym(enum_name)),
-            );
-            return self.poison(span);
-        };
-        self.record_use(enum_name);
         let record = self.records[&def].clone();
         let Some(RecordFields::Variants(variants)) = &record.fields else {
             self.error(span, format!("`{}` is not an enum", self.sym(enum_name)));
