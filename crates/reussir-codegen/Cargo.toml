@@ -17,6 +17,8 @@ reussir-backend = { path = "../reussir-backend" }
 rustc-hash.workspace = true
 # Hash-keyed lookup of string-literal payloads by their 256-bit token.
 rapidhash.workspace = true
+# Portable, stable xxh3 hash assigning each symbol to a codegen unit.
+xxhash-rust.workspace = true
 # Insertion-ordered map backing the per-function SSA environment, so a nested
 # scope recovers by truncating back to a saved length.
 indexmap.workspace = true

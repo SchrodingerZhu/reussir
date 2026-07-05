@@ -22,7 +22,7 @@ use palc::Parser;
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, LoweringOptions, NullaryVariantEncoding, OptLevel};
-use reussir_codegen::lower::lower_program;
+use reussir_codegen::lower::{CodegenUnit, lower_program, lower_unit};
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
 use reussir_compiler::{
@@ -213,6 +213,14 @@ struct Cli {
           default_value_t = VariantEncoding::ArchDependent)]
     nullary_variant_encoding: VariantEncoding,
 
+    /// Split codegen into this many units. Each function's body is emitted in
+    /// exactly one unit (a stable hash of its mangled symbol picks which);
+    /// with N > 1 the outputs are `<stem>.<i>.<ext>` siblings of `-o` and
+    /// private functions get external visibility (cross-unit calls resolve at
+    /// link time).
+    #[arg(long = "codegen-units", default_value = "1")]
+    codegen_units: u32,
+
     /// Omit source locations (the file table and `[start..end]` spans) from
     /// `hir`/`mir` text dumps. The default dump is lossless — it round-trips
     /// spans and file attribution — but structural readers (FileCheck tests,
@@ -319,6 +327,8 @@ fn write_text(path: &Path, text: &str) -> Result<(), String> {
 enum Produced<'c> {
     Text(String),
     Module(Module<'c>),
+    /// One module per codegen unit (`--codegen-units` > 1), in unit order.
+    Units(Vec<Module<'c>>),
 }
 
 /// Install a `tracing` subscriber writing to **stderr** (so it never corrupts a
@@ -378,6 +388,14 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err(format!(
             "cannot write `{target}` to stdout; give a file path with -o"
         ));
+    }
+    if cli.codegen_units == 0 {
+        return Err("--codegen-units must be at least 1".into());
+    }
+    if cli.codegen_units > 1 && cli.output.as_os_str() == "-" {
+        return Err(
+            "--codegen-units > 1 writes one file per unit; give a file path with -o".into(),
+        );
     }
     let opt = parse_opt(&cli.opt)?;
     let reloc = parse_reloc(&cli.relocation_mode)?;
@@ -449,6 +467,11 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let name = sources.name(FileId::ROOT).to_owned();
     let source = sources.source(FileId::ROOT);
 
+    if cli.codegen_units > 1 && matches!(input_stage, Stage::Mlir | Stage::LlvmIr) {
+        return Err(format!(
+            "--codegen-units applies while lowering to MLIR; a `{input_stage}` input is already a single unit"
+        ));
+    }
     // A `.ll` input skips the whole MLIR front: parse the IR and run the LLVM
     // backend straight to the requested artifact.
     if input_stage == Stage::LlvmIr {
@@ -497,17 +520,53 @@ fn backend(
     spec: &TargetSpec,
     name: &str,
 ) -> Result<bool, String> {
-    let mut module = match produced {
+    let module = match produced {
         Produced::Text(text) => {
             write_text(&cli.output, &text)?;
+            return Ok(true);
+        }
+        // A partitioned build runs the whole back leg once per unit, writing
+        // `<stem>.<i>.<ext>` siblings of `-o`.
+        Produced::Units(units) => {
+            for (index, module) in units.into_iter().enumerate() {
+                let out = unit_output(&cli.output, index);
+                backend_module(cli, context, module, target, opt, reloc, spec, name, &out)?;
+            }
             return Ok(true);
         }
         Produced::Module(module) => module,
     };
 
+    backend_module(
+        cli,
+        context,
+        module,
+        target,
+        opt,
+        reloc,
+        spec,
+        name,
+        &cli.output.clone(),
+    )
+}
+
+/// The back leg for one module, writing to `output` (per-unit paths in a
+/// partitioned build; `-o` itself otherwise).
+#[allow(clippy::too_many_arguments)]
+fn backend_module(
+    cli: &Cli,
+    context: &reussir_backend::melior::Context,
+    mut module: Module<'_>,
+    target: Stage,
+    opt: OptLevel,
+    reloc: RelocMode,
+    spec: &TargetSpec,
+    name: &str,
+    output: &Path,
+) -> Result<bool, String> {
     // A `.mlir` dump is the module as it stands, before the lowering pipeline.
     if target == Stage::Mlir {
-        write_text(&cli.output, &module.as_operation().to_string())?;
+        write_text(output, &module.as_operation().to_string())?;
         return Ok(true);
     }
 
@@ -533,7 +592,7 @@ fn backend(
     // translated out of MLIR. (`prepared`'s `Drop` releases the gathered FFI.)
     if target == Stage::MlirLlvm {
         drop(prepared);
-        write_text(&cli.output, &module.as_operation().to_string())?;
+        write_text(output, &module.as_operation().to_string())?;
         return Ok(true);
     }
 
@@ -543,8 +602,17 @@ fn backend(
     let kind = target
         .output_kind()
         .expect("llvm-ir/asm/obj target past the mlir-llvm stage");
-    emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
+    emit_to_file(finalized, &machine, opt, kind, output)?;
     Ok(true)
+}
+
+/// The output path for codegen unit `index`: the unit index slots in before
+/// the extension (`out/foo.o` → `out/foo.0.o`; no extension → `foo.0`).
+fn unit_output(output: &Path, index: usize) -> PathBuf {
+    match output.extension().and_then(|e| e.to_str()) {
+        Some(ext) => output.with_extension(format!("{index}.{ext}")),
+        None => output.with_extension(index.to_string()),
+    }
 }
 
 /// The arena-scoped front leg for package mode: elaborate every discovered
@@ -594,7 +662,8 @@ fn frontend_package<'c, 'tcx>(
         } else {
             hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
         };
-        let text = printer.program(&elab.elaborated, &elab.records, &elab.trampolines);
+        let strings = elab.strings.entries();
+        let text = printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         return Ok(Produced::Text(text));
     }
     let (full, reports) = monomorphize(&elab.mono_input());
@@ -796,6 +865,19 @@ fn finish_mir<'c, 'tcx>(
     }
     // Names feed variable/function debug info; only meaningful with `-g`.
     let names = cli.debug.then_some(resolver);
+    if cli.codegen_units > 1 {
+        let mut units = Vec::with_capacity(cli.codegen_units as usize);
+        for index in 0..cli.codegen_units {
+            let unit = CodegenUnit {
+                index,
+                count: cli.codegen_units,
+            };
+            let module = lower_unit(context, tcx, program, sources, names, unit)
+                .map_err(|e| format!("{name}: {e}"))?;
+            units.push(module);
+        }
+        return Ok(Produced::Units(units));
+    }
     let module =
         lower_program(context, tcx, program, sources, names).map_err(|e| format!("{name}: {e}"))?;
     Ok(Produced::Module(module))

@@ -228,6 +228,9 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     /// The file the current function's spans index (functions from different
     /// files share one module); set by [`function`](Self::function).
     cur_file: std::cell::Cell<FileId>,
+    /// The codegen unit being emitted; functions outside it lower to
+    /// declarations (see [`super::CodegenUnit`]).
+    unit: super::CodegenUnit,
     /// Record symbols whose debug composite is currently being built — the
     /// recursion guard for [`debug`](super::debug). A type that reaches itself
     /// (directly or through a boxed field) is emitted as a memberless
@@ -258,6 +261,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             temp_tys: RefCell::new(FxHashMap::default()),
             cur_loc: RefCell::new(Location::unknown(context)),
             cur_file: std::cell::Cell::new(FileId::ROOT),
+            unit: super::CodegenUnit { index: 0, count: 1 },
             dbg_building: RefCell::new(FxHashSet::default()),
             string_payloads: program
                 .string_literals
@@ -265,6 +269,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 .map(|(token, payload)| (*token, payload.as_str()))
                 .collect(),
         }
+    }
+
+    /// Restrict this lowerer to one codegen unit of a partitioned build.
+    pub(super) fn with_unit(mut self, unit: super::CodegenUnit) -> Self {
+        self.unit = unit;
+        self
     }
 
     /// Whether debug info should be emitted (both a source map and a name
@@ -336,6 +346,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         };
         let fn_ty = FunctionType::new(self.context, &param_tys, &result_tys);
 
+        // A partitioned build emits the body only in the function's home
+        // unit; everywhere else the symbol is a declaration the linker
+        // resolves across objects.
+        let symbol = self.program.symbol(func.symbol);
+        let emit_body = self.unit.is_home(symbol);
+
         // Reset the per-function side-tables, then run the ownership analysis for
         // this body so the tree-walk can emit each node's reference-count ops.
         *self.ownership.borrow_mut() = analyze_function(self.tcx, func, &self.records);
@@ -343,7 +359,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         self.temp_tys.borrow_mut().clear();
 
         let region = Region::new();
-        if let Some(body) = func.body {
+        if let Some(body) = func.body.filter(|_| emit_body) {
             let block_args: SmallVec<[(Type<'c>, Location<'c>); 8]> =
                 param_tys.iter().map(|t| (*t, loc)).collect();
             let block = Block::new(&block_args);
@@ -379,9 +395,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
 
         // A `private` function carries an explicit `sym_visibility` attribute;
-        // the printer renders it as the `private` keyword.
+        // the printer renders it as the `private` keyword. A partitioned build
+        // promotes every *defined* function to external visibility — a private
+        // symbol could not be called from another unit — while a body-less
+        // declaration must be `private` (an MLIR `func.func` rule; its LLVM
+        // linkage is external either way, which is what cross-unit resolution
+        // needs).
         let mut attributes = Vec::new();
-        if func.visibility == Visibility::Private {
+        if !emit_body || (func.visibility == Visibility::Private && !self.unit.is_split()) {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
                 StringAttribute::new(self.context, "private").into(),
@@ -389,15 +410,21 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
         // Debug info (when enabled): the parameters' names/types as an attribute
         // the conversion pass reads, and the function's own location fused with a
-        // subprogram attribute.
-        if let Some(args) = self.dbg_func_args_attr(func) {
-            attributes.push(args);
-        }
-        let func_loc = self.subprogram_location(func);
+        // subprogram attribute. A body-less declaration gets neither — its home
+        // unit describes it (a declaration must not carry a DISubprogram
+        // definition).
+        let func_loc = if emit_body {
+            if let Some(args) = self.dbg_func_args_attr(func) {
+                attributes.push(args);
+            }
+            self.subprogram_location(func)
+        } else {
+            self.location(func.body.and_then(|b| b.span))
+        };
 
         Ok(func::func(
             self.context,
-            StringAttribute::new(self.context, self.program.symbol(func.symbol)),
+            StringAttribute::new(self.context, symbol),
             TypeAttribute::new(fn_ty.into()),
             region,
             &attributes,

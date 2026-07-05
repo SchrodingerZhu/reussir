@@ -1,0 +1,23 @@
+// The `--codegen-units` CLI surface: it appears in `--help`, and its three
+// misuse guards each fail with a clear message rather than misbehaving.
+
+// RUN: %rrc --help | %FileCheck %s --check-prefix=HELP
+// HELP: --codegen-units <CODEGEN_UNITS>
+
+// Zero units is meaningless.
+// RUN: %not %rrc %s -o %t.o --codegen-units 0 2>&1 | %FileCheck %s --check-prefix=ZERO
+// ZERO: --codegen-units must be at least 1
+
+// A partitioned build writes one file per unit, so it needs a real `-o` path.
+// RUN: %not %rrc %s -o - --emit mir --codegen-units 3 2>&1 | %FileCheck %s --check-prefix=STDOUT
+// STDOUT: --codegen-units > 1 writes one file per unit
+
+// An already-lowered `.mlir`/`.ll` input is a single unit; splitting it is a
+// no-op the driver rejects rather than silently ignore.
+// RUN: %rrc %s -o %t.mlir --emit mlir
+// RUN: %not %rrc %t.mlir -o %t.split.o --codegen-units 2 2>&1 | %FileCheck %s --check-prefix=LOWERED
+// LOWERED: a `mlir` input is already a single unit
+
+pub fn identity(x: i64) -> i64 {
+    x
+}

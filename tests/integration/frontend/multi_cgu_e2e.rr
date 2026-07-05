@@ -1,0 +1,45 @@
+// RUN: %rrc %s -o %t.single.o
+// RUN: %cc %t.single.o %S/multi_cgu_e2e.c -o %t.single.exe
+// RUN: %t.single.exe
+
+// The split build: partition into 3 codegen units. Each function's body is
+// emitted in exactly one `%t.split.<i>.o` sibling; cross-unit calls and the
+// private helpers promoted to external visibility must resolve at link time,
+// and linking every sibling must produce the same running program as above.
+// RUN: %rrc %s -o %t.split.o --codegen-units 3
+// RUN: %cc %t.split.0.o %t.split.1.o %t.split.2.o %S/multi_cgu_e2e.c -o %t.split.exe
+// RUN: %t.split.exe
+
+// `square` is a private helper called from two other functions; under the
+// symbol partition it may land in a unit that neither caller shares, so it is
+// promoted from `private` to external and resolved across objects.
+fn square(x: i64) -> i64 {
+    x * x
+}
+
+fn cube(x: i64) -> i64 {
+    square(x) * x
+}
+
+fn sum_squares(n: i64) -> i64 {
+    if n <= 0 {
+        0
+    } else {
+        square(n) + sum_squares(n - 1)
+    }
+}
+
+pub fn run_cube() -> i64 {
+    cube(9)
+}
+extern "C" trampoline "run_cube_ffi" = run_cube;
+
+pub fn run_sum_squares() -> i64 {
+    sum_squares(10)
+}
+extern "C" trampoline "run_sum_squares_ffi" = run_sum_squares;
+
+pub fn run_mixed() -> i64 {
+    cube(4) + square(4) + sum_squares(4)
+}
+extern "C" trampoline "run_mixed_ffi" = run_mixed;
