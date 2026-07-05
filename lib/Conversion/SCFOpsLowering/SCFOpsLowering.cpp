@@ -771,6 +771,44 @@ struct ReussirTokenEnsureOpRewritePattern
   }
 };
 
+/// `token.free` of a *nullable* token lowers to an unconditional
+/// `__reussir_deallocate` call whose null guard lives inside the runtime — so
+/// the null case (the shared branch of an expanded rc decrement) still pays a
+/// full call to do nothing. Guard it here, while structured control flow is
+/// still available: coerce and free only when non-null. Plain-token frees are
+/// left for the basic-ops lowering (their pointer is statically non-null).
+struct ReussirNullableTokenFreeOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirTokenFreeOp> {
+  using OpConversionPattern::OpConversionPattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenFreeOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto nullableType = llvm::dyn_cast<NullableType>(op.getToken().getType());
+    if (!nullableType)
+      return mlir::failure();
+    auto tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
+    if (!tokenType)
+      return mlir::failure();
+    mlir::Location loc = op.getLoc();
+    // `nullable.check`'s flag is true when non-null (the dispatch lowering
+    // above routes the non-null region through the then-branch the same way).
+    mlir::Value flag =
+        reussir::ReussirNullableCheckOp::create(rewriter, loc, op.getToken());
+    auto ifOp = mlir::scf::IfOp::create(rewriter, loc, mlir::TypeRange{}, flag,
+                                        /*addThenRegion=*/true,
+                                        /*addElseRegion=*/false);
+    {
+      rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      auto coerced = reussir::ReussirNullableCoerceOp::create(
+          rewriter, loc, tokenType, op.getToken());
+      ReussirTokenFreeOp::create(rewriter, loc, coerced);
+      mlir::scf::YieldOp::create(rewriter, loc);
+    }
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
 struct ReussirStrByteAtOpRewritePattern
     : public mlir::OpConversionPattern<ReussirStrByteAtOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -906,6 +944,12 @@ struct SCFOpsLoweringPass
         [](ReussirArrayViewOp op) {
           return llvm::isa<mlir::MemRefType>(op.getView().getType());
         });
+    // A free of a still-nullable token must be null-guarded here; a free of a
+    // plain token is legal and lowers to the runtime call directly.
+    target.addDynamicallyLegalOp<ReussirTokenFreeOp>(
+        [](ReussirTokenFreeOp op) {
+          return llvm::isa<TokenType>(op.getToken().getType());
+        });
 
     target.addIllegalOp<ReussirNullableDispatchOp, ReussirRecordDispatchOp,
                         ReussirScfYieldOp, ReussirClosureUniqifyOp,
@@ -930,6 +974,7 @@ void populateSCFOpsLoweringConversionPatterns(
            ReussirClosureUniqifyOpRewritePattern,
            ReussirArrayWithUniqueViewOpRewritePattern,
            ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
+           ReussirNullableTokenFreeOpRewritePattern,
            ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
            ReussirStrStartWithOpRewritePattern>(patterns.getContext());
 }

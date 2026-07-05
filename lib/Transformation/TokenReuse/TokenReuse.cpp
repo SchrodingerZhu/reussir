@@ -449,7 +449,38 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
       rewriter.eraseOp(allocOp);
     }
 
+    // A free of an *expanded decrement*'s token pays for a nullable nobody
+    // consumes: the unique (rc==1) branch wraps the reinterpreted pointer
+    // only so a later `token.free` can test it for null again — and on the
+    // common shared branch the token is null, so the whole dance produces a
+    // runtime call that does nothing. When the decrement's result is used by
+    // nothing but frees (a consumed token would carry an ensure/realloc use
+    // by now — reuses were rewritten above), sink one statically non-null
+    // free into the unique branch instead: the shared path stops touching
+    // the allocator entirely and the nullable result dies as a dead phi.
+    // Sibling-exit records of the same token collapse into the single sunk
+    // free — the producer dominates every path the records covered.
+    llvm::DenseSet<mlir::Value> sunkTokens;
     for (const auto &free : frees) {
+      auto scfIf = llvm::dyn_cast_if_present<mlir::scf::IfOp>(
+          free.token.getDefiningOp());
+      if (scfIf && scfIf->hasAttr(kExpandedDecrementAttr) &&
+          free.token.use_empty()) {
+        if (!sunkTokens.insert(free.token).second)
+          continue; // already sunk via an earlier record of this token
+        mlir::Operation *thenYield =
+            scfIf.getThenRegion().back().getTerminator();
+        auto nonNull = llvm::dyn_cast_if_present<ReussirNullableCreateOp>(
+            thenYield->getOperand(0).getDefiningOp());
+        if (nonNull && nonNull.getPtr()) {
+          rewriter.setInsertionPoint(thenYield);
+          ReussirTokenFreeOp::create(rewriter, thenYield->getLoc(),
+                                     nonNull.getPtr());
+          continue;
+        }
+        // Unexpected branch shape: fall back to the guarded top-level free.
+        sunkTokens.erase(free.token);
+      }
       rewriter.setInsertionPoint(free.anchor);
       ReussirTokenFreeOp::create(rewriter, free.anchor->getLoc(), free.token);
     }
