@@ -150,12 +150,23 @@ def ReussirUniqueCarryingRecursionAnalysisPass
     : Pass<"reussir-unique-carrying-recursion-analysis", "::mlir::ModuleOp"> {
   let summary = "analyze uniqueness-carrying recursion and outline unique clones";
   let description = [{
-    `reussir-unique-carrying-recursion-analysis` uses sparse forward dataflow
-    with interprocedural propagation to mark RC-returning function and SCF
-    operations carrying uniqueness. When a carrying function is directly
-    self-recursive, the pass creates an internal `.unique` clone that asserts
-    RC argument uniqueness at entry and rewrites recursive calls to use the
-    specialized clone.
+    `reussir-unique-carrying-recursion-analysis` computes, per rc-typed
+    function result, whether the returned value is on every path either
+    fresh (an `rc.create*` with an initialized count, never shared
+    afterwards) or one of the function's own rc arguments passed through
+    unshared — a Kleene iteration over demand-driven provenance summaries.
+    Functions and structured-control-flow ops whose rc results all qualify
+    are marked `reussir.carrying_uniqueness`. When a carrying function is
+    directly self-recursive and a self call's carried arguments are provably
+    unique, the pass creates internal `.unique` clones (marked
+    `reussir.unique_clone`) that assert argument uniqueness at entry and
+    rewrites the provable self calls to use them, one clone per provable
+    assumption set. Provenance is traced only through region ops whose
+    results are exhaustively yield-defined (`scf.if`, `scf.index_switch`,
+    `scf.execute_region`, `reussir.record.dispatch`,
+    `reussir.array.with_unique_view`); values with retaining or multiple
+    consuming users are disqualified — see the pass source header for the
+    soundness argument.
   }];
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::func::FuncDialect",

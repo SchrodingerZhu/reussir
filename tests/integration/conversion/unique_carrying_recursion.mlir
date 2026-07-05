@@ -76,7 +76,7 @@ module {
   }
 
   // CHECK-LABEL: func.func private @loop.unique(
-  // CHECK: attributes {llvm.linkage = #llvm.linkage<internal>, reussir.carrying_uniqueness}
+  // CHECK: attributes {llvm.linkage = #llvm.linkage<internal>, reussir.carrying_uniqueness, reussir.unique_clone}
   // CHECK: reussir.rc.assume_unique(%arg0 : !reussir.rc<i64>)
   // CHECK: %[[NEXT2:.+]] = reussir.rc.create value(%arg1 : i64) : !reussir.rc<i64>
   // CHECK: %[[RECURSE2:.+]] = func.call @loop.unique(%[[NEXT2]], %{{.+}}) : (!reussir.rc<i64>, i64) -> !reussir.rc<i64>
