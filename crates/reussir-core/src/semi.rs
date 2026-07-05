@@ -1107,6 +1107,71 @@ mod tests {
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
     }
 
+    // ----- named-function lifting (a `fn` used as a closure value) -----
+
+    #[test]
+    fn lifts_a_named_function_used_as_a_value() {
+        // A bare `fn` name in argument position lifts to a closure of the
+        // function's type, matching the expected `i32 -> i32` parameter.
+        check(
+            "fn double(x: i32) -> i32 { x * 2 }\n\
+             fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }\n\
+             pub fn run() -> i32 { apply(double, 21) }",
+            |elab, _| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+                // The lifted argument is a `Closure`, not a bare reference.
+                use crate::semi::hir::ExprKind;
+                let run = elab
+                    .elaborated
+                    .iter()
+                    .find(|f| elab.resolver.resolve(f.name) == "run")
+                    .expect("run is elaborated");
+                let ExprKind::FuncCall { args, .. } = &run.body.as_ref().unwrap().kind else {
+                    panic!("run body is a call to apply");
+                };
+                assert!(
+                    matches!(args[0].kind, ExprKind::Closure(_)),
+                    "the `double` argument lifted to a closure, got {:#?}",
+                    args[0].kind
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn partially_applies_a_named_function() {
+        // Calling a two-parameter `fn` with one argument lifts it and applies
+        // the argument, yielding a residual `i32 -> i32` closure.
+        let src = "fn add(a: i32, b: i32) -> i32 { a + b }\n\
+                   fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }\n\
+                   pub fn run() -> i32 { let g = add(5); apply(g, 37) }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn lifts_a_generic_function_at_the_expected_type() {
+        // Lifting an unapplied generic `fn` leaves holes for its type parameters;
+        // the expected closure type (`i32 -> i32`) then solves them.
+        let src = "fn id<T>(x: T) -> T { x }\n\
+                   fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }\n\
+                   pub fn run() -> i32 { apply(id, 42) }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn rejects_regional_function_as_a_closure_value() {
+        // A regional function takes an implicit region handle, so it has no
+        // plain closure type to lift to.
+        let src = "regional fn helper(x: i32) -> i32 { x }\n\
+                   fn apply(f: i32 -> i32, x: i32) -> i32 { f(x) }\n\
+                   pub fn run() -> i32 { apply(helper, 1) }";
+        assert!(
+            has_error(src, "regional function as a closure value"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
     // ----- collect-trampoline-roots -----
 
     #[test]

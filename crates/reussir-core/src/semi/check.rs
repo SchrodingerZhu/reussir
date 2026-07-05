@@ -7,7 +7,7 @@ use crate::semi::traits::{Obligation, TraitId, TraitRef};
 use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
 
-use super::ctxt::{Elaborator, RecordFields};
+use super::ctxt::{Elaborator, FuncProto, RecordFields};
 use super::fulfill::{collect_holes, ty_has_hole};
 use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
@@ -248,6 +248,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.record_use(path.basename);
                 return self.mk_expr(ExprKind::Var(id), ty, span);
             }
+            // A bare name that is not a local may be a `fn` used as a value:
+            // lift it to a closure. A local binding shadows a same-named
+            // function (checked first above), matching `infer_func_call`.
+            if let Some(def) = self.resolve_function_ref(path) {
+                self.record_use(path.basename);
+                let proto = self.functions[&def].clone();
+                let inst = self.instantiate(&proto.generics, &[], span);
+                return self.lift_function(def, &proto, &inst, span);
+            }
             let hint = self.variable_suggestion(path.basename);
             self.error(
                 span,
@@ -483,7 +492,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         let inst = self.instantiate(&proto.generics, &fc.ty_args, span);
 
-        if fc.args.len() != proto.params.len() {
+        // Partial application: fewer arguments than parameters lifts the
+        // function to a closure and applies the supplied arguments, yielding a
+        // residual closure over the rest (`add(5)` : `i32 -> i32`).
+        if fc.args.len() < proto.params.len() {
+            let lifted = self.lift_function(def, &proto, &inst, span);
+            return self.closure_apply(lifted, &fc.args, span);
+        }
+        if fc.args.len() > proto.params.len() {
             self.error(
                 span,
                 format!(
@@ -579,6 +595,65 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 args: out,
             },
             result,
+            span,
+        )
+    }
+
+    /// (LIFT) Reify a named function `def` as a first-class closure value —
+    /// `|p₀,…,pₙ| def(p₀,…,pₙ)` — so a bare `fn` name can appear in value
+    /// position and a `fn` can be partially applied. A top-level function
+    /// closes over nothing, so the closure has no captures; its parameter and
+    /// return types come from the prototype instantiated at `inst` (holes for
+    /// an unapplied generic, which the surrounding context then solves). This
+    /// reuses the ordinary closure path, so ownership and codegen need no
+    /// special case.
+    fn lift_function(
+        &mut self,
+        def: DefId,
+        proto: &FuncProto<'tcx>,
+        inst: &Instantiation<'tcx>,
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        // A regional function takes an implicit region handle, so it has no
+        // plain closure type to lift to.
+        if proto.is_regional {
+            self.error(span, "cannot use a regional function as a closure value");
+            return self.poison(span);
+        }
+        // One fresh parameter per function parameter, at the instantiated type;
+        // the body forwards them to a direct call. The params are scoped to the
+        // synthesized body alone (mark/restore), never the enclosing block.
+        let mark = self.vars.mark();
+        let mut params = Vec::with_capacity(proto.params.len());
+        let mut args = Vec::with_capacity(proto.params.len());
+        for (name, pty) in &proto.params {
+            let ty = self.infer.instantiate_ty(*pty, inst);
+            let var = self.vars.fresh(*name, ty, span);
+            params.push((var, ty));
+            args.push(self.mk_expr(ExprKind::Var(var), ty, span));
+        }
+        self.vars.restore(mark);
+        let ty_args = self.inst_args(&proto.generics, inst);
+        let ret = self.infer.instantiate_ty(proto.return_ty, inst);
+        let body = self.mk_expr(
+            ExprKind::FuncCall {
+                target: def,
+                ty_args,
+                args,
+                regional: false,
+            },
+            ret,
+            span,
+        );
+        let param_tys: Vec<Ty<'tcx>> = params.iter().map(|(_, t)| *t).collect();
+        let ty = self.tcx.mk_closure(&param_tys, ret);
+        self.mk_expr(
+            ExprKind::Closure(ClosureExpr {
+                captures: Vec::new(),
+                params,
+                body: Box::new(body),
+            }),
+            ty,
             span,
         )
     }

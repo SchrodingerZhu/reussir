@@ -285,6 +285,46 @@ fn runs_a_closure_with_a_captured_value() {
 }
 
 #[test]
+fn runs_a_lifted_named_function() {
+    // A bare `fn` name used where a closure is expected lifts to a closure that
+    // forwards to the function (`|x| double(x)`). It evaluates like any other
+    // closure value, so the arithmetic comes back exact.
+    let src = r#"
+        fn double(x: i64) -> i64 { x * 2 }
+        fn apply(f: i64 -> i64, x: i64) -> i64 { f(x) }
+        pub fn run(n: i64) -> i64 { apply(double, n) }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(21), 42);
+        assert_eq!(f(-5), -10);
+    });
+}
+
+#[test]
+fn runs_a_partially_applied_named_function() {
+    // Calling a two-parameter function with one argument lifts it and partially
+    // applies: `add(5)` is a residual `i64 -> i64` closure, evaluated later.
+    let src = r#"
+        fn add(a: i64, b: i64) -> i64 { a + b }
+        fn apply(f: i64 -> i64, x: i64) -> i64 { f(x) }
+        pub fn run(n: i64) -> i64 {
+            let add5 = add(5);
+            apply(add5, n)
+        }
+        extern "C" trampoline "run_ffi" = run;
+    "#;
+    jit_run(src, |jit| {
+        let a = jit.lookup("run_ffi").expect("lookup run_ffi");
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(a as usize) };
+        assert_eq!(f(37), 42);
+        assert_eq!(f(-5), 0);
+    });
+}
+
+#[test]
 fn runs_a_closure_capturing_a_shared_record() {
     // The captured value is a heap-allocated `[shared]` record, so the closure
     // box holds an `rc` pointer in its payload. Evaluating the closure hands the
