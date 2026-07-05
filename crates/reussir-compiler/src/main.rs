@@ -21,7 +21,7 @@ use palc::Parser;
 
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
-use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
+use reussir_backend::pipeline::{self, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::lower_program;
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::{
@@ -60,6 +60,37 @@ enum Stage {
     Asm,
     /// A relocatable object file (`.o`).
     Obj,
+}
+
+/// CLI surface for [`NullaryVariantEncoding`], with the extra
+/// `arch-dependent` value that resolves per target triple.
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum NullaryVariantEncodingArg {
+    /// Best encoding the target supports: TBI on aarch64 (LAM and friends
+    /// may follow), the arch-independent form elsewhere.
+    ArchDependent,
+    /// The immortal dummy-box encoding — no TBI/LAM pointer tricks, works
+    /// on any target (including wasm32).
+    ArchIndependent,
+    /// Legacy heap-boxed layout; no immediates.
+    Boxed,
+}
+
+impl NullaryVariantEncodingArg {
+    /// Resolves the CLI choice against the target `triple`.
+    fn resolve(self, triple: &str) -> NullaryVariantEncoding {
+        match self {
+            NullaryVariantEncodingArg::ArchDependent => {
+                if triple.starts_with("aarch64") {
+                    NullaryVariantEncoding::Tbi
+                } else {
+                    NullaryVariantEncoding::Immortal
+                }
+            }
+            NullaryVariantEncodingArg::ArchIndependent => NullaryVariantEncoding::Immortal,
+            NullaryVariantEncodingArg::Boxed => NullaryVariantEncoding::Boxed,
+        }
+    }
 }
 
 impl Stage {
@@ -155,15 +186,18 @@ struct Cli {
     #[arg(short = 'g', long = "debug")]
     debug: bool,
 
-    /// Keep nullary enum variants heap-boxed instead of encoding them as
-    /// tagged pointer immediates. The tagged encoding (top byte = tag + 1,
-    /// no allocation, no reference counting) is on by default for aarch64
-    /// targets, where TBI (top-byte ignore) additionally guarantees a stray
-    /// data access through such a value is architecturally masked. Note the
-    /// FFI contract: a returned enum value with a non-zero top byte is an
-    /// immediate, not a box.
-    #[arg(long = "disable-special-pointer-tag")]
-    disable_special_pointer_tag: bool,
+    /// How nullary enum variants are represented. `arch-dependent` picks
+    /// the best encoding the target supports: on aarch64 the TBI form (top
+    /// byte = tag + 1, low bits = a per-tag dummy box; hardware top-byte
+    /// ignore masks stray dereferences, and foreign code may decode the tag
+    /// from the pointer without dereferencing); elsewhere it falls back to
+    /// the arch-independent form. `arch-independent` uses no TBI/LAM-style
+    /// pointer tricks on any target: the immediate is the dummy box address
+    /// itself, with an immortal refcount — foreign code sees a
+    /// layout-compatible box. `boxed` keeps the legacy heap-boxed layout.
+    #[arg(long = "nullary-variant-encoding", value_enum,
+          default_value_t = NullaryVariantEncodingArg::ArchDependent)]
+    nullary_variant_encoding: NullaryVariantEncodingArg,
 
     /// Omit source locations (the file table and `[start..end]` spans) from
     /// `hir`/`mir` text dumps. The default dump is lossless — it round-trips
@@ -400,12 +434,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
-        // Tagged nullary-variant immediates default on where the target's
-        // pointer semantics cover them (aarch64: TBI ignores the top byte on
-        // data access); other targets keep the boxed layout until an
-        // equivalent (e.g. x86 LAM) is wired up.
-        special_pointer_tag: machine.triple().starts_with("aarch64")
-            && !cli.disable_special_pointer_tag,
+        nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);

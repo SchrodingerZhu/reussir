@@ -23,12 +23,17 @@ def ReussirSpecialPointerTagPass
   let summary = "encode nullary variants as tagged pointer immediates";
   let description = [{
     `reussir-special-pointer-tag` rewrites nullary variant constructions of
-    shared rc-boxed enums into `reussir.rc.tagged` immediates (top byte =
-    tag + 1, low bits = a per-tag dummy box, no allocation) and stamps the
-    module so the LLVM lowering steers refcount stores away from the dummy
-    box on taggable types. Only added to the pipeline for targets with TBI,
-    which the encoding hard-depends on (aarch64 by default).
+    shared rc-boxed enums into `reussir.rc.tagged` immediates pointing at
+    per-tag dummy boxes (no allocation) and stamps the module with the
+    chosen encoding so the LLVM lowering steers refcount stores away from
+    the dummy boxes on taggable types. Two encodings exist: `tbi` (top byte
+    = tag + 1; hard-depends on hardware top-byte-ignore, aarch64) and
+    `immortal` (plain dummy address with an immortal refcount; no
+    architectural dependency).
   }];
+  let options = [Option<"encoding", "encoding", "std::string",
+                        /*default=*/"\"tbi\"",
+                        "Immediate encoding: 'tbi' or 'immortal'">];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }
 

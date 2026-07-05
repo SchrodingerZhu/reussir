@@ -112,9 +112,11 @@ unsafe extern "C" {
 
     /// Encodes nullary variants of shared rc-boxed enums as tagged pointer
     /// immediates (top byte = tag + 1) and stamps the module so the LLVM
-    /// lowering guards refcount/tag accesses. Only added when the scheme is
-    /// enabled (aarch64 targets / TBI by default).
-    pub fn reussirCreateSpecialPointerTagPass() -> MlirPass;
+    /// lowering steers refcount stores away from the dummy boxes. Only added
+    /// when the scheme is enabled; `arch_independent` selects the encoding:
+    /// false = `tbi` (top-byte tag, aarch64), true = `immortal` (plain dummy
+    /// address with an immortal refcount, any target).
+    pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;

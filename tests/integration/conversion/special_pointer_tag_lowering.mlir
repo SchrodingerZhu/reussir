@@ -15,7 +15,7 @@
 
 // CHECK-DAG: @__reussir_tag_scratch = internal global i64 0
 // CHECK-DAG: @__reussir_tag_dummy_1 = internal global [2 x i64] [i64 2, i64 1]
-module @test attributes { reussir.special_ptr_tag, dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
+module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
 
   // Immediate materialization: dummy address | (tag + 1) << 56, no
   // allocation. (2 << 56 = 144115188075855872.)

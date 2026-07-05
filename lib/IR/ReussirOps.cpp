@@ -486,6 +486,8 @@ mlir::LogicalResult ReussirRcTaggedOp::verify() {
   if (rcType.getCapability() != Capability::shared &&
       rcType.getCapability() != Capability::unspecified)
     return emitOpError("tagged immediates require a plain shared box");
+  if (rcType.getAtomicKind() != AtomicKind::normal)
+    return emitOpError("tagged immediates require a nonatomic box");
   auto variantType = llvm::dyn_cast<RecordType>(rcType.getElementType());
   if (!variantType || !variantType.isVariant() || !variantType.getComplete())
     return emitOpError("RC element type must be a complete variant record");

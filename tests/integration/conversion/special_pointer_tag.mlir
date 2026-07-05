@@ -1,7 +1,11 @@
-// RUN: %reussir-opt %s --reussir-special-pointer-tag | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-special-pointer-tag | %FileCheck %s --check-prefixes=CHECK,TBI
+// RUN: %reussir-opt %s --reussir-special-pointer-tag="encoding=immortal" | \
+// RUN:   %FileCheck %s --check-prefixes=CHECK,IMMORTAL
 
 // The special-pointer-tag pass rewrites nullary variant constructions of
-// taggable shared rc-boxed enums into `reussir.rc.tagged` immediates. It
+// taggable shared rc-boxed enums into `reussir.rc.tagged` immediates — the
+// rewrite is identical for both encodings; only the stamped attribute (and
+// later the LLVM lowering) differs. It
 // must match the *unfused* frontend chain (`record.compound {}` →
 // `record.variant` → `rc.create`), because the fused `rc.create_variant`
 // form only appears after token instantiation — too late to elide the
@@ -13,7 +17,8 @@
 !cons = !reussir.record<compound "List.Cons" [value] {i64, !reussir.record<variant "List" {!reussir.record<compound "List.Cons">, !reussir.record<compound "List.Nil" [value] {}>}>}>
 !rclist = !reussir.rc<!list>
 
-// CHECK: module @test attributes {{{.*}}reussir.special_ptr_tag{{.*}}}
+// TBI: module @test attributes {{{.*}}reussir.special_ptr_tag = "tbi"{{.*}}}
+// IMMORTAL: module @test attributes {{{.*}}reussir.special_ptr_tag = "immortal"{{.*}}}
 module @test {
   // The nullary arm becomes an immediate; no box is created.
   // CHECK-LABEL: func.func @make_nil

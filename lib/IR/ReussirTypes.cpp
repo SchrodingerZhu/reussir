@@ -751,7 +751,12 @@ RcBoxType RcType::getInnerBoxType() const {
 bool RcType::mayCarrySpecialPointerTag() const {
   // Plain shared boxes only: the frontend leaves their capability
   // `unspecified` (regional flavors are the annotated ones), and every other
-  // capability has a different header or lifecycle.
+  // capability has a different header or lifecycle. Atomic boxes are also
+  // excluded: an immediate's increments would contend on one shared dummy
+  // box cache line, and the immortal encoding's narrow-width store steering
+  // cannot be expressed around an atomicrmw.
+  if (getAtomicKind() != AtomicKind::normal)
+    return false;
   if (getCapability() != Capability::shared &&
       getCapability() != Capability::unspecified)
     return false;
