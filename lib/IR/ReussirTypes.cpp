@@ -834,6 +834,19 @@ RefType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(HoleType)
 
 //===----------------------------------------------------------------------===//
+// Reussir Constructor Context Type
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult
+CctxType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                 mlir::Type eleTy) {
+  if (!llvm::isa<RcType>(eleTy)) {
+    emitError() << "cctx element type must be an rc type, got " << eleTy;
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Rc Box Type
 //===----------------------------------------------------------------------===//
 // RcBoxType Parse/Print

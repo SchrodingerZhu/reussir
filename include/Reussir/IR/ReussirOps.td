@@ -58,51 +58,71 @@ def ReussirExpectOp : ReussirOp<"expect", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
-// Reussir Hole Operations
+// Reussir Constructor Context Operations
 //===----------------------------------------------------------------------===//
-class ReussirHoleOp<string mnemonic, list<Trait> traits>
-    : ReussirOp<"hole."#mnemonic, traits>;
+class ReussirCctxOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"cctx."#mnemonic, traits>;
 
-def ReussirHoleCreateOp : ReussirHoleOp<"create", []> {
-  let summary = "Create a stack hole";
+def ReussirCctxEmptyOp : ReussirCctxOp<"empty", [Pure]> {
+  let summary = "Create the empty constructor context";
   let description = [{
-    `reussir.hole.create` allocates a local destination slot for a value that
-    will be filled later by a TRMC-style helper.
+    `reussir.cctx.empty` produces the identity context: applying it to a value
+    yields the value itself, and extending it makes the plugged constructor
+    the context's root.
   }];
 
-  let results = (outs Res<ReussirHoleType, "created hole">:$hole);
+  let results = (outs Res<ReussirCctxType, "empty context">:$ctx);
   let assemblyFormat = [{
-    `:` qualified(type($hole)) attr-dict
+    `:` qualified(type($ctx)) attr-dict
   }];
 }
 
-def ReussirHoleLoadOp : ReussirHoleOp<"load", []> {
-  let summary = "Load from a hole";
+def ReussirCctxExtendOp : ReussirCctxOp<"extend", []> {
+  let summary = "Plug a constructor into a context and refocus on its hole";
   let description = [{
-    `reussir.hole.load` loads the value stored in a hole.
-  }];
+    `reussir.cctx.extend` plugs `rcPtr` — a constructor freshly created with a
+    hole (see the `holeFields` attribute on the fused `rc.create_*` ops) —
+    into the context's hole, and yields the context refocused on `hole`, one
+    of the plugged constructor's own holes. If the incoming context is empty,
+    the plugged constructor becomes the new context's root.
 
-  let arguments = (ins Arg<ReussirHoleType, "hole to load">:$hole);
-  let results = (outs Res<AnyType, "loaded value">:$value);
-  let assemblyFormat = [{
-    `(` $hole `:` qualified(type($hole)) `)` `:` type($value) attr-dict
-  }];
-  let hasVerifier = 1;
-}
-
-def ReussirHoleStoreOp : ReussirHoleOp<"store", []> {
-  let summary = "Store to a hole";
-  let description = [{
-    `reussir.hole.store` stores a value into a hole.
+    Both the incoming context and the hole are consumed: contexts are linear,
+    and the refocused hole must be filled exactly once through the resulting
+    context.
   }];
 
   let arguments = (ins
-      Arg<ReussirHoleType, "hole to store into">:$hole,
-      Arg<AnyType, "value to store">:$value);
-  let assemblyFormat = [{
-    `(` $hole `:` qualified(type($hole)) `)` `(` $value `:` type($value) `)` attr-dict
-  }];
+      Arg<ReussirCctxType, "context to extend">:$ctx,
+      Arg<ReussirRcType, "constructor plugged into the hole">:$rcPtr,
+      Arg<ReussirHoleType, "the plugged constructor's hole to refocus on">:$hole);
+  let results = (outs Res<ReussirCctxType, "extended context">:$newCtx);
   let hasVerifier = 1;
+  let assemblyFormat = [{
+    `(` $ctx `:` qualified(type($ctx)) `)`
+    `plug` `(` $rcPtr `:` qualified(type($rcPtr)) `)`
+    `hole` `(` $hole `:` qualified(type($hole)) `)`
+    `:` qualified(type($newCtx)) attr-dict
+  }];
+}
+
+def ReussirCctxApplyOp : ReussirCctxOp<"apply", []> {
+  let summary = "Complete a constructor context with a final value";
+  let description = [{
+    `reussir.cctx.apply` plugs `value` into the context's hole and yields the
+    context's root — the now-complete value. Applying the empty context
+    yields `value` itself. The context is consumed.
+  }];
+
+  let arguments = (ins
+      Arg<ReussirCctxType, "context to complete">:$ctx,
+      Arg<ReussirRcType, "value filling the final hole">:$value);
+  let results = (outs Res<ReussirRcType, "completed value">:$result);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    `(` $ctx `:` qualified(type($ctx)) `)`
+    `(` $value `:` qualified(type($value)) `)`
+    `:` qualified(type($result)) attr-dict
+  }];
 }
 
 //===----------------------------------------------------------------------===//

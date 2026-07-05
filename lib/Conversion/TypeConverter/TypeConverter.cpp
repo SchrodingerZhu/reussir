@@ -181,6 +181,13 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   converter.addConversion([](HoleType type) {
     return mlir::LLVM::LLVMPointerType::get(type.getContext());
   });
+  // A constructor context is a {root, hole} pointer pair; a null hole is the
+  // empty context.
+  converter.addConversion([](CctxType type) {
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(type.getContext());
+    return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(),
+                                                  {ptrTy, ptrTy});
+  });
   converter.addConversion([](RegionType type) {
     return mlir::LLVM::LLVMPointerType::get(type.getContext());
   });

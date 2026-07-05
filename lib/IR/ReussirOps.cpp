@@ -686,23 +686,35 @@ mlir::LogicalResult ReussirRcAssumeUniqueOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Reussir Hole Operations
+// Reussir Constructor Context Operations
 //===----------------------------------------------------------------------===//
-mlir::LogicalResult ReussirHoleLoadOp::verify() {
-  auto holeType = getHole().getType();
-  if (holeType.getElementType() != getValue().getType())
-    return emitOpError("value type must match hole element type, ")
-           << "value type: " << getValue().getType()
-           << ", hole element type: " << holeType.getElementType();
+mlir::LogicalResult ReussirCctxExtendOp::verify() {
+  RcType eleTy = getCtx().getType().getElementType();
+  if (getNewCtx().getType() != getCtx().getType())
+    return emitOpError("extended context type must match the incoming "
+                       "context type, got ")
+           << getNewCtx().getType() << " from " << getCtx().getType();
+  if (getRcPtr().getType() != eleTy)
+    return emitOpError("plugged constructor type must match the context "
+                       "element type, got ")
+           << getRcPtr().getType() << " for " << eleTy;
+  if (getHole().getType().getElementType() != eleTy)
+    return emitOpError("refocused hole must hold the context element type, "
+                       "got ")
+           << getHole().getType().getElementType() << " for " << eleTy;
   return mlir::success();
 }
 
-mlir::LogicalResult ReussirHoleStoreOp::verify() {
-  auto holeType = getHole().getType();
-  if (holeType.getElementType() != getValue().getType())
-    return emitOpError("value type must match hole element type, ")
-           << "value type: " << getValue().getType()
-           << ", hole element type: " << holeType.getElementType();
+mlir::LogicalResult ReussirCctxApplyOp::verify() {
+  RcType eleTy = getCtx().getType().getElementType();
+  if (getValue().getType() != eleTy)
+    return emitOpError("applied value type must match the context element "
+                       "type, got ")
+           << getValue().getType() << " for " << eleTy;
+  if (getResult().getType() != eleTy)
+    return emitOpError("result type must match the context element type, "
+                       "got ")
+           << getResult().getType() << " for " << eleTy;
   return mlir::success();
 }
 

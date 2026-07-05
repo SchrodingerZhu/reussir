@@ -145,17 +145,20 @@ def ReussirUniqueCarryingRecursionAnalysisPass
 
 def ReussirTRMCRecursionAnalysisPass
     : Pass<"reussir-trmc-recursion-analysis", "::mlir::ModuleOp"> {
-  let summary = "rewrite fused tail-recursive modulo cons patterns to hole-based helpers";
+  let summary = "tail recursion modulo constructors via first-class constructor contexts";
   let description = [{
-    `reussir-trmc-recursion-analysis` recognizes directly self-recursive
-    functions whose recursive result is embedded in a fused
-    `reussir.rc.create_compound` or `reussir.rc.create_variant` site.
-    It outlines an internal `.trmc` helper with an explicit `reussir.hole`
-    out-parameter and rewrites the recursive site to allocate the outer RC box
-    first, expose pending-field holes, and redirect the recursive fields
-    through the helper. When a fused create site contains multiple direct
-    self-calls, the pass forwards all of them through the generated holes while
-    still falling back to the original function for non-linear recursive sites.
+    `reussir-trmc-recursion-analysis` splits every directly self-recursive
+    function returning an rc-boxed value whose recursion feeds a fused
+    `reussir.rc.create_compound`/`reussir.rc.create_variant` field into a thin
+    wrapper and an internal `.trmc` helper threading a `!reussir.cctx`
+    accumulator. Constructor leaves allocate with holes, `cctx.extend` the
+    context, and tail-call the helper (a loop after lowering); plain self tail
+    calls thread the context through; every other leaf completes the context
+    with `cctx.apply`. Multiple recursive fields in one create recurse through
+    fresh single-node contexts, with the last field carrying the loop.
+    Because every return leaf has a sound rewrite, mixed functions — where
+    some arms pass the recursive result through another call first — keep
+    full coverage of their constructor arms.
   }];
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::func::FuncDialect",

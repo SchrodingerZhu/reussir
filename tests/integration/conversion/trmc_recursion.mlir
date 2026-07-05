@@ -9,14 +9,12 @@
 !rc_list = !reussir.rc<!list>
 
 module {
+  // The original function becomes a thin wrapper entering the helper through
+  // the empty constructor context.
   // CHECK-LABEL: func.func @map_plus1(
-  // CHECK: %[[NEW:.+]], %[[TAILHOLE:.+]] = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 0 : index}>
-  // CHECK-SAME: : (i64, !reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: -> (!reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK: func.call @map_plus1.trmc(%{{.+}}, %[[TAILHOLE]]) : (!reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK: reussir.scf.yield %[[NEW]] : !reussir.rc<!reussir.record<variant "List"
+  // CHECK: %[[EMPTY:.+]] = reussir.cctx.empty : !reussir.cctx<!reussir.rc<!reussir.record<variant "List"
+  // CHECK: %[[RES:.+]] = call @map_plus1.trmc(%{{.+}}, %[[EMPTY]])
+  // CHECK: return %[[RES]]
   func.func @map_plus1(%list: !rc_list) -> !rc_list {
     %list_ref = reussir.rc.borrow (%list : !rc_list) : !reussir.ref<!list>
     %result = reussir.record.dispatch (%list_ref : !reussir.ref<!list>) -> !rc_list {
@@ -43,18 +41,22 @@ module {
     return %result : !rc_list
   }
 
+  // The helper threads a `!reussir.cctx` accumulator: the constructor arm
+  // allocates with a hole, extends the context, and tail-calls itself; the
+  // base-case arm completes the context with `cctx.apply`.
   // CHECK-LABEL: func.func private @map_plus1.trmc(
   // CHECK-SAME: %[[LIST:.+]]: !reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: %[[OUTARG:.+]]: !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: {llvm.noalias, llvm.nonnull, llvm.noundef}) attributes {llvm.linkage = #llvm.linkage<internal>}
+  // CHECK-SAME: %[[CTX:.+]]: !reussir.cctx<!reussir.rc<!reussir.record<variant "List"
+  // CHECK-SAME: {llvm.noundef})
+  // CHECK-SAME: attributes {llvm.linkage = #llvm.linkage<internal>}
   // CHECK: reussir.record.dispatch
   // CHECK: %[[NEW:.+]], %[[TAILHOLE:.+]] = "reussir.rc.create_variant"(%{{.+}}, %{{.+}}) <{holeFields = array<i64: 1>, operandSegmentSizes = array<i32: 0, 2, 0, 0>, tag = 0 : index}>
   // CHECK-SAME: : (i64, !reussir.rc<!reussir.record<variant "List"
   // CHECK-SAME: -> (!reussir.rc<!reussir.record<variant "List"
   // CHECK-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK: reussir.hole.store(%[[OUTARG]] : !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK: func.call @map_plus1.trmc(%{{.+}}, %[[TAILHOLE]]) : (!reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK: reussir.hole.store(%[[OUTARG]] : !reussir.hole<!reussir.rc<!reussir.record<variant "List"
-  // CHECK-SAME: (%[[LIST]] : !reussir.rc<!reussir.record<variant "List"
+  // CHECK: %[[EXT:.+]] = reussir.cctx.extend(%[[CTX]] : !reussir.cctx<{{.+}}) plug(%[[NEW]] : {{.+}}) hole(%[[TAILHOLE]] : {{.+}})
+  // CHECK: %[[TAIL:.+]] = func.call @map_plus1.trmc(%{{.+}}, %[[EXT]])
+  // CHECK: reussir.scf.yield %[[TAIL]]
+  // CHECK: %[[DONE:.+]] = reussir.cctx.apply(%[[CTX]] : !reussir.cctx<{{.+}}) (%[[LIST]] : {{.+}})
+  // CHECK: reussir.scf.yield %[[DONE]]
 }

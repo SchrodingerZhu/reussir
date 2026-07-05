@@ -316,6 +316,37 @@ def ReussirHoleType
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Reussir Constructor Context Type
+//===----------------------------------------------------------------------===//
+def ReussirCctxType
+    : ReussirType<"Cctx", "cctx"> {
+  let summary = "Reussir first-class constructor context";
+  let description = [{
+    `reussir.cctx` is a first-class constructor context (Koka-style `ctx`): a
+    tree of already-allocated constructors with exactly one unfilled hole. It
+    is represented as a `{root, hole}` pointer pair — the root of the partial
+    value and the address of the hole — with a null hole denoting the empty
+    (identity) context.
+
+    Contexts are linear values: each context is consumed exactly once, either
+    by `reussir.cctx.extend` (plugging a new constructor into the hole and
+    refocusing on one of the new constructor's holes) or by
+    `reussir.cctx.apply` (plugging a finished value into the hole and yielding
+    the completed root). The TRMC pass threads a context through
+    tail-recursion-modulo-constructor chains so every constructor arm becomes
+    a genuine tail call.
+  }];
+
+  let parameters = (ins "mlir::Type":$eleTy);
+  let assemblyFormat = "`<` $eleTy `>`";
+  let genVerifyDecl = 1;
+
+  let extraClassDeclaration = [{
+    RcType getElementType() const { return llvm::cast<RcType>(getEleTy()); }
+  }];
+}
+
 ///===----------------------------------------------------------------------===//
 // Reussir RcBox Type
 //===----------------------------------------------------------------------===//

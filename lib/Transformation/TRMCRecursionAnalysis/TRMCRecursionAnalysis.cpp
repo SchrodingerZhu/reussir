@@ -5,6 +5,26 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
+//
+// Tail recursion modulo constructors via first-class constructor contexts.
+//
+// A self-recursive function returning an rc-boxed value is split into a thin
+// wrapper and a `.trmc` helper that threads a `!reussir.cctx` accumulator —
+// the partially built result with one unfilled hole. Every return-position
+// leaf of the helper is rewritten into exactly one of three shapes:
+//
+//   A. a constructor whose field is a direct self-call: allocate the
+//      constructor with a hole, `cctx.extend` the context with it, and
+//      tail-call the helper — the constructor chain becomes a loop;
+//   B. a plain self tail call: thread the context through unchanged;
+//   C. anything else: `cctx.apply` the context to the finished value.
+//
+// Because every leaf has a sound rewrite, eligibility is purely per-site: a
+// non-constructor arm (say, a rebalancing wrapper call around the recursion)
+// no longer disables the constructor arms next to it — it simply takes the
+// apply fallback, exactly like Koka's ctail compilation.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Reussir/Transformation/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
@@ -33,15 +53,6 @@ struct RecursiveFieldInfo {
   mlir::func::CallOp call;
 };
 
-struct TrmcRewriteContext {
-  mlir::IRRewriter &rewriter;
-  mlir::func::FuncOp helperFunc;
-  mlir::Value outHole;
-  llvm::StringRef originalName;
-  llvm::StringRef helperName;
-  bool rewroteRecursiveSite = false;
-};
-
 static bool hasDirectSelfRecursiveCall(mlir::func::FuncOp funcOp) {
   bool found = false;
   llvm::StringRef name = funcOp.getName();
@@ -59,7 +70,7 @@ static void addOptionalAttr(mlir::OperationState &state, llvm::StringRef name,
 }
 
 static ReussirRcCreateCompoundOp createCompoundWithHoles(
-    mlir::IRRewriter &rewriter, mlir::Location loc, RcType rcType,
+    mlir::OpBuilder &builder, mlir::Location loc, RcType rcType,
     mlir::ValueRange fields, mlir::Value token, mlir::Value region,
     mlir::FlatSymbolRefAttr vtable, bool skipRc,
     mlir::DenseI64ArrayAttr skipFields, mlir::DenseI64ArrayAttr holeFields) {
@@ -75,31 +86,29 @@ static ReussirRcCreateCompoundOp createCompoundWithHoles(
   if (holeFields)
     for (int64_t index : holeFields.asArrayRef())
       resultTypes.push_back(HoleType::get(
-          rewriter.getContext(), fields[static_cast<size_t>(index)].getType()));
+          builder.getContext(), fields[static_cast<size_t>(index)].getType()));
   state.addTypes(resultTypes);
   state.addAttribute(
       "operandSegmentSizes",
-      rewriter.getDenseI32ArrayAttr({static_cast<int32_t>(fields.size()),
-                                     token ? 1 : 0, region ? 1 : 0}));
+      builder.getDenseI32ArrayAttr({static_cast<int32_t>(fields.size()),
+                                    token ? 1 : 0, region ? 1 : 0}));
   addOptionalAttr(state, "vtable", vtable);
   if (skipRc)
-    state.addAttribute("skipRc", rewriter.getUnitAttr());
+    state.addAttribute("skipRc", builder.getUnitAttr());
   addOptionalAttr(state, "skipFields", skipFields);
   addOptionalAttr(state, "holeFields", holeFields);
-  return llvm::cast<ReussirRcCreateCompoundOp>(rewriter.create(state));
+  return llvm::cast<ReussirRcCreateCompoundOp>(builder.create(state));
 }
 
 static ReussirRcCreateVariantOp
-createVariantWithHoles(mlir::IRRewriter &rewriter, mlir::Location loc,
-                       RcType rcType, mlir::IntegerAttr tag, mlir::Value value,
+createVariantWithHoles(mlir::OpBuilder &builder, mlir::Location loc,
+                       RcType rcType, mlir::IntegerAttr tag,
                        mlir::ValueRange fields, mlir::Value token,
                        mlir::Value region, mlir::FlatSymbolRefAttr vtable,
                        bool skipRc, mlir::DenseI64ArrayAttr skipFields,
                        mlir::DenseI64ArrayAttr holeFields) {
   mlir::OperationState state(loc, ReussirRcCreateVariantOp::getOperationName());
   state.addAttribute("tag", tag);
-  if (value)
-    state.addOperands(value);
   state.addOperands(fields);
   if (token)
     state.addOperands(token);
@@ -110,558 +119,332 @@ createVariantWithHoles(mlir::IRRewriter &rewriter, mlir::Location loc,
   if (holeFields)
     for (int64_t index : holeFields.asArrayRef())
       resultTypes.push_back(HoleType::get(
-          rewriter.getContext(), fields[static_cast<size_t>(index)].getType()));
+          builder.getContext(), fields[static_cast<size_t>(index)].getType()));
   state.addTypes(resultTypes);
   state.addAttribute("operandSegmentSizes",
-                     rewriter.getDenseI32ArrayAttr(
-                         {value ? 1 : 0, static_cast<int32_t>(fields.size()),
-                          token ? 1 : 0, region ? 1 : 0}));
+                     builder.getDenseI32ArrayAttr(
+                         {0, static_cast<int32_t>(fields.size()), token ? 1 : 0,
+                          region ? 1 : 0}));
   addOptionalAttr(state, "vtable", vtable);
   if (skipRc)
-    state.addAttribute("skipRc", rewriter.getUnitAttr());
+    state.addAttribute("skipRc", builder.getUnitAttr());
   addOptionalAttr(state, "skipFields", skipFields);
   addOptionalAttr(state, "holeFields", holeFields);
-  return llvm::cast<ReussirRcCreateVariantOp>(rewriter.create(state));
+  return llvm::cast<ReussirRcCreateVariantOp>(builder.create(state));
 }
 
-static mlir::LogicalResult replaceWithVoidTerminator(mlir::IRRewriter &rewriter,
-                                                     mlir::Operation *term) {
-  mlir::Location loc = term->getLoc();
-  rewriter.setInsertionPoint(term);
-  if (llvm::isa<mlir::func::ReturnOp>(term))
-    mlir::func::ReturnOp::create(rewriter, loc);
-  else if (llvm::isa<mlir::scf::YieldOp>(term))
-    mlir::scf::YieldOp::create(rewriter, loc);
-  else if (llvm::isa<ReussirScfYieldOp>(term))
-    ReussirScfYieldOp::create(rewriter, loc, mlir::Value{});
-  else
-    return mlir::failure();
-  rewriter.eraseOp(term);
-  return mlir::success();
-}
-
-static mlir::LogicalResult lowerValueIntoHole(mlir::Operation *terminator,
-                                              mlir::Value value,
-                                              TrmcRewriteContext &ctx);
-
-static void clearAndCloneBody(mlir::IRRewriter &rewriter, mlir::Region &dst,
-                              mlir::Region &src) {
-  mlir::Block *placeholder = dst.empty() ? nullptr : &dst.front();
-  rewriter.cloneRegionBefore(src, dst, dst.begin());
-  if (placeholder)
-    placeholder->erase();
-}
-
-static mlir::LogicalResult lowerRegionTerminator(mlir::Region &region,
-                                                 TrmcRewriteContext &ctx) {
-  mlir::Operation *terminator = region.front().getTerminator();
-  if (auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(terminator)) {
-    if (yield.getNumOperands() != 1)
-      return mlir::failure();
-    return lowerValueIntoHole(terminator, yield.getOperand(0), ctx);
-  }
-  if (auto yield = llvm::dyn_cast<ReussirScfYieldOp>(terminator)) {
-    if (!yield.getValue())
-      return mlir::failure();
-    return lowerValueIntoHole(terminator, yield.getValue(), ctx);
-  }
-  return mlir::failure();
-}
-
-static mlir::LogicalResult lowerStructuredValue(mlir::Operation *terminator,
-                                                mlir::Value value,
-                                                TrmcRewriteContext &ctx) {
-  if (auto indexSwitch = llvm::dyn_cast_if_present<mlir::scf::IndexSwitchOp>(
-          value.getDefiningOp())) {
-    if (indexSwitch.getNumResults() != 1 || !value.hasOneUse())
-      return mlir::failure();
-    ctx.rewriter.setInsertionPoint(indexSwitch);
-    auto newIndexSwitch = mlir::scf::IndexSwitchOp::create(ctx.rewriter, 
-        indexSwitch.getLoc(), mlir::TypeRange{}, indexSwitch.getArg(),
-        indexSwitch.getCasesAttr(), indexSwitch.getCaseRegions().size());
-    clearAndCloneBody(ctx.rewriter, newIndexSwitch.getDefaultRegion(),
-                      indexSwitch.getDefaultRegion());
-    for (auto [oldRegion, newRegion] : llvm::zip(
-             indexSwitch.getCaseRegions(), newIndexSwitch.getCaseRegions())) {
-      clearAndCloneBody(ctx.rewriter, newRegion, oldRegion);
-    }
-    if (failed(lowerRegionTerminator(newIndexSwitch.getDefaultRegion(), ctx)))
-      return mlir::failure();
-    for (mlir::Region &region : newIndexSwitch.getCaseRegions())
-      if (failed(lowerRegionTerminator(region, ctx)))
-        return mlir::failure();
-    if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-      return mlir::failure();
-    ctx.rewriter.eraseOp(indexSwitch);
-    return mlir::success();
-  }
-
-  if (auto ifOp =
-          llvm::dyn_cast_if_present<mlir::scf::IfOp>(value.getDefiningOp())) {
-    if (ifOp.getNumResults() != 1 || !value.hasOneUse())
-      return mlir::failure();
-    ctx.rewriter.setInsertionPoint(ifOp);
-    auto newIf = mlir::scf::IfOp::create(ctx.rewriter, 
-        ifOp.getLoc(), mlir::TypeRange{}, ifOp.getCondition(),
-        !ifOp.getElseRegion().empty());
-    clearAndCloneBody(ctx.rewriter, newIf.getThenRegion(),
-                      ifOp.getThenRegion());
-    if (!ifOp.getElseRegion().empty())
-      clearAndCloneBody(ctx.rewriter, newIf.getElseRegion(),
-                        ifOp.getElseRegion());
-    if (failed(lowerRegionTerminator(newIf.getThenRegion(), ctx)))
-      return mlir::failure();
-    if (!newIf.getElseRegion().empty() &&
-        failed(lowerRegionTerminator(newIf.getElseRegion(), ctx)))
-      return mlir::failure();
-    if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-      return mlir::failure();
-    ctx.rewriter.eraseOp(ifOp);
-    return mlir::success();
-  }
-
-  if (auto dispatch = llvm::dyn_cast_if_present<ReussirRecordDispatchOp>(
-          value.getDefiningOp())) {
-    if (dispatch.getNumResults() != 1 || !value.hasOneUse())
-      return mlir::failure();
-    mlir::OperationState state(dispatch.getLoc(),
-                               ReussirRecordDispatchOp::getOperationName());
-    state.addOperands(dispatch.getVariant());
-    state.addAttribute("tagSets", dispatch.getTagSetsAttr());
-    for (size_t i = 0; i < dispatch->getNumRegions(); ++i)
-      state.addRegion();
-    ctx.rewriter.setInsertionPoint(dispatch);
-    auto newDispatch =
-        llvm::cast<ReussirRecordDispatchOp>(ctx.rewriter.create(state));
-    for (auto [oldRegion, newRegion] :
-         llvm::zip(dispatch.getRegions(), newDispatch.getRegions())) {
-      clearAndCloneBody(ctx.rewriter, newRegion, oldRegion);
-      if (failed(lowerRegionTerminator(newRegion, ctx)))
-        return mlir::failure();
-    }
-    if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-      return mlir::failure();
-    ctx.rewriter.eraseOp(dispatch);
-    return mlir::success();
-  }
-
-  if (auto dispatch = llvm::dyn_cast_if_present<ReussirNullableDispatchOp>(
-          value.getDefiningOp())) {
-    if (dispatch.getNumResults() != 1 || !value.hasOneUse())
-      return mlir::failure();
-    mlir::OperationState state(dispatch.getLoc(),
-                               ReussirNullableDispatchOp::getOperationName());
-    state.addOperands(dispatch.getNullable());
-    state.addRegion();
-    state.addRegion();
-    ctx.rewriter.setInsertionPoint(dispatch);
-    auto newDispatch =
-        llvm::cast<ReussirNullableDispatchOp>(ctx.rewriter.create(state));
-    clearAndCloneBody(ctx.rewriter, newDispatch.getNonNullRegion(),
-                      dispatch.getNonNullRegion());
-    clearAndCloneBody(ctx.rewriter, newDispatch.getNullRegion(),
-                      dispatch.getNullRegion());
-    if (failed(lowerRegionTerminator(newDispatch.getNonNullRegion(), ctx)) ||
-        failed(lowerRegionTerminator(newDispatch.getNullRegion(), ctx)))
-      return mlir::failure();
-    if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-      return mlir::failure();
-    ctx.rewriter.eraseOp(dispatch);
-    return mlir::success();
-  }
-
-  return mlir::failure();
-}
-
-static mlir::LogicalResult
-emitDirectRecursiveTailCall(mlir::Operation *terminator,
-                            mlir::func::CallOp call, TrmcRewriteContext &ctx) {
-  if (call.getCallee() != ctx.originalName)
-    return mlir::failure();
-  ctx.rewriter.setInsertionPoint(terminator);
-  llvm::SmallVector<mlir::Value> helperArgs(call.getOperands());
-  helperArgs.push_back(ctx.outHole);
-  mlir::func::CallOp::create(ctx.rewriter, call.getLoc(), ctx.helperName,
-                                          mlir::TypeRange{}, helperArgs);
-  ctx.rewroteRecursiveSite = true;
-  if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-    return mlir::failure();
-  ctx.rewriter.eraseOp(call);
-  return mlir::success();
-}
-
-static std::optional<llvm::SmallVector<RecursiveFieldInfo>>
+// The candidate recursive fields of a fused create: fields whose value is
+// produced by a direct self-call. Whether such a call is actually
+// linearizable is a whole-function question answered by `TrmcPlan` — token
+// reuse duplicates one source-level constructor into sibling scf.if branches
+// (reuse-token vs fresh-alloc), so one call may legitimately feed several
+// same-site creates. A call feeding two fields of the *same* create can never
+// be linearized and is dropped here.
+static llvm::SmallVector<RecursiveFieldInfo>
 collectRecursiveFields(mlir::ValueRange fields, llvm::StringRef callee) {
   llvm::SmallVector<RecursiveFieldInfo> recursiveFields;
-  llvm::DenseSet<mlir::Operation *> seenCalls;
+  llvm::SmallDenseSet<mlir::Operation *> seenCalls;
+  llvm::SmallDenseSet<mlir::Operation *> duplicated;
   for (auto [index, field] : llvm::enumerate(fields)) {
     auto callOp =
         llvm::dyn_cast_if_present<mlir::func::CallOp>(field.getDefiningOp());
-    if (!callOp || callOp.getCallee() != callee)
+    if (!callOp || callOp.getCallee() != callee || callOp.getNumResults() != 1)
       continue;
-    if (!seenCalls.insert(callOp.getOperation()).second)
-      return std::nullopt;
+    if (!seenCalls.insert(callOp.getOperation()).second) {
+      duplicated.insert(callOp.getOperation());
+      continue;
+    }
     recursiveFields.push_back(
         RecursiveFieldInfo{static_cast<unsigned>(index), callOp});
   }
+  llvm::erase_if(recursiveFields, [&](RecursiveFieldInfo &info) {
+    return duplicated.contains(info.call.getOperation());
+  });
   return recursiveFields;
 }
 
-static std::optional<llvm::SmallVector<RecursiveFieldInfo>>
-collectRecursiveFields(mlir::Operation *createOp, llvm::StringRef callee) {
-  if (auto create = llvm::dyn_cast<ReussirRcCreateCompoundOp>(createOp))
-    return collectRecursiveFields(create.getFields(), callee);
-
-  auto create = llvm::dyn_cast<ReussirRcCreateVariantOp>(createOp);
-  if (!create || create.getValue())
-    return std::nullopt;
-  return collectRecursiveFields(create.getFields(), callee);
-}
-
-static llvm::SmallVector<int64_t>
-getRecursiveFieldIndices(llvm::ArrayRef<RecursiveFieldInfo> recursiveFields) {
-  llvm::SmallVector<int64_t> indices;
-  indices.reserve(recursiveFields.size());
-  for (const RecursiveFieldInfo &field : recursiveFields)
-    indices.push_back(static_cast<int64_t>(field.index));
-  return indices;
-}
-
-static bool isLinearizableCreateUser(mlir::Operation *user,
-                                     mlir::func::CallOp callOp,
-                                     llvm::StringRef callee) {
-  auto isRecursiveFieldUser = [&](mlir::ValueRange fields) {
-    auto recursiveFields = collectRecursiveFields(fields, callee);
-    if (!recursiveFields)
-      return false;
-    return llvm::any_of(*recursiveFields, [&](const RecursiveFieldInfo &field) {
-      return field.call == callOp;
-    });
-  };
-
-  if (auto create = llvm::dyn_cast<ReussirRcCreateCompoundOp>(user))
-    return isRecursiveFieldUser(create.getFields());
-  if (auto create = llvm::dyn_cast<ReussirRcCreateVariantOp>(user))
-    return !create.getValue() && isRecursiveFieldUser(create.getFields());
+// A fused, non-regional create usable as a class-A leaf shell.
+static bool isCandidateCreate(mlir::Value value) {
+  if (!value.hasOneUse())
+    return false;
+  if (auto create = llvm::dyn_cast_if_present<ReussirRcCreateCompoundOp>(
+          value.getDefiningOp()))
+    return !create.getRegion();
+  if (auto create = llvm::dyn_cast_if_present<ReussirRcCreateVariantOp>(
+          value.getDefiningOp()))
+    return !create.getValue() && !create.getRegion();
   return false;
 }
 
-static bool isCallOnlyUsedByLinearizableCreates(mlir::func::CallOp callOp,
-                                                llvm::StringRef callee) {
-  if (callOp.getCallee() != callee)
-    return false;
-  return llvm::all_of(callOp->getUsers(), [&](mlir::Operation *user) {
-    return isLinearizableCreateUser(user, callOp, callee);
-  });
+static mlir::ValueRange createFields(mlir::Operation *create) {
+  if (auto compound = llvm::dyn_cast<ReussirRcCreateCompoundOp>(create))
+    return compound.getFields();
+  return llvm::cast<ReussirRcCreateVariantOp>(create).getFields();
 }
 
-static bool regionHasDirectSelfCall(mlir::Region &region,
-                                    llvm::StringRef originalName) {
-  bool found = false;
-  region.walk([&](mlir::func::CallOp callOp) {
-    if (callOp.getCallee() == originalName)
-      found = true;
-  });
-  return found;
-}
-
-static bool regionHasNonLinearSelfCall(mlir::Region &region,
-                                       llvm::StringRef originalName) {
-  bool found = false;
-  region.walk([&](mlir::func::CallOp callOp) {
-    if (callOp.getCallee() != originalName)
-      return;
-    if (!isCallOnlyUsedByLinearizableCreates(callOp, originalName))
-      found = true;
-  });
-  return found;
-}
-
-static mlir::Operation *
-getUniqueLinearizableCreateUser(mlir::func::CallOp callOp,
-                                llvm::StringRef originalName) {
-  if (callOp.getCallee() != originalName || !callOp->hasOneUse())
-    return nullptr;
-  mlir::Operation *user = *callOp->user_begin();
-  if (!isLinearizableCreateUser(user, callOp, originalName))
-    return nullptr;
-  return user;
-}
-
-static bool isSameLinearizableCreateSite(mlir::Operation *lhs, mlir::Operation *rhs,
-                                         llvm::StringRef originalName) {
-  if (!lhs || !rhs || lhs == rhs)
-    return lhs == rhs;
+// Two creates are the same source-level site iff they agree on op kind,
+// location, tag, and recursive-field shape. Compiler duplication (token
+// reuse's scf.if dualization) produces exactly such clones, and the clones
+// live in mutually exclusive branches — which is what makes it sound to
+// consume one shared recursive call from each of them.
+static bool isSameCreateSite(mlir::Operation *lhs, mlir::Operation *rhs,
+                             llvm::StringRef callee) {
+  if (lhs == rhs)
+    return true;
   if (lhs->getName() != rhs->getName() || lhs->getLoc() != rhs->getLoc())
     return false;
-
-  auto sameRecursiveIndex = [&](mlir::ValueRange lhsFields,
-                                mlir::ValueRange rhsFields) {
-    auto lhsRecursiveFields = collectRecursiveFields(lhsFields, originalName);
-    auto rhsRecursiveFields = collectRecursiveFields(rhsFields, originalName);
-    return lhsRecursiveFields && rhsRecursiveFields &&
-           getRecursiveFieldIndices(*lhsRecursiveFields) ==
-               getRecursiveFieldIndices(*rhsRecursiveFields);
-  };
-
-  if (auto lhsCreate = llvm::dyn_cast<ReussirRcCreateCompoundOp>(lhs)) {
-    auto rhsCreate = llvm::dyn_cast<ReussirRcCreateCompoundOp>(rhs);
-    return rhsCreate &&
-           sameRecursiveIndex(lhsCreate.getFields(), rhsCreate.getFields());
-  }
-
-  auto lhsCreate = llvm::dyn_cast<ReussirRcCreateVariantOp>(lhs);
-  auto rhsCreate = llvm::dyn_cast<ReussirRcCreateVariantOp>(rhs);
-  return lhsCreate && rhsCreate && lhsCreate.getTagAttr() == rhsCreate.getTagAttr() &&
-         sameRecursiveIndex(lhsCreate.getFields(), rhsCreate.getFields());
-}
-
-static bool hasMeaningfulSiblingSelfCall(mlir::Region &region,
-                                         mlir::Operation *currentCreateOp,
-                                         llvm::StringRef originalName) {
-  bool found = false;
-  region.walk([&](mlir::func::CallOp callOp) {
-    if (found || callOp.getCallee() != originalName)
-      return;
-    mlir::Operation *user = getUniqueLinearizableCreateUser(callOp, originalName);
-    if (!user || !isSameLinearizableCreateSite(currentCreateOp, user, originalName))
-      found = true;
-  });
-  return found;
-}
-
-static bool isSiteEligibleForTrmc(mlir::Operation *createOp,
-                                  llvm::StringRef originalName) {
-  auto recursiveFields = collectRecursiveFields(createOp, originalName);
-  if (!recursiveFields || recursiveFields->empty())
-    return false;
-  for (const RecursiveFieldInfo &field : *recursiveFields)
-    if (!isCallOnlyUsedByLinearizableCreates(field.call, originalName))
+  if (auto lhsVariant = llvm::dyn_cast<ReussirRcCreateVariantOp>(lhs)) {
+    auto rhsVariant = llvm::cast<ReussirRcCreateVariantOp>(rhs);
+    if (lhsVariant.getTagAttr() != rhsVariant.getTagAttr())
       return false;
-
-  mlir::Region *currentRegion = createOp->getParentRegion();
-  mlir::Operation *parentOp =
-      currentRegion ? currentRegion->getParentOp() : nullptr;
-  while (parentOp && !llvm::isa<mlir::func::FuncOp>(parentOp)) {
-    if (parentOp->getNumRegions() > 1) {
-      for (mlir::Region &region : parentOp->getRegions()) {
-        if (&region == currentRegion)
-          continue;
-        if (!regionHasDirectSelfCall(region, originalName))
-          continue;
-        if (regionHasNonLinearSelfCall(region, originalName))
-          return false;
-        if (hasMeaningfulSiblingSelfCall(region, createOp, originalName))
-          return true;
-      }
-    }
-    currentRegion = parentOp->getParentRegion();
-    parentOp = currentRegion ? currentRegion->getParentOp() : nullptr;
   }
+  auto lhsFields = collectRecursiveFields(createFields(lhs), callee);
+  auto rhsFields = collectRecursiveFields(createFields(rhs), callee);
+  if (lhsFields.size() != rhsFields.size())
+    return false;
+  for (auto [l, r] : llvm::zip(lhsFields, rhsFields))
+    if (l.index != r.index)
+      return false;
   return true;
 }
 
-static mlir::LogicalResult
-emitRecursiveCreateIntoHole(mlir::Operation *terminator, mlir::Value value,
-                            TrmcRewriteContext &ctx) {
-  if (auto create = llvm::dyn_cast_if_present<ReussirRcCreateCompoundOp>(
-          value.getDefiningOp())) {
-    auto recursiveFields =
-        collectRecursiveFields(create.getOperation(), ctx.originalName);
-    if (!recursiveFields || recursiveFields->empty())
-      return mlir::failure();
-    if (!isSiteEligibleForTrmc(create.getOperation(), ctx.originalName))
-      return mlir::failure();
-    llvm::SmallVector<mlir::Value> fields(create.getFields().begin(),
-                                          create.getFields().end());
-    ctx.rewriter.setInsertionPoint(terminator);
-    for (const RecursiveFieldInfo &field : *recursiveFields)
-      fields[field.index] = mlir::ub::PoisonOp::create(ctx.rewriter, 
-          create.getLoc(), fields[field.index].getType());
-    auto holeFields =
-        ctx.rewriter.getDenseI64ArrayAttr(getRecursiveFieldIndices(*recursiveFields));
-    auto newCreate = createCompoundWithHoles(
-        ctx.rewriter, create.getLoc(), create.getRcPtr().getType(), fields,
-        create.getToken(), create.getRegion(), create.getVtableAttr(),
-        create.getSkipRc(), create.getSkipFieldsAttr(), holeFields);
-    ctx.rewriter.setInsertionPointAfter(newCreate);
-    auto store = ReussirHoleStoreOp::create(ctx.rewriter, 
-        create.getLoc(), ctx.outHole, newCreate.getRcPtr());
-    mlir::Operation *insertionPoint = store;
-    for (auto [field, hole] : llvm::zip(*recursiveFields, newCreate.getHoles())) {
-      llvm::SmallVector<mlir::Value> helperArgs(field.call.getOperands());
-      helperArgs.push_back(hole);
-      ctx.rewriter.setInsertionPointAfter(insertionPoint);
-      insertionPoint = mlir::func::CallOp::create(ctx.rewriter, 
-          field.call.getLoc(), ctx.helperName, mlir::TypeRange{}, helperArgs);
+struct LeafInfo {
+  mlir::Operation *terminator;
+  mlir::Value value;
+};
+
+// The per-function rewrite plan: every return-position leaf, plus the set of
+// class-A creates with their linearizable recursive fields.
+struct TrmcPlan {
+  llvm::SmallVector<LeafInfo> leaves;
+  llvm::SmallDenseMap<mlir::Operation *, llvm::SmallVector<RecursiveFieldInfo>>
+      constructorLeaves;
+};
+
+// Walks the value spine from a return down through single-result,
+// single-use structured control flow and invokes `visit` on every leaf
+// (terminator, yielded value) pair.
+static void
+forEachLeaf(mlir::Operation *terminator, mlir::Value value,
+            llvm::function_ref<void(mlir::Operation *, mlir::Value)> visit) {
+  mlir::Operation *def = value.getDefiningOp();
+  auto allRegionsHaveOneBlock = [](mlir::Operation *op) {
+    return llvm::all_of(op->getRegions(), [](mlir::Region &region) {
+      return region.hasOneBlock();
+    });
+  };
+  if (def && def->getNumResults() == 1 && value.hasOneUse() &&
+      llvm::isa<mlir::scf::IfOp, mlir::scf::IndexSwitchOp,
+                ReussirRecordDispatchOp, ReussirNullableDispatchOp>(def) &&
+      def->getNumRegions() > 0 && allRegionsHaveOneBlock(def) &&
+      llvm::none_of(def->getRegions(),
+                    [](mlir::Region &region) { return region.empty(); })) {
+    for (mlir::Region &region : def->getRegions()) {
+      mlir::Operation *nested = region.front().getTerminator();
+      mlir::Value yielded;
+      if (auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(nested)) {
+        if (yield.getNumOperands() == 1)
+          yielded = yield.getOperand(0);
+      } else if (auto yield = llvm::dyn_cast<ReussirScfYieldOp>(nested)) {
+        yielded = yield.getValue();
+      }
+      if (!yielded) {
+        // A region that does not yield the spine value (e.g. it panics)
+        // contributes no leaf.
+        continue;
+      }
+      forEachLeaf(nested, yielded, visit);
     }
-    ctx.rewroteRecursiveSite = true;
-    if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-      return mlir::failure();
-    ctx.rewriter.eraseOp(create);
-    for (RecursiveFieldInfo &field : *recursiveFields)
-      if (field.call.use_empty())
-        ctx.rewriter.eraseOp(field.call);
-    return mlir::success();
+    return;
   }
-
-  auto create = llvm::dyn_cast_if_present<ReussirRcCreateVariantOp>(
-      value.getDefiningOp());
-  if (!create || create.getValue())
-    return mlir::failure();
-
-  auto recursiveFields =
-      collectRecursiveFields(create.getOperation(), ctx.originalName);
-  if (!recursiveFields || recursiveFields->empty())
-    return mlir::failure();
-  if (!isSiteEligibleForTrmc(create.getOperation(), ctx.originalName))
-    return mlir::failure();
-  llvm::SmallVector<mlir::Value> fields(create.getFields().begin(),
-                                        create.getFields().end());
-  ctx.rewriter.setInsertionPoint(terminator);
-  for (const RecursiveFieldInfo &field : *recursiveFields)
-    fields[field.index] = mlir::ub::PoisonOp::create(ctx.rewriter, 
-        create.getLoc(), fields[field.index].getType());
-  auto holeFields =
-      ctx.rewriter.getDenseI64ArrayAttr(getRecursiveFieldIndices(*recursiveFields));
-  auto newCreate = createVariantWithHoles(
-      ctx.rewriter, create.getLoc(), create.getRcPtr().getType(),
-      create.getTagAttr(), create.getValue(), fields, create.getToken(),
-      create.getRegion(), create.getVtableAttr(), create.getSkipRc(),
-      create.getSkipFieldsAttr(), holeFields);
-  ctx.rewriter.setInsertionPointAfter(newCreate);
-  auto store = ReussirHoleStoreOp::create(ctx.rewriter, 
-      create.getLoc(), ctx.outHole, newCreate.getRcPtr());
-  mlir::Operation *insertionPoint = store;
-  for (auto [field, hole] : llvm::zip(*recursiveFields, newCreate.getHoles())) {
-    llvm::SmallVector<mlir::Value> helperArgs(field.call.getOperands());
-    helperArgs.push_back(hole);
-    ctx.rewriter.setInsertionPointAfter(insertionPoint);
-    insertionPoint = mlir::func::CallOp::create(ctx.rewriter, 
-        field.call.getLoc(), ctx.helperName, mlir::TypeRange{}, helperArgs);
-  }
-  ctx.rewroteRecursiveSite = true;
-  if (failed(replaceWithVoidTerminator(ctx.rewriter, terminator)))
-    return mlir::failure();
-  ctx.rewriter.eraseOp(create);
-  for (RecursiveFieldInfo &field : *recursiveFields)
-    if (field.call.use_empty())
-      ctx.rewriter.eraseOp(field.call);
-  return mlir::success();
+  visit(terminator, value);
 }
 
-static mlir::LogicalResult rewriteRecursiveCreateSite(
-    mlir::Operation *createOp, llvm::StringRef originalName,
-    llvm::StringRef helperName, mlir::IRRewriter &rewriter) {
-  if (auto create = llvm::dyn_cast<ReussirRcCreateCompoundOp>(createOp)) {
-    auto recursiveFields = collectRecursiveFields(create.getOperation(),
-                                                 originalName);
-    if (!recursiveFields || recursiveFields->empty())
-      return mlir::failure();
-    if (!isSiteEligibleForTrmc(create.getOperation(), originalName))
-      return mlir::failure();
-    llvm::SmallVector<mlir::Value> fields(create.getFields().begin(),
-                                          create.getFields().end());
-    rewriter.setInsertionPoint(create);
-    for (const RecursiveFieldInfo &field : *recursiveFields)
-      fields[field.index] = mlir::ub::PoisonOp::create(rewriter, 
-          create.getLoc(), fields[field.index].getType());
-    auto holeFields =
-        rewriter.getDenseI64ArrayAttr(getRecursiveFieldIndices(*recursiveFields));
-    auto newCreate = createCompoundWithHoles(
-        rewriter, create.getLoc(), create.getRcPtr().getType(), fields,
-        create.getToken(), create.getRegion(), create.getVtableAttr(),
-        create.getSkipRc(), create.getSkipFieldsAttr(), holeFields);
-    mlir::Operation *insertionPoint = newCreate;
-    for (auto [field, hole] : llvm::zip(*recursiveFields, newCreate.getHoles())) {
-      llvm::SmallVector<mlir::Value> helperArgs(field.call.getOperands());
-      helperArgs.push_back(hole);
-      rewriter.setInsertionPointAfter(insertionPoint);
-      insertionPoint = mlir::func::CallOp::create(rewriter, 
-          field.call.getLoc(), helperName, mlir::TypeRange{}, helperArgs);
-    }
-    create.getRcPtr().replaceAllUsesWith(newCreate.getRcPtr());
-    rewriter.eraseOp(create);
-    for (RecursiveFieldInfo &field : *recursiveFields)
-      if (field.call.use_empty())
-        rewriter.eraseOp(field.call);
-    return mlir::success();
-  }
-
-  auto create = llvm::dyn_cast<ReussirRcCreateVariantOp>(createOp);
-  if (!create || create.getValue())
-    return mlir::failure();
-
-  auto recursiveFields = collectRecursiveFields(create.getOperation(),
-                                               originalName);
-  if (!recursiveFields || recursiveFields->empty())
-    return mlir::failure();
-  if (!isSiteEligibleForTrmc(create.getOperation(), originalName))
-    return mlir::failure();
-  llvm::SmallVector<mlir::Value> fields(create.getFields().begin(),
-                                        create.getFields().end());
-  rewriter.setInsertionPoint(create);
-  for (const RecursiveFieldInfo &field : *recursiveFields)
-    fields[field.index] = mlir::ub::PoisonOp::create(rewriter, 
-        create.getLoc(), fields[field.index].getType());
-  auto holeFields =
-      rewriter.getDenseI64ArrayAttr(getRecursiveFieldIndices(*recursiveFields));
-  auto newCreate = createVariantWithHoles(
-      rewriter, create.getLoc(), create.getRcPtr().getType(),
-      create.getTagAttr(), create.getValue(), fields, create.getToken(),
-      create.getRegion(), create.getVtableAttr(), create.getSkipRc(),
-      create.getSkipFieldsAttr(), holeFields);
-  mlir::Operation *insertionPoint = newCreate;
-  for (auto [field, hole] : llvm::zip(*recursiveFields, newCreate.getHoles())) {
-    llvm::SmallVector<mlir::Value> helperArgs(field.call.getOperands());
-    helperArgs.push_back(hole);
-    rewriter.setInsertionPointAfter(insertionPoint);
-    insertionPoint = mlir::func::CallOp::create(rewriter, 
-        field.call.getLoc(), helperName, mlir::TypeRange{}, helperArgs);
-  }
-  create.getRcPtr().replaceAllUsesWith(newCreate.getRcPtr());
-  rewriter.eraseOp(create);
-  for (RecursiveFieldInfo &field : *recursiveFields)
-    if (field.call.use_empty())
-      rewriter.eraseOp(field.call);
-  return mlir::success();
-}
-
-static bool rewriteRecursiveCreateSitesInFunction(mlir::func::FuncOp funcOp,
-                                                  llvm::StringRef originalName,
-                                                  llvm::StringRef helperName);
-
-static void eraseUnusedCallsTo(mlir::func::FuncOp funcOp,
-                               llvm::StringRef callee) {
-  mlir::IRRewriter rewriter(funcOp.getContext());
-  llvm::SmallVector<mlir::func::CallOp> calls;
-  funcOp.walk([&](mlir::func::CallOp callOp) {
-    if (callOp.getCallee() == callee && callOp->use_empty())
-      calls.push_back(callOp);
+static TrmcPlan buildPlan(mlir::func::FuncOp funcOp, llvm::StringRef callee) {
+  TrmcPlan plan;
+  funcOp.walk([&](mlir::func::ReturnOp returnOp) {
+    if (returnOp.getNumOperands() != 1)
+      return;
+    forEachLeaf(returnOp, returnOp.getOperand(0),
+                [&](mlir::Operation *terminator, mlir::Value value) {
+                  plan.leaves.push_back(LeafInfo{terminator, value});
+                });
   });
 
-  for (mlir::func::CallOp callOp : calls)
-    rewriter.eraseOp(callOp);
+  // Candidate creates and their candidate recursive fields.
+  llvm::SmallDenseSet<mlir::Operation *> candidates;
+  for (LeafInfo &leaf : plan.leaves)
+    if (isCandidateCreate(leaf.value))
+      candidates.insert(leaf.value.getDefiningOp());
+
+  // A recursive call is linearizable iff every use feeds a candidate create
+  // of the same site: the branches consume the shared call exactly once each
+  // along mutually exclusive paths, so after every user is rewritten the
+  // call itself dies.
+  auto isLinearizable = [&](mlir::func::CallOp call,
+                            mlir::Operation *create) {
+    for (mlir::Operation *user : call->getUsers())
+      if (!candidates.contains(user) || !isSameCreateSite(create, user, callee))
+        return false;
+    return true;
+  };
+
+  for (mlir::Operation *create : candidates) {
+    llvm::SmallVector<RecursiveFieldInfo> fields =
+        collectRecursiveFields(createFields(create), callee);
+    llvm::erase_if(fields, [&](RecursiveFieldInfo &info) {
+      return !isLinearizable(info.call, create);
+    });
+    if (!fields.empty())
+      plan.constructorLeaves.try_emplace(create, std::move(fields));
+  }
+  return plan;
 }
 
-static mlir::LogicalResult lowerValueIntoHole(mlir::Operation *terminator,
-                                              mlir::Value value,
-                                              TrmcRewriteContext &ctx) {
-  if (succeeded(lowerStructuredValue(terminator, value, ctx)))
-    return mlir::success();
+struct TrmcRewriteContext {
+  mlir::IRRewriter &rewriter;
+  llvm::StringRef originalName;
+  llvm::StringRef helperName;
+  mlir::Value ctxArg;
+  CctxType ctxType;
+};
 
-  if (auto callOp =
-          llvm::dyn_cast_if_present<mlir::func::CallOp>(value.getDefiningOp());
-      callOp && succeeded(emitDirectRecursiveTailCall(terminator, callOp, ctx)))
-    return mlir::success();
+static void setLeafValue(mlir::Operation *terminator, mlir::Value oldValue,
+                         mlir::Value newValue) {
+  for (mlir::OpOperand &operand : terminator->getOpOperands())
+    if (operand.get() == oldValue)
+      operand.set(newValue);
+}
 
-  if (succeeded(emitRecursiveCreateIntoHole(terminator, value, ctx)))
-    return mlir::success();
+// Class A: rebuild the create with holes at every linearizable recursive
+// field, recurse into the non-designated fields through fresh single-node
+// contexts, and turn the designated (last) field into the context-threaded
+// tail call.
+static void
+rewriteConstructorLeaf(mlir::Operation *terminator, mlir::Value value,
+                       llvm::ArrayRef<RecursiveFieldInfo> planned,
+                       TrmcRewriteContext &ctx) {
+  mlir::Operation *def = value.getDefiningOp();
+  auto compound = llvm::dyn_cast_if_present<ReussirRcCreateCompoundOp>(def);
+  auto variant = llvm::dyn_cast_if_present<ReussirRcCreateVariantOp>(def);
 
-  ctx.rewriter.setInsertionPoint(terminator);
-  ReussirHoleStoreOp::create(ctx.rewriter, terminator->getLoc(), ctx.outHole,
-                                          value);
-  return replaceWithVoidTerminator(ctx.rewriter, terminator);
+  mlir::ValueRange fieldRange =
+      compound ? compound.getFields() : variant.getFields();
+  llvm::SmallVector<RecursiveFieldInfo> recursiveFields(planned.begin(),
+                                                        planned.end());
+
+  mlir::IRRewriter &rewriter = ctx.rewriter;
+  mlir::Location loc = def->getLoc();
+  rewriter.setInsertionPoint(terminator);
+
+  llvm::SmallVector<mlir::Value> fields(fieldRange.begin(), fieldRange.end());
+  llvm::SmallVector<int64_t> holeIndices;
+  holeIndices.reserve(recursiveFields.size());
+  for (RecursiveFieldInfo &field : recursiveFields) {
+    fields[field.index] = mlir::ub::PoisonOp::create(
+        rewriter, loc, fields[field.index].getType());
+    holeIndices.push_back(static_cast<int64_t>(field.index));
+  }
+  auto holeFields = rewriter.getDenseI64ArrayAttr(holeIndices);
+
+  mlir::Value rcPtr;
+  mlir::ValueRange holes;
+  if (compound) {
+    auto newCreate = createCompoundWithHoles(
+        rewriter, loc, compound.getRcPtr().getType(), fields,
+        compound.getToken(), compound.getRegion(), compound.getVtableAttr(),
+        compound.getSkipRc(), compound.getSkipFieldsAttr(), holeFields);
+    rcPtr = newCreate.getRcPtr();
+    holes = newCreate.getHoles();
+  } else {
+    auto newCreate = createVariantWithHoles(
+        rewriter, loc, variant.getRcPtr().getType(), variant.getTagAttr(),
+        fields, variant.getToken(), variant.getRegion(),
+        variant.getVtableAttr(), variant.getSkipRc(),
+        variant.getSkipFieldsAttr(), holeFields);
+    rcPtr = newCreate.getRcPtr();
+    holes = newCreate.getHoles();
+  }
+
+  mlir::Type resultType = ctx.ctxType.getElementType();
+  // Non-designated recursive fields recurse through fresh single-node
+  // contexts rooted at the new constructor; their (identical) results are
+  // discarded.
+  for (size_t i = 0; i + 1 < recursiveFields.size(); ++i) {
+    RecursiveFieldInfo &field = recursiveFields[i];
+    mlir::Value empty =
+        ReussirCctxEmptyOp::create(rewriter, field.call.getLoc(), ctx.ctxType);
+    mlir::Value sub = ReussirCctxExtendOp::create(
+        rewriter, field.call.getLoc(), ctx.ctxType, empty, rcPtr, holes[i]);
+    llvm::SmallVector<mlir::Value> args(field.call.getOperands());
+    args.push_back(sub);
+    mlir::func::CallOp::create(rewriter, field.call.getLoc(), ctx.helperName,
+                               mlir::TypeRange{resultType}, args);
+  }
+
+  // The designated (last) recursive field extends the incoming context and
+  // becomes the tail call whose result is the leaf's value.
+  RecursiveFieldInfo &designated = recursiveFields.back();
+  mlir::Value extended = ReussirCctxExtendOp::create(
+      rewriter, designated.call.getLoc(), ctx.ctxType, ctx.ctxArg, rcPtr,
+      holes[recursiveFields.size() - 1]);
+  llvm::SmallVector<mlir::Value> args(designated.call.getOperands());
+  args.push_back(extended);
+  auto tailCall =
+      mlir::func::CallOp::create(rewriter, designated.call.getLoc(),
+                                 ctx.helperName, mlir::TypeRange{resultType},
+                                 args);
+
+  setLeafValue(terminator, value, tailCall.getResult(0));
+  rewriter.eraseOp(def);
+  for (RecursiveFieldInfo &field : recursiveFields)
+    if (field.call->use_empty())
+      rewriter.eraseOp(field.call);
+}
+
+// Class B: a plain self tail call threads the context through unchanged.
+static bool rewriteTailCallLeaf(mlir::Operation *terminator, mlir::Value value,
+                                TrmcRewriteContext &ctx) {
+  auto call =
+      llvm::dyn_cast_if_present<mlir::func::CallOp>(value.getDefiningOp());
+  if (!call || call.getCallee() != ctx.originalName || !value.hasOneUse() ||
+      call.getNumResults() != 1)
+    return false;
+  mlir::IRRewriter &rewriter = ctx.rewriter;
+  rewriter.setInsertionPoint(terminator);
+  llvm::SmallVector<mlir::Value> args(call.getOperands());
+  args.push_back(ctx.ctxArg);
+  auto newCall = mlir::func::CallOp::create(
+      rewriter, call.getLoc(), ctx.helperName,
+      mlir::TypeRange{ctx.ctxType.getElementType()}, args);
+  setLeafValue(terminator, value, newCall.getResult(0));
+  rewriter.eraseOp(call);
+  return true;
+}
+
+// Class C: any other leaf completes the context with its value.
+static void rewriteApplyLeaf(mlir::Operation *terminator, mlir::Value value,
+                             TrmcRewriteContext &ctx) {
+  mlir::IRRewriter &rewriter = ctx.rewriter;
+  rewriter.setInsertionPoint(terminator);
+  auto apply = ReussirCctxApplyOp::create(rewriter, terminator->getLoc(),
+                                          ctx.ctxType.getElementType(),
+                                          ctx.ctxArg, value);
+  setLeafValue(terminator, value, apply.getResult());
+}
+
+static void rewriteLeaf(mlir::Operation *terminator, mlir::Value value,
+                        const TrmcPlan &plan, TrmcRewriteContext &ctx) {
+  if (mlir::Operation *def = value.getDefiningOp()) {
+    auto planned = plan.constructorLeaves.find(def);
+    if (planned != plan.constructorLeaves.end()) {
+      rewriteConstructorLeaf(terminator, value, planned->second, ctx);
+      return;
+    }
+  }
+  if (rewriteTailCallLeaf(terminator, value, ctx))
+    return;
+  rewriteApplyLeaf(terminator, value, ctx);
 }
 
 static void makeHelperInternal(mlir::func::FuncOp helperFunc,
@@ -673,89 +456,69 @@ static void makeHelperInternal(mlir::func::FuncOp helperFunc,
       mlir::LLVM::LinkageAttr::get(context, mlir::LLVM::Linkage::Internal));
 }
 
-static mlir::FailureOr<mlir::func::FuncOp>
-createTrmcHelper(mlir::func::FuncOp funcOp, mlir::SymbolTable &symbolTable) {
+static mlir::func::FuncOp createTrmcHelper(mlir::func::FuncOp funcOp,
+                                           mlir::SymbolTable &symbolTable,
+                                           CctxType ctxType) {
   auto *context = funcOp.getContext();
   std::string helperName = (funcOp.getName() + kTrmcSuffix).str();
   if (auto existing = symbolTable.lookup<mlir::func::FuncOp>(helperName))
     return existing;
 
   auto helperFunc = llvm::cast<mlir::func::FuncOp>(funcOp->clone());
-  auto destroyDetachedHelper = [&]() {
-    if (helperFunc && !helperFunc->getParentOp())
-      helperFunc->destroy();
-  };
-  auto resultType = llvm::dyn_cast<RcType>(funcOp.getResultTypes().front());
-  if (!resultType) {
-    destroyDetachedHelper();
-    return mlir::failure();
-  }
-
-  auto holeType = HoleType::get(context, resultType);
+  mlir::Type resultType = ctxType.getElementType();
   llvm::SmallVector<mlir::Type> inputs(helperFunc.getArgumentTypes().begin(),
                                        helperFunc.getArgumentTypes().end());
-  inputs.push_back(holeType);
+  inputs.push_back(ctxType);
   helperFunc.setName(helperName);
   helperFunc.setFunctionType(
-      mlir::FunctionType::get(context, inputs, llvm::ArrayRef<mlir::Type>{}));
-  helperFunc.getBody().front().addArgument(holeType, helperFunc.getLoc());
-  helperFunc.setArgAttr(helperFunc.getNumArguments() - 1, "llvm.noalias",
-                        mlir::UnitAttr::get(context));
-  helperFunc.setArgAttr(helperFunc.getNumArguments() - 1, "llvm.nonnull",
-                        mlir::UnitAttr::get(context));
+      mlir::FunctionType::get(context, inputs, {resultType}));
+  helperFunc.getBody().front().addArgument(ctxType, helperFunc.getLoc());
   helperFunc.setArgAttr(helperFunc.getNumArguments() - 1, "llvm.noundef",
                         mlir::UnitAttr::get(context));
   makeHelperInternal(helperFunc, context);
 
   mlir::IRRewriter rewriter(context);
   TrmcRewriteContext ctx{
-      rewriter,
-      helperFunc,
-      helperFunc.getArgument(helperFunc.getNumArguments() - 1),
-      funcOp.getName(),
-      helperFunc.getName(),
-      false};
+      rewriter, funcOp.getName(), helperFunc.getName(),
+      helperFunc.getArgument(helperFunc.getNumArguments() - 1), ctxType};
 
-  llvm::SmallVector<mlir::func::ReturnOp> returns;
-  helperFunc.walk(
-      [&](mlir::func::ReturnOp returnOp) { returns.push_back(returnOp); });
-  for (mlir::func::ReturnOp returnOp : returns) {
-    if (returnOp.getNumOperands() != 1 ||
-        failed(lowerValueIntoHole(returnOp, returnOp.getOperand(0), ctx))) {
-      destroyDetachedHelper();
-      return mlir::failure();
-    }
-  }
+  // Plan on the clone: the plan owns the leaf list and the batch decision of
+  // which shared recursive calls are linearizable, so rewrites can consume
+  // one shared call from each of its mutually exclusive same-site creates.
+  TrmcPlan plan = buildPlan(helperFunc, funcOp.getName());
+  for (LeafInfo &leaf : plan.leaves)
+    rewriteLeaf(leaf.terminator, leaf.value, plan, ctx);
 
-  eraseUnusedCallsTo(helperFunc, funcOp.getName());
-
-  if (!ctx.rewroteRecursiveSite) {
-    destroyDetachedHelper();
-    return mlir::failure();
-  }
   symbolTable.insert(helperFunc);
   return helperFunc;
 }
 
-static bool rewriteRecursiveCreateSitesInFunction(mlir::func::FuncOp funcOp,
-                                                  llvm::StringRef originalName,
-                                                  llvm::StringRef helperName) {
-  mlir::IRRewriter rewriter(funcOp.getContext());
-  llvm::SmallVector<mlir::Operation *> creates;
-  funcOp.walk([&](mlir::Operation *op) {
-    if (llvm::isa<ReussirRcCreateCompoundOp, ReussirRcCreateVariantOp>(op))
-      creates.push_back(op);
-  });
+// The original function becomes a thin wrapper: every caller enters the
+// context-threaded helper through the empty context.
+static void rewriteOriginalToWrapper(mlir::func::FuncOp funcOp,
+                                     llvm::StringRef helperName,
+                                     CctxType ctxType) {
+  mlir::Region &body = funcOp.getBody();
+  for (mlir::Block &block : body)
+    block.dropAllReferences();
 
-  bool rewroteAny = false;
-  for (mlir::Operation *op : creates) {
-    if (!op->getBlock())
-      continue;
-    if (succeeded(
-            rewriteRecursiveCreateSite(op, originalName, helperName, rewriter)))
-      rewroteAny = true;
-  }
-  return rewroteAny;
+  mlir::OpBuilder builder(funcOp.getContext());
+  llvm::SmallVector<mlir::Location> argLocs(funcOp.getNumArguments(),
+                                            funcOp.getLoc());
+  mlir::Block *entry = builder.createBlock(&body, body.begin(),
+                                           funcOp.getArgumentTypes(), argLocs);
+  while (&body.back() != entry)
+    body.back().erase();
+
+  builder.setInsertionPointToStart(entry);
+  mlir::Value empty =
+      ReussirCctxEmptyOp::create(builder, funcOp.getLoc(), ctxType);
+  llvm::SmallVector<mlir::Value> args(entry->getArguments());
+  args.push_back(empty);
+  auto call = mlir::func::CallOp::create(
+      builder, funcOp.getLoc(), helperName,
+      mlir::TypeRange{ctxType.getElementType()}, args);
+  mlir::func::ReturnOp::create(builder, funcOp.getLoc(), call.getResults());
 }
 
 struct TRMCRecursionAnalysisPass
@@ -776,19 +539,18 @@ struct TRMCRecursionAnalysisPass
         return;
       if (!hasDirectSelfRecursiveCall(funcOp))
         return;
+      if (buildPlan(funcOp, funcOp.getName()).constructorLeaves.empty())
+        return;
       candidates.push_back(funcOp);
     });
 
     for (mlir::func::FuncOp funcOp : candidates) {
-      auto helperOr = createTrmcHelper(funcOp, symbolTable);
-      if (failed(helperOr))
-        continue;
-      if (!rewriteRecursiveCreateSitesInFunction(funcOp, funcOp.getName(),
-                                                 helperOr->getName())) {
-        helperOr->erase();
-        continue;
-      }
-      eraseUnusedCallsTo(funcOp, funcOp.getName());
+      auto ctxType = CctxType::get(
+          funcOp.getContext(),
+          llvm::cast<RcType>(funcOp.getResultTypes().front()));
+      mlir::func::FuncOp helper =
+          createTrmcHelper(funcOp, symbolTable, ctxType);
+      rewriteOriginalToWrapper(funcOp, helper.getName(), ctxType);
     }
   }
 };
