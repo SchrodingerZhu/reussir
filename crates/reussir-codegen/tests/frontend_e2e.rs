@@ -226,7 +226,14 @@ fn lowers_variant_debug_info_through_the_pipeline() {
             .expect("variant lowering with debug info succeeds")
     });
 
-    run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
+    // Pin the optimization prologue off: the DI shapes under test hang off
+    // `describe`/`walk`'s parameters, and the inliner would dissolve those
+    // trivial single-caller functions and with them the variant composites.
+    let options = LoweringOptions {
+        opt: reussir_backend::pipeline::OptLevel::None,
+        ..LoweringOptions::default()
+    };
+    run_lowering_pipeline(&context, &mut module, &options)
         .expect("pipeline lowers variant debug info to LLVM");
 
     // The recursive `List` must lower to a DWARF type *cycle*: a `rec-self`
