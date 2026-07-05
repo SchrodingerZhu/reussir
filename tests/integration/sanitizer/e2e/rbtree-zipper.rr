@@ -1,0 +1,11 @@
+// REQUIRES: asan
+// ASan+LSan gate over frontend/rbtree-zipper.rr. Its FFI returns only scalars, so
+// the compiled code must free every allocation itself: any leak (or ASan
+// error) reported here is a real ownership/lowering/backend bug.
+// Heavy test: only exercised at -Oaggressive (deep recursion overflows the
+// ASan-instrumented stack at lower optimization levels).
+
+// RUN: %rrc %S/../../frontend/rbtree-zipper.rr -o %t.aggr.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %asan_flags -c -x ir %t.aggr.ll -o %t.aggr.o
+// RUN: %cc %asan_flags %t.aggr.o %S/../../frontend/rbtree2.c %reussir_rt_asan -o %t.aggr.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.aggr.exe

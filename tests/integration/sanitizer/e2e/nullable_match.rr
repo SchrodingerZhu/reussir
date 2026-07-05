@@ -1,0 +1,19 @@
+// REQUIRES: asan
+// ASan+LSan gate over frontend/nullable_match.rr. Its FFI returns only scalars, so
+// the compiled code must free every allocation itself: any leak (or ASan
+// error) reported here is a real ownership/lowering/backend bug.
+
+// RUN: %rrc %S/../../frontend/nullable_match.rr -o %t.none.ll -t llvm-ir --relocation-mode pic -Onone
+// RUN: %cc %asan_flags -c -x ir %t.none.ll -o %t.none.o
+// RUN: %cc %asan_flags %t.none.o %S/../../frontend/nullable_match.c %reussir_rt_asan -o %t.none.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.none.exe
+
+// RUN: %rrc %S/../../frontend/nullable_match.rr -o %t.default.ll -t llvm-ir --relocation-mode pic -Odefault
+// RUN: %cc %asan_flags -c -x ir %t.default.ll -o %t.default.o
+// RUN: %cc %asan_flags %t.default.o %S/../../frontend/nullable_match.c %reussir_rt_asan -o %t.default.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.default.exe
+
+// RUN: %rrc %S/../../frontend/nullable_match.rr -o %t.aggr.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %asan_flags -c -x ir %t.aggr.ll -o %t.aggr.o
+// RUN: %cc %asan_flags %t.aggr.o %S/../../frontend/nullable_match.c %reussir_rt_asan -o %t.aggr.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.aggr.exe
