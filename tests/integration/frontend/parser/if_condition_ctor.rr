@@ -1,4 +1,7 @@
-// RUN: %reussir-parser %s | %FileCheck %s
+// The Rust surface parser accepts this construct. Structural coverage
+// lives in the reussir-syntax unit tests; this lit test guards
+// end-to-end parse acceptance (`--check` = parse, no elaboration).
+// RUN: %reussir-syntax --check %s
 
 struct Foo { x: bool }
 
@@ -9,24 +12,3 @@ fn test(foo: bool) -> i32 {
 fn test_parenthesized() -> i32 {
     if (Foo { x: true }.x) { 1 } else { 2 }
 }
-
-// CHECK: fn test(foo: bool) -> i32 {
-// CHECK:     if foo then
-// CHECK:         {
-// CHECK:             1
-// CHECK:         }
-// CHECK:     else
-// CHECK:         {
-// CHECK:             2
-// CHECK:         }
-// CHECK: }
-// CHECK: fn test_parenthesized() -> i32 {
-// CHECK:     if Foo{x: true}.x then
-// CHECK:         {
-// CHECK:             1
-// CHECK:         }
-// CHECK:     else
-// CHECK:         {
-// CHECK:             2
-// CHECK:         }
-// CHECK: }
