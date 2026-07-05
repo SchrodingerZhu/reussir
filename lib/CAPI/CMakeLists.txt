@@ -42,6 +42,7 @@ set(REUSSIR_BACKEND_ARCHIVES
   # transformations
   MLIRReussirRcCreateSink
   MLIRReussirRcCreateFusion
+  MLIRReussirRcDispatchFusion
   MLIRReussirInferVariantTag
   MLIRReussirIncDecCancellation
   MLIRReussirTokenReuse

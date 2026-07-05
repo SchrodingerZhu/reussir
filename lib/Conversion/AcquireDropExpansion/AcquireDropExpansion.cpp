@@ -105,7 +105,9 @@ private:
     }
     mlir::Value loaded =
         ReussirRefLoadOp::create(rewriter, op.getLoc(), rcType, op.getRef());
-    ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType, loaded);
+    ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType, loaded,
+                           /*destructureTag=*/mlir::IntegerAttr{},
+                           /*boundMembers=*/mlir::DenseI64ArrayAttr{});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -206,7 +208,9 @@ private:
         retNullableTy = NullableType::get(op.getContext(), tokenType);
       }
       ReussirRcDecOp::create(rewriter, op.getLoc(), retNullableTy,
-                                      nonNullBlock->getArgument(0));
+                                      nonNullBlock->getArgument(0),
+                             /*destructureTag=*/mlir::IntegerAttr{},
+                             /*boundMembers=*/mlir::DenseI64ArrayAttr{});
       ReussirScfYieldOp::create(rewriter, op.getLoc(), nullptr);
     }
     rewriter.eraseOp(op);

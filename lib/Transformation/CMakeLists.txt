@@ -1,5 +1,6 @@
 add_subdirectory(RcCreateSink)
 add_subdirectory(RcCreateFusion)
+add_subdirectory(RcDispatchFusion)
 add_subdirectory(InferVariantTag)
 add_subdirectory(IncDecCancellation)
 add_subdirectory(TokenReuse)
@@ -11,6 +12,7 @@ add_subdirectory(TRMCRecursionAnalysis)
 set(REUSSIR_TRANSFORMATION_AGGREGATE_LIBS
   MLIRReussirRcCreateSink
   MLIRReussirRcCreateFusion
+  MLIRReussirRcDispatchFusion
   MLIRReussirInferVariantTag
   MLIRReussirIncDecCancellation
   MLIRReussirTokenReuse

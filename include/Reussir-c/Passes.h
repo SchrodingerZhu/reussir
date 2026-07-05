@@ -47,6 +47,7 @@ MlirPass reussirCreateRcCreateSinkPass(void);
 /// `tbi` (top-byte tag, requires hardware top-byte-ignore, aarch64), true =
 /// `immortal` (plain dummy address with an immortal refcount, any target).
 MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
+MlirPass reussirCreateRcDispatchFusionPass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);
 MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized);

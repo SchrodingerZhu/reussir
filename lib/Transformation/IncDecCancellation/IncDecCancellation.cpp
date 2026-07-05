@@ -11,6 +11,7 @@
 #include "Reussir/Conversion/RcDecrementExpansion.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
+#include "Reussir/IR/ReussirTypes.h"
 
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/Dominance.h>
@@ -68,6 +69,132 @@ void eraseOrReplaceDecOp(ReussirRcDecOp decOp) {
   }
 }
 
+// Whether `op` is a structured branch whose regions execute at most once
+// with exactly one region taken, and whose results are all trivial (their
+// validity cannot depend on the released box). Loops are excluded, as is an
+// `scf.if` without an else (its implicit empty path never releases).
+bool isSingleShotTrivialBranch(mlir::Operation *op) {
+  if (llvm::isa<mlir::LoopLikeOpInterface>(op))
+    return false;
+  if (auto ifOp = llvm::dyn_cast<mlir::scf::IfOp>(op)) {
+    if (ifOp.getElseRegion().empty())
+      return false;
+  } else if (!llvm::isa<mlir::scf::IndexSwitchOp, ReussirRecordDispatchOp,
+                        ReussirNullableDispatchOp>(op)) {
+    return false;
+  }
+  return llvm::all_of(op->getResultTypes(), [](mlir::Type type) {
+    return isTriviallyCopyable(type);
+  });
+}
+
+// Collects the release of `rcPtr` on *every* path through `region`: either a
+// direct release at the region's top level, or a nested single-shot branch
+// all of whose paths release. Everything before the release must leave the
+// box's count alone (borrows are fine; anything else touching the pointer,
+// or an opaque op, disqualifies the path).
+bool armReleasesOnAllPaths(mlir::Region &region,
+                           mlir::TypedValue<RcType> rcPtr,
+                           mlir::AliasAnalysis &aliasAnalysis,
+                           llvm::SmallVectorImpl<ReussirRcDecOp> &releases) {
+  if (!region.hasOneBlock())
+    return false;
+  for (mlir::Operation &op : region.front()) {
+    if (auto dec = llvm::dyn_cast<ReussirRcDecOp>(op)) {
+      if (aliasAnalysis.alias(dec.getRcPtr(), rcPtr) ==
+          mlir::AliasResult::MustAlias) {
+        releases.push_back(dec);
+        return true;
+      }
+      if (aliasAnalysis.alias(dec.getRcPtr(), rcPtr) !=
+          mlir::AliasResult::NoAlias)
+        return false;
+      continue;
+    }
+    if (isSingleShotTrivialBranch(&op)) {
+      llvm::SmallVector<ReussirRcDecOp> nested;
+      bool all = op.getNumRegions() > 0;
+      for (mlir::Region &inner : op.getRegions())
+        if (!armReleasesOnAllPaths(inner, rcPtr, aliasAnalysis, nested)) {
+          all = false;
+          break;
+        }
+      if (all) {
+        releases.append(nested.begin(), nested.end());
+        return true;
+      }
+      return false;
+    }
+    if (llvm::is_contained(op.getOperands(), mlir::Value(rcPtr)) &&
+        !llvm::isa<ReussirRcBorrowOp>(op))
+      return false;
+    if (op.getNumRegions() > 0 || llvm::isa<mlir::CallOpInterface>(op))
+      return false;
+  }
+  return false;
+}
+
+// `inc %v` followed by a dispatch over `%v` whose *every* arm releases the
+// box is borrow semantics in disguise: the increment and the arm releases
+// cancel. A destructuring release (see `reussir-rc-dispatch-fusion`)
+// additionally fused away the arm's bound-member retains — on the now
+// certainly-shared path the arm still needs its own references, so they are
+// rematerialized at the release's position. This is what reduces an inlined
+// read-only predicate (rbtree's `is_red`) to pure tag loads.
+bool cancelIntoDispatch(ReussirRcIncOp incOp,
+                        ReussirRecordDispatchOp dispatch,
+                        mlir::AliasAnalysis &aliasAnalysis) {
+  auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
+      dispatch.getVariant().getDefiningOp());
+  if (!borrow || aliasAnalysis.alias(borrow.getRcPtr(), incOp.getRcPtr()) !=
+                     mlir::AliasResult::MustAlias)
+    return false;
+
+  llvm::SmallVector<ReussirRcDecOp> releases;
+  for (mlir::Region &region : dispatch.getRegions())
+    if (!armReleasesOnAllPaths(region, incOp.getRcPtr(), aliasAnalysis,
+                               releases))
+      return false;
+
+  for (ReussirRcDecOp dec : releases) {
+    if (dec.isDestructuring()) {
+      RcType rcType = dec.getRcPtr().getType();
+      auto recordType = llvm::cast<RecordType>(rcType.getElementType());
+      int64_t tag = dec.getDestructureTagAttr().getInt();
+      auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
+      mlir::OpBuilder builder(dec);
+      if (!dec.getBoundMembersAttr().empty()) {
+        auto refType = builder.getType<RefType>(recordType,
+                                                Capability::unspecified,
+                                                rcType.getAtomicKind());
+        auto payloadRefType = builder.getType<RefType>(
+            payload, Capability::unspecified, rcType.getAtomicKind());
+        mlir::Value ref = ReussirRcBorrowOp::create(builder, dec.getLoc(),
+                                                    refType, dec.getRcPtr());
+        mlir::Value coerced = ReussirRecordCoerceOp::create(
+            builder, dec.getLoc(), payloadRefType, builder.getIndexAttr(tag),
+            ref);
+        for (int64_t idx : dec.getBoundMembersAttr().asArrayRef()) {
+          auto projectedTy = getProjectedType(
+              payload.getMembers()[idx], payload.getMemberIsField()[idx],
+              Capability::unspecified);
+          auto projectedRefTy = builder.getType<RefType>(
+              projectedTy, Capability::unspecified, rcType.getAtomicKind());
+          mlir::Value slot = ReussirRefProjectOp::create(
+              builder, dec.getLoc(), projectedRefTy, coerced,
+              builder.getIndexAttr(idx));
+          mlir::Value member = ReussirRefLoadOp::create(
+              builder, dec.getLoc(), projectedTy, slot);
+          ReussirRcIncOp::create(builder, dec.getLoc(), member);
+        }
+      }
+    }
+    eraseOrReplaceDecOp(dec);
+  }
+  incOp.erase();
+  return true;
+}
+
 } // namespace
 
 llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
@@ -113,8 +240,13 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
       // *not* `CallableOpInterface`, which is the call *target* (`func.func`)
       // and never appears mid-block. A control-flow op with regions is likewise
       // opaque.
-      if (llvm::isa<mlir::CallOpInterface>(next) ||
-          llvm::isa<mlir::RegionBranchOpInterface>(next))
+      if (llvm::isa<mlir::CallOpInterface>(next))
+        break;
+      if (auto dispatch = llvm::dyn_cast<ReussirRecordDispatchOp>(next)) {
+        cancelIntoDispatch(op, dispatch, aliasAnalysis);
+        break;
+      }
+      if (llvm::isa<mlir::RegionBranchOpInterface>(next))
         break;
       // `reussir.ref.drop` releases every rc reachable *through* the referenced
       // value (the first cancellation run precedes acquire/drop expansion, so

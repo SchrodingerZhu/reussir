@@ -555,8 +555,11 @@ struct ReussirClosureUniqifyOpRewritePattern
     rewriter.setInsertionPointToStart(&scfIfOp.getElseRegion().front());
     auto cloned = reussir::ReussirClosureCloneOp::create(rewriter, 
         op.getLoc(), op.getClosure().getType(), op.getClosure());
-    reussir::ReussirRcDecOp::create(rewriter, op.getLoc(), mlir::Type{},
-                                             op.getClosure());
+    reussir::ReussirRcDecOp::create(rewriter, op.getLoc(),
+                                    /*nullableToken=*/mlir::Type{},
+                                    op.getClosure(),
+                                    /*destructureTag=*/mlir::IntegerAttr{},
+                                    /*boundMembers=*/mlir::DenseI64ArrayAttr{});
     mlir::scf::YieldOp::create(rewriter, op.getLoc(), cloned.getResult());
 
     rewriter.replaceOp(op, scfIfOp);

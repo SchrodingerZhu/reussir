@@ -407,10 +407,25 @@ def ReussirRcDecOp : ReussirRcOp<"dec", [
   }];
 
   let arguments = (
-    ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr
+    ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr,
+    OptionalAttr<IndexAttr>:$destructureTag,
+    OptionalAttr<DenseI64ArrayAttr>:$boundMembers
   );
   let results =
       (outs Res<Optional<ReussirNullableTokenType>, "Nullable token">:$nullableToken);
+
+  let extraClassDeclaration = [{
+    /// Whether this decrement *destructures* its box: a pattern match on the
+    /// variant arm `destructureTag` consumed the box, taking ownership of the
+    /// `boundMembers` (their retain/release pairs were fused away). It
+    /// expands shallowly instead of through the transitive drop glue: on the
+    /// unique path the bound members transfer with the arm (only unbound rc
+    /// members are released) and the box becomes a token; on the shared path
+    /// the bound members are retained and the count drops. Introduced by
+    /// `reussir-rc-dispatch-fusion`; cancelled against a preceding increment
+    /// (bound retains rematerialize) by `reussir-inc-dec-cancellation`.
+    bool isDestructuring() { return getDestructureTagAttr() != nullptr; }
+  }];
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` 

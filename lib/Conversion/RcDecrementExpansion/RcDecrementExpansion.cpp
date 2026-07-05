@@ -76,11 +76,55 @@ struct RcDecrementExpansionPattern
         type.getElementType(), Capability::unspecified, type.getAtomicKind());
     TokenType tokenType = llvm::cast<TokenType>(
         llvm::cast<NullableType>(op.getNullableToken().getType()).getPtrTy());
+    // A *destructuring* decrement (see `reussir-rc-dispatch-fusion`) knows
+    // the pattern arm that consumed the box: bound members transfer with the
+    // arm, so the unique path releases only the *unbound* content and the
+    // shared path retains the bound members in place of the fused-away
+    // per-binding retains. Everything else expands through the transitive
+    // drop glue as before.
     {
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      mlir::Value ref = ReussirRcBorrowOp::create(rewriter, 
-          op.getLoc(), borrowedRefType, op.getRcPtr());
-      ReussirRefDropOp::create(rewriter, op.getLoc(), ref);
+      if (op.isDestructuring()) {
+        int64_t tag = op.getDestructureTagAttr().getInt();
+        auto recordType = llvm::cast<RecordType>(type.getElementType());
+        auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
+        llvm::SmallDenseSet<int64_t> bound;
+        for (int64_t index : op.getBoundMembersAttr().asArrayRef())
+          bound.insert(index);
+        auto payloadRefType = rewriter.getType<RefType>(
+            payload, Capability::unspecified, type.getAtomicKind());
+        mlir::Value ref = ReussirRcBorrowOp::create(
+            rewriter, op.getLoc(), borrowedRefType, op.getRcPtr());
+        mlir::Value coerced = ReussirRecordCoerceOp::create(
+            rewriter, op.getLoc(), payloadRefType, rewriter.getIndexAttr(tag),
+            ref);
+        for (auto [idx, memberTy, memberIsField] : llvm::enumerate(
+                 payload.getMembers(), payload.getMemberIsField())) {
+          if (bound.contains(static_cast<int64_t>(idx)) || memberIsField)
+            continue;
+          auto projectedTy = getProjectedType(memberTy, memberIsField,
+                                              Capability::unspecified);
+          if (isTriviallyCopyable(projectedTy))
+            continue;
+          // Unbound members release through `ref.drop` — the same route the
+          // transitive glue took. The acquire/drop expansion later turns an
+          // rc slot's drop into a *plain* member decrement, which keeps it
+          // visible to the post-expansion cancellation window (`inc %m`
+          // against the unique-path release moves the retain to the shared
+          // branch); materializing the decrement here would see it expanded
+          // immediately and hide it from that optimization.
+          auto projectedRefTy = rewriter.getType<RefType>(
+              projectedTy, Capability::unspecified, type.getAtomicKind());
+          mlir::Value slot = ReussirRefProjectOp::create(
+              rewriter, op.getLoc(), projectedRefTy, coerced,
+              rewriter.getIndexAttr(idx));
+          ReussirRefDropOp::create(rewriter, op.getLoc(), slot);
+        }
+      } else {
+        mlir::Value ref = ReussirRcBorrowOp::create(rewriter, 
+            op.getLoc(), borrowedRefType, op.getRcPtr());
+        ReussirRefDropOp::create(rewriter, op.getLoc(), ref);
+      }
       mlir::Value token = ReussirRcReinterpretOp::create(rewriter, 
           op.getLoc(), tokenType, op.getRcPtr());
       mlir::Value nonnull = ReussirNullableCreateOp::create(rewriter, 
@@ -94,6 +138,33 @@ struct RcDecrementExpansionPattern
           mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
       ReussirRcSetOp::create(rewriter, op.getLoc(), op.getRcPtr(),
                                       decremented.getResult());
+      if (op.isDestructuring()) {
+        // The shared path keeps the box alive, so the arm's bound members
+        // need their own references — the retains the fusion erased.
+        int64_t tag = op.getDestructureTagAttr().getInt();
+        auto recordType = llvm::cast<RecordType>(type.getElementType());
+        auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
+        auto payloadRefType = rewriter.getType<RefType>(
+            payload, Capability::unspecified, type.getAtomicKind());
+        mlir::Value ref = ReussirRcBorrowOp::create(
+            rewriter, op.getLoc(), borrowedRefType, op.getRcPtr());
+        mlir::Value coerced = ReussirRecordCoerceOp::create(
+            rewriter, op.getLoc(), payloadRefType, rewriter.getIndexAttr(tag),
+            ref);
+        for (int64_t idx : op.getBoundMembersAttr().asArrayRef()) {
+          auto projectedTy = getProjectedType(
+              payload.getMembers()[idx], payload.getMemberIsField()[idx],
+              Capability::unspecified);
+          auto projectedRefTy = rewriter.getType<RefType>(
+              projectedTy, Capability::unspecified, type.getAtomicKind());
+          mlir::Value slot = ReussirRefProjectOp::create(
+              rewriter, op.getLoc(), projectedRefTy, coerced,
+              rewriter.getIndexAttr(idx));
+          mlir::Value member = ReussirRefLoadOp::create(
+              rewriter, op.getLoc(), projectedTy, slot);
+          ReussirRcIncOp::create(rewriter, op.getLoc(), member);
+        }
+      }
       auto null = ReussirNullableCreateOp::create(rewriter, 
           op.getLoc(), op.getNullableToken().getType(), nullptr);
       mlir::scf::YieldOp::create(rewriter, op.getLoc(), null->getResults());
