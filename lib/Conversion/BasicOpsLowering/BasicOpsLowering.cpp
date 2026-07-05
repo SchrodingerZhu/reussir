@@ -59,6 +59,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/SpecialPointerTag.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/BinaryFormat/Dwarf.h"
@@ -75,6 +76,152 @@ namespace reussir {
 //===----------------------------------------------------------------------===//
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// Special pointer tag support
+//===----------------------------------------------------------------------===//
+// When `reussir-special-pointer-tag` ran (module carries kSpecialPtrTagAttr),
+// a value of a taggable shared rc<variant> type may be an unboxed immediate
+// pointing at a per-tag *dummy box* — a well-formed shared box header the
+// hot accesses land in, so refcount loads/increments, uniqueness reads, and
+// even the variant-tag read through a tagged value lower exactly as without
+// the scheme: plain loads, zero guards. The attribute's value selects one of
+// two encodings, differing only in how the cold guards recognize immediates:
+//   * `tbi` (aarch64): top byte = tag + 1, low bits = the dummy address;
+//     the hardware ignores the top byte on data accesses. The dummy count is
+//     initialized to 2 and guards test the pointer's top byte. Foreign code
+//     may decode `tag = top - 1` without dereferencing.
+//   * `immortal` (any target, including 32-bit ones like wasm32): the
+//     immediate *is* the dummy address — no pointer bit tricks. For a w-bit
+//     refcount word the dummy count is initialized to 3 * 2^(w-2) and guards
+//     test refcount magnitude: a real box can never reach the 2^(w-1)
+//     threshold (each reference occupies >= 4 bytes of address space, so
+//     fewer than 2^(w-2) can exist). Foreign code sees a layout-compatible
+//     box.
+// Two invariants keep both encodings sound:
+//   * the dummy's refcount is pinned above the shared/unique decision point,
+//     so an immediate's decrement always takes the *shared* branch (no field
+//     drop, no token, no free of the dummy) and `rc.is_unique` answers
+//     false. In the immortal encoding on targets narrower than 64 bits,
+//     `rc.inc`'s store is steered away from a recognized dummy as well —
+//     2^(w-2) unbalanced increments would otherwise be reachable and wrap
+//     the count. (With w = 64 that is > 4 * 10^18 increments: unreachable,
+//     so the increment stays guard-free on 64-bit targets.)
+//   * `rc.set` — the one decrementing store — steers a recognized-immediate
+//     access to a separate scratch word (an address select off the critical
+//     path), so the dummy count can never decay to 1.
+// The only other guard is `rc.assume_unique`, which must neutralize its
+// assumption for immediates (an `assume(false)` would be unsound).
+
+enum class TagEncoding { None, TBI, Immortal };
+
+// The immortal encoding's dummy refcount initializer and recognition
+// threshold for a `width`-bit refcount word.
+uint64_t immortalRefCount(unsigned width) {
+  return (uint64_t(3) << (width - 2)) & llvm::maskTrailingOnes<uint64_t>(width);
+}
+uint64_t immortalThreshold(unsigned width) {
+  return uint64_t(1) << (width - 1);
+}
+
+TagEncoding specialPtrTagEncoding(mlir::Operation *op) {
+  auto module = op->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return TagEncoding::None;
+  auto attr = module->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr);
+  if (!attr)
+    return TagEncoding::None;
+  return attr.getValue() == kSpecialPtrTagImmortal ? TagEncoding::Immortal
+                                                   : TagEncoding::TBI;
+}
+
+// The per-tag dummy box a tagged immediate points at: `{refcount, tag}`,
+// sized to the target's index width. Loads and increments through a tagged
+// value land here and observe a well-formed shared box header carrying the
+// immediate's own tag; the refcount stays pinned because `rc.set` never
+// writes it (see above).
+mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
+                                 uint64_t tag, TagEncoding encoding,
+                                 mlir::IntegerType indexTy,
+                                 mlir::OpBuilder &builder) {
+  // Content-addressed v0 name, like every other lowering-generated global
+  // (namespace + the decimal tag as payload).
+  std::string name =
+      mangledBlake3Symbol("REUSSIR_TAG_DUMMY", llvm::Twine(tag).str());
+  auto global = module.lookupSymbol<mlir::LLVM::GlobalOp>(name);
+  if (!global) {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto arrTy = mlir::LLVM::LLVMArrayType::get(indexTy, 2);
+    uint64_t refCount = encoding == TagEncoding::Immortal
+                            ? immortalRefCount(indexTy.getWidth())
+                            : 2;
+    auto init = mlir::DenseElementsAttr::get(
+        mlir::RankedTensorType::get({2}, indexTy),
+        llvm::ArrayRef<llvm::APInt>{llvm::APInt(indexTy.getWidth(), refCount),
+                                    llvm::APInt(indexTy.getWidth(), tag)});
+    global = mlir::LLVM::GlobalOp::create(
+        builder, loc, arrTy,
+        /*isConstant=*/false, mlir::LLVM::Linkage::Internal, name, init);
+  }
+  return global;
+}
+
+// `count >= immortalThreshold` — the value under the immortal encoding is a
+// dummy box (a real refcount can never reach the threshold).
+mlir::Value isImmortalCount(mlir::Value count, mlir::Location loc,
+                            mlir::OpBuilder &builder) {
+  auto intTy = llvm::cast<mlir::IntegerType>(count.getType());
+  auto threshold = mlir::LLVM::ConstantOp::create(
+      builder, loc, intTy,
+      builder.getIntegerAttr(intTy, immortalThreshold(intTy.getWidth())));
+  return mlir::LLVM::ICmpOp::create(
+      builder, loc, mlir::LLVM::ICmpPredicate::uge, count, threshold);
+}
+
+// The per-module scratch word guarded accesses are steered to.
+mlir::Value tagScratchAddr(mlir::ModuleOp module, mlir::Location loc,
+                           mlir::OpBuilder &builder) {
+  std::string kName = mangledBlake3Symbol("REUSSIR_TAG_SCRATCH", "");
+  auto global = module.lookupSymbol<mlir::LLVM::GlobalOp>(kName);
+  if (!global) {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto i64Ty = builder.getI64Type();
+    global = mlir::LLVM::GlobalOp::create(
+        builder, loc, i64Ty, /*isConstant=*/false,
+        mlir::LLVM::Linkage::Internal, kName, builder.getI64IntegerAttr(0));
+  }
+  return mlir::LLVM::AddressOfOp::create(builder, loc, global);
+}
+
+// `ptr`'s top byte as an i64 (zero for any real heap pointer).
+mlir::Value topByteOf(mlir::Value ptr, mlir::Location loc,
+                      mlir::OpBuilder &builder) {
+  auto i64Ty = builder.getI64Type();
+  auto raw = mlir::LLVM::PtrToIntOp::create(builder, loc, i64Ty, ptr);
+  auto c56 = mlir::LLVM::ConstantOp::create(builder, loc, i64Ty,
+                                            builder.getI64IntegerAttr(56));
+  return mlir::LLVM::LShrOp::create(builder, loc, raw, c56);
+}
+
+// `top != 0` — the value is a tagged immediate.
+mlir::Value isTaggedImmediate(mlir::Value topByte, mlir::Location loc,
+                              mlir::OpBuilder &builder) {
+  auto zero = mlir::LLVM::ConstantOp::create(builder, loc, builder.getI64Type(),
+                                             builder.getI64IntegerAttr(0));
+  return mlir::LLVM::ICmpOp::create(builder, loc, mlir::LLVM::ICmpPredicate::ne,
+                                    topByte, zero);
+}
+
+// Steer `addr` to the scratch word when `isTagged` holds.
+mlir::Value guardedAddr(mlir::Operation *op, mlir::Value isTagged,
+                        mlir::Value addr, mlir::Location loc,
+                        mlir::OpBuilder &builder) {
+  auto scratch =
+      tagScratchAddr(op->getParentOfType<mlir::ModuleOp>(), loc, builder);
+  return mlir::LLVM::SelectOp::create(builder, loc, isTagged, scratch, addr);
+}
 
 void ensureRuntimeFunctions(mlir::ModuleOp module,
                             const mlir::LLVMTypeConverter &converter);
@@ -296,8 +443,13 @@ struct ReussirRcFetchConversionPattern
     auto indexTy =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
             ->getIndexType();
-    mlir::Value loaded = mlir::LLVM::LoadOp::create(
-        rewriter, op.getLoc(), indexTy, adaptor.getRcPtr());
+    mlir::Location loc = op.getLoc();
+    // No guard for tagged immediates: TBI masks the top byte, so the load
+    // hits the dummy box's refcount, which is pinned >= 2 — exactly what
+    // routes the expanded decrement to its shared branch and answers
+    // `is_unique` with false (see the special-pointer-tag notes above).
+    mlir::Value loaded =
+        mlir::LLVM::LoadOp::create(rewriter, loc, indexTy, adaptor.getRcPtr());
     rewriter.replaceOp(op, loaded);
     return mlir::success();
   }
@@ -310,8 +462,30 @@ struct ReussirRcSetConversionPattern
   mlir::LogicalResult
   matchAndRewrite(ReussirRcSetOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Value addr = adaptor.getRcPtr();
+    // `rc.set` is the one store that can lower a refcount, so it must not
+    // reach the dummy box (its count would eventually decay to 1 and send an
+    // immediate down the unique branch). Steer a recognized-immediate access
+    // to the scratch word instead; the address select is off any result's
+    // critical path. TBI recognizes immediates by the pointer's top byte,
+    // the immortal encoding by the magnitude of the count being stored (the
+    // dummy's decremented count still clears the threshold: it starts at
+    // 3 * 2^(w-2) and never actually decreases, since this very steering
+    // keeps every decrementing store away from it).
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    if (encoding != TagEncoding::None &&
+        op.getRcPtr().getType().mayCarrySpecialPointerTag()) {
+      mlir::Value tagged;
+      if (encoding == TagEncoding::TBI) {
+        mlir::Value top = topByteOf(addr, op.getLoc(), rewriter);
+        tagged = isTaggedImmediate(top, op.getLoc(), rewriter);
+      } else {
+        tagged = isImmortalCount(adaptor.getRefCount(), op.getLoc(), rewriter);
+      }
+      addr = guardedAddr(op, tagged, addr, op.getLoc(), rewriter);
+    }
     rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, adaptor.getRefCount(),
-                                                     adaptor.getRcPtr());
+                                                     addr);
     return mlir::success();
   }
 };
@@ -889,8 +1063,11 @@ struct ReussirRecordTagConversionPattern
         rewriter, loc, tagPtrType, elementType, refPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
 
-    // Load the tag value
-    auto tagValue =
+    // Load the tag value. Under the special-pointer-tag scheme a tagged
+    // immediate scrutinee needs no decode: the load lands in its per-tag
+    // dummy box (TBI masks the top byte) and reads the real tag — so the
+    // match hot path is identical with and without the scheme.
+    mlir::Value tagValue =
         rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, indexType, tagPtr);
 
     // Assume that the tag is always in bounds
@@ -981,9 +1158,21 @@ struct ReussirRcIncConversionPattern
           rewriter, op.getLoc(), llvmPtrType, convertedBoxType,
           adaptor.getRcPtr(), llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
     }
+    // Usually no guard for tagged immediates: the increment lands on the
+    // dummy box's refcount — a benign write that only ever grows it (rc.set,
+    // the sole decrementing store, is steered away). The exception is the
+    // immortal encoding on refcount words narrower than 64 bits, where the
+    // dummy could actually be grown past wrap-around within a program's
+    // lifetime: there the increment's store is steered to the scratch word
+    // instead (the load stays plain, so nothing on the read path changes).
     auto indexType =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
             ->getIndexType();
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    bool steerNarrowImmortal =
+        encoding == TagEncoding::Immortal &&
+        llvm::cast<mlir::IntegerType>(indexType).getWidth() < 64 &&
+        rcPtrTy.mayCarrySpecialPointerTag();
     auto one = mlir::arith::ConstantOp::create(
         rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, 1));
     mlir::Value oldRefCnt;
@@ -992,13 +1181,21 @@ struct ReussirRcIncConversionPattern
                                              refcntPtr);
       auto newRefCnt = mlir::arith::AddIOp::create(rewriter, op.getLoc(),
                                                    indexType, oldRefCnt, one);
-      mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt, refcntPtr);
+      mlir::Value storeAddr = refcntPtr;
+      if (steerNarrowImmortal) {
+        mlir::Value immortal =
+            isImmortalCount(oldRefCnt, op.getLoc(), rewriter);
+        storeAddr = guardedAddr(op, immortal, refcntPtr, op.getLoc(), rewriter);
+      }
+      mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt, storeAddr);
     } else {
       oldRefCnt = mlir::LLVM::AtomicRMWOp::create(
           rewriter, op.getLoc(), mlir::LLVM::AtomicBinOp::add, refcntPtr, one,
           mlir::LLVM::AtomicOrdering::monotonic);
     }
-    auto geOne = mlir::LLVM::ICmpOp::create(
+    // Valid for immediates too: the dummy box's count starts at 2 and only
+    // ever grows, so `old >= 1` holds on that path as well.
+    mlir::Value geOne = mlir::LLVM::ICmpOp::create(
         rewriter, op.getLoc(), mlir::LLVM::ICmpPredicate::uge, oldRefCnt, one);
     mlir::LLVM::AssumeOp::create(rewriter, op.getLoc(), geOne);
 
@@ -1143,6 +1340,53 @@ struct ReussirRcCreateCompoundOpConversionPattern
       store.setInvariantGroup(true);
     }
     rewriter.replaceOp(op, results);
+    return mlir::success();
+  }
+};
+
+struct ReussirRcTaggedConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcTaggedOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcTaggedOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // The immediate is the per-tag dummy box's address; refcount,
+    // uniqueness, and tag accesses through the value hit the dummy box
+    // unguarded and observe a well-formed shared header. The TBI encoding
+    // additionally sets the top byte to `tag + 1` (masked by the hardware
+    // on data accesses) so foreign code and future inhabited-variant
+    // tagging can decode from the pointer; the immortal encoding uses the
+    // plain address.
+    mlir::Location loc = op.getLoc();
+    auto indexTy = llvm::cast<mlir::IntegerType>(
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
+            ->getIndexType());
+    mlir::Type ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    auto dummy =
+        tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
+                    op.getTag().getZExtValue(), encoding, indexTy, rewriter);
+    mlir::Value base = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrTy,
+                                                       dummy.getSymName());
+    if (encoding != TagEncoding::TBI) {
+      rewriter.replaceOp(op, base);
+      return mlir::success();
+    }
+    // The TBI encoding manipulates a 64-bit pointer's top byte; it is
+    // meaningless on narrower targets (use the immortal encoding there).
+    if (indexTy.getWidth() != 64)
+      return op.emitOpError(
+          "the TBI encoding requires a 64-bit target; use the "
+          "arch-independent encoding instead");
+    mlir::Value baseInt =
+        mlir::LLVM::PtrToIntOp::create(rewriter, loc, indexTy, base);
+    uint64_t encoded = (op.getTag().getZExtValue() + 1) << 56;
+    mlir::Value tagBits = mlir::LLVM::ConstantOp::create(
+        rewriter, loc, indexTy,
+        rewriter.getIntegerAttr(indexTy, static_cast<int64_t>(encoded)));
+    mlir::Value imm = mlir::LLVM::OrOp::create(rewriter, loc, baseInt, tagBits);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::IntToPtrOp>(op, ptrTy, imm);
     return mlir::success();
   }
 };
@@ -1594,11 +1838,15 @@ struct ReussirRcIsUniqueOpConversionPattern
     : public mlir::OpConversionPattern<ReussirRcIsUniqueOp> {
   using OpConversionPattern::OpConversionPattern;
 
+  // Builds `refcount == 1`; when `outCount` is non-null it receives the
+  // loaded refcount so callers can post-process the condition (see
+  // rc.assume_unique's immortal neutralization).
   static mlir::Value
   buildUniquenessCondition(mlir::Location loc, RcType rcPtrTy,
                            mlir::Value rcPtr,
                            const mlir::TypeConverter *typeConverter,
-                           mlir::ConversionPatternRewriter &rewriter) {
+                           mlir::ConversionPatternRewriter &rewriter,
+                           mlir::Value *outCount = nullptr) {
     RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     auto convertedBoxType = typeConverter->convertType(rcBoxType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
@@ -1608,12 +1856,18 @@ struct ReussirRcIsUniqueOpConversionPattern
     auto refcntPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedBoxType, rcPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+    // No guard for tagged immediates: the load reads the dummy box's
+    // refcount, pinned above the unique/shared decision point, so
+    // uniqueness is naturally false there.
     auto refcnt =
         mlir::LLVM::LoadOp::create(rewriter, loc, indexType, refcntPtr);
+    if (outCount)
+      *outCount = refcnt;
     auto one = mlir::arith::ConstantOp::create(
         rewriter, loc, mlir::IntegerAttr::get(indexType, 1));
-    return mlir::arith::CmpIOp::create(
+    mlir::Value isOne = mlir::arith::CmpIOp::create(
         rewriter, loc, mlir::arith::CmpIPredicate::eq, refcnt, one);
+    return isOne;
   }
 
   mlir::LogicalResult
@@ -1634,10 +1888,32 @@ struct ReussirRcAssumeUniqueOpConversionPattern
   mlir::LogicalResult
   matchAndRewrite(ReussirRcAssumeUniqueOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    auto isUnique =
+    // NOTE: for a tagged immediate the condition reads the dummy box's
+    // refcount and is `false`; asserting `assume(false)` would be unsound,
+    // so neutralize the assumption on that path. TBI recognizes immediates
+    // by the pointer's top byte, the immortal encoding by the loaded
+    // count's magnitude.
+    RcType rcPtrTy = op.getRcPtr().getType();
+    mlir::Value count;
+    mlir::Value isUnique =
         ReussirRcIsUniqueOpConversionPattern::buildUniquenessCondition(
-            op.getLoc(), op.getRcPtr().getType(), adaptor.getRcPtr(),
-            getTypeConverter(), rewriter);
+            op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(),
+            rewriter, &count);
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    if (encoding != TagEncoding::None && rcPtrTy.mayCarrySpecialPointerTag()) {
+      mlir::Value tagged;
+      if (encoding == TagEncoding::TBI) {
+        mlir::Value top = topByteOf(adaptor.getRcPtr(), op.getLoc(), rewriter);
+        tagged = isTaggedImmediate(top, op.getLoc(), rewriter);
+      } else {
+        tagged = isImmortalCount(count, op.getLoc(), rewriter);
+      }
+      auto vTrue = mlir::LLVM::ConstantOp::create(rewriter, op.getLoc(),
+                                                  rewriter.getI1Type(),
+                                                  rewriter.getBoolAttr(true));
+      isUnique = mlir::LLVM::SelectOp::create(rewriter, op.getLoc(), tagged,
+                                              vTrue, isUnique);
+    }
     mlir::LLVM::AssumeOp::create(rewriter, op.getLoc(), isUnique);
     rewriter.eraseOp(op);
     return mlir::success();
@@ -2783,20 +3059,20 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirRefFromMemrefOp, ReussirRefDiffOp, ReussirRefCmpOp,
         ReussirRefMemcpyOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
         ReussirNullableCoerceOp, ReussirRcIncOp, ReussirRcCreateOp,
-        ReussirRcCreateCompoundOp, ReussirRcCreateVariantOp, ReussirRcDecOp,
-        ReussirRcBorrowOp, ReussirRcIsUniqueOp, ReussirRcAssumeUniqueOp,
-        ReussirRecordCompoundOp, ReussirRecordVariantOp, ReussirRefProjectOp,
-        ReussirArrayProjectOp, ReussirArrayViewOp, ReussirRecordTagOp,
-        ReussirRecordExtractOp, ReussirRecordCoerceOp, ReussirRegionVTableOp,
-        ReussirRcFreezeOp, ReussirRegionCleanupOp, ReussirRegionCreateOp,
-        ReussirRcReinterpretOp, ReussirClosureApplyOp, ReussirClosureCloneOp,
-        ReussirClosureEvalOp, ReussirClosureInspectPayloadOp,
-        ReussirClosureCursorOp, ReussirClosureInstantiateOp,
-        ReussirClosureVtableOp, ReussirClosureCreateOp, ReussirRcFetchOp,
-        ReussirRcSetOp, ReussirStrGlobalOp, ReussirStrLiteralOp,
-        ReussirStrCastOp, ReussirStrLenOp, ReussirStrUnsafeByteAtOp,
-        ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirTrampolineOp,
-        ReussirTokenLaunderOp>();
+        ReussirRcCreateCompoundOp, ReussirRcCreateVariantOp, ReussirRcTaggedOp,
+        ReussirRcDecOp, ReussirRcBorrowOp, ReussirRcIsUniqueOp,
+        ReussirRcAssumeUniqueOp, ReussirRecordCompoundOp,
+        ReussirRecordVariantOp, ReussirRefProjectOp, ReussirArrayProjectOp,
+        ReussirArrayViewOp, ReussirRecordTagOp, ReussirRecordExtractOp,
+        ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
+        ReussirRegionCleanupOp, ReussirRegionCreateOp, ReussirRcReinterpretOp,
+        ReussirClosureApplyOp, ReussirClosureCloneOp, ReussirClosureEvalOp,
+        ReussirClosureInspectPayloadOp, ReussirClosureCursorOp,
+        ReussirClosureInstantiateOp, ReussirClosureVtableOp,
+        ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcSetOp,
+        ReussirStrGlobalOp, ReussirStrLiteralOp, ReussirStrCastOp,
+        ReussirStrLenOp, ReussirStrUnsafeByteAtOp, ReussirStrUnsafeStartWithOp,
+        ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
   }
 };
 
@@ -2881,7 +3157,8 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirNullableCheckConversionPattern,
       ReussirNullableCreateConversionPattern,
       ReussirNullableCoerceConversionPattern, ReussirRcIncConversionPattern,
-      ReussirRcDecOpConversionPattern, ReussirRcCreateOpConversionPattern,
+      ReussirRcTaggedConversionPattern, ReussirRcDecOpConversionPattern,
+      ReussirRcCreateOpConversionPattern,
       ReussirRcCreateCompoundOpConversionPattern,
       ReussirRcCreateVariantOpConversionPattern,
       ReussirRcBorrowOpConversionPattern, ReussirRcIsUniqueOpConversionPattern,

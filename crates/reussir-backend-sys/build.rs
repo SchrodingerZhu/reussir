@@ -37,6 +37,7 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirInferVariantTag",
     "MLIRReussirIncDecCancellation",
     "MLIRReussirTokenReuse",
+    "MLIRReussirSpecialPointerTag",
     "MLIRReussirInvariantGroupAnalysis",
     "MLIRReussirUniqueCarryingRecursionAnalysis",
     "MLIRReussirTRMCRecursionAnalysis",

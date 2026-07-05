@@ -49,6 +49,23 @@ impl OptLevel {
     }
 }
 
+/// How nullary variants of shared rc-boxed enums are represented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NullaryVariantEncoding {
+    /// Legacy layout: every construction heap-allocates a refcounted box.
+    Boxed,
+    /// Unboxed immediate whose top byte is `tag + 1` and whose low bits
+    /// point at a per-tag dummy box. Hard-depends on the hardware ignoring
+    /// the pointer's top byte on data accesses (aarch64 TBI); the top byte
+    /// doubles as a dereference-free FFI tag decode.
+    Tbi,
+    /// Unboxed immediate that *is* the per-tag dummy box address, with an
+    /// immortal refcount recognized by magnitude. No architectural
+    /// dependency (works on any target, including wasm32); foreign code
+    /// sees a layout-compatible box.
+    Immortal,
+}
+
 /// Knobs for [`run_lowering_pipeline`].
 #[derive(Clone, Copy, Debug)]
 pub struct LoweringOptions {
@@ -56,6 +73,10 @@ pub struct LoweringOptions {
     pub opt: OptLevel,
     /// Allow the token-reuse pass to reuse tokens across function calls.
     pub reuse_token_across_call: bool,
+    /// How nullary variants of shared rc-boxed enums are encoded. `rrc`
+    /// exposes this as `--nullary-variant-encoding`; embedders (REPL/JIT,
+    /// tests) default to [`NullaryVariantEncoding::Boxed`].
+    pub nullary_variant_encoding: NullaryVariantEncoding,
     /// Run the invariant-group analysis pass.
     pub enable_invariant_analysis: bool,
 }
@@ -65,6 +86,10 @@ impl Default for LoweringOptions {
         Self {
             opt: OptLevel::Default,
             reuse_token_across_call: false,
+            // Boxed by default: only target-aware drivers (rrc) pick an
+            // immediate encoding, so embedders (REPL/JIT, tests) keep the
+            // boxed layout untouched.
+            nullary_variant_encoding: NullaryVariantEncoding::Boxed,
             // Off by default, mirroring the C++ `createLoweringPipeline`
             // (`enableInvariantAnalysis = false`).
             enable_invariant_analysis: false,
@@ -153,12 +178,23 @@ pub fn run_lowering_pipeline(
         opt = ?options.opt,
         reuse_token_across_call = options.reuse_token_across_call,
         enable_invariant_analysis = options.enable_invariant_analysis,
+        nullary_variant_encoding = ?options.nullary_variant_encoding,
     )
     .entered();
 
     let manager = PassManager::new(context);
 
     lowering_pipeline!(manager,
+        // Nullary variants of shared rc-boxed enums become tagged pointer
+        // immediates. Must run before any uniqueness/token pass so no
+        // provenance or allocation token is ever attached to a rewritten
+        // construction.
+        if options.nullary_variant_encoding != NullaryVariantEncoding::Boxed => {
+            module: sys::reussirCreateSpecialPointerTagPass(
+                options.nullary_variant_encoding == NullaryVariantEncoding::Immortal,
+            );
+        }
+
         // Optimization-only prologue.
         if options.opt.runs_optimization() => {
             if options.opt == OptLevel::Aggressive => {

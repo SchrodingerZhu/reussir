@@ -50,7 +50,8 @@ namespace reussir {
 namespace {
 
 static mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType) {
-  return mlir::MemRefType::get(arrayType.getShape(), arrayType.getElementType());
+  return mlir::MemRefType::get(arrayType.getShape(),
+                               arrayType.getElementType());
 }
 
 static mlir::RankedTensorType getArrayViewTensorType(ArrayType arrayType) {
@@ -66,9 +67,9 @@ static mlir::LogicalResult verifyZeroRankMemRefType(mlir::Operation *op,
   if (!memrefType || memrefType.getRank() != 0)
     return op->emitOpError(valueName) << " must be a zero-rank memref";
   if (memrefType.getElementType() != elementType)
-    return op->emitOpError(valueName) << " element type mismatch: expected "
-                                      << elementType << ", got "
-                                      << memrefType.getElementType();
+    return op->emitOpError(valueName)
+           << " element type mismatch: expected " << elementType << ", got "
+           << memrefType.getElementType();
   return mlir::success();
 }
 
@@ -78,17 +79,17 @@ static mlir::LogicalResult verifyArrayViewType(mlir::Operation *op,
                                                llvm::StringRef valueName) {
   if (auto memrefType = llvm::dyn_cast<mlir::MemRefType>(type)) {
     if (memrefType != getArrayViewMemRefType(arrayType))
-      return op->emitOpError(valueName) << " type mismatch: expected "
-                                        << getArrayViewMemRefType(arrayType)
-                                        << ", got " << memrefType;
+      return op->emitOpError(valueName)
+             << " type mismatch: expected " << getArrayViewMemRefType(arrayType)
+             << ", got " << memrefType;
     return mlir::success();
   }
 
   if (auto tensorType = llvm::dyn_cast<mlir::RankedTensorType>(type)) {
     if (tensorType != getArrayViewTensorType(arrayType))
-      return op->emitOpError(valueName) << " type mismatch: expected "
-                                        << getArrayViewTensorType(arrayType)
-                                        << ", got " << tensorType;
+      return op->emitOpError(valueName)
+             << " type mismatch: expected " << getArrayViewTensorType(arrayType)
+             << ", got " << tensorType;
     return mlir::success();
   }
 
@@ -115,7 +116,8 @@ mlir::LogicalResult verifyRcCreateLikeOp(mlir::Operation *op, RcType rcType,
     return mlir::success();
 
   TokenType tokenType = llvm::cast<TokenType>(token.getType());
-  auto rcBoxType = RcBoxType::get(op->getContext(), valueType, region != nullptr);
+  auto rcBoxType =
+      RcBoxType::get(op->getContext(), valueType, region != nullptr);
   auto dataLayout = mlir::DataLayout::closest(op);
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
   auto size = dataLayout.getTypeSize(rcBoxType);
@@ -151,12 +153,14 @@ verifyRcCreateLikeSymbolUses(mlir::Operation *op, mlir::Value region,
 
   mlir::Type vtableType = vtableOp.getTypeAttr().getValue();
   if (vtableType != valueType)
-    return op->emitOpError("vtable type attribute must match value input type, ")
+    return op->emitOpError(
+               "vtable type attribute must match value input type, ")
            << "vtable type: " << vtableType << ", value type: " << valueType;
   return mlir::success();
 }
 
-mlir::LogicalResult verifyCompoundFields(mlir::Operation *op, RecordType recordType,
+mlir::LogicalResult verifyCompoundFields(mlir::Operation *op,
+                                         RecordType recordType,
                                          mlir::ValueRange fields) {
   if (!recordType)
     return op->emitOpError("RC element type must be a record type");
@@ -166,8 +170,8 @@ mlir::LogicalResult verifyCompoundFields(mlir::Operation *op, RecordType recordT
     return op->emitOpError("RC element type must be a compound record");
   if (recordType.getMembers().size() != fields.size())
     return op->emitOpError("number of fields must match number of members");
-  for (auto [field, member, memberCapability] :
-       llvm::zip(fields, recordType.getMembers(), recordType.getMemberIsField())) {
+  for (auto [field, member, memberCapability] : llvm::zip(
+           fields, recordType.getMembers(), recordType.getMemberIsField())) {
     mlir::Type projectedType =
         reussir::getProjectedType(member, memberCapability, Capability::flex);
     if (projectedType != field.getType())
@@ -178,7 +182,8 @@ mlir::LogicalResult verifyCompoundFields(mlir::Operation *op, RecordType recordT
   return mlir::success();
 }
 
-mlir::LogicalResult verifySkippedFields(mlir::Operation *op, size_t fieldCount) {
+mlir::LogicalResult verifySkippedFields(mlir::Operation *op,
+                                        size_t fieldCount) {
   auto skippedFields = op->getAttrOfType<mlir::DenseI64ArrayAttr>("skipFields");
   if (!skippedFields)
     return mlir::success();
@@ -454,8 +459,9 @@ mlir::LogicalResult ReussirRcCreateCompoundOp::verify() {
 // RcCreateCompoundOp TokenAcceptor Interface
 //===----------------------------------------------------------------------===//
 TokenType ReussirRcCreateCompoundOp::getTokenType() {
-  auto rcBoxType = RcBoxType::get(getContext(), getRcPtr().getType().getElementType(),
-                                  getRegion() != nullptr);
+  auto rcBoxType =
+      RcBoxType::get(getContext(), getRcPtr().getType().getElementType(),
+                     getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
   auto size = dataLayout.getTypeSize(rcBoxType);
@@ -467,14 +473,36 @@ TokenType ReussirRcCreateCompoundOp::getTokenType() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcCreateCompoundOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
-  return verifyRcCreateLikeSymbolUses(
-      getOperation(), getRegion(), getRcPtr().getType().getElementType(),
-      getVtableAttr(), symbolTable);
+  return verifyRcCreateLikeSymbolUses(getOperation(), getRegion(),
+                                      getRcPtr().getType().getElementType(),
+                                      getVtableAttr(), symbolTable);
 }
 
 //===----------------------------------------------------------------------===//
 // RcCreateVariantOp verification
 //===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcTaggedOp::verify() {
+  RcType rcType = getRcPtr().getType();
+  if (rcType.getCapability() != Capability::shared &&
+      rcType.getCapability() != Capability::unspecified)
+    return emitOpError("tagged immediates require a plain shared box");
+  if (rcType.getAtomicKind() != AtomicKind::normal)
+    return emitOpError("tagged immediates require a nonatomic box");
+  auto variantType = llvm::dyn_cast<RecordType>(rcType.getElementType());
+  if (!variantType || !variantType.isVariant() || !variantType.getComplete())
+    return emitOpError("RC element type must be a complete variant record");
+  size_t tag = getTag().getZExtValue();
+  if (tag >= variantType.getMembers().size())
+    return emitOpError("tag out of bounds");
+  // The encoding stores `tag + 1` in the pointer's top byte.
+  if (tag + 1 > 0xFF)
+    return emitOpError("tag does not fit the top-byte encoding");
+  auto arm = llvm::dyn_cast<RecordType>(variantType.getMembers()[tag]);
+  if (!arm || !arm.isCompound() || !arm.getMembers().empty())
+    return emitOpError("tagged immediates only encode nullary variants");
+  return mlir::success();
+}
+
 mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
   RecordType variantType = getRecordType();
   if (!variantType)
@@ -520,8 +548,8 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
   } else {
     auto compoundType = llvm::dyn_cast<RecordType>(targetVariantType);
     if (!compoundType || !compoundType.isCompound())
-      return emitOpError(
-          "compound fields payload requires the selected variant member to be a compound record");
+      return emitOpError("compound fields payload requires the selected "
+                         "variant member to be a compound record");
     if (failed(verifyCompoundFields(getOperation(), compoundType, getFields())))
       return mlir::failure();
     if (failed(verifyHoleFields(getOperation(), getFields().getTypes(),
@@ -539,8 +567,9 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
 // RcCreateVariantOp TokenAcceptor Interface
 //===----------------------------------------------------------------------===//
 TokenType ReussirRcCreateVariantOp::getTokenType() {
-  auto rcBoxType = RcBoxType::get(getContext(), getRcPtr().getType().getElementType(),
-                                  getRegion() != nullptr);
+  auto rcBoxType =
+      RcBoxType::get(getContext(), getRcPtr().getType().getElementType(),
+                     getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
   auto size = dataLayout.getTypeSize(rcBoxType);
@@ -552,9 +581,9 @@ TokenType ReussirRcCreateVariantOp::getTokenType() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcCreateVariantOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
-  return verifyRcCreateLikeSymbolUses(
-      getOperation(), getRegion(), getRcPtr().getType().getElementType(),
-      getVtableAttr(), symbolTable);
+  return verifyRcCreateLikeSymbolUses(getOperation(), getRegion(),
+                                      getRcPtr().getType().getElementType(),
+                                      getVtableAttr(), symbolTable);
 }
 
 //===----------------------------------------------------------------------===//
@@ -809,7 +838,8 @@ mlir::LogicalResult ReussirArrayViewOp::verify() {
   RefType refType = getRef().getType();
   ArrayType arrayType = llvm::dyn_cast<ArrayType>(refType.getElementType());
   if (!arrayType)
-    return emitOpError("array.view input must be a reference to a reussir.array");
+    return emitOpError(
+        "array.view input must be a reference to a reussir.array");
   return verifyArrayViewType(getOperation(), getView().getType(), arrayType,
                              "array.view result");
 }
@@ -817,12 +847,13 @@ mlir::LogicalResult ReussirArrayViewOp::verify() {
 mlir::LogicalResult ReussirArrayProjectOp::verify() {
   auto memrefType = llvm::dyn_cast<mlir::MemRefType>(getView().getType());
   if (!memrefType)
-    return emitOpError("array.project input must be a statically shaped memref");
+    return emitOpError(
+        "array.project input must be a statically shaped memref");
   if (!memrefType.hasStaticShape() || !memrefType.getLayout().isIdentity())
     return emitOpError("array.project input memref must have a static "
                        "identity-layout type");
-  ArrayType arrayType =
-      ArrayType::get(getContext(), memrefType.getShape(), memrefType.getElementType());
+  ArrayType arrayType = ArrayType::get(getContext(), memrefType.getShape(),
+                                       memrefType.getElementType());
   if (arrayType.getRank() == 0)
     return emitOpError("array view must have at least one extent");
 
@@ -1404,8 +1435,9 @@ void ReussirRecordDispatchOp::print(mlir::OpAsmPrinter &p) {
 //===----------------------------------------------------------------------===//
 // Reussir Array WithUniqueView Op
 //===----------------------------------------------------------------------===//
-mlir::ParseResult ReussirArrayWithUniqueViewOp::parse(
-    mlir::OpAsmParser &parser, mlir::OperationState &result) {
+mlir::ParseResult
+ReussirArrayWithUniqueViewOp::parse(mlir::OpAsmParser &parser,
+                                    mlir::OperationState &result) {
   llvm::SMLoc operandLoc = parser.getCurrentLocation();
   mlir::OpAsmParser::UnresolvedOperand arrayOperand;
   RcType arrayType;
@@ -1525,7 +1557,8 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
     expectedType = recordParent.getValue() ? recordParent.getValue().getType()
                                            : mlir::Type{};
   else if (auto arrayParent =
-               getOperation()->getParentOfType<ReussirArrayWithUniqueViewOp>()) {
+               getOperation()
+                   ->getParentOfType<ReussirArrayWithUniqueViewOp>()) {
     expectedType = arrayParent.getResult() ? arrayParent.getResult().getType()
                                            : mlir::Type{};
     allowImplicitArrayResult =
@@ -2158,8 +2191,9 @@ mlir::LogicalResult ReussirPolyFFIOp::verify() {
 //===----------------------------------------------------------------------===//
 // emitOwnershipAcquisition
 //===----------------------------------------------------------------------===//
-static mlir::LogicalResult emitArrayOwnershipAcquisition(
-    mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc);
+static mlir::LogicalResult
+emitArrayOwnershipAcquisition(mlir::Value view, mlir::OpBuilder &builder,
+                              mlir::Location loc);
 
 mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                                              mlir::OpBuilder &builder,
@@ -2188,9 +2222,10 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
         }
 
         if (auto arrayType = llvm::dyn_cast<ArrayType>(elementType)) {
-          auto view = ReussirArrayViewOp::create(
-                          builder, loc, getArrayViewMemRefType(arrayType), value)
-                          .getView();
+          auto view =
+              ReussirArrayViewOp::create(
+                  builder, loc, getArrayViewMemRefType(arrayType), value)
+                  .getView();
           return emitArrayOwnershipAcquisition(view, builder, loc);
         }
 
@@ -2207,8 +2242,8 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
               if (isTriviallyCopyable(projectedType))
                 continue;
               auto fieldRef = ReussirRefProjectOp::create(
-                  builder,
-                  loc, RefType::get(builder.getContext(), projectedType), value,
+                  builder, loc,
+                  RefType::get(builder.getContext(), projectedType), value,
                   builder.getIndexAttr(i));
 
               if (emitOwnershipAcquisition(fieldRef, builder, loc).failed())
@@ -2226,8 +2261,7 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
             // Create the dispatch operation with the correct number of
             // regions
             auto dispatchOp = ReussirRecordDispatchOp::create(
-                builder,
-                loc, mlir::Type{}, value, tagSetsAttr,
+                builder, loc, mlir::Type{}, value, tagSetsAttr,
                 recordType.getMembers().size());
 
             // Create regions for each variant and apply ownership acquisition
@@ -2271,12 +2305,12 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
       .Default([&](mlir::Type) { return mlir::failure(); });
 }
 
-static mlir::LogicalResult emitArrayOwnershipAcquisition(
-    mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc) {
+static mlir::LogicalResult
+emitArrayOwnershipAcquisition(mlir::Value view, mlir::OpBuilder &builder,
+                              mlir::Location loc) {
   auto viewType = llvm::cast<mlir::MemRefType>(view.getType());
-  ArrayType arrayType =
-      ArrayType::get(builder.getContext(), viewType.getShape(),
-                     viewType.getElementType());
+  ArrayType arrayType = ArrayType::get(
+      builder.getContext(), viewType.getShape(), viewType.getElementType());
   auto *context = builder.getContext();
   for (int64_t index : llvm::seq<int64_t>(0, arrayType.getShape().front())) {
     auto idx = mlir::arith::ConstantIndexOp::create(builder, loc, index);
@@ -2284,8 +2318,7 @@ static mlir::LogicalResult emitArrayOwnershipAcquisition(
       RefType projectedType = RefType::get(context, arrayType.getElementType(),
                                            Capability::unspecified);
       auto elementRef = ReussirArrayProjectOp::create(
-          builder,
-          loc, projectedType, view, idx.getResult());
+          builder, loc, projectedType, view, idx.getResult());
       if (emitOwnershipAcquisition(elementRef.getProjected(), builder, loc)
               .failed())
         return mlir::failure();
@@ -2293,9 +2326,8 @@ static mlir::LogicalResult emitArrayOwnershipAcquisition(
     }
 
     auto projectedType = getArrayViewMemRefType(arrayType.dropFront());
-    auto nestedView = ReussirArrayProjectOp::create(
-        builder,
-        loc, projectedType, view, idx.getResult());
+    auto nestedView = ReussirArrayProjectOp::create(builder, loc, projectedType,
+                                                    view, idx.getResult());
     if (emitArrayOwnershipAcquisition(nestedView.getProjected(), builder, loc)
             .failed())
       return mlir::failure();
@@ -2319,10 +2351,9 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
   mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(moduleOp.getBody());
   RefType refType = builder.getType<RefType>(type);
-  auto dtor = mlir::func::FuncOp::create(
-      builder,
-      builder.getUnknownLoc(), funcName,
-      builder.getFunctionType({refType}, {}));
+  auto dtor =
+      mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), funcName,
+                                 builder.getFunctionType({refType}, {}));
   dtor.setPrivate();
   dtor->setAttr("llvm.linkage", builder.getAttr<mlir::LLVM::LinkageAttr>(
                                     mlir::LLVM::linkage::Linkage::LinkonceODR));
@@ -2362,10 +2393,9 @@ mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
   // Construct RefType from RecordType
   RefType refType = builder.getType<RefType>(type);
 
-  auto funcOp = mlir::func::FuncOp::create(
-      builder,
-      builder.getUnknownLoc(), funcName,
-      builder.getFunctionType({refType}, {}));
+  auto funcOp =
+      mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), funcName,
+                                 builder.getFunctionType({refType}, {}));
   funcOp.setPrivate();
   funcOp->setAttr("llvm.linkage",
                   builder.getAttr<mlir::LLVM::LinkageAttr>(

@@ -611,6 +611,32 @@ def ReussirRcCreateVariantOp : ReussirRcOp<"create_variant", [
   }];
 }
 
+def ReussirRcTaggedOp : ReussirRcOp<"tagged", [Pure]> {
+  let summary = "Materialize a nullary variant as a tagged pointer immediate";
+  let description = [{
+    `reussir.rc.tagged` produces an rc pointer encoding a *nullary* variant
+    (an arm whose payload is an empty compound) as an unboxed immediate: the
+    pointer's top byte is `tag + 1` and its low bits hold the address of a
+    per-tag dummy box `{refcount = 2, tag}`. No allocation takes place, and
+    no observable reference counting: because the target's TBI ignores the
+    top byte on data accesses, refcount/uniqueness/tag reads through the
+    value land in the dummy box and observe a well-formed shared header,
+    so the hot lowerings need no immediate-checks at all. Only introduced
+    when the special-pointer-tag scheme is enabled (aarch64 targets, whose
+    TBI the encoding hard-depends on).
+    ```mlir
+    %leaf = reussir.rc.tagged tag(1) : !reussir.rc<!reussir.record<...>>
+    ```
+  }];
+
+  let arguments = (ins Arg<IndexAttr, "tag">:$tag);
+  let results = (outs Res<ReussirRcType, "tagged immediate">:$rcPtr);
+  let assemblyFormat = [{
+    `tag` `(` $tag `)` `:` qualified(type($rcPtr)) attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def ReussirRcReinterpretOp : ReussirRcOp<"reinterpret", []> {
   let summary = "Reinterpret a Rc pointer into a token";
   let description = [{
