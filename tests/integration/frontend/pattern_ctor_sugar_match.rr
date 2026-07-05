@@ -71,7 +71,7 @@ fn map_to_none(x : Option<i32>) -> Option<i32> {
 // FULL-NEXT:     } : Option::<i32>
 // FULL-NEXT: }
 // FULL-EMPTY:
-// FULL-NEXT: fn @_RC7is_some(v0 (x): Option::<i32>) -> bool {
+// FULL-NEXT: fn @_RC7is_some(v0 (x): borrowed Option::<i32>) -> bool {
 // FULL-NEXT:     match v0 : Option::<i32> {
 // FULL-NEXT:         switch scrut {
 // FULL-NEXT:             #0 => {

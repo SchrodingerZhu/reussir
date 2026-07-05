@@ -13,7 +13,9 @@
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
 
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
+#include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/Dominance.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/Visitors.h>
@@ -197,7 +199,64 @@ bool cancelIntoDispatch(ReussirRcIncOp incOp,
 
 } // namespace
 
+// Whether a value of `container` may transitively hold a reference of
+// `needle`'s type: walks record members, rc/nullable payloads, and treats
+// closures as universal containers (their captures are type-erased).
+// Conservative `true` when unsure; memoized against nominal recursion.
+static bool mayTransitivelyContain(mlir::Type container, mlir::Type needle,
+                                   llvm::SmallPtrSetImpl<const void *> &seen) {
+  if (container == needle)
+    return true;
+  if (!seen.insert(container.getAsOpaquePointer()).second)
+    return false;
+  if (llvm::isa<ClosureType>(container))
+    return true;
+  if (auto rc = llvm::dyn_cast<RcType>(container))
+    return mayTransitivelyContain(rc.getElementType(), needle, seen);
+  if (auto nullable = llvm::dyn_cast<NullableType>(container))
+    return mayTransitivelyContain(nullable.getPtrTy(), needle, seen);
+  if (auto record = llvm::dyn_cast<RecordType>(container)) {
+    if (record.getMembers().empty())
+      return true; // incomplete view: assume the worst
+    for (mlir::Type member : record.getMembers())
+      if (member && mayTransitivelyContain(member, needle, seen))
+        return true;
+    return false;
+  }
+  // Scalars and tokens cannot hold references.
+  return !llvm::isa<mlir::IntegerType, mlir::FloatType, mlir::IndexType>(
+      container);
+}
+
+// A `func.call` is transparent to an inc/dec cancellation of `rcPtr` when it
+// provably neither consumes nor releases that value: every argument position
+// either merely lends its value (a declared borrowed parameter of the
+// callee) or is an owned value whose type cannot transitively contain
+// `rcPtr`'s type (so consuming it cannot release `rcPtr`).
+static bool callOnlyBorrows(mlir::func::CallOp call, mlir::Value rcPtr,
+                            mlir::SymbolTableCollection &symbols) {
+  auto callee = symbols.lookupNearestSymbolFrom<mlir::func::FuncOp>(
+      call, call.getCalleeAttr());
+  if (!callee)
+    return false;
+  auto borrowed =
+      callee->getAttrOfType<mlir::DenseI64ArrayAttr>("reussir.borrowed_params");
+  if (!borrowed)
+    return false;
+  for (auto [i, operand] : llvm::enumerate(call.getArgOperands())) {
+    if (llvm::is_contained(borrowed.asArrayRef(), static_cast<int64_t>(i)))
+      continue;
+    if (operand == rcPtr)
+      return false;
+    llvm::SmallPtrSet<const void *, 16> seen;
+    if (mayTransitivelyContain(operand.getType(), rcPtr.getType(), seen))
+      return false;
+  }
+  return true;
+}
+
 llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
+  mlir::SymbolTableCollection symbolTables;
   mlir::AliasAnalysis aliasAnalysis(func);
   registerAliasAnalysisImplementations(aliasAnalysis);
   mlir::PostDominanceInfo postDominanceInfo(func);
@@ -239,9 +298,17 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
       // it could drop a live reference. Guard on the call-site interface —
       // *not* `CallableOpInterface`, which is the call *target* (`func.func`)
       // and never appears mid-block. A control-flow op with regions is likewise
-      // opaque.
-      if (llvm::isa<mlir::CallOpInterface>(next))
-        break;
+      // opaque. Exception: a `func.call` that provably only borrows relative
+      // to the incremented value (declared borrowed parameters; owned
+      // arguments type-disjoint from it) neither consumes nor releases it,
+      // so the walk continues across it.
+      if (llvm::isa<mlir::CallOpInterface>(next)) {
+        auto funcCall = llvm::dyn_cast<mlir::func::CallOp>(next);
+        if (!funcCall || !callOnlyBorrows(funcCall, op.getRcPtr(), symbolTables))
+          break;
+        next = next->getNextNode();
+        continue;
+      }
       if (auto dispatch = llvm::dyn_cast<ReussirRecordDispatchOp>(next)) {
         cancelIntoDispatch(op, dispatch, aliasAnalysis);
         break;

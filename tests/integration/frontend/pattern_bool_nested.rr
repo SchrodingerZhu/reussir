@@ -49,7 +49,7 @@ fn test(x : Pair) -> i32 {
 
 // FULL: record @_RC4Pair : shared enum Pair { @_RNvC4Pair6MkPair MkPair(bool, bool) };
 // FULL-EMPTY:
-// FULL-NEXT: fn @_RC4test(v0 (x): Pair) -> i32 {
+// FULL-NEXT: fn @_RC4test(v0 (x): borrowed Pair) -> i32 {
 // FULL-NEXT:     match v0 : Pair {
 // FULL-NEXT:         switch scrut {
 // FULL-NEXT:             #0 => {

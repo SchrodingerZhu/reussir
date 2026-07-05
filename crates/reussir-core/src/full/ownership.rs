@@ -111,6 +111,8 @@ use crate::utils::bitset::HybridBitSet;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
+use crate::full::mir::Symbol;
+
 use crate::full::mir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::hir::{ExprId, VarId};
 use crate::semi::ty::{Flexivity, Ty, TyCtxt, TyKind};
@@ -386,26 +388,54 @@ impl VarSet {
 // The analyzer
 // ---------------------------------------------------------------------------
 
+/// Per-function borrowed-parameter masks, keyed by symbol: `masks[sym][i]`
+/// is true when the callee's i-th parameter uses the borrowed convention
+/// (see [`super::borrow`]). Callers consult this to pass such arguments
+/// without transferring ownership.
+pub type BorrowMasks = FxHashMap<Symbol, smallvec::SmallVec<[bool; 8]>>;
+
+/// Collect the borrowed-parameter masks of every function in `program`.
+pub fn borrow_masks<'tcx>(program: &crate::full::mir::Program<'tcx>) -> BorrowMasks {
+    program
+        .functions
+        .iter()
+        .map(|f| (f.symbol, f.params.iter().map(|p| p.borrowed).collect()))
+        .collect()
+}
+
 /// Analyze one function body, returning the rc ops it needs. `table` classifies
 /// every ground record the body mentions (value vs shared + value-record fields).
+/// `masks` carries every callee's borrowed-parameter convention.
 pub fn analyze_function<'tcx>(
     tcx: &TyCtxt<'tcx>,
     func: &Function<'tcx>,
     table: &RecordTable<'tcx>,
+    masks: &BorrowMasks,
 ) -> OwnershipTable {
     let mut a = Analyzer {
         rr: Rr::new(tcx, table),
         free_memo: FxHashMap::default(),
         actions: FxHashMap::default(),
+        masks,
     };
     if let Some(body) = func.body {
-        // Top-level continuation is empty: the return value is moved to the
-        // caller, everything else must be settled within the body.
-        a.place(body, &VarSet::default());
-        // [Param-Unused]: an RR parameter never used anywhere is dead on entry.
+        // Top-level continuation contains the borrowed parameters: they are
+        // never consumed here (the caller owns them), so every use inside the
+        // body sees them live — a match borrows them in place, a projection
+        // reads them, and no branch settles them. Everything else must be
+        // settled within the body; the return value is moved to the caller.
+        let mut root_live = VarSet::default();
+        for p in &func.params {
+            if p.borrowed {
+                root_live.insert(p.var);
+            }
+        }
+        a.place(body, &root_live);
+        // [Param-Unused]: an owned RR parameter never used anywhere is dead on
+        // entry. (A borrowed one belongs to the caller either way.)
         let body_free = a.free(body);
         for p in &func.params {
-            if a.rr.is_rr(p.ty) && !body_free.contains(p.var) {
+            if !p.borrowed && a.rr.is_rr(p.ty) && !body_free.contains(p.var) {
                 a.add_before(body.id, RcOp::Drop(p.var));
             }
         }
@@ -419,6 +449,8 @@ struct Analyzer<'a, 'tcx> {
     /// threading `live_after` top-down.
     free_memo: FxHashMap<ExprId, VarSet>,
     actions: FxHashMap<ExprId, Action>,
+    /// Every callee's borrowed-parameter convention.
+    masks: &'a BorrowMasks,
 }
 
 impl<'tcx> Analyzer<'_, 'tcx> {
@@ -590,8 +622,10 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 }
             }
             ExprKind::Seq(es) => self.place_seq(es, live_after),
-            ExprKind::Call { args, .. }
-            | ExprKind::Ctor { args, .. }
+            ExprKind::Call { callee, args, .. } => {
+                self.place_call(e.id, callee, args, live_after)
+            }
+            ExprKind::Ctor { args, .. }
             | ExprKind::Variant { args, .. }
             | ExprKind::Intrinsic { args, .. } => self.place_args(args, live_after),
             ExprKind::NullableCall(opt) => {
@@ -977,6 +1011,84 @@ impl<'tcx> Analyzer<'_, 'tcx> {
         }
         for (i, arg) in args.iter().enumerate() {
             self.place(arg, &afters[i]);
+        }
+    }
+
+    /// [Args] with the callee's borrowed positions honored: an argument in a
+    /// borrowed position is passed without transferring ownership — no dup,
+    /// no move — and the caller settles it after the call when the call was
+    /// its last use. Timeline: `[args left→right] → call → [after]`, so a
+    /// borrowed value must survive until the call itself.
+    fn place_call(
+        &mut self,
+        call_id: ExprId,
+        callee: Symbol,
+        args: &'tcx [Expr<'tcx>],
+        live_after: &VarSet,
+    ) {
+        let Some(mask) = self.masks.get(&callee).cloned() else {
+            return self.place_args(args, live_after);
+        };
+        let mask: SmallVec<[bool; 8]> = mask;
+        let n = args.len();
+        if n == 0 {
+            return;
+        }
+        let mut afters = SmallVec::<[_; 4]>::with_capacity(n);
+        afters.resize_with(n, VarSet::default);
+        afters[n - 1] = live_after.clone();
+        for i in (0..n - 1).rev() {
+            let mut s = self.free(&args[i + 1]);
+            s.union_with(&afters[i + 1]);
+            afters[i] = s;
+        }
+        // Borrowed-position `Var` arguments are set aside and settled per
+        // distinct variable below; everything else follows [Args]. Their
+        // occurrences still count in `free()`, so an owned use of the same
+        // variable elsewhere in this call sees it live and dups.
+        let mut lent: SmallVec<[VarId; 4]> = SmallVec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let borrowed = mask.get(i).copied().unwrap_or(false);
+            if borrowed && self.rr.is_rr(arg.ty) {
+                match arg.kind {
+                    ExprKind::Var(x) => {
+                        if !lent.contains(&x) {
+                            lent.push(x);
+                        }
+                        continue;
+                    }
+                    _ => {
+                        // A temporary: evaluate it owned, lend it to the
+                        // call, and release it afterwards.
+                        self.place(arg, &afters[i]);
+                        self.add_after(call_id, RcOp::DropValue(arg.id));
+                        continue;
+                    }
+                }
+            }
+            self.place(arg, &afters[i]);
+        }
+        for x in lent {
+            // An owned occurrence of `x` elsewhere in this same call (an
+            // argument subexpression that consumes it while the arguments
+            // evaluate) would invalidate the lent pointer before the call
+            // runs: pin `x` for the duration with a dup ahead of every
+            // argument and release it after the call.
+            let owned_elsewhere = args.iter().enumerate().any(|(k, a)| {
+                let borrowed_var = mask.get(k).copied().unwrap_or(false)
+                    && matches!(a.kind, ExprKind::Var(v) if v == x);
+                !borrowed_var && self.free(a).contains(x)
+            });
+            if owned_elsewhere {
+                self.add_before(args[0].id, RcOp::Dup(x));
+                self.add_after(call_id, RcOp::Drop(x));
+            } else if !live_after.contains(x) {
+                // The call is the last use: the caller keeps ownership
+                // across it and settles the value right after — exactly
+                // once, however many positions borrowed it.
+                self.add_after(call_id, RcOp::Drop(x));
+            }
+            // Else: still owned and live downstream — nothing to do.
         }
     }
 }

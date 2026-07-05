@@ -189,9 +189,10 @@ impl Render<'_> {
             .iter()
             .map(|p| {
                 text(format!(
-                    "v{} ({}): ",
+                    "v{} ({}): {}",
                     p.var.0,
-                    self.resolver.resolve(p.name)
+                    self.resolver.resolve(p.name),
+                    if p.borrowed { "borrowed " } else { "" }
                 )) + self.ty(p.ty)
             })
             .collect();

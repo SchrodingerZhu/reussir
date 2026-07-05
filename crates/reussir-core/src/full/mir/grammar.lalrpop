@@ -83,8 +83,8 @@ Body: Option<raw::Expr> = {
 };
 
 Param: raw::Param =
-    <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
-    => raw::Param { var, name: name.into(), ty };
+    <var:"var"> "(" <name:"ident"> ")" ":" <b:"borrowed"?> <ty:Ty>
+    => raw::Param { var, name: name.into(), ty, borrowed: b.is_some() };
 
 // ----- types -----
 
@@ -299,6 +299,7 @@ extern {
         "shared" => Token::Shared,
         "field" => Token::Field,
         "extern" => Token::Extern,
+        "borrowed" => Token::Borrowed,
         "trampoline" => Token::Trampoline,
         "let" => Token::Let,
         "if" => Token::If,

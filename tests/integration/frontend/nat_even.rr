@@ -42,7 +42,6 @@ fn even(n : Nat) -> bool {
 // CHECK-MLIR:       reussir.record.dispatch
 // Zero branch: dec scrutinee, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant true
 // CHECK-MLIR:       reussir.scf.yield
 // Succ branch: intermediate lookup (no inc needed), nested dispatch
@@ -54,7 +53,6 @@ fn even(n : Nat) -> bool {
 // CHECK-MLIR:       reussir.record.dispatch
 // Succ(Zero): dec base scrutinee, yield false
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant false
 // CHECK-MLIR:       reussir.scf.yield
 // Succ(Succ(m)): load deepest binding, inc it, dec base scrutinee, call even
@@ -62,5 +60,4 @@ fn even(n : Nat) -> bool {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       call @_RC4even

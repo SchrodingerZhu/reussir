@@ -19,19 +19,19 @@
 // CHECK-EMPTY:
 // CHECK: record @_RIC5RcBoxmE : shared struct RcBox::<u32> { "val": u32 };
 // CHECK-EMPTY:
-// CHECK: pub fn @_RC10rc_project(v0 (rc): RcBox::<u32>) -> u32 {
+// CHECK: pub fn @_RC10rc_project(v0 (rc): borrowed RcBox::<u32>) -> u32 {
 // CHECK-NEXT: proj(v0 : RcBox::<u32>, 0) : u32
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK: pub fn @_RC11mixed_chain(v0 (rc): Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>>) -> u32 {
+// CHECK: pub fn @_RC11mixed_chain(v0 (rc): borrowed Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>>) -> u32 {
 // CHECK-NEXT: proj(v0 : Box::<RcBox::<RcBox::<RcBox::<Box::<Box::<u32>>>>>>, 0, 0, 0, 0, 0, 0) : u32
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK: pub fn @_RC18rc_project_chained(v0 (rc): RcBox::<RcBox::<u32>>) -> u32 {
+// CHECK: pub fn @_RC18rc_project_chained(v0 (rc): borrowed RcBox::<RcBox::<u32>>) -> u32 {
 // CHECK-NEXT: proj(v0 : RcBox::<RcBox::<u32>>, 0, 0) : u32
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK: pub fn @_RC20rc_project_chained_2(v0 (rc): RcBox::<RcBox::<RcBox::<u32>>>) -> u32 {
+// CHECK: pub fn @_RC20rc_project_chained_2(v0 (rc): borrowed RcBox::<RcBox::<RcBox::<u32>>>) -> u32 {
 // CHECK-NEXT: proj(v0 : RcBox::<RcBox::<RcBox::<u32>>>, 0, 0, 0) : u32
 // CHECK-NEXT: }
 

@@ -22,7 +22,6 @@ fn count_leaves(t : Tree) -> i32 {
 // Leaf(_): ignore value, dec scrutinee, return 1
 // CHECK-MLIR:       [0] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant 1 : i32
 // CHECK-MLIR:       reussir.scf.yield
 // Node(l, r): inc both children, dec scrutinee, recurse on both
@@ -33,6 +32,5 @@ fn count_leaves(t : Tree) -> i32 {
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       call @_RC12count_leaves
 // CHECK-MLIR:       call @_RC12count_leaves

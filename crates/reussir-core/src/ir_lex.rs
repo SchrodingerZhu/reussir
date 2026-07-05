@@ -36,6 +36,8 @@ pub enum Token<'a> {
     Field,
     #[token("extern")]
     Extern,
+    #[token("borrowed")]
+    Borrowed,
     #[token("trampoline")]
     Trampoline,
     #[token("let")]

@@ -46,7 +46,7 @@ fn test(x : Result) -> i32 {
 
 // FULL: record @_RC6Result : shared enum Result { @_RNvC6Result2Ok Ok(i32), @_RNvC6Result3Err Err(i32) };
 // FULL-EMPTY:
-// FULL-NEXT: fn @_RC4test(v0 (x): Result) -> i32 {
+// FULL-NEXT: fn @_RC4test(v0 (x): borrowed Result) -> i32 {
 // FULL-NEXT:     match v0 : Result {
 // FULL-NEXT:         switch scrut {
 // FULL-NEXT:             #0 => {

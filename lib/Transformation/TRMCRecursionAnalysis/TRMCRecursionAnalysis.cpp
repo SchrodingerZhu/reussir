@@ -286,6 +286,17 @@ static TrmcPlan buildPlan(mlir::func::FuncOp funcOp, llvm::StringRef callee) {
     for (mlir::Operation *user : call->getUsers())
       if (!candidates.contains(user) || !isSameCreateSite(create, user, callee))
         return false;
+    // The rewrite puts the recursive call in tail position: everything
+    // currently sequenced after it runs BEFORE the moved call. An op after
+    // the call that touches one of its operands — e.g. the settle-dec of an
+    // argument lent to a borrowed parameter — would then act on the value
+    // while the callee still reads it. Bail on such leaves (the ordinary
+    // cctx.apply fallback keeps them correct).
+    for (mlir::Operation *op = call->getNextNode(); op; op = op->getNextNode())
+      if (!candidates.contains(op))
+        for (mlir::Value operand : op->getOperands())
+          if (llvm::is_contained(call.getArgOperands(), operand))
+            return false;
     return true;
   };
 

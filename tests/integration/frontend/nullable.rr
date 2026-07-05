@@ -40,7 +40,7 @@ fn baz(reg : RegBox) -> Nullable<Data> {
 
 // An unannotated regional parameter is pinned rigid; the `[field]` link
 // projects at the base's (frozen) view.
-// CHECK: fn @_RC3baz(v0 (reg): [rigid] RegBox) -> Nullable<[rigid] Data> {
+// CHECK: fn @_RC3baz(v0 (reg): borrowed [rigid] RegBox) -> Nullable<[rigid] Data> {
 // CHECK-NEXT: proj(v0 : [rigid] RegBox, 0) : Nullable<[rigid] Data>
 // CHECK-NEXT: }
 

@@ -42,7 +42,7 @@ fn test(x : Wrapper) -> i32 {
 
 // FULL: record @_RC7Wrapper : shared enum Wrapper { @_RNvC7Wrapper3Val Val(i32), @_RNvC7Wrapper4None None() };
 // FULL-EMPTY:
-// FULL-NEXT: fn @_RC4test(v0 (x): Wrapper) -> i32 {
+// FULL-NEXT: fn @_RC4test(v0 (x): borrowed Wrapper) -> i32 {
 // FULL-NEXT:     match v0 : Wrapper {
 // FULL-NEXT:         switch scrut {
 // FULL-NEXT:             #0 => {

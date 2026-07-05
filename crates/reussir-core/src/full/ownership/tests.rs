@@ -347,6 +347,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
             name: dummy_tok(),
             var: v,
             ty,
+            borrowed: false,
         }
     }
 
@@ -963,7 +964,7 @@ fn run<'tcx>(
     func: &Function<'tcx>,
     builder: &MirBuilder<'_, 'tcx>,
 ) -> OwnershipTable {
-    let ot = analyze_function(tcx, func, &builder.table);
+    let ot = analyze_function(tcx, func, &builder.table, &Default::default());
     println!("{}", render(func, &ot, &builder.symbols));
     let rr = Rr::new(tcx, &builder.table);
     check_balanced(func, &ot, &rr);

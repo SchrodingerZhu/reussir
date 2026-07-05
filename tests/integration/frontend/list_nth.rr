@@ -33,7 +33,6 @@ fn nth(list : List<i32>, n : i32) -> Option<i32> {
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec list, return None
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // Cons(x, xs): extract fields (head then tail), inc tail, dec list, check index
@@ -43,7 +42,6 @@ fn nth(list : List<i32>, n : i32) -> Option<i32> {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // n==0 branch: dec xs, return Some(x)
 // CHECK-MLIR:       reussir.rc.dec
 // CHECK-MLIR:       reussir.record.compound

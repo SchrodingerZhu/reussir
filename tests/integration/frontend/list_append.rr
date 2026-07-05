@@ -21,7 +21,6 @@ fn append(a : List<i32>, b : List<i32>) -> List<i32> {
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec a, yield b (ownership of b transfers to caller)
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       reussir.scf.yield %arg1 :
 // Cons(x, xs): load x, load xs, inc xs, dec a, build Cons{x, append(xs, b)}
 // CHECK-MLIR:       [1] ->
@@ -30,7 +29,6 @@ fn append(a : List<i32>, b : List<i32>) -> List<i32> {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       call @_RC6append
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant

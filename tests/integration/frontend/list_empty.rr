@@ -53,12 +53,10 @@ pub fn empty2(list : List<i32>) -> bool {
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec scrutinee, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant true
 // Cons: dec scrutinee, yield false (no pattern bindings extracted)
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant false
 
 // empty2: match with explicit Cons(..)
@@ -66,9 +64,7 @@ pub fn empty2(list : List<i32>) -> bool {
 // CHECK-MLIR:       reussir.record.dispatch
 // Nil: dec, yield true
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // Cons: dec, yield false (no pattern bindings extracted)
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       arith.constant false

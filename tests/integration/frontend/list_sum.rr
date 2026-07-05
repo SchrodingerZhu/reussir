@@ -18,17 +18,15 @@ fn sum(list : List<i32>) -> i32 {
 // CHECK-MLIR-LABEL: func.func private @_RC3sum(%arg0
 // CHECK-MLIR:       reussir.rc.borrow(%arg0 :
 // CHECK-MLIR:       reussir.record.dispatch
-// Nil: dec list, yield 0
+// Nil: yield 0
 // CHECK-MLIR:       [0] ->
-// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       arith.constant 0 : i32
 // CHECK-MLIR:       reussir.scf.yield
-// Cons: load x (i32), load xs (RC), inc xs, dec list, recurse
+// Cons: load x (i32), load xs (RC), inc xs, recurse (borrowed), settle xs
 // CHECK-MLIR:       [1] ->
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0 :
 // CHECK-MLIR:       call @_RC3sum

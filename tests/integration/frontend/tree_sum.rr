@@ -25,7 +25,6 @@ fn tree_sum(t : Tree) -> i32 {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.scf.yield
 // Node(l, r): both children are RC, both need inc, then dec scrutinee
 // CHECK-MLIR:       [1] ->
@@ -35,6 +34,5 @@ fn tree_sum(t : Tree) -> i32 {
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       call @_RC8tree_sum
 // CHECK-MLIR:       call @_RC8tree_sum

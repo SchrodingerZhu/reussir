@@ -34,7 +34,9 @@ use reussir_backend::melior::ir::{
 };
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
-use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
+use reussir_core::full::ownership::{
+    BorrowMasks, OwnershipTable, RcOp, RecordTable, analyze_function, borrow_masks,
+};
 use reussir_core::intrinsic::IntrinsicOp;
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
@@ -217,6 +219,9 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     /// enables DWARF variable/type emission. See [`debug`](super::debug).
     pub(super) names: Option<&'p dyn Resolver<TokenKey>>,
     ownership: RefCell<OwnershipTable>,
+    /// Every function's borrowed-parameter convention (see
+    /// `reussir_core::full::borrow`), consulted at call sites.
+    borrow_masks: BorrowMasks,
     var_tys: RefCell<FxHashMap<VarId, Ty<'tcx>>>,
     /// Ground types of the temporary expressions currently held in
     /// [`Env::temps`], so a reference-count op the ownership pass keyed to such a
@@ -261,6 +266,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             source,
             names,
             ownership: RefCell::new(OwnershipTable::default()),
+            borrow_masks: borrow_masks(program),
             var_tys: RefCell::new(FxHashMap::default()),
             temp_tys: RefCell::new(FxHashMap::default()),
             cur_loc: RefCell::new(Location::unknown(context)),
@@ -359,7 +365,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
 
         // Reset the per-function side-tables, then run the ownership analysis for
         // this body so the tree-walk can emit each node's reference-count ops.
-        *self.ownership.borrow_mut() = analyze_function(self.tcx, func, &self.records);
+        *self.ownership.borrow_mut() =
+            analyze_function(self.tcx, func, &self.records, &self.borrow_masks);
         self.var_tys.borrow_mut().clear();
         self.temp_tys.borrow_mut().clear();
 
@@ -407,6 +414,31 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // linkage is external either way, which is what cross-unit resolution
         // needs).
         let mut attributes = Vec::new();
+        // Borrowed-parameter positions (see `reussir_core::full::borrow`), as
+        // an array attribute backend passes consult: IncDecCancellation may
+        // cancel an inc/dec pair around a call that only lends the value, and
+        // TRMC must not reorder a lent argument's settle-dec across the call.
+        let borrowed: Vec<i64> = func
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.borrowed.then_some(i as i64))
+            .collect();
+        if !borrowed.is_empty() {
+            let rendered = format!(
+                "array<i64: {}>",
+                borrowed
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            attributes.push((
+                Identifier::new(self.context, "reussir.borrowed_params"),
+                Attribute::parse(self.context, &rendered)
+                    .unwrap_or_else(|| panic!("malformed borrowed attribute {rendered}")),
+            ));
+        }
         if !emit_body || (func.visibility == Visibility::Private && !self.unit.is_split()) {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
@@ -651,10 +683,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     })?);
                 }
                 for a in args.iter() {
-                    operands.push(
-                        self.expr(block, env, a)?
-                            .ok_or_else(|| LoweringError("call argument is unit".into()))?,
-                    );
+                    let val = self
+                        .expr(block, env, a)?
+                        .ok_or_else(|| LoweringError("call argument is unit".into()))?;
+                    // A temporary lent to a borrowed parameter is released
+                    // AFTER the call (the ownership pass keys a `DropValue`
+                    // to this call node); stash it so that op can find it.
+                    if !matches!(a.kind, ExprKind::Var(_)) {
+                        self.remember_temp(env, a, val);
+                    }
+                    operands.push(val);
                 }
                 let result_tys = if is_unit(e.ty) {
                     Vec::new()

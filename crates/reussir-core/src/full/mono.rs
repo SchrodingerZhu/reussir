@@ -162,6 +162,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                     name: *name,
                     var: *var,
                     ty,
+                    borrowed: false,
                 }
             })
             .collect();
@@ -255,12 +256,16 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         symbols, reports, ..
     } = driver;
     (
-        mir::Program {
-            functions,
-            records,
-            trampolines,
-            string_literals: input.strings.clone(),
-            symbols,
+        {
+            let mut program = mir::Program {
+                functions,
+                records,
+                trampolines,
+                string_literals: input.strings.clone(),
+                symbols,
+            };
+            super::borrow::infer_borrowed_params(tcx, &mut program);
+            program
         },
         reports,
     )

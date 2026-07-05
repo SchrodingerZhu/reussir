@@ -170,6 +170,7 @@ pub struct Param {
     pub var: u32,
     pub name: String,
     pub ty: Ty,
+    pub borrowed: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -207,6 +207,7 @@ impl<'tcx> Builder<'_, 'tcx> {
                     name,
                     var: VarId(p.var),
                     ty: self.ty(&p.ty),
+                    borrowed: p.borrowed,
                 }
             })
             .collect();

@@ -92,6 +92,12 @@ pub struct Param<'tcx> {
     pub name: TokenKey,
     pub var: VarId,
     pub ty: Ty<'tcx>,
+    /// Inferred borrowed calling convention: the callee only reads the value
+    /// (match scrutinee / projection base) and neither consumes nor returns
+    /// it, so callers pass without a dup and keep ownership (see
+    /// [`super::borrow`]). Deterministic from the body alone, so every
+    /// codegen unit and repl re-monomorphization agrees.
+    pub borrowed: bool,
 }
 
 /// A ground record instance whose layout the backend materializes. Keyed by

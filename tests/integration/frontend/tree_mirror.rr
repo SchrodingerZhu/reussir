@@ -25,7 +25,6 @@ fn mirror(t : Tree) -> Tree {
 // CHECK-MLIR:       reussir.ref.project
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR-NOT:   reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // CHECK-MLIR:       reussir.record.compound
 // CHECK-MLIR:       reussir.record.variant
 // CHECK-MLIR:       reussir.rc.create
@@ -37,7 +36,6 @@ fn mirror(t : Tree) -> Tree {
 // CHECK-MLIR:       reussir.ref.load
 // CHECK-MLIR:       reussir.rc.inc
 // CHECK-MLIR:       reussir.rc.inc
-// CHECK-MLIR:       reussir.rc.dec(%arg0
 // Recursive calls in swapped order: mirror(r) then mirror(l)
 // CHECK-MLIR:       call @_RC6mirror
 // CHECK-MLIR:       call @_RC6mirror
