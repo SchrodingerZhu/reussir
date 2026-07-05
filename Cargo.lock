@@ -1300,8 +1300,7 @@ dependencies = [
 [[package]]
 name = "mlir-sys"
 version = "220.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55f8c5781dc23ebe7456f9e9aaecab9eee9e542f7e9051b95b0a31b1d5d4b61f"
+source = "git+https://github.com/reussir-lang/mlir-sys?rev=eddb6b0fcab6980633eedf6e549276b3e9b7d18a#eddb6b0fcab6980633eedf6e549276b3e9b7d18a"
 dependencies = [
  "bindgen",
 ]

@@ -32,6 +32,7 @@ module;
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/TargetSelect.h>
 #include <mlir/IR/MLIRContext.h>
+#include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <optional>
 #include <spdlog/spdlog.h>

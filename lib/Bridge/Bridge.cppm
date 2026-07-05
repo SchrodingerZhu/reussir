@@ -57,6 +57,7 @@ module;
 #include <mlir/InitAllExtensions.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <mlir/Parser/Parser.h>
+#include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>

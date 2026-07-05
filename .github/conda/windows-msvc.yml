@@ -1,0 +1,20 @@
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - cmake
+  - ninja
+  - lit
+  - clangxx=22.1.8
+  - compiler-rt=22.1.8
+  - llvmdev=22.1.8
+  - llvm-tools=22.1.8
+  - mlir=22.1.8
+  - gtest
+  - spdlog
+  - zlib
+  - zstd
+  - libxml2
+  - pip
+  - pip:
+      - filecheck==1.0.3

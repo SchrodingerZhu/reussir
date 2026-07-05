@@ -111,3 +111,8 @@ ratatui-textarea = "0.9"
 
 [profile.release]
 lto = "thin"
+
+[patch.crates-io]
+# Reussir fork carries MSVC fixes for conda-forge LLVM/MLIR 22 until they can
+# be upstreamed: enum alias normalization, .lib parsing, and static:-bundle.
+mlir-sys = { git = "https://github.com/reussir-lang/mlir-sys", rev = "eddb6b0fcab6980633eedf6e549276b3e9b7d18a" }

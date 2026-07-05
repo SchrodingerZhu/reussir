@@ -14,6 +14,9 @@
 #include <llvm/Support/CBindingWrapping.h>
 #include <llvm/Support/Error.h>
 
+// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
+// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+#include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Pass.h>
 #include <mlir/Conversion/ConvertToLLVM/ToLLVMPass.h>
@@ -22,6 +25,7 @@
 #include <mlir/Dialect/DLTI/DLTI.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Target/LLVMIR/Import.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>

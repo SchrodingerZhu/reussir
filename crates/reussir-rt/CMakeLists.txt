@@ -43,6 +43,7 @@ add_custom_target(reussir-rt-install ALL
     COMMENT "Installing reussir-rt libraries"
     DEPENDS reussir-rt-build
 )
+add_dependencies(reussir-rt-install reussir-rt-build)
 
 # Read rust-toolchain.toml to get the channel
 file(READ "${CMAKE_SOURCE_DIR}/rust-toolchain.toml" RUST_TOOLCHAIN_CONTENT)
@@ -83,6 +84,7 @@ string(REPLACE "-" "_" RUST_CARGO_TARGET_ENV ${RUST_HOST_TRIPLE})
 string(TOUPPER "${RUST_CARGO_TARGET_ENV}" RUST_CARGO_TARGET_ENV)
 
 set(INSTALLED_TOOLCHAIN_PATH "${LOCAL_RUSTUP_HOME}/toolchains/${RUST_CHANNEL}-${RUST_HOST_TRIPLE}")
+set(RUST_HOST_LIBRARY_DIR "${INSTALLED_TOOLCHAIN_PATH}/lib/rustlib/${RUST_HOST_TRIPLE}/lib")
 set(REUSSIR_RUNTIME_NEEDS_BUILD_STD OFF)
 foreach(sanitizer IN LISTS REUSSIR_RUNTIME_SANITIZERS)
     string(TOLOWER "${sanitizer}" sanitizer)
@@ -127,14 +129,20 @@ add_custom_target(reussir-rust-install ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${INSTALLED_TOOLCHAIN_PATH}/lib"
         "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+    # Stage host Rust dylibs where the test executables' rpath can find them.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${RUST_HOST_LIBRARY_DIR}"
+        "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
     COMMENT "Installing rust libraries and tools from ${INSTALLED_TOOLCHAIN_PATH}"
     DEPENDS reussir-rt-build reussir-rust-toolchain-fetch
 )
+add_dependencies(reussir-rust-install reussir-rt-build reussir-rust-toolchain-fetch)
 
 # Main reussir-rt target that depends on the complete build process
 add_custom_target(reussir-rt ALL
     DEPENDS reussir-rt-install reussir-rust-install
 )
+add_dependencies(reussir-rt reussir-rt-install reussir-rust-install)
 
 set(REUSSIR_SUPPORTED_RUNTIME_SANITIZERS address leak memory thread)
 set(REUSSIR_SANITIZED_RUNTIME_TARGETS "")
@@ -176,6 +184,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
         COMMENT "Building sanitized runtime ${output_lib}"
         DEPENDS reussir-rust-toolchain-fetch
     )
+    add_dependencies(reussir-rt-${suffix}-build reussir-rust-toolchain-fetch)
 
     add_custom_target(reussir-rt-${suffix}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${REUSSIR_RT_OUTPUT_DIR}/sanitizers"
@@ -185,6 +194,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
         COMMENT "Installing sanitized runtime ${output_lib}"
         DEPENDS reussir-rt-${suffix}-build
     )
+    add_dependencies(reussir-rt-${suffix} reussir-rt-${suffix}-build)
 
     list(APPEND REUSSIR_SANITIZED_RUNTIME_TARGETS reussir-rt-${suffix})
     set(REUSSIR_SANITIZED_RUNTIME_TARGETS "${REUSSIR_SANITIZED_RUNTIME_TARGETS}" PARENT_SCOPE)
@@ -213,6 +223,7 @@ endforeach()
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
     add_custom_target(reussir-rt-sanitizers
         DEPENDS ${REUSSIR_SANITIZED_RUNTIME_TARGETS})
+    add_dependencies(reussir-rt-sanitizers ${REUSSIR_SANITIZED_RUNTIME_TARGETS})
 else()
     add_custom_target(reussir-rt-sanitizers
         COMMAND ${CMAKE_COMMAND} -E echo "No sanitized Reussir runtimes configured"

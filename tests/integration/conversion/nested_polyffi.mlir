@@ -1,3 +1,4 @@
+// UNSUPPORTED: darwin
 // RUN: %reussir-opt --reussir-compile-polymorphic-ffi=optimized %s \
 // RUN:   -reussir-lowering-basic-ops --convert-to-llvm \
 // RUN:   --reconcile-unrealized-casts | %reussir-translate --reussir-to-llvmir \

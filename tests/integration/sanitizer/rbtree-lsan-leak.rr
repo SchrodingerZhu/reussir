@@ -2,7 +2,9 @@
 // RUN: %rrc %S/../frontend/rbtree.rr -o %t.ll -t llvm-ir --relocation-mode pic
 // RUN: %cc %lsan_flags -c -x ir %t.ll -o %t.o
 // RUN: %cc %lsan_flags %t.o %S/rbtree-harness.c %reussir_rt_lsan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
-// RUN: %lsan_env %not --crash %t.exe
+// RUN: LSAN_OPTIONS=abort_on_error=0:report_objects=1:use_registers=0:use_stacks=0 %not %t.exe
 
-// Uses a small N (50) harness. The harness walks the list and exits without
-// releasing it, so LSan should report the leak.
+// Uses a small N (50) harness, then intentionally asks LSan to check a leaked C
+// allocation. The harness returns nonzero when LSan finds the leak, with
+// stack/register roots disabled so the deliberate leak is not hidden by
+// conservative root scanning.
