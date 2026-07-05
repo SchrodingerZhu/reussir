@@ -46,7 +46,7 @@ use smallvec::SmallVec;
 use crate::source::{FileId, SourceCache};
 
 use super::ty::{TypeCtx, field_link_element, is_unit, num_class, regional_capability};
-use super::{LoweringError, Result, err};
+use super::{LinkagePolicy, LoweringError, Result, err};
 
 /// The lexical environment threaded through one block scope: the SSA value bound
 /// to each in-scope variable, together with the enclosing region handle regional
@@ -238,6 +238,8 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     pub(super) dbg_building: RefCell<FxHashSet<mir::Symbol>>,
     /// String-literal payloads by token, for `str.select` pattern emission.
     string_payloads: RapidHashMap<StringToken, &'p str>,
+    /// How definitions map to LLVM linkage (see [`LinkagePolicy`]).
+    linkage: LinkagePolicy,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
@@ -247,6 +249,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         program: &'p mir::Program<'tcx>,
         source: Option<&'p SourceCache>,
         names: Option<&'p dyn Resolver<TokenKey>>,
+        linkage: LinkagePolicy,
     ) -> Self {
         Lowerer {
             context,
@@ -268,6 +271,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 .iter()
                 .map(|(token, payload)| (*token, payload.as_str()))
                 .collect(),
+            linkage,
         }
     }
 
@@ -408,6 +412,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 StringAttribute::new(self.context, "private").into(),
             ));
         }
+        // The function's LLVM linkage (an `llvm.linkage` attribute FuncToLLVM
+        // carries onto the `llvm.func`). Declarations stay plain external.
+        if let Some(linkage) = self.llvm_linkage(func) {
+            let attr = format!("#llvm.linkage<{linkage}>");
+            attributes.push((
+                Identifier::new(self.context, "llvm.linkage"),
+                Attribute::parse(self.context, &attr)
+                    .unwrap_or_else(|| panic!("malformed linkage attribute {attr}")),
+            ));
+        }
         // Debug info (when enabled): the parameters' names/types as an attribute
         // the conversion pass reads, and the function's own location fused with a
         // subprogram attribute. A body-less declaration gets neither — its home
@@ -430,6 +444,45 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             &attributes,
             func_loc,
         ))
+    }
+
+    /// The LLVM linkage for a lowered function under the session's
+    /// [`LinkagePolicy`], or `None` to leave the (external) default.
+    ///
+    /// A monomorphized generic instance is recognized by its v0 symbol: mono
+    /// mangles an instantiated item as `path-with-args` (`"I" path {type}+
+    /// "E"`), so exactly the instantiated symbols start with `_RI`. That makes
+    /// the classification stable across the textual-MIR round trip without
+    /// widening the MIR itself.
+    fn llvm_linkage(&self, func: &mir::Function<'tcx>) -> Option<&'static str> {
+        let symbol = self.program.symbol(func.symbol);
+        // Declarations — body-less functions, and every function outside its
+        // home codegen unit — stay plain external for cross-object resolution.
+        if func.body.is_none() || !self.unit.is_home(symbol) {
+            return None;
+        }
+        match self.linkage {
+            LinkagePolicy::Jit => None,
+            LinkagePolicy::Aot { dedup_instances } => {
+                if symbol.starts_with("_RI") {
+                    // Another compilation unit may instantiate the same
+                    // generic — emit the definition as mergeable. This holds
+                    // for private generics too: a pub generic caller can force
+                    // their instantiation from downstream units. Partitioned
+                    // builds keep this: the home unit's `linkonce_odr`
+                    // definition satisfies the other units' external
+                    // declarations.
+                    dedup_instances.then_some("linkonce_odr")
+                } else if func.visibility == Visibility::Private && !self.unit.is_split() {
+                    // Mirrors the `sym_visibility` promotion above: in a
+                    // partitioned build any other unit may call this symbol,
+                    // so the definition must stay externally linkable.
+                    Some("internal")
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Lower an expression into `block`, returning the SSA value holding its
