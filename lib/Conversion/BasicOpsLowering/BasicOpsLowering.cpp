@@ -144,7 +144,10 @@ mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
                                  uint64_t tag, TagEncoding encoding,
                                  mlir::IntegerType indexTy,
                                  mlir::OpBuilder &builder) {
-  std::string name = ("__reussir_tag_dummy_" + llvm::Twine(tag)).str();
+  // Content-addressed v0 name, like every other lowering-generated global
+  // (namespace + the decimal tag as payload).
+  std::string name =
+      mangledBlake3Symbol("REUSSIR_TAG_DUMMY", llvm::Twine(tag).str());
   auto global = module.lookupSymbol<mlir::LLVM::GlobalOp>(name);
   if (!global) {
     mlir::OpBuilder::InsertionGuard guard(builder);
@@ -179,7 +182,7 @@ mlir::Value isImmortalCount(mlir::Value count, mlir::Location loc,
 // The per-module scratch word guarded accesses are steered to.
 mlir::Value tagScratchAddr(mlir::ModuleOp module, mlir::Location loc,
                            mlir::OpBuilder &builder) {
-  constexpr llvm::StringLiteral kName = "__reussir_tag_scratch";
+  std::string kName = mangledBlake3Symbol("REUSSIR_TAG_SCRATCH", "");
   auto global = module.lookupSymbol<mlir::LLVM::GlobalOp>(kName);
   if (!global) {
     mlir::OpBuilder::InsertionGuard guard(builder);

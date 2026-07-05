@@ -13,14 +13,14 @@
 !list = !reussir.record<variant "List" {!reussir.record<compound "List.Cons" [value] {i64, !reussir.record<variant "List">}>, !reussir.record<compound "List.Nil" [value] {}>}>
 !rclist = !reussir.rc<!list>
 
-// CHECK-DAG: @__reussir_tag_scratch = internal global i64 0
-// CHECK-DAG: @__reussir_tag_dummy_1 = internal global [2 x i64] [i64 2, i64 1]
+// CHECK-DAG: @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2 = internal global i64 0
+// CHECK-DAG: @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX = internal global [2 x i64] [i64 2, i64 1]
 module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
 
   // Immediate materialization: dummy address | (tag + 1) << 56, no
   // allocation. (2 << 56 = 144115188075855872.)
   // CHECK-LABEL: define ptr @make_nil()
-  // CHECK: %[[ENC:.+]] = or i64 ptrtoint (ptr @__reussir_tag_dummy_1 to i64), 144115188075855872
+  // CHECK: %[[ENC:.+]] = or i64 ptrtoint (ptr @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX to i64), 144115188075855872
   // CHECK: %[[PTR:.+]] = inttoptr i64 %[[ENC]] to ptr
   // CHECK: ret ptr %[[PTR]]
   func.func @make_nil() -> !rclist {
@@ -57,7 +57,7 @@ module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.
   // CHECK: %[[INT:.+]] = ptrtoint ptr %0 to i64
   // CHECK: %[[TOP:.+]] = lshr i64 %[[INT]], 56
   // CHECK: %[[ISTAG:.+]] = icmp ne i64 %[[TOP]], 0
-  // CHECK: %[[ADDR:.+]] = select i1 %[[ISTAG]], ptr @__reussir_tag_scratch, ptr %0
+  // CHECK: %[[ADDR:.+]] = select i1 %[[ISTAG]], ptr @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2, ptr %0
   // CHECK: store i64 %1, ptr %[[ADDR]]
   func.func @set(%rc: !rclist, %v: index) {
     reussir.rc.set(%rc : !rclist, %v : index)
