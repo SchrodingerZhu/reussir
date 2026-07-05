@@ -570,7 +570,18 @@ void RecordType::complete(llvm::ArrayRef<mlir::Type> members,
 //===----------------------------------------------------------------------===//
 // RecordType GetElementRegionSizeAndAlignment
 //===----------------------------------------------------------------------===//
+bool RcBoxType::isHeaderFused() const {
+  auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
+  return recordTy && recordTy.hasFusedHeader() && !isRegional();
+}
+
+bool RecordType::hasFusedHeader() const {
+  return isVariant() && getDefaultCapability() != Capability::value;
+}
+
 mlir::IntegerType RecordType::getTagType() const {
+  if (hasFusedHeader())
+    return mlir::IntegerType::get(getContext(), 32);
   size_t arms = getMembers().size();
   unsigned width = arms <= (1u << 8) ? 8 : arms <= (1u << 16) ? 16 : 32;
   return mlir::IntegerType::get(getContext(), width);
@@ -654,6 +665,15 @@ RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
   if (isCompound())
     return size * 8; // Convert to bits
 
+  if (hasFusedHeader()) {
+    // {4-byte count slot, i32 tag, payload}: an 8-byte header the rc box
+    // overlays its refcount onto; the payload sits at its natural boundary
+    // past it.
+    llvm::Align finalAlign = std::max(align, llvm::Align(8));
+    llvm::TypeSize headerSize =
+        llvm::alignTo(llvm::TypeSize::getFixed(8), align.value());
+    return llvm::alignTo(size + headerSize, finalAlign.value()) * 8;
+  }
   mlir::IntegerType tagType = getTagType();
   llvm::TypeSize tagSize = dataLayout.getTypeSize(tagType);
   llvm::Align tagAlign{dataLayout.getTypeABIAlignment(tagType)};
@@ -673,6 +693,8 @@ RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
   if (isCompound())
     return align.value();
 
+  if (hasFusedHeader())
+    return std::max<uint64_t>(align.value(), 8);
   mlir::IntegerType tagType = getTagType();
   uint64_t tagAlignment = dataLayout.getTypeABIAlignment(tagType);
   uint64_t finalAlignment = std::max(align.value(), tagAlignment);
@@ -934,13 +956,20 @@ void RcBoxType::print(mlir::AsmPrinter &printer) const {
 llvm::TypeSize
 RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                              mlir::DataLayoutEntryListRef params) const {
-  mlir::IndexType type = mlir::IndexType::get(getContext());
+  // A box whose element carries a fused header IS the element: the refcount
+  // overlays the element's leading count slot.
+  if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
+      recordTy && recordTy.hasFusedHeader() && !isRegional())
+    return dataLayout.getTypeSizeInBits(recordTy);
+  mlir::IndexType ptrWord = mlir::IndexType::get(getContext());
+  mlir::IntegerType countType = mlir::IntegerType::get(getContext(), 32);
   auto derived =
       isRegional()
           ? deriveCompoundSizeAndAlignment(
-                getContext(), {type, type, type, getEleTy()},
+                getContext(), {ptrWord, ptrWord, ptrWord, getEleTy()},
                 {false, false, false, false}, dataLayout, true)
-          : deriveCompoundSizeAndAlignment(getContext(), {type, getEleTy()},
+          : deriveCompoundSizeAndAlignment(getContext(),
+                                           {countType, getEleTy()},
                                            {false, false}, dataLayout, true);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed size");
@@ -950,13 +979,18 @@ RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                     mlir::DataLayoutEntryListRef params) const {
-  mlir::IndexType type = mlir::IndexType::get(getContext());
+  if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
+      recordTy && recordTy.hasFusedHeader() && !isRegional())
+    return dataLayout.getTypeABIAlignment(recordTy);
+  mlir::IndexType ptrWord = mlir::IndexType::get(getContext());
+  mlir::IntegerType countType = mlir::IntegerType::get(getContext(), 32);
   auto derived =
       isRegional()
           ? deriveCompoundSizeAndAlignment(
-                getContext(), {type, type, type, getEleTy()},
+                getContext(), {ptrWord, ptrWord, ptrWord, getEleTy()},
                 {false, false, false, false}, dataLayout, true)
-          : deriveCompoundSizeAndAlignment(getContext(), {type, getEleTy()},
+          : deriveCompoundSizeAndAlignment(getContext(),
+                                           {countType, getEleTy()},
                                            {false, false}, dataLayout, true);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed alignment");

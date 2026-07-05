@@ -6,7 +6,9 @@ use std::{
 
 #[repr(C)]
 struct RcBox<T> {
-    count: Cell<usize>,
+    // Mirrors the compiler's box header: an i32 refcount, with the payload
+    // at `align_to(4, align(T))` (repr(C) gives exactly that).
+    count: Cell<u32>,
     data: UnsafeCell<T>,
 }
 
@@ -44,7 +46,7 @@ impl<T> Rc<T> {
     pub unsafe fn data_mut(&mut self) -> &mut T {
         unsafe { &mut *self.get_box().as_mut().data.get() }
     }
-    pub fn count_ref(&self) -> &Cell<usize> {
+    pub fn count_ref(&self) -> &Cell<u32> {
         unsafe { &self.get_box().as_ref().count }
     }
     pub fn is_unique(&self) -> bool {

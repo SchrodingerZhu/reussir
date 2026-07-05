@@ -82,8 +82,15 @@ RecordType::emitScannerInstructions(llvm::SmallVectorImpl<int32_t> &buffer,
   size_t scannedBytes = EmitState.scannedBytes;
   size_t cursorPosition = EmitState.cursorPosition;
   auto tagSize = dataLayout.getTypeSize(getTagType()).getFixedValue();
+  // A fused-header variant keeps its tag past the 4-byte count slot; move
+  // the cursor onto it before the variant read.
+  size_t tagOffset = scannedBytes + (hasFusedHeader() ? 4 : 0);
+  if (cursorPosition < tagOffset) {
+    buffer.push_back(advance(tagOffset - cursorPosition));
+    cursorPosition = tagOffset;
+  }
   buffer.push_back(variant(tagSize));
-  scannedBytes += tagSize;
+  scannedBytes = tagOffset + tagSize;
   auto layoutInfo = getElementRegionLayoutInfo(dataLayout);
   scannedBytes = llvm::alignTo(scannedBytes, layoutInfo.alignment);
   size_t currentSkip = buffer.size();

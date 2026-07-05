@@ -44,6 +44,20 @@ fn variant_tag_size(arms: usize) -> u64 {
     }
 }
 
+/// Tag offset/width and payload header size of a variant record (mirrors the
+/// backend layout): a shared/regional variant carries the fused 8-byte box
+/// header `{i32 count slot, i32 tag}`, so the tag reads at offset 4 and the
+/// payload starts past 8 bytes; a [value] variant is `{minimal tag @ 0,
+/// payload}`.
+fn variant_tag_layout(cap: DefaultCap, arms: usize) -> (u64, u64, u64) {
+    if cap == DefaultCap::Value {
+        let tag = variant_tag_size(arms);
+        (0, tag, tag)
+    } else {
+        (4, 4, 8)
+    }
+}
+
 /// Packed physical member order (mirrors `RecordType::getPackedOrder`):
 /// member indices sorted by descending storage alignment, stable on
 /// declaration order.
@@ -218,9 +232,10 @@ pub fn inline_size_align<'tcx>(
                 ShapeLayout::Compound(fields) => compound_size_align(fields, shapes),
                 ShapeLayout::Variants(variants) => {
                     let payload = variants_payload_size_align(variants, shapes)?;
-                    let tag = variant_tag_size(variants.len());
-                    let payload_offset = align_to(tag, payload.align);
-                    let align = payload.align.max(tag);
+                    let (_, tag_size, header) =
+                        variant_tag_layout(shape.default_cap, variants.len());
+                    let payload_offset = align_to(header, payload.align);
+                    let align = payload.align.max(if header == 8 { 8 } else { tag_size });
                     Ok(SizeAlign {
                         size: align_to(payload_offset + payload.size, align),
                         align,
@@ -232,8 +247,8 @@ pub fn inline_size_align<'tcx>(
     }
 }
 
-/// The payload address inside a **shared** rc box (`{ count: usize, T }`,
-/// payload at `align_to(usize, align(T))`). Used by the value caller to
+/// The payload address inside a **shared** rc box (`{ count: i32, T }`,
+/// payload at `align_to(4, align(T))`). Used by the value caller to
 /// reach the `__ReplBox` payload without walking the box as a record.
 ///
 /// # Safety
@@ -245,7 +260,7 @@ pub unsafe fn shared_box_payload<'tcx>(
     shapes: &ShapeTable<'tcx>,
 ) -> Result<*const u8, String> {
     let inner = inline_size_align(box_ty, shapes)?;
-    Ok(unsafe { boxed.add(align_to(WORD, inner.align) as usize) })
+    Ok(unsafe { boxed.add(align_to(4, inner.align) as usize) })
 }
 
 /// Packed layout of a member list (descending storage alignment, stable on
@@ -498,9 +513,15 @@ impl<'tcx> Walker<'_, 'tcx> {
                         return Ok(());
                     }
                     let inner = inline_size_align(ty, self.shapes)?;
+                    let fused_variant =
+                        matches!(shape.layout, ShapeLayout::Variants(_))
+                            && shape.default_cap != DefaultCap::Value;
                     let header = match shape.default_cap {
-                        DefaultCap::Value => WORD, // unreachable in practice
-                        DefaultCap::Shared => WORD,
+                        DefaultCap::Value => 4, // unreachable in practice
+                        // A shared variant box IS the record: the refcount
+                        // overlays the record's leading count slot.
+                        DefaultCap::Shared if fused_variant => 0,
+                        DefaultCap::Shared => 4,
                         DefaultCap::Regional => 3 * WORD,
                     };
                     let payload = boxed.add(align_to(header, inner.align) as usize);
@@ -527,10 +548,13 @@ impl<'tcx> Walker<'_, 'tcx> {
                 unsafe { self.render_fields(payload, fields, depth, out) }
             }
             ShapeLayout::Variants(variants) => {
-                let tag = match variant_tag_size(variants.len()) {
-                    1 => unsafe { payload.cast::<u8>().read_unaligned() as usize },
-                    2 => unsafe { payload.cast::<u16>().read_unaligned() as usize },
-                    _ => unsafe { payload.cast::<u32>().read_unaligned() as usize },
+                let (tag_offset, tag_size, _) =
+                    variant_tag_layout(shape.default_cap, variants.len());
+                let tag_addr = unsafe { payload.add(tag_offset as usize) };
+                let tag = match tag_size {
+                    1 => unsafe { tag_addr.cast::<u8>().read_unaligned() as usize },
+                    2 => unsafe { tag_addr.cast::<u16>().read_unaligned() as usize },
+                    _ => unsafe { tag_addr.cast::<u32>().read_unaligned() as usize },
                 };
                 let Some(variant) = variants.get(tag) else {
                     return Err(format!("corrupt enum tag {tag} for `{}`", shape.name));
@@ -551,9 +575,10 @@ impl<'tcx> Walker<'_, 'tcx> {
                     })
                     .collect();
                 let payload_area = variants_payload_size_align(variants, self.shapes)?;
-                let tag_size = variant_tag_size(variants.len());
+                let (_, _, header) =
+                    variant_tag_layout(shape.default_cap, variants.len());
                 let base =
-                    unsafe { payload.add(align_to(tag_size, payload_area.align) as usize) };
+                    unsafe { payload.add(align_to(header, payload_area.align) as usize) };
                 unsafe { self.render_fields(base, &fields, depth, out) }
             }
         }
