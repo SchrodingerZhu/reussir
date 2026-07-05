@@ -238,7 +238,9 @@ mod tests {
 
     #[repr(C)]
     struct Variants {
-        tag: usize,
+        // Mirrors the compiler's minimal-width variant tag (i8 for <= 256
+        // arms), with the payload at its natural alignment boundary.
+        tag: u8,
         storage: VariantsStorage,
     }
 
@@ -261,7 +263,7 @@ mod tests {
 
     unsafe impl RegionalObjectTrait for Variants {
         const SCAN_INSTRS: &'static [PackedInstr] = &[
-            Instruction::Variant.pack(),
+            Instruction::Variant(1).pack(),
             Instruction::Jump(3).pack(), // Goto Foo
             Instruction::Jump(5).pack(), // Goto Bar
             Instruction::End.pack(),     // Goto Baz, but no fields to scan

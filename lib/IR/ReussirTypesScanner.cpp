@@ -33,19 +33,14 @@ RecordType::emitScannerInstructions(llvm::SmallVectorImpl<int32_t> &buffer,
   if (isCompound()) {
     size_t scannedBytes = EmitState.scannedBytes;
     size_t cursorPosition = EmitState.cursorPosition;
-    for (auto [rawMember, isField] :
-         llvm::zip(getMembers(), getMemberIsField())) {
+    // Walk members in packed physical order: scan offsets must match the
+    // converted struct layout.
+    for (uint32_t logical : getPackedOrder(dataLayout)) {
+      mlir::Type rawMember = getMembers()[logical];
+      bool isField = getMemberIsField()[logical];
       if (!rawMember)
         continue;
-      mlir::Type member;
-      auto recordTy = llvm::dyn_cast<RecordType>(rawMember);
-      if (isField ||
-          (recordTy &&
-           (recordTy.getDefaultCapability() == Capability::shared ||
-            recordTy.getDefaultCapability() == Capability::regional)))
-        member = mlir::LLVM::LLVMPointerType::get(getContext());
-      else
-        member = rawMember;
+      mlir::Type member = memberStorageType(getContext(), rawMember, isField);
       // advance to the next field
       llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
       if (!memberSize.isFixed())
@@ -86,10 +81,9 @@ RecordType::emitScannerInstructions(llvm::SmallVectorImpl<int32_t> &buffer,
   // | variant | skip | skip | skip | ... | end |
   size_t scannedBytes = EmitState.scannedBytes;
   size_t cursorPosition = EmitState.cursorPosition;
-  auto indexTy = mlir::IndexType::get(getContext());
-  auto indexSize = dataLayout.getTypeSize(indexTy).getFixedValue();
-  buffer.push_back(variant());
-  scannedBytes += indexSize;
+  auto tagSize = dataLayout.getTypeSize(getTagType()).getFixedValue();
+  buffer.push_back(variant(tagSize));
+  scannedBytes += tagSize;
   auto layoutInfo = getElementRegionLayoutInfo(dataLayout);
   scannedBytes = llvm::alignTo(scannedBytes, layoutInfo.alignment);
   size_t currentSkip = buffer.size();

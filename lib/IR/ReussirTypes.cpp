@@ -236,6 +236,31 @@ bool isTriviallyCopyable(mlir::Type type) {
       .Default([](mlir::Type type) { return false; });
 }
 //===----------------------------------------------------------------------===//
+// memberStorageType
+//===----------------------------------------------------------------------===//
+// The type a member occupies in storage. A member is stored as a pointer if:
+// 1. it is a mutable field (isField == true)
+// 2. it is a referential record (either shared or regional)
+// 3. it is a closure
+// unless this layout is derived for memory box internal layout, which forces
+// the structure to expand in place.
+mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
+                             bool isField, bool memBoxInternal) {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
+  mlir::Type member = rawMember;
+  auto recordTy = llvm::dyn_cast<RecordType>(rawMember);
+  if (!memBoxInternal &&
+      (isField ||
+       (recordTy &&
+        (recordTy.getDefaultCapability() == Capability::shared ||
+         recordTy.getDefaultCapability() == Capability::regional))))
+    member = ptrTy;
+  if (llvm::isa<ClosureType>(member))
+    member = ptrTy;
+  return member;
+}
+
+//===----------------------------------------------------------------------===//
 // deriveCompoundSizeAndAlignment
 //===----------------------------------------------------------------------===//
 std::optional<std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>>
@@ -244,7 +269,6 @@ deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
                                llvm::ArrayRef<bool> memberIsField,
                                const mlir::DataLayout &dataLayout,
                                bool memBoxInternal) {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
   llvm::TypeSize resultSize = llvm::TypeSize::getFixed(0);
   llvm::Align resultAlignment{1};
   mlir::Type memberWithLargestAlignment;
@@ -254,24 +278,8 @@ deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
   for (auto [rawMember, isField] : llvm::zip(members, memberIsField)) {
     if (!rawMember)
       continue;
-    mlir::Type member = rawMember;
-    auto recordTy = llvm::dyn_cast<RecordType>(rawMember);
-    // A member is stored as a pointer if:
-    // 1. it is a mutable field (isField == true)
-    // 2. it is a referential record (either shared or regional)
-    // 3. if this layout is derived for memory box internal layout, we force
-    //    expand the structure in place.
-    if (!memBoxInternal &&
-        (isField ||
-         (recordTy &&
-          (recordTy.getDefaultCapability() == Capability::shared ||
-           recordTy.getDefaultCapability() == Capability::regional))))
-      member = ptrTy;
-
-    // Additionally, closure type is also stored as a pointer
-    if (auto closureTy = llvm::dyn_cast<ClosureType>(member))
-      member = ptrTy;
-
+    mlir::Type member =
+        memberStorageType(context, rawMember, isField, memBoxInternal);
     llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
     if (!memberSize.isFixed())
       return std::nullopt;
@@ -562,11 +570,53 @@ void RecordType::complete(llvm::ArrayRef<mlir::Type> members,
 //===----------------------------------------------------------------------===//
 // RecordType GetElementRegionSizeAndAlignment
 //===----------------------------------------------------------------------===//
+mlir::IntegerType RecordType::getTagType() const {
+  size_t arms = getMembers().size();
+  unsigned width = arms <= (1u << 8) ? 8 : arms <= (1u << 16) ? 16 : 32;
+  return mlir::IntegerType::get(getContext(), width);
+}
+
+llvm::SmallVector<uint32_t>
+RecordType::getPackedOrder(const mlir::DataLayout &dataLayout) const {
+  llvm::SmallVector<uint32_t> order(getMembers().size());
+  for (uint32_t i = 0; i < order.size(); ++i)
+    order[i] = i;
+  if (!isCompound())
+    return order;
+  llvm::SmallVector<uint64_t> aligns(order.size());
+  for (uint32_t i = 0; i < order.size(); ++i) {
+    mlir::Type storage = memberStorageType(getContext(), getMembers()[i],
+                                           getMemberIsField()[i]);
+    aligns[i] = dataLayout.getTypeABIAlignment(storage);
+  }
+  llvm::stable_sort(order,
+                    [&](uint32_t a, uint32_t b) { return aligns[a] > aligns[b]; });
+  return order;
+}
+
+uint32_t
+RecordType::getPhysicalMemberIndex(const mlir::DataLayout &dataLayout,
+                                   uint32_t index) const {
+  llvm::SmallVector<uint32_t> order = getPackedOrder(dataLayout);
+  auto *it = llvm::find(order, index);
+  assert(it != order.end() && "member index out of range");
+  return static_cast<uint32_t>(it - order.begin());
+}
+
 RecordType::LayoutInfo RecordType::getElementRegionLayoutInfo(
     const mlir::DataLayout &dataLayout) const {
   if (isCompound()) {
-    auto derived = deriveCompoundSizeAndAlignment(
-        getContext(), getMembers(), getMemberIsField(), dataLayout);
+    // Iterate members in packed physical order so offsets (and the total
+    // size) match the converted LLVM struct.
+    llvm::SmallVector<uint32_t> order = getPackedOrder(dataLayout);
+    llvm::SmallVector<mlir::Type> members(order.size());
+    llvm::SmallVector<bool> memberIsField(order.size());
+    for (auto [physical, logical] : llvm::enumerate(order)) {
+      members[physical] = getMembers()[logical];
+      memberIsField[physical] = getMemberIsField()[logical];
+    }
+    auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
+                                                  memberIsField, dataLayout);
     if (!derived)
       llvm_unreachable("RecordType must have a fixed size");
     auto [sizeInBytes, alignment, memberWithLargestAlignment] = *derived;
@@ -604,8 +654,7 @@ RecordType::getTypeSizeInBits(const ::mlir::DataLayout &dataLayout,
   if (isCompound())
     return size * 8; // Convert to bits
 
-  mlir::IndexType tagType =
-      mlir::IndexType::get(getContext()); // Use IndexType for tag
+  mlir::IntegerType tagType = getTagType();
   llvm::TypeSize tagSize = dataLayout.getTypeSize(tagType);
   llvm::Align tagAlign{dataLayout.getTypeABIAlignment(tagType)};
   llvm::Align finalAlign =
@@ -624,8 +673,7 @@ RecordType::getABIAlignment(const ::mlir::DataLayout &dataLayout,
   if (isCompound())
     return align.value();
 
-  mlir::IndexType tagType =
-      mlir::IndexType::get(getContext()); // Use IndexType for tag
+  mlir::IntegerType tagType = getTagType();
   uint64_t tagAlignment = dataLayout.getTypeABIAlignment(tagType);
   uint64_t finalAlignment = std::max(align.value(), tagAlignment);
   return finalAlignment;

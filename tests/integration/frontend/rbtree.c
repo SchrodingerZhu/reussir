@@ -4,10 +4,11 @@
 
 typedef struct rc_list {
     int64_t refcount;
-    int64_t tag;
+    uint8_t tag;      /* minimal-width variant tag (2 arms -> i8) */
+    uint8_t _pad[7];
+    struct rc_list *tail; /* members are packed by descending alignment */
     int32_t head;
-    int32_t _pad;
-    struct rc_list *tail;
+    int32_t _pad2;
 } rc_list_t;
 
 #define LIST_NIL 0

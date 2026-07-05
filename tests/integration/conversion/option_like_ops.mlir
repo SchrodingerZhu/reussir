@@ -123,7 +123,8 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
 // CHECK-LABEL: define i32 @option_unwrap_or_default(ptr %0, i32 %1)
 // CHECK: getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: load i64, ptr
+// CHECK: load i8, ptr
+// CHECK: zext i8
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label
@@ -135,7 +136,8 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
 // CHECK-LABEL: define i32 @option_unwrap_or_compute(ptr %0)
 // CHECK: getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: load i64, ptr
+// CHECK: load i8, ptr
+// CHECK: zext i8
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label
@@ -147,7 +149,8 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
 // CHECK-LABEL: define i32 @result_unwrap_or_error(ptr %0)
 // CHECK: getelementptr %Result, ptr %0, i32 0, i32 0
-// CHECK: load i64, ptr
+// CHECK: load i8, ptr
+// CHECK: zext i8
 // CHECK: trunc i64
 // CHECK: switch i32
 // CHECK: i32 0, label
