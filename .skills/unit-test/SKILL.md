@@ -4,10 +4,10 @@ description: Run unit tests for Reussir.
 license: MPL-2.0
 ---
 
-Reussir have both C++ and Haskell unit tests. 
+Reussir has C++ unit tests (googletest) and Rust crate tests.
 
-To run, invoke `ninja reussir-ut` in the build directory. Then run it
-under `build/bin`.
+To run the C++ unit tests, invoke `ninja reussir-ut` in the build directory.
+Then run it under `build/bin`.
 
 The output should look like this:
 ```bash
@@ -49,7 +49,9 @@ Running main() from ./googletest/src/gtest_main.cc
 [  PASSED  ] 10 tests.
 ```
 
-To run the Haskell unit tests, invoke `cabal test all -j` in the root directory.
-Notice that this may take a while and generates a long output. The whole command
-expect to exit successfully. There can be warnings generated at Reussir's
-backend, or some sample error messages from the compiler.
+To run the Rust crate tests, invoke the per-crate CMake test targets from the
+build directory, e.g. `ninja rrc-test`, `ninja reussir-codegen-test`, and
+`ninja reussir-backend-test`. Notice that this may take a while and generates a
+long output. Each is expected to exit successfully; there can be warnings from
+Reussir's backend, or sample error messages from the compiler's diagnostics
+tests.

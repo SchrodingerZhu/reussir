@@ -675,8 +675,8 @@ impl Emitter<'_> {
     fn constant(&self, token: &ResolvedToken) -> Value {
         match token.kind() {
             IntLit => tagged("ConstInt", int_value(token.text())),
-            // "ConstDouble" is the wire tag the Haskell differential verifier
-            // (`reussir-surface-verify`) decodes; keep it stable.
+            // "ConstDouble" is the JSON wire tag for a float literal in the
+            // surface-AST encoding; keep it stable for consumers of the JSON.
             FloatLit => tagged(
                 "ConstDouble",
                 // Underscore separators are not valid JSON; strip them. The

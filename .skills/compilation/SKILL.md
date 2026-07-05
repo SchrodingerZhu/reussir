@@ -4,76 +4,63 @@ description: Compile Reussir source code.
 license: MPL-2.0
 ---
 
-You can use `reussir-compiler` to compile Reussir source code.
-code.
+You can use `rrc` (the Reussir compiler driver, built from
+`crates/reussir-compiler`) to compile Reussir source code. Build it with
+`cmake --build build --target rrc`; the binary lands at `build/bin/rrc`.
 
-It has several CLI options:
+`rrc` is a clang-style pipeline driver. The input's extension (or `--from`)
+picks where to enter the chain, and `-o`'s extension (or `--emit`) picks where
+to leave it:
 
-```bash
-reussir-compiler - Reussir Compiler
-
-Usage: reussir-compiler INPUT (-o|--output OUTPUT) [-O|--opt-level ARG]
-                        [-t|--target ARG] [-l|--log-level ARG]
-                        [-m|--module-name ARG] [--target-triple TRIPLE]
-                        [--target-cpu CPU] [--target-features FEATURES]
-
-  Compile a Reussir file
-
-Available options:
-  INPUT                    Input file
-  -o,--output OUTPUT       Output file
-  -O,--opt-level ARG       Optimization level (none, default, aggressive, size,
-                           tpde)
-  -t,--target ARG          Output target (llvm-ir, asm, object)
-  -l,--log-level ARG       Log level (error, warning, info, debug, trace)
-  -m,--module-name ARG     Module name
-  --target-triple TRIPLE   Target triple (default: native)
-  --target-cpu CPU         Target CPU (default: native)
-  --target-features FEATURES
-                           Target features (default: native)
-  -h,--help                Show this help text
+```text
+.rr ──▶ .hir ──▶ .mir ──▶ .mlir ──▶ mlir-llvm ──▶ .ll ──▶ .s/.o
 ```
 
-As an example, to dump the llvm-ir, you can do something like:
+Key options (`rrc --help` for the full list):
+
+```text
+Usage: rrc [INPUT] --output <OUTPUT> [OPTIONS]
+
+  -o, --output <OUTPUT>     Output file (`-` writes hir/mir/mlir text dumps to stdout)
+  -t, --emit <EMIT>         Stage: hir, mir, mlir, mlir-llvm, llvm-ir, asm, obj
+  -x, --from <FROM>         Treat input as: rr, hir, mir, mlir, llvm-ir
+  -O, --opt <OPT>           none, default, aggressive, size
+      --relocation-mode     default, pic, static, dynamic-no-pic
+      --target-triple TRIPLE
+      --target-cpu CPU
+      --target-features FEATURES
+  -v, --verbose             Log lowering/backend tracing events to stderr
+```
+
+As an example, to dump the optimized LLVM IR:
 
 ```bash
-cabal run reussir-compiler -- tests/integration/frontend/projection.rr -o /dev/fd/0 -tllvm-ir -Oaggressive
+build/bin/rrc tests/integration/frontend/projection.rr -o out.ll --emit llvm-ir -O aggressive
 ```
 
 The first several lines will look like this:
 
 ```llvm
-; ModuleID = 'main'
-source_filename = "main"
+; ModuleID = 'LLVMDialectModule'
+source_filename = "LLVMDialectModule"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
+target triple = "aarch64-unknown-linux-gnu"
 
 %_RIC3BoxIC5RcBoxIC5RcBoxIC5RcBoxIC3BoxIC3BoxmEEEEEE = type { ptr }
-
-define weak_odr i32 @_RC10rc_project(ptr %0) local_unnamed_addr !dbg !3 {
-  %2 = getelementptr i8, ptr %0, i64 8, !dbg !6
-  %3 = load i32, ptr %2, align 4, !dbg !6
-  ret i32 %3, !dbg !6
-}
 ```
+
+Note: `llvm-ir`/`asm`/`obj` targets go through the file-based LLVM emitter, so
+they need a real `-o` path (not `-o -`). The `hir`/`mir`/`mlir`/`mlir-llvm` text
+dumps can stream to stdout with `-o -`.
 
 To cross-compile for a specific target, use the `--target-triple` flag:
 
 ```bash
-cabal run reussir-compiler -- tests/integration/frontend/projection.rr -o output.ll -tllvm-ir --target-triple x86_64-unknown-linux-gnu
+build/bin/rrc tests/integration/frontend/projection.rr -o output.ll --emit llvm-ir --target-triple x86_64-unknown-linux-gnu
 ```
 
-You can also specify `--target-cpu` and `--target-features` for finer control over code generation.
+You can also specify `--target-cpu` and `--target-features` for finer control
+over code generation.
 
-Using the `-ltrace` option, you can get more detailed information about the compilation process.
-
-Although it can be quite verbose:
-```
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: RefProject {refProjectVal = (Value 10,TypeRef (Ref {refInner = TypeExpr (Symbol "_RIC3BoxmE"), refAtomicity = NonAtomic, refCapability = Shared})), refProjectField = 0, refProjectRes = (Value 11,TypeRef (Ref {refInner = TypePrim (PrimInt PrimInt32), refAtomicity = NonAtomic, refCapability = Shared}))}
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: RefLoad {refLoadVal = (Value 11,TypeRef (Ref {refInner = TypePrim (PrimInt PrimInt32), refAtomicity = NonAtomic, refCapability = Shared})), refLoadRes = (Value 12,TypePrim (PrimInt PrimInt32))}
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: Return (Just (Value 12,TypePrim (PrimInt PrimInt32)))
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Lowering function Symbol "_RC10rc_project" with body
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: RcBorrow {rcBorrowVal = (Value 0,TypeRc (Rc {rcBoxInner = TypeExpr (Symbol "_RIC5RcBoxmE"), rcBoxAtomicity = NonAtomic, rcBoxCapability = Shared})), rcBorrowRes = (Value 1,TypeRef (Ref {refInner = TypeExpr (Symbol "_RIC5RcBoxmE"), refAtomicity = NonAtomic, refCapability = Shared}))}
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: RefProject {refProjectVal = (Value 1,TypeRef (Ref {refInner = TypeExpr (Symbol "_RIC5RcBoxmE"), refAtomicity = NonAtomic, refCapability = Shared})), refProjectField = 0, refProjectRes = (Value 2,TypeRef (Ref {refInner = TypePrim (PrimInt PrimInt32), refAtomicity = NonAtomic, refCapability = Shared}))}
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: RefLoad {refLoadVal = (Value 2,TypeRef (Ref {refInner = TypePrim (PrimInt PrimInt32), refAtomicity = NonAtomic, refCapability = Shared})), refLoadRes = (Value 3,TypePrim (PrimInt PrimInt32))}
-[2026-01-25 23:19:56.231] [reussir-compiler] [trace] reussir-compiler: Adding IR instruction: Return (Just (Value 3,TypePrim (PrimInt PrimInt32)))
-```
+Using `-v` (or `RUST_LOG`), you can get more detailed tracing about the
+lowering and backend pipeline (it can be quite verbose).

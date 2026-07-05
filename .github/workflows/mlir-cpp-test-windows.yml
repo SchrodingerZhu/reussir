@@ -25,24 +25,11 @@ jobs:
           drive-size: 8GB
           workspace-copy: true
           trusted-dev-drive: true
-          env-mapping: |
-            CABAL_DIR,{{ DEV_DRIVE }}\cabal
 
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
         with:
           working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-
-      - name: Cache Cabal (Windows)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CABAL_DIR }}
-            C:/ghcup
-            ${{ env.DEV_DRIVE_WORKSPACE }}/dist-newstyle
-          key: windows-clang64-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            windows-clang64-cabal-
 
       - name: Install vcredist140
         shell: pwsh
@@ -66,24 +53,6 @@ jobs:
             mingw-w64-clang-x86_64-python
             mingw-w64-clang-x86_64-python-pip
             mingw-w64-clang-x86_64-rustup
-
-      - name: Setup GHCup MSYSTEM
-        shell: msys2 {0}
-        run: |
-          echo "GHCUP_MSYS2_ENV=CLANG64" >> $GITHUB_ENV
-          echo "GHCUP_MSYS2=$(cygpath -w /)" >> $GITHUB_ENV
-
-      - name: Setup GHCup Without Silly Upstream
-        shell: msys2 {0}
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          export BOOTSTRAP_HASKELL_NONINTERACTIVE=1
-          export BOOTSTRAP_HASKELL_GHC_VERSION=9.14.1
-          export BOOTSTRAP_HASKELL_CABAL_VERSION=latest
-          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
-          . /c/ghcup/env
-          cabal update
-
 
       - name: Install Rust and Python dependencies
         shell: msys2 {0}
@@ -123,27 +92,6 @@ jobs:
         shell: msys2 {0}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          . /c/ghcup/env
           export GITHUB_WORKSPACE=$(cygpath "$DEV_DRIVE_WORKSPACE")
           . .github/workflows/setup_path.sh
           cmake --build build --target check
-
-      - name: Build Haskell frontend
-        shell: msys2 {0}
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          . /c/ghcup/env
-          export GITHUB_WORKSPACE=$(cygpath "$DEV_DRIVE_WORKSPACE")
-          . .github/workflows/setup_path.sh
-          cabal update
-          cabal build all -j
-
-      - name: Test Haskell frontend
-        shell: msys2 {0}
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          . /c/ghcup/env
-          export GITHUB_WORKSPACE=$(cygpath "$DEV_DRIVE_WORKSPACE")
-          . .github/workflows/setup_path.sh
-          chcp.com 65001
-          cabal test all -j

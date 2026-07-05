@@ -27,7 +27,7 @@ to exhibit the following qualities:
 
 ## Special Requirements for AI Agents
 
-- Test all changes using both Haskell/C++ unit tests and LLVM *lit*-based
+- Test all changes using both Rust/C++ unit tests and LLVM *lit*-based
   integration tests.
 - Do not leave scratch code, ad-hoc scripts, or debugging logs in the repository.
   Clean up all temporary artifacts before completing a task.

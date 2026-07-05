@@ -38,16 +38,10 @@ else()
 endif()
 
 set(rustc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rustc${CMAKE_EXECUTABLE_SUFFIX})
-set(reussir_elab_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-elab${CMAKE_EXECUTABLE_SUFFIX})
-set(reussir_compiler_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-compiler${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rrc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc${CMAKE_EXECUTABLE_SUFFIX})
-set(reussir_repl_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-repl${CMAKE_EXECUTABLE_SUFFIX})
-# The Rust REPL (`crates/reussir-repl`, binary `rrepl`), tested side by side
-# with the Haskell one until the Rust pipeline reaches parity.
+# The Rust REPL (`crates/reussir-repl`, binary `rrepl`).
 set(rrepl_path ${REUSSIR_RREPL_BINARY})
-set(reussir_parser_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-parser${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
-set(reussir_surface_verify_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-surface-verify${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rt_asan_path ${REUSSIR_RT_ASAN_LIBRARY})
 set(reussir_rt_lsan_path ${REUSSIR_RT_LSAN_LIBRARY})
 set(reussir_rt_msan_path ${REUSSIR_RT_MSAN_LIBRARY})
@@ -90,12 +84,15 @@ endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# `rrepl` carries an order-only dependency on reussir-rt (see
+# crates/reussir-repl/CMakeLists.txt), so it is safe to depend on here: it
+# builds after the runtime, not concurrently, and enables the repl-rs suite.
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
-  DEPENDS reussir-opt reussir-rt reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser reussir-syntax reussir-surface-verify rrc)
+  DEPENDS reussir-opt reussir-rt reussir-translate reussir-syntax rrc rrepl)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v --filter "sanitizer/"
-    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate reussir-elab reussir-repl reussir-compiler reussir-parser)
+    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate rrc)
 endif()

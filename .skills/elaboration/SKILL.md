@@ -4,99 +4,55 @@ description: Elaborate Reussir source code.
 license: MPL-2.0
 ---
 
-You can use `reussir-elab` to track the type checking process of Reussir source 
-code.
+You can use `rrc` (built with `cmake --build build --target rrc`) to inspect the
+type-checking and lowering of Reussir source code by dumping an intermediate
+stage with `--emit`:
 
-The command has two modes:
+- `--emit hir`: the **Semi** IR. Local expression types are inferred and
+  checked, but generic substitutions are not attempted — generics stay open
+  (`$0`, `$1`) for later instantiation.
+- `--emit mir`: the **Full** IR. All types are checked and monomorphized, and
+  memory-management modality is inserted: Rc-managed objects are wrapped, and
+  functions and records are mangled without generic parameters.
 
-- `--mode semi`: Semi-elaborate the source code and print the elaborated AST.
-  In the Semi IR, local expression types are inferred and checked but generic
-  subsitutions are not attempted. Instead, only generic solutions are printed,
-  which can be used for further instantiations.
-- `--mode full`: Fully elaborate the source code and print the elaborated AST.
-  In the Full IR, all types are checked and all generic subsitutions are
-  attempted. Different from the Semi IR, the Full IR additionally insert
-  modality for memory management. So, for Rc-managed objects, the values are
-  now wrapped in Rc. Moreover, functions and records are now mangled without
-  generic parameters.
-  
-For example, `cabal run reussir-elab -- --mode semi tests/integration/frontend/region.rr` will generate the following output:
+Add `--no-source-locations` for a structural dump (no file table / byte spans);
+use `-o -` to stream to stdout.
+
+For example, `build/bin/rrc tests/integration/frontend/region.rr --emit hir --no-source-locations -o -`
+generates:
 
 ```rust
-;; Instantiated Generics
-Generic @1 should be instantiated to:
-Generic @0 should be instantiated to:
-u64
+[regional] struct #Cell<$0> { "value": $0 };
 
-;; Elaborated Records
-struct [regional] Container<T@1>{
-    cell: [field] Cell[regional]<T1>
+[regional] struct #Container<$1> { "cell": field Nullable<[regional] #Cell::<$1>> };
+
+fn #trivial() -> u64 {
+    region { 1 : u64 } : u64
 }
 
-struct [regional] Cell<T@0>{
-    value: T0
+fn #freeze_cell() -> [rigid] #Cell::<u64> {
+    region { #Cell::<u64>{1 : u64} : [flex] #Cell::<u64> } : [rigid] #Cell::<u64>
 }
 
-
-;; Elaborated Functions
-fn freeze_cell() -> Cell[rigid]<u64> {
-    run_region{Cell<u64>(1.0 : u64) : Cell[flex]<u64>} : Cell[rigid]<u64>
-}
-
-fn trivial() -> u64 {
-    run_region{1.0 : u64} : u64
-}
-
-regional fn regional_function(v0 (x): u64) -> Cell[flex]<u64> {
-    Cell<u64>(v0) : Cell[flex]<u64>
-}
-
-fn freeze_cell_with_let_expr() -> Cell[rigid]<u64> {
-    run_region{{
-        let v0 (x) : Cell[flex]<u64> = regional_function[regional](42.0 : u64) : Cell[flex]<u64>;
-        v0
-    }} : Cell[rigid]<u64>
+regional fn #regional_function(v0 (x): u64) -> [flex] #Cell::<u64> {
+    #Cell::<u64>{v0 : u64} : [flex] #Cell::<u64>
 }
 ```
 
-While `cabal run reussir-elab -- --mode full tests/integration/frontend/region.rr` will generate the following output:
+While `build/bin/rrc tests/integration/frontend/region.rr --emit mir --no-source-locations -o -`
+generates the monomorphized, mangled Full IR:
 
 ```rust
-;; Elaborated Full Records
-struct _RIC4CellyE (aka Cell<u64>){
-    value: u64
+record @_RIC4CellyE : regional struct Cell::<u64> { "value": u64 };
+
+fn @_RC11freeze_cell() -> [rigid] Cell::<u64> {
+    region { @_RIC4CellyE{1 : u64} : [flex] Cell::<u64> } : [rigid] Cell::<u64>
 }
 
-
-;; Elaborated Full Functions
-regional fn _RC17regional_function(x: u64) -> Rc<_RIC4CellyE, Flex> {
-    {
-        rc_wrap(compound(v0) : _RIC4CellyE) : Rc<_RIC4CellyE, Flex>
-    }
-}
-
-fn _RC25freeze_cell_with_let_expr() -> Rc<_RIC4CellyE, Rigid> {
-    {
-        run_region{{
-            let v0 (x) : Rc<_RIC4CellyE, Flex> = _RC17regional_function[regional](42.0 : u64) : Rc<_RIC4CellyE, Flex>;
-            v0
-        }} : Rc<_RIC4CellyE, Rigid>
-    }
-}
-
-fn _RC7trivial() -> u64 {
-    {
-        run_region{{
-            1.0 : u64
-        }} : u64
-    }
-}
-
-fn _RC11freeze_cell() -> Rc<_RIC4CellyE, Rigid> {
-    {
-        run_region{{
-            rc_wrap(compound(1.0 : u64) : _RIC4CellyE) : Rc<_RIC4CellyE, Flex>
-        }} : Rc<_RIC4CellyE, Rigid>
-    }
+regional fn @_RC17regional_function(v0 (x): u64) -> [flex] Cell::<u64> {
+    @_RIC4CellyE{v0 : u64} : [flex] Cell::<u64>
 }
 ```
+
+Both the `hir` and `mir` text dumps round-trip: a dump can be fed back into
+`rrc` with `--from hir` / `--from mir` to resume the pipeline.

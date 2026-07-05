@@ -26,18 +26,13 @@ config.substitutions.append((r'%llc', config.llc_path))
 config.substitutions.append((r'%extra_sys_libs', config.extra_sys_libs))
 config.substitutions.append((r'%lli', config.lli_path))
 config.substitutions.append((r'%rpath_flag', config.rpath_flag))
-config.substitutions.append((r'%reussir-elab', config.reussir_elab_path))
-config.substitutions.append((r'%reussir-compiler', config.reussir_compiler_path))
 config.substitutions.append((r'%rrc', config.reussir_rrc_path))
-config.substitutions.append((r'%reussir-repl', config.reussir_repl_path))
 # The Rust REPL; its suite lives in repl-rs/ and only runs when the `rrepl`
 # CMake target has been built.
 config.substitutions.append((r'%rrepl', config.rrepl_path))
 if config.rrepl_path and os.path.exists(config.rrepl_path):
     config.available_features.add('rrepl')
-config.substitutions.append((r'%reussir-parser', config.reussir_parser_path))
 config.substitutions.append((r'%reussir-syntax', config.reussir_syntax_path))
-config.substitutions.append((r'%reussir-surface-verify', config.reussir_surface_verify_path))
 config.substitutions.append((r'%asan_flags', config.asan_flags))
 config.substitutions.append((r'%lsan_flags', config.lsan_flags))
 config.substitutions.append((r'%msan_flags', config.msan_flags))

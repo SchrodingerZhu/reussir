@@ -12,19 +12,6 @@ go through the following checklist:
 
   It is preferred to build Reussir with LLVM toolchain (>= 21) and Ninja.
 
-- `cabal --version` should return a version number greater than or equal to 3.16.
-  The following is a sample output:
-  ```bash
-  cabal-install version 3.16.1.0 
-  compiled using version 3.16.1.0 of the Cabal library (in-tree)
-  ```
-
-- `ghc --version` should return a version number greater than or equal to 9.14.
-  The following is a sample output:
-  ```bash
-  The Glorious Glasgow Haskell Compilation System, version 9.14.1
-  ```
-
 - `rustc --version` should return a version number greater than or equal to 1.90.
   The following is a sample output:
   ```bash

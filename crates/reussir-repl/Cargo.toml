@@ -8,9 +8,8 @@ description = "Reussir REPL: incremental elaboration over a persistent HIR, JIT-
 [lib]
 name = "reussir_repl"
 
-# The binary is `rrepl`, not `reussir-repl`: the Haskell frontend already
-# installs a `reussir-repl` executable (and CMake target); the two coexist
-# until the Rust pipeline reaches feature parity.
+# The binary is `rrepl` (the REPL's conventional short name), not
+# `reussir-repl`.
 [[bin]]
 name = "rrepl"
 path = "src/main.rs"

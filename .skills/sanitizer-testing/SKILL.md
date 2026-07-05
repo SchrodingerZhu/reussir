@@ -26,13 +26,12 @@ the runtime.
    ```bash
    ninja -C build-sanitizers reussir-ut check check-sanitizer
    ctest --test-dir build-sanitizers --output-on-failure
-   cabal test all -j
    ```
 
 3. For integration tests of generated Reussir programs, prefer this pipeline:
 
    ```bash
-   %reussir-compiler input.rr -o %t.ll -t llvm-ir ...
+   %rrc input.rr -o %t.ll --emit llvm-ir ...
    %cc %asan_flags -c -x ir %t.ll -o %t.o
    %cc %asan_flags %t.o harness.c %reussir_rt_asan -o %t.exe \
      %rpath_flag %extra_sys_libs

@@ -1,10 +1,8 @@
 # Builds the reussir-compiler Rust crate (the AOT driver: Reussir source ->
 # native object / assembly / LLVM IR) with cargo.
 #
-# The CMake targets and the produced binary are named `rrc`, not
-# `reussir-compiler`: frontend/CMakeLists.txt already registers a
-# `reussir-compiler` custom target, and CMake aborts configuration when two
-# targets share a name.
+# The CMake targets and the produced binary are named `rrc` (the driver's
+# conventional short name), not `reussir-compiler`.
 #
 # Like reussir-backend / reussir-jit / reussir-codegen, these targets are NOT
 # part of the default `ALL` build. Invoke them explicitly:

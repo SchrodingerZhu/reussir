@@ -1,65 +1,37 @@
 ---
 name: parser-tree
-description: Parse Reussir source code into a parser tree.
+description: Parse Reussir source code and inspect / validate the surface AST.
 license: MPL-2.0
 ---
 
-You can use `reussir-parser` to parse Reussir source code into a parser tree.
+You can use `reussir-syntax` (built with `cmake --build build --target
+reussir-syntax`; binary at `build/bin/reussir-syntax`) to parse Reussir source
+code. It emits the surface AST as JSON, and can also just validate that a file
+parses.
 
-For example, `cabal run reussir-parser -- tests/integration/frontend/fibonacci.rr`
-will generate the following output:
+To check that a file parses (report diagnostics, no output on success):
 
-```rust
-pub fn fibonacci(n: u64) -> u64 {
-    {
-        if (n <= 1) then
-            {
-                n
-            }
-        else
-            {
-                (fibonacci((n - 1)) + fibonacci((n - 2)))
-            }
-    }
-}
-fn fibonacci_iter_impl(n: u64, acc0: u64, acc1: u64) -> u64 {
-    {
-        if (n == 0) then
-            {
-                acc0
-            }
-        else
-            {
-                fibonacci_iter_impl((n - 1), acc1, (acc0 + acc1))
-            }
-    }
-}
-pub fn fibonacci_iter(n: u64) -> u64 {
-    {
-        fibonacci_iter_impl(n, 0, 1)
-    }
-}
-fn fibonacci_logarithmic_impl(n: u64, a00: u64, a01: u64, a10: u64, a11: u64, b00: u64, b01: u64, b10: u64, b11: u64) -> u64 {
-    {
-        if (n == 0) then
-            {
-                a01
-            }
-        else
-            {
-                if ((n % 2) == 1) then
-                    {
-                        let na00 = ((a00 * b00) + (a01 * b10));
-                        let na01 = ((a00 * b01) + (a01 * b11));
-                        let na10 = ((a10 * b00) + (a11 * b10));
-                        let na11 = ((a10 * b01) + (a11 * b11));
-                        fibonacci_logarithmic_impl((n / 2), na00, na01, na10, na11, ((b00 * b00) + (b01 * b10)), ((b00 * b01) + (b01 * b11)), ((b10 * b00) + (b11 * b10)), ((b10 * b01) + (b11 * b11)))
-                    }
-                else
-                    {
-                        fibonacci_logarithmic_impl((n / 2), a00, a01, a10, a11, ((b00 * b00) + (b01 * b10)), ((b00 * b01) + (b01 * b11)), ((b10 * b00) + (b11 * b10)), ((b10 * b01) + (b11 * b11)))
-                    }
-            }
-    }
-}
+```bash
+build/bin/reussir-syntax --check tests/integration/frontend/fibonacci.rr
 ```
+
+On a syntax error it renders each diagnostic with source context on stderr and
+exits non-zero; the parser recovers and reports every error, not just the first.
+
+To emit the JSON surface AST (to stdout, or `-o PATH`):
+
+```bash
+build/bin/reussir-syntax tests/integration/frontend/fibonacci.rr -o -
+```
+
+The output is a single JSON document encoding the spanned AST, e.g.:
+
+```json
+[{"contents":{"spanStartOffset":...,"spanValue":{"contents":{"recordDefaultCap":"Value",
+"recordFields":{...}}}}}, ...]
+```
+
+For a human-readable view of the *elaborated* program instead of the raw parse
+tree, prefer `rrc --emit hir` (see the `elaboration` skill). The detailed
+structural assertions the parser needs are covered by `reussir-syntax`'s own
+Rust unit tests (`cmake --build build --target rrc-test` runs the crate suites).
