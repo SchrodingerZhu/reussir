@@ -1262,15 +1262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mimalloc"
-version = "0.1.48"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
-dependencies = [
- "libmimalloc-sys",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2107,7 +2098,7 @@ version = "0.1.0"
 dependencies = [
  "backtrace",
  "hashbrown 0.16.1",
- "mimalloc",
+ "libmimalloc-sys",
  "num_enum",
  "smallvec",
  "snmalloc-rs",

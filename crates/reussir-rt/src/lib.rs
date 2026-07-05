@@ -2,9 +2,11 @@
 
 #[cfg(all(feature = "mimalloc", not(miri)))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: alloc::mimalloc::MiMalloc = alloc::mimalloc::MiMalloc;
 
-#[cfg(all(feature = "snmalloc", not(miri)))]
+// mimalloc is in the default feature set, so an additive `--features snmalloc`
+// would otherwise enable both and declare two global allocators.
+#[cfg(all(feature = "snmalloc", not(feature = "mimalloc"), not(miri)))]
 #[global_allocator]
 static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 

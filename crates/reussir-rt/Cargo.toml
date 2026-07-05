@@ -7,16 +7,16 @@ license.workspace = true
 [dependencies]
 backtrace = { version = "0.3.75" }
 hashbrown = { version = "0.16.0" }
-mimalloc = { version = "0.1", features = ["v3"], optional = true }
+libmimalloc-sys = { version = "0.1.44", features = ["v3"], optional = true }
 snmalloc-rs = { version = "0.7", optional = true }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true
 
 [features]
-default = ["snmalloc"]
+default = ["mimalloc"]
 snmalloc = ["snmalloc-rs"]
-mimalloc = ["dep:mimalloc"]
+mimalloc = ["dep:libmimalloc-sys"]
 
 [lib]
 crate-type = ["dylib", "lib", "staticlib"]
