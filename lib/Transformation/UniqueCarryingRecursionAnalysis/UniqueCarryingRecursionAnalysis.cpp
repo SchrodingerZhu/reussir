@@ -5,6 +5,83 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
+//
+// Uniqueness-carrying analysis and `.unique` specialization.
+//
+// # The claim
+//
+// A function *carries uniqueness* when every rc-typed result it returns is,
+// on every path, either **fresh** (produced by an `rc.create*` whose count
+// is initialized to 1 and never shared afterwards) or **carried** (one of
+// the function's own rc arguments, passed through unshared). The payoff:
+// at a call site where every carried argument is *itself* proven unique,
+// the results are unique too — so a directly self-recursive carrying
+// function can run a specialized `.unique` clone that asserts argument
+// uniqueness at entry (`rc.assume_unique`, an `llvm.assume(count == 1)`
+// after lowering), letting the reuse machinery take unique fast paths
+// through the whole recursion.
+//
+// # Provenance lattice
+//
+// Per rc value: `Unknown` (bottom) or a pair `{fresh, carriedArgs}` meaning
+// "on some path this is a fresh create / argument i". Join is the pointwise
+// union: the value is unique iff every contributor is, so a joined value is
+// proven unique under an assumption set exactly when *all* its carried bits
+// are assumed (freshness needs no assumption). `Unknown` is absorbing in
+// proofs (never unique) and the identity of the join.
+//
+// # Sharing discipline (the part provenance alone cannot see)
+//
+// Freshness at the definition does not survive sharing: a created value
+// that is also retained elsewhere (`rc.inc`, a second consuming user)
+// reaches the recursive call with count > 1, and asserting uniqueness on
+// it would be undefined behavior. Provenance is therefore *disqualified*
+// (demoted to `Unknown`) when the value has any retaining user, or more
+// than one consuming user. Forwarding terminators (`scf.yield`,
+// `reussir.scf.yield`, `func.return`) and read-only observers (`rc.borrow`,
+// `rc.fetch`, `rc.is_unique`, `rc.assume_unique`) do not count: forwards
+// sit on mutually exclusive paths (their sharing is checked at the level of
+// the forwarded result), and reads do not retain. This is conservative —
+// consuming uses on mutually exclusive paths are also rejected — but it is
+// what makes the entry assumption sound without a path-sensitive count
+// analysis. The frontend's ownership discipline guarantees any genuine
+// sharing materializes as an explicit `rc.inc`, which this check sees.
+//
+// # Control flow
+//
+// Region results are traced only through operations whose results are
+// *exhaustively* defined by their regions' yields: `scf.if`,
+// `scf.index_switch`, `scf.execute_region`, and `reussir.record.dispatch`.
+// Loop-carrying ops (`scf.for`, `scf.while`) are deliberately Unknown:
+// their results may come from the *init* operands on a zero-trip count, a
+// path the yield-only join would miss. `reussir.array.with_unique_view` is
+// fresh only in its implicit-result form (an empty yield returns the
+// uniquified array itself, count 1 by construction); an explicit yield is
+// traced like any other forward.
+//
+// # Fixpoint
+//
+// Function summaries start at bottom and are recomputed from the previous
+// round until stable — a Kleene iteration of a monotone map (joins only
+// accumulate bits, bounded by the argument count), so it terminates at the
+// least fixpoint. Optimism about recursion is sound coinductively: any
+// value a terminating execution actually returns is produced by a finite
+// chain of creates/argument passes, which some iteration covers.
+//
+// # Specialization
+//
+// For each carrying, directly self-recursive function, the set of provable
+// assumption vectors is closed off: starting from the empty assumption,
+// each self call contributes the argument subset it can prove, and each
+// discovered subset is re-run (the clone bodies are copies of the base, so
+// walking the base under the subset's assumptions is equivalent). Each
+// subset gets one clone (`f.unique` when it is the only one, else
+// `f.unique_<bits>`), marked private/internal and tagged
+// `reussir.unique_clone`; debug info is stripped (the clone has no distinct
+// source location). Reruns are idempotent: self calls are reset to the base
+// symbol before re-deciding, and existing clones are found by the marker.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Reussir/Transformation/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
@@ -29,6 +106,7 @@ namespace {
 
 static constexpr llvm::StringLiteral kCarryingUniquenessAttr =
     "reussir.carrying_uniqueness";
+static constexpr llvm::StringLiteral kUniqueCloneAttr = "reussir.unique_clone";
 
 struct UniqueCarryingValue {
   bool unknown = true;
@@ -171,17 +249,54 @@ public:
           def, llvm::cast<mlir::OpResult>(value).getResultNumber());
     }
 
+    // Provenance does not survive sharing: a value retained elsewhere (an
+    // `rc.inc` alias) or consumed more than once reaches its consumer with
+    // count > 1 no matter how it was produced. See the sharing-discipline
+    // note in the file header.
+    if (result.isCarrying() && isSharedAfterDefinition(value))
+      result = UniqueCarryingValue::getUnknown();
+
     active.erase(value);
     cache[value] = result;
     return result;
   }
 
+  // Whether `value`'s uses can elevate its count on some path before its
+  // consumer runs. Forwarding terminators and read-only observers are
+  // harmless; an explicit retain always disqualifies; any second consuming
+  // user does too (conservatively, even on a mutually exclusive path).
+  static bool isSharedAfterDefinition(mlir::Value value) {
+    unsigned consumingUses = 0;
+    for (mlir::Operation *user : value.getUsers()) {
+      if (llvm::isa<ReussirRcIncOp>(user))
+        return true;
+      if (llvm::isa<mlir::scf::YieldOp, ReussirScfYieldOp,
+                    mlir::func::ReturnOp>(user))
+        continue;
+      if (llvm::isa<ReussirRcBorrowOp, ReussirRcFetchOp, ReussirRcIsUniqueOp,
+                    ReussirRcAssumeUniqueOp>(user))
+        continue;
+      if (++consumingUses > 1)
+        return true;
+    }
+    return false;
+  }
+
 private:
   UniqueCarryingValue evaluateResult(mlir::Operation *op,
                                      unsigned resultIndex) {
-    if (llvm::isa<ReussirRcCreateOp, ReussirRcCreateCompoundOp,
-                  ReussirRcCreateVariantOp>(op))
-      return UniqueCarryingValue::getFresh();
+    // A create initializes its count to 1 — unless `skip_rc` elides that
+    // initialization (reuse/TRMC machinery), in which case the box keeps
+    // whatever count it already had.
+    if (auto create = llvm::dyn_cast<ReussirRcCreateOp>(op))
+      return create.getSkipRc() ? UniqueCarryingValue::getUnknown()
+                                : UniqueCarryingValue::getFresh();
+    if (auto create = llvm::dyn_cast<ReussirRcCreateCompoundOp>(op))
+      return create.getSkipRc() ? UniqueCarryingValue::getUnknown()
+                                : UniqueCarryingValue::getFresh();
+    if (auto create = llvm::dyn_cast<ReussirRcCreateVariantOp>(op))
+      return create.getSkipRc() ? UniqueCarryingValue::getUnknown()
+                                : UniqueCarryingValue::getFresh();
 
     if (auto callOp = llvm::dyn_cast<mlir::func::CallOp>(op)) {
       auto it = summaries.find(callOp.getCallee());
@@ -204,36 +319,52 @@ private:
     }
 
     if (auto withUniqueView = llvm::dyn_cast<ReussirArrayWithUniqueViewOp>(op)) {
-      if (withUniqueView.getResult() &&
-          withUniqueView.getResult().getType() ==
-              withUniqueView.getArray().getType())
-        return UniqueCarryingValue::getFresh();
-      auto yieldOp =
-          llvm::dyn_cast<ReussirScfYieldOp>(withUniqueView.getBody().front().getTerminator());
+      auto yieldOp = llvm::dyn_cast<ReussirScfYieldOp>(
+          withUniqueView.getBody().front().getTerminator());
       if (!yieldOp)
         return UniqueCarryingValue::getUnknown();
+      // The implicit-result form (an empty yield) returns the uniquified
+      // array itself: count 1 by the op's contract. An explicit yield is an
+      // ordinary forward — same-typed or not, it need not be the array.
+      if (withUniqueView.getResult() && yieldOp.getNumOperands() == 0)
+        return UniqueCarryingValue::getFresh();
       if (resultIndex >= yieldOp.getNumOperands())
         return UniqueCarryingValue::getUnknown();
       return evaluate(yieldOp.getOperand(resultIndex));
     }
 
-    auto *dialect = op->getDialect();
-    if (dialect && dialect->getNamespace() == "scf") {
-      UniqueCarryingValue joined = UniqueCarryingValue::getUnknown();
-      for (mlir::Region &region : op->getRegions()) {
-        if (region.empty())
-          continue;
-        auto yieldOp =
-            llvm::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
-        if (!yieldOp || resultIndex >= yieldOp.getNumOperands())
-          continue;
-        joined = UniqueCarryingValue::join(
-            joined, evaluate(yieldOp.getOperand(resultIndex)));
-      }
-      return joined;
-    }
+    // A variant dispatch's results are exhaustively defined by its arms'
+    // yields — the dominant control-flow shape of frontend-emitted code
+    // (every `match`).
+    if (llvm::isa<ReussirRecordDispatchOp>(op))
+      return joinRegionYields<ReussirScfYieldOp>(op, resultIndex);
+
+    // Only structured ops whose results come *exclusively* from region
+    // yields may be traced this way. Loop ops are excluded on purpose:
+    // `scf.for`/`scf.while` results can be the init operands (a zero-trip
+    // loop), a path a yield-only join would silently miss.
+    if (llvm::isa<mlir::scf::IfOp, mlir::scf::IndexSwitchOp,
+                  mlir::scf::ExecuteRegionOp>(op))
+      return joinRegionYields<mlir::scf::YieldOp>(op, resultIndex);
 
     return UniqueCarryingValue::getUnknown();
+  }
+
+  template <typename YieldOpT>
+  UniqueCarryingValue joinRegionYields(mlir::Operation *op,
+                                       unsigned resultIndex) {
+    UniqueCarryingValue joined = UniqueCarryingValue::getUnknown();
+    for (mlir::Region &region : op->getRegions()) {
+      if (region.empty())
+        continue;
+      auto yieldOp =
+          llvm::dyn_cast<YieldOpT>(region.front().getTerminator());
+      if (!yieldOp || resultIndex >= yieldOp->getNumOperands())
+        return UniqueCarryingValue::getUnknown();
+      joined = UniqueCarryingValue::join(
+          joined, evaluate(yieldOp->getOperand(resultIndex)));
+    }
+    return joined;
   }
 
   const FunctionSummaryMap &summaries;
@@ -327,8 +458,11 @@ static bool hasSelfRecursiveCall(mlir::func::FuncOp funcOp) {
   return found;
 }
 
-static bool isUniqueCloneName(llvm::StringRef name) {
-  return name.contains(".unique");
+// A clone is recognized by its marker attribute; the name check is a
+// belt-and-suspenders fallback for IR that predates the marker.
+static bool isUniqueClone(mlir::func::FuncOp funcOp) {
+  return funcOp->hasAttr(kUniqueCloneAttr) ||
+         funcOp.getName().contains(".unique");
 }
 
 static bool isUniqueCloneOf(llvm::StringRef baseName, llvm::StringRef callee) {
@@ -506,6 +640,8 @@ static mlir::func::FuncOp getOrCreateUniqueClone(
   uniqueFunc->setAttr("llvm.linkage",
                       mlir::LLVM::LinkageAttr::get(
                           funcOp.getContext(), mlir::LLVM::Linkage::Internal));
+  uniqueFunc->setAttr(kUniqueCloneAttr,
+                      mlir::UnitAttr::get(funcOp.getContext()));
   stripCloneDebugInfo(uniqueFunc);
   symbolTable.insert(uniqueFunc);
 
@@ -578,7 +714,7 @@ struct UniqueCarryingRecursionAnalysisPass
     llvm::SmallVector<mlir::func::FuncOp> recursiveFunctions;
     moduleOp.walk([&](mlir::func::FuncOp funcOp) {
       if (!funcOp->hasAttr(kCarryingUniquenessAttr) || funcOp.isDeclaration() ||
-          isUniqueCloneName(funcOp.getName()) || !hasSelfRecursiveCall(funcOp))
+          isUniqueClone(funcOp) || !hasSelfRecursiveCall(funcOp))
         return;
       if (!collectCarriedRcArguments(funcOp, summaries).any())
         return;
