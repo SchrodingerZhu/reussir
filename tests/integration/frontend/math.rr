@@ -1,14 +1,23 @@
-// RUN: %reussir-elab --mode semi %s
-// RUN: %reussir-elab --mode full %s | %FileCheck %s
-// RUN: %reussir-compiler %s -o %t.o
+// The `core::intrinsic::math` intrinsics: the trailing constant `i32` is the
+// fast-math flag (`1` = reassoc, `127` = fast, `0` = none). The HIR dump pins
+// the checked intrinsic form and its flag; the MLIR dump pins the `math`
+// dialect op with its `fastmath` attribute.
 
-// CHECK-DAG: fn _RC3cos(x: f64) -> f64 {
-// CHECK-NEXT-DAG: intrinsic<core::intrinsic::math::cos>(v0, 1.0 : i32) : f64
-// CHECK-NEXT-DAG: }
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=MLIR
+// RUN: %rrc %s -o %t.o
 
-// CHECK-DAG: fn _RC3sin(x: f64) -> f64 {
-// CHECK-NEXT-DAG: intrinsic<core::intrinsic::math::sin>(v0, 127.0 : i32) : f64
-// CHECK-NEXT-DAG: }
+// CHECK: fn #cos(v0 (x): f64) -> f64 {
+// CHECK-NEXT: intrinsic#math#cos#1(v0 : f64) : f64
+// CHECK-NEXT: }
+
+// CHECK: fn #sin(v0 (x): f64) -> f64 {
+// CHECK-NEXT: intrinsic#math#sin#127(v0 : f64) : f64
+// CHECK-NEXT: }
+
+// MLIR: math.cos %{{.*}} fastmath<reassoc> : f64
+// MLIR: math.sin %{{.*}} fastmath<fast> : f64
+
 fn cos(x : f64) -> f64 {
     core::intrinsic::math::cos(x, 1)
 }
@@ -16,3 +25,9 @@ fn cos(x : f64) -> f64 {
 fn sin(x : f64) -> f64 {
     core::intrinsic::math::sin(x, 127)
 }
+
+pub fn main(x : f64) -> f64 {
+    cos(x) + sin(x)
+}
+
+extern "C" trampoline "reussir_main" = main;

@@ -1,5 +1,12 @@
-// RUN: %reussir-elab --mode semi --package-root %S/module_basic --package-name mylib
-// RUN: %reussir-elab --mode full --package-root %S/module_basic --package-name mylib
-// RUN: %reussir-compiler --package-root %S/module_basic --package-name mylib -o %t.o
-// RUN: %cc %t.o %S/module_basic/driver.c -o %t.exe
+// A two-file package: `lib.rr` declares `mod math;` and calls `math::add`
+// cross-module; the exported trampoline drives the C driver. The HIR dump
+// pins the fully-qualified item paths module resolution produced.
+
+// RUN: %rrc --package-root %S/module_basic --package-name mylib --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc --package-root %S/module_basic --package-name mylib -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/module_basic/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
+
+// CHECK: pub fn #mylib::entry(v0 (n): u64) -> u64 {
+// CHECK-NEXT: #mylib::math::add(v0 : u64, 10 : u64) : u64
+// CHECK: pub fn #mylib::math::add(v0 (a): u64, v1 (b): u64) -> u64 {

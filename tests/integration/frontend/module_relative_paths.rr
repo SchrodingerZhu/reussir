@@ -1,5 +1,7 @@
-// RUN: %reussir-elab --mode semi --package-root %S/module_relative_paths --package-name mypkg
-// RUN: %reussir-elab --mode full --package-root %S/module_relative_paths --package-name mypkg
-// RUN: %reussir-compiler --package-root %S/module_relative_paths --package-name mypkg -o %t.o
-// RUN: %cc %t.o %S/module_relative_paths/driver.c -o %t.exe
+// Module-relative reference paths: `root::` (package-root-relative),
+// `super::` and `super::super::` (parent-relative), across a tree of four
+// modules — the discovery and resolution rules of the reference frontend.
+
+// RUN: %rrc --package-root %S/module_relative_paths --package-name mypkg -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/module_relative_paths/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe

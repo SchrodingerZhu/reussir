@@ -1,8 +1,9 @@
-// RUN: %not %reussir-elab --mode semi --package-root %S/module_missing_file --package-name mypkg 2>&1 | %FileCheck %s --check-prefix=ERR
-// RUN: %not %reussir-elab --mode full --package-root %S/module_missing_file --package-name mypkg 2>&1 | %FileCheck %s --check-prefix=ERR
-// RUN: %not %reussir-compiler --package-root %S/module_missing_file --package-name mypkg -o %t.o 2>&1 | %FileCheck %s --check-prefix=ERR
+// A `mod missing;` declaration with no source file is a discovery error
+// naming both candidate paths (`missing.rr` and `missing/mod.rr`).
 
-// ERR: Error: module 'missing'
-// ERR: has no source file
-// ERR: missing.rr
-// ERR: missing{{[/\\]}}mod.rr
+// RUN: %not %rrc --package-root %S/module_missing_file --package-name mypkg -o %t.o 2>&1 | %FileCheck %s --check-prefix=ERR
+
+// ERR: error: module 'missing'
+// ERR-SAME: has no source file
+// ERR-SAME: missing.rr
+// ERR-SAME: missing{{[/\\]}}mod.rr
