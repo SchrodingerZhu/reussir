@@ -16,6 +16,7 @@ stacker.workspace = true
 [features]
 default = ["snmalloc"]
 snmalloc = ["snmalloc-rs"]
+mimalloc = ["dep:mimalloc"]
 
 [lib]
 crate-type = ["dylib", "lib", "staticlib"]
