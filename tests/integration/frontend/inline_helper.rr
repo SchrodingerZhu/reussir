@@ -1,0 +1,34 @@
+// RUN: %rrc %s --emit mlir-llvm -O default -o %t.mlir
+// RUN: %FileCheck %s < %t.mlir
+
+// The optimization prologue's inliner must dissolve small private helpers
+// into their callers. This regressed silently once before: the func
+// dialect's inliner interface is a separately registered MLIR *extension*
+// (`func::registerInlinerExtension`), and without it the inliner pass
+// resolves no `func.call` sites and inlines nothing — while reussir-opt,
+// which registers all extensions, still inlines. Guard the rrc pipeline.
+
+enum Nat {
+    Zero,
+    Succ(Nat)
+}
+
+fn is_zero(n: Nat) -> bool {
+    match n {
+        Nat::Zero => true,
+        _ => false
+    }
+}
+
+pub fn count_down(n: Nat) -> i32 {
+    if is_zero(n) { 0 } else {
+        match n {
+            Nat::Succ(m) => 1 + count_down(m),
+            Nat::Zero => 0
+        }
+    }
+}
+
+// The helper's body is absorbed into `count_down`; no call to it survives
+// anywhere in the module.
+// CHECK-NOT: llvm.call @_RC7is_zero

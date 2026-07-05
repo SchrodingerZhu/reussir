@@ -20,6 +20,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/DLTI/DLTI.h>
+#include <mlir/Dialect/Func/Extensions/InlinerExtension.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/Math/IR/Math.h>
@@ -51,6 +52,11 @@ void populateReussirRegistry(mlir::DialectRegistry &registry) {
                   mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
                   mlir::math::MathDialect, mlir::ub::UBDialect,
                   mlir::func::FuncDialect, mlir::cf::ControlFlowDialect>();
+
+  // Since MLIR 17 the func dialect's DialectInlinerInterface lives in a
+  // separately registered extension; without it the inliner pass resolves no
+  // `func.call` sites and silently inlines nothing.
+  mlir::func::registerInlinerExtension(registry);
 
   // Register the ConvertToLLVMPatternInterface for exactly the dialects that can
   // reach the ConvertToLLVM pass, plus Reussir's own lowering interface. These
