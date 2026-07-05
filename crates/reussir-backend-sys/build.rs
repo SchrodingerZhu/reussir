@@ -34,6 +34,7 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirAttachNativeTarget",
     "MLIRReussirRcCreateSink",
     "MLIRReussirRcCreateFusion",
+    "MLIRReussirRcDispatchFusion",
     "MLIRReussirInferVariantTag",
     "MLIRReussirIncDecCancellation",
     "MLIRReussirTokenReuse",

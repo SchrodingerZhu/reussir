@@ -66,6 +66,26 @@ def ReussirRcCreateFusionPass
 }
 
 //===----------------------------------------------------------------------===//
+// RcDispatchFusion
+//===----------------------------------------------------------------------===//
+def ReussirRcDispatchFusionPass
+    : Pass<"reussir-rc-dispatch-fusion", "::mlir::func::FuncOp"> {
+  let summary = "fuse pattern-match consumption into destructuring decrements";
+  let description = [{
+    `reussir-rc-dispatch-fusion` recognizes a borrowing `record.dispatch`
+    whose arm retains its bound members and then decrements the scrutinee,
+    erases the bound retains, and tags the decrement with the arm's tag and
+    bound member indices (Koka's `dropn_reuse` shape). The decrement
+    expansion then releases the box *shallowly*: on the unique path bound
+    members transfer with the arm and only unbound rc members are released;
+    on the shared path the bound members are retained. A preceding increment
+    cancels against the destructuring decrement in
+    `reussir-inc-dec-cancellation` by rematerializing the bound retains.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // InferVariantTag
 //===----------------------------------------------------------------------===//
 def ReussirInferVariantTagPass

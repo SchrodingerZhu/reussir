@@ -89,6 +89,9 @@ MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent) {
 MlirPass reussirCreateRcCreateSinkPass(void) {
   return wrapOwned(reussir::createReussirRcCreateSinkPass());
 }
+MlirPass reussirCreateRcDispatchFusionPass(void) {
+  return wrapOwned(reussir::createReussirRcDispatchFusionPass());
+}
 MlirPass reussirCreateRcCreateFusionPass(void) {
   return wrapOwned(reussir::createReussirRcCreateFusionPass());
 }

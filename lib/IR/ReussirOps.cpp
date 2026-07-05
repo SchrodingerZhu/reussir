@@ -305,6 +305,30 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
   RcType RcType = getRcPtr().getType();
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
+  if (bool(getDestructureTagAttr()) != bool(getBoundMembersAttr()))
+    return emitOpError(
+        "destructureTag and boundMembers must be set together");
+  if (isDestructuring()) {
+    if (RcType.getAtomicKind() != AtomicKind::normal)
+      return emitOpError("destructuring decrement requires a nonatomic box");
+    if (RcType.isRegional())
+      return emitOpError("destructuring decrement must not be regional");
+    auto recordType = llvm::dyn_cast<RecordType>(RcType.getElementType());
+    if (!recordType || !recordType.isVariant() || !recordType.getComplete())
+      return emitOpError(
+          "destructuring decrement requires a complete variant box");
+    int64_t tag = getDestructureTagAttr().getInt();
+    if (tag < 0 || static_cast<size_t>(tag) >= recordType.getMembers().size())
+      return emitOpError("destructure tag out of range: ") << tag;
+    auto payload =
+        llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
+    if (!payload || !payload.getComplete())
+      return emitOpError("destructured arm must have a complete payload");
+    for (int64_t index : getBoundMembersAttr().asArrayRef())
+      if (index < 0 ||
+          static_cast<size_t>(index) >= payload.getMembers().size())
+        return emitOpError("bound member index out of range: ") << index;
+  }
   if (RcType.getCapability() == reussir::Capability::rigid) {
     if (getNullableToken() != nullptr)
       return emitOpError("rigid RC decrement cannot return a token");
