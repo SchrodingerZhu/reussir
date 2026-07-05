@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <em>Frontend in Haskell, backend in MLIR/C++, runtime in Rust</em>
+  <em>Frontend in Rust, backend in MLIR/C++, runtime in Rust</em>
 </p>
 
 <p align="center">
@@ -97,7 +97,7 @@ with native code and the broader MLIR ecosystem. The current codebase therefore
 includes:
 
 - a Rust runtime that matches the RC object model,
-- bridge code between the Haskell frontend and MLIR/C++ backend,
+- bridge code between the Rust frontend and MLIR/C++ backend,
 - a polymorphic FFI direction instead of forcing everything through one boxed
   representation.
 
@@ -105,22 +105,20 @@ includes:
 
 The repository is split by responsibility:
 
-- `frontend/`:
-  Haskell packages for parsing, diagnostics, elaboration, code generation, the
-  REPL, and the language server.
+- `crates/`:
+  the Rust frontend and runtime — `reussir-syntax` (parser), `reussir-core`
+  (elaboration, monomorphization, ownership analysis), `reussir-codegen`
+  (MLIR lowering), `reussir-backend`/`reussir-jit` (the melior/MLIR bridge and
+  JIT), `reussir-compiler` (the `rrc` driver), `reussir-repl` (the `rrepl`
+  REPL), and `reussir-rt` (the RC-object runtime).
 - `include/` and `lib/`:
   the Reussir MLIR dialect, analyses, conversions, bridge code, and backend
   support libraries.
-- `crates/reussir-rt/`:
-  the Rust runtime for RC objects, nullable helpers, and related runtime
-  support.
 - `tool/`:
   command-line MLIR tools such as `reussir-opt` and `reussir-translate`.
 - `tests/`:
   C++ unit tests and LLVM `lit` integration tests covering both backend passes
   and frontend end-to-end compilation.
-- `reussir-vscode/`:
-  editor support for the language.
 
 ## Compilation Guide
 
@@ -131,8 +129,7 @@ You need a working development environment with:
 - CMake 3.28 or newer,
 - Ninja,
 - LLVM and MLIR with CMake package files available,
-- Rust and Cargo,
-- GHC and Cabal,
+- Rust and Cargo (the pinned toolchain is fetched automatically),
 - Python 3 for `lit`.
 
 The exact package source depends on your platform and local toolchain setup.
@@ -159,16 +156,15 @@ cmake -S . -B build -G Ninja -DREUSSIR_ENABLE_TESTS=ON -DREUSSIR_ENABLE_PEDANTIC
 cmake --build build
 ```
 
-This builds the backend libraries and tools, the Rust runtime, and the frontend
-executables exposed through CMake:
+This builds the backend libraries and MLIR tools (`reussir-opt`,
+`reussir-translate`), the Rust runtime, and — through explicit CMake targets —
+the Rust frontend tools:
 
 - `reussir-opt`
 - `reussir-translate`
-- `reussir-elab`
-- `reussir-compiler`
-- `reussir-parser`
-- `reussir-repl`
-- `reussir-lsp`
+- `rrc` — the compiler driver
+- `reussir-syntax` — the parser (JSON AST emitter)
+- `rrepl` — the REPL
 
 ### 3. Compile specific targets
 
@@ -176,49 +172,32 @@ executables exposed through CMake:
 cmake --build build --target reussir-opt
 cmake --build build --target reussir-translate
 cmake --build build --target reussir-rt
-cmake --build build --target reussir-compiler
-cmake --build build --target reussir-repl
+cmake --build build --target rrc
+cmake --build build --target rrepl
 ```
 
-Built binaries are placed under `build/bin/`, and runtime libraries are copied
-under `build/lib/`.
+Built binaries are placed under `build/bin/` (`rrepl` under
+`build/target/<profile>/`), and runtime libraries are copied under `build/lib/`.
 
-### 4. Frontend-only workflow
-
-The frontend is managed as a Cabal multi-package project:
-
-```bash
-cabal build all -j
-```
-
-Current frontend packages:
-
-- `reussir-bridge`
-- `reussir-codegen`
-- `reussir-core`
-- `reussir-diagnostic`
-- `reussir-lsp`
-- `reussir-parser`
-- `reussir-repl`
-
-### 5. Typical local workflows
+### 4. Typical local workflows
 
 Inspect elaboration output:
 
 ```bash
-build/bin/reussir-elab path/to/program.rr
+build/bin/rrc --emit hir path/to/program.rr
 ```
 
 Compile a Reussir source file:
 
 ```bash
-build/bin/reussir-compiler path/to/program.rr
+build/bin/rrc path/to/program.rr -o program.o
 ```
 
 Run the REPL:
 
 ```bash
-build/bin/reussir-repl
+cmake --build build --target rrepl
+build/target/release/rrepl
 ```
 
 ## Testing
@@ -232,6 +211,14 @@ cmake --build build --target reussir-ut
 ctest --test-dir build --output-on-failure
 ```
 
+### Rust crate tests
+
+```bash
+cmake --build build --target rrc-test
+cmake --build build --target reussir-codegen-test
+cmake --build build --target reussir-backend-test
+```
+
 ### LLVM `lit` integration tests
 
 ```bash
@@ -239,13 +226,8 @@ cmake --build build --target check
 ```
 
 The integration suite covers backend conversions, reuse-related passes, and
-frontend end-to-end examples under `tests/integration/`.
-
-### Haskell tests
-
-```bash
-cabal test all -j
-```
+frontend end-to-end examples under `tests/integration/`. Build `rrepl` first
+(`cmake --build build --target rrepl`) to include the `repl-rs` suite.
 
 ## Status
 

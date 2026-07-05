@@ -27,36 +27,17 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Cache Cabal
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cabal
-            ~/.local/state/cabal
-            dist-newstyle
-            ~/.ghcup
-          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ matrix.llvm-version }}-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-llvm-${{ matrix.llvm-version }}-cabal-
-
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
 
-      - name: Setup GHC
-        uses: haskell/ghcup-setup@v1
-        with:
-          ghc: 9.14.1
-          cabal: latest
-
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
           sudo pip install lit --break-system-packages
-          cabal update
 
       - name: Install LLVM ${{ matrix.llvm-version }}
         run: |

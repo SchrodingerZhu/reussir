@@ -26,36 +26,17 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Cache Cabal
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cabal
-            ~/.local/state/cabal
-            dist-newstyle
-            ~/.ghcup
-          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ matrix.llvm-version }}-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-llvm-${{ matrix.llvm-version }}-cabal-
-
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
 
-      - name: Setup GHC
-        uses: haskell/ghcup-setup@v1
-        with:
-          ghc: 9.14.1
-          cabal: latest
-
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev patchelf
           sudo pip install lit --break-system-packages
-          cabal update
 
       - name: Install LLVM ${{ matrix.llvm-version }}
         run: |
@@ -117,8 +98,7 @@ jobs:
           mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
 
           # Copy binaries
-          for bin in reussir-opt reussir-translate reussir-compiler \
-                     reussir-elab reussir-repl reussir-parser \
+          for bin in reussir-opt reussir-translate rrc reussir-syntax \
                      rustc cargo rustdoc; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
@@ -184,18 +164,6 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Cache Cabal
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cabal
-            ~/.local/state/cabal
-            ~/.ghcup
-            dist-newstyle
-          key: macos-15-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            macos-15-cabal-
-
       - name: Install Homebrew dependencies
         run: |
           brew update
@@ -207,15 +175,6 @@ jobs:
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
-
-      - name: Setup GHC
-        uses: haskell/ghcup-setup@v1
-        with:
-          ghc: 9.14.1
-          cabal: latest
-
-      - name: Setup Cabal
-        run: cabal update
 
       - name: Setup environment paths
         run: |
@@ -268,8 +227,7 @@ jobs:
           mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
 
           # Copy binaries
-          for bin in reussir-opt reussir-translate reussir-compiler \
-                     reussir-elab reussir-repl reussir-parser \
+          for bin in reussir-opt reussir-translate rrc reussir-syntax \
                      rustc cargo rustdoc; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
@@ -331,17 +289,6 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Cache Cabal (Windows)
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:/Users/runneradmin/AppData/Local/cabal
-            C:/ghcup
-            dist-newstyle
-          key: windows-clang64-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            windows-clang64-cabal-
-
       - name: Install vcredist140
         shell: pwsh
         run: |
@@ -365,20 +312,6 @@ jobs:
             mingw-w64-clang-x86_64-python-pip
             mingw-w64-clang-x86_64-rustup
             mingw-w64-clang-x86_64-7zip
-
-      - name: Setup GHCup MSYSTEM
-        shell: msys2 {0}
-        run: |
-          echo "GHCUP_MSYS2_ENV=CLANG64" >> $GITHUB_ENV
-
-      - name: Setup GHCup Without Silly Upstream
-        shell: msys2 {0}
-        run: |
-          export BOOTSTRAP_HASKELL_GHC_VERSION=9.14.1
-          export BOOTSTRAP_HASKELL_CABAL_VERSION=latest
-          curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh
-          . /c/ghcup/env
-          cabal update
 
       - name: Install Rust and Python dependencies
         shell: msys2 {0}
@@ -412,7 +345,6 @@ jobs:
       - name: Run Integration Tests
         shell: msys2 {0}
         run: |
-          . /c/ghcup/env
           . .github/workflows/setup_path.sh
           cmake --build build --target check
 
@@ -425,8 +357,7 @@ jobs:
           mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
 
           # Copy binaries (with .exe suffix)
-          for bin in reussir-opt reussir-translate reussir-compiler \
-                     reussir-elab reussir-repl reussir-parser \
+          for bin in reussir-opt reussir-translate rrc reussir-syntax \
                      rustc cargo rustdoc; do
             cp -a "build/bin/${bin}.exe" "${PREFIX}/bin/" 2>/dev/null || true
           done

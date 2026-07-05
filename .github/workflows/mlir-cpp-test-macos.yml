@@ -26,18 +26,6 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Cache Cabal
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/cabal
-            ~/.local/state/cabal
-            ~/.ghcup
-            dist-newstyle
-          key: ${{ matrix.os }}-cabal-${{ hashFiles('**/*.cabal', 'cabal.project') }}
-          restore-keys: |
-            ${{ matrix.os }}-cabal-
-
       - name: Install Homebrew dependencies
         run: |
           brew update
@@ -49,15 +37,6 @@ jobs:
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
-
-      - name: Setup GHC
-        uses: haskell/ghcup-setup@v1
-        with:
-          ghc: 9.14.1
-          cabal: latest
-
-      - name: Setup Cabal
-        run: cabal update
 
       - name: Setup environment paths
         run: |
@@ -100,13 +79,3 @@ jobs:
         run: |
           export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
           cmake --build build --target check
-
-      - name: Build Haskell frontend
-        run: |
-          export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
-          cabal build all -j
-
-      - name: Test Haskell frontend
-        run: |
-          export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
-          cabal test all -j

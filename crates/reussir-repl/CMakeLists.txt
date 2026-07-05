@@ -1,11 +1,8 @@
 # Builds the reussir-repl Rust crate (the incremental REPL: persistent
 # elaborator + ORC JIT) with cargo.
 #
-# The CMake targets are named `rrepl`, not `reussir-repl`:
-# frontend/CMakeLists.txt already registers a `reussir-repl` custom target
-# for the Haskell REPL, and CMake aborts configuration when two targets share
-# a name. The produced binary is likewise `rrepl`; the two REPLs coexist
-# until the Rust pipeline reaches feature parity.
+# The CMake targets and the produced binary are named `rrepl` (the REPL's
+# conventional short name), not `reussir-repl`.
 #
 # Like reussir-backend / reussir-jit / reussir-codegen, these targets are NOT
 # part of the default `ALL` build. Invoke them explicitly:
@@ -48,6 +45,13 @@ add_custom_target(rrepl
     COMMENT "Building rrepl with cargo (${REUSSIR_REPL_CARGO_PROFILE} profile)"
     USES_TERMINAL
 )
+
+# Order-only dependency on reussir-rt: rrepl's cargo build shares the
+# ${CMAKE_BINARY_DIR}/target directory with the runtime's, and building them
+# concurrently races the prefer-dynamic libstd the runtime dylib links (and
+# that reussir-rt-install stages into build/lib). Serialize the two so `check`
+# can depend on rrepl without corrupting the runtime.
+add_dependencies(rrepl reussir-rt)
 
 add_custom_target(rrepl-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}
