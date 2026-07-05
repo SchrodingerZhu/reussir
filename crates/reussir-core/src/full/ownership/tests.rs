@@ -399,6 +399,7 @@ fn kind_name(kind: &ExprKind<'_>) -> &'static str {
         ExprKind::Var(_) => "Var",
         ExprKind::Negate(_) => "Negate",
         ExprKind::Not(_) => "Not",
+        ExprKind::Intrinsic { .. } => "Intrinsic",
         ExprKind::Arith(..) => "Arith",
         ExprKind::Cmp(..) => "Cmp",
         ExprKind::Cast(..) => "Cast",
@@ -727,7 +728,8 @@ fn interp<'tcx>(
         }
         ExprKind::Call { args, .. }
         | ExprKind::Ctor { args, .. }
-        | ExprKind::Variant { args, .. } => {
+        | ExprKind::Variant { args, .. }
+        | ExprKind::Intrinsic { args, .. } => {
             for a in args {
                 interp(a, ot, rr, rc);
             }
@@ -926,7 +928,9 @@ fn children<'tcx>(e: &Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
         If(c, t, e) => vec![c, t, e],
         Let { value, .. } => vec![value],
         Seq(es) => es.iter().collect(),
-        Call { args, .. } | Ctor { args, .. } | Variant { args, .. } => args.iter().collect(),
+        Call { args, .. } | Ctor { args, .. } | Variant { args, .. } | Intrinsic { args, .. } => {
+            args.iter().collect()
+        }
         NullableCall(opt) => opt.into_iter().collect(),
         ClosureCall { target, args } => std::iter::once(target).chain(args.iter()).collect(),
         Closure(c) => vec![c.body],

@@ -469,7 +469,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             }
             ExprKind::Call { args, .. }
             | ExprKind::Ctor { args, .. }
-            | ExprKind::Variant { args, .. } => {
+            | ExprKind::Variant { args, .. }
+            | ExprKind::Intrinsic { args, .. } => {
                 for arg in args {
                     s.union_with(&self.free(arg));
                 }
@@ -591,7 +592,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             ExprKind::Seq(es) => self.place_seq(es, live_after),
             ExprKind::Call { args, .. }
             | ExprKind::Ctor { args, .. }
-            | ExprKind::Variant { args, .. } => self.place_args(args, live_after),
+            | ExprKind::Variant { args, .. }
+            | ExprKind::Intrinsic { args, .. } => self.place_args(args, live_after),
             ExprKind::NullableCall(opt) => {
                 if let Some(x) = opt {
                     self.place(x, live_after);

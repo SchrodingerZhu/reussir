@@ -9,6 +9,8 @@
 //! interner and adds the ground-only invariant and v0 symbol mangling.
 
 pub mod full;
+/// The built-in `core` package's math intrinsics (`core::intrinsic::math`).
+pub mod intrinsic;
 /// The shared logos lexer for the textual IR (both the MIR and HIR grammars).
 pub mod ir_lex;
 /// Arbitrary-precision numeric literals, carried exact through HIR/MIR and

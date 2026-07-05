@@ -325,6 +325,13 @@ pub enum Kind {
         args: Vec<Expr>,
     },
     NullableCall(Option<Expr>),
+    /// `intrinsic#<family>#<name>#<imm>(args…)` — a `core::intrinsic` call.
+    Intrinsic {
+        family: String,
+        name: String,
+        imm: u32,
+        args: Vec<Expr>,
+    },
     ClosureCall {
         target: Expr,
         args: Vec<Expr>,

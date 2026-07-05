@@ -35,6 +35,7 @@ use reussir_backend::melior::ir::{
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
+use reussir_core::intrinsic::IntrinsicOp;
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
@@ -584,6 +585,40 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Negate(x) => self.negate(block, env, x).map(Some),
             Not(x) => self.not(block, env, x).map(Some),
             Arith(l, op, r) => self.arith(block, env, l, *op, r, e.ty).map(Some),
+            // A `core::intrinsic::<family>` call: dispatch to the family's op
+            // builder over the (scalar) operands. Each family owns its own
+            // dialect ops and attributes; the backend pipeline's dialect
+            // conversions take the emitted op from there.
+            Intrinsic { op, args } => {
+                let mut operands = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    let v = self.expr(block, env, a)?.ok_or_else(|| {
+                        LoweringError("intrinsic operand produced no value".into())
+                    })?;
+                    operands.push(v);
+                }
+                let result = self.tys.mlir_ty(e.ty)?;
+                let built = match op {
+                    IntrinsicOp::Math { func, flag } => {
+                        let fastmath =
+                            reussir_core::intrinsic::FastMath(*flag)
+                                .mlir_attr()
+                                .map(|text| {
+                                    Attribute::parse(self.context, &text)
+                                        .expect("valid fastmath attribute")
+                                });
+                        super::math::math_operation(
+                            self.context,
+                            *func,
+                            &operands,
+                            result,
+                            fastmath,
+                            loc,
+                        )
+                    }
+                };
+                Ok(Some(self.append(block, built)))
+            }
             Cmp(l, op, r) => self.cmp(block, env, l, *op, r).map(Some),
             Cast(x, t) => self.cast(block, env, x, *t),
             If(c, t, f) => self.lower_if(block, env, c, t, f, e.ty),

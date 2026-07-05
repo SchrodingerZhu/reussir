@@ -458,6 +458,15 @@ impl<'a> Printer<'a> {
                     + self.arg_list(args)
                     + text(")")
             }
+            ExprKind::Intrinsic { op, args } => {
+                text(format!(
+                    "intrinsic#{}#{}#{}(",
+                    op.family(),
+                    op.name(),
+                    op.imm()
+                )) + self.arg_list(args)
+                    + text(")")
+            }
             ExprKind::NullableCall(inner) => match inner {
                 Some(x) => text("NonNull(") + self.value(x) + text(")"),
                 None => text("Null"),

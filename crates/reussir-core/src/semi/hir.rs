@@ -140,6 +140,12 @@ pub enum ExprKind<'tcx> {
     },
     /// `Nullable::NonNull{e}` (Some) or `Nullable::Null` (None).
     NullableCall(Option<Box<Expr<'tcx>>>),
+    /// A `core::intrinsic::<family>::<fn>` call: the resolved op (family + its
+    /// immediates) and the value operands (the node's own type is the result).
+    Intrinsic {
+        op: crate::intrinsic::IntrinsicOp,
+        args: Vec<Expr<'tcx>>,
+    },
     Closure(ClosureExpr<'tcx>),
     ClosureCall {
         target: Box<Expr<'tcx>>,

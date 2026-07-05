@@ -52,6 +52,7 @@
 
 mod debug;
 mod expr;
+mod math;
 mod ty;
 
 use std::borrow::Cow;

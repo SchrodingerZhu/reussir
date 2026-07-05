@@ -460,6 +460,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let callee = self.mk_expr(ExprKind::Var(id), ty, span);
             return self.closure_apply(callee, &fc.args, span);
         }
+        // The built-in `core` package: `core::intrinsic::<family>::<fn>` calls
+        // are intrinsics, and nothing else lives under `core` (the package name
+        // is reserved, so this can never shadow user code).
+        if let Some(done) = self.infer_intrinsic(fc, span) {
+            return done;
+        }
         let Some(def) = self.resolve_function_ref(&fc.name) else {
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
@@ -828,6 +834,124 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// A constructor-call expression; see [`Self::infer_ctor`] for the dispatch rules.
     fn infer_ctor_call(&mut self, cc: &surface::CtorCall, span: Option<Span>) -> Expr<'tcx> {
         self.infer_ctor(&cc.name, &cc.ty_args, &cc.args, span)
+    }
+
+    /// The built-in `core` package's intrinsics, spelled
+    /// `core::intrinsic::<family>::<fn>`. Routes to the family checker;
+    /// `None` only when the call does not target `core` at all, so ordinary
+    /// resolution proceeds. Adding a family adds an arm here plus its worker.
+    fn infer_intrinsic(
+        &mut self,
+        fc: &surface::FuncCall,
+        span: Option<Span>,
+    ) -> Option<Expr<'tcx>> {
+        if fc.name.segments.first().map(|&k| self.sym(k)) != Some("core") {
+            return None;
+        }
+        let segs: Vec<&str> = fc.name.segments.iter().map(|&k| self.sym(k)).collect();
+        // Everything under `core` is an intrinsic; nothing else lives there.
+        let ["core", "intrinsic", family] = segs.as_slice() else {
+            let shown = self.path_display(&fc.name);
+            self.error(
+                span,
+                format!("the built-in `core` package has no function `{shown}`"),
+            );
+            return Some(self.poison(span));
+        };
+        match *family {
+            "math" => Some(self.infer_math_intrinsic(fc, span)),
+            other => {
+                self.error(
+                    span,
+                    format!("unknown intrinsic family `core::intrinsic::{other}`"),
+                );
+                Some(self.poison(span))
+            }
+        }
+    }
+
+    /// (MATH) `core::intrinsic::math::<fn>::<T?>(args…, flag)`: the value
+    /// operands share one `FloatingPoint`-bounded element type `T` (explicit
+    /// or inferred; `fpowi`'s exponent is `i32`), the `is*` checks return
+    /// `bool` and everything else returns `T`, and the trailing argument is a
+    /// **constant** `i32` fast-math flag (`0..=127`, `0` = none, `127` = fast).
+    fn infer_math_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::{FastMath, IntrinsicOp, MathFn, MathKind};
+
+        let name = self.sym(fc.name.basename);
+        let Some(func) = MathFn::parse(name) else {
+            self.error(
+                span,
+                format!("unknown math intrinsic `core::intrinsic::math::{name}`"),
+            );
+            return self.poison(span);
+        };
+
+        // The shared element type: an optional single explicit type argument,
+        // else inferred — either way bounded by `FloatingPoint`.
+        let elem = match fc.ty_args.as_slice() {
+            [] | [None] => self.infer.new_hole_ty(),
+            [Some(t)] => self.eval_type(t),
+            _ => {
+                self.error(
+                    span,
+                    format!("`{name}` takes at most one type argument (the operand type)"),
+                );
+                return self.poison(span);
+            }
+        };
+        self.register_bound(self.builtins.floating_point, elem, span);
+
+        let kind = func.kind();
+        let want = kind.value_args() + 1;
+        if fc.args.len() != want {
+            self.error(
+                span,
+                format!(
+                    "`{name}` expects {want} argument(s) (including the trailing                      fast-math flag), got {}",
+                    fc.args.len()
+                ),
+            );
+            return self.poison(span);
+        }
+        let i32_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(32));
+        let (value_args, flag_arg) = fc.args.split_at(want - 1);
+        let mut args = Vec::with_capacity(value_args.len());
+        for (i, a) in value_args.iter().enumerate() {
+            // `fpowi` raises a float to an integer power; everything else is
+            // uniform over the element type.
+            let expected = if kind == MathKind::Fpowi && i == 1 {
+                i32_ty
+            } else {
+                elem
+            };
+            args.push(self.check_expr(a, expected));
+        }
+        // The flag selects `arith.fastmath` bits at compile time, so it must
+        // be a literal — not merely an `i32`-typed expression.
+        let flag_expr = self.check_expr(&flag_arg[0], i32_ty);
+        let flag = match &flag_expr.kind {
+            ExprKind::ConstInt(n) => u32::try_from(*n).ok().filter(|f| *f <= FastMath::MAX),
+            _ => None,
+        };
+        let Some(flag) = flag else {
+            self.error(
+                flag_expr.span,
+                format!(
+                    "the fast-math flag of `{name}` must be a constant integer \
+                     in 0..=127 (0 = none, 127 = fast)"
+                ),
+            );
+            return self.poison(span);
+        };
+
+        let result = if kind == MathKind::Check {
+            self.tcx.mk_bool()
+        } else {
+            elem
+        };
+        let op = IntrinsicOp::Math { func, flag };
+        self.mk_expr(ExprKind::Intrinsic { op, args }, result, span)
     }
 
     /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`]; a
@@ -1358,6 +1482,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
             },
             NullableCall(e) => NullableCall(e.map(|e| zb(self, e))),
+            Intrinsic { op, args } => Intrinsic {
+                op,
+                args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
+            },
             ClosureCall { target, args } => ClosureCall {
                 target: zb(self, target),
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
@@ -1417,6 +1545,11 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
     };
     match &e.kind {
         Var(v) => push(out, *v),
+        Intrinsic { args, .. } => {
+            for a in args {
+                free_vars(a, out);
+            }
+        }
         Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => free_vars(e, out),
         Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => {
             free_vars(l, out);

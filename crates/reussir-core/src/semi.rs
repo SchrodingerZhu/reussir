@@ -267,6 +267,108 @@ mod tests {
     }
 
     #[test]
+    fn math_intrinsics_type_check_per_shape() {
+        check(
+            r#"
+                fn trig(x : f64) -> f64 {
+                    core::intrinsic::math::cos(x, 1) + core::intrinsic::math::sin(x, 127)
+                }
+                fn narrow(x : f32) -> f32 {
+                    core::intrinsic::math::sqrt<f32>(x, 0)
+                }
+                fn classify(x : f64) -> bool {
+                    core::intrinsic::math::isnan(core::intrinsic::math::powf(x, 2.0, 0), 0)
+                }
+                fn ipow(x : f64) -> f64 {
+                    core::intrinsic::math::fpowi(x, 3, 0)
+                }
+                fn fused(a : f64, b : f64, c : f64) -> f64 {
+                    core::intrinsic::math::fma(a, b, c, 127)
+                }
+            "#,
+            |elab, _| {
+                use crate::intrinsic::{IntrinsicOp, MathFn};
+                use crate::semi::hir::ExprKind;
+                // The elaborated bodies carry `Intrinsic` nodes with the parsed
+                // op + flag (spot-check `trig`).
+                let trig = &elab.elaborated[0];
+                let ExprKind::Arith(l, _, r) = &trig.body.as_ref().unwrap().kind else {
+                    panic!("trig body is an addition");
+                };
+                let ExprKind::Intrinsic { op, args } = &l.kind else {
+                    panic!("lhs is an intrinsic");
+                };
+                assert_eq!(
+                    (*op, args.len()),
+                    (
+                        IntrinsicOp::Math {
+                            func: MathFn::Cos,
+                            flag: 1
+                        },
+                        1
+                    )
+                );
+                let ExprKind::Intrinsic { op, .. } = &r.kind else {
+                    panic!("rhs is an intrinsic");
+                };
+                assert_eq!(
+                    *op,
+                    IntrinsicOp::Math {
+                        func: MathFn::Sin,
+                        flag: 127
+                    }
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn math_intrinsics_reject_bad_shapes() {
+        // A non-constant fast-math flag.
+        let msg = |reports: Vec<Report>| {
+            reports
+                .iter()
+                .map(|r| r.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let m = msg(reports_of(
+            "pub fn f(x : f64) -> f64 { core::intrinsic::math::cos(x, x) }",
+        ));
+        assert!(m.contains("must be a constant integer"), "{m}");
+        // A flag out of range.
+        let m = msg(reports_of(
+            "pub fn f(x : f64) -> f64 { core::intrinsic::math::cos(x, 128) }",
+        ));
+        assert!(m.contains("must be a constant integer"), "{m}");
+        // An unknown intrinsic name, and a non-math `core` path.
+        let m = msg(reports_of(
+            "pub fn f(x : f64) -> f64 { core::intrinsic::math::tanhh(x, 1) }",
+        ));
+        assert!(
+            m.contains("unknown math intrinsic `core::intrinsic::math::tanhh`"),
+            "{m}"
+        );
+        let m = msg(reports_of(
+            "pub fn f(x : f64) -> f64 { core::other::cos(x, 1) }",
+        ));
+        assert!(
+            m.contains("the built-in `core` package has no function `core::other::cos`"),
+            "{m}"
+        );
+        // A non-float operand fails the FloatingPoint bound.
+        let m = msg(reports_of(
+            "pub fn f(x : u64) -> u64 { core::intrinsic::math::cos(x, 1) }",
+        ));
+        assert!(m.contains("does not implement `FloatingPoint`"), "{m}");
+        // Wrong arity (the trailing flag is required).
+        let m = msg(reports_of(
+            "pub fn f(x : f64) -> f64 { core::intrinsic::math::cos(x) }",
+        ));
+        assert!(m.contains("expects 2 argument(s)"), "{m}");
+    }
+
+    #[test]
     fn try_extend_accumulates_and_rolls_back_atomically() {
         use std::sync::Arc;
 
