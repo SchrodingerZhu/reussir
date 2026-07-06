@@ -264,6 +264,26 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
         break;
       if (llvm::isa<ReussirRegionCleanupOp>(next))
         break;
+      // Count-*observing* ops: `array.with_unique_view`, `closure.uniqify`
+      // and a standalone `rc.is_unique` read `count == 1` to decide between
+      // in-place mutation and a defensive clone. The inc/dec pair around them
+      // is not redundant — it is exactly what makes the count observation see
+      // the value as shared — so cancelling across them would turn a
+      // copy-on-write into an in-place mutation of a live shared value.
+      if (auto viewOp = llvm::dyn_cast<ReussirArrayWithUniqueViewOp>(next);
+          viewOp && aliasAnalysis.alias(op.getRcPtr(), viewOp.getArray()) !=
+                        mlir::AliasResult::NoAlias)
+        break;
+      if (auto uniqifyOp = llvm::dyn_cast<ReussirClosureUniqifyOp>(next);
+          uniqifyOp &&
+          aliasAnalysis.alias(op.getRcPtr(), uniqifyOp.getClosure()) !=
+              mlir::AliasResult::NoAlias)
+        break;
+      if (auto isUniqueOp = llvm::dyn_cast<ReussirRcIsUniqueOp>(next);
+          isUniqueOp &&
+          aliasAnalysis.alias(op.getRcPtr(), isUniqueOp.getRcPtr()) !=
+              mlir::AliasResult::NoAlias)
+        break;
       // `closure.apply`/`closure.eval` consume/mutate only their own closure
       // operand, so they are risky only when that operand may alias the
       // incremented pointer; an application of an unrelated closure is harmless
