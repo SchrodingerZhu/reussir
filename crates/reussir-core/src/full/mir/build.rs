@@ -256,6 +256,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let ret = self.ty(ret);
                 self.tcx.mk_closure(&params, ret)
             }
+            raw::Ty::Array { elem, dims } => {
+                let elem = self.ty(elem);
+                self.tcx.mk_array(elem, dims)
+            }
         }
     }
 
@@ -445,6 +449,29 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .expect("known intrinsic in machine-emitted IR"),
                 args: self.expr_slice(args),
             },
+            raw::Kind::ArrayOp {
+                op,
+                args,
+                kernel_params,
+                kernel,
+            } => {
+                let args = self.expr_slice(args);
+                let kernel = kernel.as_ref().map(|body| {
+                    let params: Vec<(VarId, Ty<'tcx>)> = kernel_params
+                        .iter()
+                        .map(|(v, t)| (VarId(*v), self.ty(t)))
+                        .collect();
+                    let params = self.tcx.alloc_slice(&params);
+                    let body = self.expr_ref(body);
+                    &*self.tcx.alloc(mir::Kernel { params, body })
+                });
+                M::ArrayOp {
+                    op: crate::intrinsic::ArrayFn::parse(op)
+                        .expect("known array op in machine-emitted IR"),
+                    args,
+                    kernel,
+                }
+            }
             raw::Kind::NullableCall(inner) => {
                 M::NullableCall(inner.as_ref().map(|x| self.expr_ref(x)))
             }
@@ -644,6 +671,18 @@ mod tests {
             "pub fn fib(n: u64) -> u64 { \
              let m = n + 1; \
              if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_arrays() {
+        // The `array<f64, 8>` type and all five `array#…` ops, including
+        // kernels with their params.
+        roundtrip(
+            "pub fn make() -> Array<f64, 8> { Array::tabulate<f64, 8>(|i| i as f64) } \
+             pub fn ones() -> Array<f64, 8> { Array::splat<f64, 8>(1.0) } \
+             pub fn s(a: Array<f64, 8>) -> f64 { a.fold(0.0, |acc, x| acc + x) } \
+             pub fn b(a: Array<f64, 8>, i: i64, v: f64) -> Array<f64, 8> { a.set(i, a.get(i) + v) }",
         );
     }
 

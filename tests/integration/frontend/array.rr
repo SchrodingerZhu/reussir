@@ -1,0 +1,46 @@
+// Statically shaped arrays (issue #344, Phase A): the `Array<elem, extents…>`
+// type, the `Array::splat`/`Array::tabulate` constructors, and the
+// `get`/`set`/`fold` methods, as elaborated into the HIR `array#…` forms.
+
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+
+// CHECK: pub fn #make() -> array<f64, 8>
+// CHECK: array#tabulate() kernel(v{{[0-9]+}}: i64) {
+pub fn make() -> Array<f64, 8> {
+    Array::tabulate<f64, 8>(|i| i as f64)
+}
+
+// CHECK: pub fn #splat_ones() -> array<i32, 4, 4>
+// CHECK: array#splat(1 : i32
+pub fn splat_ones() -> Array<i32, 4, 4> {
+    Array::splat<i32, 4, 4>(1)
+}
+
+// CHECK: pub fn #sum(v0 (a): array<f64, 8>) -> f64
+// CHECK: array#fold(v0 : array<f64, 8> {{.*}}, 0.0 : f64 {{.*}}) kernel(v{{[0-9]+}}: f64, v{{[0-9]+}}: f64) {
+pub fn sum(a : Array<f64, 8>) -> f64 {
+    a.fold(0.0, |acc, x| acc + x)
+}
+
+// CHECK: pub fn #bump(v0 (a): array<f64, 8>, v1 (i): i64, v2 (v): f64) -> array<f64, 8>
+// CHECK: array#set(v0 : array<f64, 8> {{.*}}, v1 : i64 {{.*}}, (array#get(v0
+pub fn bump(a : Array<f64, 8>, i : i64, v : f64) -> Array<f64, 8> {
+    a.set(i, a.get(i) + v)
+}
+
+// A rank-2 access takes one index per dimension, row-major.
+// CHECK: pub fn #cell(v0 (m): array<i32, 4, 4>, v1 (i): i64, v2 (j): i64) -> i32
+// CHECK: array#get(v0 : array<i32, 4, 4> {{.*}}, v1 : i64 {{.*}}, v2 : i64
+pub fn cell(m : Array<i32, 4, 4>, i : i64, j : i64) -> i32 {
+    m.get(i, j)
+}
+
+// Kernels may read enclosing arrays (a stencil): the reads reference the
+// enclosing binding directly — no closure, no captures.
+// CHECK: pub fn #blur(v0 (x): array<f64, 8>) -> array<f64, 8>
+// CHECK: array#tabulate() kernel(v{{[0-9]+}}: i64) {
+// CHECK: array#get(v0
+pub fn blur(x : Array<f64, 8>) -> Array<f64, 8> {
+    Array::tabulate<f64, 8>(|i|
+        if i == 0 { x.get(i) } else { (x.get(i - 1) + x.get(i)) / 2.0 })
+}

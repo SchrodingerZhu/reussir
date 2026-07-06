@@ -307,6 +307,9 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
         // Overwritten with the real answer below.
         self.memo.borrow_mut().insert(ty, false);
         let b = match *ty.kind() {
+            // An array is one rc-managed box regardless of its (Plain)
+            // element type.
+            TyKind::Array { .. } => true,
             // The management class is the record table's call (keyed by the
             // canonical, flexivity-erased type); the per-use flexivity then refines
             // the one case where it matters — a regional record.
@@ -512,7 +515,29 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                     s.union_with(&self.free(arg));
                 }
             }
+            // An array op uses its value operands, plus every enclosing var the
+            // inline kernel body reads (the kernel's own params are binders).
+            ExprKind::ArrayOp { args, kernel, .. } => {
+                for arg in args {
+                    s.union_with(&self.free(arg));
+                }
+                if let Some(k) = kernel {
+                    s.union_with(&self.kernel_free(k));
+                }
+            }
         }
+        s
+    }
+
+    /// The free RR variables of an [`ArrayOp`](ExprKind::ArrayOp) kernel body,
+    /// minus the kernel's own parameters.
+    fn kernel_free(&mut self, k: &mir::Kernel<'tcx>) -> VarSet {
+        let mut s = self.free(k.body);
+        let mut params = VarSet::default();
+        for &(p, _) in k.params {
+            params.insert(p);
+        }
+        s.subtract(&params);
         s
     }
 
@@ -617,6 +642,82 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             ExprKind::Closure(c) => self.place_closure(e.id, &c, live_after),
             ExprKind::ClosureCall { target, args } => {
                 self.place_closure_call(target, args, live_after)
+            }
+            ExprKind::ArrayOp { op, args, kernel } => {
+                self.place_array_op(e, op, args, kernel, live_after)
+            }
+        }
+    }
+
+    /// Place an [`ArrayOp`](ExprKind::ArrayOp)'s operands and kernel.
+    ///
+    /// Ownership contract per op (see [`ArrayFn`](crate::intrinsic::ArrayFn)):
+    /// `Set` and `Splat` treat their operands like call arguments (the `Set`
+    /// base is consumed — the op returns the updated array); `Get` and `Fold`
+    /// only *borrow* their array operand; and a kernel body's free vars are
+    /// read-only borrows for the whole op (the type checker restricts kernel
+    /// bodies to be rc-free, so RR vars appear there only as `get` bases).
+    ///
+    /// Borrowed vars take no rc op at their use; instead, like a `Proj` base,
+    /// any of them that is dead downstream is dropped right after the op. A
+    /// non-`Var` borrowed base is a temporary: placed as a value and its
+    /// result dropped after the op ([`RcOp::DropValue`]).
+    fn place_array_op(
+        &mut self,
+        e: &Expr<'tcx>,
+        op: crate::intrinsic::ArrayFn,
+        args: &'tcx [Expr<'tcx>],
+        kernel: Option<&'tcx mir::Kernel<'tcx>>,
+        live_after: &VarSet,
+    ) {
+        use crate::intrinsic::ArrayFn;
+        let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold);
+
+        // Everything the op borrows rather than consumes: kernel-read vars,
+        // plus a `Var` base of a borrowing op.
+        let mut borrowed = VarSet::default();
+        if let Some(k) = kernel {
+            borrowed.union_with(&self.kernel_free(k));
+        }
+        let mut base_is_borrowed_var = false;
+        if borrows_base
+            && self.rr.is_rr(args[0].ty)
+            && let ExprKind::Var(x) = args[0].kind
+        {
+            borrowed.insert(x);
+            base_is_borrowed_var = true;
+        }
+
+        // Value operands, left-to-right with standard liveness threading, all
+        // under `live_after ∪ borrowed` so nothing borrowed is treated as dead.
+        let mut live = live_after.clone();
+        live.union_with(&borrowed);
+        let n = args.len();
+        for i in 0..n {
+            if i == 0 && base_is_borrowed_var {
+                continue; // a borrowed base takes no rc op at its use
+            }
+            let mut la = live.clone();
+            for later in &args[i + 1..] {
+                la.union_with(&self.free(later));
+            }
+            self.place(&args[i], &la);
+            if i == 0 && borrows_base && self.rr.is_rr(args[0].ty) {
+                // A temporary base is borrowed for the op, then released.
+                self.add_after(e.id, RcOp::DropValue(args[0].id));
+            }
+        }
+
+        // The kernel body: every free var is in `live`, so its placement adds
+        // no consuming ops (its RR uses are `get` bases, which borrow).
+        if let Some(k) = kernel {
+            self.place(k.body, &live);
+        }
+
+        // Borrowed vars whose last use is this op die here.
+        for v in borrowed.iter() {
+            if !live_after.contains(v) {
+                self.add_after(e.id, RcOp::Drop(v));
             }
         }
     }

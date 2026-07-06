@@ -342,6 +342,7 @@ const RECURSION_LIMIT: usize = 128;
 fn ty_depth(ty: Ty<'_>) -> usize {
     match *ty.kind() {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
+        TyKind::Array { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
             1 + params
@@ -474,6 +475,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.note_records(ret);
             }
             TyKind::Nullable(inner) => self.note_records(inner),
+            TyKind::Array { elem, .. } => self.note_records(elem),
             _ => {}
         }
     }
@@ -507,6 +509,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.discover_records(ret, worklist);
             }
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
+            TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
             _ => {}
         }
     }
@@ -734,6 +737,15 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 args: self.lower_slice(args, subst),
             },
             ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst)),
+            ExprKind::ArrayOp { op, args, kernel } => M::ArrayOp {
+                op: *op,
+                args: self.lower_slice(args, subst),
+                kernel: kernel.as_ref().map(|k| {
+                    let params = self.lower_var_tys(&k.params, subst);
+                    let body = self.lower_ref(&k.body, subst);
+                    &*self.tcx.alloc(mir::Kernel { params, body })
+                }),
+            },
             ExprKind::Match(scrut, tree) => {
                 M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
             }
@@ -1212,6 +1224,7 @@ mod tests {
                 params.iter().all(|&p| is_ground(p)) && is_ground(ret)
             }
             TyKind::Nullable(inner) => is_ground(inner),
+            TyKind::Array { elem, .. } => is_ground(elem),
             _ => true,
         }
     }
@@ -1220,6 +1233,7 @@ mod tests {
     fn children<'tcx>(e: &mir::Expr<'tcx>) -> Vec<&'tcx mir::Expr<'tcx>> {
         use mir::ExprKind::*;
         match e.kind {
+            ArrayOp { args, kernel, .. } => args.iter().chain(kernel.map(|k| k.body)).collect(),
             GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
             | Poison => vec![],
             Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],

@@ -404,15 +404,27 @@ impl Parser<'_> {
             // In type position `<` always opens type arguments.
             let args = self.start();
             self.bump();
-            self.type_();
+            self.type_arg();
             while self.at(Comma) {
                 self.bump();
-                self.type_();
+                self.type_arg();
             }
             self.expect(RAngle);
             args.complete(self, TypeArgList);
         }
         Some(m.complete(self, PathType))
+    }
+
+    /// A type argument: a type, or an integer literal (an array extent such
+    /// as the `512` in `Array<f64, 512>`).
+    fn type_arg(&mut self) {
+        if self.at(IntLit) {
+            let m = self.start();
+            self.bump();
+            m.complete(self, ConstType);
+            return;
+        }
+        self.type_();
     }
 
     // ===== Patterns =====

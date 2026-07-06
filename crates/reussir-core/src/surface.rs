@@ -217,7 +217,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
 }
 
 fn is_type_kind(kind: SyntaxKind) -> bool {
-    matches!(kind, PrimType | PathType | ArrowType | ParenTypeList)
+    matches!(
+        kind,
+        PrimType | PathType | ArrowType | ParenTypeList | SyntaxKind::ConstType
+    )
 }
 
 fn expr_children(node: &ResolvedNode) -> impl Iterator<Item = &ResolvedNode> {
@@ -323,6 +326,12 @@ fn int_value(text: &str) -> i64 {
     i64::try_from(&literal::parse_int(text)).unwrap_or(i64::MAX)
 }
 
+/// An array extent in type-argument position; clamped rather than failed —
+/// the elaborator range-checks and reports.
+fn parse_extent(text: &str) -> u64 {
+    u64::try_from(&literal::parse_int(text)).unwrap_or(u64::MAX)
+}
+
 fn binary_op(kind: SyntaxKind) -> Option<BinOp> {
     Some(match kind {
         Plus => BinOp::Add,
@@ -382,6 +391,8 @@ pub enum TypeKind {
     TypeExpr(Path, SmallVec<[Type; 2]>),
     /// A closure type: argument types and a result.
     TypeArrow(SmallVec<[Type; 2]>, Type),
+    /// An integer literal in type-argument position (an array extent).
+    TypeConst(u64),
 }
 
 /// A type expression (a view over a `PrimType` / `PathType` / `ArrowType` node).
@@ -412,6 +423,10 @@ impl Type {
         let node = &self.node;
         match node.kind() {
             PrimType => prim_type(tokens(node).next().expect("prim type token").text()),
+            SyntaxKind::ConstType => {
+                let text = tokens(node).next().expect("const type token").text();
+                TypeKind::TypeConst(parse_extent(text))
+            }
             PathType => {
                 let path = child_node(node, PathKind).expect("type path");
                 let args = child_node(node, TypeArgList)

@@ -202,6 +202,11 @@ pub enum Ty {
         params: Vec<Ty>,
         ret: Box<Ty>,
     },
+    /// `array<elem, extents…>` — a statically shaped array.
+    Array {
+        elem: Box<Ty>,
+        dims: Vec<u64>,
+    },
 }
 
 /// The per-use capability prefix printed before a record type (absent = value).
@@ -340,6 +345,13 @@ pub enum Kind {
         captures: Vec<(u32, Ty)>,
         params: Vec<(u32, Ty)>,
         body: Expr,
+    },
+    /// `array#<op>(args…) [kernel(params…) { body }]` — a built-in array op.
+    ArrayOp {
+        op: String,
+        args: Vec<Expr>,
+        kernel_params: Vec<(u32, Ty)>,
+        kernel: Option<Expr>,
     },
     Match(Expr, Box<Tree>),
 }

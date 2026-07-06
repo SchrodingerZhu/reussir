@@ -68,6 +68,10 @@ pub enum Token<'a> {
     Proj,
     #[token("intrinsic")]
     Intrinsic,
+    #[token("array")]
+    Array,
+    #[token("kernel")]
+    Kernel,
     #[token("assign")]
     Assign,
     #[token("scrut")]

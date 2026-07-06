@@ -23,19 +23,19 @@ use reussir_backend::dialect;
 use reussir_backend::dialect::ty::{ReussirCapability, ReussirLifeScope};
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
-use reussir_backend::melior::dialect::{func, scf};
+use reussir_backend::melior::dialect::{func, memref, scf};
 use reussir_backend::melior::ir::attribute::{
     Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
     TypeAttribute,
 };
-use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType};
+use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType, MemRefType};
 use reussir_backend::melior::ir::{
     Block, BlockLike, Identifier, Location, Operation, Region, RegionLike, Type, Value,
 };
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
-use reussir_core::intrinsic::IntrinsicOp;
+use reussir_core::intrinsic::{ArrayFn, IntrinsicOp};
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
@@ -688,6 +688,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
             Closure(c) => self.closure(block, env, c).map(Some),
             ClosureCall { target, args } => self.closure_call(block, env, target, args),
+            ArrayOp { op, args, kernel } => self.lower_array_op(block, env, e, *op, args, *kernel),
             GlobalStr(token) => self.global_str(block, e, *token).map(Some),
             Poison => err("poison expression reached lowering"),
         }
@@ -2652,5 +2653,384 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let region = Region::new();
         region.append_block(block);
         Ok(region)
+    }
+
+    // ----- built-in array operations (issue #344) -----
+
+    /// Lower an [`ArrayOp`](ExprKind::ArrayOp). The shapes:
+    ///
+    /// * `get` — borrow + view + bounds-checked `memref.load`;
+    /// * `set` — bounds checks, then `array.with_unique_view` storing the
+    ///   element (the empty-yield implicit result is the updated array);
+    /// * `splat`/`tabulate` — a fresh `rc.create` over a poison payload
+    ///   (uniquely owned by construction, so a plain borrow + view is a
+    ///   mutable view), filled by an `scf.for` nest with **no** bounds checks
+    ///   (the loops iterate exactly the extents);
+    /// * `fold` — borrow + view and an `scf.for` nest threading the
+    ///   accumulator through `iter_args`.
+    ///
+    /// Kernel bodies are inlined: their params bind to the loop induction
+    /// variables (cast `index → i64`) or the loaded element/accumulator, and
+    /// the body lowers against the enclosing environment (its free variables
+    /// are read-only borrows — the ownership analysis emits no rc ops inside).
+    fn lower_array_op<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        op: ArrayFn,
+        args: &'tcx [Expr<'tcx>],
+        kernel: Option<&'tcx mir::Kernel<'tcx>>,
+    ) -> Result<Option<Value<'c, 'b>>> {
+        match op {
+            ArrayFn::Get => self.array_get(block, env, args).map(Some),
+            ArrayFn::Set => self.array_set(block, env, args).map(Some),
+            ArrayFn::Splat => self.array_splat(block, env, e, args).map(Some),
+            ArrayFn::Tabulate => self
+                .array_tabulate(block, env, e, kernel.expect("tabulate has a kernel"))
+                .map(Some),
+            ArrayFn::Fold => self
+                .array_fold(block, env, e, args, kernel.expect("fold has a kernel"))
+                .map(Some),
+        }
+    }
+
+    /// The extents of an array-typed MIR type.
+    fn array_dims(ty: Ty<'tcx>) -> Result<&'tcx [u64]> {
+        match *ty.kind() {
+            TyKind::Array { dims, .. } => Ok(dims),
+            _ => err("array operation on a non-array type"),
+        }
+    }
+
+    /// The `memref<dims x elem>` view type of an array-typed `ty`.
+    fn memref_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let TyKind::Array { elem, dims } = *ty.kind() else {
+            return err("array view requested for a non-array type");
+        };
+        let elem = self.tys.mlir_ty(elem)?;
+        let shape: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
+        Ok(MemRefType::new(elem, &shape, None, None).into())
+    }
+
+    /// Borrow an rc array and materialize the memref view of its payload.
+    fn array_view_of<'b>(
+        &self,
+        block: &'b Block<'c>,
+        rc_val: Value<'c, 'b>,
+        arr_ty: Ty<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let inner = self.tys.array_inner_of(arr_ty)?;
+        let ref_ty = self.tys.unspecified_ref_type(inner);
+        let borrowed = self.append(
+            block,
+            dialect::rc_borrow(self.context, ref_ty, rc_val, loc).into(),
+        );
+        let view_ty = self.memref_of(arr_ty)?;
+        Ok(self.append(
+            block,
+            dialect::array_view(self.context, view_ty, borrowed, loc).into(),
+        ))
+    }
+
+    /// Lower `i64` index expressions and bounds-check them against `dims`:
+    /// each index is cast to `index` (a negative value wraps to a huge
+    /// unsigned one), compared `ult` against its extent, the verdicts are
+    /// and-reduced, and the failure branch panics. Statically provable checks
+    /// fold away downstream (the comparisons are against constant extents).
+    fn checked_indices<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        idx_exprs: &'tcx [Expr<'tcx>],
+        dims: &[u64],
+    ) -> Result<Vec<Value<'c, 'b>>> {
+        let loc = self.loc();
+        let index_ty = Type::index(self.context);
+        let mut idxs = Vec::with_capacity(idx_exprs.len());
+        let mut ok: Option<Value<'c, 'b>> = None;
+        for (ie, &d) in idx_exprs.iter().zip(dims) {
+            let raw = self
+                .expr(block, env, ie)?
+                .ok_or_else(|| LoweringError("array index is unit".into()))?;
+            let idx = self.append(block, arith::index_cast(raw, index_ty, loc));
+            let ext = self.index_const(block, d as i64);
+            let in_range = self.append(
+                block,
+                arith::cmpi(self.context, CmpiPredicate::Ult, idx, ext, loc),
+            );
+            ok = Some(match ok {
+                None => in_range,
+                Some(acc) => self.append(block, arith::andi(acc, in_range, loc)),
+            });
+            idxs.push(idx);
+        }
+        if let Some(ok) = ok {
+            let then_block = Block::new(&[]);
+            then_block.append_operation(scf::r#yield(&[], loc));
+            let then_region = Region::new();
+            then_region.append_block(then_block);
+            let else_block = Block::new(&[]);
+            else_block.append_operation(builders::panic(
+                self.context,
+                "array index out of bounds",
+                loc,
+            ));
+            else_block.append_operation(scf::r#yield(&[], loc));
+            let else_region = Region::new();
+            else_region.append_block(else_block);
+            block.append_operation(scf::r#if(ok, &[], then_region, else_region, loc));
+        }
+        Ok(idxs)
+    }
+
+    fn array_get<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let base = &args[0];
+        let dims = Self::array_dims(base.ty)?;
+        let rc_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("array base is unit".into()))?;
+        // A temporary base (e.g. `tabulate(…).get(i)`) is released *after*
+        // this node by a value-keyed drop; stash it where that op looks.
+        self.remember_temp(env, base, rc_val);
+        let view = self.array_view_of(block, rc_val, base.ty)?;
+        let idxs = self.checked_indices(block, env, &args[1..], dims)?;
+        Ok(self.append(block, memref::load(view, &idxs, self.loc())))
+    }
+
+    fn array_set<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let base = &args[0];
+        let dims = Self::array_dims(base.ty)?;
+        let rank = dims.len();
+        let rc_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("array base is unit".into()))?;
+        let idxs = self.checked_indices(block, env, &args[1..=rank], dims)?;
+        let value = self
+            .expr(block, env, &args[rank + 1])?
+            .ok_or_else(|| LoweringError("array element is unit".into()))?;
+        let body = Block::new(&[(self.memref_of(base.ty)?, loc)]);
+        let view = body
+            .argument(0)
+            .expect("with_unique_view body takes the view")
+            .into();
+        body.append_operation(memref::store(value, view, &idxs, loc));
+        body.append_operation(builders::scf_yield(None, loc));
+        let region = Region::new();
+        region.append_block(body);
+        let rc_ty = self.tys.mlir_ty(base.ty)?;
+        let op = block.append_operation(builders::array_with_unique_view(
+            rc_val, rc_ty, region, loc,
+        ));
+        Ok(op.result(0).expect("with_unique_view result").into())
+    }
+
+    /// A fresh, uniquely-owned rc array over an uninitialized (poison)
+    /// payload; the caller fills every element before the value escapes.
+    fn fresh_array<'b>(&self, block: &'b Block<'c>, arr_ty: Ty<'tcx>) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let inner = self.tys.array_inner_of(arr_ty)?;
+        let rc_ty = self.tys.mlir_ty(arr_ty)?;
+        let poison = self.append(block, builders::poison(self.context, inner, loc));
+        Ok(self.append(block, builders::rc_create(self.context, poison, rc_ty, loc)))
+    }
+
+    fn array_splat<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let value = self
+            .expr(block, env, &args[0])?
+            .ok_or_else(|| LoweringError("array element is unit".into()))?;
+        let rc_val = self.fresh_array(block, e.ty)?;
+        let view = self.array_view_of(block, rc_val, e.ty)?;
+        let dims = Self::array_dims(e.ty)?;
+        self.splat_nest(block, view, value, dims, Vec::new())?;
+        Ok(rc_val)
+    }
+
+    /// The `scf.for` nest of `splat`: store `value` at every index tuple.
+    fn splat_nest<'b>(
+        &self,
+        block: &'b Block<'c>,
+        view: Value<'c, 'b>,
+        value: Value<'c, 'b>,
+        dims: &[u64],
+        ivs: Vec<Value<'c, 'b>>,
+    ) -> Result<()> {
+        let loc = self.loc();
+        if dims.is_empty() {
+            block.append_operation(memref::store(value, view, &ivs, loc));
+            return Ok(());
+        }
+        let lb = self.index_const(block, 0);
+        let ub = self.index_const(block, dims[0] as i64);
+        let step = self.index_const(block, 1);
+        let inner = Block::new(&[(Type::index(self.context), loc)]);
+        {
+            let iv = inner.argument(0).expect("loop induction variable").into();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            ivs2.push(iv);
+            self.splat_nest(&inner, view, value, &dims[1..], ivs2)?;
+            inner.append_operation(scf::r#yield(&[], loc));
+        }
+        let region = Region::new();
+        region.append_block(inner);
+        block.append_operation(scf::r#for(lb, ub, step, region, loc));
+        Ok(())
+    }
+
+    fn array_tabulate<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        kernel: &'tcx mir::Kernel<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let rc_val = self.fresh_array(block, e.ty)?;
+        let view = self.array_view_of(block, rc_val, e.ty)?;
+        let dims = Self::array_dims(e.ty)?;
+        self.tabulate_nest(block, env, view, dims, kernel, Vec::new())?;
+        Ok(rc_val)
+    }
+
+    /// The `scf.for` nest of `tabulate`: in the innermost body, bind each
+    /// kernel param to its induction variable (cast to `i64`), lower the
+    /// kernel body inline, and store its value.
+    fn tabulate_nest<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        view: Value<'c, 'b>,
+        dims: &[u64],
+        kernel: &'tcx mir::Kernel<'tcx>,
+        ivs: Vec<Value<'c, 'b>>,
+    ) -> Result<()> {
+        let loc = self.loc();
+        if dims.is_empty() {
+            let i64_ty: Type<'c> = IntegerType::new(self.context, 64).into();
+            let mark = env.vars.len();
+            for (&(v, _), &iv) in kernel.params.iter().zip(&ivs) {
+                let as_i64 = self.append(block, arith::index_cast(iv, i64_ty, loc));
+                env.vars.insert(v, as_i64);
+            }
+            let val = self
+                .expr(block, env, kernel.body)?
+                .ok_or_else(|| LoweringError("array kernel produced no value".into()))?;
+            env.vars.truncate(mark);
+            block.append_operation(memref::store(val, view, &ivs, loc));
+            return Ok(());
+        }
+        let lb = self.index_const(block, 0);
+        let ub = self.index_const(block, dims[0] as i64);
+        let step = self.index_const(block, 1);
+        let inner = Block::new(&[(Type::index(self.context), loc)]);
+        {
+            let iv = inner.argument(0).expect("loop induction variable").into();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            ivs2.push(iv);
+            env.subscope(|scope| self.tabulate_nest(&inner, scope, view, &dims[1..], kernel, ivs2))?;
+            inner.append_operation(scf::r#yield(&[], loc));
+        }
+        let region = Region::new();
+        region.append_block(inner);
+        block.append_operation(scf::r#for(lb, ub, step, region, loc));
+        Ok(())
+    }
+
+    fn array_fold<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        args: &'tcx [Expr<'tcx>],
+        kernel: &'tcx mir::Kernel<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let base = &args[0];
+        let dims = Self::array_dims(base.ty)?;
+        let rc_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("array base is unit".into()))?;
+        // A temporary base (e.g. `tabulate(…).fold(…)`) is released *after*
+        // this node by a value-keyed drop; stash it where that op looks.
+        self.remember_temp(env, base, rc_val);
+        let view = self.array_view_of(block, rc_val, base.ty)?;
+        let init = self
+            .expr(block, env, &args[1])?
+            .ok_or_else(|| LoweringError("fold accumulator is unit".into()))?;
+        let acc_ty = self.tys.mlir_ty(e.ty)?;
+        self.fold_nest(block, env, view, dims, kernel, acc_ty, init, Vec::new())
+    }
+
+    /// The `scf.for` nest of `fold`: the accumulator threads every level as an
+    /// `iter_args`; the innermost body loads the element, binds the kernel
+    /// params to `(acc, elem)`, and yields the kernel body's value.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_nest<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        view: Value<'c, 'b>,
+        dims: &[u64],
+        kernel: &'tcx mir::Kernel<'tcx>,
+        acc_ty: Type<'c>,
+        acc_in: Value<'c, 'b>,
+        ivs: Vec<Value<'c, 'b>>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        if dims.is_empty() {
+            let elem = self.append(block, memref::load(view, &ivs, loc));
+            let mark = env.vars.len();
+            env.vars.insert(kernel.params[0].0, acc_in);
+            env.vars.insert(kernel.params[1].0, elem);
+            let out = self
+                .expr(block, env, kernel.body)?
+                .ok_or_else(|| LoweringError("fold kernel produced no value".into()))?;
+            env.vars.truncate(mark);
+            return Ok(out);
+        }
+        let lb = self.index_const(block, 0);
+        let ub = self.index_const(block, dims[0] as i64);
+        let step = self.index_const(block, 1);
+        let inner = Block::new(&[(Type::index(self.context), loc), (acc_ty, loc)]);
+        {
+            let iv = inner.argument(0).expect("loop induction variable").into();
+            let acc_arg = inner.argument(1).expect("loop-carried accumulator").into();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            ivs2.push(iv);
+            env.subscope(|scope| {
+                let next =
+                    self.fold_nest(&inner, scope, view, &dims[1..], kernel, acc_ty, acc_arg, ivs2)?;
+                inner.append_operation(scf::r#yield(&[next], loc));
+                Ok::<_, LoweringError>(())
+            })?;
+        }
+        let region = Region::new();
+        region.append_block(inner);
+        let op = block.append_operation(builders::scf_for_iter(
+            lb,
+            ub,
+            step,
+            &[acc_in],
+            &[acc_ty],
+            region,
+            loc,
+        ));
+        Ok(op.result(0).expect("loop-carried result").into())
     }
 }

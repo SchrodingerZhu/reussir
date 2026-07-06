@@ -151,6 +151,61 @@ impl FastMath {
     }
 }
 
+/// A built-in operation on a statically shaped array (`TyKind::Array`, issue
+/// #344). Unlike [`IntrinsicOp`], these are not spelled under `core::intrinsic`
+/// — `Splat`/`Tabulate` are `Array::<fn>` path calls and the rest are
+/// method-style calls on an array-typed receiver — and they carry their own
+/// HIR/MIR node (`ExprKind::ArrayOp`) because `Tabulate`/`Fold` hold an inline
+/// kernel body, which the generic `Intrinsic` node cannot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArrayFn {
+    /// `Array::splat(v)`: every element is `v`. Value operands: `[v]`.
+    Splat,
+    /// `Array::tabulate(|i, …| e)`: element at each index tuple is the kernel
+    /// applied to the (row-major) indices. No value operands.
+    Tabulate,
+    /// `a.get(i, …)`: checked element read. Value operands: `[a, i…]`; `a` is
+    /// borrowed, not consumed.
+    Get,
+    /// `a.set(i, …, v)`: checked element write, consuming `a` and returning
+    /// the updated array (copy-on-write when shared). Value operands:
+    /// `[a, i…, v]`.
+    Set,
+    /// `a.fold(init, |acc, x| e)`: row-major reduction. Value operands:
+    /// `[a, init]`; `a` is borrowed, not consumed.
+    Fold,
+}
+
+impl ArrayFn {
+    /// Parse a surface / textual-IR name.
+    pub fn parse(name: &str) -> Option<ArrayFn> {
+        match name {
+            "splat" => Some(ArrayFn::Splat),
+            "tabulate" => Some(ArrayFn::Tabulate),
+            "get" => Some(ArrayFn::Get),
+            "set" => Some(ArrayFn::Set),
+            "fold" => Some(ArrayFn::Fold),
+            _ => None,
+        }
+    }
+
+    /// The surface name, also used by the textual IR (`array#<name>`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArrayFn::Splat => "splat",
+            ArrayFn::Tabulate => "tabulate",
+            ArrayFn::Get => "get",
+            ArrayFn::Set => "set",
+            ArrayFn::Fold => "fold",
+        }
+    }
+
+    /// Whether the op takes an inline kernel body.
+    pub fn has_kernel(self) -> bool {
+        matches!(self, ArrayFn::Tabulate | ArrayFn::Fold)
+    }
+}
+
 /// A resolved intrinsic operation: which family, which op within it, and the
 /// family's compile-time immediates. One generic `Intrinsic` IR node carries
 /// this through HIR/MIR, so the node itself — and its traversal, ownership, and

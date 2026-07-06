@@ -1,0 +1,59 @@
+// End-to-end semantics of the Phase A array operations (issue #344):
+// construction, reads/writes, folds, rank-2 indexing, copy-on-write on a
+// shared array, and in-place update of a unique one.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/array_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/array_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+// tabulate + fold: sum of 0..7 = 28.
+pub fn test_tabulate_sum() -> f64 {
+    Array::tabulate<f64, 8>(|i| i as f64).fold(0.0, |acc, x| acc + x)
+}
+extern "C" trampoline "test_tabulate_sum_ffi" = test_tabulate_sum;
+
+// splat + get.
+pub fn test_splat_get() -> i64 {
+    let a = Array::splat<i64, 16>(7);
+    a.get(15)
+}
+extern "C" trampoline "test_splat_get_ffi" = test_splat_get;
+
+// A unique array updates in place through a call boundary.
+fn bump(a : Array<f64, 8>, i : i64, v : f64) -> Array<f64, 8> {
+    a.set(i, a.get(i) + v)
+}
+pub fn test_unique_update() -> f64 {
+    let a = Array::tabulate<f64, 8>(|i| i as f64);
+    bump(a, 3, 10.0).fold(0.0, |acc, x| acc + x)
+}
+extern "C" trampoline "test_unique_update_ffi" = test_unique_update;
+
+// Copy-on-write: `a` is still live across the `set`, so the update must
+// clone; the original observes its old value. 1.0 + 99.0 = 100.0.
+pub fn test_cow() -> f64 {
+    let a = Array::splat<f64, 4>(1.0);
+    let b = a.set(0, 99.0);
+    a.get(0) + b.get(0)
+}
+extern "C" trampoline "test_cow_ffi" = test_cow;
+
+// Rank-2: m[i][j] = i * 10 + j, summed row-major; checked against the
+// closed form.
+pub fn test_rank2() -> i64 {
+    let m = Array::tabulate<i64, 4, 4>(|i, j| i * 10 + j);
+    m.fold(0, |acc, x| acc + x) + m.get(2, 3)
+}
+extern "C" trampoline "test_rank2_ffi" = test_rank2;
+
+// A stencil kernel reading the enclosing array.
+pub fn test_stencil() -> f64 {
+    let x = Array::splat<f64, 8>(3.0);
+    let y = Array::tabulate<f64, 8>(|i|
+        if i == 0 { x.get(i) } else { (x.get(i - 1) + x.get(i)) / 2.0 });
+    y.fold(0.0, |acc, v| acc + v)
+}
+extern "C" trampoline "test_stencil_ffi" = test_stencil;

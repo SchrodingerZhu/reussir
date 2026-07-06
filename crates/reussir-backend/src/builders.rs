@@ -487,6 +487,65 @@ pub fn record_dispatch<'c>(
 /// melior's generated builder takes only `(context, location)` — it exposes no
 /// parameter for it, so it can build only a value-less yield. The value is absent
 /// for a void dispatch.
+/// `scf.for %iv = %lb to %ub step %step iter_args(…) -> (tys…)`.
+///
+/// melior's [`scf::r#for`](melior::dialect::scf::r#for) takes no init operands
+/// or result types, so it cannot express a loop-carried value (a fold
+/// accumulator). The body region's entry block must take the induction
+/// variable (`index`) followed by one argument per init operand, and terminate
+/// with an `scf.yield` of the next iteration's carried values.
+pub fn scf_for_iter<'c>(
+    lower: Value<'c, '_>,
+    upper: Value<'c, '_>,
+    step: Value<'c, '_>,
+    inits: &[Value<'c, '_>],
+    result_types: &[Type<'c>],
+    body: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("scf.for", location)
+        .add_operands(&[lower, upper, step])
+        .add_operands(inits)
+        .add_results(result_types)
+        .add_regions([body])
+        .build()
+        .expect("valid scf.for with iter_args")
+}
+
+/// `reussir.array.with_unique_view (%array : rc) -> rc { ^bb(%view: memref): … }`
+/// — uniqify (clone-if-shared) an rc array and run `body` with a mutable view
+/// of its payload. With an empty terminating `reussir.scf.yield`, the op's
+/// *implicit* result is the uniquified array itself, which is the only form
+/// the code generator emits.
+///
+/// Built raw because the op has a custom assembly format and an optional
+/// result, which the generated builder does not surface.
+pub fn array_with_unique_view<'c>(
+    array: Value<'c, '_>,
+    result_type: Type<'c>,
+    body: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.array.with_unique_view", location)
+        .add_operands(&[array])
+        .add_results(&[result_type])
+        .add_regions([body])
+        .build()
+        .expect("valid reussir.array.with_unique_view")
+}
+
+/// `reussir.panic "<message>"` — abort through the runtime with a diagnostic
+/// message (used on the cold side of a bounds check).
+pub fn panic<'c>(context: &'c Context, message: &str, location: Location<'c>) -> Operation<'c> {
+    OperationBuilder::new("reussir.panic", location)
+        .add_attributes(&[(
+            Identifier::new(context, "message"),
+            StringAttribute::new(context, message).into(),
+        )])
+        .build()
+        .expect("valid reussir.panic")
+}
+
 pub fn scf_yield<'c>(value: Option<Value<'c, '_>>, location: Location<'c>) -> Operation<'c> {
     let mut builder = OperationBuilder::new("reussir.scf.yield", location);
     if let Some(value) = value {

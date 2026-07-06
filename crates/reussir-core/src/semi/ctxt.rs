@@ -430,6 +430,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.push_ty_display(out, inner);
                 out.push('>');
             }
+            TyKind::Array { elem, dims } => {
+                out.push_str("Array<");
+                self.push_ty_display(out, elem);
+                for extent in dims {
+                    let _ = write!(out, ", {extent}");
+                }
+                out.push('>');
+            }
             TyKind::Record { def, args, flex } => {
                 match flex {
                     Flexivity::Flex => out.push_str("[flex] "),
@@ -928,6 +936,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect()
     }
 
+    /// Phase A of the array design (issue #344) supports arrays as locals,
+    /// parameters, and returns only — a record member of array type has no
+    /// dialect-level member representation yet.
+    fn reject_array_member(&mut self, fty: Ty<'tcx>, span: Option<Span>) {
+        if matches!(fty.kind(), crate::semi::ty::TyKind::Array { .. }) {
+            self.error(
+                span,
+                "an array cannot be a record member in this version (see issue #344)",
+            );
+        }
+    }
+
     fn populate_record(&mut self, rec: &surface::Record, def: DefId) {
         let Some(record) = self.records.get(&def) else {
             return;
@@ -950,6 +970,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
+                        self.reject_array_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -962,6 +983,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
+                        self.reject_array_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -975,7 +997,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (name, tys) = &v.value;
                         Variant {
                             name: *name,
-                            fields: tys.iter().map(|t| self.eval_type(t)).collect(),
+                            fields: tys
+                                .iter()
+                                .map(|t| {
+                                    let fty = self.eval_type(t);
+                                    self.reject_array_member(fty, span);
+                                    fty
+                                })
+                                .collect(),
                         }
                     })
                     .collect(),

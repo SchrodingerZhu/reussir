@@ -161,6 +161,8 @@ Ty: raw::Ty = {
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     <cap:Cap> "#" <path:PathArgs>
         => raw::Ty::Record { cap, path: path.0, args: path.1 },
+    "array" "<" <elem:Ty> <dims:("," <"int">)+> ">"
+        => raw::Ty::Array { elem: Box::new(elem), dims: dims.iter().map(raw::small_u64).collect() },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
@@ -228,6 +230,10 @@ Atom: raw::Kind = {
         => raw::Kind::VariantCall { path: path.0, ty_args: path.1, variant: raw::small_usize(&v), args },
     "intrinsic" "#" <family:"ident"> "#" <name:"ident"> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Intrinsic { family: family.to_string(), name: name.to_string(), imm: raw::small_u32(&imm), args },
+    "array" "#" <op:"ident"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::ArrayOp { op: op.to_string(), args, kernel_params: vec![], kernel: None },
+    "array" "#" <op:"ident"> "(" <args:Comma<Expr>> ")" "kernel" "(" <params:Comma<ClosureParam>> ")" "{" <body:Expr> "}"
+        => raw::Kind::ArrayOp { op: op.to_string(), args, kernel_params: params, kernel: Some(body) },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
@@ -353,6 +359,8 @@ extern {
         "rigid" => Token::Rigid,
         "proj" => Token::Proj,
         "intrinsic" => Token::Intrinsic,
+        "array" => Token::Array,
+        "kernel" => Token::Kernel,
         "assign" => Token::Assign,
         "Nullable" => Token::Nullable,
         "NonNull" => Token::NonNull,

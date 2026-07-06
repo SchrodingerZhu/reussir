@@ -475,6 +475,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if let Some(done) = self.infer_intrinsic(fc, span) {
             return done;
         }
+        // The built-in `Array` head (reserved by the type namespace):
+        // `Array::splat<T, extents…>(v)` / `Array::tabulate<T, extents…>(|i…| e)`
+        // construct statically shaped arrays (issue #344).
+        if fc.name.segments.len() == 1 && self.sym(fc.name.segments[0]) == "Array" {
+            return self.infer_array_ctor(fc, span);
+        }
         let Some(def) = self.resolve_function_ref(&fc.name) else {
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
@@ -538,6 +544,30 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[surface::Expr],
         span: Option<Span>,
     ) -> Expr<'tcx> {
+        // `base.get(…)` / `base.set(…)` / `base.fold(…)` on an array-typed base
+        // are built-in array operations, not closure-field applications. The
+        // base (with any leading field accesses) is inferred once; if it is not
+        // an array, the trailing access resumes the ordinary projection + apply
+        // path, so records with closure fields named `get` still work.
+        if let surface::ExprKind::AccessChain(base, accs) = callee.kind()
+            && let Some(surface::Access::Named(name)) = accs.last()
+        {
+            let method = self.sym(*name).to_string();
+            if matches!(method.as_str(), "get" | "set" | "fold") {
+                let lead = &accs[..accs.len() - 1];
+                let base = if lead.is_empty() {
+                    self.infer_expr(&base)
+                } else {
+                    let b = self.infer_expr(&base);
+                    self.project_access(b, lead, span)
+                };
+                if let TyKind::Array { .. } = self.infer.shallow_resolve(base.ty).kind() {
+                    return self.infer_array_method(base, &method, args, span);
+                }
+                let callee = self.project_access(base, &accs[accs.len() - 1..], span);
+                return self.closure_apply(callee, args, span);
+            }
+        }
         let callee = self.infer_expr(callee);
         self.closure_apply(callee, args, span)
     }
@@ -846,6 +876,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let base = self.infer_expr(base);
+        self.project_access(base, accs, span)
+    }
+
+    /// The projection half of (PROJ), over an already-inferred base — shared
+    /// with the array-method routing in `infer_closure_call`, which must infer
+    /// the base once before deciding how to interpret the trailing access.
+    fn project_access(
+        &mut self,
+        base: Expr<'tcx>,
+        accs: &[surface::Access],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
         let mut cur = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
@@ -1027,6 +1069,374 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         let op = IntrinsicOp::Math { func, flag };
         self.mk_expr(ExprKind::Intrinsic { op, args }, result, span)
+    }
+
+    /// (ARR-CTOR) `Array::splat<T, extents…>(v)` / `Array::tabulate<T,
+    /// extents…>(|i…| e)`. The explicit type arguments carry the array shape
+    /// (they are required — there is nothing to infer them from); `splat`
+    /// checks its one argument against the element type, `tabulate` checks a
+    /// literal kernel lambda of one `i64` parameter per dimension against it.
+    fn infer_array_ctor(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let method = self.sym(fc.name.basename).to_string();
+        let op = match ArrayFn::parse(&method) {
+            Some(op @ (ArrayFn::Splat | ArrayFn::Tabulate)) => op,
+            _ => {
+                self.error(
+                    span,
+                    format!(
+                        "`Array` has no constructor `{method}` (expected `splat` or `tabulate`)"
+                    ),
+                );
+                return self.poison(span);
+            }
+        };
+        if fc.ty_args.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`Array::{method}` requires explicit type arguments — an element \
+                     type and extents, e.g. `Array::{method}<f64, 512>(…)`"
+                ),
+            );
+            return self.poison(span);
+        }
+        let mut targs = Vec::with_capacity(fc.ty_args.len());
+        for t in &fc.ty_args {
+            let Some(t) = t else {
+                self.error(
+                    span,
+                    format!("`Array::{method}` type arguments cannot be `_`: the array shape must be explicit"),
+                );
+                return self.poison(span);
+            };
+            targs.push(t.clone());
+        }
+        let tspan = targs[0].span();
+        let arr = self.eval_array_args(&targs, tspan);
+        let TyKind::Array { elem, dims } = *arr.kind() else {
+            // `eval_array_args` already reported why.
+            return self.poison(span);
+        };
+        if fc.args.len() != 1 {
+            self.error(
+                span,
+                format!("`Array::{method}` expects exactly one argument"),
+            );
+            return self.poison(span);
+        }
+        match op {
+            ArrayFn::Splat => {
+                let v = self.check_expr(&fc.args[0], elem);
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op,
+                        args: vec![v],
+                        kernel: None,
+                    },
+                    arr,
+                    span,
+                )
+            }
+            ArrayFn::Tabulate => {
+                let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
+                let param_tys = vec![i64_ty; dims.len()];
+                let Some(kernel) = self.check_kernel(&fc.args[0], &param_tys, elem, &method) else {
+                    return self.poison(span);
+                };
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op,
+                        args: Vec::new(),
+                        kernel: Some(Box::new(kernel)),
+                    },
+                    arr,
+                    span,
+                )
+            }
+            _ => unreachable!("filtered above"),
+        }
+    }
+
+    /// (ARR-METHOD) `a.get(i…)` / `a.set(i…, v)` / `a.fold(init, |acc, x| e)`
+    /// on an array-typed base. Indices are `i64` (checked against the extents
+    /// at runtime); `get` borrows and yields the element, `set` consumes the
+    /// array and yields the updated one, `fold` borrows and reduces row-major.
+    fn infer_array_method(
+        &mut self,
+        base: Expr<'tcx>,
+        method: &str,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let bty = self.infer.shallow_resolve(base.ty);
+        let TyKind::Array { elem, dims } = *bty.kind() else {
+            unreachable!("routed here only for array bases");
+        };
+        let rank = dims.len();
+        let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
+        match method {
+            "get" => {
+                if args.len() != rank {
+                    self.error(
+                        span,
+                        format!(
+                            "`get` on `{}` expects {rank} index argument(s), got {}",
+                            self.ty_display(bty),
+                            args.len()
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let mut hargs = vec![base];
+                for a in args {
+                    hargs.push(self.check_expr(a, i64_ty));
+                }
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Get,
+                        args: hargs,
+                        kernel: None,
+                    },
+                    elem,
+                    span,
+                )
+            }
+            "set" => {
+                if args.len() != rank + 1 {
+                    self.error(
+                        span,
+                        format!(
+                            "`set` on `{}` expects {rank} index argument(s) and a value, got {} argument(s)",
+                            self.ty_display(bty),
+                            args.len()
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let mut hargs = vec![base];
+                for a in &args[..rank] {
+                    hargs.push(self.check_expr(a, i64_ty));
+                }
+                hargs.push(self.check_expr(&args[rank], elem));
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Set,
+                        args: hargs,
+                        kernel: None,
+                    },
+                    bty,
+                    span,
+                )
+            }
+            "fold" => {
+                if args.len() != 2 {
+                    self.error(
+                        span,
+                        "`fold` expects an initial accumulator and a kernel lambda",
+                    );
+                    return self.poison(span);
+                }
+                let init = self.infer_expr(&args[0]);
+                let acc_ty = init.ty;
+                let Some(kernel) = self.check_kernel(&args[1], &[acc_ty, elem], acc_ty, "fold")
+                else {
+                    return self.poison(span);
+                };
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Fold,
+                        args: vec![base, init],
+                        kernel: Some(Box::new(kernel)),
+                    },
+                    acc_ty,
+                    span,
+                )
+            }
+            _ => unreachable!("routed here only for get/set/fold"),
+        }
+    }
+
+    /// Check an [`ArrayOp`](ExprKind::ArrayOp) kernel: a *literal* lambda whose
+    /// parameters take the given types and whose body checks against `ret`.
+    /// The body is checked in the enclosing scope with only the params added —
+    /// free variables reference enclosing bindings directly (no captures) —
+    /// and the rc-free body restriction is enforced after zonking, once types
+    /// are resolved (see `enforce_kernel_expr`).
+    fn check_kernel(
+        &mut self,
+        arg: &surface::Expr,
+        param_tys: &[Ty<'tcx>],
+        ret: Ty<'tcx>,
+        what: &str,
+    ) -> Option<super::hir::Kernel<'tcx>> {
+        let span = Some(arg.span());
+        let surface::ExprKind::Lambda(lam) = arg.kind() else {
+            self.error(
+                span,
+                format!("`{what}` requires a literal lambda kernel (e.g. `|i| …`)"),
+            );
+            return None;
+        };
+        if lam.args.len() != param_tys.len() {
+            self.error(
+                span,
+                format!(
+                    "`{what}` kernel takes {} parameter(s), got {}",
+                    param_tys.len(),
+                    lam.args.len()
+                ),
+            );
+            return None;
+        }
+        let mark = self.vars.mark();
+        let mut params = Vec::new();
+        for ((name, ann), &pty) in lam.args.iter().zip(param_tys) {
+            if let Some(t) = ann {
+                let t = self.eval_type(t);
+                self.expect(t, pty, span);
+            }
+            let var = self.vars.fresh(*name, pty, None);
+            params.push((var, pty));
+        }
+        if let Some(rt) = &lam.ret_ty {
+            let rt = self.eval_type(rt);
+            self.expect(rt, ret, span);
+        }
+        let body = self.check_expr(&lam.body, ret);
+        self.vars.restore(mark);
+        Some(super::hir::Kernel {
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    /// Whether a type may appear in an array-kernel body: a plain scalar (or a
+    /// deferred generic, matching the element-type rule), plus `Unit` for
+    /// statement positions. Managed values would need per-iteration rc ops in
+    /// the inlined loop body, defeating the point of the kernel form.
+    fn kernel_ty_allowed(&mut self, ty: Ty<'tcx>) -> bool {
+        let ty = self.infer.resolve(ty);
+        matches!(ty.kind(), TyKind::Unit) || crate::semi::ty_eval::is_plain_scalar_or_deferred(ty)
+    }
+
+    /// Enforce the kernel-body restriction on a zonked kernel body: every
+    /// subexpression computes a plain scalar; the only managed values are
+    /// enclosing arrays read through nested `get`s on plain variables. This is
+    /// what lets ownership treat kernel free vars as read-only borrows and
+    /// codegen inline the body into a loop with no rc traffic.
+    fn enforce_kernel_expr(&mut self, e: &Expr<'tcx>) {
+        use crate::intrinsic::ArrayFn;
+        match &e.kind {
+            ExprKind::ArrayOp {
+                op: ArrayFn::Get,
+                args,
+                ..
+            } => {
+                if !matches!(args[0].kind, ExprKind::Var(_)) {
+                    self.error(
+                        args[0].span,
+                        "an array read inside a kernel must be on an array variable",
+                    );
+                }
+                for a in &args[1..] {
+                    self.enforce_kernel_expr(a);
+                }
+                return;
+            }
+            ExprKind::ArrayOp { op, .. } => {
+                self.error(
+                    e.span,
+                    format!(
+                        "`{}` is not allowed inside an array kernel (only `get` reads are)",
+                        op.as_str()
+                    ),
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !self.kernel_ty_allowed(e.ty) {
+            let shown = self.infer.resolve(e.ty);
+            self.error(
+                e.span,
+                format!(
+                    "array kernel bodies are restricted to plain scalar computation; \
+                     a value of type `{}` is not allowed here",
+                    self.ty_display(shown)
+                ),
+            );
+            return; // don't cascade into children of an already-rejected node
+        }
+        match &e.kind {
+            ExprKind::Negate(x) | ExprKind::Not(x) | ExprKind::Cast(x, _) => {
+                self.enforce_kernel_expr(x)
+            }
+            ExprKind::Arith(l, _, r) | ExprKind::Cmp(l, _, r) => {
+                self.enforce_kernel_expr(l);
+                self.enforce_kernel_expr(r);
+            }
+            ExprKind::If(c, t, f) => {
+                self.enforce_kernel_expr(c);
+                self.enforce_kernel_expr(t);
+                self.enforce_kernel_expr(f);
+            }
+            ExprKind::Let { value, .. } => self.enforce_kernel_expr(value),
+            ExprKind::Seq(es) => es.iter().for_each(|e| self.enforce_kernel_expr(e)),
+            ExprKind::FuncCall { args, .. } | ExprKind::Intrinsic { args, .. } => {
+                args.iter().for_each(|e| self.enforce_kernel_expr(e))
+            }
+            ExprKind::Proj(base, _) => self.enforce_kernel_expr(base),
+            ExprKind::Match(scrut, tree) => {
+                self.enforce_kernel_expr(scrut);
+                self.enforce_kernel_tree(tree);
+            }
+            // Leaves, or forms whose own (already-allowed) type makes their
+            // children irrelevant here.
+            _ => {}
+        }
+    }
+
+    fn enforce_kernel_tree(&mut self, tree: &super::hir::DecisionTree<'tcx>) {
+        use super::hir::{DecisionTree, SwitchCases};
+        match tree {
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+            DecisionTree::Leaf { body, .. } => self.enforce_kernel_expr(body),
+            DecisionTree::Guard {
+                guard,
+                success,
+                failure,
+                ..
+            } => {
+                self.enforce_kernel_expr(guard);
+                self.enforce_kernel_tree(success);
+                self.enforce_kernel_tree(failure);
+            }
+            DecisionTree::Switch { cases, .. } => match cases {
+                SwitchCases::Int { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Bool { if_true, if_false } => {
+                    self.enforce_kernel_tree(if_true);
+                    self.enforce_kernel_tree(if_false);
+                }
+                SwitchCases::Char { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Ctor(subs) => subs.iter().for_each(|t| self.enforce_kernel_tree(t)),
+                SwitchCases::String { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Nullable { non_null, null } => {
+                    self.enforce_kernel_tree(non_null);
+                    self.enforce_kernel_tree(null);
+                }
+            },
+        }
     }
 
     /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`]; a
@@ -1579,6 +1989,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 body: zb(self, c.body),
             }),
             Match(scrut, tree) => Match(zb(self, scrut), self.zonk_tree(tree)),
+            ArrayOp { op, args, kernel } => {
+                let args = args.into_iter().map(|e| self.zonk_expr(e)).collect();
+                let kernel = kernel.map(|k| {
+                    let k = super::hir::Kernel {
+                        params: k
+                            .params
+                            .into_iter()
+                            .map(|(v, t)| (v, self.zonk_ty(t, span)))
+                            .collect(),
+                        body: zb(self, k.body),
+                    };
+                    // Types are resolved now — enforce the rc-free body rule.
+                    self.enforce_kernel_expr(&k.body);
+                    Box::new(k)
+                });
+                ArrayOp { op, args, kernel }
+            }
             other => other,
         }
     }
@@ -1653,6 +2080,19 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
             args.iter().for_each(|e| free_vars(e, out));
         }
         Closure(c) => free_vars(&c.body, out),
+        ArrayOp { args, kernel, .. } => {
+            args.iter().for_each(|e| free_vars(e, out));
+            if let Some(k) = kernel {
+                // Kernel params are binders, not free uses.
+                let mut body = Vec::new();
+                free_vars(&k.body, &mut body);
+                for v in body {
+                    if !k.params.iter().any(|&(p, _)| p == v) {
+                        push(out, v);
+                    }
+                }
+            }
+        }
         Match(scrut, _) => free_vars(scrut, out),
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
     }

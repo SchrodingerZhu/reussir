@@ -527,6 +527,12 @@ impl Parser<'_> {
                 let h = self.start();
                 self.bump();
                 h.complete(self, InferType);
+            } else if self.at(IntLit) {
+                // An integer extent in a call's type arguments
+                // (`Array::splat<f64, 512>(…)`).
+                let h = self.start();
+                self.bump();
+                h.complete(self, ConstType);
             } else {
                 self.type_();
             }

@@ -139,6 +139,13 @@ pub enum TyKind<'tcx> {
         params: &'tcx [Ty<'tcx>],
         ret: Ty<'tcx>,
     },
+    /// A statically shaped multidimensional array of `Plain` elements,
+    /// reference counted as a whole; the extents are part of the type
+    /// (`Array<f64, 512, 512>`). See issue #344.
+    Array {
+        elem: Ty<'tcx>,
+        dims: &'tcx [u64],
+    },
     Nullable(Ty<'tcx>),
     /// A rigid type parameter in scope.
     Generic(GenericId),
@@ -253,6 +260,11 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn mk_hole(&self, hole: HoleId) -> Ty<'tcx> {
         self.mk(TyKind::Hole(hole))
+    }
+
+    pub fn mk_array(&self, elem: Ty<'tcx>, dims: &[u64]) -> Ty<'tcx> {
+        let dims = self.alloc_slice(dims);
+        self.mk(TyKind::Array { elem, dims })
     }
 
     pub fn mk_nullable(&self, inner: Ty<'tcx>) -> Ty<'tcx> {

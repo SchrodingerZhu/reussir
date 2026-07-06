@@ -150,6 +150,8 @@ pub enum SyntaxKind {
     TypeArgList,
     /// `_` placeholder inside a type argument list.
     InferType,
+    /// An integer literal in type-argument position (an array extent).
+    ConstType,
 
     // ===== Nodes: expressions =====
     BlockExpr,

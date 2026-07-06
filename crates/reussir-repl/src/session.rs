@@ -622,6 +622,14 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 format!("Nullable<{}>", Self::render_ty_with(elab, inner))
             }
+            TyKind::Array { elem, dims } => {
+                let dims: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
+                format!(
+                    "Array<{}, {}>",
+                    Self::render_ty_with(elab, elem),
+                    dims.join(", ")
+                )
+            }
             TyKind::Record { def, args, .. } => {
                 let mut out = elab.defs.path(def).display(elab.resolver);
                 if !args.is_empty() {

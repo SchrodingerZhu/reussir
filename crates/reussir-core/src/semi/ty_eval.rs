@@ -69,6 +69,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.tcx.mk_closure(&args, ret)
             }
             TypeKind::TypeExpr(path, args) => self.eval_type_expr(path, args, ty.span()),
+            TypeKind::TypeConst(_) => {
+                self.error(
+                    Some(ty.span()),
+                    "an integer extent is only valid as an `Array` type argument",
+                );
+                self.tcx.mk(TyKind::Bottom)
+            }
         }
     }
 
@@ -123,8 +130,79 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
+        // The built-in statically shaped array type: an element type followed
+        // by one or more integer extents (`Array<f64, 512, 512>`); see #344.
+        if path.segments.is_empty() && self.sym(key) == "Array" {
+            return self.eval_array_args(args, span);
+        }
+
         // A user record, resolved to its def — bare in the current module, or
         // module-qualified (`utils::math::Cell`, `root::…`, `super::…`).
+        return self.eval_record_type_expr(path, args, span, key);
+    }
+
+    /// Evaluate the type arguments of the built-in `Array` head — an element
+    /// type followed by one or more integer extents — into a
+    /// [`TyKind::Array`]. Shared between the type grammar (`Array<f64, 512>`)
+    /// and the `Array::splat`/`Array::tabulate` constructor calls, whose
+    /// explicit type arguments have the same form.
+    pub(crate) fn eval_array_args(
+        &mut self,
+        args: &[surface::Type],
+        span: surface::Span,
+    ) -> Ty<'tcx> {
+        if args.len() < 2 {
+            self.error(
+                Some(span),
+                "`Array` takes an element type and at least one integer extent",
+            );
+            return self.tcx.mk(TyKind::Bottom);
+        }
+        let elem = self.eval_type(&args[0]);
+        // Phase A restricts elements to plain scalars: views over the
+        // payload must be free of reference-count traffic.
+        if !is_plain_scalar_or_deferred(elem) {
+            self.error(
+                Some(span),
+                format!(
+                    "array elements must be plain scalars (integers, floats, bool, char); `{}` is not",
+                    self.ty_display(elem)
+                ),
+            );
+        }
+        let mut dims = Vec::with_capacity(args.len() - 1);
+        let mut product: u128 = 1;
+        for arg in &args[1..] {
+            match arg.kind() {
+                TypeKind::TypeConst(extent) => {
+                    if extent == 0 {
+                        self.error(Some(span), "array extents must be positive");
+                    }
+                    product = product.saturating_mul(u128::from(extent.max(1)));
+                    dims.push(extent.max(1));
+                }
+                _ => {
+                    self.error(
+                        Some(span),
+                        "array extents must be integer literals in this version",
+                    );
+                    dims.push(1);
+                }
+            }
+        }
+        if product > (1u128 << 32) {
+            self.error(Some(span), "array is too large (more than 2^32 elements)");
+        }
+        self.tcx.mk_array(elem, &dims)
+    }
+
+    fn eval_record_type_expr(
+        &mut self,
+        path: &surface::Path,
+        args: &[surface::Type],
+        span: surface::Span,
+        key: reussir_syntax::kind::TokenKey,
+    ) -> Ty<'tcx> {
         let Some(def) = self.resolve_record_ref(path) else {
             let hint = if path.segments.is_empty() {
                 self.record_suggestion(key)
@@ -214,6 +292,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// rejected; `Record`/`Closure` are valid inners, and `Generic`/`Hole`/`Bottom`
 /// are deferred (resolved/checked later) so this never reports a false positive
 /// on a not-yet-ground type.
+/// Whether `t` qualifies as a Phase-A array element: a plain scalar, or a
+/// generic/hole deferred to the monomorphization-time groundness check.
+pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
+    matches!(
+        t.kind(),
+        TyKind::Int(_)
+            | TyKind::Fp(_)
+            | TyKind::Bool
+            | TyKind::Char
+            | TyKind::Generic(_)
+            | TyKind::Hole(_)
+            | TyKind::Bottom
+    )
+}
+
 fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
     matches!(
         t.kind(),
