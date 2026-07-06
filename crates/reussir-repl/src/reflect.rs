@@ -9,7 +9,8 @@
 //! - C-style sequential struct layout; a member is stored as a *pointer*
 //!   when it is a `[field]` link, a shared/regional record, or a closure;
 //!   everything else is inline.
-//! - An enum (variant record) is `{ tag: usize @ 0, payload }` with the
+//! - An enum (variant record) is `{ tag @ 0, payload }` — the tag is the
+//!   minimal-width integer covering the arm count (u8/u16/u32) — with the
 //!   payload at `align_to(tag_size, payload_align)` and the total aligned to
 //!   `max(tag_align, payload_align)`; the payload area is the largest
 //!   variant. No niche optimizations exist.
@@ -30,6 +31,34 @@ use reussir_core::semi::ty::{DefId, FpTy, IntTy, Ty, TyKind};
 
 /// The pointer/`usize` width of the JIT host.
 const WORD: u64 = std::mem::size_of::<usize>() as u64;
+
+/// The minimal-width tag of a variant record (mirrors
+/// `RecordType::getTagType`): u8 up to 256 arms, then u16, then u32.
+fn variant_tag_size(arms: usize) -> u64 {
+    if arms <= 1 << 8 {
+        1
+    } else if arms <= 1 << 16 {
+        2
+    } else {
+        4
+    }
+}
+
+/// Packed physical member order (mirrors `RecordType::getPackedOrder`):
+/// member indices sorted by descending storage alignment, stable on
+/// declaration order.
+fn packed_order<'tcx>(
+    fields: &[FieldShape<'tcx>],
+    shapes: &ShapeTable<'tcx>,
+) -> Result<Vec<usize>, String> {
+    let mut aligns = Vec::with_capacity(fields.len());
+    for field in fields {
+        aligns.push(member_size_align(field.ty, field.is_field, shapes)?.align);
+    }
+    let mut order: Vec<usize> = (0..fields.len()).collect();
+    order.sort_by(|&a, &b| aligns[b].cmp(&aligns[a]).then(a.cmp(&b)));
+    Ok(order)
+}
 
 /// Ground record shapes keyed by the nominal identity (`def` + ground args).
 pub type ShapeTable<'tcx> = FxHashMap<(DefId, &'tcx [Ty<'tcx>]), RecordShape<'tcx>>;
@@ -189,8 +218,9 @@ pub fn inline_size_align<'tcx>(
                 ShapeLayout::Compound(fields) => compound_size_align(fields, shapes),
                 ShapeLayout::Variants(variants) => {
                     let payload = variants_payload_size_align(variants, shapes)?;
-                    let payload_offset = align_to(WORD, payload.align);
-                    let align = payload.align.max(WORD);
+                    let tag = variant_tag_size(variants.len());
+                    let payload_offset = align_to(tag, payload.align);
+                    let align = payload.align.max(tag);
                     Ok(SizeAlign {
                         size: align_to(payload_offset + payload.size, align),
                         align,
@@ -218,14 +248,16 @@ pub unsafe fn shared_box_payload<'tcx>(
     Ok(unsafe { boxed.add(align_to(WORD, inner.align) as usize) })
 }
 
-/// Sequential (C-style) layout of a member list: total size/align.
+/// Packed layout of a member list (descending storage alignment, stable on
+/// declaration order): total size/align.
 fn compound_size_align<'tcx>(
     fields: &[FieldShape<'tcx>],
     shapes: &ShapeTable<'tcx>,
 ) -> Result<SizeAlign, String> {
     let mut size = 0u64;
     let mut align = 1u64;
-    for field in fields {
+    for &logical in &packed_order(fields, shapes)? {
+        let field = &fields[logical];
         let member = member_size_align(field.ty, field.is_field, shapes)?;
         size = align_to(size, member.align) + member.size;
         align = align.max(member.align);
@@ -236,17 +268,18 @@ fn compound_size_align<'tcx>(
     })
 }
 
-/// Byte offset of each member in a sequential layout.
+/// Byte offset of each (logical) member in the packed layout.
 fn member_offsets<'tcx>(
     fields: &[FieldShape<'tcx>],
     shapes: &ShapeTable<'tcx>,
 ) -> Result<Vec<u64>, String> {
-    let mut offsets = Vec::with_capacity(fields.len());
+    let mut offsets = vec![0u64; fields.len()];
     let mut size = 0u64;
-    for field in fields {
+    for &logical in &packed_order(fields, shapes)? {
+        let field = &fields[logical];
         let member = member_size_align(field.ty, field.is_field, shapes)?;
         let offset = align_to(size, member.align);
-        offsets.push(offset);
+        offsets[logical] = offset;
         size = offset + member.size;
     }
     Ok(offsets)
@@ -494,7 +527,11 @@ impl<'tcx> Walker<'_, 'tcx> {
                 unsafe { self.render_fields(payload, fields, depth, out) }
             }
             ShapeLayout::Variants(variants) => {
-                let tag = unsafe { payload.cast::<usize>().read_unaligned() };
+                let tag = match variant_tag_size(variants.len()) {
+                    1 => unsafe { payload.cast::<u8>().read_unaligned() as usize },
+                    2 => unsafe { payload.cast::<u16>().read_unaligned() as usize },
+                    _ => unsafe { payload.cast::<u32>().read_unaligned() as usize },
+                };
                 let Some(variant) = variants.get(tag) else {
                     return Err(format!("corrupt enum tag {tag} for `{}`", shape.name));
                 };
@@ -514,7 +551,9 @@ impl<'tcx> Walker<'_, 'tcx> {
                     })
                     .collect();
                 let payload_area = variants_payload_size_align(variants, self.shapes)?;
-                let base = unsafe { payload.add(align_to(WORD, payload_area.align) as usize) };
+                let tag_size = variant_tag_size(variants.len());
+                let base =
+                    unsafe { payload.add(align_to(tag_size, payload_area.align) as usize) };
                 unsafe { self.render_fields(base, &fields, depth, out) }
             }
         }

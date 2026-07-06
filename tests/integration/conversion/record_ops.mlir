@@ -36,17 +36,22 @@ module {
   }
 }
 
+// Members are packed by descending alignment (the tail pointer precedes the
+// i32 head) and the variant tag is the minimal-width integer (2 arms -> i8).
+// CHECK: %"List::Cons" = type { ptr, i32, [4 x i8] }
+// CHECK: %List = type { i8, %"List::Cons" }
+
 // CHECK-LABEL: define ptr @cons(i32 %0, ptr %1)
 // CHECK: %[[cons_alloca:[0-9]+]] = alloca %"List::Cons", align 8
-// CHECK: %[[cons_ptr0:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 0
+// CHECK: %[[cons_ptr0:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 1
 // CHECK: store i32 %0, ptr %[[cons_ptr0]], align 4
-// CHECK: %[[cons_ptr1:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 1
+// CHECK: %[[cons_ptr1:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 0
 // CHECK: store ptr %1, ptr %[[cons_ptr1]], align 8
 // CHECK: %[[cons_loaded:[0-9]+]] = load %"List::Cons", ptr %[[cons_alloca]], align 8
 // CHECK: %[[alloca:[0-9]+]] = alloca %List, i64 1, align 8
 // CHECK: call void @llvm.lifetime.start.p0({{.*}}ptr %[[alloca]])
 // CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[tag_ptr]], align 4
+// CHECK: store i8 0, ptr %[[tag_ptr]], align 1
 // CHECK: %[[value_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 1
 // CHECK: store %"List::Cons" %[[cons_loaded]], ptr %[[value_ptr]], align 8
 // CHECK: %[[loaded:[0-9]+]] = load %List, ptr %[[alloca]], align 8
@@ -60,10 +65,12 @@ module {
 
 // CHECK-LABEL: define i64 @test_option_tag(ptr %0)
 // CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: %[[tag_value:[0-9]+]] = load i64, ptr %[[tag_ptr]], align 4
+// CHECK: %[[narrow_tag:[0-9]+]] = load i8, ptr %[[tag_ptr]], align 1
+// CHECK: %[[tag_value:[0-9]+]] = zext i8 %[[narrow_tag]] to i64
 // CHECK: ret i64 %[[tag_value]]
 
 // CHECK-LABEL: define i64 @test_result_tag(ptr %0)
 // CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Result, ptr %0, i32 0, i32 0
-// CHECK: %[[tag_value:[0-9]+]] = load i64, ptr %[[tag_ptr]], align 4
+// CHECK: %[[narrow_tag:[0-9]+]] = load i8, ptr %[[tag_ptr]], align 1
+// CHECK: %[[tag_value:[0-9]+]] = zext i8 %[[narrow_tag]] to i64
 // CHECK: ret i64 %[[tag_value]]

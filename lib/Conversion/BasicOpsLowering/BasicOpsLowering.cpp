@@ -139,7 +139,10 @@ TagEncoding specialPtrTagEncoding(mlir::Operation *op) {
 // sized to the target's index width. Loads and increments through a tagged
 // value land here and observe a well-formed shared box header carrying the
 // immediate's own tag; the refcount stays pinned because `rc.set` never
-// writes it (see above).
+// writes it (see above). Records read their tag at the minimal width
+// (i8/i16/i32) from the same offset; on a little-endian target that read
+// sees the low bytes of the full-width tag word stored here, so one
+// index-wide dummy serves every tag width.
 mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
                                  uint64_t tag, TagEncoding encoding,
                                  mlir::IntegerType indexTy,
@@ -728,12 +731,14 @@ struct ReussirRecordCompoundConversionPattern
     auto fieldValues = adaptor.getFields();
 
     // Insert each field using GEP + store
+    auto dataLayout = getDataLayout(*converter, op.getOperation());
     for (size_t i = 0; i < fieldValues.size(); ++i) {
       // GEP indices:
       // 0 -> Dereference the base pointer (step into the allocated element)
-      // i -> Access the i-th field of the struct
-      llvm::SmallVector<mlir::LLVM::GEPArg, 2> gepArgs{0,
-                                                       static_cast<int32_t>(i)};
+      // then the packed physical position of the i-th logical member
+      llvm::SmallVector<mlir::LLVM::GEPArg, 2> gepArgs{
+          0, static_cast<int32_t>(recordType.getPhysicalMemberIndex(
+                 dataLayout, static_cast<uint32_t>(i)))};
 
       mlir::Value fieldPtr = mlir::LLVM::GEPOp::create(
           rewriter, loc, ptrType, llvmStructType, alloca, gepArgs);
@@ -789,8 +794,16 @@ struct ReussirRecordExtractConversionPattern
     // 2. Store the entire struct value into the allocated memory
     mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getRecord(), alloca);
 
-    // 3. GEP: Calculate the memory address of the specific field
+    // 3. GEP: Calculate the memory address of the specific field, mapping
+    // the logical member index to its packed physical position.
     int32_t fieldIndex = static_cast<int32_t>(op.getIndex().getZExtValue());
+    if (auto recordType =
+            llvm::dyn_cast<RecordType>(op.getRecord().getType());
+        recordType && recordType.isCompound()) {
+      auto dataLayout = getDataLayout(*converter, op.getOperation());
+      fieldIndex = static_cast<int32_t>(recordType.getPhysicalMemberIndex(
+          dataLayout, static_cast<uint32_t>(fieldIndex)));
+    }
     llvm::SmallVector<mlir::LLVM::GEPArg, 2> gepArgs{0, fieldIndex};
 
     mlir::Value fieldPtr = mlir::LLVM::GEPOp::create(
@@ -827,10 +840,12 @@ struct ReussirRecordVariantConversionPattern
     if (!llvmStructType)
       return op.emitOpError("failed to convert record type to LLVM type");
     auto indexType = converter->getIndexType();
-    // Get the tag and value (already converted by the type converter)
+    // Get the tag (at the record's minimal tag width) and value (already
+    // converted by the type converter)
     mlir::Value tag = mlir::arith::ConstantOp::create(
         rewriter, loc,
-        mlir::IntegerAttr::get(indexType, op.getTag().getZExtValue()));
+        mlir::IntegerAttr::get(recordType.getTagType(),
+                               op.getTag().getZExtValue()));
     mlir::Value value = adaptor.getValue();
 
     // Get the preferred alignment for the struct type
@@ -957,12 +972,20 @@ struct ReussirReferenceProjectConversionPattern
     RefType refType = op.getRef().getType();
     mlir::Type elementType = converter->convertType(refType.getElementType());
 
+    // Logical member indices map to packed physical struct fields.
+    int32_t fieldIndex = static_cast<int32_t>(op.getIndex().getZExtValue());
+    if (auto recordType =
+            llvm::dyn_cast<RecordType>(refType.getElementType());
+        recordType && recordType.isCompound()) {
+      auto dataLayout = getDataLayout(*converter, op.getOperation());
+      fieldIndex = static_cast<int32_t>(recordType.getPhysicalMemberIndex(
+          dataLayout, static_cast<uint32_t>(fieldIndex)));
+    }
+
     // Create GEP operation to get the field pointer
-    llvm::SmallVector<mlir::LLVM::GEPArg> gepArgs;
     auto gepOp = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, elementType, refPtr,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{
-            0, static_cast<int>(op.getIndex().getZExtValue())});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, fieldIndex});
 
     rewriter.replaceOp(op, gepOp);
     return mlir::success();
@@ -1096,12 +1119,21 @@ struct ReussirRecordTagConversionPattern
         rewriter, loc, tagPtrType, elementType, refPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
 
-    // Load the tag value. Under the special-pointer-tag scheme a tagged
+    // Load the tag value at the record's minimal tag width and widen it to
+    // the op's index result. Under the special-pointer-tag scheme a tagged
     // immediate scrutinee needs no decode: the load lands in its per-tag
     // dummy box (TBI masks the top byte) and reads the real tag — so the
     // match hot path is identical with and without the scheme.
+    mlir::IntegerType tagType = recordType.getTagType();
+    mlir::Value narrowTag =
+        mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
     mlir::Value tagValue =
-        rewriter.replaceOpWithNewOp<mlir::LLVM::LoadOp>(op, indexType, tagPtr);
+        tagType.getWidth() <
+                llvm::cast<mlir::IntegerType>(indexType).getWidth()
+            ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexType, narrowTag)
+                  .getResult()
+            : narrowTag;
+    rewriter.replaceOp(op, tagValue);
 
     // Assume that the tag is always in bounds
     auto numberMembers = mlir::arith::ConstantOp::create(
@@ -1350,6 +1382,7 @@ struct ReussirRcCreateCompoundOpConversionPattern
     auto converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto llvmRecordType = converter->convertType(op.getRecordType());
+    auto dataLayout = getDataLayout(*converter, op.getOperation());
     llvm::SmallVector<mlir::Value> results;
     results.push_back(storage->token);
     for (auto [index, field] : llvm::enumerate(adaptor.getFields())) {
@@ -1363,7 +1396,9 @@ struct ReussirRcCreateCompoundOpConversionPattern
       auto fieldPtr = mlir::LLVM::GEPOp::create(
           rewriter, op.getLoc(), llvmPtrType, llvmRecordType,
           storage->elementPtr,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(index)});
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{
+              0, static_cast<int32_t>(op.getRecordType().getPhysicalMemberIndex(
+                     dataLayout, static_cast<uint32_t>(index)))});
       if (isHoleField)
         results.push_back(fieldPtr);
       if (skipStore)
@@ -1444,10 +1479,10 @@ struct ReussirRcCreateVariantOpConversionPattern
     if (!llvmVariantType)
       return op.emitOpError("failed to convert record type to LLVM type");
 
-    auto indexType = converter->getIndexType();
     auto tag = mlir::arith::ConstantOp::create(
         rewriter, op.getLoc(),
-        mlir::IntegerAttr::get(indexType, op.getTag().getZExtValue()));
+        mlir::IntegerAttr::get(op.getRecordType().getTagType(),
+                               op.getTag().getZExtValue()));
     auto tagPtr = mlir::LLVM::GEPOp::create(
         rewriter, op.getLoc(), llvmPtrType, llvmVariantType,
         storage->elementPtr, llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
@@ -1469,6 +1504,7 @@ struct ReussirRcCreateVariantOpConversionPattern
         auto payloadType = llvm::cast<RecordType>(
             op.getRecordType().getMembers()[op.getTag().getZExtValue()]);
         auto llvmPayloadType = converter->convertType(payloadType);
+        auto dataLayout = getDataLayout(*converter, op.getOperation());
         for (auto [index, field] : llvm::enumerate(adaptor.getFields())) {
           bool isHoleField = hasIndexedFieldAttr(
               op.getOperation(), "holeFields", static_cast<int64_t>(index));
@@ -1479,8 +1515,9 @@ struct ReussirRcCreateVariantOpConversionPattern
             continue;
           auto fieldPtr = mlir::LLVM::GEPOp::create(
               rewriter, op.getLoc(), llvmPtrType, llvmPayloadType, payloadPtr,
-              llvm::ArrayRef<mlir::LLVM::GEPArg>{0,
-                                                 static_cast<int32_t>(index)});
+              llvm::ArrayRef<mlir::LLVM::GEPArg>{
+                  0, static_cast<int32_t>(payloadType.getPhysicalMemberIndex(
+                         dataLayout, static_cast<uint32_t>(index)))});
           if (isHoleField)
             results.push_back(fieldPtr);
           if (skipStore)

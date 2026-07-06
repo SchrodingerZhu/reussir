@@ -125,7 +125,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK: store i64 1, ptr %[[COUNT]], align 8
 // CHECK: %[[VARIANT:.*]] = getelementptr { i64, %List }, ptr %[[ALLOC]], i32 0, i32 1
 // CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[TAGPTR]], align 8
+// CHECK: store i8 0, ptr %[[TAGPTR]], align 1
 // CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
 // CHECK: %[[FIELD0:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 0
 // CHECK: store i32 %0, ptr %[[FIELD0]], align 4, !invariant.group
@@ -162,7 +162,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK: call void @llvm.assume
 // CHECK: %[[VARIANT:.*]] = getelementptr { i64, %List }, ptr %{{.*}}, i32 0, i32 1
 // CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[TAGPTR]], align 8
+// CHECK: store i8 0, ptr %[[TAGPTR]], align 1
 // CHECK: %[[PAYLOAD:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD]]
 // CHECK: ret ptr
@@ -171,7 +171,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK: call void @llvm.assume
 // CHECK: %[[VARIANT2:.*]] = getelementptr { i64, %ListAlt }, ptr %{{.*}}, i32 0, i32 1
 // CHECK: %[[TAGPTR2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[TAGPTR2]], align 8
+// CHECK: store i8 0, ptr %[[TAGPTR2]], align 1
 // CHECK: %[[PAYLOAD2:.*]] = getelementptr %ListAlt, ptr %[[VARIANT2]], i32 0, i32 1
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD2]]
 // CHECK: ret ptr
@@ -180,7 +180,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK: call void @llvm.assume
 // CHECK: %[[VARIANT3:.*]] = getelementptr { i64, %ListAlt }, ptr %{{.*}}, i32 0, i32 1
 // CHECK: %[[TAGPTR3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[TAGPTR3]], align 8
+// CHECK: store i8 0, ptr %[[TAGPTR3]], align 1
 // CHECK: %[[PAYLOAD3:.*]] = getelementptr %ListAlt, ptr %[[VARIANT3]], i32 0, i32 1
 // CHECK-NOT: getelementptr %"List::Cons", ptr %[[PAYLOAD3]]
 // CHECK: ret ptr
@@ -189,7 +189,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK: call void @llvm.assume
 // CHECK: %[[VARIANT4:.*]] = getelementptr { i64, %Triple }, ptr %{{.*}}, i32 0, i32 1
 // CHECK: %[[TAGPTR4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 0
-// CHECK: store i64 0, ptr %[[TAGPTR4]], align 8
+// CHECK: store i8 0, ptr %[[TAGPTR4]], align 1
 // CHECK: %[[PAYLOAD4:.*]] = getelementptr %Triple, ptr %[[VARIANT4]], i32 0, i32 1
 // CHECK-NOT: getelementptr %"Triple::Cons", ptr %[[PAYLOAD4]], i32 0, i32 0
 // CHECK-NOT: getelementptr %"Triple::Cons", ptr %[[PAYLOAD4]], i32 0, i32 1

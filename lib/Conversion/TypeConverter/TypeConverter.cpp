@@ -96,7 +96,9 @@ convertRecordType(mlir::LLVMTypeConverter &converter,
 
   llvm::SmallVector<mlir::Type> members;
   if (type.getKind() == reussir::RecordKind::variant) {
-    members.push_back(converter.getIndexType());
+    // The discriminant is the record's minimal-width tag type; the payload
+    // lands at its natural alignment boundary after it.
+    members.push_back(type.getTagType());
     auto [size, _unused, representative] =
         type.getElementRegionLayoutInfo(dataLayout);
     if (representative) {
@@ -110,8 +112,12 @@ convertRecordType(mlir::LLVMTypeConverter &converter,
   } else {
     size_t expectedTotalSize = dataLayout.getTypeSize(type);
     size_t currentSize = 0;
-    for (auto [member, capability] :
-         llvm::zip(type.getMembers(), type.getMemberIsField())) {
+    // Struct fields are emitted in packed physical order (descending storage
+    // alignment, stable on declaration order); lowerings translate logical
+    // member indices through getPhysicalMemberIndex.
+    for (uint32_t logical : type.getPackedOrder(dataLayout)) {
+      mlir::Type member = type.getMembers()[logical];
+      bool capability = type.getMemberIsField()[logical];
       mlir::Type projectedType =
           getProjectedType(member, capability, Capability::unspecified);
       auto align = dataLayout.getTypeABIAlignment(projectedType);

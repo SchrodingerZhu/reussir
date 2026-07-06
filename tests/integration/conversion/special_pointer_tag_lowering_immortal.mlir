@@ -43,8 +43,9 @@ module @test attributes { reussir.special_ptr_tag = "immortal", dlti.dl_spec = #
   // CHECK-LABEL: define i64 @tag(ptr %0)
   // CHECK-NOT: lshr
   // CHECK-NOT: select
-  // CHECK: %[[TAG:.+]] = load i64, ptr
-  // CHECK: ret i64 %[[TAG]]
+  // CHECK: %[[TAG:.+]] = load i8, ptr
+  // CHECK: %[[WIDE:.+]] = zext i8 %[[TAG]] to i64
+  // CHECK: ret i64 %[[WIDE]]
   func.func @tag(%ref: !reussir.ref<!list shared>) -> index {
     %tag = reussir.record.tag(%ref : !reussir.ref<!list shared>) : index
     return %tag : index

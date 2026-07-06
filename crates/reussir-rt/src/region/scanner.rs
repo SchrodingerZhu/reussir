@@ -7,9 +7,10 @@ pub enum Instruction {
     /// Load and yield current position as a header pointer,
     /// then advance the instr pointer by 1.
     Field,
-    /// Load current position as a usize variant index,
-    /// advance the instr pointer by (index + 1).
-    Variant,
+    /// Load current position as a variant index of the given byte width
+    /// (1, 2, or 4 — the record's minimal tag width), then advance the
+    /// instr pointer by (index + 1).
+    Variant(u32),
     /// Scanner ended.
     End,
     /// Advance the cursor by the given number of bytes.
@@ -19,8 +20,11 @@ pub enum Instruction {
 }
 
 const END_VALUE: i32 = 0;
-const VARIANT_VALUE: i32 = -1;
+const VARIANT8_VALUE: i32 = -1;
 const FIELD_VALUE: i32 = -2;
+const VARIANT16_VALUE: i32 = -3;
+const VARIANT32_VALUE: i32 = -4;
+const JUMP_BASE: i32 = -5;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -37,10 +41,12 @@ impl From<PackedInstr> for Instruction {
     fn from(value: PackedInstr) -> Self {
         match value.0 {
             END_VALUE => Instruction::End,
-            VARIANT_VALUE => Instruction::Variant,
+            VARIANT8_VALUE => Instruction::Variant(1),
             FIELD_VALUE => Instruction::Field,
+            VARIANT16_VALUE => Instruction::Variant(2),
+            VARIANT32_VALUE => Instruction::Variant(4),
             val if val > 0 => Instruction::Advance(val as u32),
-            val => Instruction::Jump((-val) as u32 - 3),
+            val => Instruction::Jump((val - JUMP_BASE).unsigned_abs()),
         }
     }
 }
@@ -55,7 +61,12 @@ impl Instruction {
     pub const fn pack(self) -> PackedInstr {
         match self {
             Instruction::End => PackedInstr(END_VALUE),
-            Instruction::Variant => PackedInstr(VARIANT_VALUE),
+            Instruction::Variant(width) => match width {
+                1 => PackedInstr(VARIANT8_VALUE),
+                2 => PackedInstr(VARIANT16_VALUE),
+                4 => PackedInstr(VARIANT32_VALUE),
+                _ => panic!("unsupported variant tag width"),
+            },
             Instruction::Field => PackedInstr(FIELD_VALUE),
             Instruction::Advance(bytes) => {
                 debug_assert!(bytes > 0);
@@ -63,7 +74,7 @@ impl Instruction {
             }
             Instruction::Jump(instrs) => {
                 debug_assert!(instrs > 0);
-                PackedInstr(-(instrs as i32) - 3)
+                PackedInstr(JUMP_BASE - (instrs as i32))
             }
         }
     }
@@ -88,8 +99,12 @@ impl Scanner {
                             return Some(child);
                         }
                     }
-                    Instruction::Variant => {
-                        let index = self.cursor.cast::<usize>().read();
+                    Instruction::Variant(width) => {
+                        let index = match width {
+                            1 => self.cursor.cast::<u8>().read() as usize,
+                            2 => self.cursor.cast::<u16>().read() as usize,
+                            _ => self.cursor.cast::<u32>().read() as usize,
+                        };
                         self.instr = self.instr.add(index + 1);
                     }
                     Instruction::Advance(bytes) => {

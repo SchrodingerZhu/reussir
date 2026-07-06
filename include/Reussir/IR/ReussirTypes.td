@@ -143,6 +143,16 @@ def ReussirRecordType
         mlir::Type memberWithLargestAlignment;
       };
       LayoutInfo getElementRegionLayoutInfo(const mlir::DataLayout &dataLayout) const;
+      // The discriminant type of a variant record: the narrowest integer
+      // covering the arm count (i8/i16/i32).
+      mlir::IntegerType getTagType() const;
+      // Physical member order of a compound record: member indices sorted by
+      // descending storage alignment (stable on declaration order), so no
+      // padding ever appears between members. Identity for variants.
+      llvm::SmallVector<uint32_t> getPackedOrder(const mlir::DataLayout &dataLayout) const;
+      // Position of logical member `index` in the packed physical order —
+      // i.e. the GEP field index of that member in the converted LLVM struct.
+      uint32_t getPhysicalMemberIndex(const mlir::DataLayout &dataLayout, uint32_t index) const;
       ::mlir::FlatSymbolRefAttr getDtorName() const;
       ::mlir::FlatSymbolRefAttr getAcquireName() const;
       size_t emitScannerInstructions(

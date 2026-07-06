@@ -9,10 +9,10 @@
  * reference count, followed by the variant record:
  *
  *   offset  0:  int64_t  refcount
- *   offset  8:  int64_t  tag         (0 = Nil, 1 = Cons)
- *   offset 16:  int32_t  head        (valid when tag == 1)
+ *   offset  8:  uint8_t  tag         (0 = Nil, 1 = Cons; minimal width)
+ *   offset 16:  void*    tail        (valid when tag == 1, next RC<List>)
  *   offset 20:  (padding, 4 bytes)
- *   offset 24:  void*    tail        (valid when tag == 1, next RC<List>)
+ *   offset 24:  int32_t  head        (valid when tag == 1)
  *
  * Total allocation: 32 bytes  (__reussir_allocate(align=8, size=32))
  *
@@ -21,10 +21,11 @@
  */
 typedef struct rc_list {
     int64_t          refcount;
-    int64_t          tag;
+    uint8_t          tag;      /* minimal-width variant tag (2 arms -> i8) */
+    uint8_t          _pad[7];
+    struct rc_list  *tail;     /* members are packed by descending alignment */
     int32_t          head;
-    int32_t          _pad;
-    struct rc_list  *tail;
+    int32_t          _pad2;
 } rc_list_t;
 
 #define LIST_NIL  0
