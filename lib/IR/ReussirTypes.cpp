@@ -594,6 +594,11 @@ RecordType::getPackedOrder(const mlir::DataLayout &dataLayout) const {
     order[i] = i;
   if (!isCompound())
     return order;
+  // Packing is a whole-compilation layout contract toggled on the loaded
+  // dialect (on by default). When off, members keep declaration order.
+  if (auto *dialect = getContext()->getLoadedDialect<ReussirDialect>();
+      dialect && !dialect->getPackRecordMembers())
+    return order;
   llvm::SmallVector<uint64_t> aligns(order.size());
   for (uint32_t i = 0; i < order.size(); ++i) {
     mlir::Type storage = memberStorageType(getContext(), getMembers()[i],

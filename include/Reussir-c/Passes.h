@@ -111,6 +111,13 @@ int reussirHasTPDE(void);
 bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
                                    const char *triple);
 
+// Sets whether compound record members are laid out in packed physical order
+// (descending storage alignment) rather than declaration order. On by default.
+// This is a whole-compilation layout contract held on the context-loaded
+// Reussir dialect, so set it once before the lowering pipeline computes any
+// layout. Loads the Reussir dialect into `context` if not already loaded.
+void reussirContextSetPackRecordMembers(MlirContext context, bool enable);
+
 #ifdef __cplusplus
 }
 #endif

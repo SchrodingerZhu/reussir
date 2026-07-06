@@ -49,10 +49,19 @@ def ReussirDialect : Dialect {
     void registerOperations();
     // Register interfaces.
     void registerInterfaces();
+    // Whether compound record members are laid out in packed physical order
+    // (descending storage alignment) rather than declaration order. On by
+    // default. This is a whole-compilation layout contract, held on the
+    // context-loaded dialect so `RecordType::getPackedOrder` can read it, and
+    // set once by the lowering driver before any layout is computed.
+    bool packRecordMembers = true;
   public:
+    void setPackRecordMembers(bool enable) { packRecordMembers = enable; }
+    bool getPackRecordMembers() const { return packRecordMembers; }
+
     mlir::Type parseType(mlir::DialectAsmParser &parser) const override;
     void printType(mlir::Type ty, mlir::DialectAsmPrinter &p) const override;
- 
+
     mlir::Attribute parseAttribute(mlir::DialectAsmParser &parser,
                                    mlir::Type type) const override;
     void printAttribute(mlir::Attribute attr,
