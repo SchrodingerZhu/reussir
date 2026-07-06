@@ -8,11 +8,11 @@
  * The Reussir runtime allocates an RC box whose first word is the
  * reference count, followed by the variant record:
  *
- *   offset  0:  int64_t  refcount
- *   offset  8:  uint8_t  tag         (0 = Nil, 1 = Cons; minimal width)
- *   offset 16:  void*    tail        (valid when tag == 1, next RC<List>)
+ *   offset  0:  uint32_t refcount
+ *   offset  4:  uint32_t tag         (0 = Nil, 1 = Cons; fused header)
+ *   offset  8:  void*    tail        (valid when tag == 1, next RC<List>)
  *   offset 20:  (padding, 4 bytes)
- *   offset 24:  int32_t  head        (valid when tag == 1)
+ *   offset 16:  int32_t  head        (valid when tag == 1)
  *
  * Total allocation: 32 bytes  (__reussir_allocate(align=8, size=32))
  *
@@ -20,12 +20,11 @@
  * structure live (refcount >= 1) so we can safely inspect it here.
  */
 typedef struct rc_list {
-    int64_t          refcount;
-    uint8_t          tag;      /* minimal-width variant tag (2 arms -> i8) */
-    uint8_t          _pad[7];
+    uint32_t         refcount; /* fused 8-byte header: i32 count + i32 tag */
+    uint32_t         tag;
     struct rc_list  *tail;     /* members are packed by descending alignment */
     int32_t          head;
-    int32_t          _pad2;
+    int32_t          _pad;
 } rc_list_t;
 
 #define LIST_NIL  0

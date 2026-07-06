@@ -21,7 +21,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
           %tail_ref = reussir.ref.project (%cons : !reussir.ref<!list_cons shared>) [1] : !reussir.ref<!reussir.rc<!list> shared>
           %tail = reussir.ref.load (%tail_ref : !reussir.ref<!reussir.rc<!list> shared>) : !reussir.rc<!list>
           reussir.rc.inc (%tail : !reussir.rc<!list>)
-          %token = reussir.rc.dec (%arg0 : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 32>>
+          %token = reussir.rc.dec (%arg0 : !reussir.rc<!list>) : !reussir.nullable<!reussir.token<align: 8, size: 24>>
           // We currently don't free the token here
           reussir.scf.yield %tail : !reussir.rc<!list>
       }

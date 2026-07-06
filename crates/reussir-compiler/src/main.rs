@@ -190,6 +190,13 @@ struct Cli {
     #[arg(long = "reuse-across-call")]
     reuse_across_call: bool,
 
+    /// Lay out compound record members in declaration order instead of the
+    /// default packed order (members sorted by descending storage alignment,
+    /// eliminating inter-member padding). Packing is the shipped default and
+    /// the layout contract; this restores the unpacked layout.
+    #[arg(long = "no-pack-record-members")]
+    no_pack_record_members: bool,
+
     /// Run the MLIR backend single-threaded (disable its thread pool). Useful for
     /// deterministic diagnostics and for debugging under tools that dislike the
     /// backend's worker threads (e.g. some sanitizers/debuggers).
@@ -580,6 +587,7 @@ fn backend_module(
         opt,
         reuse_token_across_call: cli.reuse_across_call,
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
+        pack_record_members: !cli.no_pack_record_members,
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);

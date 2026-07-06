@@ -79,6 +79,11 @@ pub struct LoweringOptions {
     pub nullary_variant_encoding: NullaryVariantEncoding,
     /// Run the invariant-group analysis pass.
     pub enable_invariant_analysis: bool,
+    /// Lay out compound record members in packed physical order (descending
+    /// storage alignment) rather than declaration order. On by default — the
+    /// layout contract external consumers compile against; `rrc` exposes the
+    /// off switch as `--no-pack-record-members`.
+    pub pack_record_members: bool,
 }
 
 impl Default for LoweringOptions {
@@ -93,6 +98,9 @@ impl Default for LoweringOptions {
             // Off by default, mirroring the C++ `createLoweringPipeline`
             // (`enableInvariantAnalysis = false`).
             enable_invariant_analysis: false,
+            // On by default: packed layout is the shipped default and the
+            // layout contract; only an explicit driver flag turns it off.
+            pack_record_members: true,
         }
     }
 }
@@ -179,8 +187,17 @@ pub fn run_lowering_pipeline(
         reuse_token_across_call = options.reuse_token_across_call,
         enable_invariant_analysis = options.enable_invariant_analysis,
         nullary_variant_encoding = ?options.nullary_variant_encoding,
+        pack_record_members = options.pack_record_members,
     )
     .entered();
+
+    // Record-member packing is a whole-compilation layout contract held on the
+    // context-loaded dialect; set it once before any pass computes a layout.
+    // SAFETY: `context` is live for the call; the CAPI only loads the Reussir
+    // dialect and sets a bool on it.
+    unsafe {
+        sys::reussirContextSetPackRecordMembers(context.to_raw(), options.pack_record_members);
+    }
 
     let manager = PassManager::new(context);
 

@@ -34,6 +34,7 @@
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/Conversion/Passes.h"
 #include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/Transformation/Passes.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
@@ -215,4 +216,9 @@ bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
   moduleOp->setAttr(mlir::DLTIDialect::kDataLayoutAttrName,
                     mlir::DataLayoutSpecAttr::get(context, entries));
   return true;
+}
+
+void reussirContextSetPackRecordMembers(MlirContext context, bool enable) {
+  mlir::MLIRContext *ctx = unwrap(context);
+  ctx->getOrLoadDialect<reussir::ReussirDialect>()->setPackRecordMembers(enable);
 }

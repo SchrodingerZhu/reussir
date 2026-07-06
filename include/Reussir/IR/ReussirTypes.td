@@ -143,7 +143,15 @@ def ReussirRecordType
         mlir::Type memberWithLargestAlignment;
       };
       LayoutInfo getElementRegionLayoutInfo(const mlir::DataLayout &dataLayout) const;
-      // The discriminant type of a variant record: the narrowest integer
+      // A shared/regional variant record carries a fused 8-byte box header:
+      // `{4-byte count slot, i32 tag, payload}`. When rc-boxed, the box IS
+      // the record — the refcount overlays the leading slot, so the rc
+      // pointer equals the record pointer. [value] variants (never a box
+      // element; shared records embed as pointers) keep the compact
+      // `{minimal-width tag, payload}` layout instead.
+      bool hasFusedHeader() const;
+      // The discriminant type of a variant record: i32 for fused-header
+      // (shared/regional) variants, otherwise the narrowest integer
       // covering the arm count (i8/i16/i32).
       mlir::IntegerType getTagType() const;
       // Physical member order of a compound record: member indices sorted by
@@ -409,8 +417,14 @@ def ReussirRcBoxType
   let extraClassDeclaration = [{
     mlir::Type getElementType() const { return getEleTy(); }
     bool isRegional() const { return getRegional(); }
+    // Whether the box IS its element: a non-regional box of a fused-header
+    // variant overlays the refcount on the element's leading count slot, so
+    // box pointer == element pointer.
+    bool isHeaderFused() const;
     size_t getElementIndex() const {
-      return isRegional() ? 3 : 1;
+      if (isRegional())
+        return 3;
+      return isHeaderFused() ? 0 : 1;
     }
   }];
 }

@@ -18,10 +18,10 @@ module {
   func.func @cons(%fst : i32, %tail : !reussir.rc<!list>) -> !reussir.rc<!list> {
     %0 = reussir.record.compound(%fst, %tail : i32, !reussir.rc<!list>) : !cons
     %1 = reussir.record.variant [0] (%0 : !cons) : !list
-    %token = reussir.token.alloc : !reussir.token<align: 8, size: 32>
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 24>
     %rc = reussir.rc.create 
         value(%1 : !list) 
-        token(%token : !reussir.token<align: 8, size: 32>) : !reussir.rc<!list>
+        token(%token : !reussir.token<align: 8, size: 24>) : !reussir.rc<!list>
     return %rc : !reussir.rc<!list>
   }
 
@@ -37,9 +37,10 @@ module {
 }
 
 // Members are packed by descending alignment (the tail pointer precedes the
-// i32 head) and the variant tag is the minimal-width integer (2 arms -> i8).
+// i32 head); a shared variant carries the fused 8-byte box header
+// {i32 count slot, i32 tag} and the box IS the record.
 // CHECK: %"List::Cons" = type { ptr, i32, [4 x i8] }
-// CHECK: %List = type { i8, %"List::Cons" }
+// CHECK: %List = type { i32, i32, %"List::Cons" }
 
 // CHECK-LABEL: define ptr @cons(i32 %0, ptr %1)
 // CHECK: %[[cons_alloca:[0-9]+]] = alloca %"List::Cons", align 8
@@ -50,27 +51,27 @@ module {
 // CHECK: %[[cons_loaded:[0-9]+]] = load %"List::Cons", ptr %[[cons_alloca]], align 8
 // CHECK: %[[alloca:[0-9]+]] = alloca %List, i64 1, align 8
 // CHECK: call void @llvm.lifetime.start.p0({{.*}}ptr %[[alloca]])
-// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 0
-// CHECK: store i8 0, ptr %[[tag_ptr]], align 1
-// CHECK: %[[value_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 1
+// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 1
+// CHECK: store i32 0, ptr %[[tag_ptr]], align 4
+// CHECK: %[[value_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 2
 // CHECK: store %"List::Cons" %[[cons_loaded]], ptr %[[value_ptr]], align 8
 // CHECK: %[[loaded:[0-9]+]] = load %List, ptr %[[alloca]], align 8
 // CHECK: call void @llvm.lifetime.end.p0({{.*}}ptr %[[alloca]])
-// CHECK: %[[allocated:[0-9]+]] = call ptr @__reussir_allocate(i64 8, i64 32)
-// CHECK: %[[rc_tag_ptr:[0-9]+]] = getelementptr { i64, %List }, ptr %[[allocated]], i32 0, i32 0
-// CHECK: store i64 1, ptr %[[rc_tag_ptr]], align 4
-// CHECK: %[[rc_value_ptr:[0-9]+]] = getelementptr { i64, %List }, ptr %[[allocated]], i32 0, i32 1
-// CHECK: store %List %[[loaded]], ptr %[[rc_value_ptr]], align 8
+// CHECK: %[[allocated:[0-9]+]] = call ptr @__reussir_allocate(i64 8, i64 24)
+// CHECK: %[[count_ptr:[0-9]+]] = getelementptr %List, ptr %[[allocated]], i32 0, i32 0
+// CHECK: %[[box_ptr:[0-9]+]] = getelementptr %List, ptr %[[allocated]], i32 0, i32 0
+// CHECK: store %List %[[loaded]], ptr %[[box_ptr]], align 8
+// CHECK: store i32 1, ptr %[[count_ptr]], align 4
 // CHECK: ret ptr %[[allocated]]
 
 // CHECK-LABEL: define i64 @test_option_tag(ptr %0)
-// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Option, ptr %0, i32 0, i32 0
-// CHECK: %[[narrow_tag:[0-9]+]] = load i8, ptr %[[tag_ptr]], align 1
-// CHECK: %[[tag_value:[0-9]+]] = zext i8 %[[narrow_tag]] to i64
+// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Option, ptr %0, i32 0, i32 1
+// CHECK: %[[narrow_tag:[0-9]+]] = load i32, ptr %[[tag_ptr]], align 4
+// CHECK: %[[tag_value:[0-9]+]] = zext i32 %[[narrow_tag]] to i64
 // CHECK: ret i64 %[[tag_value]]
 
 // CHECK-LABEL: define i64 @test_result_tag(ptr %0)
-// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Result, ptr %0, i32 0, i32 0
-// CHECK: %[[narrow_tag:[0-9]+]] = load i8, ptr %[[tag_ptr]], align 1
-// CHECK: %[[tag_value:[0-9]+]] = zext i8 %[[narrow_tag]] to i64
+// CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %Result, ptr %0, i32 0, i32 1
+// CHECK: %[[narrow_tag:[0-9]+]] = load i32, ptr %[[tag_ptr]], align 4
+// CHECK: %[[tag_value:[0-9]+]] = zext i32 %[[narrow_tag]] to i64
 // CHECK: ret i64 %[[tag_value]]

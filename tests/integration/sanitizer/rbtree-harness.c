@@ -3,11 +3,11 @@
 #include <stdlib.h>
 
 typedef struct rc_list {
-    int64_t refcount;
-    int64_t tag;
+    uint32_t refcount; /* fused 8-byte header: i32 count + i32 tag */
+    uint32_t tag;
+    struct rc_list *tail; /* members are packed by descending alignment */
     int32_t head;
     int32_t _pad;
-    struct rc_list *tail;
 } rc_list_t;
 
 #define LIST_NIL 0

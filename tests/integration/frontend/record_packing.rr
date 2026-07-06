@@ -1,0 +1,25 @@
+// Compound record members are laid out in packed physical order (descending
+// storage alignment) by default; `--no-pack-record-members` restores the
+// declaration-order layout. Both are valid — the field projection stays
+// correct — so the choice only changes the physical struct shape.
+
+// RUN: %rrc %s -o %t.packed.ll --emit llvm-ir -O none
+// RUN: %FileCheck %s --check-prefix=PACKED < %t.packed.ll
+// RUN: %rrc %s -o %t.unpacked.ll --emit llvm-ir -O none --no-pack-record-members
+// RUN: %FileCheck %s --check-prefix=UNPACKED < %t.unpacked.ll
+
+// Sorted by descending alignment: the i64 leads, then the two i8s, then tail
+// padding — 16 bytes, no inter-member padding.
+// PACKED: %_RC1S = type { i64, i8, i8, [6 x i8] }
+
+// Declaration order (a: i8, b: i64, c: i8): `a` is widened to i64 to carry the
+// padding that aligns `b` — 24 bytes.
+// UNPACKED: %_RC1S = type { i64, i64, i8, [7 x i8] }
+
+struct [value] S { a: i8, b: i64, c: i8 }
+
+pub fn use_s(x: i64) -> i64 {
+    let s = S { a: 1, b: x, c: 2 };
+    s.b
+}
+extern "C" trampoline "use_s_ffi" = use_s;

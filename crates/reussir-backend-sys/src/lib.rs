@@ -174,6 +174,13 @@ unsafe extern "C" {
         triple: *const c_char,
     ) -> bool;
 
+    /// Sets whether compound record members are laid out in packed physical
+    /// order (descending storage alignment) rather than declaration order. On
+    /// by default. A whole-compilation layout contract held on the
+    /// context-loaded Reussir dialect; set it once before the lowering pipeline
+    /// computes any layout.
+    pub fn reussirContextSetPackRecordMembers(context: MlirContext, enable: bool);
+
     //==-- LLVM-side codegen helpers (Jit.h) --==//
 
     /// Runs the Reussir LLVM optimization pipeline on `module` in place at the
