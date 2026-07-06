@@ -679,10 +679,11 @@ mod tests {
         // The `array<f64, 8>` type and all five `array#…` ops, including
         // kernels with their params.
         roundtrip(
-            "pub fn make() -> Array<f64, 8> { Array::tabulate<f64, 8>(|i| i as f64) } \
-             pub fn ones() -> Array<f64, 8> { Array::splat<f64, 8>(1.0) } \
-             pub fn s(a: Array<f64, 8>) -> f64 { a.fold(0.0, |acc, x| acc + x) } \
-             pub fn b(a: Array<f64, 8>, i: i64, v: f64) -> Array<f64, 8> { a.set(i, a.get(i) + v) }",
+            "pub fn make() -> Array<f64, 8> { core::intrinsic::array::tabulate<f64, 8>(|i| i as f64) } \
+             pub fn ones() -> Array<f64, 8> { core::intrinsic::array::splat<f64, 8>(1.0) } \
+             pub fn s(a: Array<f64, 8>) -> f64 { core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x) } \
+             pub fn b(a: Array<f64, 8>, i: i64, v: f64) -> Array<f64, 8> { \
+             core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v) }",
         );
     }
 

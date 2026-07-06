@@ -18,26 +18,29 @@ fn zero_extent(a : Array<f64, 0>) -> i64 { 0 }
 // CHECK-DAG: an integer extent is only valid as an `Array` type argument
 fn stray_const(x : Nullable<4>) -> i64 { 0 }
 
-// CHECK: `Array::splat` requires explicit type arguments
-fn no_ty_args() -> Array<f64, 4> { Array::splat(0.0) }
+// CHECK: `core::intrinsic::array::splat` requires explicit type arguments
+fn no_ty_args() -> Array<f64, 4> { core::intrinsic::array::splat(0.0) }
 
-// CHECK: `Array` has no constructor `build`
-fn bad_ctor() -> Array<f64, 4> { Array::build<f64, 4>(0.0) }
+// CHECK: unknown array intrinsic `core::intrinsic::array::build`
+fn bad_ctor() -> Array<f64, 4> { core::intrinsic::array::build<f64, 4>(0.0) }
 
 // CHECK: `get` on `Array<f64, 4, 4>` expects 2 index argument(s), got 1
-fn rank_mismatch(m : Array<f64, 4, 4>) -> f64 { m.get(0) }
+fn rank_mismatch(m : Array<f64, 4, 4>) -> f64 { core::intrinsic::array::get(m, 0) }
+
+// CHECK: `core::intrinsic::array::get` expects an array as its first argument, found `i64`
+fn not_an_array(x : i64) -> i64 { core::intrinsic::array::get(x, 0) }
 
 // CHECK: `tabulate` requires a literal lambda kernel
-fn make_it(f : i64 -> f64) -> Array<f64, 4> { Array::tabulate<f64, 4>(f) }
+fn make_it(f : i64 -> f64) -> Array<f64, 4> { core::intrinsic::array::tabulate<f64, 4>(f) }
 
 // CHECK: `fold` kernel takes 2 parameter(s), got 1
-fn short_kernel(a : Array<f64, 4>) -> f64 { a.fold(0.0, |acc| acc) }
+fn short_kernel(a : Array<f64, 4>) -> f64 { core::intrinsic::array::fold(a, 0.0, |acc| acc) }
 
 // A kernel body may not create managed values (here: a boxed list).
 enum List { Cons(i64), Nil() }
 // CHECK: array kernel bodies are restricted to plain scalar computation
 fn managed_kernel(a : Array<i64, 4>) -> i64 {
-    a.fold(0, |acc, x| {
+    core::intrinsic::array::fold(a, 0, |acc, x| {
         let v = List::Cons{x};
         match v { List::Cons(h) => acc + h, List::Nil() => acc }
     })
@@ -46,11 +49,15 @@ fn managed_kernel(a : Array<i64, 4>) -> i64 {
 // Only `get` is allowed inside a kernel.
 // CHECK: `set` is not allowed inside an array kernel
 fn set_in_kernel(a : Array<f64, 4>, b : Array<f64, 4>) -> f64 {
-    a.fold(0.0, |acc, x| { let c = b.set(0, x); acc })
+    core::intrinsic::array::fold(a, 0.0, |acc, x| {
+        let c = core::intrinsic::array::set(b, 0, x);
+        acc
+    })
 }
 
 // A nested kernel read must be directly on an array variable.
 // CHECK: an array read inside a kernel must be on an array variable
 fn temp_get_in_kernel(a : Array<f64, 4>) -> f64 {
-    a.fold(0.0, |acc, x| Array::splat<f64, 4>(x).get(0) + acc)
+    core::intrinsic::array::fold(a, 0.0, |acc, x|
+        core::intrinsic::array::get(core::intrinsic::array::splat<f64, 4>(x), 0) + acc)
 }

@@ -475,12 +475,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if let Some(done) = self.infer_intrinsic(fc, span) {
             return done;
         }
-        // The built-in `Array` head (reserved by the type namespace):
-        // `Array::splat<T, extents…>(v)` / `Array::tabulate<T, extents…>(|i…| e)`
-        // construct statically shaped arrays (issue #344).
-        if fc.name.segments.len() == 1 && self.sym(fc.name.segments[0]) == "Array" {
-            return self.infer_array_ctor(fc, span);
-        }
         let Some(def) = self.resolve_function_ref(&fc.name) else {
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
@@ -544,30 +538,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[surface::Expr],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        // `base.get(…)` / `base.set(…)` / `base.fold(…)` on an array-typed base
-        // are built-in array operations, not closure-field applications. The
-        // base (with any leading field accesses) is inferred once; if it is not
-        // an array, the trailing access resumes the ordinary projection + apply
-        // path, so records with closure fields named `get` still work.
-        if let surface::ExprKind::AccessChain(base, accs) = callee.kind()
-            && let Some(surface::Access::Named(name)) = accs.last()
-        {
-            let method = self.sym(*name).to_string();
-            if matches!(method.as_str(), "get" | "set" | "fold") {
-                let lead = &accs[..accs.len() - 1];
-                let base = if lead.is_empty() {
-                    self.infer_expr(&base)
-                } else {
-                    let b = self.infer_expr(&base);
-                    self.project_access(b, lead, span)
-                };
-                if let TyKind::Array { .. } = self.infer.shallow_resolve(base.ty).kind() {
-                    return self.infer_array_method(base, &method, args, span);
-                }
-                let callee = self.project_access(base, &accs[accs.len() - 1..], span);
-                return self.closure_apply(callee, args, span);
-            }
-        }
         let callee = self.infer_expr(callee);
         self.closure_apply(callee, args, span)
     }
@@ -876,18 +846,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let base = self.infer_expr(base);
-        self.project_access(base, accs, span)
-    }
-
-    /// The projection half of (PROJ), over an already-inferred base — shared
-    /// with the array-method routing in `infer_closure_call`, which must infer
-    /// the base once before deciding how to interpret the trailing access.
-    fn project_access(
-        &mut self,
-        base: Expr<'tcx>,
-        accs: &[surface::Access],
-        span: Option<Span>,
-    ) -> Expr<'tcx> {
         let mut cur = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
@@ -977,6 +935,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         match *family {
             "math" => Some(self.infer_math_intrinsic(fc, span)),
+            "array" => Some(self.infer_array_intrinsic(fc, span)),
             other => {
                 self.error(
                     span,
@@ -1071,32 +1030,82 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.mk_expr(ExprKind::Intrinsic { op, args }, result, span)
     }
 
-    /// (ARR-CTOR) `Array::splat<T, extents…>(v)` / `Array::tabulate<T,
-    /// extents…>(|i…| e)`. The explicit type arguments carry the array shape
-    /// (they are required — there is nothing to infer them from); `splat`
-    /// checks its one argument against the element type, `tabulate` checks a
-    /// literal kernel lambda of one `i64` parameter per dimension against it.
+    /// (ARR) The `core::intrinsic::array` family (issue #344) — special
+    /// *vararg* functions over statically shaped arrays:
+    ///
+    /// * `splat<T, extents…>(v)` / `tabulate<T, extents…>(|i…| e)` construct
+    ///   an array; the explicit type arguments carry the shape (there is
+    ///   nothing to infer them from);
+    /// * `get(a, i…)` / `set(a, i…, v)` / `fold(a, init, |acc, x| e)` take the
+    ///   array as their first argument and one `i64` index per dimension.
+    fn infer_array_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let name = self.sym(fc.name.basename).to_string();
+        match ArrayFn::parse(&name) {
+            Some(ArrayFn::Splat | ArrayFn::Tabulate) => self.infer_array_ctor(fc, span),
+            Some(_) => {
+                if !fc.ty_args.is_empty() {
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` takes no type arguments \
+                             (the shape comes from its array argument)"
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                if fc.args.is_empty() {
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` expects an array as its \
+                             first argument"
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let base = self.infer_expr(&fc.args[0]);
+                if !matches!(
+                    self.infer.shallow_resolve(base.ty).kind(),
+                    TyKind::Array { .. }
+                ) {
+                    let shown = self.infer.resolve(base.ty);
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` expects an array as its \
+                             first argument, found `{}`",
+                            self.ty_display(shown)
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                self.infer_array_op(base, &name, &fc.args[1..], span)
+            }
+            None => {
+                self.error(
+                    span,
+                    format!("unknown array intrinsic `core::intrinsic::array::{name}`"),
+                );
+                self.poison(span)
+            }
+        }
+    }
+
+    /// The constructing array intrinsics: `splat` checks its one argument
+    /// against the element type, `tabulate` checks a literal kernel lambda of
+    /// one `i64` parameter per dimension against it.
     fn infer_array_ctor(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         use crate::intrinsic::ArrayFn;
         let method = self.sym(fc.name.basename).to_string();
-        let op = match ArrayFn::parse(&method) {
-            Some(op @ (ArrayFn::Splat | ArrayFn::Tabulate)) => op,
-            _ => {
-                self.error(
-                    span,
-                    format!(
-                        "`Array` has no constructor `{method}` (expected `splat` or `tabulate`)"
-                    ),
-                );
-                return self.poison(span);
-            }
-        };
+        let op = ArrayFn::parse(&method).expect("routed here for splat/tabulate only");
         if fc.ty_args.is_empty() {
             self.error(
                 span,
                 format!(
-                    "`Array::{method}` requires explicit type arguments — an element \
-                     type and extents, e.g. `Array::{method}<f64, 512>(…)`"
+                    "`core::intrinsic::array::{method}` requires explicit type arguments — \
+                     an element type and extents, e.g. \
+                     `core::intrinsic::array::{method}<f64, 512>(…)`"
                 ),
             );
             return self.poison(span);
@@ -1106,7 +1115,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let Some(t) = t else {
                 self.error(
                     span,
-                    format!("`Array::{method}` type arguments cannot be `_`: the array shape must be explicit"),
+                    format!(
+                        "`core::intrinsic::array::{method}` type arguments cannot be `_`: \
+                         the array shape must be explicit"
+                    ),
                 );
                 return self.poison(span);
             };
@@ -1121,7 +1133,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if fc.args.len() != 1 {
             self.error(
                 span,
-                format!("`Array::{method}` expects exactly one argument"),
+                format!("`core::intrinsic::array::{method}` expects exactly one argument"),
             );
             return self.poison(span);
         }
@@ -1158,11 +1170,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    /// (ARR-METHOD) `a.get(i…)` / `a.set(i…, v)` / `a.fold(init, |acc, x| e)`
-    /// on an array-typed base. Indices are `i64` (checked against the extents
-    /// at runtime); `get` borrows and yields the element, `set` consumes the
-    /// array and yields the updated one, `fold` borrows and reduces row-major.
-    fn infer_array_method(
+    /// The accessing array intrinsics over an already-inferred array `base`:
+    /// `get(a, i…)`, `set(a, i…, v)`, `fold(a, init, |acc, x| e)`. Indices are
+    /// `i64` (checked against the extents at runtime); `get` borrows and
+    /// yields the element, `set` consumes the array and yields the updated
+    /// one, `fold` borrows and reduces row-major.
+    fn infer_array_op(
         &mut self,
         base: Expr<'tcx>,
         method: &str,
