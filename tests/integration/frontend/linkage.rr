@@ -1,5 +1,5 @@
 // RUN: %rrc %s --emit llvm-ir -O none -o %t.ll
-// RUN: %FileCheck %s < %t.ll
+// RUN: %FileCheck %s %linkage_check_prefixes < %t.ll
 
 // AOT linkage policy (rustc-style):
 // - private non-generic functions are `internal` — free to discard, inline,
@@ -27,8 +27,10 @@ pub fn entry(x: i64) -> i64 {
 
 extern "C" trampoline "entry_ffi" = entry;
 
-// The generic instance is mergeable across compilation units.
-// CHECK-DAG: define linkonce_odr i64 @_RIC6doublexE(i64 %0)
+// The generic instance is mergeable across compilation units when the
+// object format can carry the required COMDAT; COFF stays strong for now.
+// CHECK-DEDUP-DAG: define linkonce_odr i64 @_RIC6doublexE(i64 %0)
+// CHECK-COFF-DAG: define i64 @_RIC6doublexE(i64 %0)
 // The private helper is internal.
 // CHECK-DAG: define internal i64 @_RC6helper(i64 %0)
 // The pub function and the trampoline are the strong external ABI surface.

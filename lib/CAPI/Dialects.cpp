@@ -8,6 +8,9 @@
 
 #include "Reussir-c/Dialects.h"
 
+// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
+// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+#include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Registration.h>
 #include <mlir/Conversion/ArithToLLVM/ArithToLLVM.h>

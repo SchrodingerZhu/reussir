@@ -2,15 +2,69 @@
 message(STATUS "finding tools in ${LLVM_TOOLS_BINARY_DIR}")
 
 function(find_llvm_tool VAR TOOL)
+    set(tool_names "${TOOL}${CMAKE_EXECUTABLE_SUFFIX}" "${TOOL}")
+    foreach(extra_name IN LISTS ARGN)
+        list(APPEND tool_names "${extra_name}")
+    endforeach()
     find_program(${VAR}
-        NAMES "${TOOL}${CMAKE_EXECUTABLE_SUFFIX}"
+        NAMES ${tool_names}
         HINTS ${LLVM_TOOLS_BINARY_DIR}
         REQUIRED)
     message(STATUS "${TOOL} path: ${${VAR}}")
 endfunction()
 
-find_llvm_tool(filecheck_path FileCheck)
-find_llvm_tool(not_path not)
+find_llvm_tool(filecheck_path FileCheck filecheck filecheck.exe)
+find_program(not_executable_path
+    NAMES "not${CMAKE_EXECUTABLE_SUFFIX}" not
+    HINTS ${LLVM_TOOLS_BINARY_DIR})
+if(not_executable_path)
+    set(not_path "${not_executable_path}")
+else()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(not_script_path "${CMAKE_CURRENT_BINARY_DIR}/reussir-lit-not.py")
+    file(WRITE "${not_script_path}" [=[
+import subprocess
+import sys
+
+
+def main():
+    args = sys.argv[1:]
+    expect_crash = False
+    if args and args[0] == "--crash":
+        expect_crash = True
+        args = args[1:]
+    if not args:
+        print("usage: not [--crash] command [args...]", file=sys.stderr)
+        return 2
+
+    try:
+        completed = subprocess.run(args)
+    except FileNotFoundError as err:
+        print(f"not: {err}", file=sys.stderr)
+        return 1
+
+    code = completed.returncode
+    if expect_crash:
+        crashed = code < 0 or code >= 0x80000000
+        return 0 if crashed else 1
+    return 0 if code != 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+]=])
+    if(WIN32)
+        set(not_wrapper_path "${CMAKE_CURRENT_BINARY_DIR}/reussir-lit-not.cmd")
+        file(WRITE "${not_wrapper_path}" "@echo off\r\n\"${Python3_EXECUTABLE}\" \"${not_script_path}\" %*\r\n")
+    else()
+        set(not_wrapper_path "${CMAKE_CURRENT_BINARY_DIR}/reussir-lit-not")
+        file(WRITE "${not_wrapper_path}" "#!/bin/sh\nexec \"${Python3_EXECUTABLE}\" \"${not_script_path}\" \"$@\"\n")
+        file(CHMOD "${not_wrapper_path}"
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    endif()
+    set(not_path "${not_wrapper_path}")
+endif()
+message(STATUS "not path: ${not_path}")
 find_llvm_tool(opt_path opt)
 find_llvm_tool(llc_path llc)
 find_llvm_tool(lli_path lli)
@@ -21,8 +75,14 @@ if(REUSSIR_RUNTIME_SANITIZERS AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
     "compile generated LLVM IR with `%cc -x ir`.")
 endif()
 
+set(cc_runtime_flags "")
+
 if (WIN32)
-  set(extra_sys_libs "-lucrt -lntdll -lws2_32 -ladvapi32 -lbcrypt -luserenv")
+  set(extra_sys_libs "-Wl,/nodefaultlib:libucrt -Wl,/defaultlib:ucrt -lntdll -lws2_32 -ladvapi32 -lbcrypt -luserenv")
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    # Rust MSVC targets use DLL CRT imports; keep lit-linked test drivers matched.
+    set(cc_runtime_flags "-fms-runtime-lib=dll")
+  endif()
   set(REUSSIR_LIBRARY_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
   set(REUSSIR_RT_LIBRARY_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir_rt.dll)
   set(rpath_flag "")

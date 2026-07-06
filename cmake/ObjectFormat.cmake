@@ -36,13 +36,8 @@ function(detect_object_format OUTPUT_VAR)
         elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
             set(OBJECT_FORMAT "MachO")
         elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
-            if(MSVC)
-                set(OBJECT_FORMAT "COFF")
-            elseif(MINGW)
-                set(OBJECT_FORMAT "COFF")
-            elseif(CYGWIN)
-                set(OBJECT_FORMAT "COFF")
-            endif()
+            # Windows uses COFF even when CMake does not classify the Clang driver as MSVC-like.
+            set(OBJECT_FORMAT "COFF")
         elseif(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
             set(OBJECT_FORMAT "Wasm")
         endif()
@@ -50,12 +45,26 @@ function(detect_object_format OUTPUT_VAR)
     
     # Additional check using compiler preprocessor if still unknown
     if(OBJECT_FORMAT STREQUAL "UNKNOWN")
+        set(_object_format_test_source "${CMAKE_BINARY_DIR}/object_format_test.cpp")
+        file(WRITE "${_object_format_test_source}" [[
+#if defined(__ELF__)
+__ELF__
+#endif
+#if defined(__MACH__)
+__MACH__
+#endif
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+_WIN32
+#endif
+int main() { return 0; }
+]])
         try_compile(COMPILE_RESULT
             ${CMAKE_BINARY_DIR}/object_format_test
-            ${CMAKE_BINARY_DIR}/object_format_test.cpp
+            ${_object_format_test_source}
             COMPILE_DEFINITIONS -E
             OUTPUT_VARIABLE COMPILER_OUTPUT
         )
+        unset(_object_format_test_source)
         
         # Check common preprocessor defines
         if(COMPILER_OUTPUT MATCHES "__ELF__")

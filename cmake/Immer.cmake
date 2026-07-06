@@ -17,4 +17,7 @@ set(immer_BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
 set(immer_BUILD_DOCS OFF CACHE BOOL "Build docs" FORCE)
 set(immer_BUILD_EXTRAS OFF CACHE BOOL "Build extras" FORCE)
 
+# LLVM-style builds disable C++ exceptions; make Immer use its no-exceptions path.
+add_compile_definitions(IMMER_NO_EXCEPTIONS)
+
 FetchContent_MakeAvailable(immer)

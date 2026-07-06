@@ -1,4 +1,4 @@
-name: MinGW Clang64 Full Pipeline
+name: Windows MSVC Full Pipeline
 
 on:
   push:
@@ -8,6 +8,12 @@ on:
 
 permissions:
   contents: read
+
+env:
+  LLVM_VERSION: 22.1.8
+  CONDA_ENV_FILE: .github/conda/windows-msvc.yml
+  CONDA_PKGS_DIR: D:\conda_pkgs_dir
+  CONDA_ENV_PATH: D:\conda_envs\reussir-msvc
 
 jobs:
   build:
@@ -22,7 +28,7 @@ jobs:
       - name: Setup Dev Drive
         uses: samypr100/setup-dev-drive@v3
         with:
-          drive-size: 8GB
+          drive-size: 20GB
           workspace-copy: true
           trusted-dev-drive: true
 
@@ -31,67 +37,212 @@ jobs:
         with:
           working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
 
-      - name: Install vcredist140
+      - name: Setup MSVC environment
         shell: pwsh
         run: |
-          choco install vcredist140 -y
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) {
+            throw "Could not find a Visual Studio installation with the x64 C++ tools."
+          }
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+          $before = @{}
+          cmd /c set | ForEach-Object {
+            if ($_ -match "^(.*?)=(.*)$") {
+              $before[$matches[1].ToUpperInvariant()] = $matches[2]
+            }
+          }
+          cmd /c "`"$vcvars`" && set" | ForEach-Object {
+            if ($_ -match "^(.*?)=(.*)$") {
+              $name = $matches[1]
+              $value = $matches[2]
+              $upper = $name.ToUpperInvariant()
+              $skip = $upper.StartsWith("GITHUB_") -or $upper.StartsWith("RUNNER_") -or $upper.StartsWith("ACTIONS_")
+              if (-not $skip -and ((-not $before.ContainsKey($upper)) -or $before[$upper] -ne $value)) {
+                "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          }
 
-      - name: Setup MSYS2
-        id: msys2
-        uses: msys2/setup-msys2@v2
+      - name: Cache Conda packages
+        uses: actions/cache@v4
         with:
-          msystem: clang64
-          update: true
-          install: >-
-            git
-            mingw-w64-clang-x86_64-toolchain
-            mingw-w64-clang-x86_64-cmake
-            mingw-w64-clang-x86_64-ninja
-            mingw-w64-clang-x86_64-mlir
-            mingw-w64-clang-x86_64-spdlog
-            mingw-w64-clang-x86_64-gtest
-            mingw-w64-clang-x86_64-python
-            mingw-w64-clang-x86_64-python-pip
-            mingw-w64-clang-x86_64-rustup
+          enableCrossOsArchive: true
+          path: ${{ env.CONDA_PKGS_DIR }}
+          key: windows-msvc-conda-pkgs-${{ runner.arch }}-${{ hashFiles('.github/conda/windows-msvc.yml') }}-v1
+          restore-keys: |
+            windows-msvc-conda-pkgs-${{ runner.arch }}-
 
-      - name: Install Rust and Python dependencies
-        shell: msys2 {0}
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+      - name: Cache Conda environment
+        id: cache-conda-env
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONDA_ENV_PATH }}
+          key: windows-msvc-conda-env-${{ runner.arch }}-${{ hashFiles('.github/conda/windows-msvc.yml') }}-v1
+
+      - name: Setup Miniforge
+        uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-version: latest
+          activate-environment: ${{ env.CONDA_ENV_PATH }}
+          auto-activate: true
+          channels: conda-forge
+          channel-priority: strict
+          conda-remove-defaults: "true"
+          pkgs-dirs: ${{ env.CONDA_PKGS_DIR }}
+
+      - name: Install Conda dependencies
+        shell: pwsh
         run: |
-          pip install lit
-          # The repo-root rust-toolchain.toml pins only a bare `channel`, which
-          # rustup resolves against the default host triple. On this clang64
-          # image that default is the MSVC host, so the runtime would build as
-          # x86_64-pc-windows-msvc and emit /DEFAULTLIB:oldnames directives that
-          # the gnu clang linker used by the integration tests cannot satisfy
-          # (ld.lld: could not open 'libOLDNAMES.a'). Pin the default host to
-          # gnullvm so the bare channel resolves to the gnu/LLVM toolchain.
-          rustup set default-host x86_64-pc-windows-gnullvm
-          rustup target add x86_64-pc-windows-gnullvm
-          rustup default nightly-2026-02-15-x86_64-pc-windows-gnullvm
-          rustup component add rust-src rustfmt clippy
-          rustc -vV
+          $llvmRoot = Join-Path $env:CONDA_ENV_PATH "Library"
+          $mlirConfig = Join-Path $llvmRoot "lib\cmake\mlir\MLIRConfig.cmake"
+          $llvmConfig = Join-Path $llvmRoot "lib\cmake\llvm\LLVMConfig.cmake"
+          if ((Test-Path $mlirConfig) -and (Test-Path $llvmConfig)) {
+            Write-Host "Using cached Conda environment at $env:CONDA_ENV_PATH"
+            conda list --prefix "$env:CONDA_ENV_PATH"
+          } else {
+            Write-Host "Cached Conda environment is missing LLVM/MLIR; updating $env:CONDA_ENV_PATH"
+            conda env update --prefix "$env:CONDA_ENV_PATH" --file "$env:CONDA_ENV_FILE" --prune
+          }
+
+      - name: Setup LLVM paths
+        shell: pwsh
+        run: |
+          conda list
+          $llvmRoot = Join-Path $env:CONDA_PREFIX "Library"
+          if (-not (Test-Path "$llvmRoot\lib\cmake\mlir\MLIRConfig.cmake")) {
+            throw "Conda MLIR package did not provide MLIRConfig.cmake."
+          }
+          if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
+            throw "Conda LLVM package did not provide LLVMConfig.cmake."
+          }
+          $xml2ImportLib = Join-Path $llvmRoot "lib\xml2.lib"
+          if (-not (Test-Path $xml2ImportLib)) {
+            $xml2Candidates = @(
+              (Join-Path $llvmRoot "lib\libxml2.lib"),
+              (Join-Path $llvmRoot "lib\libxml2.dll.lib"),
+              (Join-Path $llvmRoot "lib\xml2.dll.lib")
+            )
+            $xml2Source = $xml2Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $xml2Source) {
+              $xml2Source = Get-ChildItem -Path (Join-Path $llvmRoot "lib") -Filter "*xml2*.lib" -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName -First 1
+            }
+            if ($xml2Source) {
+              Copy-Item $xml2Source $xml2ImportLib
+              Write-Host "Created xml2 import library alias: $xml2ImportLib -> $xml2Source"
+            } else {
+              $xml2Dll = Get-ChildItem -Path (Join-Path $llvmRoot "bin") -Filter "*xml2*.dll" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if (-not $xml2Dll) {
+                throw "Conda libxml2 package did not provide a DLL matching *xml2*.dll."
+              }
+              $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+              $libTool = Get-Command lib.exe -ErrorAction SilentlyContinue
+              if (-not $dumpbin -or -not $libTool) {
+                throw "MSVC dumpbin.exe and lib.exe are required to generate xml2.lib."
+              }
+              $exports = & $dumpbin.Source /exports $xml2Dll.FullName | ForEach-Object {
+                if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+([^=\s]+)') { $matches[1] }
+              } | Sort-Object -Unique
+              if (-not $exports) {
+                throw "Could not read exports from $($xml2Dll.FullName)."
+              }
+              $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+              $xml2Def = Join-Path $tempDir "xml2.def"
+              @("LIBRARY $($xml2Dll.Name)", "EXPORTS") + ($exports | ForEach-Object { "  $_" }) |
+                Set-Content -Path $xml2Def -Encoding ascii
+              & $libTool.Source /nologo /def:$xml2Def /machine:x64 /out:$xml2ImportLib
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path $xml2ImportLib)) {
+                throw "Failed to generate xml2.lib from $($xml2Dll.FullName)."
+              }
+              Write-Host "Generated xml2 import library: $xml2ImportLib from $($xml2Dll.FullName)"
+            }
+          }
+          function Ensure-LibAlias($aliasName, [string[]]$candidates) {
+            $aliasPath = Join-Path $llvmRoot "lib\$aliasName"
+            if (Test-Path $aliasPath) {
+              return
+            }
+            $source = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $source) {
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($aliasName)
+              $source = Get-ChildItem -Path (Join-Path $llvmRoot "lib") -Filter "*$stem*.lib" -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName -First 1
+            }
+            if (-not $source) {
+              throw "Conda package did not provide a source import library for $aliasName."
+            }
+            Copy-Item $source $aliasPath
+            Write-Host "Created import library alias: $aliasPath -> $source"
+          }
+          Ensure-LibAlias "zstd.dll.lib" @(
+            (Join-Path $llvmRoot "lib\zstd.lib"),
+            (Join-Path $llvmRoot "lib\libzstd.lib"),
+            (Join-Path $llvmRoot "lib\zstd.dll.lib")
+          )
+          $fileCheck = Get-Command FileCheck.exe -ErrorAction SilentlyContinue
+          if (-not $fileCheck) {
+            $fileCheck = Get-Command filecheck.exe -ErrorAction SilentlyContinue
+          }
+          if (-not $fileCheck) {
+            $fileCheck = Get-Command filecheck -ErrorAction SilentlyContinue
+          }
+          if (-not $fileCheck) {
+            throw "Neither LLVM FileCheck nor the Python filecheck replacement is available."
+          }
+          $fileCheckDir = Split-Path -Parent $fileCheck.Source
+          Write-Host "FileCheck-compatible tool: $($fileCheck.Source)"
+          "LLVM_PREFIX=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LLVM_SYMBOLIZER_PATH=$llvmRoot\bin\llvm-symbolizer.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CMAKE_PREFIX_PATH=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "FILECHECK_PATH=$($fileCheck.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $fileCheckDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-02-15
+          components: rust-src, rustfmt, clippy
+
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          variant: sccache
+          key: windows-msvc-conda-llvm-${{ env.LLVM_VERSION }}
 
       - name: Configure CMake
-        shell: msys2 {0}
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          cmake -B build \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=ON
+          $env:RUSTC_WRAPPER = "sccache"
+          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
+          cmake -B build `
+            -G Ninja `
+            -DCMAKE_C_COMPILER="$env:LLVM_PREFIX\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="$env:LLVM_PREFIX\bin\clang++.exe" `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DREUSSIR_ENABLE_PEDANTIC=ON `
+            -DREUSSIR_ENABLE_TESTS=ON `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
+            -DLLVM_DIR="$env:LLVM_PREFIX\lib\cmake\llvm" `
+            -DMLIR_DIR="$env:LLVM_PREFIX\lib\cmake\mlir" `
+            -Dfilecheck_path="$env:FILECHECK_PATH"
 
       - name: Build
-        shell: msys2 {0}
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: cmake --build build --parallel
-
-
-      - name: Run Integration Tests
-        shell: msys2 {0}
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          export GITHUB_WORKSPACE=$(cygpath "$DEV_DRIVE_WORKSPACE")
-          . .github/workflows/setup_path.sh
+          $env:RUSTC_WRAPPER = "sccache"
+          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
+          cmake --build build --parallel
+
+      - name: Run Integration Tests
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          $env:RUSTC_WRAPPER = "sccache"
+          $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"
           cmake --build build --target check

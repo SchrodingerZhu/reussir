@@ -14,6 +14,29 @@ typedef struct rc_list {
 #define LIST_CONS 1
 
 extern rc_list_t *make_tree_to_list_ffi(int32_t size);
+extern int __lsan_do_recoverable_leak_check(void);
+
+#if defined(_MSC_VER)
+#define NOINLINE __declspec(noinline)
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+
+static NOINLINE void leak_c_allocation(void) {
+    volatile char *leaked = (volatile char *)malloc(64);
+    if (leaked == NULL) {
+        abort();
+    }
+    leaked[0] = 1;
+    leaked = NULL;
+}
+
+static NOINLINE void clear_stack_roots(void) {
+    volatile char buffer[4096];
+    for (size_t i = 0; i < sizeof(buffer); ++i) {
+        buffer[i] = 0;
+    }
+}
 
 int main(void) {
     const int32_t n = 50;
@@ -36,5 +59,7 @@ int main(void) {
         abort();
     }
 
-    return 0;
+    leak_c_allocation();
+    clear_stack_roots();
+    return __lsan_do_recoverable_leak_check() > 0 ? 1 : 0;
 }

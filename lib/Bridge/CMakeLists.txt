@@ -20,6 +20,11 @@ add_mlir_library(MLIRReussirBridge
     MLIRReussirTransformation
   LINK_COMPONENTS
     Core
+    ExecutionEngine
+    JITLink
+    nativecodegen
+    OrcJIT
+    RuntimeDyld
     Support
     Target
     TargetParser

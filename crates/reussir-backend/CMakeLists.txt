@@ -17,13 +17,14 @@ endif()
 # libpolly-<ver>-dev, must be installed).
 set(REUSSIR_BACKEND_CARGO_ENV
     CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
+    ${REUSSIR_CARGO_CXX_ENV}
     MLIR_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     # melior-macro 0.20 (the `dialect!` macro that generates the Reussir op
     # builders) still discovers llvm-config through the LLVM-21-era variable name
     # even though it targets LLVM 22; point it at the same prefix so its baked
     # include directory is correct.
     MLIR_SYS_210_PREFIX=${REUSSIR_LLVM_PREFIX}
-    TABLEGEN_220_PREFIX=${REUSSIR_LLVM_PREFIX}
+    TABLEGEN_220_PREFIX=${REUSSIR_TABLEGEN_PREFIX}
     LLVM_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     # `llvm-sys` 221 (the shared LLVM-IR boundary: translate, the backend LLVM
     # pipeline, polyffi gather/link) discovers LLVM through the 221 variable.
