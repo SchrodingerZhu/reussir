@@ -1793,7 +1793,6 @@ struct ReussirClosureCreateOpConversionPattern
     auto converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto indexType = converter->getIndexType();
 
     // Get the RcBox<ClosureBox> type
     RcBoxType rcBoxType = op.getRcClosureBoxType();
@@ -1951,8 +1950,6 @@ struct ReussirRcIsUniqueOpConversionPattern
     RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     auto convertedBoxType = typeConverter->convertType(rcBoxType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto indexType = static_cast<const mlir::LLVMTypeConverter *>(typeConverter)
-                         ->getIndexType();
 
     auto refcntPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedBoxType, rcPtr,
