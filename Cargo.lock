@@ -1987,6 +1987,7 @@ dependencies = [
  "melior",
  "mlir-sys",
  "reussir-backend-sys",
+ "tempfile",
  "tracing",
 ]
 

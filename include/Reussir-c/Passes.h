@@ -69,6 +69,22 @@ MlirPass reussirCreateTokenReusePass(bool reuseAcrossCall);
 // The default inliner configured with a canonicalizer that does not simplify
 // regions, matching the C++ backend pipeline.
 MlirPass reussirCreateDefaultInlinerPass(void);
+
+// The upstream transform-dialect interpreter, applying the transform named
+// sequence `entryPoint` to the payload module. The entry point is resolved
+// first in the payload module itself, then in the context's transform
+// library (populated by the preload pass below); the pass fails if it is
+// found in neither. The pipeline runs one interpreter per anchor, each with
+// the anchor's `__reussir_anchor_<name>` entry point.
+MlirPass reussirCreateTransformInterpreterPass(MlirStringRef entryPoint);
+
+// The upstream transform-library preload pass: parses each of the `nPaths`
+// script files in `paths` and merges its transform named sequences into the
+// context-wide transform library consulted by the interpreter. Merging
+// reports a symbol clash, so distinct scripts must use distinct entry
+// points (one script per anchor).
+MlirPass reussirCreateTransformPreloadLibraryPass(MlirStringRef const *paths,
+                                                  intptr_t nPaths);
 MlirPass reussirCreateCanonicalizerPass(void);
 MlirPass reussirCreateCSEPass(void);
 MlirPass reussirCreateControlFlowSinkPass(void);

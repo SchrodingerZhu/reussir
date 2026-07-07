@@ -25,10 +25,14 @@
 #include <mlir/Dialect/DLTI/DLTI.h>
 #include <mlir/Dialect/Func/Extensions/InlinerExtension.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/Func/TransformOps/FuncTransformOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/Linalg/TransformOps/DialectExtension.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
+#include <mlir/Dialect/SCF/TransformOps/SCFTransformOps.h>
+#include <mlir/Dialect/Transform/IR/TransformDialect.h>
 #include <mlir/Dialect/UB/IR/UBOps.h>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/IR/MLIRContext.h>
@@ -60,6 +64,20 @@ void populateReussirRegistry(mlir::DialectRegistry &registry) {
   // separately registered extension; without it the inliner pass resolves no
   // `func.call` sites and silently inlines nothing.
   mlir::func::registerInlinerExtension(registry);
+
+  // The transform dialect carries user-authored schedules (issue #349): the
+  // lowering pipeline can run `transform-interpreter` at named anchors over
+  // scripts supplied by the driver (`rrc --transform-script`). Register the
+  // dialect plus the extensions schedules need — func/structured matching
+  // (`transform.structured.match`) and the scf loop transforms
+  // (`transform.loop.*`). This keeps the minimal-dialect policy above: none
+  // of it (nor the dialects the extensions declare) is loaded into a context
+  // until a schedule actually parses transform ops, so pipelines without
+  // scripts see the same loaded-dialect set as before.
+  registry.insert<mlir::transform::TransformDialect>();
+  mlir::func::registerTransformDialectExtension(registry);
+  mlir::linalg::registerTransformDialectExtension(registry);
+  mlir::scf::registerTransformDialectExtension(registry);
 
   // Register the ConvertToLLVMPatternInterface for exactly the dialects that can
   // reach the ConvertToLLVM pass, plus Reussir's own lowering interface. These

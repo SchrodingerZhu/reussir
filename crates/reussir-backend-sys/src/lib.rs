@@ -13,7 +13,7 @@ use core::ffi::{c_char, c_int};
 
 use mlir_sys::{
     MlirAttribute, MlirContext, MlirDialectHandle, MlirDialectRegistry, MlirModule, MlirPass,
-    MlirType,
+    MlirStringRef, MlirType,
 };
 
 //==-- Reussir type enums --==//
@@ -133,6 +133,23 @@ unsafe extern "C" {
     //==-- Upstream passes used by the pipeline --==//
 
     pub fn reussirCreateDefaultInlinerPass() -> MlirPass;
+
+    /// The upstream transform-dialect interpreter, applying the transform
+    /// named sequence `entry_point` to the payload module. The entry point is
+    /// resolved first in the payload module itself, then in the context's
+    /// transform library (populated by the preload pass below); the pass
+    /// fails if it is found in neither.
+    pub fn reussirCreateTransformInterpreterPass(entry_point: MlirStringRef) -> MlirPass;
+
+    /// The upstream transform-library preload pass: parses each of the
+    /// `n_paths` script files in `paths` and merges its transform named
+    /// sequences into the context-wide transform library consulted by the
+    /// interpreter. Merging reports a symbol clash, so distinct scripts must
+    /// use distinct entry points (one script per anchor).
+    pub fn reussirCreateTransformPreloadLibraryPass(
+        paths: *const MlirStringRef,
+        n_paths: isize,
+    ) -> MlirPass;
     pub fn reussirCreateCanonicalizerPass() -> MlirPass;
     pub fn reussirCreateCSEPass() -> MlirPass;
     pub fn reussirCreateControlFlowSinkPass() -> MlirPass;

@@ -26,3 +26,8 @@ reussir-backend-sys = { path = "../reussir-backend-sys" }
 mlir-sys.workspace = true
 llvm-sys.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Auto-cleaned scratch files holding the transform scripts the pipeline
+# tests feed through `LoweringOptions::transform_scripts`.
+tempfile = "3"

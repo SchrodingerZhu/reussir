@@ -19,12 +19,14 @@
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Pass.h>
+#include <mlir/CAPI/Support.h>
 #include <mlir/Conversion/ConvertToLLVM/ToLLVMPass.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
 #include <mlir/Dialect/DLTI/DLTI.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Dialect/Transform/Transforms/Passes.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Target/LLVMIR/Import.h>
@@ -138,6 +140,19 @@ MlirPass reussirCreateDefaultInlinerPass(void) {
   llvm::StringMap<mlir::OpPassManager> pipelines;
   return wrapOwned(mlir::createInlinerPass(
       pipelines, addCanonicalizerWithoutRegionSimplification));
+}
+MlirPass reussirCreateTransformInterpreterPass(MlirStringRef entryPoint) {
+  mlir::transform::InterpreterPassOptions options;
+  options.entryPoint = unwrap(entryPoint).str();
+  return wrapOwned(mlir::transform::createInterpreterPass(options));
+}
+MlirPass reussirCreateTransformPreloadLibraryPass(MlirStringRef const *paths,
+                                                  intptr_t nPaths) {
+  mlir::transform::PreloadLibraryPassOptions options;
+  options.transformLibraryPaths.reserve(nPaths);
+  for (intptr_t i = 0; i < nPaths; ++i)
+    options.transformLibraryPaths.push_back(unwrap(paths[i]).str());
+  return wrapOwned(mlir::transform::createPreloadLibraryPass(options));
 }
 MlirPass reussirCreateCanonicalizerPass(void) {
   return wrapOwned(mlir::createCanonicalizerPass());
