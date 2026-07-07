@@ -6,6 +6,8 @@
 //! with `func.func`-nested passes placed in their original order so the
 //! interleaving with module-level passes is preserved.
 
+use std::path::PathBuf;
+
 use melior::Context;
 use melior::ir::Module;
 use melior::pass::{Pass, PassManager};
@@ -66,8 +68,60 @@ pub enum NullaryVariantEncoding {
     Immortal,
 }
 
+/// A named interception point in the lowering pipeline where user-supplied
+/// transform-dialect scripts run (issue #349). Each anchor is a documented,
+/// stable IR contract: scripts see the module at that abstraction level and
+/// must leave it consumable by the passes that follow.
+///
+/// A script targeting an anchor must define the anchor's entry point,
+/// `transform.named_sequence @__reussir_anchor_<name>(%payload)`, in a module
+/// carrying the `transform.with_named_sequence` attribute. Distinct anchors
+/// have distinct entry points, so scripts for several anchors can coexist in
+/// the context-wide transform library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Anchor {
+    /// Before any Reussir pass: pure `reussir`-dialect IR straight from
+    /// codegen, no tokens instantiated yet. For whole-program structural
+    /// rewrites and custom analyses.
+    Entry,
+    /// After the Reussir-level passes (both `scf-ops-lowering` runs and the
+    /// polymorphic-FFI compile are done), before the LLVM descent begins:
+    /// array kernels are plain memref/scf/arith loop nests. The main
+    /// scheduling surface — tiling, unrolling, fusion.
+    Kernel,
+}
+
+impl Anchor {
+    /// The anchor's user-facing name, as written in `--transform-script
+    /// <file>@<name>`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Anchor::Entry => "entry",
+            Anchor::Kernel => "kernel",
+        }
+    }
+
+    /// The transform entry point the interpreter runs at this anchor:
+    /// `__reussir_anchor_<name>`.
+    pub fn entry_point(self) -> &'static str {
+        match self {
+            Anchor::Entry => "__reussir_anchor_entry",
+            Anchor::Kernel => "__reussir_anchor_kernel",
+        }
+    }
+
+    /// Parses a user-facing anchor name (`entry`/`kernel`).
+    pub fn parse(name: &str) -> Option<Anchor> {
+        match name {
+            "entry" => Some(Anchor::Entry),
+            "kernel" => Some(Anchor::Kernel),
+            _ => None,
+        }
+    }
+}
+
 /// Knobs for [`run_lowering_pipeline`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct LoweringOptions {
     /// Optimization level.
     pub opt: OptLevel,
@@ -84,6 +138,10 @@ pub struct LoweringOptions {
     /// layout contract external consumers compile against; `rrc` exposes the
     /// off switch as `--no-pack-record-members`.
     pub pack_record_members: bool,
+    /// Transform-dialect scripts to run, each at its [`Anchor`]. Empty means
+    /// zero overhead: no transform pass is added and the pipeline is exactly
+    /// the fixed pass list. `rrc` exposes this as `--transform-script`.
+    pub transform_scripts: Vec<(Anchor, PathBuf)>,
 }
 
 impl Default for LoweringOptions {
@@ -101,6 +159,7 @@ impl Default for LoweringOptions {
             // On by default: packed layout is the shipped default and the
             // layout contract; only an explicit driver flag turns it off.
             pack_record_members: true,
+            transform_scripts: Vec::new(),
         }
     }
 }
@@ -136,6 +195,15 @@ pub fn attach_target_spec(module: &Module, data_layout: &str, triple: &str) -> R
 fn pass(raw: sys::mlir_sys::MlirPass) -> Pass {
     // SAFETY: the C API returns a freshly created, owned MlirPass.
     unsafe { Pass::from_raw(raw) }
+}
+
+// Views a string as the borrowed MlirStringRef the C API takes; `s` must
+// outlive every use of the result.
+fn string_ref(s: &str) -> sys::mlir_sys::MlirStringRef {
+    sys::mlir_sys::MlirStringRef {
+        data: s.as_ptr().cast(),
+        length: s.len(),
+    }
 }
 
 /// A small DSL describing the lowering pipeline as a declarative list of steps,
@@ -201,7 +269,36 @@ pub fn run_lowering_pipeline(
 
     let manager = PassManager::new(context);
 
+    // Transform scripts, marshalled for the C API: every script file is
+    // preloaded into the context's transform library up front (one pass, all
+    // paths), then each anchor with at least one script runs the interpreter
+    // with that anchor's `__reussir_anchor_<name>` entry point. The `String`s
+    // must stay alive until the factories below have copied them.
+    let script_paths: Vec<String> = options
+        .transform_scripts
+        .iter()
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+        .collect();
+    let script_refs: Vec<sys::mlir_sys::MlirStringRef> =
+        script_paths.iter().map(|s| string_ref(s)).collect();
+    let at_anchor = |anchor: Anchor| options.transform_scripts.iter().any(|(a, _)| *a == anchor);
+
     lowering_pipeline!(manager,
+        if !script_refs.is_empty() => {
+            module: sys::reussirCreateTransformPreloadLibraryPass(
+                script_refs.as_ptr(),
+                script_refs.len() as isize,
+            );
+        }
+
+        // `entry` anchor: pure reussir-dialect IR straight from codegen,
+        // before any Reussir pass.
+        if at_anchor(Anchor::Entry) => {
+            module: sys::reussirCreateTransformInterpreterPass(
+                string_ref(Anchor::Entry.entry_point()),
+            );
+        }
+
         // Nullary variants of shared rc-boxed enums become tagged pointer
         // immediates. Must run before any uniqueness/token pass so no
         // provenance or allocation token is ever attached to a rewritten
@@ -245,6 +342,17 @@ pub fn run_lowering_pipeline(
         func:   sys::reussirCreateRcCreateFusionPass();
         module: sys::reussirCreateTRMCRecursionAnalysisPass();
         module: sys::reussirCreateCompilePolymorphicFFIPass(false);
+
+        // `kernel` anchor: the Reussir-level work is done (both
+        // scf-ops-lowering runs, FFI compiled) and the LLVM descent has not
+        // begun — array kernels are plain memref/scf/arith loop nests, the
+        // transform dialect's home turf. Runs before the invariant analysis
+        // so that pass sees the scheduled IR.
+        if at_anchor(Anchor::Kernel) => {
+            module: sys::reussirCreateTransformInterpreterPass(
+                string_ref(Anchor::Kernel.entry_point()),
+            );
+        }
 
         if options.enable_invariant_analysis => {
             func: sys::reussirCreateInvariantGroupAnalysisPass();
@@ -300,5 +408,119 @@ mod tests {
         // After lowering, the function is an llvm.func rather than a func.func.
         let rendered = module.as_operation().to_string();
         assert!(rendered.contains("llvm.func @answer"), "got:\n{rendered}");
+    }
+
+    // A loop-nest kernel of the shape the `kernel` anchor guarantees: by the
+    // time the anchor runs, this function is untouched memref/scf/arith IR.
+    const SUM_KERNEL: &str = r#"
+        module {
+          func.func @sum(%a: memref<4xi64>) -> i64 {
+            %c0 = arith.constant 0 : index
+            %c1 = arith.constant 1 : index
+            %c4 = arith.constant 4 : index
+            %zero = arith.constant 0 : i64
+            %r = scf.for %i = %c0 to %c4 step %c1
+                iter_args(%acc = %zero) -> (i64) {
+              %v = memref.load %a[%i] : memref<4xi64>
+              %s = arith.addi %acc, %v : i64
+              scf.yield %s : i64
+            }
+            func.return %r : i64
+          }
+        }
+    "#;
+
+    // Writes `script` to an auto-cleaned file and returns the handle; the
+    // preload pass reads the script from disk by path.
+    fn script_file(script: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut file = tempfile::Builder::new()
+            .suffix(".transform.mlir")
+            .tempfile()
+            .expect("temp script file");
+        file.write_all(script.as_bytes()).expect("write script");
+        file
+    }
+
+    #[test]
+    fn kernel_anchor_script_schedules_the_loop() {
+        let context = crate::context();
+        let mut module = Module::parse(&context, SUM_KERNEL).expect("module should parse");
+
+        // Fully unroll the 4-trip loop at the kernel anchor.
+        let script = script_file(
+            r#"
+            module attributes {transform.with_named_sequence} {
+              transform.named_sequence @__reussir_anchor_kernel(
+                  %m: !transform.any_op {transform.readonly}) {
+                %loops = transform.structured.match ops{["scf.for"]} in %m
+                    : (!transform.any_op) -> !transform.op<"scf.for">
+                transform.loop.unroll %loops { factor = 4 } : !transform.op<"scf.for">
+                transform.yield
+              }
+            }
+            "#,
+        );
+        let options = LoweringOptions {
+            transform_scripts: vec![(Anchor::Kernel, script.path().to_path_buf())],
+            ..LoweringOptions::default()
+        };
+        run_lowering_pipeline(&context, &mut module, &options).expect("pipeline should succeed");
+
+        assert!(module.as_operation().verify());
+        // The unrolled (and then canonicalized) loop is straight-line code:
+        // four loads and no back edge.
+        let rendered = module.as_operation().to_string();
+        assert_eq!(
+            rendered.matches("llvm.load").count(),
+            4,
+            "expected the loop fully unrolled, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("llvm.br"),
+            "expected no loop back edge after full unroll, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn scriptless_options_add_no_transform_passes() {
+        // The baseline pipeline must not observe the transform machinery at
+        // all when no script is given — same behaviour as before the anchors
+        // existed, kernel loop intact.
+        let context = crate::context();
+        let mut module = Module::parse(&context, SUM_KERNEL).expect("module should parse");
+        run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
+            .expect("pipeline should succeed");
+        let rendered = module.as_operation().to_string();
+        assert_eq!(
+            rendered.matches("llvm.load").count(),
+            1,
+            "expected the loop untouched, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn script_missing_anchor_entry_point_fails_cleanly() {
+        // A script that never defines the anchor's entry point is a pipeline
+        // error (the interpreter cannot resolve `__reussir_anchor_kernel`),
+        // not a silent no-op and not a crash.
+        let context = crate::context();
+        let mut module = Module::parse(&context, SUM_KERNEL).expect("module should parse");
+        let script = script_file(
+            r#"
+            module attributes {transform.with_named_sequence} {
+              transform.named_sequence @some_other_sequence(
+                  %m: !transform.any_op {transform.readonly}) {
+                transform.yield
+              }
+            }
+            "#,
+        );
+        let options = LoweringOptions {
+            transform_scripts: vec![(Anchor::Kernel, script.path().to_path_buf())],
+            ..LoweringOptions::default()
+        };
+        run_lowering_pipeline(&context, &mut module, &options)
+            .expect_err("missing entry point should fail the pipeline");
     }
 }
