@@ -25,7 +25,6 @@ set(REUSSIR_BACKEND_CARGO_ENV
     # include directory is correct.
     MLIR_SYS_210_PREFIX=${REUSSIR_LLVM_PREFIX}
     TABLEGEN_220_PREFIX=${REUSSIR_TABLEGEN_PREFIX}
-    LLVM_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
     # `llvm-sys` 221 (the shared LLVM-IR boundary: translate, the backend LLVM
     # pipeline, polyffi gather/link) discovers LLVM through the 221 variable.
     LLVM_SYS_221_PREFIX=${REUSSIR_LLVM_PREFIX}
