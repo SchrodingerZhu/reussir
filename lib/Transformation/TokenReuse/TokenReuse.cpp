@@ -13,6 +13,7 @@
 #include "Reussir/IR/ReussirInterfaces.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Support/AllocatorBinModel.h"
 
 #include <bit>
 #include <cstddef>
@@ -99,45 +100,6 @@ namespace reussir {
 // vector of operations where such changes are needed.
 
 namespace {
-static inline constexpr size_t MIN_ALLOC_STEP_SIZE = 2 * sizeof(void *);
-static inline constexpr size_t MIN_ALLOC_STEP_BITS =
-    std::countr_zero(MIN_ALLOC_STEP_SIZE);
-static inline constexpr size_t INTERMEDIATE_BITS = 2;
-size_t toExpMand(size_t value) {
-  auto oneAtBit = [](size_t bit) { return 1 << bit; };
-  constexpr size_t LEADING_BIT =
-      oneAtBit(INTERMEDIATE_BITS + MIN_ALLOC_STEP_BITS) >> 1;
-  constexpr size_t MANTISSA_MASK = oneAtBit(INTERMEDIATE_BITS) - 1;
-  constexpr size_t BITS = sizeof(size_t) * CHAR_BIT;
-
-  value = value - 1;
-
-  size_t e = BITS - INTERMEDIATE_BITS - MIN_ALLOC_STEP_BITS -
-             __builtin_clz(value | LEADING_BIT);
-  size_t b = (e == 0) ? 0 : 1;
-  size_t m = (value >> (MIN_ALLOC_STEP_BITS + e - b)) & MANTISSA_MASK;
-
-  return (e << INTERMEDIATE_BITS) + m;
-}
-// Guess if two tokens are in the same size class.
-// Computation logic is from SnMalloc, may not apply to other allocators.
-bool possiblyInplaceReallocable(size_t oldAlign, size_t oldSize,
-                                size_t newAlign, size_t newSize) {
-  if (oldAlign != newAlign)
-    return false;
-  auto alignedSize = [](size_t alignment, size_t size) {
-    return ((alignment - 1) | (size - 1)) + 1;
-  };
-  // Do not attempt reuse if data is likely managed via superslab.
-  constexpr size_t GB = 1024 * 1024 * 1024;
-  auto oldAlignedSize = alignedSize(oldAlign, oldSize);
-  auto newAlignedSize = alignedSize(newAlign, newSize);
-  if (oldAlignedSize >= GB || newAlignedSize >= GB)
-    return false;
-  auto oldExpMand = toExpMand(oldAlignedSize >> MIN_ALLOC_STEP_BITS);
-  auto newExpMand = toExpMand(newAlignedSize >> MIN_ALLOC_STEP_BITS);
-  return newExpMand == oldExpMand;
-}
 // heuristic < 0 : do not reuse at all
 // heuristic == 0: can reuse via realloc
 // heuristic > 0 : can reuse via ensure, larger is better
@@ -197,8 +159,7 @@ int hueristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
   size_t newSize = consumerType.getSize();
   size_t oldAlign = producedType.getAlign();
   size_t newAlign = consumerType.getAlign();
-  return possiblyInplaceReallocable(oldAlign, oldSize, newAlign, newSize) ? 0
-                                                                          : -1;
+  return sameAllocatorBin(oldAlign, oldSize, newAlign, newSize) ? 0 : -1;
 }
 
 struct ValueHash {

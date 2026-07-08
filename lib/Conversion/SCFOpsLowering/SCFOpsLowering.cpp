@@ -13,6 +13,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Support/AllocatorBinModel.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/SmallVector.h>
@@ -709,6 +710,68 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
   }
 };
 
+// Whether this realloc converts between layouts served from the same
+// allocator bin — the only shape TokenReuse emits since the bin model became
+// exact (#325). Such a realloc never moves: a non-null block already
+// satisfies the new layout in place, so the op expands to a null-dispatch
+// (launder | alloc) with no runtime realloc call. Cross-bin reallocs (user
+// IR) stay legal here and lower to `__reussir_reallocate` later.
+static bool isSameBinRealloc(ReussirTokenReallocOp op) {
+  TokenType newType = op.getRealloced().getType();
+  TokenType oldType;
+  if (auto nullable = mlir::dyn_cast<NullableType>(op.getToken().getType()))
+    oldType = mlir::cast<TokenType>(nullable.getPtrTy());
+  else
+    oldType = mlir::cast<TokenType>(op.getToken().getType());
+  return sameAllocatorBin(oldType.getAlign(), oldType.getSize(),
+                          newType.getAlign(), newType.getSize());
+}
+
+struct ReussirTokenReallocOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirTokenReallocOp> {
+  using OpConversionPattern::OpConversionPattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirTokenReallocOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (!isSameBinRealloc(op))
+      return mlir::failure();
+    TokenType newType = op.getRealloced().getType();
+    auto nullableType = mlir::dyn_cast<NullableType>(op.getToken().getType());
+    if (!nullableType) {
+      // Plain token: the block is already big enough — reuse it in place.
+      rewriter.replaceOpWithNewOp<ReussirTokenLaunderOp>(op, newType,
+                                                         op.getToken());
+      return mlir::success();
+    }
+    auto oldType = mlir::cast<TokenType>(nullableType.getPtrTy());
+    auto nullableDispatchOp = ReussirNullableDispatchOp::create(
+        rewriter, op.getLoc(), newType, op.getToken());
+    {
+      mlir::Block *nonNullBlock =
+          rewriter.createBlock(&nullableDispatchOp.getNonNullRegion(), {},
+                               oldType, {op.getLoc()});
+      rewriter.setInsertionPointToStart(nonNullBlock);
+      auto launderedToken = ReussirTokenLaunderOp::create(
+          rewriter, op.getLoc(), newType, nonNullBlock->getArgument(0));
+      mlir::scf::YieldOp::create(rewriter, op.getLoc(),
+                                 launderedToken->getResults());
+    }
+    {
+      mlir::Block *nullBlock =
+          rewriter.createBlock(&nullableDispatchOp.getNullRegion());
+      rewriter.setInsertionPointToStart(nullBlock);
+      auto allocatedToken =
+          ReussirTokenAllocOp::create(rewriter, op.getLoc(), newType);
+      mlir::scf::YieldOp::create(rewriter, op.getLoc(),
+                                 allocatedToken->getResults());
+    }
+    nullableDispatchOp->setAttr(REUSSIR_EXPANDED_ENSURE_ATTR,
+                                rewriter.getUnitAttr());
+    rewriter.replaceOp(op, nullableDispatchOp);
+    return mlir::success();
+  }
+};
+
 struct ReussirScfYieldOpRewritePattern
     : public mlir::OpConversionPattern<ReussirScfYieldOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -958,6 +1021,10 @@ struct SCFOpsLoweringPass
         [](ReussirArrayViewOp op) {
           return llvm::isa<mlir::MemRefType>(op.getView().getType());
         });
+    // Same-bin reallocs expand to a null-dispatch here (no runtime realloc
+    // call); cross-bin reallocs stay for the direct runtime-call lowering.
+    target.addDynamicallyLegalOp<ReussirTokenReallocOp>(
+        [](ReussirTokenReallocOp op) { return !isSameBinRealloc(op); });
     // A free of a still-nullable token must be null-guarded here; a free of a
     // plain token is legal and lowers to the runtime call directly.
     target.addDynamicallyLegalOp<ReussirTokenFreeOp>(
@@ -988,6 +1055,7 @@ void populateSCFOpsLoweringConversionPatterns(
            ReussirClosureUniqifyOpRewritePattern,
            ReussirArrayWithUniqueViewOpRewritePattern,
            ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
+           ReussirTokenReallocOpRewritePattern,
            ReussirNullableTokenFreeOpRewritePattern,
            ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
            ReussirStrStartWithOpRewritePattern>(patterns.getContext());
