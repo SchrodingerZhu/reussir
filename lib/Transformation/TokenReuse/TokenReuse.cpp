@@ -71,6 +71,11 @@ namespace reussir {
 //    Remove the selected token from the pool. Currently, we just iterate all
 //    the tokens to find the most suitable one.
 // 5. At `CallOpInterface` or `LoopLikeOpInterface`, we free all pending tokens.
+//    With `reuse-across-call`, non-tail calls stop flushing so tokens can feed
+//    acceptors after the call — but tail-positioned calls always flush: no
+//    acceptor can follow them, and a post-call free would break the tail call
+//    (stack overflow on deep recursion) and defer the release of every carried
+//    block until the whole callee subtree returns (#325 P8).
 //    (TODO: Exceptional/Early-Exit Regions do not exist in MLIR yet but
 //    maintainers are actively working on it. We need to monitor the progress.)
 // 6. At `RegionBranchInterface`, we continue on each nested branch and
@@ -228,6 +233,41 @@ getDfsOrder(const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder,
   return 0;
 }
 
+// A call sits in tail position when nothing observable runs after it on any
+// path to the function return: it immediately precedes its block terminator,
+// its results feed nothing but that terminator, and every enclosing region op
+// sits in tail position itself (loops never qualify — a call ending a loop
+// body resumes iteration, not the return). Tokens carried across such a call
+// can never be consumed afterwards — the only thing that could follow is
+// their `token.free`, which both keeps the frame alive (deep nbe-shaped
+// recursion overflows the default stack) and defers the release of every
+// carried block until after the whole callee subtree (peak live memory ~
+// doubles on allocation-dense evaluators). So the matcher must treat a
+// tail-positioned call as a flush point even with reuse-across-call enabled.
+bool isTailPositioned(mlir::Operation *op) {
+  while (true) {
+    mlir::Block *block = op->getBlock();
+    if (!block)
+      return false;
+    mlir::Operation *terminator = block->getTerminator();
+    if (op->getNextNode() != terminator)
+      return false;
+    for (mlir::OpResult res : op->getResults())
+      for (mlir::Operation *user : res.getUsers())
+        if (user != terminator)
+          return false;
+    mlir::Operation *parent = block->getParentOp();
+    if (!parent)
+      return false;
+    if (isa<mlir::FunctionOpInterface>(parent))
+      return terminator->hasTrait<mlir::OpTrait::ReturnLike>();
+    if (isa<mlir::LoopLikeOpInterface>(parent) ||
+        !isa<mlir::RegionBranchOpInterface>(parent))
+      return false;
+    op = parent;
+  }
+}
+
 // A member decrement expands *inside* its owner's expanded decrement: the
 // owner's unique branch releases its fields, so a pattern-destructured child
 // box dies — and yields its reuse token — two regions deep. That token's SSA
@@ -376,7 +416,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
 
     for (auto &op : region.front()) {
       if (isa<mlir::LoopLikeOpInterface>(op) ||
-          (!reuseAcrossCall && isa<mlir::CallOpInterface>(op))) {
+          (isa<mlir::CallOpInterface>(op) &&
+           (!reuseAcrossCall || isTailPositioned(&op)))) {
         mlir::func::CallOp funcCall = llvm::dyn_cast<mlir::func::CallOp>(op);
         // skip intrinsic calls
         if (!funcCall ||

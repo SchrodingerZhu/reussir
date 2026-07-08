@@ -1,0 +1,45 @@
+// RUN: %rrc %s -o %t.o --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %t.o %S/reuse_across_call_tail_stack.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// Deep tail recursion where the dead box's token is consumed by a create on
+// one sibling path but left pending on the other, which ends in a tail call.
+// The sibling consumption keeps the token's SSA value used, so the free
+// cannot be sunk into the decrement's unique branch (the P1 rescue); with
+// --reuse-across-call the matcher used to leave that free *after* the tail
+// call, breaking the tail-call shape — tens of millions of frames overflow
+// the default stack (#325 P8). Tail-positioned calls must flush pending
+// tokens before the call so the recursion lowers to a loop. This test
+// intentionally runs at the default stack size — do not raise RLIMIT_STACK.
+
+enum Node {
+    Big(i64, i64, i64),
+    Nil
+}
+
+fn spin(n: Node, depth: i64) -> i64 {
+    match n {
+        Node::Big(a, _, _) =>
+            if a % 2 == 0 {
+                // Consumes the dead `Big` token: same-typed create right
+                // before the call.
+                spin(Node::Big{a - 1, 0, 0}, depth)
+            } else {
+                // No acceptor on this path: the token is pending across a
+                // tail-positioned call (`Nil` is a tagged immediate).
+                spin(Node::Nil, depth)
+            },
+        Node::Nil =>
+            if depth <= 0 {
+                0
+            } else {
+                spin(Node::Big{depth * 2, 0, 0}, depth - 1)
+            }
+    }
+}
+
+fn tail_spin(depth: i64) -> i64 {
+    spin(Node::Nil, depth)
+}
+
+extern "C" trampoline "tail_spin_ffi" = tail_spin;
