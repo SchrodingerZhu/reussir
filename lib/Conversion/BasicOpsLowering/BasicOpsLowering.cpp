@@ -224,6 +224,32 @@ mlir::Value guardedAddr(mlir::Operation *op, mlir::Value isTagged,
   return mlir::LLVM::SelectOp::create(builder, loc, isTagged, scratch, addr);
 }
 
+// Skip a guarded refcount store entirely behind an unlikely branch. The
+// select-steered form makes the store *address* data-depend on the freshly
+// loaded count, so the store — and everything queued behind it — serializes
+// against the load on every rc op (measured: IPC halves on nbe-shaped
+// traversals, #325). A predicted-not-taken branch turns that data dependency
+// into a control dependency the core speculates past, and skipping the store
+// outright also means the dummy box is never written: no scratch word, no
+// wrap-around accounting on this path.
+void emitGuardedStore(mlir::ConversionPatternRewriter &rewriter,
+                      mlir::Location loc, mlir::Value value, mlir::Value addr,
+                      mlir::Value skipCond) {
+  mlir::Block *condBlock = rewriter.getInsertionBlock();
+  mlir::Block *contBlock =
+      rewriter.splitBlock(condBlock, rewriter.getInsertionPoint());
+  mlir::Block *storeBlock = rewriter.createBlock(
+      contBlock->getParent(), mlir::Region::iterator(contBlock));
+  rewriter.setInsertionPointToEnd(storeBlock);
+  mlir::LLVM::StoreOp::create(rewriter, loc, value, addr);
+  mlir::LLVM::BrOp::create(rewriter, loc, contBlock);
+  rewriter.setInsertionPointToEnd(condBlock);
+  auto condBr = mlir::LLVM::CondBrOp::create(rewriter, loc, skipCond,
+                                             contBlock, storeBlock);
+  condBr->setAttr("branch_weights", rewriter.getDenseI32ArrayAttr({1, 2000}));
+  rewriter.setInsertionPointToStart(contBlock);
+}
+
 void ensureRuntimeFunctions(mlir::ModuleOp module,
                             const mlir::LLVMTypeConverter &converter);
 
@@ -478,13 +504,15 @@ struct ReussirRcSetConversionPattern
             : adaptor.getRefCount();
     // `rc.set` is the one store that can lower a refcount, so it must not
     // reach the dummy box (its count would eventually decay to 1 and send an
-    // immediate down the unique branch). Steer a recognized-immediate access
-    // to the scratch word instead; the address select is off any result's
-    // critical path. TBI recognizes immediates by the pointer's top byte,
-    // the immortal encoding by the magnitude of the count being stored (the
-    // dummy's decremented count still clears the threshold: it starts at
-    // 3 * 2^(w-2) and never actually decreases, since this very steering
-    // keeps every decrementing store away from it).
+    // immediate down the unique branch). Skip a recognized-immediate store
+    // behind an unlikely branch: the dummy's count is then never written at
+    // all, and the store issues speculatively on the (overwhelmingly common)
+    // real-box path instead of address-depending on the loaded count. TBI
+    // recognizes immediates by the pointer's top byte, the immortal encoding
+    // by the magnitude of the count being stored (the dummy's decremented
+    // count still clears the threshold: it starts at 3 * 2^(w-2) and never
+    // actually decreases, since this very gating keeps every decrementing
+    // store away from it).
     TagEncoding encoding = specialPtrTagEncoding(op);
     if (encoding != TagEncoding::None &&
         op.getRcPtr().getType().mayCarrySpecialPointerTag()) {
@@ -495,7 +523,9 @@ struct ReussirRcSetConversionPattern
       } else {
         tagged = isImmortalCount(narrowCount, op.getLoc(), rewriter);
       }
-      addr = guardedAddr(op, tagged, addr, op.getLoc(), rewriter);
+      emitGuardedStore(rewriter, op.getLoc(), narrowCount, addr, tagged);
+      rewriter.eraseOp(op);
+      return mlir::success();
     }
     rewriter.replaceOpWithNewOp<mlir::LLVM::StoreOp>(op, narrowCount, addr);
     return mlir::success();
@@ -1256,13 +1286,18 @@ struct ReussirRcIncConversionPattern
                                              refcntPtr);
       auto newRefCnt = mlir::arith::AddIOp::create(rewriter, op.getLoc(),
                                                    countType, oldRefCnt, one);
-      mlir::Value storeAddr = refcntPtr;
       if (steerNarrowImmortal) {
+        // Same rationale as `rc.set`: skip the dummy's store behind an
+        // unlikely branch rather than address-selecting it into the scratch
+        // word, so the store doesn't data-depend on the loaded count.
         mlir::Value immortal =
             isImmortalCount(oldRefCnt, op.getLoc(), rewriter);
-        storeAddr = guardedAddr(op, immortal, refcntPtr, op.getLoc(), rewriter);
+        emitGuardedStore(rewriter, op.getLoc(), newRefCnt, refcntPtr,
+                         immortal);
+      } else {
+        mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt,
+                                    refcntPtr);
       }
-      mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt, storeAddr);
     } else {
       oldRefCnt = mlir::LLVM::AtomicRMWOp::create(
           rewriter, op.getLoc(), mlir::LLVM::AtomicBinOp::add, refcntPtr, one,

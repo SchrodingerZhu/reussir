@@ -8,12 +8,11 @@
 // 3 * 2^62 = 0xC000000000000000 for a 64-bit refcount word. Hot reads
 // (rc.fetch, rc.is_unique, record.tag) are plain loads; `rc.set` recognizes
 // a dummy by the magnitude of the stored count (>= 2^63; a real refcount
-// can never get there) and steers it to the scratch word.
+// can never get there) and skips it behind an unlikely branch.
 
 !list = !reussir.record<variant "List" {!reussir.record<compound "List.Cons" [value] {i64, !reussir.record<variant "List">}>, !reussir.record<compound "List.Nil" [value] {}>}>
 !rclist = !reussir.rc<!list>
 
-// CHECK-DAG: @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2 = internal global i64 0
 // CHECK-DAG: @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX = internal global [2 x i32] [i32 -1073741824, i32 1]
 module @test attributes { reussir.special_ptr_tag = "immortal", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
 
@@ -54,13 +53,16 @@ module @test attributes { reussir.special_ptr_tag = "immortal", dlti.dl_spec = #
 
   // The decrementing store: a count at or above 2^63 identifies a dummy
   // (its stored value is `immortal - 1`, still over the threshold), and the
-  // store is steered to the scratch word so the dummy never decays.
+  // store is skipped behind an unlikely branch so the dummy never decays —
+  // and the store no longer address-depends on the loaded count.
   // CHECK-LABEL: define void @set(ptr %0, i64 %1)
   // CHECK-NOT: lshr
   // CHECK: %[[NARROW:.+]] = trunc i64 %1 to i32
   // CHECK: %[[ISDUMMY:.+]] = icmp uge i32 %[[NARROW]], -2147483648
-  // CHECK: %[[ADDR:.+]] = select i1 %[[ISDUMMY]], ptr @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2, ptr %0
-  // CHECK: store i32 %[[NARROW]], ptr %[[ADDR]]
+  // CHECK: br i1 %[[ISDUMMY]], label %[[CONT:.+]], label %[[STORE:.+]], !prof
+  // CHECK: [[STORE]]:
+  // CHECK: store i32 %[[NARROW]], ptr %0
+  // CHECK: br label %[[CONT]]
   func.func @set(%rc: !rclist, %v: index) {
     reussir.rc.set(%rc : !rclist, %v : index)
     return
