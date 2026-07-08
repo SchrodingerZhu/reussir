@@ -110,13 +110,13 @@ unsafe extern "C" {
     pub fn reussirCreateSCFOpsLoweringPass() -> MlirPass;
     pub fn reussirCreateRcCreateSinkPass() -> MlirPass;
 
-    /// Encodes nullary variants of shared rc-boxed enums as tagged pointer
-    /// immediates (top byte = tag + 1) and stamps the module so the LLVM
-    /// lowering steers refcount stores away from the dummy boxes. Only added
-    /// when the scheme is enabled; `arch_independent` selects the encoding:
-    /// false = `tbi` (top-byte tag, aarch64), true = `immortal` (plain dummy
-    /// address with an immortal refcount, any target).
-    pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
+    /// Encodes nullary variants of shared rc-boxed enums as unboxed
+    /// immediates and stamps the module so the LLVM lowering steers the cold
+    /// refcount guards. Only added when the scheme is enabled; `encoding`
+    /// selects the representation: `tbi` (top-byte tag, aarch64), `immortal`
+    /// (plain dummy address with an immortal refcount, any target), or
+    /// `taggedbox` (Koka/Lean-style low-bit immediate, no dummy box).
+    pub fn reussirCreateSpecialPointerTagPass(encoding: MlirStringRef) -> MlirPass;
     pub fn reussirCreateRcDispatchFusionPass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;

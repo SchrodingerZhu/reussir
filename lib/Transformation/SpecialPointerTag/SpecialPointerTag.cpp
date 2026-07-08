@@ -85,7 +85,8 @@ struct SpecialPointerTagPass
   using Base::Base;
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
-    if (encoding != kSpecialPtrTagTBI && encoding != kSpecialPtrTagImmortal) {
+    if (encoding != kSpecialPtrTagTBI && encoding != kSpecialPtrTagImmortal &&
+        encoding != kSpecialPtrTagTaggedBox) {
       module.emitError("unknown special-pointer-tag encoding: ") << encoding;
       return signalPassFailure();
     }

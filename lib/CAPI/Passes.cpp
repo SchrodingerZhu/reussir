@@ -39,7 +39,6 @@
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/Transformation/Passes.h"
-#include "Reussir/Transformation/SpecialPointerTag.h"
 
 using namespace mlir;
 
@@ -86,10 +85,9 @@ MlirPass reussirCreateInferVariantTagPass(void) {
 MlirPass reussirCreateSCFOpsLoweringPass(void) {
   return wrapOwned(reussir::createReussirSCFOpsLoweringPass());
 }
-MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent) {
+MlirPass reussirCreateSpecialPointerTagPass(MlirStringRef encoding) {
   reussir::ReussirSpecialPointerTagPassOptions options;
-  options.encoding = archIndependent ? reussir::kSpecialPtrTagImmortal.str()
-                                     : reussir::kSpecialPtrTagTBI.str();
+  options.encoding = unwrap(encoding).str();
   return wrapOwned(reussir::createReussirSpecialPointerTagPass(options));
 }
 

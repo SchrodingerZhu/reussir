@@ -26,14 +26,16 @@ def ReussirSpecialPointerTagPass
     shared rc-boxed enums into `reussir.rc.tagged` immediates pointing at
     per-tag dummy boxes (no allocation) and stamps the module with the
     chosen encoding so the LLVM lowering steers refcount stores away from
-    the dummy boxes on taggable types. Two encodings exist: `tbi` (top byte
-    = tag + 1; hard-depends on hardware top-byte-ignore, aarch64) and
-    `immortal` (plain dummy address with an immortal refcount; no
-    architectural dependency).
+    the dummy boxes on taggable types. Three encodings exist: `tbi` (top byte
+    = tag + 1; hard-depends on hardware top-byte-ignore, aarch64), `immortal`
+    (plain dummy address with an immortal refcount; no architectural
+    dependency), and `taggedbox` (PoC Koka/Lean-style low-bit immediate
+    `(tag << 1) | 1`; no dummy box, rc ops guard on the pointer's low bit).
   }];
   let options = [Option<"encoding", "encoding", "std::string",
                         /*default=*/"\"tbi\"",
-                        "Immediate encoding: 'tbi' or 'immortal'">];
+                        "Immediate encoding: 'tbi', 'immortal', or "
+                        "'taggedbox'">];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }
 

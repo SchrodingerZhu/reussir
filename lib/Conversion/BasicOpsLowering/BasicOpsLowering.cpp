@@ -113,7 +113,17 @@ namespace {
 // The only other guard is `rc.assume_unique`, which must neutralize its
 // assumption for immediates (an `assume(false)` would be unsound).
 
-enum class TagEncoding { None, TBI, Immortal };
+// TaggedBox (PoC, #325): the Koka/Lean low-bit convention. Unlike TBI and
+// Immortal, the immediate is *not* a dummy-box pointer — it is the pure
+// value `(tag << 1) | 1`, so it cannot be dereferenced. Every rc access
+// that would touch the box (fetch, set, inc, the variant-tag read,
+// uniqueness) first tests the pointer's low bit and, when set, skips the box
+// behind a predicted-not-taken branch (tag reads decode `imm >> 1`). This
+// trades the dummy-box's guard-free hot reads for a branch on every access,
+// but recognizes immediates with a cheap `and` instead of the immortal
+// encoding's count-magnitude load — the point of the experiment on targets
+// without TBI.
+enum class TagEncoding { None, TBI, Immortal, TaggedBox };
 
 // The immortal encoding's dummy refcount initializer and recognition
 // threshold for a `width`-bit refcount word.
@@ -131,8 +141,37 @@ TagEncoding specialPtrTagEncoding(mlir::Operation *op) {
   auto attr = module->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr);
   if (!attr)
     return TagEncoding::None;
-  return attr.getValue() == kSpecialPtrTagImmortal ? TagEncoding::Immortal
-                                                   : TagEncoding::TBI;
+  if (attr.getValue() == kSpecialPtrTagImmortal)
+    return TagEncoding::Immortal;
+  if (attr.getValue() == kSpecialPtrTagTaggedBox)
+    return TagEncoding::TaggedBox;
+  return TagEncoding::TBI;
+}
+
+// Whether `recordType` is a complete variant with at least one nullary arm
+// (an empty compound) — the shape whose constructions the special-pointer-tag
+// pass turns into immediates. A `record.tag` scrutinee of such a type may be
+// a low-bit tagged immediate under the TaggedBox encoding, so its tag read
+// must decode instead of loading. Mirrors RcType::mayCarrySpecialPointerTag's
+// arm scan (kept local: that predicate needs the RcType wrapper this site
+// does not have).
+bool variantMayBeTaggedImmediate(RecordType recordType) {
+  if (!recordType || !recordType.isVariant() || !recordType.getComplete())
+    return false;
+  // The low-bit decode reads the tag straight from the pointer, which only
+  // equals the raw immediate when the box IS its element (fused header, so
+  // rc.borrow is an offset-0 GEP). Non-fused taggable variants do not exist
+  // in the current scheme, but gate on it so the decode stays exact.
+  if (!recordType.hasFusedHeader())
+    return false;
+  for (auto [idx, member] : llvm::enumerate(recordType.getMembers())) {
+    if (idx + 1 > 0xFF)
+      break;
+    auto arm = llvm::dyn_cast<RecordType>(member);
+    if (arm && arm.isCompound() && arm.getMembers().empty())
+      return true;
+  }
+  return false;
 }
 
 // The per-tag dummy box a tagged immediate points at: `{refcount, tag}`,
@@ -215,6 +254,22 @@ mlir::Value isTaggedImmediate(mlir::Value topByte, mlir::Location loc,
                                     topByte, zero);
 }
 
+// `(ptr & 1) != 0` — the value is a TaggedBox low-bit immediate. Koka's
+// `kk_datatype_is_ptr` inverted: a real heap box is 8-byte aligned, so its
+// low bit is clear; a nullary immediate `(tag << 1) | 1` has it set.
+mlir::Value isLowBitTagged(mlir::Value ptr, mlir::Location loc,
+                           mlir::OpBuilder &builder) {
+  auto i64Ty = builder.getI64Type();
+  auto raw = mlir::LLVM::PtrToIntOp::create(builder, loc, i64Ty, ptr);
+  auto one = mlir::LLVM::ConstantOp::create(builder, loc, i64Ty,
+                                            builder.getI64IntegerAttr(1));
+  auto zero = mlir::LLVM::ConstantOp::create(builder, loc, i64Ty,
+                                             builder.getI64IntegerAttr(0));
+  auto masked = mlir::LLVM::AndOp::create(builder, loc, raw, one);
+  return mlir::LLVM::ICmpOp::create(builder, loc, mlir::LLVM::ICmpPredicate::ne,
+                                    masked, zero);
+}
+
 // Steer `addr` to the scratch word when `isTagged` holds.
 mlir::Value guardedAddr(mlir::Operation *op, mlir::Value isTagged,
                         mlir::Value addr, mlir::Location loc,
@@ -248,6 +303,34 @@ void emitGuardedStore(mlir::ConversionPatternRewriter &rewriter,
                                              contBlock, storeBlock);
   condBr->setAttr("branch_weights", rewriter.getDenseI32ArrayAttr({1, 2000}));
   rewriter.setInsertionPointToStart(contBlock);
+}
+
+// The read-side dual of `emitGuardedStore` for the TaggedBox encoding: yield
+// `sentinel` for a recognized low-bit immediate (whose pointer cannot be
+// dereferenced) and the loaded value otherwise, through a predicted-not-taken
+// branch rather than an address select. Used where the count would otherwise
+// be read off the (nonexistent) dummy box; `sentinel` must route the caller
+// to the shared/non-unique branch. Returns the merged value.
+mlir::Value emitGuardedLoad(mlir::ConversionPatternRewriter &rewriter,
+                            mlir::Location loc, mlir::Type resultTy,
+                            mlir::Value addr, mlir::Value skipCond,
+                            mlir::Value sentinel) {
+  mlir::Block *condBlock = rewriter.getInsertionBlock();
+  mlir::Block *contBlock =
+      rewriter.splitBlock(condBlock, rewriter.getInsertionPoint());
+  mlir::Value merged = contBlock->addArgument(resultTy, loc);
+  mlir::Block *loadBlock = rewriter.createBlock(
+      contBlock->getParent(), mlir::Region::iterator(contBlock));
+  rewriter.setInsertionPointToEnd(loadBlock);
+  mlir::Value loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultTy, addr);
+  mlir::LLVM::BrOp::create(rewriter, loc, loaded, contBlock);
+  rewriter.setInsertionPointToEnd(condBlock);
+  auto condBr = mlir::LLVM::CondBrOp::create(rewriter, loc, skipCond, contBlock,
+                                             mlir::ValueRange{sentinel},
+                                             loadBlock, mlir::ValueRange{});
+  condBr->setAttr("branch_weights", rewriter.getDenseI32ArrayAttr({1, 2000}));
+  rewriter.setInsertionPointToStart(contBlock);
+  return merged;
 }
 
 void ensureRuntimeFunctions(mlir::ModuleOp module,
@@ -471,12 +554,26 @@ struct ReussirRcFetchConversionPattern
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
             ->getIndexType();
     mlir::Location loc = op.getLoc();
-    // No guard for tagged immediates: TBI masks the top byte, so the load
-    // hits the dummy box's refcount, which is pinned >= 2 — exactly what
-    // routes the expanded decrement to its shared branch and answers
-    // `is_unique` with false (see the special-pointer-tag notes above).
-    mlir::Value loaded = mlir::LLVM::LoadOp::create(
-        rewriter, loc, rewriter.getI32Type(), adaptor.getRcPtr());
+    // No guard for the dummy-box encodings: TBI masks the top byte and the
+    // immortal address is real, so the load hits the dummy box's refcount,
+    // pinned >= 2 — exactly what routes the expanded decrement to its shared
+    // branch and answers `is_unique` with false. The TaggedBox immediate has
+    // no box, so its pointer cannot be loaded: guard the load and yield a
+    // sentinel `2` (>= 2, so the same shared-branch routing holds).
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    mlir::Value loaded;
+    if (encoding == TagEncoding::TaggedBox &&
+        op.getRcPtr().getType().mayCarrySpecialPointerTag()) {
+      mlir::Value tagged = isLowBitTagged(adaptor.getRcPtr(), loc, rewriter);
+      mlir::Value sentinel = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI32Type(),
+          rewriter.getI32IntegerAttr(2));
+      loaded = emitGuardedLoad(rewriter, loc, rewriter.getI32Type(),
+                               adaptor.getRcPtr(), tagged, sentinel);
+    } else {
+      loaded = mlir::LLVM::LoadOp::create(rewriter, loc, rewriter.getI32Type(),
+                                          adaptor.getRcPtr());
+    }
     mlir::Value widened =
         llvm::cast<mlir::IntegerType>(indexTy).getWidth() > 32
             ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, loaded)
@@ -520,6 +617,10 @@ struct ReussirRcSetConversionPattern
       if (encoding == TagEncoding::TBI) {
         mlir::Value top = topByteOf(addr, op.getLoc(), rewriter);
         tagged = isTaggedImmediate(top, op.getLoc(), rewriter);
+      } else if (encoding == TagEncoding::TaggedBox) {
+        // The immediate carries no box; recognize it by the low bit and skip
+        // the store (the address is not writable).
+        tagged = isLowBitTagged(addr, op.getLoc(), rewriter);
       } else {
         tagged = isImmortalCount(narrowCount, op.getLoc(), rewriter);
       }
@@ -1164,13 +1265,34 @@ struct ReussirRecordTagConversionPattern
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, tagField});
 
     // Load the tag value at the record's minimal tag width and widen it to
-    // the op's index result. Under the special-pointer-tag scheme a tagged
+    // the op's index result. Under the TBI/immortal schemes a tagged
     // immediate scrutinee needs no decode: the load lands in its per-tag
     // dummy box (TBI masks the top byte) and reads the real tag — so the
-    // match hot path is identical with and without the scheme.
+    // match hot path is identical with and without the scheme. Under
+    // TaggedBox there is no dummy box, so a low-bit immediate is decoded as
+    // `imm >> 1` behind a branch and only a real box is loaded.
     mlir::IntegerType tagType = recordType.getTagType();
-    mlir::Value narrowTag =
-        mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
+    mlir::Value narrowTag;
+    if (specialPtrTagEncoding(op) == TagEncoding::TaggedBox &&
+        variantMayBeTaggedImmediate(recordType)) {
+      auto i64Ty = rewriter.getI64Type();
+      mlir::Value raw = mlir::LLVM::PtrToIntOp::create(rewriter, loc, i64Ty,
+                                                       refPtr);
+      auto oneI64 = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, i64Ty, rewriter.getI64IntegerAttr(1));
+      mlir::Value shifted = mlir::LLVM::LShrOp::create(rewriter, loc, raw,
+                                                       oneI64);
+      mlir::Value decoded =
+          tagType.getWidth() < 64
+              ? mlir::LLVM::TruncOp::create(rewriter, loc, tagType, shifted)
+                    .getResult()
+              : shifted;
+      mlir::Value tagged = isLowBitTagged(refPtr, loc, rewriter);
+      narrowTag =
+          emitGuardedLoad(rewriter, loc, tagType, tagPtr, tagged, decoded);
+    } else {
+      narrowTag = mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
+    }
     mlir::Value tagValue =
         tagType.getWidth() <
                 llvm::cast<mlir::IntegerType>(indexType).getWidth()
@@ -1267,6 +1389,44 @@ struct ReussirRcIncConversionPattern
           rewriter, op.getLoc(), llvmPtrType, convertedBoxType,
           adaptor.getRcPtr(), llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
     }
+    auto countType = rewriter.getI32Type();
+    TagEncoding encoding = specialPtrTagEncoding(op);
+    // TaggedBox: the immediate has no box, so neither the count load nor its
+    // store may touch it. Skip the entire increment (load + add + store)
+    // behind a predicted-not-taken low-bit branch — Koka's `if (is_ptr) dup`.
+    // (mayCarrySpecialPointerTag implies a non-atomic normal box, so the
+    // atomic path below is never an immediate.)
+    if (encoding == TagEncoding::TaggedBox &&
+        rcPtrTy.mayCarrySpecialPointerTag() &&
+        rcPtrTy.getAtomicKind() == AtomicKind::normal) {
+      mlir::Value tagged =
+          isLowBitTagged(adaptor.getRcPtr(), op.getLoc(), rewriter);
+      mlir::Block *condBlock = rewriter.getInsertionBlock();
+      mlir::Block *contBlock =
+          rewriter.splitBlock(condBlock, rewriter.getInsertionPoint());
+      mlir::Block *incBlock = rewriter.createBlock(
+          contBlock->getParent(), mlir::Region::iterator(contBlock));
+      rewriter.setInsertionPointToEnd(incBlock);
+      auto one = mlir::arith::ConstantOp::create(
+          rewriter, op.getLoc(), mlir::IntegerAttr::get(countType, 1));
+      mlir::Value oldRefCnt = mlir::LLVM::LoadOp::create(
+          rewriter, op.getLoc(), countType, refcntPtr);
+      auto newRefCnt = mlir::arith::AddIOp::create(rewriter, op.getLoc(),
+                                                   countType, oldRefCnt, one);
+      mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt, refcntPtr);
+      mlir::Value geOne = mlir::LLVM::ICmpOp::create(
+          rewriter, op.getLoc(), mlir::LLVM::ICmpPredicate::uge, oldRefCnt, one);
+      mlir::LLVM::AssumeOp::create(rewriter, op.getLoc(), geOne);
+      mlir::LLVM::BrOp::create(rewriter, op.getLoc(), contBlock);
+      rewriter.setInsertionPointToEnd(condBlock);
+      auto condBr = mlir::LLVM::CondBrOp::create(rewriter, op.getLoc(), tagged,
+                                                 contBlock, incBlock);
+      condBr->setAttr("branch_weights",
+                      rewriter.getDenseI32ArrayAttr({1, 2000}));
+      rewriter.setInsertionPointToStart(contBlock);
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     // Usually no guard for tagged immediates: the increment lands on the
     // dummy box's refcount — a benign write that only ever grows it (rc.set,
     // the sole decrementing store, is steered away). The exception is the
@@ -1274,8 +1434,6 @@ struct ReussirRcIncConversionPattern
     // dummy could actually be grown past wrap-around within a program's
     // lifetime: there the increment's store is steered to the scratch word
     // instead (the load stays plain, so nothing on the read path changes).
-    auto countType = rewriter.getI32Type();
-    TagEncoding encoding = specialPtrTagEncoding(op);
     bool steerNarrowImmortal = encoding == TagEncoding::Immortal &&
                                rcPtrTy.mayCarrySpecialPointerTag();
     auto one = mlir::arith::ConstantOp::create(
@@ -1489,6 +1647,17 @@ struct ReussirRcTaggedConversionPattern
             ->getIndexType());
     mlir::Type ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     TagEncoding encoding = specialPtrTagEncoding(op);
+    // TaggedBox: no dummy box at all — the immediate is the pure value
+    // `(tag << 1) | 1` (Koka/Lean low-bit convention). All accesses through
+    // it are guarded by the low bit at their lowering sites.
+    if (encoding == TagEncoding::TaggedBox) {
+      uint64_t imm = (op.getTag().getZExtValue() << 1) | 1;
+      mlir::Value immVal = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, indexTy,
+          rewriter.getIntegerAttr(indexTy, static_cast<int64_t>(imm)));
+      rewriter.replaceOpWithNewOp<mlir::LLVM::IntToPtrOp>(op, ptrTy, immVal);
+      return mlir::success();
+    }
     auto dummy =
         tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
                     op.getTag().getZExtValue(), encoding, rewriter);
@@ -1981,6 +2150,7 @@ struct ReussirRcIsUniqueOpConversionPattern
                            mlir::Value rcPtr,
                            const mlir::TypeConverter *typeConverter,
                            mlir::ConversionPatternRewriter &rewriter,
+                           TagEncoding encoding = TagEncoding::None,
                            mlir::Value *outCount = nullptr) {
     RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
     auto convertedBoxType = typeConverter->convertType(rcBoxType);
@@ -1989,12 +2159,22 @@ struct ReussirRcIsUniqueOpConversionPattern
     auto refcntPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedBoxType, rcPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-    // No guard for tagged immediates: the load reads the dummy box's
-    // refcount, pinned above the unique/shared decision point, so
-    // uniqueness is naturally false there.
+    // No guard for the dummy-box encodings: the load reads the dummy box's
+    // refcount, pinned above the unique/shared decision point, so uniqueness
+    // is naturally false there. TaggedBox has no box, so guard the load and
+    // yield a sentinel `2` (!= 1, so not unique) for a low-bit immediate.
     auto countType = rewriter.getI32Type();
-    auto refcnt =
-        mlir::LLVM::LoadOp::create(rewriter, loc, countType, refcntPtr);
+    mlir::Value refcnt;
+    if (encoding == TagEncoding::TaggedBox &&
+        rcPtrTy.mayCarrySpecialPointerTag()) {
+      mlir::Value tagged = isLowBitTagged(rcPtr, loc, rewriter);
+      mlir::Value sentinel = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, countType, rewriter.getI32IntegerAttr(2));
+      refcnt =
+          emitGuardedLoad(rewriter, loc, countType, refcntPtr, tagged, sentinel);
+    } else {
+      refcnt = mlir::LLVM::LoadOp::create(rewriter, loc, countType, refcntPtr);
+    }
     if (outCount)
       *outCount = refcnt;
     auto one = mlir::arith::ConstantOp::create(
@@ -2009,7 +2189,8 @@ struct ReussirRcIsUniqueOpConversionPattern
                   mlir::ConversionPatternRewriter &rewriter) const override {
     RcType rcPtrTy = op.getRcPtr().getType();
     auto isUnique = buildUniquenessCondition(
-        op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(), rewriter);
+        op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(), rewriter,
+        specialPtrTagEncoding(op));
     rewriter.replaceOp(op, isUnique);
     return mlir::success();
   }
@@ -2022,23 +2203,25 @@ struct ReussirRcAssumeUniqueOpConversionPattern
   mlir::LogicalResult
   matchAndRewrite(ReussirRcAssumeUniqueOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    // NOTE: for a tagged immediate the condition reads the dummy box's
-    // refcount and is `false`; asserting `assume(false)` would be unsound,
-    // so neutralize the assumption on that path. TBI recognizes immediates
-    // by the pointer's top byte, the immortal encoding by the loaded
-    // count's magnitude.
+    // NOTE: for a tagged immediate the condition is `false` (or its load is
+    // skipped); asserting `assume(false)` would be unsound, so neutralize the
+    // assumption on that path. TBI recognizes immediates by the pointer's top
+    // byte, the immortal encoding by the loaded count's magnitude, TaggedBox
+    // by the pointer's low bit.
     RcType rcPtrTy = op.getRcPtr().getType();
     mlir::Value count;
+    TagEncoding encoding = specialPtrTagEncoding(op);
     mlir::Value isUnique =
         ReussirRcIsUniqueOpConversionPattern::buildUniquenessCondition(
             op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(),
-            rewriter, &count);
-    TagEncoding encoding = specialPtrTagEncoding(op);
+            rewriter, encoding, &count);
     if (encoding != TagEncoding::None && rcPtrTy.mayCarrySpecialPointerTag()) {
       mlir::Value tagged;
       if (encoding == TagEncoding::TBI) {
         mlir::Value top = topByteOf(adaptor.getRcPtr(), op.getLoc(), rewriter);
         tagged = isTaggedImmediate(top, op.getLoc(), rewriter);
+      } else if (encoding == TagEncoding::TaggedBox) {
+        tagged = isLowBitTagged(adaptor.getRcPtr(), op.getLoc(), rewriter);
       } else {
         tagged = isImmortalCount(count, op.getLoc(), rewriter);
       }

@@ -30,6 +30,15 @@ constexpr llvm::StringLiteral kSpecialPtrTagTBI = "tbi";
 /// value (2^62); guards test refcount magnitude instead of pointer bits.
 constexpr llvm::StringLiteral kSpecialPtrTagImmortal = "immortal";
 
+/// PoC (#325): Koka/Lean-style low-bit tagged immediate. A nullary variant
+/// is the pure value `(tag << 1) | 1` — no dummy box exists — so the
+/// immediate is *not* dereferenceable. Every rc op that would touch the box
+/// first tests the pointer's low bit and skips the box behind a
+/// predicted-not-taken branch; the variant tag is decoded as `imm >> 1`.
+/// Recognition is a cheap `and` rather than a load, mirroring Koka's
+/// `kk_datatype_is_ptr`. For targets without TBI (x86_64).
+constexpr llvm::StringLiteral kSpecialPtrTagTaggedBox = "taggedbox";
+
 } // namespace reussir
 
 #endif // REUSSIR_TRANSFORMATION_SPECIALPOINTERTAG_H

@@ -40,13 +40,14 @@ MlirPass reussirCreateInferVariantTagPass(void);
 MlirPass reussirCreateSCFOpsLoweringPass(void);
 MlirPass reussirCreateRcCreateSinkPass(void);
 
-/// Encodes nullary variants of shared rc-boxed enums as tagged pointer
-/// immediates (top byte = tag + 1) and stamps the module so the LLVM
-/// lowering steers refcount stores away from the dummy boxes. Add only when
-/// the scheme is enabled; `archIndependent` selects the encoding: false =
-/// `tbi` (top-byte tag, requires hardware top-byte-ignore, aarch64), true =
-/// `immortal` (plain dummy address with an immortal refcount, any target).
-MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
+/// Encodes nullary variants of shared rc-boxed enums as unboxed immediates
+/// and stamps the module so the LLVM lowering steers the cold refcount
+/// guards. Add only when the scheme is enabled; `encoding` selects the
+/// representation: `tbi` (top-byte tag, requires hardware top-byte-ignore,
+/// aarch64), `immortal` (plain dummy address with an immortal refcount, any
+/// target), or `taggedbox` (Koka/Lean-style low-bit immediate `(tag<<1)|1`,
+/// no dummy box; low-bit branch guards, for targets without TBI).
+MlirPass reussirCreateSpecialPointerTagPass(MlirStringRef encoding);
 MlirPass reussirCreateRcDispatchFusionPass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);

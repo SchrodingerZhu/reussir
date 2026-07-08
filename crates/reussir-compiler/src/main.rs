@@ -73,6 +73,13 @@ enum VariantEncoding {
     /// The immortal dummy-box encoding — no TBI/LAM pointer tricks, works
     /// on any target (including wasm32).
     ArchIndependent,
+    /// PoC (#325): Koka/Lean-style low-bit tagged immediate. A nullary
+    /// variant becomes the pure value `(tag << 1) | 1` — no dummy box at
+    /// all — and rc ops recognize it by testing the low bit, taking the
+    /// predicted-not-taken branch rather than the immortal encoding's
+    /// count-magnitude guard. Intended for targets without TBI (x86_64),
+    /// where it trades the immortal dummy-box reads for branchy tag decodes.
+    TaggedBox,
     /// Legacy heap-boxed layout; no immediates.
     Boxed,
 }
@@ -89,6 +96,7 @@ impl VariantEncoding {
                 }
             }
             VariantEncoding::ArchIndependent => NullaryVariantEncoding::Immortal,
+            VariantEncoding::TaggedBox => NullaryVariantEncoding::TaggedBox,
             VariantEncoding::Boxed => NullaryVariantEncoding::Boxed,
         }
     }
@@ -215,8 +223,10 @@ struct Cli {
     /// the arch-independent form. `arch-independent` uses no TBI/LAM-style
     /// pointer tricks on any target: the immediate is the dummy box address
     /// itself, with an immortal refcount — foreign code sees a
-    /// layout-compatible box. `boxed` keeps the legacy heap-boxed layout.
-    #[arg(long = "nullary-variant-encoding", value_enum,
+    /// layout-compatible box. `tagged-box` is a PoC Koka/Lean-style low-bit
+    /// immediate — `(tag << 1) | 1`, no dummy box, low-bit branch guards.
+    /// `boxed` keeps the legacy heap-boxed layout.
+    #[arg(long = "variant-encoding", value_enum,
           default_value_t = VariantEncoding::ArchDependent)]
     nullary_variant_encoding: VariantEncoding,
 

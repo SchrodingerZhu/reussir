@@ -66,6 +66,24 @@ pub enum NullaryVariantEncoding {
     /// dependency (works on any target, including wasm32); foreign code
     /// sees a layout-compatible box.
     Immortal,
+    /// PoC (#325): Koka/Lean-style low-bit tagged immediate `(tag << 1) | 1`.
+    /// No dummy box; rc ops recognize the immediate by testing the pointer's
+    /// low bit and skip the box behind a predicted-not-taken branch, and the
+    /// variant tag is decoded as `imm >> 1`. Targets without TBI (x86_64).
+    TaggedBox,
+}
+
+impl NullaryVariantEncoding {
+    /// The `reussir-special-pointer-tag` pass `encoding=` string for this
+    /// choice (only the immediate encodings; `Boxed` runs no pass).
+    fn pass_encoding(self) -> &'static str {
+        match self {
+            NullaryVariantEncoding::Boxed => "",
+            NullaryVariantEncoding::Tbi => "tbi",
+            NullaryVariantEncoding::Immortal => "immortal",
+            NullaryVariantEncoding::TaggedBox => "taggedbox",
+        }
+    }
 }
 
 /// A named interception point in the lowering pipeline where user-supplied
@@ -305,7 +323,7 @@ pub fn run_lowering_pipeline(
         // construction.
         if options.nullary_variant_encoding != NullaryVariantEncoding::Boxed => {
             module: sys::reussirCreateSpecialPointerTagPass(
-                options.nullary_variant_encoding == NullaryVariantEncoding::Immortal,
+                string_ref(options.nullary_variant_encoding.pass_encoding()),
             );
         }
 
