@@ -7,13 +7,13 @@
 // `{refcount = 2, tag}`. TBI makes loads through the tagged value land in
 // the dummy box, so the hot reads (rc.fetch, rc.is_unique, record.tag)
 // lower to plain loads with no immediate-check; only `rc.set` — the one
-// store that could decay the dummy's refcount to 1 — steers a tagged
-// access to the scratch word.
+// store that could decay the dummy's refcount to 1 — skips a tagged
+// access behind an unlikely branch (a select-steered store address would
+// data-depend on the count and serialize every rc op against its load).
 
 !list = !reussir.record<variant "List" {!reussir.record<compound "List.Cons" [value] {i64, !reussir.record<variant "List">}>, !reussir.record<compound "List.Nil" [value] {}>}>
 !rclist = !reussir.rc<!list>
 
-// CHECK-DAG: @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2 = internal global i64 0
 // CHECK-DAG: @_RNvC17REUSSIR_TAG_DUMMY43JTSaUNTZpqgb8a0JnRra5ebq8TvOJDFg1m5Smu4IYVX = internal global [2 x i32] [i32 2, i32 1]
 module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
 
@@ -53,15 +53,18 @@ module @test attributes { reussir.special_ptr_tag = "tbi", dlti.dl_spec = #dlti.
     return %tag : index
   }
 
-  // The decrementing store: a tagged access is steered to the scratch word
-  // so the dummy refcount can never decay below 2.
+  // The decrementing store: a tagged access skips the store entirely via an
+  // unlikely branch, so the dummy refcount is never written and can never
+  // decay below 2.
   // CHECK-LABEL: define void @set(ptr %0, i64 %1)
   // CHECK: %[[NARROW:.+]] = trunc i64 %1 to i32
   // CHECK: %[[INT:.+]] = ptrtoint ptr %0 to i64
   // CHECK: %[[TOP:.+]] = lshr i64 %[[INT]], 56
   // CHECK: %[[ISTAG:.+]] = icmp ne i64 %[[TOP]], 0
-  // CHECK: %[[ADDR:.+]] = select i1 %[[ISTAG]], ptr @_RNvC19REUSSIR_TAG_SCRATCH43DvQR3LzfbDLEt0P0zamCLh5N8ob8mGkcKPkikTHzGH2, ptr %0
-  // CHECK: store i32 %[[NARROW]], ptr %[[ADDR]]
+  // CHECK: br i1 %[[ISTAG]], label %[[CONT:.+]], label %[[STORE:.+]], !prof
+  // CHECK: [[STORE]]:
+  // CHECK: store i32 %[[NARROW]], ptr %0
+  // CHECK: br label %[[CONT]]
   func.func @set(%rc: !rclist, %v: index) {
     reussir.rc.set(%rc : !rclist, %v : index)
     return
