@@ -27,3 +27,9 @@ dist-*
 _codeql_detected_source_root
 node_modules
 *.vsix
+
+# Nix devShell auto-generated cmake preset (created by flake.nix shellHook)
+CMakeUserPresets.json
+
+# clangd symlink into build/
+/compile_commands.json
