@@ -44,6 +44,9 @@ jobs:
           CODENAME=$(lsb_release -cs)
           echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-${{ matrix.llvm-version }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
+          # Install LLVM/Clang toolchain. libpolly-*-dev provides the static
+          # Polly archives that llvm-config --link-static references (needed by
+          # mlir-sys / tblgen / llvm-sys).
           sudo apt-get install -y \
             clang-${{ matrix.llvm-version }} \
             lldb-${{ matrix.llvm-version }} \
@@ -52,7 +55,8 @@ jobs:
             libmlir-${{ matrix.llvm-version }}-dev \
             mlir-${{ matrix.llvm-version }}-tools \
             llvm-${{ matrix.llvm-version }}-dev \
-            llvm-${{ matrix.llvm-version }}-tools
+            llvm-${{ matrix.llvm-version }}-tools \
+            libpolly-${{ matrix.llvm-version }}-dev
           echo "LD_LIBRARY_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "LLVM_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-${{ matrix.llvm-version }}" >> $GITHUB_ENV
 

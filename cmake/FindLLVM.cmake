@@ -17,7 +17,7 @@ if(LLVM_PACKAGE_VERSION VERSION_LESS "22.0.0" OR
 endif()
 
 # Normalized install prefix exported for the Rust crates' cargo invocations
-# (MLIR_SYS_220_PREFIX / TABLEGEN_220_PREFIX / LLVM_SYS_220_PREFIX). LLVMConfig
+# (MLIR_SYS_220_PREFIX / TABLEGEN_220_PREFIX / LLVM_SYS_221_PREFIX). LLVMConfig
 # defines LLVM_INSTALL_PREFIX; fall back to the parent of the binary dir.
 if(DEFINED LLVM_INSTALL_PREFIX)
   set(REUSSIR_LLVM_PREFIX "${LLVM_INSTALL_PREFIX}")
