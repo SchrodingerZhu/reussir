@@ -128,7 +128,7 @@ bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
                                    const char *triple);
 
 // Stamps (or removes) the module unit attribute opting the compilation into
-// per-constructor variant box sizing (#325): boxed variant heap cells sized
+// per-constructor variant box sizing: boxed variant heap cells sized
 // for the constructed arm instead of the uniform max-arm width. Experimental
 // until the full landing plan (docs/design/per-constructor-box-sizing.md)
 // completes: with only the allocation side landed, a non-mimalloc allocator

@@ -113,6 +113,17 @@ namespace {
 // The only other guard is `rc.assume_unique`, which must neutralize its
 // assumption for immediates (an `assume(false)` would be unsound).
 
+// Whether `ty` is `nullable<token<align, ?>>` — a nullable dynamic token,
+// which lowers to a fat `{ptr, size}` struct rather than a bare
+// pointer, so nullable check/create must operate on the pointer field.
+inline bool isDynamicTokenNullable(mlir::Type ty) {
+  auto nullable = llvm::dyn_cast<NullableType>(ty);
+  if (!nullable)
+    return false;
+  auto token = llvm::dyn_cast<TokenType>(nullable.getPtrTy());
+  return token && token.isDynamicSize();
+}
+
 enum class TagEncoding { None, TBI, Immortal };
 
 // The immortal encoding's dummy refcount initializer and recognition
@@ -371,8 +382,9 @@ struct ReussirTokenFreeConversionPattern
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     ensureRuntimeFunctions(op->getParentOfType<mlir::ModuleOp>(), *converter);
 
-    // Get the token operand (already converted to LLVM pointer)
-    mlir::Value tokenPtr = adaptor.getToken();
+    // Get the token operand (already converted: a bare pointer for a static
+    // token, a fat `{ptr, size}` for a dynamic one).
+    mlir::Value tokenVal = adaptor.getToken();
 
     // Get the token type and extract alignment and size
     TokenType tokenType = llvm::dyn_cast<TokenType>(op.getToken().getType());
@@ -385,22 +397,32 @@ struct ReussirTokenFreeConversionPattern
       return op.emitOpError(
           "token operand must be of TokenType or NullableTokenType");
 
-    uint64_t alignment = tokenType.getAlign();
-    uint64_t size = tokenType.getSize();
     auto indexType = converter->getIndexType();
-
-    // Create constants for alignment and size
     auto alignConst = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, alignment));
-    auto sizeConst = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, size));
+        rewriter, loc, mlir::IntegerAttr::get(indexType, tokenType.getAlign()));
+
+    // The pointer and the (static or runtime) size to hand `deallocate`.
+    mlir::Value tokenPtr;
+    mlir::Value sizeVal;
+    if (tokenType.isDynamicSize()) {
+      // Fat token: pointer is field 0, the runtime size field 1.
+      tokenPtr = mlir::LLVM::ExtractValueOp::create(
+          rewriter, loc, tokenVal, llvm::ArrayRef<int64_t>{0});
+      sizeVal = mlir::LLVM::ExtractValueOp::create(
+          rewriter, loc, tokenVal, llvm::ArrayRef<int64_t>{1});
+    } else {
+      tokenPtr = tokenVal;
+      sizeVal = mlir::arith::ConstantOp::create(
+          rewriter, loc,
+          mlir::IntegerAttr::get(indexType, tokenType.getSize()));
+    }
 
     // Replace the original operation with the runtime function call
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
     auto deallocFunc =
         moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>("__reussir_deallocate");
     rewriter.replaceOpWithNewOp<mlir::LLVM::CallOp>(
-        op, deallocFunc, mlir::ValueRange{tokenPtr, alignConst, sizeConst});
+        op, deallocFunc, mlir::ValueRange{tokenPtr, alignConst, sizeVal});
 
     return mlir::success();
   }
@@ -427,9 +449,59 @@ struct ReussirRcReinterpretConversionPattern
   mlir::LogicalResult
   matchAndRewrite(ReussirRcReinterpretOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    // For reinterpret, we just use the input token directly since it's
-    // already converted to an LLVM pointer by the type converter
-    rewriter.replaceOp(op, adaptor.getRcPtr());
+    // A static token is the box pointer verbatim. A *dynamic* token
+    // (`token<align, ?>`, from an unpinned variant dec under per-constructor
+    // sizing) is a fat `{ptr, size}`: recover the exact size from the box's
+    // still-live fused tag (per-constructor box) so the later free /
+    // realloc pass an exact size on any allocator.
+    auto tokenType = llvm::dyn_cast<TokenType>(op.getReinterpreted().getType());
+    if (!tokenType || !tokenType.isDynamicSize()) {
+      rewriter.replaceOp(op, adaptor.getRcPtr());
+      return mlir::success();
+    }
+    auto converter =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+    mlir::Location loc = op.getLoc();
+    auto recordType =
+        llvm::cast<RecordType>(op.getRcPtr().getType().getElementType());
+    auto dataLayout = getDataLayout(*converter, op);
+    auto indexTy = converter->getIndexType();
+    auto i32Ty = rewriter.getI32Type();
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    mlir::Value box = adaptor.getRcPtr();
+    // Fused header `{i32 count, i32 tag}`: the tag is the second i32 word.
+    auto hdrTy = mlir::LLVM::LLVMArrayType::get(i32Ty, 2);
+    mlir::Value tagPtr = mlir::LLVM::GEPOp::create(
+        rewriter, loc, ptrTy, hdrTy, box,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
+    mlir::Value tag =
+        mlir::LLVM::LoadOp::create(rewriter, loc, i32Ty, tagPtr);
+    mlir::Value tagIdx = mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, tag);
+    // size = select over the arms; the fallback is unreachable (the tag is
+    // always in range) but keeps the chain total.
+    auto armConst = [&](size_t k) {
+      return mlir::LLVM::ConstantOp::create(
+          rewriter, loc, indexTy,
+          rewriter.getIntegerAttr(
+              indexTy, recordType.getVariantArmAllocSize(dataLayout, k)
+                           .getFixedValue()));
+    };
+    mlir::Value size = armConst(0);
+    for (size_t k = 1; k < recordType.getMembers().size(); ++k) {
+      mlir::Value isK = mlir::LLVM::ICmpOp::create(
+          rewriter, loc, mlir::LLVM::ICmpPredicate::eq, tagIdx,
+          mlir::LLVM::ConstantOp::create(rewriter, loc, indexTy,
+                                         rewriter.getIntegerAttr(indexTy, k)));
+      size = mlir::LLVM::SelectOp::create(rewriter, loc, isK, armConst(k), size);
+    }
+    // Assemble the fat `{ptr, size}` token.
+    mlir::Type fatTy = converter->convertType(tokenType);
+    mlir::Value fat = mlir::LLVM::UndefOp::create(rewriter, loc, fatTy);
+    fat = mlir::LLVM::InsertValueOp::create(rewriter, loc, fat, box,
+                                            llvm::ArrayRef<int64_t>{0});
+    fat = mlir::LLVM::InsertValueOp::create(rewriter, loc, fat, size,
+                                            llvm::ArrayRef<int64_t>{1});
+    rewriter.replaceOp(op, fat);
     return mlir::success();
   }
 };
@@ -539,26 +611,54 @@ struct ReussirTokenReallocConversionPattern
               llvm::report_fatal_error("Unexpected token type");
             });
     TokenType outputTokenType = op.getRealloced().getType();
-    size_t oldAlign = inputTokenType.getAlign();
-    size_t oldSize = inputTokenType.getSize();
-    size_t newAlign = outputTokenType.getAlign();
-    size_t newSize = outputTokenType.getSize();
     auto indexType = converter->getIndexType();
+    auto loc = op.getLoc();
+    // The old pointer and size: a dynamic token (`token<align, ?>`) is a fat
+    // `{ptr, size}` carrying its size at runtime; a static token is a bare
+    // pointer with a compile-time size.
+    mlir::Value tokenVal = adaptor.getToken();
+    mlir::Value oldPtr;
+    mlir::Value oldSizeVal;
+    if (inputTokenType.isDynamicSize()) {
+      oldPtr = mlir::LLVM::ExtractValueOp::create(
+          rewriter, loc, tokenVal, llvm::ArrayRef<int64_t>{0});
+      oldSizeVal = mlir::LLVM::ExtractValueOp::create(
+          rewriter, loc, tokenVal, llvm::ArrayRef<int64_t>{1});
+    } else {
+      oldPtr = tokenVal;
+      oldSizeVal = mlir::arith::ConstantOp::create(
+          rewriter, loc,
+          mlir::IntegerAttr::get(indexType, inputTokenType.getSize()));
+    }
     mlir::Value oldAlignVal = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, oldAlign));
-    mlir::Value oldSizeVal = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, oldSize));
+        rewriter, loc,
+        mlir::IntegerAttr::get(indexType, inputTokenType.getAlign()));
     mlir::Value newAlignVal = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, newAlign));
+        rewriter, loc,
+        mlir::IntegerAttr::get(indexType, outputTokenType.getAlign()));
     mlir::Value newSizeVal = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(), mlir::IntegerAttr::get(indexType, newSize));
+        rewriter, loc,
+        mlir::IntegerAttr::get(indexType, outputTokenType.getSize()));
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
     auto reallocFunc =
         moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>("__reussir_reallocate");
-    rewriter.replaceOpWithNewOp<mlir::LLVM::CallOp>(
-        op, reallocFunc,
-        mlir::ValueRange{adaptor.getToken(), oldAlignVal, oldSizeVal,
-                         newAlignVal, newSizeVal});
+    mlir::Value reallocated =
+        mlir::LLVM::CallOp::create(
+            rewriter, loc, reallocFunc,
+            mlir::ValueRange{oldPtr, oldAlignVal, oldSizeVal, newAlignVal,
+                             newSizeVal})
+            .getResult();
+    // Launder the result. The reallocated block holds a freshly constructed
+    // object; an LTO'd allocator fast path may return the identical pointer,
+    // so its stale invariant-group metadata must be stripped. The ptr-eq
+    // assume keeps alias/value propagation across the barrier (see the token
+    // launder lowering for the analysis).
+    mlir::Value laundered =
+        mlir::LLVM::LaunderInvariantGroupOp::create(rewriter, loc, reallocated);
+    mlir::Value ptrEq = mlir::LLVM::ICmpOp::create(
+        rewriter, loc, mlir::LLVM::ICmpPredicate::eq, laundered, reallocated);
+    mlir::LLVM::AssumeOp::create(rewriter, loc, ptrEq);
+    rewriter.replaceOp(op, laundered);
     return mlir::success();
   }
 };
@@ -1171,6 +1271,11 @@ struct ReussirNullableCheckConversionPattern
     mlir::Type llvmPtrType =
         mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     mlir::Value nullable = adaptor.getNullable();
+    // A nullable dynamic token (`token<align, ?>`,) lowers to a fat
+    // `{ptr, size}`; presence is the pointer field being non-null.
+    if (isDynamicTokenNullable(op.getNullable().getType()))
+      nullable = mlir::LLVM::ExtractValueOp::create(
+          rewriter, op.getLoc(), nullable, llvm::ArrayRef<int64_t>{0});
     mlir::Value nullConstant =
         mlir::LLVM::ZeroOp::create(rewriter, op.getLoc(), llvmPtrType);
     rewriter.replaceOpWithNewOp<mlir::LLVM::ICmpOp>(
@@ -1187,9 +1292,14 @@ struct ReussirNullableCreateConversionPattern
   matchAndRewrite(ReussirNullableCreateOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     // Check if the operation has input. If so, replace it directly with
-    // adaptor value. Otherwise, create a new null value.
+    // adaptor value. Otherwise, create a new null value. A nullable dynamic
+    // token is a fat `{ptr, size}` struct; its null is a zero struct
+    // (a null pointer field), not a bare null pointer.
     if (op.getPtr())
       rewriter.replaceOp(op, adaptor.getPtr());
+    else if (isDynamicTokenNullable(op.getResult().getType()))
+      rewriter.replaceOpWithNewOp<mlir::LLVM::ZeroOp>(
+          op, getTypeConverter()->convertType(op.getResult().getType()));
     else
       rewriter.replaceOpWithNewOp<mlir::LLVM::ZeroOp>(
           op, mlir::LLVM::LLVMPointerType::get(rewriter.getContext()));

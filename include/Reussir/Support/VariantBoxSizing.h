@@ -18,7 +18,7 @@
 namespace reussir {
 
 /// Module unit attribute opting the compilation into *per-constructor* box
-/// sizing (#325): a boxed variant's heap cell is sized for the constructed
+/// sizing: a boxed variant's heap cell is sized for the constructed
 /// arm (`header + arm[k]`) instead of the uniform max-arm width. Field
 /// offsets never move — the payload offset is derived from the variant-wide
 /// alignment, so per-arm sizing only drops the trailing padding up to the
@@ -42,6 +42,7 @@ inline bool perConstructorBoxSizing(mlir::Operation *op) {
   auto module = op->getParentOfType<mlir::ModuleOp>();
   return module && module->hasAttr(kPerConstructorBoxSizingAttr);
 }
+
 
 } // namespace reussir
 

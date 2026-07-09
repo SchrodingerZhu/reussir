@@ -1,98 +1,88 @@
-# Per-constructor variant box sizing (#325)
+# Per-constructor variant box sizing
 
-## Motivation (measured, 2026-07-08, x86_64 Ryzen 9950X)
+## Motivation (measured, x86_64 Ryzen 9950X)
 
-`nbe-closure` runs 1.74× slower than Koka at **fewer** executed instructions
-(0.67×) — the gap is memory stalls: 13× the LLC misses, IPC 2.3 vs 5.9.
-Padding Koka's constructors to Reussir's uniform 32-byte cells reproduced
-Reussir's misses (0.22M → 2.51M vs our 2.42M) and runtime (125 → 238ms vs
-our 224ms) almost exactly, so node size is causally ~the whole gap. Koka
-sizes each constructor individually (`Var`/`VVar` = 16B); Reussir boxes
-every variant at its max-arm width (32B), doubling the numerous leaf nodes.
-Ruled out by experiment: borrow inference (Koka has none — `^` is
-annotation-only and it dups `env` at fan-outs exactly like us), the
-immediate encoding (PR #359: TaggedBox tied immortal), reuse pairing (both
-compilers do size-keyed Perceus reuse), and allocation volume (+39% allocs
-= +5% time).
+`nbe-closure` ran ~1.74× slower than Koka at *fewer* executed instructions —
+the gap is memory stalls (13× the LLC misses, IPC 2.3 vs 5.9). Padding Koka's
+constructors to Reussir's uniform 32-byte cells reproduced Reussir's misses
+(0.22M → 2.51M vs our 2.42M) and runtime (125 → 238 ms vs our 224 ms) almost
+exactly, so node size is causally ~the whole gap. Koka sizes each constructor
+individually (`Var`/`VVar` = 16 B); Reussir boxed every variant at its
+max-arm width (32 B), doubling the numerous leaf nodes. (Ruled out by
+experiment: object algebra/footprint via Koka padding, the immediate encoding,
+borrow inference — Koka has none — and allocation *volume*.)
 
-## Design
+## What the feature does
 
-A boxed **fused-header** variant cell is sized `header + arm[k]` (its own
-immutable tag `k`) instead of `header + max(arms)`.
+A boxed **fused-header** variant cell is allocated `header + arm[k]` (its own
+constructed tag `k`) instead of `header + max(arms)`. Field offsets never
+move — the payload offset comes from the variant-wide alignment, so per-arm
+sizing only drops the trailing padding up to the max arm. Value (inline)
+variants stay uniform (they embed in other layouts). `nbe-closure` allocations
+go from `218× 32 B` to `77× 16 B + 140× 24 B + 4× 32 B`.
 
-* **Offsets never move.** The payload offset is a function of the
-  variant-wide alignment, which per-arm sizing keeps; only the trailing
-  padding up to the max arm is dropped. Every projection/load/store/tag
-  read is byte-identical, so record access lowering is untouched.
-* **Value (inline) variants stay uniform.** They embed in other layouts
-  (`ref.spilled`, `ref.memcpy`, array strides) and are never a heap cell.
-* **No unsized free / no `token<?>`.** Every free is downstream of a tag
-  discriminator: a tag-known dec (post-match, `reussir-infer-variant-tag`)
-  frees with the static per-arm size; a tag-unknown dec is pushed to the
-  outlined dtor whose per-arm switch (it must read the tag anyway to drop
-  fields) frees with that arm's constant — placed *after* the
-  special-pointer-tag immediate check. Works on caller-supplies-layout
-  allocators (wasm/talc), not just mimalloc.
-* **Reuse is untouched structurally.** `TokenReuse` pairs via
-  `sameAllocatorBin(old, new)`; per-arm sizes flow in as values and
-  cross-size pairings (16 ↮ 32) are refused automatically. NB: mimalloc has
-  no 24-byte bin (24 → 32), so the practical win is precisely the 16-byte
-  bin for one-word arms — the leaves the padding experiment indicted.
+Note the mimalloc bin geometry: 24 rounds up to the 32-byte bin, so the real
+cache win is the **16-byte bin for one-word arms** (`Var`/`VVar`); the 24-byte
+arms don't shrink their footprint until an 8-granular bin exists
+(`MI_MAX_ALIGN_SIZE=8`, a separate lever). On stock mimalloc this measured as a
+~1.10× win with the requested-size bookkeeping halved.
 
-**Invariant** (what the verifier + ASan gates enforce): for any boxed
-variant, `allocated size == token<> size == freed size == header + arm[k]`.
+## What "size" means, per allocator
 
-## Switch
+The shipping runtime is mimalloc behind a `GlobalAlloc` whose `dealloc`
+**ignores the layout** — `dealloc(ptr, _layout) { mi_free(ptr) }` — `mi_free`
+recovers the true block from mimalloc's own metadata. So the size passed to
+`__reussir_deallocate` is never used on mimalloc; per-constructor sizing needs
+only the *allocation* side to get the cache win there.
 
-Module unit attribute `reussir.per_constructor_box_sizing`
-(`include/Reussir/Support/VariantBoxSizing.h`), stamped by
-`rrc --variant-box-sizing=per-constructor` via
-`reussirModuleSetPerConstructorBoxSizing` /
-`pipeline::set_per_constructor_box_sizing`. Default `uniform`. An attribute
-(not dialect state) so lit tests opt in by writing it on the module.
+The exact free/realloc size matters only for a **size-strict** allocator (the
+wasm/talc future). To keep that path correct too, decrements track the size:
 
-## Landing plan — stacked PRs, each ~300–400 LOC, each targeting main
+- A decrement that knows its arm statically (a destructuring match, or the
+  tag pinned by `reussir-infer-variant-tag`) produces a token of that arm's
+  exact size.
+- An **unpinned** decrement of a non-uniform variant produces a **dynamic**
+  token, `token<align, ?>`. It lowers to a fat `{ptr, size}` pair: the size is
+  read at production from the box's still-live fused tag (a per-arm switch), so
+  free and realloc pass the exact runtime size on any allocator. A variant
+  whose arms are all one size stays a static token.
 
-1. **[this PR] Switch + arm-size helper + create-side + verifier.**
-   `RecordType::getVariantArmAllocSize(dataLayout, tag)` (variant-wide
-   alignment, arm-k payload); `ReussirRcCreateVariantOp::getTokenType()`
-   returns the per-arm token under the attribute (fused-header, complete,
-   non-regional only); `verifyRcCreateLikeOp` now checks the provided token
-   against the op's own `TokenAcceptor::getTokenType()` — the single source
-   of truth — so a wrong-size pairing is a *compile* error, not a heap
-   overflow. EXPERIMENTAL until step 2: allocation is per-arm but
-   tag-unknown frees still claim max-arm; safe only on mimalloc (free
-   ignores the stated size).
-2. **Free side.** (a) Tag-known decs: when `reussir-infer-variant-tag` (or
-   dispatch fusion) pinned the arm, `ReussirRcDecOp::getTokenType()`
-   returns the per-arm token so the unique-path
-   `rc.reinterpret → token.free` carries the right size. (b) Tag-unknown
-   decs: `AcquireDropExpansion`'s outlined dtor emits the per-arm constant
-   free in each switch arm, after the tagged-immediate guard. Gate: an
-   ASan-executing mixed-arm lit test driving both paths; wasm/talc
-   correctness run. **This is the highest-risk step; do not stack further
-   until ASan is green.**
-3. **Reuse + lowering audit.** Confirm `SCFOpsLowering`'s same-bin
-   `token.realloc` fast path keys on concrete arm sizes; lit-pin that a
-   16→32 pairing no longer fires while 32→32 still does; poison-reuse
-   guard uses the token size (already per-arm by construction).
-4. **Indirect producers.** Regional `rc.create*` (bump path in
-   `crates/reussir-rt/src/region/mod.rs` + `initializeRcCreateStorage`)
-   and TRMC constructor contexts (`cctx.extend/apply` hole allocation in
-   `TRMCRecursionAnalysis`) take the concrete arm size. `quote` is
-   TRMC-heavy and hot — measure before/after.
-5. **Validate + flip default.** Targets from the padding control:
-   nbe-closure LLC ~2.4M → ~0.2M, ~224 → ~130ms, RSS ~246 → ~155MB.
-   Measure the lost 16↔32 reuse pairings on the tree benches; full suite +
-   aarch64 + wasm; then flip `--variant-box-sizing` default and keep the
-   flag one release as escape hatch.
-6. **FFI marshalling** (separate): non-uniform + fused-header + tagged
-   layouts already rule out plain-cast FFI; generated marshalling is the
-   answer regardless.
+No unsized `dealloc` and no set-typed token were needed: the size is always
+recoverable — statically at a pinned dec, or carried in the fat token at an
+unpinned one.
 
-## Verified so far (PR 1)
+## Reuse
 
-Token instantiation on the mixed-arm probe:
-`Cons{i64, rc}` → `token<align 8, size 24>`, `Var{i64}` →
-`token<align 8, size 16>` with the attribute; both 24 without. Full lit
-suite green with the verifier now routed through `getTokenType()`.
+`TokenReuse` pairs a dead donor token with a construction. `token<?>` is a
+**universal fallback donor**: it can be resized to any acceptor at runtime via
+`token.realloc`. Scoring tiers (`hueristic`):
+
+- `>= 2` — exact static match → `token.ensure` (preferred; locality-scored).
+- `1` — a fixed-size donor in the same allocator bin → `token.realloc`.
+- `0` — a dynamic `token<?>` → `token.realloc` (fallback; used only when no
+  statically-sized donor fits).
+
+**Binning (`sameAllocatorBin`) is only a pairing heuristic** — it decides which
+donor to offer to which acceptor. It is *not* a lowering-correctness property,
+so it does not gate any lowering. `token.realloc` always lowers to
+`__reussir_reallocate` (a real resize) followed by an invariant-group
+**launder** of the result: an LTO'd allocator fast path may return the
+identical pointer, whose stale invariant-group metadata must be stripped; the
+ptr-eq assume keeps value propagation across the barrier. (`token.realloc`'s
+result is always a static token, so the launder applies to a bare pointer.)
+
+Follow-up: the reuse `realloc` copies the dead donor's contents when it
+relocates — wasted work. A no-copy resize is tracked in #362.
+
+## Status / follow-ups
+
+Landed: the switch (`reussir.per_constructor_box_sizing` module attr,
+`rrc --variant-box-sizing`), per-arm allocation, dynamic-token free, and
+`token<?>` fallback reuse. Sound (requested alloc/free sizes round-trip;
+executing gate `per_ctor_box_sizing_mixed_arms.rr` under both sizings).
+
+Remaining: regional `rc.create*` bump path; confirm TRMC constructor contexts
+(they already ride `rc.create_variant`, so per-arm); the 8-granular mimalloc
+bin to capture the 24-byte arms; measure the full suite + flip the default;
+generated FFI marshalling (the layout was never a plain cast, so non-uniform
+sizing doesn't move that goalpost).

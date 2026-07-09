@@ -1,25 +1,27 @@
 // RUN: %reussir-opt %s -reussir-lowering-scf-ops | %FileCheck %s
 
-// A same-bin token.realloc never moves — the non-null block already
-// satisfies the new layout in place — so it expands to a null-dispatch
-// (launder | alloc) with no runtime realloc call. Cross-bin reallocs keep
-// the op and lower to __reussir_reallocate later.
+// A `token.realloc` is a real resize between two distinct layouts. Whether
+// the two layouts share an allocator bin is only a *pairing heuristic* in
+// TokenReuse — it says nothing about whether the block can be relabeled in
+// place (that holds only on a bin allocator that ignores the free size). So
+// SCF lowering never elides a realloc: every one is left for the direct
+// `__reussir_reallocate` lowering, which resizes for real and is sound on
+// any allocator (mimalloc or a size-strict one alike).
 
 module @test {
+    // Same-bin (24 and 32 both in the 32-byte mimalloc bin): still a real
+    // realloc, not a launder.
     // CHECK-LABEL: @same_bin
-    // CHECK-NOT: reussir.token.realloc
-    // CHECK: scf.if
-    // CHECK: reussir.token.launder
-    // CHECK: reussir.token.alloc
+    // CHECK: reussir.token.realloc
+    // CHECK-NOT: reussir.token.launder
     func.func @same_bin(%t: !reussir.nullable<!reussir.token<align: 8, size: 24>>) -> !reussir.token<align: 8, size: 32> {
         %0 = reussir.token.realloc(%t : !reussir.nullable<!reussir.token<align: 8, size: 24>>) : !reussir.token<align: 8, size: 32>
         return %0 : !reussir.token<align: 8, size: 32>
     }
 
-    // A plain (non-nullable) same-bin token needs no dispatch at all.
     // CHECK-LABEL: @same_bin_plain
-    // CHECK-NOT: reussir.token.realloc
-    // CHECK: reussir.token.launder
+    // CHECK: reussir.token.realloc
+    // CHECK-NOT: reussir.token.launder
     func.func @same_bin_plain(%t: !reussir.token<align: 8, size: 24>) -> !reussir.token<align: 8, size: 32> {
         %0 = reussir.token.realloc(%t : !reussir.token<align: 8, size: 24>) : !reussir.token<align: 8, size: 32>
         return %0 : !reussir.token<align: 8, size: 32>
