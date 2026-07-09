@@ -171,6 +171,20 @@ impl Default for LoweringOptions {
 /// ABI alignment 4), so every size and alignment the pipeline computes —
 /// allocation sizes, spill alignments, load/store alignment annotations —
 /// understates the target.
+/// Stamps the module attribute opting the compilation into per-constructor
+/// variant box sizing (#325): boxed variant heap cells sized for the
+/// constructed arm (`header + arm[k]`) instead of the uniform max-arm
+/// width; field offsets are unchanged. Experimental until the landing plan
+/// (docs/design/per-constructor-box-sizing.md) completes — with only the
+/// allocation side landed, non-mimalloc allocators (wasm/talc) would see
+/// wrong-size frees. `rrc` exposes this as `--variant-box-sizing`; call
+/// before the lowering pipeline runs, like [`attach_target_spec`].
+pub fn set_per_constructor_box_sizing(module: &Module, enable: bool) {
+    // SAFETY: `module` is live for the call; the CAPI only sets/removes a
+    // module attribute.
+    unsafe { sys::reussirModuleSetPerConstructorBoxSizing(module.to_raw(), enable) }
+}
+
 pub fn attach_target_spec(module: &Module, data_layout: &str, triple: &str) -> Result<(), String> {
     let data_layout = std::ffi::CString::new(data_layout)
         .map_err(|_| "data layout contains a NUL byte".to_string())?;

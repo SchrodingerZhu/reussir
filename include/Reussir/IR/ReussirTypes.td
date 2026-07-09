@@ -143,6 +143,17 @@ def ReussirRecordType
         mlir::Type memberWithLargestAlignment;
       };
       LayoutInfo getElementRegionLayoutInfo(const mlir::DataLayout &dataLayout) const;
+      // Per-constructor box sizing (#325): the byte size a fused-header
+      // variant box needs when it is known to hold arm `tag` — the fused
+      // header plus that arm's storage, in place of the uniform max-arm
+      // size `getTypeSizeInBits/8` reports. The payload offset (and thus
+      // every field offset) is derived from the *variant-wide* alignment,
+      // identical to the uniform layout: per-arm sizing only drops the
+      // trailing padding up to the max arm. Callers gate on
+      // `kPerConstructorBoxSizingAttr` (Support/VariantBoxSizing.h); only
+      // valid on complete fused-header variants.
+      llvm::TypeSize getVariantArmAllocSize(const mlir::DataLayout &dataLayout,
+                                            size_t tag) const;
       // A shared/regional variant record carries a fused 8-byte box header:
       // `{4-byte count slot, i32 tag, payload}`. When rc-boxed, the box IS
       // the record — the refcount overlays the leading slot, so the rc

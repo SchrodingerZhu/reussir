@@ -77,6 +77,17 @@ enum VariantEncoding {
     Boxed,
 }
 
+/// CLI surface for the variant box-sizing contract (#325).
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum BoxSizing {
+    /// Every boxed variant cell is the max-arm width (the shipped layout
+    /// contract; any arm's block reuses for any other).
+    Uniform,
+    /// EXPERIMENTAL: each cell is sized for its constructed arm
+    /// (`header + arm[k]`); offsets unchanged, trailing padding dropped.
+    PerConstructor,
+}
+
 impl VariantEncoding {
     /// Resolves the CLI choice against the target `triple`.
     fn resolve(self, triple: &str) -> NullaryVariantEncoding {
@@ -219,6 +230,20 @@ struct Cli {
     #[arg(long = "nullary-variant-encoding", value_enum,
           default_value_t = VariantEncoding::ArchDependent)]
     nullary_variant_encoding: VariantEncoding,
+
+    /// How boxed enum variants size their heap cells. `uniform` (default,
+    /// the shipped layout contract) sizes every cell at the max-arm width,
+    /// so any arm's block can be reused for any other. `per-constructor`
+    /// (#325, EXPERIMENTAL — allocation-side only for now; requires the
+    /// bundled mimalloc runtime, whose free ignores the stated size) sizes
+    /// each cell for the constructed arm: `header + arm[k]`. Field offsets
+    /// are identical either way — per-constructor only drops the trailing
+    /// padding up to the max arm, shrinking leaf-heavy workloads' cache
+    /// footprint (nbe-closure: the 16-byte leaf arms double to 32 under
+    /// `uniform`, which measured as ~the whole gap vs Koka).
+    #[arg(long = "variant-box-sizing", value_enum,
+          default_value_t = BoxSizing::Uniform)]
+    variant_box_sizing: BoxSizing,
 
     /// Split codegen into this many units. Each function's body is emitted in
     /// exactly one unit (a stable hash of its mangled symbol picks which);
@@ -583,6 +608,10 @@ fn backend_module(
     // real target sizes and alignments.
     let machine = TargetMachine::new(spec, opt, reloc)?;
     pipeline::attach_target_spec(&module, machine.data_layout(), machine.triple())?;
+    pipeline::set_per_constructor_box_sizing(
+        &module,
+        cli.variant_box_sizing == BoxSizing::PerConstructor,
+    );
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
