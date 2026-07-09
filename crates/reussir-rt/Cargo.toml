@@ -14,12 +14,12 @@ smallvec = "1.15.1"
 stacker.workspace = true
 
 [features]
-default = ["mimalloc-v3"]
+default = ["mimalloc-v2"]
 snmalloc = ["snmalloc-rs"]
 # `mimalloc` is the version-neutral gate the code checks; select the bundled
 # mimalloc major through one of the versioned features (with
-# --no-default-features). v3 (default) has the reworked page management and
-# lower fragmentation; v2 is the stable line. Both share the bin geometry
+# --no-default-features). v2 (default) is the stable line; v3 has the
+# reworked page management and lower fragmentation. Both share the bin geometry
 # that include/Reussir/Support/AllocatorBinModel.h models (verified by
 # probing mi_usable_size on both), so the compiler-side size-class contract
 # holds for either.
