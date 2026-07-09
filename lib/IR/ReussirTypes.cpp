@@ -799,12 +799,44 @@ TokenType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
 
-  if (size % align != 0) {
+  // A dynamic token (`size: ?`) carries its size at runtime; the multiple-of
+  // alignment invariant is still met by every concrete arm size it may hold.
+  if (size != TokenType::kDynamicSize && size % align != 0) {
     emitError() << "Token size must be a multiple of alignment";
     return mlir::failure();
   }
   return mlir::success();
 }
+
+//===----------------------------------------------------------------------===//
+// TokenType assembly: `<align : N, size : (M | ?)>`
+//===----------------------------------------------------------------------===//
+mlir::Type TokenType::parse(mlir::AsmParser &parser) {
+  size_t align = 0;
+  if (parser.parseLess() || parser.parseKeyword("align") ||
+      parser.parseColon() || parser.parseInteger(align) ||
+      parser.parseComma() || parser.parseKeyword("size") || parser.parseColon())
+    return {};
+  size_t size = 0;
+  if (mlir::succeeded(parser.parseOptionalQuestion()))
+    size = kDynamicSize;
+  else if (parser.parseInteger(size))
+    return {};
+  if (parser.parseGreater())
+    return {};
+  return getChecked([&] { return parser.emitError(parser.getNameLoc()); },
+                    parser.getContext(), align, size);
+}
+
+void TokenType::print(mlir::AsmPrinter &printer) const {
+  printer << "<align : " << getAlign() << ", size : ";
+  if (isDynamicSize())
+    printer << "?";
+  else
+    printer << getSize();
+  printer << ">";
+}
+
 //===----------------------------------------------------------------------===//
 // TokenType DataLayoutInterface
 //===----------------------------------------------------------------------===//

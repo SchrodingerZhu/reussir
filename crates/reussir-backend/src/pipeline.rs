@@ -172,7 +172,7 @@ impl Default for LoweringOptions {
 /// allocation sizes, spill alignments, load/store alignment annotations —
 /// understates the target.
 /// Stamps the module attribute opting the compilation into per-constructor
-/// variant box sizing (#325): boxed variant heap cells sized for the
+/// variant box sizing: boxed variant heap cells sized for the
 /// constructed arm (`header + arm[k]`) instead of the uniform max-arm
 /// width; field offsets are unchanged. Experimental until the landing plan
 /// (docs/design/per-constructor-box-sizing.md) completes — with only the

@@ -105,9 +105,22 @@ private:
     }
     mlir::Value loaded =
         ReussirRefLoadOp::create(rewriter, op.getLoc(), rcType, op.getRef());
-    ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType, loaded,
-                           /*destructureTag=*/mlir::IntegerAttr{},
-                           /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+    auto dec = ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType,
+                                      loaded,
+                                      /*destructureTag=*/mlir::IntegerAttr{},
+                                      /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+    // This leaf member-decrement is created *after* token instantiation, so
+    // the max-arm token computed above never saw `getTokenType()` — the
+    // single source of truth for the box's per-constructor layout.
+    // An unpinned non-uniform variant needs the dynamic (runtime-sized)
+    // token, else every arm would free at the max-arm width (e.g. a 16-byte
+    // leaf freed at 32). Fix the result type to the authoritative one; the
+    // result has no users yet, so retyping in place is safe.
+    if (nullableType) {
+      TokenType correct = dec.getTokenType();
+      if (correct != llvm::cast<TokenType>(nullableType.getPtrTy()))
+        dec->getResult(0).setType(NullableType::get(op.getContext(), correct));
+    }
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -207,10 +220,19 @@ private:
         TokenType tokenType = TokenType::get(op.getContext(), align, size);
         retNullableTy = NullableType::get(op.getContext(), tokenType);
       }
-      ReussirRcDecOp::create(rewriter, op.getLoc(), retNullableTy,
-                                      nonNullBlock->getArgument(0),
-                             /*destructureTag=*/mlir::IntegerAttr{},
-                             /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+      auto dec = ReussirRcDecOp::create(rewriter, op.getLoc(), retNullableTy,
+                                        nonNullBlock->getArgument(0),
+                                        /*destructureTag=*/mlir::IntegerAttr{},
+                                        /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+      // Route through `getTokenType()` (the per-constructor source of truth,
+      //); the max-arm token above would free non-uniform arms at the
+      // wrong size. Result has no users yet — retyping in place is safe.
+      if (retNullableTy) {
+        TokenType correct = dec.getTokenType();
+        if (correct != llvm::cast<TokenType>(retNullableTy.getPtrTy()))
+          dec->getResult(0).setType(
+              NullableType::get(op.getContext(), correct));
+      }
       ReussirScfYieldOp::create(rewriter, op.getLoc(), nullptr);
     }
     rewriter.eraseOp(op);

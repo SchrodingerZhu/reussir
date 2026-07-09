@@ -77,7 +77,7 @@ enum VariantEncoding {
     Boxed,
 }
 
-/// CLI surface for the variant box-sizing contract (#325).
+/// CLI surface for the variant box-sizing contract.
 #[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
 enum BoxSizing {
     /// Every boxed variant cell is the max-arm width (the shipped layout
@@ -234,7 +234,7 @@ struct Cli {
     /// How boxed enum variants size their heap cells. `uniform` (default,
     /// the shipped layout contract) sizes every cell at the max-arm width,
     /// so any arm's block can be reused for any other. `per-constructor`
-    /// (#325, EXPERIMENTAL — allocation-side only for now; requires the
+    ///(EXPERIMENTAL — allocation-side only for now; requires the
     /// bundled mimalloc runtime, whose free ignores the stated size) sizes
     /// each cell for the constructed arm: `header + arm[k]`. Field offsets
     /// are identical either way — per-constructor only drops the trailing

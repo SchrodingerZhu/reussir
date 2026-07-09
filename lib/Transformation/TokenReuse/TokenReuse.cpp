@@ -100,17 +100,22 @@ namespace reussir {
 // vector of operations where such changes are needed.
 
 namespace {
-// heuristic < 0 : do not reuse at all
-// heuristic == 0: can reuse via realloc
-// heuristic > 0 : can reuse via ensure, larger is better
+// heuristic  < 0 : do not reuse at all
+// heuristic == 0 : reuse via realloc — dynamic token (`token<align, ?>`), a
+//                  universal fallback donor, resized at runtime
+// heuristic == 1 : reuse via realloc — a fixed-size token in the same
+//                  allocator bin (preferred over a dynamic donor)
+// heuristic >= 2 : reuse via ensure — an exact-size match, larger is better
+// (kReallocEnsureCutoff below is the boundary: < it lowers to realloc.)
 // TODO: consider appreantly non-exclusive cases.
+static constexpr int kReallocEnsureCutoff = 2;
 int hueristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
               TokenAcceptor consumer, mlir::AliasAnalysis &aliasAnalyzer) {
   // Under perfect match, we measure the locality score.
   if (producedType == consumer.getTokenType()) {
     ReussirRcCreateOp create =
         dyn_cast<ReussirRcCreateOp>(consumer.getOperation());
-    int localityScore = 1;
+    int localityScore = kReallocEnsureCutoff;
     // First, we do a very coarse grained copy avoidance analysis.
     if (producerRc && create &&
         mlir::isa<RecordType>(create.getRcPtr().getType().getElementType())) {
@@ -154,12 +159,20 @@ int hueristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
     }
     return localityScore;
   }
+  // A dynamic token (`token<align, ?>`, an unpinned variant decrement) can be
+  // resized to any acceptor at runtime via realloc — a universal *fallback*
+  // donor. It scores below both the ensure tier and the fixed-size same-bin
+  // realloc tier, so it is chosen only when no statically-sized donor fits.
+  if (producedType.isDynamicSize())
+    return 0;
   TokenType consumerType = consumer.getTokenType();
   size_t oldSize = producedType.getSize();
   size_t newSize = consumerType.getSize();
   size_t oldAlign = producedType.getAlign();
   size_t newAlign = consumerType.getAlign();
-  return sameAllocatorBin(oldAlign, oldSize, newAlign, newSize) ? 0 : -1;
+  // A fixed-size same-bin donor also reallocs, but is preferred over a
+  // dynamic one — score it one tier above.
+  return sameAllocatorBin(oldAlign, oldSize, newAlign, newSize) ? 1 : -1;
 }
 
 struct ValueHash {
@@ -461,7 +474,7 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                                       getDfsOrder(dfsOrder, bestToken)))) {
                 bestScore = score;
                 bestToken = tokenVal;
-                bestRealloc = (score == 0);
+                bestRealloc = (score < kReallocEnsureCutoff);
               }
             }
             if (auto scfIf = dyn_cast_or_null<mlir::scf::IfOp>(
@@ -486,7 +499,7 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                                         getDfsOrder(dfsOrder, bestToken)))) {
                   bestScore = score;
                   bestToken = tokenVal;
-                  bestRealloc = (score == 0);
+                  bestRealloc = (score < kReallocEnsureCutoff);
                 }
               }
             }

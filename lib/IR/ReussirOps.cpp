@@ -117,7 +117,7 @@ mlir::LogicalResult verifyRcCreateLikeOp(mlir::Operation *op, RcType rcType,
     return mlir::success();
 
   // The op's own `TokenAcceptor::getTokenType()` is the single source of
-  // truth for the box's layout — under per-constructor box sizing (#325) a
+  // truth for the box's layout — under per-constructor box sizing a
   // variant construction expects `header + arm[tag]`, not the uniform
   // max-arm width, and this check is what holds the
   // allocated == token == freed size invariant together.
@@ -291,11 +291,27 @@ mlir::LogicalResult ReussirRcReinterpretOp::verify() {
            << "token alignment: " << tokenType.getAlign()
            << ", RC box alignment: " << alignment;
 
-  // Check that token size matches RC box size
-  if (tokenType.getSize() != size)
+  // Check that token size matches RC box size. Under per-constructor box
+  // sizing a fused-header variant box may be any arm's cell: a
+  // destructuring dec reinterprets it at the statically known arm size, and
+  // an unpinned dec at a *dynamic* size (`token<align, ?>`) carried at
+  // runtime — accept both for such variants.
+  if (tokenType.getSize() != size) {
+    if (auto recordType =
+            llvm::dyn_cast<RecordType>(rcType.getElementType());
+        recordType && recordType.isVariant() && recordType.getComplete() &&
+        rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+      if (tokenType.isDynamicSize())
+        return mlir::success();
+      for (size_t tag = 0; tag < recordType.getMembers().size(); ++tag)
+        if (tokenType.getSize() ==
+            recordType.getVariantArmAllocSize(dataLayout, tag))
+          return mlir::success();
+    }
     return emitOpError("token size must match RC box size, ")
            << "token size: " << tokenType.getSize()
            << ", RC box size: " << size.getFixedValue();
+  }
 
   return mlir::success();
 }
@@ -341,24 +357,38 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
     return emitOpError("this RC decrement cannot produce a token");
   NullableType nullableType = getNullableToken().getType();
   TokenType tokenType = llvm::dyn_cast<TokenType>(nullableType.getPtrTy());
-  RcBoxType rcBoxType = RcType.getInnerBoxType();
   if (!tokenType)
     return emitOpError("nullable token must be of TokenType");
-  auto dataLayout = mlir::DataLayout::closest(getOperation());
-  auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  auto size = dataLayout.getTypeSize(rcBoxType);
-  if (!size.isFixed())
-    return emitOpError("managed type must have a fixed size");
-
-  if (tokenType.getAlign() != alignment)
+  // `getTokenType()` is the single source of truth for the box's layout.
+  // Under per-constructor box sizing a fused-header variant dec's
+  // token is valid at any of: the exact arm cell (a pinned/destructuring
+  // dec), the dynamic runtime size (`token<align, ?>`, an unpinned dec), or
+  // the uniform max-arm width — and a preceding inc/dec-cancellation may add
+  // or drop the destructuring tag after the token was typed, so accept the
+  // whole valid set rather than the single current `getTokenType()`.
+  TokenType expected = getTokenType();
+  if (tokenType.getAlign() != expected.getAlign())
     return emitOpError("token alignment must match managed type alignment, ")
            << "token alignment: " << tokenType.getAlign()
-           << ", element alignment: " << alignment;
+           << ", element alignment: " << expected.getAlign();
 
-  if (tokenType.getSize() != size)
+  if (tokenType.getSize() != expected.getSize()) {
+    auto dataLayout = mlir::DataLayout::closest(getOperation());
+    RcBoxType rcBoxType = RcType.getInnerBoxType();
+    if (auto recordType = llvm::dyn_cast<RecordType>(RcType.getElementType());
+        recordType && recordType.isVariant() && recordType.getComplete() &&
+        rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+      if (tokenType.isDynamicSize())
+        return mlir::success();
+      for (size_t tag = 0; tag < recordType.getMembers().size(); ++tag)
+        if (tokenType.getSize() ==
+            recordType.getVariantArmAllocSize(dataLayout, tag))
+          return mlir::success();
+    }
     return emitOpError("token size must match managed type size, ")
            << "token size: " << tokenType.getSize()
-           << ", element size: " << size.getFixedValue();
+           << ", element size: " << expected.getSize();
+  }
 
   return mlir::success();
 }
@@ -406,6 +436,39 @@ TokenType ReussirRcDecOp::getTokenType() {
   // Compute token type as in verify
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
+  // Per-constructor box sizing (module opt-in,). For a fused-header
+  // variant box, the unique-path token — the cell handed to reuse or freed —
+  // must match the arm actually allocated:
+  //   * a *destructuring* dec knows the arm the pattern match consumed, so
+  //     its token is that arm's exact per-constructor cell (static);
+  //   * any other variant dec cannot know the arm statically, so its token
+  //     has a *dynamic* size (`token<align, ?>`) carried at runtime — its
+  //     free/realloc read the exact size, sound on any allocator.
+  if (auto recordType = llvm::dyn_cast<RecordType>(rcType.getElementType());
+      recordType && recordType.isVariant() && recordType.getComplete() &&
+      rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+    if (isDestructuring()) {
+      llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
+          dataLayout, getDestructureTagAttr().getInt());
+      return TokenType::get(getContext(), alignment, armSize.getFixedValue());
+    }
+    // A variant whose arms are all the same size stays a *static* token even
+    // when unpinned: the max-arm size is exact for every arm, so it reuses
+    // and frees normally. Only a genuinely non-uniform variant needs the
+    // dynamic (runtime-carried) size.
+    uint64_t armSize0 =
+        recordType.getVariantArmAllocSize(dataLayout, 0).getFixedValue();
+    bool uniform = true;
+    for (size_t tag = 1, n = recordType.getMembers().size(); tag < n; ++tag)
+      if (recordType.getVariantArmAllocSize(dataLayout, tag).getFixedValue() !=
+          armSize0) {
+        uniform = false;
+        break;
+      }
+    if (uniform)
+      return TokenType::get(getContext(), alignment, armSize0);
+    return TokenType::getDynamic(getContext(), alignment);
+  }
   auto size = dataLayout.getTypeSize(rcBoxType);
 
   return TokenType::get(getContext(), alignment, size.getFixedValue());
@@ -450,6 +513,23 @@ TokenType ReussirRcCreateOp::getTokenType() {
                                   getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
+  // Per-constructor box sizing (module opt-in,): tokens are attached
+  // while constructions are still the unfused `rc.create(record.variant)`
+  // chain (RcCreateFusion runs after token instantiation and reuse), so
+  // the static arm is read off the variant producer: the box only needs
+  // `header + arm[tag]`. The fused `rc.create_variant` this later becomes
+  // reports the same size, keeping the token verifier's invariant.
+  if (auto recordType = llvm::dyn_cast<RecordType>(getValue().getType());
+      recordType && recordType.isVariant() && recordType.getComplete() &&
+      rcBoxType.isHeaderFused() && !getRegion() &&
+      perConstructorBoxSizing(getOperation())) {
+    if (auto variant = llvm::dyn_cast_if_present<ReussirRecordVariantOp>(
+            getValue().getDefiningOp())) {
+      llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
+          dataLayout, variant.getTag().getZExtValue());
+      return TokenType::get(getContext(), alignment, armSize.getFixedValue());
+    }
+  }
   auto size = dataLayout.getTypeSize(rcBoxType);
   return TokenType::get(getContext(), alignment, size.getFixedValue());
 }
@@ -597,7 +677,7 @@ TokenType ReussirRcCreateVariantOp::getTokenType() {
       RcBoxType::get(getContext(), elementType, getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  // Per-constructor box sizing (module opt-in, #325): a fused-header
+  // Per-constructor box sizing (module opt-in,): a fused-header
   // variant box IS its record, and this op constructs a statically known
   // arm — size the token for `header + arm[tag]` instead of the max-arm
   // width. Alignment (hence the payload offset and every field offset) is

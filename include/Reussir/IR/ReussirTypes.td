@@ -143,7 +143,7 @@ def ReussirRecordType
         mlir::Type memberWithLargestAlignment;
       };
       LayoutInfo getElementRegionLayoutInfo(const mlir::DataLayout &dataLayout) const;
-      // Per-constructor box sizing (#325): the byte size a fused-header
+      // Per-constructor box sizing: the byte size a fused-header
       // variant box needs when it is known to hold arm `tag` — the fused
       // header plus that arm's storage, in place of the uniform max-arm
       // size `getTypeSizeInBits/8` reports. The payload offset (and thus
@@ -190,13 +190,30 @@ def ReussirTokenType
           "token", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Memory Token";
   let description = [{
-    `reussir.token` represents a block of raw memory.
+    `reussir.token` represents a block of raw memory. Its `size` is normally a
+    compile-time constant (`token<align: 8, size: 24>`). Under per-constructor
+    box sizing an *unpinned* variant decrement cannot know its arm
+    statically, so its token has a **dynamic** size, written
+    `token<align: 16, size: ?>`: the size is carried at runtime. A dynamic
+    token lowers to a fat `{ptr, size}` pair (align stays static, from the
+    type) instead of a bare pointer, so its free and realloc pass the exact
+    runtime size — sound on any allocator, mimalloc or talc alike.
   }];
   let parameters = (ins "size_t":$align, "size_t":$size);
-  let assemblyFormat = [{
-    `<` `align` `:` $align `,`  `size` `:` $size `>`
-  }];
+  let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
+  let extraClassDeclaration = [{
+    // Sentinel `size` marking a runtime-carried (dynamic) token size. Chosen
+    // as the max representable size so it can never collide with a real
+    // allocation size and so type equality/hashing treat all dynamic tokens
+    // of a given alignment as one type.
+    static constexpr size_t kDynamicSize = ~size_t{0};
+    bool isDynamicSize() const { return getSize() == kDynamicSize; }
+    // A dynamic token of the given alignment.
+    static TokenType getDynamic(::mlir::MLIRContext *ctx, size_t align) {
+      return get(ctx, align, kDynamicSize);
+    }
+  }];
 }
 
 ///===----------------------------------------------------------------------===//
