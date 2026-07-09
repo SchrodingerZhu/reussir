@@ -15,7 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         llvm-version: [22]
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        # DISK-USAGE PROBE: scoped to the x86 runner that hit
+        # "No space left on device" during the rrc cargo test.
+        os: [ubuntu-24.04]
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -43,16 +45,16 @@ jobs:
         run: |
           # Add LLVM apt repository GPG key
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          
+
           # Get Ubuntu codename
           CODENAME=$(lsb_release -cs)
-          
+
           # Add LLVM apt repository with consistent suffix pattern
           echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-${{ matrix.llvm-version }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          
+
           # Update apt cache
           sudo apt-get update
-          
+
           # Install LLVM/Clang toolchain. libpolly-*-dev provides the static
           # Polly archives that llvm-config --link-static references (needed by
           # mlir-sys / tblgen / llvm-sys); libclang-*-dev provides libclang for
@@ -68,9 +70,21 @@ jobs:
             llvm-${{ matrix.llvm-version }}-dev \
             llvm-${{ matrix.llvm-version }}-tools \
             libpolly-${{ matrix.llvm-version }}-dev
-          
+
           echo "LD_LIBRARY_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "LLVM_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-${{ matrix.llvm-version }}" >> $GITHUB_ENV
+
+      # ------------------------------------------------------------------ probe
+      - name: "DISK 📊 baseline (after deps + LLVM, before build)"
+        if: always()
+        run: |
+          echo "===================== DISK: baseline ====================="
+          df -h /
+          echo "--- runner top-level (one filesystem, depth 1) ---"
+          sudo du -xh -d1 / 2>/dev/null | sort -rh | head -15 || true
+          echo "--- LLVM apt install size ---"
+          du -sh /usr/lib/llvm-${{ matrix.llvm-version }} 2>/dev/null || true
+      # ------------------------------------------------------------------------
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -96,24 +110,68 @@ jobs:
           -DMLIR_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/mlir
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          cmake --build build --parallel
+          echo "== DISK after C++ Build =="; df -h /
 
       - name: Run Unit Tests
         run: |
           cmake --build build --target reussir-ut
           ctest --test-dir build --output-on-failure
+          echo "== DISK after Unit Tests =="; df -h /
 
       - name: Run Integration Tests
-        run: cmake --build build --target check
+        run: |
+          cmake --build build --target check
+          echo "== DISK after Integration Tests =="; df -h /
 
       - name: Run Sanitizer Integration Tests
-        run: cmake --build build --target check-sanitizer
+        run: |
+          cmake --build build --target check-sanitizer
+          echo "== DISK after Sanitizer Tests (4 rt variants built) =="; df -h /
 
       - name: Build and Test reussir-backend
-        run: cmake --build build --target reussir-backend-test
+        run: |
+          cmake --build build --target reussir-backend-test
+          echo "== DISK after reussir-backend-test =="; df -h /
 
       - name: Build and Test reussir-codegen
-        run: cmake --build build --target reussir-codegen-test
+        run: |
+          cmake --build build --target reussir-codegen-test
+          echo "== DISK after reussir-codegen-test (right before rrc) =="; df -h /
 
       - name: Build and Test rrc
-        run: cmake --build build --target rrc-test
+        run: |
+          cmake --build build --target rrc-test
+          echo "== DISK after rrc-test =="; df -h /
+
+      # ------------------------------------------------------------ deep dive
+      - name: "DISK 📊 deep dive (final, runs even on failure)"
+        if: always()
+        run: |
+          echo "===================== DISK: final ====================="
+          df -h /
+          echo
+          echo "--- runner top-level (one filesystem, depth 1, top 15) ---"
+          sudo du -xh -d1 / 2>/dev/null | sort -rh | head -15 || true
+          echo
+          echo "--- known suspects (sorted) ---"
+          du -sh \
+            "$GITHUB_WORKSPACE/build" \
+            "$GITHUB_WORKSPACE/build/target" \
+            "$GITHUB_WORKSPACE/build/lib" \
+            "$GITHUB_WORKSPACE/build/.rustup" \
+            "$HOME/.cargo" \
+            "$HOME/.rustup" \
+            /usr/lib/llvm-${{ matrix.llvm-version }} \
+            2>/dev/null | sort -rh || true
+          echo
+          echo "--- build/ breakdown (depth 2, top 25) ---"
+          du -xh -d2 "$GITHUB_WORKSPACE/build" 2>/dev/null | sort -rh | head -25 || true
+          echo
+          echo "--- cargo target/release/deps: biggest 25 artifacts ---"
+          du -ah "$GITHUB_WORKSPACE/build/target/release/deps" 2>/dev/null | sort -rh | head -25 || true
+          echo
+          echo "--- sccache cache size ---"
+          du -sh "$HOME/.cache/sccache" 2>/dev/null || true
+      # ------------------------------------------------------------------------
