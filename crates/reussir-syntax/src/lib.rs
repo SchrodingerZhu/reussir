@@ -153,6 +153,8 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // `regional fn` is an item; any other `regional ...` is a region
         // expression.
         RegionalKw => p.nth(1) == FnKw,
+        // An outer attribute `#[...]` only ever heads an item.
+        Pound => true,
         _ => false,
     };
     if starts_item {

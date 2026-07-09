@@ -89,7 +89,8 @@ def ReussirRecordType
   let parameters = (ins OptionalArrayRefParameter<"mlir::Type">:$members,
       OptionalArrayRefParameter<"bool">:$memberIsField,
       OptionalParameter<"mlir::StringAttr">:$name, "bool":$complete,
-      "reussir::RecordKind":$kind, "reussir::Capability":$defaultCapability);
+      "reussir::RecordKind":$kind, "reussir::Capability":$defaultCapability,
+      "bool":$fixed);
 
   let storageClass = "RecordTypeStorage";
   let genStorageClass = 0;
@@ -98,45 +99,54 @@ def ReussirRecordType
   let hasCustomAssemblyFormat = 1;
 
   let builders = [
-      // Create an identified and complete record type.
+      // Create an identified and complete record type. `fixed` pins uniform
+      // max-arm box sizing (variant-only; pass false for compounds and for
+      // variant records that use the default per-constructor sizing).
       TypeBuilder<(ins "llvm::ArrayRef<mlir::Type>":$members,
                       "llvm::ArrayRef<bool>":$memberIsField,
                       "mlir::StringAttr":$name, "reussir::RecordKind":$kind,
-                      "reussir::Capability":$defaultCapability),
+                      "reussir::Capability":$defaultCapability, "bool":$fixed),
                   [{
       return $_get($_ctxt, members, memberIsField, name, /*complete=*/true,
-                       kind, defaultCapability);
+                       kind, defaultCapability, fixed);
     }]>,
 
-      // Create an identified and incomplete record type.
+      // Create an identified and incomplete record type. `fixed` is unknown
+      // until completion, so it starts false and is set by `complete`.
       TypeBuilder<(ins "mlir::StringAttr":$name, "reussir::RecordKind":$kind),
                   [{
-      return $_get($_ctxt, 
-        /* members= */ llvm::ArrayRef<Type>{}, 
+      return $_get($_ctxt,
+        /* members= */ llvm::ArrayRef<Type>{},
         /* memberIsField= */ llvm::ArrayRef<bool>{},
         name,
-        /* complete= */ false, 
+        /* complete= */ false,
         kind,
-        /* defaultCapability= */ reussir::Capability::unspecified);
+        /* defaultCapability= */ reussir::Capability::unspecified,
+        /* fixed= */ false);
     }]>,
 
       // Create an anonymous record type (always complete).
       TypeBuilder<(ins "llvm::ArrayRef<mlir::Type>":$members,
                       "llvm::ArrayRef<bool>":$memberIsField,
                       "reussir::RecordKind":$kind,
-                      "reussir::Capability":$defaultCapability),
+                      "reussir::Capability":$defaultCapability, "bool":$fixed),
                   [{
       return $_get($_ctxt, members, memberIsField, mlir::StringAttr{}, /*complete=*/true,
-                      kind, defaultCapability);
+                      kind, defaultCapability, fixed);
     }]>];
 
   let extraClassDeclaration = [{
       using Base::verifyInvariants;
       bool isCompound() const { return getKind() == RecordKind::compound; };
       bool isVariant() const { return getKind() == RecordKind::variant; };
-      void complete(llvm::ArrayRef<mlir::Type> members, 
+      // `getFixed()` (declared from the `fixed` parameter, defined in
+      // ReussirTypes.cpp): whether this variant pins uniform max-arm box
+      // sizing (`#[repr(fixed)]`). False (the default) sizes each boxed cell
+      // for its constructed arm (`header + arm[k]`). Variant-only; always
+      // false for compounds.
+      void complete(llvm::ArrayRef<mlir::Type> members,
                     llvm::ArrayRef<bool> memberIsField,
-                    reussir::Capability defaultCapability);
+                    reussir::Capability defaultCapability, bool fixed);
       struct LayoutInfo {
         llvm::TypeSize size;
         llvm::Align alignment;
@@ -149,9 +159,9 @@ def ReussirRecordType
       // size `getTypeSizeInBits/8` reports. The payload offset (and thus
       // every field offset) is derived from the *variant-wide* alignment,
       // identical to the uniform layout: per-arm sizing only drops the
-      // trailing padding up to the max arm. Callers gate on
-      // `kPerConstructorBoxSizingAttr` (Support/VariantBoxSizing.h); only
-      // valid on complete fused-header variants.
+      // trailing padding up to the max arm. Callers gate on the variant not
+      // being `#[repr(fixed)]` (i.e. `!getFixed()`); only valid on complete
+      // fused-header variants.
       llvm::TypeSize getVariantArmAllocSize(const mlir::DataLayout &dataLayout,
                                             size_t tag) const;
       // A shared/regional variant record carries a fused 8-byte box header:

@@ -1,0 +1,40 @@
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// Roundtrip: emit HIR/MIR, re-parse it (`--from`), and re-emit — the `fixed`
+// marker must survive print -> parse -> print unchanged (HIR and MIR both).
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.mir
+// RUN: %rrc %t.mir --from mir --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s -o %t.o
+
+// `#[repr(fixed)]` on an enum threads a `fixed` marker all the way through
+// surface -> HIR -> MIR (and stays roundtrip-consistent), pinning uniform
+// max-arm box sizing. A plain enum prints without the marker (the default
+// per-constructor sizing). The final RUN also compiles to an object,
+// exercising the codegen path that forwards the flag into the dialect variant
+// record type.
+
+// HIR-DAG: enum fixed #Fx
+// HIR-DAG: enum #Vr
+// MIR-DAG: enum fixed Fx::<i32>
+// MIR-DAG: enum Vr::<i32>
+
+#[repr(fixed)]
+enum Fx<T> {
+    A,
+    B(T, T)
+}
+
+enum Vr<T> {
+    A,
+    B(T, T)
+}
+
+fn mk_fx() -> Fx<i32> {
+    Fx::A{}
+}
+
+fn mk_vr() -> Vr<i32> {
+    Vr::A{}
+}

@@ -43,6 +43,7 @@ RecordDecl: raw::Record = {
     "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
         default_cap,
+        repr_fixed: false,
         kind: raw::RecordKind::Struct,
         path,
         generics: generics.unwrap_or_default(),
@@ -50,10 +51,12 @@ RecordDecl: raw::Record = {
         span: loc.and_then(|l| l.1),
         body: raw::RecordBody::Compound(ms),
     },
-    <default_cap:DefaultCap> "enum" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    // Only an enum may carry the `fixed` marker (`#[repr(fixed)]`).
+    <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <vs:Comma<Variant>> "}" ";"
     => raw::Record {
         default_cap,
+        repr_fixed: fixed.is_some(),
         kind: raw::RecordKind::Enum,
         path,
         generics: generics.unwrap_or_default(),
@@ -333,6 +336,7 @@ extern {
         "value" => Token::Value,
         "shared" => Token::Shared,
         "field" => Token::Field,
+        "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
         "quoted" => Token::Quoted(<Cow<'input, str>>),

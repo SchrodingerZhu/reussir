@@ -107,6 +107,11 @@ pub struct RecordInstance<'tcx> {
     /// The capability the record declares by default — selects the lowering
     /// (only `Value` records lower today; `Shared`/`Regional` await the rc work).
     pub default_cap: DefaultCap,
+    /// `#[repr(fixed)]`: pin uniform max-arm box sizing for this variant instead
+    /// of the default per-constructor sizing (`header + arm[k]`). Only ever set
+    /// for enums; always `false` for compounds. Threaded through to the dialect
+    /// variant record type's `fixed` flag.
+    pub repr_fixed: bool,
     /// The ground field layout.
     pub layout: RecordLayout<'tcx>,
 }

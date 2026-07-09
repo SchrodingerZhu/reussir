@@ -123,24 +123,29 @@ MlirType reussirStrTypeGet(MlirContext context, ReussirLifeScope lifeScope);
 
 // A complete record type. `name` may be a null `MlirAttribute` for an anonymous
 // record, or a `StringAttr` for an identified one. `memberIsField` is an array
-// of `nMembers` booleans.
+// of `nMembers` booleans. `fixed` pins uniform max-arm box sizing on a variant
+// (`#[repr(fixed)]`); pass false for compounds and for variants that use the
+// default per-constructor sizing.
 MlirType reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
                                       MlirType const *members,
                                       bool const *memberIsField,
                                       MlirAttribute name,
                                       ReussirRecordKind kind,
-                                      ReussirCapability defaultCapability);
+                                      ReussirCapability defaultCapability,
+                                      bool fixed);
 
 // An identified, incomplete record type. `name` must be a `StringAttr`.
 // Complete it later with `reussirRecordTypeComplete`.
 MlirType reussirRecordTypeGetIncomplete(MlirContext context, MlirAttribute name,
                                         ReussirRecordKind kind);
 
-// Completes a previously created incomplete record type in place.
+// Completes a previously created incomplete record type in place. `fixed` pins
+// uniform max-arm box sizing on a variant (`#[repr(fixed)]`); pass false for
+// compounds and for variants that use the default per-constructor sizing.
 void reussirRecordTypeComplete(MlirType record, intptr_t nMembers,
                                MlirType const *members,
                                bool const *memberIsField,
-                               ReussirCapability defaultCapability);
+                               ReussirCapability defaultCapability, bool fixed);
 
 // Whether an identified record type has had its body filled in. A handle
 // obtained from `reussirRecordTypeGetIncomplete` reports `false` until

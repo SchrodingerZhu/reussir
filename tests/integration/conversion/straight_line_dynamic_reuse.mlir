@@ -2,17 +2,19 @@
 
 // Straight-line reuse of a *dynamic* token (`token<align, ?>`, #361). An
 // unpinned decrement of a non-uniform variant yields a dynamic donor whose
-// size is only known at runtime. Unlike a statically-sized donor — which
-// only pairs within its mimalloc bin (see straight_line_reuse.mlir) — a
-// dynamic token is a *universal fallback* donor: TokenReuse pairs it with any
-// acceptor via `token.realloc`, which resizes to the acceptor's exact size at
-// runtime. Binning is only a heuristic for *which* donor to prefer; it never
-// gates this pairing.
+// size is only known at runtime. Per-constructor box sizing is the default,
+// so a non-`fixed` variant like `List` here (non-uniform arms) decrements to a
+// dynamic `token<?>` with no module-wide opt-in. Unlike a statically-sized
+// donor — which only pairs within its mimalloc bin (see
+// straight_line_reuse.mlir) — a dynamic token is a *universal fallback* donor:
+// TokenReuse pairs it with any acceptor via `token.realloc`, which resizes to
+// the acceptor's exact size at runtime. Binning is only a heuristic for *which*
+// donor to prefer; it never gates this pairing.
 
 !list = !reussir.record<variant "List" {!reussir.record<compound "List.Cons" [value] {i64, !reussir.record<variant "List">}>, !reussir.record<compound "List.Var" [value] {i64}>, !reussir.record<compound "List.Nil" [value] {}>}>
 !rclist = !reussir.rc<!list>
 
-module @test attributes { reussir.per_constructor_box_sizing, dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
+module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>, #dlti.dl_entry<i8, dense<8> : vector<2xi64>>> } {
     // The dead dynamic donor feeds a 16-byte `Var` construction. The fresh
     // 16-byte alloc is dropped; the donor is realloc'd to size 16 in place of it.
     // CHECK-LABEL: @dyn_reuse_leaf

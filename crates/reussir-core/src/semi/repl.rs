@@ -338,6 +338,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 ty_params: vec![(ty_param, generic)],
                 kind: surface::RecordKind::StructKind,
                 default_cap: DefaultCap::Shared,
+                repr_fixed: false,
                 fields: Some(RecordFields::Named(vec![(
                     field,
                     self.tcx.mk_generic(generic),

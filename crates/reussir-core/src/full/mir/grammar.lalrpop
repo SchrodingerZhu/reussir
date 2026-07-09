@@ -18,7 +18,7 @@ Item: raw::Item = {
     <f:FileDecl> => raw::Item::File(f),
     <s:StringDecl> => raw::Item::String(s),
     "record" "@" <s:Sym> ":" <cap:DefCap> <kind:RecordBody> ";"
-        => raw::Item::Record(raw::RecordDecl { symbol: s, default_cap: cap, ty: kind.0, body: kind.1 }),
+        => raw::Item::Record(raw::RecordDecl { symbol: s, default_cap: cap, ty: kind.0, body: kind.1, repr_fixed: kind.2 }),
     <f:Func> => raw::Item::Func(f),
     "extern" <abi:"quoted"> "trampoline" <export:"quoted"> "=" "@" <target:Sym> ";"
         => raw::Item::Tramp(raw::Tramp { abi: abi.into(), export: export.into(), target }),
@@ -44,10 +44,13 @@ DefCap: raw::DefCap = {
 };
 
 /// A record body: the nominal record type followed by its ground field layout.
-/// Returns `(nominal type, layout)`; `struct`/`enum` pick compound vs variant.
-RecordBody: (raw::Ty, raw::RecordBody) = {
-    "struct" <t:Ty> "{" <ms:Comma<Member>> "}" => (t, raw::RecordBody::Compound(ms)),
-    "enum" <t:Ty> "{" <vs:Comma<Variant>> "}" => (t, raw::RecordBody::Variant(vs)),
+/// Returns `(nominal type, layout, repr_fixed)`; `struct`/`enum` pick compound
+/// vs variant. Only an `enum` may carry the `fixed` marker (`#[repr(fixed)]`,
+/// uniform max-arm box sizing); a `struct` is always non-fixed.
+RecordBody: (raw::Ty, raw::RecordBody, bool) = {
+    "struct" <t:Ty> "{" <ms:Comma<Member>> "}" => (t, raw::RecordBody::Compound(ms), false),
+    "enum" <fixed:"fixed"?> <t:Ty> "{" <vs:Comma<Variant>> "}"
+        => (t, raw::RecordBody::Variant(vs), fixed.is_some()),
 };
 
 /// A compound field: an optional `name:` prefix (absent for a tuple field), an
@@ -298,6 +301,7 @@ extern {
         "value" => Token::Value,
         "shared" => Token::Shared,
         "field" => Token::Field,
+        "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
         "let" => Token::Let,

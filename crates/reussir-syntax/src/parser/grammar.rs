@@ -54,9 +54,10 @@ impl Parser<'_> {
         m.complete(self, SourceFile);
     }
 
-    /// Optional `pub`, then one of the item forms.
+    /// Optional outer attributes, optional `pub`, then one of the item forms.
     fn stmt(&mut self) {
         let m = self.start();
+        self.attrs_opt();
         if self.at(PubKw) {
             self.bump();
         }
@@ -286,6 +287,36 @@ impl Parser<'_> {
         }
         self.expect(Semicolon);
         m.complete(self, ExternTrampolineStmt);
+    }
+
+    /// Zero or more outer attributes `#[ ... ]` preceding an item. Each is
+    /// parsed as an `AttrList` node holding the bracketed contents verbatim
+    /// (an identifier, optionally with a parenthesized argument list) so the
+    /// surface layer can interpret e.g. `#[repr(fixed)]`. Unknown attributes
+    /// parse fine here; the surface/HIR layers decide what they mean.
+    fn attrs_opt(&mut self) {
+        while self.at(Pound) {
+            let m = self.start();
+            self.bump();
+            self.expect(LBracket);
+            self.expect_ident("an attribute name");
+            if self.at(LParen) {
+                self.bump();
+                while !self.at(RParen) && !self.at_eof() {
+                    if self.at(Comma) {
+                        self.bump();
+                    } else if self.at_ident_like() {
+                        self.bump();
+                    } else {
+                        self.error("expected an attribute argument");
+                        break;
+                    }
+                }
+                self.expect(RParen);
+            }
+            self.expect(RBracket);
+            m.complete(self, AttrList);
+        }
     }
 
     /// Optional `[shared]`, `[regional]`, ... on records.

@@ -2,27 +2,25 @@
 // RUN: %cc %t.o %S/per_ctor_box_sizing_mixed_arms.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
-// Per-constructor box sizing (#325), executing gate: a variant with 16-, 24-
-// and 32-byte arms is constructed, matched (destructuring decs — the pinned
-// reuse donors), rebuilt across arms of *different* sizes (per-arm pairing
-// must refuse cross-bin 16<->24/32 donations), and torn down through both
-// the tag-known and the tag-unknown (max-arm token) free paths, at depth.
-// Per-constructor sizing is the default now (no `#[repr(fixed)]`); the
-// `#[repr(fixed)]` uniform control is per_ctor_box_sizing_mixed_arms_fixed.rr,
-// which reuses this same C harness (field offsets are identical either way).
-// Any size disagreement between alloc/token/free corrupts the allocator and
-// shows up here (and under the suite's sanitizer configs).
+// The `#[repr(fixed)]` (uniform max-arm box sizing) control for
+// per_ctor_box_sizing_mixed_arms.rr: the same rotate/total/drive program and
+// the SAME C harness (field offsets are identical under fixed vs
+// per-constructor — only the trailing padding differs), but every cell is
+// pinned to the 32-byte max-arm width. This exercises the uniform token/free
+// path end to end; any alloc/token/free size disagreement corrupts the
+// allocator and shows up here (and under the suite's sanitizer configs).
 
+#[repr(fixed)]
 enum T {
-    One(i64),             // 8 header + 8  = 16-byte cell
-    Two(i64, i64),        // 8 header + 16 = 24-byte cell
+    One(i64),             // 8 header + 8  -> padded to 32-byte max-arm cell
+    Two(i64, i64),        // 8 header + 16 -> padded to 32-byte max-arm cell
     Three(i64, i64, i64), // 8 header + 24 = 32-byte cell
     Nil
 }
 
 // Rotate the arms: each step consumes one cell and constructs a cell of a
-// *different* size, exercising cross-size (refused) pairings and per-arm
-// frees on the destructured path.
+// *different* arm — under `fixed` every cell is the same 32-byte size, so a
+// dead donor always pairs in place.
 fn rotate(t: T, depth: i64, acc: i64) -> i64 {
     if depth == 0 {
         total(t, acc)

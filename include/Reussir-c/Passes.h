@@ -127,14 +127,6 @@ int reussirHasTPDE(void);
 bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
                                    const char *triple);
 
-// Stamps (or removes) the module unit attribute opting the compilation into
-// per-constructor variant box sizing: boxed variant heap cells sized
-// for the constructed arm instead of the uniform max-arm width. Experimental
-// until the full landing plan (docs/design/per-constructor-box-sizing.md)
-// completes: with only the allocation side landed, a non-mimalloc allocator
-// (wasm/talc) would see wrong-size frees. Off by default.
-void reussirModuleSetPerConstructorBoxSizing(MlirModule module, bool enable);
-
 // Sets whether compound record members are laid out in packed physical order
 // (descending storage alignment) rather than declaration order. On by default.
 // This is a whole-compilation layout contract held on the context-loaded

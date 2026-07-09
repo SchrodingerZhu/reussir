@@ -61,6 +61,9 @@ impl Program {
 #[derive(Clone, Debug)]
 pub struct Record {
     pub default_cap: DefaultCap,
+    /// `#[repr(fixed)]`: uniform max-arm box sizing for an enum. Only ever set
+    /// for enums (`struct` is always `false`).
+    pub repr_fixed: bool,
     pub kind: RecordKind,
     pub path: String,
     pub generics: Vec<Generic>,

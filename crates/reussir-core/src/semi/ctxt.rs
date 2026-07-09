@@ -130,6 +130,9 @@ pub struct Record<'tcx> {
     pub ty_params: Vec<(TokenKey, GenericId)>,
     pub kind: surface::RecordKind,
     pub default_cap: DefaultCap,
+    /// `#[repr(fixed)]`: uniform max-arm box sizing for this enum instead of the
+    /// default per-constructor sizing. Only ever set for enums.
+    pub repr_fixed: bool,
     pub fields: Option<RecordFields<'tcx>>,
     /// Generics that must be instantiated regional because they appear as the
     /// element of a `[field]` link (e.g. `inner: [field] T`). Checked at the
@@ -852,6 +855,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ty_params,
             kind: rec.kind,
             default_cap,
+            repr_fixed: rec.repr_fixed,
             fields: None,
             regional_generics: Vec::new(),
             span,

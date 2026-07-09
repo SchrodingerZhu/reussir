@@ -39,7 +39,6 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
-#include "Reussir/Support/VariantBoxSizing.h"
 #include "mlir/IR/PatternMatch.h"
 
 #include <llvm/ADT/DenseSet.h>
@@ -300,7 +299,7 @@ mlir::LogicalResult ReussirRcReinterpretOp::verify() {
     if (auto recordType =
             llvm::dyn_cast<RecordType>(rcType.getElementType());
         recordType && recordType.isVariant() && recordType.getComplete() &&
-        rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+        rcBoxType.isHeaderFused() && !recordType.getFixed()) {
       if (tokenType.isDynamicSize())
         return mlir::success();
       for (size_t tag = 0; tag < recordType.getMembers().size(); ++tag)
@@ -377,7 +376,7 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
     RcBoxType rcBoxType = RcType.getInnerBoxType();
     if (auto recordType = llvm::dyn_cast<RecordType>(RcType.getElementType());
         recordType && recordType.isVariant() && recordType.getComplete() &&
-        rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+        rcBoxType.isHeaderFused() && !recordType.getFixed()) {
       if (tokenType.isDynamicSize())
         return mlir::success();
       for (size_t tag = 0; tag < recordType.getMembers().size(); ++tag)
@@ -446,7 +445,7 @@ TokenType ReussirRcDecOp::getTokenType() {
   //     free/realloc read the exact size, sound on any allocator.
   if (auto recordType = llvm::dyn_cast<RecordType>(rcType.getElementType());
       recordType && recordType.isVariant() && recordType.getComplete() &&
-      rcBoxType.isHeaderFused() && perConstructorBoxSizing(getOperation())) {
+      rcBoxType.isHeaderFused() && !recordType.getFixed()) {
     if (isDestructuring()) {
       llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
           dataLayout, getDestructureTagAttr().getInt());
@@ -522,7 +521,7 @@ TokenType ReussirRcCreateOp::getTokenType() {
   if (auto recordType = llvm::dyn_cast<RecordType>(getValue().getType());
       recordType && recordType.isVariant() && recordType.getComplete() &&
       rcBoxType.isHeaderFused() && !getRegion() &&
-      perConstructorBoxSizing(getOperation())) {
+      !recordType.getFixed()) {
     if (auto variant = llvm::dyn_cast_if_present<ReussirRecordVariantOp>(
             getValue().getDefiningOp())) {
       llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
@@ -686,7 +685,7 @@ TokenType ReussirRcCreateVariantOp::getTokenType() {
   if (auto recordType = llvm::dyn_cast<RecordType>(elementType);
       recordType && recordType.isVariant() && recordType.getComplete() &&
       rcBoxType.isHeaderFused() && !getRegion() &&
-      perConstructorBoxSizing(getOperation())) {
+      !recordType.getFixed()) {
     llvm::TypeSize armSize =
         recordType.getVariantArmAllocSize(dataLayout, getTag().getZExtValue());
     return TokenType::get(getContext(), alignment, armSize.getFixedValue());

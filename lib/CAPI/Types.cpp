@@ -126,17 +126,18 @@ MlirType reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
                                       bool const *memberIsField,
                                       MlirAttribute name,
                                       ReussirRecordKind kind,
-                                      ReussirCapability defaultCapability) {
+                                      ReussirCapability defaultCapability,
+                                      bool fixed) {
   llvm::SmallVector<mlir::Type> memberTypes = unwrapTypes(nMembers, members);
   llvm::ArrayRef<bool> fields(memberIsField, nMembers);
   if (name.ptr)
     return wrap(RecordType::get(unwrap(context), memberTypes, fields,
                                 llvm::cast<mlir::StringAttr>(unwrap(name)),
                                 toRecordKind(kind),
-                                toCapability(defaultCapability)));
+                                toCapability(defaultCapability), fixed));
   return wrap(RecordType::get(unwrap(context), memberTypes, fields,
                               toRecordKind(kind),
-                              toCapability(defaultCapability)));
+                              toCapability(defaultCapability), fixed));
 }
 
 MlirType reussirRecordTypeGetIncomplete(MlirContext context, MlirAttribute name,
@@ -149,11 +150,11 @@ MlirType reussirRecordTypeGetIncomplete(MlirContext context, MlirAttribute name,
 void reussirRecordTypeComplete(MlirType record, intptr_t nMembers,
                                MlirType const *members,
                                bool const *memberIsField,
-                               ReussirCapability defaultCapability) {
+                               ReussirCapability defaultCapability, bool fixed) {
   llvm::SmallVector<mlir::Type> memberTypes = unwrapTypes(nMembers, members);
   llvm::ArrayRef<bool> fields(memberIsField, nMembers);
   llvm::cast<RecordType>(unwrap(record))
-      .complete(memberTypes, fields, toCapability(defaultCapability));
+      .complete(memberTypes, fields, toCapability(defaultCapability), fixed);
 }
 
 bool reussirRecordTypeIsComplete(MlirType record) {

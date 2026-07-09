@@ -2,10 +2,11 @@
 
 // The dynamic-size token (`token<align, size: ?>`, #325) round-trips through
 // the custom assembly, and a static token is unchanged. A dynamic token is
-// produced by an unpinned decrement of a *non-uniform* variant under
-// per-constructor box sizing; it carries its size at runtime (lowering to a
-// fat `{ptr, size}` pair) so its free/realloc pass the exact size on any
-// allocator.
+// produced by an unpinned decrement of a *non-uniform* variant under the
+// default per-constructor box sizing (a `fixed` variant would instead yield a
+// static uniform token). It lowers to a bare pointer (#366); its free/realloc
+// recover the exact size from the size-recovering allocator, so no size need
+// be carried.
 
 // CHECK-LABEL: @dynamic
 // CHECK-SAME: !reussir.token<align : 16, size : ?>

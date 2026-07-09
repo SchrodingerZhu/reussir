@@ -41,15 +41,23 @@ struct RecordTypeStorage : public mlir::TypeStorage {
   bool complete;
   reussir::RecordKind kind;
   reussir::Capability defaultCapability;
+  // Variant box sizing: `true` pins every boxed cell at the uniform max-arm
+  // width (the `#[repr(fixed)]` contract); `false` (the default) sizes each
+  // cell for its constructed arm (`header + arm[k]`). Meaningful only for
+  // variants; always `false` for compounds. Part of the mutable body (set at
+  // completion), so a named record's self-references resolve to the same
+  // value — mirrors `defaultCapability`.
+  bool fixed;
 
   using KeyTy = RecordTypeStorage;
 
   RecordTypeStorage(llvm::ArrayRef<mlir::Type> members,
                     llvm::ArrayRef<bool> memberIsField, mlir::StringAttr name,
                     bool complete, reussir::RecordKind kind,
-                    reussir::Capability defaultCapability)
+                    reussir::Capability defaultCapability, bool fixed)
       : members(members), memberIsField(memberIsField), name(name),
-        complete(complete), kind(kind), defaultCapability(defaultCapability) {}
+        complete(complete), kind(kind), defaultCapability(defaultCapability),
+        fixed(fixed) {}
 
   RecordTypeStorage(const KeyTy &key) = default;
 
@@ -60,14 +68,14 @@ struct RecordTypeStorage : public mlir::TypeStorage {
       return name == other.name && kind == other.kind;
     return members == other.members && memberIsField == other.memberIsField &&
            kind == other.kind && defaultCapability == other.defaultCapability &&
-           complete == other.complete;
+           complete == other.complete && fixed == other.fixed;
   }
 
   static llvm::hash_code hashKey(const KeyTy &key) {
     if (key.name)
       return llvm::hash_combine(key.name, key.kind);
     return llvm::hash_combine(key.members, key.memberIsField, key.kind,
-                              key.defaultCapability, key.complete);
+                              key.defaultCapability, key.complete, key.fixed);
   }
 
   static RecordTypeStorage *construct(::mlir::TypeStorageAllocator &allocator,
@@ -93,7 +101,7 @@ struct RecordTypeStorage : public mlir::TypeStorage {
   llvm::LogicalResult mutate(mlir::TypeStorageAllocator &allocator,
                              llvm::ArrayRef<mlir::Type> members,
                              llvm::ArrayRef<bool> memberIsField,
-                             reussir::Capability defaultCapability) {
+                             reussir::Capability defaultCapability, bool fixed) {
 
     // Anonymous records cannot mutate.
     if (!name)
@@ -103,12 +111,14 @@ struct RecordTypeStorage : public mlir::TypeStorage {
     if (complete)
       return llvm::success(members == this->members &&
                            memberIsField == this->memberIsField &&
-                           defaultCapability == this->defaultCapability);
+                           defaultCapability == this->defaultCapability &&
+                           fixed == this->fixed);
 
     // Mutate incomplete records.
     this->members = allocator.copyInto(members);
     this->memberIsField = allocator.copyInto(memberIsField);
     this->defaultCapability = defaultCapability;
+    this->fixed = fixed;
     this->complete = true;
     return llvm::success();
   }

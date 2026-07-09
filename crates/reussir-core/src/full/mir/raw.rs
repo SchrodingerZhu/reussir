@@ -90,6 +90,9 @@ pub struct RecordDecl {
     pub default_cap: DefCap,
     pub ty: Ty,
     pub body: RecordBody,
+    /// `#[repr(fixed)]`: uniform max-arm box sizing for a variant. Only ever
+    /// set for enums (`struct` is always `false`).
+    pub repr_fixed: bool,
 }
 
 /// A record's ground shape.

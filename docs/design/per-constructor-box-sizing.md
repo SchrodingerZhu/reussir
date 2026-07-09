@@ -76,22 +76,30 @@ relocates — wasted work. A no-copy resize is tracked in #362.
 
 ## Status / follow-ups
 
-Landed: the switch (`reussir.per_constructor_box_sizing` module attr,
-`rrc --variant-box-sizing`), per-arm allocation, dynamic-token free, and
-`token<?>` fallback reuse. Sound (requested alloc/free sizes round-trip;
-executing gate `per_ctor_box_sizing_mixed_arms.rr` under both sizings).
+Landed: per-arm allocation, dynamic-token free, and `token<?>` fallback reuse.
+Sound (requested alloc/free sizes round-trip; executing gate
+`per_ctor_box_sizing_mixed_arms.rr` and its `_fixed` sibling cover both
+sizings).
 
-**Now the default** (`rrc --variant-box-sizing per-constructor`; `uniform`
-is the opt-out). Every construction path was already per-arm-correct through
-the `getTokenType()` / `getVariantArmAllocSize()` single source of truth —
-the heap path (#360/#361), the **regional** bump `rc.create` (token-driven:
-the cell size is the token's, never `getTypeSize(rcBoxType)`; the region is a
-linked bump, so per-arm just shortens each cell), and **TRMC** holes (the
-constructor's token is threaded through unchanged). Flipping the flag needed
-no lowering change; the full integration suite is green under it.
+**Per-type, on by default.** The sizing decision is a property of the variant
+record type, not a whole-compilation switch: the dialect variant record
+carries a `fixed` flag, and the source enum opts into uniform max-arm sizing
+with `#[repr(fixed)]`. A non-`fixed` variant (the default) sizes per
+constructor. The flag threads surface → HIR → MIR → the dialect type (all
+roundtrip-consistent), and the token-typing consumers gate on
+`!recordType.getFixed()` in place of the old module attribute. The earlier
+`reussir.per_constructor_box_sizing` module attr and `rrc
+--variant-box-sizing` flag are removed. Every construction path was already
+per-arm-correct through the `getTokenType()` / `getVariantArmAllocSize()`
+single source of truth — the heap path (#360/#361), the **regional** bump
+`rc.create` (token-driven: the cell size is the token's, never
+`getTypeSize(rcBoxType)`; the region is a linked bump, so per-arm just
+shortens each cell), and **TRMC** holes (the constructor's token is threaded
+through unchanged). The move to a per-type flag needed no lowering change; the
+full integration suite is green.
 
 Remaining: the 8-granular mimalloc bin to capture the 24-byte arms (a runtime
 knob, orthogonal — `AllocatorBinModel.h` is only a *pairing hint*, so its
 geometry never gates correctness); benchmark the full suite to quantify the
-win at the new default; generated FFI marshalling (the layout was never a
-plain cast, so non-uniform sizing doesn't move that goalpost).
+win; generated FFI marshalling (the layout was never a plain cast, so
+non-uniform sizing doesn't move that goalpost).

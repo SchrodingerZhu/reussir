@@ -144,8 +144,11 @@ impl<'a> Printer<'a> {
             DefaultCap::Shared => "[shared] ",
             DefaultCap::Regional => "[regional] ",
         };
+        // `#[repr(fixed)]` prints as a `fixed` marker after `enum`; the grammar
+        // accepts it only on an enum, so this roundtrips.
         let kind = match r.kind {
             RecordKind::StructKind => "struct #",
+            RecordKind::EnumKind if r.repr_fixed => "enum fixed #",
             RecordKind::EnumKind => "enum #",
         };
         let head = text(format!("{cap}{kind}{}", self.path(r.def)))
