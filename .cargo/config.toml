@@ -1,14 +1,17 @@
-# snmalloc-sys vendors a copy of snmalloc whose CMake build compiles with
-# `/WX` (warnings-as-errors) under MSVC. Recent MSVC toolchains (VS 2022 17.x /
-# VS 18, 14.5x) emit C4864 ("expected 'template' keyword before dependent
-# template name") inside snmalloc's `corealloc.h`, which `/WX` promotes to a
-# hard error and breaks the Windows (MSVC) build of `reussir-rt`.
+# reussir-rt uses mimalloc as the language-heap allocator. libmimalloc-sys has
+# no feature to set mimalloc's small-bin granularity, so inject the compile
+# define here: `MI_MAX_ALIGN_SIZE=8` makes mimalloc guarantee only 8-byte
+# alignment and step its small size-classes by 8, giving 8-granular bins
+# {8,16,24,32,40,48,56,64} instead of the default 16-granular {8,16,32,48,…}.
+# That lets a per-constructor variant box of 24/40/… bytes occupy its exact
+# size instead of rounding up (e.g. a 24-byte `App` node stays 24, not 32),
+# which is what closes the nbe-closure footprint gap vs Koka (Koka sets the
+# same define in kklib). Reussir boxes are <=8-aligned and `alloc.rs`'s
+# natural-alignment dispatch routes any over-aligned request through
+# `mi_*_aligned`, so weakening malloc's implicit alignment to 8 is sound. The
+# define is inert for the other C build-scripts (backtrace, psm, stacker),
+# which do not use the macro.
 #
-# Disable just that warning for the MSVC target. `/wd<n>` removes the warning
-# entirely, so `/WX` cannot promote it regardless of flag order. The cc/cmake
-# build crates fold these target-prefixed vars into `CMAKE_CXX_FLAGS`, and the
-# target suffix scopes them to MSVC only — the gnu/gnullvm (clang) Windows
-# builds and all other platforms are unaffected.
+# The `alloc.rs` `MI_MAX_ALIGN_SIZE` constant must stay equal to this value.
 [env]
-CFLAGS_x86_64_pc_windows_msvc = "/wd4864"
-CXXFLAGS_x86_64_pc_windows_msvc = "/wd4864"
+CFLAGS = "-DMI_MAX_ALIGN_SIZE=8"

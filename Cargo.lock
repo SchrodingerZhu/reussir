@@ -321,15 +321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake"
-version = "0.1.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2098,10 +2089,10 @@ version = "0.1.0"
 dependencies = [
  "backtrace",
  "hashbrown 0.16.1",
+ "libc",
  "libmimalloc-sys",
  "num_enum",
  "smallvec",
- "snmalloc-rs",
  "stacker",
 ]
 
@@ -2339,24 +2330,6 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
-
-[[package]]
-name = "snmalloc-rs"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "530a04ae687609072d0edd38866406fbbcd23d2f716791437e312ec4d64a355a"
-dependencies = [
- "snmalloc-sys",
-]
-
-[[package]]
-name = "snmalloc-sys"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a96cbeb16d6bcc5979f80ec907582a886b7fb3b9a707678b63dd93a10d8ee858"
-dependencies = [
- "cmake",
-]
 
 [[package]]
 name = "stable_deref_trait"
