@@ -7,22 +7,27 @@ license.workspace = true
 [dependencies]
 backtrace = { version = "0.3.75" }
 hashbrown = { version = "0.16.0" }
+# Fallback allocator when the mimalloc backend is unavailable: the sanitizer
+# runtime variants (built `--no-default-features`), miri, and lean embeddings
+# like reussir-jit. libc `malloc`/`free`/`realloc` recover the block size from
+# the pointer (so the unsized `token<?>` ABI works), the sanitizers *interpose*
+# them (so ASan/LSan/MSan actually see the runtime's allocations — mimalloc's
+# and dlmalloc's private heaps are invisible to them), and miri shims them.
+libc = "0.2"
 libmimalloc-sys = { version = "0.1.44", optional = true }
-snmalloc-rs = { version = "0.7", optional = true }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true
 
 [features]
 default = ["mimalloc-v2"]
-snmalloc = ["snmalloc-rs"]
-# `mimalloc` is the version-neutral gate the code checks; select the bundled
-# mimalloc major through one of the versioned features (with
-# --no-default-features). v2 (default) is the stable line; v3 has the
-# reworked page management and lower fragmentation. Both share the bin geometry
-# that include/Reussir/Support/AllocatorBinModel.h models (verified by
-# probing mi_usable_size on both), so the compiler-side size-class contract
-# holds for either.
+# The language heap requires a size-recovering allocator (`token<?>` frees
+# without a size); mimalloc is that allocator today (dlmalloc later). `mimalloc`
+# is the version-neutral gate the code checks; select the bundled major through
+# one of the versioned features (with --no-default-features). v3 has the
+# reworked page management and lower fragmentation; v2 (default) is the stable
+# line. Both share the bin geometry that
+# include/Reussir/Support/AllocatorBinModel.h models (only a pairing hint).
 mimalloc = ["dep:libmimalloc-sys"]
 mimalloc-v3 = ["mimalloc", "libmimalloc-sys/v3"]
 mimalloc-v2 = ["mimalloc"]

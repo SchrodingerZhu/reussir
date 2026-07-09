@@ -1,14 +1,15 @@
 #![allow(clippy::missing_safety_doc)]
 
-#[cfg(all(feature = "mimalloc", not(miri)))]
+// The language heap talks to a size-recovering allocator directly through the
+// `__reussir_*` entry points in `alloc` (so a `token<?>` frees without a
+// `Layout`). Rust's own allocations go through `ReussirGlobalAlloc`, which
+// forwards to that *same* backend — runtime-internal memory and `__reussir_*`
+// blocks cross (region headers are allocated by `__reussir_allocate` and freed
+// through `std::alloc`), so they must be one allocator. Skipped under miri,
+// where the backend cannot service the interpreter's own allocations.
+#[cfg(not(miri))]
 #[global_allocator]
-static GLOBAL: alloc::mimalloc::MiMalloc = alloc::mimalloc::MiMalloc;
-
-// mimalloc is in the default feature set, so an additive `--features snmalloc`
-// would otherwise enable both and declare two global allocators.
-#[cfg(all(feature = "snmalloc", not(feature = "mimalloc"), not(miri)))]
-#[global_allocator]
-static GLOBAL: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+static GLOBAL: alloc::ReussirGlobalAlloc = alloc::ReussirGlobalAlloc;
 
 pub mod alloc;
 pub mod collections;

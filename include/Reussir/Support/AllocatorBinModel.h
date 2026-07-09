@@ -16,30 +16,28 @@
 
 namespace reussir {
 
-// Approximate size-class (bin) map of the default reussir-rt allocator
-// (mimalloc behind the natural-bin GlobalAlloc), as observed via
-// mi_usable_size(mi_malloc(n)) for n in [1, 1024]:
-//   <= 16      : 8-byte bins  {8, 16}
-//   17 .. 128  : 16-byte bins {32, 48, ..., 128}
-//   > 128      : each power-of-two octave splits into four bins
-//                (129..256 step 32, 257..512 step 64, 513..1024 step 128, …)
-// The exact geometry varies by mimalloc major (e.g. whether 24 gets its own
-// bin), which is fine — see below.
+// Size-class (bin) map of the default reussir-rt allocator: mimalloc behind
+// the natural-bin path, built with `MI_MAX_ALIGN_SIZE=8` (so it guarantees
+// only 8-byte alignment and its small size-classes step by 8, not 16 — see
+// crates/reussir-rt). Verified against mi_usable_size(mi_malloc(n)) for
+// n in [1, 1024]:
+//   <= 64      : 8-byte bins  {8, 16, 24, 32, 40, 48, 56, 64}
+//   > 64       : each power-of-two octave splits into four bins
+//                (65..128 step 16, 129..256 step 32, 257..512 step 64, …)
+// The 8-granular small range is what lets a per-constructor 24-byte variant
+// box occupy a real 24-byte block instead of rounding to 32 (the default
+// `MI_MAX_ALIGN_SIZE=16` gives 16-granular bins {8,16,32,48,…} with no 24).
 //
-// This is only a *hint*, not a correctness contract. TokenReuse consults it to
-// choose which donor to prefer: a fixed-size donor sharing a bin with its
-// acceptor scores above a cross-bin one, since reusing it avoids a moving
-// realloc. It gates nothing in lowering — `token.realloc` always calls
-// `__reussir_reallocate` (which copies if the allocator moves the block), so a
-// stale or imprecise map only costs a suboptimal pairing (an avoidable copy),
-// never a miscompile. Keep it roughly in step with the linked allocator to keep
-// the heuristic sharp (see #325: the previous SnMalloc-derived model paired
-// across mimalloc bins, so its "in-bin" reallocs copied anyway).
+// This is only a *hint*, not a correctness contract: TokenReuse consults it to
+// prefer a donor that shares a bin with its acceptor (so reuse avoids a moving
+// realloc). It gates nothing in lowering — `token.realloc` always calls the
+// runtime, which copies if the block moves — so a stale or imprecise map only
+// costs a suboptimal pairing, never a miscompile. Keep it roughly in step with
+// the linked allocator to keep the heuristic sharp (see #325: the previous
+// SnMalloc-derived model paired across mimalloc bins, so its reallocs copied).
 constexpr std::size_t allocatorBinSize(std::size_t size) {
-  if (size <= 16)
+  if (size <= 64)
     return (size + 7) & ~std::size_t{7};
-  if (size <= 128)
-    return (size + 15) & ~std::size_t{15};
   const std::size_t octave = std::bit_ceil(size);
   const std::size_t step = octave / 8;
   return (size + step - 1) & ~(step - 1);

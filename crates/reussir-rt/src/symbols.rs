@@ -10,7 +10,10 @@
 
 use core::ffi::c_void;
 
-use crate::alloc::{__reussir_allocate, __reussir_deallocate, __reussir_reallocate};
+use crate::alloc::{
+    __reussir_allocate, __reussir_dealloc_unsized, __reussir_deallocate, __reussir_realloc_unsized,
+    __reussir_reallocate,
+};
 use crate::panic::__reussir_panic;
 use crate::region::{
     __reussir_acquire_rigid_object, __reussir_cleanup_region, __reussir_freeze_flex_object,
@@ -48,7 +51,9 @@ pub fn exported_symbols() -> &'static [RuntimeSymbol] {
     symbols![
         __reussir_allocate,
         __reussir_deallocate,
+        __reussir_dealloc_unsized,
         __reussir_reallocate,
+        __reussir_realloc_unsized,
         __reussir_panic,
         __reussir_freeze_flex_object,
         __reussir_cleanup_region,

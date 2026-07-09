@@ -207,16 +207,12 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   converter.addConversion([](ViewType type) {
     return mlir::LLVM::LLVMPointerType::get(type.getContext());
   });
-  converter.addConversion([&converter](TokenType type) -> mlir::Type {
-    auto ptrTy = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    // A static token is a bare pointer. A dynamic token (`size: ?`, from an
-    // unpinned variant decrement under per-constructor sizing) carries its
-    // runtime size alongside the pointer as a fat `{ptr, size}` pair, so its
-    // free/realloc can pass the exact size on any allocator.
-    if (!type.isDynamicSize())
-      return ptrTy;
-    return mlir::LLVM::LLVMStructType::getLiteral(
-        type.getContext(), {ptrTy, converter.getIndexType()});
+  converter.addConversion([](TokenType type) -> mlir::Type {
+    // Every token is a bare pointer. A dynamic token (`size: ?`, from an
+    // unpinned variant decrement under per-constructor sizing) carries no
+    // size: its free/realloc go through the unsized runtime ABI, which
+    // recovers the block from the pointer (a size-recovering allocator).
+    return mlir::LLVM::LLVMPointerType::get(type.getContext());
   });
   converter.addConversion([](RawPtrType type) {
     return mlir::LLVM::LLVMPointerType::get(type.getContext());
