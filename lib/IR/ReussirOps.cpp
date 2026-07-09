@@ -39,6 +39,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Support/VariantBoxSizing.h"
 #include "mlir/IR/PatternMatch.h"
 
 #include <llvm/ADT/DenseSet.h>
@@ -115,22 +116,22 @@ mlir::LogicalResult verifyRcCreateLikeOp(mlir::Operation *op, RcType rcType,
   if (!token)
     return mlir::success();
 
+  // The op's own `TokenAcceptor::getTokenType()` is the single source of
+  // truth for the box's layout — under per-constructor box sizing (#325) a
+  // variant construction expects `header + arm[tag]`, not the uniform
+  // max-arm width, and this check is what holds the
+  // allocated == token == freed size invariant together.
+  auto acceptor = llvm::cast<TokenAcceptor>(op);
+  TokenType expected = acceptor.getTokenType();
   TokenType tokenType = llvm::cast<TokenType>(token.getType());
-  auto rcBoxType =
-      RcBoxType::get(op->getContext(), valueType, region != nullptr);
-  auto dataLayout = mlir::DataLayout::closest(op);
-  auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  auto size = dataLayout.getTypeSize(rcBoxType);
-  if (!size.isFixed())
-    return op->emitOpError("RC type must have a fixed size");
-  if (tokenType.getAlign() != alignment)
+  if (tokenType.getAlign() != expected.getAlign())
     return op->emitOpError("token alignment must match RC type alignment, ")
            << "token alignment: " << tokenType.getAlign()
-           << ", RC type alignment: " << alignment;
-  if (tokenType.getSize() != size)
+           << ", RC type alignment: " << expected.getAlign();
+  if (tokenType.getSize() != expected.getSize())
     return op->emitOpError("token size must match RC type size, ")
            << "token size: " << tokenType.getSize()
-           << ", RC type size: " << size.getFixedValue();
+           << ", RC type size: " << expected.getSize();
   return mlir::success();
 }
 
@@ -591,11 +592,25 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
 // RcCreateVariantOp TokenAcceptor Interface
 //===----------------------------------------------------------------------===//
 TokenType ReussirRcCreateVariantOp::getTokenType() {
+  mlir::Type elementType = getRcPtr().getType().getElementType();
   auto rcBoxType =
-      RcBoxType::get(getContext(), getRcPtr().getType().getElementType(),
-                     getRegion() != nullptr);
+      RcBoxType::get(getContext(), elementType, getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
+  // Per-constructor box sizing (module opt-in, #325): a fused-header
+  // variant box IS its record, and this op constructs a statically known
+  // arm — size the token for `header + arm[tag]` instead of the max-arm
+  // width. Alignment (hence the payload offset and every field offset) is
+  // unchanged. Regional boxes keep the uniform size: their bump-allocation
+  // header/lifecycle is handled separately (phase 4 of the landing plan).
+  if (auto recordType = llvm::dyn_cast<RecordType>(elementType);
+      recordType && recordType.isVariant() && recordType.getComplete() &&
+      rcBoxType.isHeaderFused() && !getRegion() &&
+      perConstructorBoxSizing(getOperation())) {
+    llvm::TypeSize armSize =
+        recordType.getVariantArmAllocSize(dataLayout, getTag().getZExtValue());
+    return TokenType::get(getContext(), alignment, armSize.getFixedValue());
+  }
   auto size = dataLayout.getTypeSize(rcBoxType);
   return TokenType::get(getContext(), alignment, size.getFixedValue());
 }

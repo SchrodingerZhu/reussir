@@ -660,6 +660,30 @@ RecordType::LayoutInfo RecordType::getElementRegionLayoutInfo(
   return {size, largestAlignment, memberWithLargestAlignment};
 }
 
+llvm::TypeSize
+RecordType::getVariantArmAllocSize(const mlir::DataLayout &dataLayout,
+                                   size_t tag) const {
+  assert(isVariant() && "arm alloc size is a variant-box query");
+  assert(hasFusedHeader() && "per-arm sizing requires the fused-header "
+                             "layout (box pointer == record pointer)");
+  assert(tag < getMembers().size() && "tag out of range");
+  // The payload offset is a function of the *variant-wide* alignment — keep
+  // it, so every arm's fields sit at exactly the offsets of the uniform
+  // layout and only the trailing padding up to the max arm is dropped.
+  // Mirrors the fused-header branch of getTypeSizeInBits with the max-arm
+  // payload size replaced by arm `tag`'s.
+  auto [maxSize, align, _] = getElementRegionLayoutInfo(dataLayout);
+  (void)maxSize;
+  mlir::Type member = getProjectedType(getMembers()[tag],
+                                       getMemberIsField()[tag],
+                                       Capability::value);
+  llvm::TypeSize armSize = dataLayout.getTypeSize(member);
+  llvm::Align finalAlign = std::max(align, llvm::Align(8));
+  llvm::TypeSize headerSize =
+      llvm::alignTo(llvm::TypeSize::getFixed(8), align.value());
+  return llvm::alignTo(armSize + headerSize, finalAlign.value());
+}
+
 //===----------------------------------------------------------------------===//
 // RecordType DataLayoutInterface
 //===----------------------------------------------------------------------===//
