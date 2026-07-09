@@ -81,8 +81,17 @@ Landed: the switch (`reussir.per_constructor_box_sizing` module attr,
 `token<?>` fallback reuse. Sound (requested alloc/free sizes round-trip;
 executing gate `per_ctor_box_sizing_mixed_arms.rr` under both sizings).
 
-Remaining: regional `rc.create*` bump path; confirm TRMC constructor contexts
-(they already ride `rc.create_variant`, so per-arm); the 8-granular mimalloc
-bin to capture the 24-byte arms; measure the full suite + flip the default;
-generated FFI marshalling (the layout was never a plain cast, so non-uniform
-sizing doesn't move that goalpost).
+**Now the default** (`rrc --variant-box-sizing per-constructor`; `uniform`
+is the opt-out). Every construction path was already per-arm-correct through
+the `getTokenType()` / `getVariantArmAllocSize()` single source of truth —
+the heap path (#360/#361), the **regional** bump `rc.create` (token-driven:
+the cell size is the token's, never `getTypeSize(rcBoxType)`; the region is a
+linked bump, so per-arm just shortens each cell), and **TRMC** holes (the
+constructor's token is threaded through unchanged). Flipping the flag needed
+no lowering change; the full integration suite is green under it.
+
+Remaining: the 8-granular mimalloc bin to capture the 24-byte arms (a runtime
+knob, orthogonal — `AllocatorBinModel.h` is only a *pairing hint*, so its
+geometry never gates correctness); benchmark the full suite to quantify the
+win at the new default; generated FFI marshalling (the layout was never a
+plain cast, so non-uniform sizing doesn't move that goalpost).

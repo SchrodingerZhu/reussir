@@ -80,10 +80,10 @@ enum VariantEncoding {
 /// CLI surface for the variant box-sizing contract.
 #[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
 enum BoxSizing {
-    /// Every boxed variant cell is the max-arm width (the shipped layout
-    /// contract; any arm's block reuses for any other).
+    /// Opt-out: every boxed variant cell is the max-arm width (any arm's
+    /// block reuses for any other, at the cost of trailing padding).
     Uniform,
-    /// EXPERIMENTAL: each cell is sized for its constructed arm
+    /// Default: each cell is sized for its constructed arm
     /// (`header + arm[k]`); offsets unchanged, trailing padding dropped.
     PerConstructor,
 }
@@ -231,18 +231,19 @@ struct Cli {
           default_value_t = VariantEncoding::ArchDependent)]
     nullary_variant_encoding: VariantEncoding,
 
-    /// How boxed enum variants size their heap cells. `uniform` (default,
-    /// the shipped layout contract) sizes every cell at the max-arm width,
-    /// so any arm's block can be reused for any other. `per-constructor`
-    ///(EXPERIMENTAL — allocation-side only for now; requires the
-    /// bundled mimalloc runtime, whose free ignores the stated size) sizes
-    /// each cell for the constructed arm: `header + arm[k]`. Field offsets
-    /// are identical either way — per-constructor only drops the trailing
-    /// padding up to the max arm, shrinking leaf-heavy workloads' cache
-    /// footprint (nbe-closure: the 16-byte leaf arms double to 32 under
-    /// `uniform`, which measured as ~the whole gap vs Koka).
+    /// How boxed enum variants size their heap cells. `per-constructor`
+    /// (default) sizes each cell for its constructed arm (`header + arm[k]`):
+    /// an unpinned decrement of a non-uniform variant frees the exact runtime
+    /// size (via a dynamic `token<align, ?>`), so this is sound on any
+    /// allocator, not just the bundled mimalloc. `uniform` (opt-out) sizes
+    /// every cell at the max-arm width, so any arm's block reuses for any
+    /// other, at the cost of trailing padding. Field offsets are identical
+    /// either way — per-constructor only drops the trailing padding up to the
+    /// max arm, shrinking leaf-heavy workloads' cache footprint (nbe-closure:
+    /// the 16-byte leaf arms double to 32 under `uniform`, which measured as
+    /// ~the whole gap vs Koka).
     #[arg(long = "variant-box-sizing", value_enum,
-          default_value_t = BoxSizing::Uniform)]
+          default_value_t = BoxSizing::PerConstructor)]
     variant_box_sizing: BoxSizing,
 
     /// Split codegen into this many units. Each function's body is emitted in
