@@ -21,7 +21,7 @@ struct [value] Packed {
 fn probe(p: Packed) -> i64 {
     let sum = p.big + 1;
     let twice = sum * 2;
-    twice - sum       // packed_print.lldb breaks on this line (line 23)
+    twice - sum       // packed_print.lldb breaks on this line (line 24)
 }
 
 fn run(n: i64) -> i64 {
