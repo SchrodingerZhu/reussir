@@ -76,10 +76,13 @@ jobs:
           # Install LLVM/Clang toolchain. libpolly-*-dev provides the static
           # Polly archives that llvm-config --link-static references (needed by
           # mlir-sys / tblgen / llvm-sys); libclang-*-dev provides libclang for
-          # their bindgen step.
+          # their bindgen step. python3-lldb-* provides lldb's script support,
+          # which the debuginfo lit suite needs to load the Reussir formatters
+          # (tests/integration/debuginfo; gdb comes with the runner image).
           sudo apt-get install -y \
             clang-${{ matrix.llvm-version }} \
             lldb-${{ matrix.llvm-version }} \
+            python3-lldb-${{ matrix.llvm-version }} \
             lld-${{ matrix.llvm-version }} \
             clangd-${{ matrix.llvm-version }} \
             libclang-${{ matrix.llvm-version }}-dev \

@@ -43,6 +43,23 @@ config.substitutions.append((r'%library_path', sh_path(config.library_path)))
 config.substitutions.append((r'%llc', sh_path(config.llc_path)))
 config.substitutions.append((r'%extra_sys_libs', sh_path(config.extra_sys_libs)))
 config.substitutions.append((r'%lli', sh_path(config.lli_path)))
+# The debug-info rescan suite (debuginfo/): %lldb is a batch, init-free lldb
+# with the Reussir data formatters (tool/lldb/reussir_formatters.py)
+# preloaded, so tests can drive a compiled executable and FileCheck the
+# debugger's variable printing. Gated on the `lldb` feature: configured-in
+# and present, or the tests are unsupported.
+if config.lldb_path and os.path.exists(config.lldb_path):
+    config.available_features.add('lldb')
+    config.substitutions.append((
+        r'%lldb',
+        '%s --batch --no-lldbinit -O "command script import %s"'
+        % (sh_path(config.lldb_path), sh_path(config.lldb_formatters_path))))
+# gdb decodes the variant DWARF natively — its tests pin the emitted debug
+# info with no formatter script in the loop. `-nx` keeps user init files out.
+if config.gdb_path and os.path.exists(config.gdb_path):
+    config.available_features.add('gdb')
+    config.substitutions.append((r'%gdb',
+                                 '%s --batch -nx' % sh_path(config.gdb_path)))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The Rust REPL; its suite lives in repl-rs/ and only runs when the `rrepl`

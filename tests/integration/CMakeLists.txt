@@ -69,6 +69,35 @@ find_llvm_tool(opt_path opt)
 find_llvm_tool(llc_path llc)
 find_llvm_tool(lli_path lli)
 
+# lldb drives the end-to-end debug-info suite (tests/integration/debuginfo):
+# it runs compiled executables under the debugger, with the Reussir formatters
+# preloaded, and FileChecks the printed variables. Any reasonably recent lldb
+# can read the DWARF the pipeline emits — it need not match the LLVM major.
+# Optional: when absent the `lldb` lit feature stays off and those tests are
+# marked unsupported.
+find_program(lldb_path
+    NAMES "lldb-${LLVM_VERSION_MAJOR}" "lldb${CMAKE_EXECUTABLE_SUFFIX}" lldb
+    HINTS ${LLVM_TOOLS_BINARY_DIR})
+if(lldb_path)
+    message(STATUS "lldb path: ${lldb_path}")
+else()
+    set(lldb_path "")
+    message(STATUS "lldb not found: debuginfo lit tests will be skipped")
+endif()
+set(reussir_lldb_formatters_path
+    "${CMAKE_SOURCE_DIR}/tool/lldb/reussir_formatters.py")
+
+# gdb is the pure-DWARF oracle for the same suite: it decodes the
+# `DW_TAG_variant_part` encoding natively (no formatters), so its tests pin
+# the debug info itself rather than any script. Optional like lldb.
+find_program(gdb_path NAMES gdb)
+if(gdb_path)
+    message(STATUS "gdb path: ${gdb_path}")
+else()
+    set(gdb_path "")
+    message(STATUS "gdb not found: gdb debuginfo lit tests will be skipped")
+endif()
+
 if(REUSSIR_RUNTIME_SANITIZERS AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR
     "Sanitizer integration tests require Clang as C compiler because they "

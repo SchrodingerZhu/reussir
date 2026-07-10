@@ -1,0 +1,162 @@
+// REQUIRES: gdb
+// RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
+// RUN: %cc %t.o %S/gdb_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %gdb -x %S/gdb_print.gdb %t.exe | %FileCheck %s
+
+// The pure-DWARF debug-info rescan: gdb decodes the `DW_TAG_variant_part`
+// encoding natively — no formatter script in the loop — so these checks pin
+// the emitted debug info itself. One pass over every layout the pipeline
+// produces: a value enum (all arms, including the nullary one), a boxed
+// self-recursive enum with a pointer chase through the box wrapper, a boxed
+// struct nesting a value struct/enum/bool, a packed mixed-alignment value
+// struct, regional records (struct and enum), a `#[repr(fixed)]` enum, and
+// mutually recursive enums.
+
+enum [value] Shape {
+    Dot,
+    Circle(i64),
+    Rect(i64, i64)
+}
+
+enum List {
+    Nil,
+    Cons(i64, List)
+}
+
+struct [value] Point {
+    x: i64,
+    y: i64
+}
+
+struct Snapshot {
+    origin: Point,
+    shape: Shape,
+    flag: bool
+}
+
+struct [value] Packed {
+    small: i32,
+    big: i64,
+    tiny: bool
+}
+
+struct [regional] RCell {
+    tag: i64,
+    peer: i64
+}
+
+enum [regional] RTag {
+    Zero,
+    Pair(i64, i64)
+}
+
+#[repr(fixed)]
+enum Fixed {
+    One(i64),
+    Two(i64, i64, i64)
+}
+
+enum Ping {
+    Stop,
+    Next(Pong)
+}
+
+enum Pong {
+    Wrap(i64, Ping)
+}
+
+fn inspect_shape(s: Shape) -> i64 {
+    let probe = 41;
+    probe + 1
+}
+
+fn inspect_list(l: List) -> i64 {
+    let depth = 3;
+    depth
+}
+
+fn inspect_snapshot(snap: Snapshot) -> i64 {
+    let here = 7;
+    here
+}
+
+fn inspect_packed(p: Packed) -> i64 {
+    let sum = p.big + 1;
+    sum
+}
+
+regional fn observe_cell(c: [flex] RCell) -> i64 {
+    let z = 1;
+    z
+}
+
+regional fn observe_rtag(r: [flex] RTag) -> i64 {
+    let z = 2;
+    z
+}
+
+fn observe_fixed(f: Fixed) -> i64 {
+    let z = 3;
+    z
+}
+
+fn observe_ping(p: Ping) -> i64 {
+    let z = 4;
+    z
+}
+
+fn run(n: i64) -> i64 {
+    let a = inspect_shape(Shape::Rect{n, n + 1});
+    let b = inspect_shape(Shape::Circle{n * 2});
+    let c = inspect_shape(Shape::Dot);
+    let d = inspect_list(List::Cons{n, List::Cons{n + 1, List::Nil}});
+    let e = inspect_snapshot(Snapshot{
+        origin: Point{x: n, y: n + 1},
+        shape: Shape::Circle{n + 2},
+        flag: true
+    });
+    let f = inspect_packed(Packed{small: 33, big: n * 100, tiny: true});
+    let g = regional {
+        let cell : [flex] RCell = RCell{tag: n, peer: n + 1};
+        observe_cell(cell)
+    };
+    let h = regional {
+        let r : [flex] RTag = RTag::Pair{n, n + 1};
+        observe_rtag(r)
+    };
+    let i = observe_fixed(Fixed::Two{n, n + 1, n + 2});
+    let j = observe_ping(Ping::Next{Pong::Wrap{n * 3, Ping::Stop}});
+    a + b + c + d + e + f + g + h + i + j
+}
+
+extern "C" trampoline "gdb_print_ffi" = run;
+
+// The value enum, all three arms — gdb collapses the variant part natively.
+// CHECK: $1 = Rect{f0: 7, f1: 8}
+// CHECK: $2 = Circle{f0: 14}
+// CHECK: $3 = Dot
+
+// The boxed self-recursive enum, then a chase through the recursive field:
+// the pointee is the box wrapper, whose `value` is the next cell's view.
+// CHECK: $4 = Cons{f0: 7, f1: {{0x[0-9a-f]+}}
+// CHECK: $5 = _RC4List$box {value: Cons{f0: 8, f1: {{0x[0-9a-f]+}}
+// CHECK: $6 = 8
+
+// The boxed struct: nested value struct, value enum member, real bool.
+// CHECK: $7 = _RC8Snapshot {origin: _RC5Point {x: 7, y: 8}, shape: Circle{f0: 9}, flag: true}
+
+// The packed mixed-alignment struct: declared names, physical (packed)
+// offsets — `big` precedes `small`/`tiny` in memory.
+// CHECK: $8 = _RC6Packed {small: 33, big: 700, tiny: true}
+
+// Regional records: three-word box header skipped; the enum's tag-first view
+// sits at header + 4. The argument binds past the implicit region parameter.
+// CHECK: $9 = _RC5RCell {tag: 7, peer: 8}
+// CHECK: $10 = Pair{f0: 7, f1: 8}
+
+// #[repr(fixed)]: uniform sizing keeps the same variant encoding.
+// CHECK: $11 = Two{f0: 7, f1: 8, f2: 9}
+
+// Mutual recursion: the chase crosses both composites.
+// CHECK: $12 = Next{f0: {{0x[0-9a-f]+}}
+// CHECK: $13 = _RC4Pong$box {value: Wrap{f0: 21, f1: {{0x[0-9a-f]+}}

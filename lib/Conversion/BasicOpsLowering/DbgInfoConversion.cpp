@@ -66,6 +66,38 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
       .Default([](auto attr) { return mlir::Type{}; });
 }
 
+// Whether `boxed` wraps a fused-header variant record (`{i32 count-slot,
+// i32 tag, payload}` — see TypeConverter). Such a record's debug composite
+// describes the TAG-FIRST VIEW (base at the tag, 4 bytes into the record):
+// the discriminant must sit at offset 0 of the composite or lldb's variant
+// parser misreads it (see the variant emission below). Regional boxes carry
+// their three-word header in front of the record; shared boxes of a
+// fused-header record ARE the record.
+bool boxedFusedVariant(DBGBoxedTypeAttr boxed) {
+  auto recordTy = llvm::dyn_cast_if_present<RecordType>(
+      getUnderlyingTypeFromDbgAttr(boxed.getDbgType()));
+  return recordTy && recordTy.hasFusedHeader();
+}
+
+// Byte offset from the box pointer to the data the payload's debug composite
+// describes: the tag-first view for a fused-header variant, the payload
+// itself otherwise, past a regional box's three-word `{status, next, vtable}`
+// header (a shared non-fused box has a one-word refcount header; a shared
+// fused box has none — the record overlays it).
+uint64_t boxedViewOffset(const mlir::DataLayout &dataLayout,
+                         mlir::MLIRContext *ctx, DBGBoxedTypeAttr boxed,
+                         mlir::Type payloadTy) {
+  uint64_t indexSize = dataLayout.getTypeSize(mlir::IndexType::get(ctx));
+  uint64_t payloadAlign = dataLayout.getTypeABIAlignment(payloadTy);
+  if (boxedFusedVariant(boxed)) {
+    uint64_t recordStart =
+        boxed.getRegional() ? llvm::alignTo(3 * indexSize, payloadAlign) : 0;
+    return recordStart + 4;
+  }
+  uint64_t headerWords = boxed.getRegional() ? 3 : 1;
+  return llvm::alignTo(headerWords * indexSize, payloadAlign);
+}
+
 // State for emitting recursive record debug types. A record's debug attr is
 // re-entered on a recursive field (the frontend hands us a memberless,
 // same-named placeholder to break its own recursion); MLIR attributes are
@@ -102,11 +134,16 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
           .template Case<DBGIntTypeAttr>([&](DBGIntTypeAttr intAttr) {
             auto sizeInBits =
                 dataLayout.getTypeSizeInBits(intAttr.getInnerType());
+            // `bool` gets the boolean encoding so debuggers print
+            // `true`/`false` instead of a character literal.
+            unsigned encoding = intAttr.getIsSigned()
+                                    ? llvm::dwarf::DW_ATE_signed
+                                    : llvm::dwarf::DW_ATE_unsigned;
+            if (intAttr.getDbgName() == "bool")
+              encoding = llvm::dwarf::DW_ATE_boolean;
             return mlir::LLVM::DIBasicTypeAttr::get(
                 moduleOp.getContext(), llvm::dwarf::DW_TAG_base_type,
-                intAttr.getDbgName(), sizeInBits,
-                intAttr.getIsSigned() ? llvm::dwarf::DW_ATE_signed
-                                      : llvm::dwarf::DW_ATE_unsigned);
+                intAttr.getDbgName(), sizeInBits, encoding);
           })
           .template Case<DBGRecordTypeAttr>([&](DBGRecordTypeAttr recAttr)
                                                 -> mlir::Attribute {
@@ -165,34 +202,45 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 uint64_t ptrBits = dataLayout.getTypeSizeInBits(ptrTy);
                 uint64_t ptrAlignBits =
                     dataLayout.getTypeABIAlignment(ptrTy) * 8;
-                // The rc pointer aims at the box *header*, not the payload, and a
-                // member cannot carry the `DW_OP_deref`/header-skip expression a
-                // variable would. So the pointee models the box `{ header, value }`
-                // with the payload (`value`) past the header — one ref-count word
-                // for a shared box, three (`{ status, next, vtable }`) regional —
-                // matching the variable-side `DIExpression` offset.
-                auto payloadUnderlying = getUnderlyingTypeFromDbgAttr(typeAttr);
+                // The rc pointer aims at the box *header*, not the payload
+                // view, and a member cannot carry the `DW_OP_deref`/skip
+                // expression a variable would. So the pointee models the box
+                // `{ header, value }` with `value` — the payload composite —
+                // at the view offset: past the refcount word (one shared,
+                // three regional), or at the tag (record + 4) for a
+                // fused-header variant whose composite is the tag-first view.
+                auto payloadUnderlying =
+                    getUnderlyingTypeFromDbgAttr(typeAttr);
                 if (!payloadUnderlying)
                   return std::nullopt;
                 uint64_t payloadBits =
                     dataLayout.getTypeSizeInBits(payloadUnderlying);
                 uint64_t payloadAlignBytes =
                     dataLayout.getTypeABIAlignment(payloadUnderlying);
-                uint64_t headerWords = boxed.getRegional() ? 3 : 1;
-                uint64_t valueOffBytes = llvm::alignTo(
-                    headerWords * (ptrBits / 8), payloadAlignBytes);
+                uint64_t valueOffBytes = boxedViewOffset(
+                    dataLayout, ctx, boxed, payloadUnderlying);
+                uint64_t valueBits =
+                    boxedFusedVariant(boxed) ? payloadBits - 32 : payloadBits;
                 auto valueMember = mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_member,
-                    mlir::StringAttr::get(ctx, "value"), diType, payloadBits,
+                    mlir::StringAttr::get(ctx, "value"), diType, valueBits,
                     payloadAlignBytes * 8, valueOffBytes * 8,
                     /*address space=*/std::nullopt, /*extraData=*/nullptr);
-                auto box = makeComposite(
-                    llvm::dwarf::DW_TAG_structure_type,
-                    mlir::StringAttr::get(ctx, ""), valueOffBytes * 8 + payloadBits,
-                    payloadAlignBytes * 8, {valueMember});
+                // Named `<record>$box` so the lldb formatters' `^_R` type
+                // match engages on the wrapper (and its pointers) and can
+                // collapse the box to its payload's active case.
+                mlir::StringAttr boxName = mlir::StringAttr::get(ctx, "");
+                if (auto payloadRec = llvm::dyn_cast_if_present<
+                        DBGRecordTypeAttr>(boxed.getDbgType()))
+                  boxName = mlir::StringAttr::get(
+                      ctx, payloadRec.getDbgName().getValue() + "$box");
+                auto pointee = makeComposite(
+                    llvm::dwarf::DW_TAG_structure_type, boxName,
+                    valueOffBytes * 8 + valueBits, payloadAlignBytes * 8,
+                    {valueMember});
                 auto pointer = mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_pointer_type,
-                    /*name=*/mlir::StringAttr{}, box, ptrBits, ptrAlignBits,
+                    /*name=*/mlir::StringAttr{}, pointee, ptrBits, ptrAlignBits,
                     /*offsetInBits=*/0, /*address space=*/std::nullopt,
                     /*extraData=*/nullptr);
                 return std::make_tuple(mlir::cast<mlir::LLVM::DITypeAttr>(pointer),
@@ -211,35 +259,137 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
             auto alignInBits =
                 dataLayout.getTypeABIAlignment(recAttr.getUnderlyingType()) * 8;
 
+            // Physical field offsets (bits) for `count` fields with the given
+            // sizes/alignments, starting at `baseBits`. Compound records are
+            // *packed* — members laid out in descending storage-alignment
+            // order (TypeConverter/getPackedOrder), not declaration order —
+            // so the offsets must be accumulated along the packed order and
+            // reported back per declared field. Falls back to declaration
+            // order when the underlying record is unavailable (e.g. a layout
+            // rebuilt from textual MIR).
+            // The base is added AFTER packing: a fused-header variant's case
+            // fields are view-relative (view base = the tag, 4 bytes into an
+            // 8-aligned record), so aligning `base + offset` per field would
+            // snap them past their real positions.
+            auto physicalOffsets =
+                [&](RecordType recTy, llvm::ArrayRef<uint64_t> fieldSizeBits,
+                    llvm::ArrayRef<uint64_t> fieldAlignBits,
+                    uint64_t baseBits) -> llvm::SmallVector<uint64_t> {
+              llvm::SmallVector<uint32_t> order(fieldSizeBits.size());
+              for (uint32_t i = 0; i < order.size(); ++i)
+                order[i] = i;
+              if (recTy && recTy.isCompound() &&
+                  recTy.getMembers().size() == fieldSizeBits.size())
+                order = recTy.getPackedOrder(dataLayout);
+              llvm::SmallVector<uint64_t> offsets(fieldSizeBits.size());
+              uint64_t current = 0;
+              for (uint32_t logical : order) {
+                current = llvm::alignTo(current, fieldAlignBits[logical]);
+                offsets[logical] = baseBits + current;
+                current += fieldSizeBits[logical];
+              }
+              return offsets;
+            };
+
             if (recAttr.getIsVariant()) {
-              // A variant lays out as a tag word followed by a payload area large
-              // enough for any case. MLIR's `DICompositeTypeAttr` cannot express a
-              // discriminated `DW_TAG_variant_part`, so the cases are modelled as
-              // an overlapping union (every case at the payload offset) carried in
-              // a `payload` member after the `tag` — every case stays inspectable.
-              llvm::SmallVector<mlir::LLVM::DINodeAttr> cases;
+              // A variant lays out as a tag plus a payload area large enough
+              // for any case. MLIR's `DICompositeTypeAttr` cannot express a
+              // discriminated `DW_TAG_variant_part`, so the cases are modelled
+              // as an overlapping union carried in a `payload` member next to
+              // the `tag`; `fixupVariantDebugInfo` rewrites that into the real
+              // variant_part after translation.
+              //
+              // The encoding matches rustc's — the shape debuggers are
+              // actually tested against: the DISCRIMINANT SITS AT OFFSET 0 of
+              // the described composite, each case is a struct spanning the
+              // whole composite with its fields at composite-relative
+              // offsets, and every case member is at offset 0. Anything else
+              // is valid DWARF that lldb misreads: its variant parser drops
+              // the discriminant's own member location (the value is even
+              // misapplied as a bitfield width), so a tag anywhere but the
+              // composite's start decodes garbage.
+              //
+              // A value variant already starts at its tag. A fused-header
+              // variant (`{i32 count, i32 tag, payload}`) does not — so its
+              // composite describes the TAG-FIRST VIEW of the box, base at
+              // the tag (box + 4): the variable-side `DIExpression` and the
+              // member-side box wrapper (see boxedExpr / memberType) both
+              // present the box from that view, and gdb reads the same
+              // standard DWARF.
+              auto recordTy = llvm::dyn_cast_if_present<RecordType>(
+                  recAttr.getUnderlyingType());
+
+              // Pass 1: translate every case's fields; the payload area's
+              // alignment (needed for its offset) is the max field alignment.
+              struct CaseField {
+                mlir::StringAttr name;
+                mlir::LLVM::DITypeAttr type;
+                uint64_t sizeBits;
+                uint64_t alignBits;
+              };
+              struct CaseInfo {
+                mlir::StringAttr name;
+                RecordType record; // the arm's record type; may be null
+                llvm::SmallVector<CaseField> fields;
+              };
+              llvm::SmallVector<CaseInfo> caseInfos;
               uint64_t payloadAlignBytes = 1;
               for (auto element : recAttr.getMembers()) {
                 auto memberAttr = llvm::dyn_cast<DBGRecordMemberAttr>(element);
                 if (!memberAttr)
                   return nullptr;
-                auto info = memberType(memberAttr.getTypeAttr());
-                if (!info)
-                  return nullptr;
-                auto [caseTy, caseSizeBits, caseAlignBits] = *info;
-                payloadAlignBytes =
-                    std::max(payloadAlignBytes, caseAlignBits / 8);
-                cases.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
-                    ctx, llvm::dwarf::DW_TAG_member, memberAttr.getName(), caseTy,
-                    caseSizeBits, caseAlignBits, /*offsetInBits=*/0,
-                    /*address space=*/std::nullopt, /*extraData=*/nullptr));
+                CaseInfo info{memberAttr.getName(), {}, {}};
+                if (auto caseRec = llvm::dyn_cast<DBGRecordTypeAttr>(
+                        memberAttr.getTypeAttr())) {
+                  info.record = llvm::dyn_cast_if_present<RecordType>(
+                      caseRec.getUnderlyingType());
+                  for (auto fieldElem : caseRec.getMembers()) {
+                    auto fieldAttr =
+                        llvm::dyn_cast<DBGRecordMemberAttr>(fieldElem);
+                    if (!fieldAttr)
+                      return nullptr;
+                    auto fieldInfo = memberType(fieldAttr.getTypeAttr());
+                    if (!fieldInfo)
+                      return nullptr;
+                    auto [fieldTy, fieldBits, fieldAlignBits] = *fieldInfo;
+                    payloadAlignBytes =
+                        std::max(payloadAlignBytes, fieldAlignBits / 8);
+                    info.fields.push_back(
+                        {fieldAttr.getName(), fieldTy, fieldBits,
+                         fieldAlignBits});
+                  }
+                } else {
+                  // Not a record payload: model it as the case's single field.
+                  auto fieldInfo = memberType(memberAttr.getTypeAttr());
+                  if (!fieldInfo)
+                    return nullptr;
+                  auto [fieldTy, fieldBits, fieldAlignBits] = *fieldInfo;
+                  payloadAlignBytes =
+                      std::max(payloadAlignBytes, fieldAlignBits / 8);
+                  info.fields.push_back({mlir::StringAttr::get(ctx, "f0"),
+                                         fieldTy, fieldBits, fieldAlignBits});
+                }
+                caseInfos.push_back(std::move(info));
               }
-              auto indexTy = mlir::IndexType::get(ctx);
-              uint64_t tagSizeBits = dataLayout.getTypeSizeInBits(indexTy);
-              uint64_t tagSizeBytes = dataLayout.getTypeSize(indexTy);
+
+              // Mirror the converted layout exactly (see TypeConverter): a
+              // fused-header variant is `{i32 count-slot, i32 tag, payload}`
+              // — its view starts at the tag, 4 bytes in — and a value
+              // variant `{minimal-width tag, payload}` (tag at 0, payload at
+              // its natural alignment past the tag). Every offset below is
+              // view-relative.
+              mlir::Type tagIntTy =
+                  recordTy ? mlir::Type(recordTy.getTagType())
+                           : mlir::Type(mlir::IndexType::get(ctx));
+              uint64_t tagSizeBits = dataLayout.getTypeSizeInBits(tagIntTy);
+              uint64_t tagSizeBytes = dataLayout.getTypeSize(tagIntTy);
+              bool fusedHeader = recordTy && recordTy.hasFusedHeader();
+              uint64_t viewShiftBytes = fusedHeader ? 4 : 0;
               uint64_t payloadOffsetBytes =
-                  llvm::alignTo(tagSizeBytes, payloadAlignBytes);
-              uint64_t payloadSizeBits = sizeInBits - payloadOffsetBytes * 8;
+                  llvm::alignTo(fusedHeader ? 8 : tagSizeBytes,
+                                payloadAlignBytes) -
+                  viewShiftBytes;
+              uint64_t viewSizeBits = sizeInBits - viewShiftBytes * 8;
               auto tagTy = mlir::LLVM::DIBasicTypeAttr::get(
                   ctx, llvm::dwarf::DW_TAG_base_type,
                   mlir::StringAttr::get(ctx, "<tag>"), tagSizeBits,
@@ -249,20 +399,48 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   mlir::StringAttr::get(ctx, "tag"), tagTy, tagSizeBits,
                   tagSizeBytes * 8, /*offsetInBits=*/0,
                   /*address space=*/std::nullopt, /*extraData=*/nullptr);
+
+              // Pass 2: build each view-size case struct with view-relative
+              // field offsets (packed order within the arm), and the
+              // overlapping union of the cases.
+              llvm::SmallVector<mlir::LLVM::DINodeAttr> cases;
+              for (auto &info : caseInfos) {
+                llvm::SmallVector<uint64_t> fieldSizes, fieldAligns;
+                for (auto &field : info.fields) {
+                  fieldSizes.push_back(field.sizeBits);
+                  fieldAligns.push_back(field.alignBits);
+                }
+                auto offsets = physicalOffsets(info.record, fieldSizes,
+                                               fieldAligns,
+                                               payloadOffsetBytes * 8);
+                llvm::SmallVector<mlir::LLVM::DINodeAttr> fields;
+                for (auto [field, offset] : llvm::zip(info.fields, offsets))
+                  fields.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
+                      ctx, llvm::dwarf::DW_TAG_member, field.name, field.type,
+                      field.sizeBits, field.alignBits, offset,
+                      /*address space=*/std::nullopt, /*extraData=*/nullptr));
+                auto caseComposite = makeComposite(
+                    llvm::dwarf::DW_TAG_structure_type, info.name,
+                    viewSizeBits, alignInBits, fields);
+                cases.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
+                    ctx, llvm::dwarf::DW_TAG_member, info.name, caseComposite,
+                    viewSizeBits, alignInBits, /*offsetInBits=*/0,
+                    /*address space=*/std::nullopt, /*extraData=*/nullptr));
+              }
               auto payloadUnion = makeComposite(
                   llvm::dwarf::DW_TAG_union_type, mlir::StringAttr::get(ctx, ""),
-                  payloadSizeBits, payloadAlignBytes * 8, cases);
+                  viewSizeBits, payloadAlignBytes * 8, cases);
               auto payloadMember = mlir::LLVM::DIDerivedTypeAttr::get(
                   ctx, llvm::dwarf::DW_TAG_member,
                   mlir::StringAttr::get(ctx, "payload"), payloadUnion,
-                  payloadSizeBits, payloadAlignBytes * 8,
-                  payloadOffsetBytes * 8, /*address space=*/std::nullopt,
+                  viewSizeBits, payloadAlignBytes * 8,
+                  /*offsetInBits=*/0, /*address space=*/std::nullopt,
                   /*extraData=*/nullptr);
               llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {tagMember,
                                                                    payloadMember};
               auto composite =
                   makeComposite(llvm::dwarf::DW_TAG_structure_type, name,
-                                sizeInBits, alignInBits, members);
+                                viewSizeBits, alignInBits, members);
               state->ancestors.erase(name);
               if (!state->used.contains(recId))
                 return composite;
@@ -270,8 +448,18 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   composite.withRecId(recId));
             }
 
-            llvm::SmallVector<mlir::LLVM::DINodeAttr> members;
-            uint64_t currentOffsetBits = 0;
+            // A compound record: translate the fields, then place them at
+            // their *packed* physical offsets (declaration order only breaks
+            // ties — see physicalOffsets above).
+            auto recordTy = llvm::dyn_cast_if_present<RecordType>(
+                recAttr.getUnderlyingType());
+            struct FieldInfo {
+              mlir::StringAttr name;
+              mlir::LLVM::DITypeAttr type;
+              uint64_t sizeBits;
+              uint64_t alignBits;
+            };
+            llvm::SmallVector<FieldInfo> fields;
             for (auto element : recAttr.getMembers()) {
               auto memberAttr = llvm::dyn_cast<DBGRecordMemberAttr>(element);
               if (!memberAttr)
@@ -280,14 +468,23 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               if (!info)
                 return nullptr;
               auto [memberTy, memberSizeBits, memberAlignBits] = *info;
-              currentOffsetBits = llvm::alignTo(currentOffsetBits, memberAlignBits);
+              fields.push_back({memberAttr.getName(), memberTy, memberSizeBits,
+                                memberAlignBits});
+            }
+            llvm::SmallVector<uint64_t> fieldSizes, fieldAligns;
+            for (auto &field : fields) {
+              fieldSizes.push_back(field.sizeBits);
+              fieldAligns.push_back(field.alignBits);
+            }
+            auto offsets =
+                physicalOffsets(recordTy, fieldSizes, fieldAligns, /*base*/ 0);
+            llvm::SmallVector<mlir::LLVM::DINodeAttr> members;
+            for (auto [field, offset] : llvm::zip(fields, offsets))
               members.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
                   moduleOp->getContext(), llvm::dwarf::DW_TAG_member,
-                  memberAttr.getName(), memberTy, memberSizeBits, memberAlignBits,
-                  currentOffsetBits,
+                  field.name, field.type, field.sizeBits, field.alignBits,
+                  offset,
                   /*address space=*/std::nullopt, /*extraData=*/nullptr));
-              currentOffsetBits += memberSizeBits;
-            }
             auto composite = makeComposite(llvm::dwarf::DW_TAG_class_type, name,
                                            sizeInBits, alignInBits, members);
             state->ancestors.erase(name);
@@ -417,20 +614,17 @@ mlir::LLVM::DIExpressionAttr boxedExpr(mlir::ModuleOp moduleOp,
     return {};
   auto *context = moduleOp.getContext();
   mlir::DataLayout dataLayout{moduleOp};
-  // The box header is a run of pointer-sized words: one ref-count word for a
-  // shared box `{ count, payload }`, or three (`{ status, next, vtable }`) for a
-  // regional box. The payload follows, aligned up to its own alignment.
-  uint64_t headerWords = boxed.getRegional() ? 3 : 1;
-  uint64_t indexSize =
-      dataLayout.getTypeSize(mlir::IndexType::get(context));
-  uint64_t offset = llvm::alignTo(headerWords * indexSize,
-                                  dataLayout.getTypeABIAlignment(payloadTy));
+  // Dereference the rc pointer, then skip to the data the payload composite
+  // describes: past the box header (one ref-count word shared, three words
+  // regional), or to the tag-first view (record + 4) for a fused-header
+  // variant. See boxedViewOffset.
+  uint64_t offset = boxedViewOffset(dataLayout, context, boxed, payloadTy);
   llvm::SmallVector<mlir::LLVM::DIExpressionElemAttr, 2> elems = {
       mlir::LLVM::DIExpressionElemAttr::get(context, llvm::dwarf::DW_OP_deref,
-                                            {}),
-      mlir::LLVM::DIExpressionElemAttr::get(
-          context, llvm::dwarf::DW_OP_plus_uconst, {offset}),
-  };
+                                            {})};
+  if (offset != 0)
+    elems.push_back(mlir::LLVM::DIExpressionElemAttr::get(
+        context, llvm::dwarf::DW_OP_plus_uconst, {offset}));
   return mlir::LLVM::DIExpressionAttr::get(context, elems);
 }
 } // namespace
@@ -492,6 +686,16 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
       auto updatedFuncLoc = funcOp->getLoc();
       if (auto dbgFuncArgsAttr =
               funcOp->getAttrOfType<mlir::ArrayAttr>("reussir.dbg_func_args")) {
+        // `dbg_func_args` describes the SOURCE parameters; the lowered
+        // function may take leading implicit arguments in front of them — a
+        // `regional` function receives the region it allocates into as its
+        // first argument. Bind each debug attr to the corresponding trailing
+        // argument, or a regional fn's first source parameter gets described
+        // as the region pointer.
+        size_t implicitLeadingArgs =
+            funcOp.getNumArguments() >= dbgFuncArgsAttr.size()
+                ? funcOp.getNumArguments() - dbgFuncArgsAttr.size()
+                : 0;
         for (auto [idx, argAttr] :
              llvm::enumerate(dbgFuncArgsAttr.getValue())) {
           if (auto funcArgAttr = mlir::dyn_cast<DBGFuncArgAttr>(argAttr)) {
@@ -499,8 +703,9 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
                 translateDBGAttrToLLVM<mlir::LLVM::DILocalVariableAttr>(
                     moduleOp, funcArgAttr, funcFileAttr, dbgCompileUnitAttr,
                     funcOp, subprogram, updatedFuncLoc);
-            if (translated && idx < funcOp.getNumArguments()) {
-              auto argValue = funcOp.getArgument(idx);
+            if (translated &&
+                idx + implicitLeadingArgs < funcOp.getNumArguments()) {
+              auto argValue = funcOp.getArgument(idx + implicitLeadingArgs);
               auto &entryBlock = funcOp.getBody().front();
               builder.setInsertionPointToStart(&entryBlock);
               // Spill the argument to a stack slot and describe *that* with

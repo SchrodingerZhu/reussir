@@ -1,0 +1,20 @@
+# Companion command script for variant_print.rr — see the RUN lines there.
+# Breakpoints go on the inspect functions; each stop prints the argument the
+# checks pin down.
+breakpoint set --name inspect_shape
+breakpoint set --name inspect_list
+breakpoint set --name inspect_snapshot
+breakpoint set --name inspect_tree
+run
+frame variable s
+continue
+frame variable s
+continue
+frame variable s
+continue
+frame variable l
+continue
+frame variable snap
+continue
+frame variable t
+continue
