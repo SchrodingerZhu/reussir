@@ -471,20 +471,15 @@ TokenType ReussirRcDecOp::getTokenType() {
     mlir::ModuleOp module = (*this)->getParentOfType<mlir::ModuleOp>();
     bool nullaryImmediates = module && module->hasAttr(kSpecialPtrTagAttr) &&
                              rcType.mayCarrySpecialPointerTag();
-    // Mirrors NullaryVariantPattern's per-arm eligibility (SpecialPointerTag):
-    // an empty compound arm with an encodable tag never boxes. "Encodable"
-    // means the tag fits the immediate's one-byte tag slot: the TBI encoding
-    // stores `tag + 1` in the pointer's top byte (the +1 reserves 0 to mean
-    // "untagged, a real box pointer"), so only tags 0..254 have a
-    // representation — see `ReussirRcTaggedOp::verify` and the same bound in
-    // `RcType::mayCarrySpecialPointerTag`. A nullary arm with a larger tag is
-    // NOT rewritten by the pass, still allocates a real box, and therefore
-    // must keep counting toward the token type.
+    // An arm cannot produce a token exactly when the scheme is enabled and
+    // its constructions are rewritten to immediates — which for a taggable
+    // type (`mayCarrySpecialPointerTag`, folded into `nullaryImmediates`
+    // above and guaranteeing the tag-slot range at the type level) is
+    // simply every *nullary* arm. Same predicate as the rewrite pattern, so
+    // the two can never drift apart; encoding-agnostic (the arch/encoding
+    // choice was resolved when the pass stamped the module attribute).
     auto producesToken = [&](size_t tag) {
-      if (!nullaryImmediates || tag + 1 > 0xFF)
-        return true;
-      auto arm = llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
-      return !(arm && arm.isCompound() && arm.getMembers().empty());
+      return !(nullaryImmediates && recordType.isNullaryArm(tag));
     };
     std::optional<uint64_t> tokenArmSize;
     bool uniform = true;

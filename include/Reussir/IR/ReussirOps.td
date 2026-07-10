@@ -647,18 +647,36 @@ def ReussirRcCreateVariantOp : ReussirRcOp<"create_variant", [
 }
 
 def ReussirRcTaggedOp : ReussirRcOp<"tagged", [Pure]> {
-  let summary = "Materialize a nullary variant as a tagged pointer immediate";
+  let summary = "Materialize a nullary variant as a pointer immediate";
   let description = [{
     `reussir.rc.tagged` produces an rc pointer encoding a *nullary* variant
-    (an arm whose payload is an empty compound) as an unboxed immediate: the
-    pointer's top byte is `tag + 1` and its low bits hold the address of a
-    per-tag dummy box `{refcount = 2, tag}`. No allocation takes place, and
-    no observable reference counting: because the target's TBI ignores the
-    top byte on data accesses, refcount/uniqueness/tag reads through the
-    value land in the dummy box and observe a well-formed shared header,
-    so the hot lowerings need no immediate-checks at all. Only introduced
-    when the special-pointer-tag scheme is enabled (aarch64 targets, whose
-    TBI the encoding hard-depends on).
+    (an arm whose payload is an empty compound) as an unboxed immediate. No
+    allocation takes place — no token is ever attached — and no observable
+    reference counting happens: the value points at a per-tag dummy box (a
+    static global shaped like a real box header `{refcount, tag}`), so
+    refcount/uniqueness/tag reads through it land in well-formed memory and
+    observe a never-unique shared header — the hot lowerings need no
+    immediate-checks at all; only the few guarded refcount *stores* must
+    avoid writing the dummy box.
+
+    The op itself is encoding-agnostic; the module's
+    `reussir.special_ptr_tag` attribute selects how the immediate is
+    encoded at LLVM lowering:
+      * `immortal` (any target): the immediate is the dummy box address,
+        plain; guards recognize immediates by the dummy refcount's
+        immortal magnitude.
+      * `tbi` (aarch64, 64-bit): additionally ORs `(tag + 1) << 56` into
+        the pointer's top byte (hardware top-byte-ignore masks it on data
+        accesses), so the tag also decodes from the pointer without a
+        memory access; guards test the top byte.
+
+    Under both encodings the op reserves one byte for the tag, `0` meaning
+    "untagged, a real box pointer" — the verifier bounds `tag + 1 <= 0xFF`
+    so the same IR stays valid under either encoding. That range is a
+    *type-level* eligibility concern (`RcType::mayCarrySpecialPointerTag`
+    refuses types whose nullary arms exceed the slot); per arm, "nullary on
+    a taggable type" alone decides immediate-vs-boxed, and hence
+    token-vs-no-token.
     ```mlir
     %leaf = reussir.rc.tagged tag(1) : !reussir.rc<!reussir.record<...>>
     ```
