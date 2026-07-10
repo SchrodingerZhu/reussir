@@ -1,0 +1,323 @@
+{
+  description = "Reussir — MLIR-based compiler framework for RC-managed functional programs";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs = { self, nixpkgs, fenix, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+
+        # LLVM/MLIR 22 — must match FindLLVM.cmake's version check (22.x only).
+        llvmPkgs = pkgs.llvmPackages_22;
+
+        # Pinned nightly Rust toolchain from rust-toolchain.toml.
+        # The sha256 covers the channel manifest downloaded by fenix.
+        rustToolchain = fenix.packages.${system}.fromToolchainFile {
+          file = ./rust-toolchain.toml;
+          sha256 = "sha256-7gtdtMrnS61/fyYXzXomlz9yIODc+zU9kfn2mIVsPYM=";
+        };
+
+        # Merge LLVM+MLIR outputs into one prefix so that llvm-sys/mlir-sys
+        # Rust build scripts (which expect a single "install prefix" with
+        # bin/llvm-config, bin/mlir-tblgen, include/, lib/) work correctly.
+        #
+        # nixpkgs splits each LLVM component into multiple outputs:
+        #   llvm.dev  → bin/llvm-config, include/llvm*, lib/cmake/llvm/
+        #   llvm.lib  → lib/libLLVM*.so / lib/libLLVM*.a
+        #   mlir.dev  → include/mlir*, lib/cmake/mlir/
+        #   mlir      → lib/libMLIR*.a
+        #   tblgen    → bin/llvm-tblgen, bin/mlir-tblgen, bin/clang-tblgen
+        #
+        # symlinkJoin (buildEnv) deep-merges these into one virtual prefix.
+        #
+        # postBuild patches LLVMConfig.cmake to set LLVM_INSTALL_PREFIX to this
+        # join path rather than the original llvm.out store path.  cmake/FindLLVM.cmake
+        # (project code) derives REUSSIR_LLVM_PREFIX from LLVM_INSTALL_PREFIX and
+        # passes it as LLVM_SYS_221_PREFIX to cargo.  llvm-sys needs to find
+        # bin/llvm-config at that prefix — but llvm.out doesn't have it; only
+        # llvm.dev does.  The patched join path has llvm-config (from llvm.dev).
+        llvmMlirJoin = pkgs.symlinkJoin {
+          name = "reussir-llvm-mlir-${llvmPkgs.release_version}";
+          paths = [
+            llvmPkgs.llvm.dev   # llvm-config, headers, cmake configs
+            llvmPkgs.llvm.lib   # LLVM shared/static libraries
+            llvmPkgs.mlir.dev   # MLIR headers, cmake configs
+            llvmPkgs.mlir       # MLIR static libraries
+            llvmPkgs.tblgen     # mlir-tblgen, llvm-tblgen
+          ];
+          postBuild = ''
+            sed -i \
+              "s|set(LLVM_INSTALL_PREFIX \"[^\"]*\")|set(LLVM_INSTALL_PREFIX \"$out\")|" \
+              "$out/lib/cmake/llvm/LLVMConfig.cmake"
+
+            # llvm-config has the llvm.dev/llvm.lib store paths baked in, so
+            # --includedir/--libdir point at outputs that lack the MLIR pieces
+            # (mlir-c/ headers, libMLIR*.a).  mlir-sys walks those two paths in
+            # its build script and fails.  Replace the symlink with a shim that
+            # rewrites the llvm output paths to this join, which has everything.
+            rm "$out/bin/llvm-config"
+            cat > "$out/bin/llvm-config" <<EOF
+            #!${pkgs.runtimeShell}
+            output=\$("${llvmPkgs.llvm.dev}/bin/llvm-config" "\$@") || exit \$?
+            printf '%s\n' "\$output" | sed \
+              -e "s|${llvmPkgs.llvm.dev}|$out|g" \
+              -e "s|${llvmPkgs.llvm.lib}|$out|g" \
+              -e "s|${llvmPkgs.llvm}|$out|g"
+            EOF
+            chmod +x "$out/bin/llvm-config"
+          '';
+        };
+
+        # Rust channel string from rust-toolchain.toml (e.g. "nightly-2026-02-15").
+        # Used in the shellHook to pre-populate the local rustup toolchain directory.
+        rustChannel =
+          (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+
+        # System header flags for the clang-scan-deps workaround.
+        #
+        # cmake 3.28+ with C++23 uses clang-scan-deps (the raw binary, not the
+        # nixpkgs clang wrapper) for dependency scanning.  clang-scan-deps uses
+        # the clang library API directly — it does NOT invoke the wrapper script —
+        # so it never receives the system header paths the wrapper injects from
+        # its nix-support/ files.  Without those paths, scanning fails with
+        # "fatal error: 'type_traits' file not found" (GCC C++ stdlib) then
+        # "'features.h' file not found" (glibc).
+        #
+        # The fix: embed the missing include paths in CMAKE_CXX_FLAGS (stored in
+        # CMakeCache.txt and propagated into compile_commands.json).  clang-scan-
+        # deps reads the compilation database, so it sees these flags and the
+        # internal clang driver finds the headers.
+        #
+        # Headers required:
+        #   GCC C++ stdlib  →  from libcxx-cxxflags: -cxx-isystem <path> pairs
+        #   glibc           →  from libc-cflags:     -idirafter <path>
+        #
+        # We parse both files at Nix eval time (single space-separated lines) by
+        # zipping words with their successor to find each token's argument.
+        nixSysFlags =
+          let
+            # Generic helper: split a nix-support flag file into words, then
+            # collect every occurrence of <token> followed by its argument path.
+            extractPaths = file: token:
+              let
+                words  = builtins.filter (s: s != "")
+                           (pkgs.lib.splitString " "
+                             (builtins.readFile file));
+                indexed = pkgs.lib.imap0 (i: v: { inherit i v; }) words;
+              in
+              map (e: builtins.elemAt words (e.i + 1))
+                (builtins.filter (e: e.v == token) indexed);
+
+            gccCxxPaths = extractPaths
+              "${llvmPkgs.stdenv.cc}/nix-support/libcxx-cxxflags"
+              "-cxx-isystem";
+
+            glibcPaths = extractPaths
+              "${llvmPkgs.stdenv.cc}/nix-support/libc-cflags"
+              "-idirafter";
+          in
+          pkgs.lib.concatStringsSep " " (
+            (map (p: "-isystem ${p}") gccCxxPaths) ++
+            (map (p: "-idirafter ${p}") glibcPaths)
+          );
+
+      in {
+        # ---------------------------------------------------------------------------
+        # Development shell: `nix develop` or `direnv allow` (via .envrc).
+        #
+        # Provides everything needed to:
+        #   cmake --preset nix-dev -B build
+        #   cmake --build build
+        #
+        # LSP support:
+        #   C/C++  → clangd (from clang-tools), reads build/compile_commands.json
+        #   Rust   → rust-analyzer (from pkgs), reads rust-project.json / Cargo.toml
+        # ---------------------------------------------------------------------------
+        devShells.default = pkgs.mkShell.override {
+          # Build C++ code with clang 22 (same toolchain as the project uses).
+          stdenv = llvmPkgs.stdenv;
+        } {
+          name = "reussir-dev";
+
+          # Disable fortify hardening: cargo compiles build scripts with
+          # opt-level=0 (cargo's rule: build scripts always use the dev
+          # profile, even for --profile release).  The nixpkgs clang wrapper
+          # injects -O2 (before) and -D_FORTIFY_SOURCE=3 (after) via hardening,
+          # but cc-rs's -O0 overrides the -O2, leaving FORTIFY_SOURCE defined
+          # without optimization.  tblgen's build.rs then adds -Werror which
+          # turns the resulting #warning into a fatal error.
+          # Disabling fortify in the dev shell is the standard fix; production
+          # builds go through their own hardened derivation.
+          hardeningDisable = [ "fortify" "fortify3" ];
+
+          packages = [
+            # Build orchestration
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.pkg-config
+
+            # Python (needed by lit and MLIR's Python bindings)
+            pkgs.python3
+            pkgs.python3Packages.lit
+
+            # C++ test framework (CMakeLists.txt: find_package(GTest REQUIRED))
+            pkgs.gtest
+
+            # LLVM/Clang/MLIR toolchain
+            llvmPkgs.clang          # clang, clang++
+            llvmPkgs.lld            # lld linker
+            llvmPkgs.clang-tools    # clangd, clang-tidy, clang-format, clang-scan-deps
+            llvmPkgs.llvm           # llvm tools (llvm-ar, opt, …)
+            llvmPkgs.mlir           # mlir-opt, mlir-translate, etc.
+            llvmPkgs.tblgen         # mlir-tblgen, llvm-tblgen (needed by cmake & mlir-sys)
+
+            # Rust toolchain (nightly-2026-02-15 as pinned in rust-toolchain.toml)
+            rustToolchain
+
+            # Rust LSP — works alongside the pinned toolchain
+            pkgs.rust-analyzer
+
+            # cargo-nextest is convenient for `cargo nextest run` workflows
+            pkgs.cargo-nextest
+
+            # spdlog is used by lib/Bridge (find_package(spdlog REQUIRED))
+            pkgs.spdlog
+
+            # zlib / libxml2 are LLVM link-time deps on some targets
+            pkgs.zlib
+            pkgs.libxml2
+          ];
+
+          # --- CMake discovery: tell cmake exactly where the LLVM/MLIR configs are
+          LLVM_DIR = "${llvmMlirJoin}/lib/cmake/llvm";
+          MLIR_DIR = "${llvmMlirJoin}/lib/cmake/mlir";
+
+          # --- Rust crate build-script discovery variables.
+          #     The cmake build exports these via REUSSIR_BACKEND_CARGO_ENV (see
+          #     crates/reussir-backend/CMakeLists.txt).  We mirror them here so
+          #     that plain `cargo build -p reussir-backend` also works.
+          #     Two numbering schemes collide here: the melior family uses
+          #     "<llvm-major>0" (220 = LLVM 22), while llvm-sys uses its crate
+          #     major, which mashes LLVM major.minor together (221 = LLVM 22.1).
+          # read by mlir-sys 220 (the git rev patched in Cargo.toml)
+          MLIR_SYS_220_PREFIX     = "${llvmMlirJoin}";
+          # melior-macro 0.20 still uses the 210 variable name despite targeting
+          # MLIR 22; point it at the same combined prefix.
+          MLIR_SYS_210_PREFIX     = "${llvmMlirJoin}";
+          # read by tblgen 0.9.1 (via its llvm22-0 feature)
+          TABLEGEN_220_PREFIX     = "${llvmMlirJoin}";
+          # read by llvm-sys 221.0.1 — the only LLVM_SYS_* var in Cargo.lock
+          LLVM_SYS_221_PREFIX     = "${llvmMlirJoin}";
+
+          # bindgen (mlir-sys / llvm-sys wrapper.h) loads libclang.so at build
+          # time; the nixpkgs clang wrapper doesn't put it on any search path.
+          LIBCLANG_PATH = "${llvmPkgs.libclang.lib}/lib";
+          # bindgen invokes libclang directly (not the nix cc wrapper), so it
+          # misses the wrapper-injected system include paths; reuse the same
+          # flag set computed for clang-scan-deps.
+          BINDGEN_EXTRA_CLANG_ARGS = nixSysFlags;
+
+          # Enable compile_commands.json generation for clangd.
+          CMAKE_EXPORT_COMPILE_COMMANDS = "1";
+
+          # cmake/FindMLIR.cmake checks this env var and uses it as MLIR_TABLEGEN_EXE.
+          # Without an absolute path, cmake passes "mlir-tblgen" as a bare string to
+          # add_custom_command(), which ninja then misinterprets as a file build target
+          # (relative to the tablegen output directory) instead of a PATH-found binary.
+          MLIR_TABLEGEN_EXE_OVERRIDE = "${llvmPkgs.tblgen}/bin/mlir-tblgen";
+
+          shellHook = ''
+            # stdenv.cc.cc.lib supplies libstdc++.so.6: proc-macro dylibs that
+            # statically link LLVM TableGen C++ (melior-macro via the tblgen
+            # crate) need it at dlopen time when rustc expands the macro, and
+            # NixOS has no global libstdc++ — without this, rustc reports the
+            # misleading "error[E0463]: can't find crate for `melior_macro`".
+            # zlib: rustc links rrc without an rpath entry for it (LLVM's
+            # system-libs pull in -lz), so the binary needs it findable at
+            # run time — lit tests execute build/bin/rrc directly.
+            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            # crates/reussir-rt/CMakeLists.txt sets LOCAL_RUSTUP_HOME = build/.rustup
+            # and then tries to run `rustup toolchain install <channel>-<host-triple>`
+            # there if build/.rustup/toolchains/<channel>-<host-triple>/bin/rustc is
+            # absent.  In the Nix dev shell, fenix provides the toolchain as a store
+            # path (not a live rustup installation), so the install command would fail.
+            #
+            # Pre-create the expected directory structure by symlinking the fenix
+            # toolchain store path, so cmake's EXISTS check passes and the install
+            # step becomes a no-op.
+            _rust_host=$(rustc -vV 2>/dev/null | awk '/^host:/{print $2}')
+            _toolchain_dir="build/.rustup/toolchains/${rustChannel}-$_rust_host"
+            if [ -n "$_rust_host" ] && [ ! -e "$_toolchain_dir" ]; then
+              mkdir -p "build/.rustup/toolchains"
+              ln -sfn "${rustToolchain}" "$_toolchain_dir"
+            fi
+            unset _rust_host _toolchain_dir
+
+            # Write CMakeUserPresets.json (user-local, gitignored) so that
+            # `cmake --preset nix-dev` just works with no extra flags.
+            #
+            # Key settings explained:
+            #
+            # LLVM_ENABLE_LIBCXX=ON — skips LLVM's libstdc++ >= 7.4 try_compile
+            #   probe (cmake 3.28 uses clang-scan-deps for this probe; without the
+            #   GCC C++ headers clang-scan-deps fails on <iosfwd>).  The flag does
+            #   NOT force -stdlib=libc++: LLVM_USES_LIBSTDCXX fires afterwards and
+            #   detects we are on libstdc++, suppressing that flag.
+            #
+            # CMAKE_CXX_FLAGS — injects the GCC C++ stdlib include paths that the
+            #   nixpkgs clang wrapper normally injects via -cxx-isystem, but which
+            #   clang-scan-deps (the raw binary) does not receive.  These paths end
+            #   up in compile_commands.json and are therefore visible to clang-scan-
+            #   deps when it scans C++23 module dependencies during the build.
+            #   Value is computed at Nix eval time from nix-support/libcxx-cxxflags.
+            #
+            # Nix string interpolations expand to store paths at eval time;
+            # cmake's ''${sourceDir} macro is kept literal (single-quoted HEREDOC).
+            cat > CMakeUserPresets.json << 'PRESETS_EOF'
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "nix-dev",
+      "displayName": "Nix devShell (reussir flake)",
+      "description": "Auto-generated by the Nix devShell — do not commit",
+      "generator": "Ninja",
+      "binaryDir": "''${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER":              "clang",
+        "CMAKE_CXX_COMPILER":            "clang++",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "LLVM_ENABLE_LIBCXX":            "ON",
+        "CMAKE_CXX_FLAGS":               "${nixSysFlags}",
+        "LLVM_DIR":                      "${llvmMlirJoin}/lib/cmake/llvm",
+        "MLIR_DIR":                      "${llvmMlirJoin}/lib/cmake/mlir"
+      }
+    }
+  ]
+}
+PRESETS_EOF
+
+            echo ""
+            echo "  Reussir dev shell — LLVM/MLIR ${llvmPkgs.release_version}"
+            echo ""
+            echo "  Quick start (CMakeUserPresets.json 'nix-dev' preset written):"
+            echo "    cmake --preset nix-dev -B build    # configure into ./build"
+            echo "    cmake --build build                # compile"
+            echo "    ln -sf build/compile_commands.json .   # for clangd"
+            echo ""
+          '';
+        };
+      }
+    );
+}
