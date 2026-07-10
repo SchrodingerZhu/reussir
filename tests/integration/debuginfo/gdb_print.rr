@@ -1,4 +1,5 @@
 // REQUIRES: gdb
+// UNSUPPORTED: windows
 // RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
 // RUN: %cc %t.o %S/gdb_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %gdb -x %S/gdb_print.gdb %t.exe | %FileCheck %s

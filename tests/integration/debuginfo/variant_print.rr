@@ -1,8 +1,13 @@
 // REQUIRES: lldb
+// UNSUPPORTED: windows
 // RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
 // RUN: %cc %t.o %S/variant_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %lldb -s %S/variant_print.lldb %t.exe | %FileCheck %s
 
+// These are DWARF tests: on windows the MSVC target's debug flow (and the
+// MinGW debuggers that happen to sit on CI runners' PATH) is a different
+// world, hence UNSUPPORTED there.
+//
 // Debug-info rescan, end to end: compile with `-g`, run under lldb with the
 // Reussir formatters (tool/lldb/reussir_formatters.py) loaded, and check the
 // debugger's *printed variables* — not just the emitted IR. This pins the
