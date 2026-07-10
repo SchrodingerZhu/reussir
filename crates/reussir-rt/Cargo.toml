@@ -14,7 +14,9 @@ hashbrown = { version = "0.16.0" }
 # them (so ASan/LSan/MSan actually see the runtime's allocations — mimalloc's
 # and dlmalloc's private heaps are invisible to them), and miri shims them.
 libc = "0.2"
-libmimalloc-sys = { version = "0.1.44", optional = true }
+# `extended` only adds extern declarations (mi_usable_size for the no-copy
+# language realloc); the linked C library is the same either way.
+libmimalloc-sys = { version = "0.1.44", optional = true, features = ["extended"] }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true

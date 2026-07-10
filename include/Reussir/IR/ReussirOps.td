@@ -237,6 +237,11 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
     layout and the new layout are different, the memory will be reallocated, such reallocation
     may happen in place depending on the allocator and the new size.
 
+    The block's contents are NOT preserved across the resize: the operand token is dead
+    storage about to be overwritten (token reuse), so the runtime relocates with a plain
+    free + alloc instead of a copying realloc — the runtime entry points are declared
+    `allockind("realloc,uninitialized,...")` accordingly.
+
     ```mlir
     %realloced = reussir.token.realloc
       (%token : !reussir.token<align: 8, size: 8>) 

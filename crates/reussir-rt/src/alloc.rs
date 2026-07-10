@@ -15,6 +15,15 @@
 //! *unsized* `__reussir_dealloc_unsized`/`__reussir_realloc_unsized` (dynamic
 //! `token<?>`), which pass only the pointer (and, for realloc, the new
 //! alignment + size).
+//!
+//! The language reallocs do NOT preserve the block's contents (#362): every
+//! `token.realloc` resizes a *dead* donor whose storage the acceptor is about
+//! to overwrite with a freshly constructed object — the compiler already
+//! declares the entry points `allockind("realloc,uninitialized,...")`. So the
+//! backend resizes in place when the existing block satisfies the new layout
+//! and otherwise does a plain free + alloc, never a copying `realloc`. Only
+//! `ReussirGlobalAlloc::realloc` keeps the copying path — Rust's
+//! `GlobalAlloc::realloc` contract requires it.
 
 /// mimalloc backend (production). Its free/realloc recover the block size from
 /// the pointer, so no size is needed to free or grow.
@@ -63,6 +72,25 @@ mod backend {
             } else {
                 ffi::mi_realloc_aligned(ptr.cast(), new_size, new_align).cast()
             }
+        }
+    }
+
+    /// Resize a block whose contents are dead — the language-heap realloc.
+    /// Keeps the block when it already satisfies the new layout (mimalloc
+    /// recovers the usable size from the pointer, so a same-bin resize — the
+    /// pairing TokenReuse prefers — is pointer-identity); otherwise free +
+    /// alloc, skipping mi_realloc's copy of the dead contents. The
+    /// `usable / 2` floor mirrors mi_realloc's shrink policy: a much smaller
+    /// object moves to a right-sized block instead of squatting on a big one.
+    #[inline]
+    pub unsafe fn realloc_dead(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
+        unsafe {
+            let usable = ffi::mi_usable_size(ptr.cast());
+            if ptr as usize % new_align == 0 && new_size <= usable && new_size >= usable / 2 {
+                return ptr;
+            }
+            ffi::mi_free(ptr.cast());
+            alloc(new_align, new_size)
         }
     }
 }
@@ -194,6 +222,21 @@ mod backend {
     }
 
     pub use imp::{alloc, free, realloc};
+
+    /// Resize a block whose contents are dead — the language-heap realloc.
+    /// The platform allocators expose no portable usable-size query, so this
+    /// is always free + alloc. That is not just simple but *diagnostic*: the
+    /// result is always a fresh block, so generated code that wrongly reads
+    /// the donor's contents after a `token.realloc` fails loudly under the
+    /// sanitizers/miri instead of being masked by an in-place resize. It also
+    /// honors any alignment, unlike the copying realloc above.
+    #[inline]
+    pub unsafe fn realloc_dead(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
+        unsafe {
+            imp::free(ptr);
+            imp::alloc(new_align, new_size)
+        }
+    }
 }
 
 /// The runtime's `#[global_allocator]`: forwards Rust's own allocations
@@ -278,7 +321,9 @@ pub unsafe extern "C" fn __reussir_reallocate(
 }
 
 /// Resize a dynamic `token<?>` to `new_size`/`new_align`: the old size is not
-/// supplied — the backend recovers it.
+/// supplied — the backend recovers it. The block's contents are NOT preserved
+/// (see the module docs): the donor is dead, so a cross-bin resize is a plain
+/// free + alloc instead of a copying realloc.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __reussir_realloc_unsized(
     ptr: *mut u8,
@@ -288,7 +333,7 @@ pub unsafe extern "C" fn __reussir_realloc_unsized(
     if ptr.is_null() {
         return unsafe { __reussir_allocate(new_align, new_size) };
     }
-    let ptr = unsafe { backend::realloc(ptr, new_align, new_size) };
+    let ptr = unsafe { backend::realloc_dead(ptr, new_align, new_size) };
     if ptr.is_null() {
         unsafe { crate::panic!("reallocation failed") };
     }
@@ -301,8 +346,8 @@ mod tests {
     /// Asserts only what the ABI promises: non-null, requested alignment, and
     /// that the result is a writable block freeable by the pointer-only free.
     /// Deliberately NO content-preservation check — the language-heap realloc
-    /// resizes a *dead* donor's storage, and a future no-copy grow (#362) may
-    /// not carry contents. Cfg-agnostic on purpose: under the default feature
+    /// resizes a *dead* donor's storage and does not copy (#362).
+    /// Cfg-agnostic on purpose: under the default feature
     /// this exercises the mimalloc backend, under `--no-default-features` the
     /// platform fallback (Unix `malloc`/`posix_memalign`, Windows
     /// `_aligned_*`), and under miri the shimmed fallback — the same paths the
@@ -338,6 +383,39 @@ mod tests {
             assert!(!p.is_null());
             assert_eq!(p as usize % 64, 0);
             super::backend::free(p);
+        }
+    }
+
+    /// The dead-contents resize behind the language reallocs. Asserts the ABI
+    /// (non-null, aligned, writable, pointer-only-freeable) across a within-bin
+    /// grow, a cross-bin grow, and a large shrink; contents are dead by
+    /// contract so none are checked.
+    #[test]
+    fn backend_realloc_dead() {
+        unsafe {
+            let p = super::backend::alloc(8, 24);
+            assert!(!p.is_null());
+            // A resize the block already fits (same bin): mimalloc keeps it,
+            // so this must be pointer-identity there. The fallback always
+            // moves — no identity assert for it.
+            let q = super::backend::realloc_dead(p, 8, 24);
+            assert!(!q.is_null());
+            #[cfg(all(feature = "mimalloc", not(miri)))]
+            assert_eq!(q, p, "a fitting resize stays in place under mimalloc");
+            // Cross-bin grow: relocates without copying the dead contents.
+            let r = super::backend::realloc_dead(q, 8, 4096);
+            assert!(!r.is_null());
+            assert_eq!(r as usize % 8, 0);
+            for i in 0..4096 {
+                r.add(i).write(i as u8);
+            }
+            // Large shrink: moves to a right-sized block (mi_realloc's shrink
+            // policy) rather than squatting on the big one.
+            let s = super::backend::realloc_dead(r, 8, 16);
+            assert!(!s.is_null());
+            assert_eq!(s as usize % 8, 0);
+            s.cast::<u64>().write(42);
+            super::backend::free(s);
         }
     }
 
