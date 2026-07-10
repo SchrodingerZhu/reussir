@@ -34,9 +34,13 @@ namespace reussir {
 /// taggable type = immediate = never a token" with no tag arithmetic.
 /// A hybrid "immortal fallback inside a tbi module" (zero-top-byte
 /// immediates recognized by refcount magnitude) would decouple eligibility
-/// from the tag range, but every guard would then need to LOAD the refcount
-/// — surrendering tbi's load-free `rc.set` guard, which is the encoding's
-/// point.
+/// from the tag range. It was rejected not for guard cost (at the guarded
+/// sites the count is already in a register: `rc.set` tests its own operand,
+/// `rc.inc` just loaded it) but for what it erodes: two classifiers to keep
+/// sound instead of one, immediates whose tags are no longer decodable from
+/// the pointer (the tbi encoding's FFI point), and allocation/token
+/// behavior that would differ between encodings for the same source —
+/// all to serve variants with more than 255 arms.
 constexpr llvm::StringLiteral kSpecialPtrTagAttr = "reussir.special_ptr_tag";
 
 /// TBI encoding (aarch64): the immediate's top byte is `tag + 1` and its low

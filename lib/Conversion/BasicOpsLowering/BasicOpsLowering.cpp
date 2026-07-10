@@ -216,15 +216,6 @@ mlir::Value isTaggedImmediate(mlir::Value topByte, mlir::Location loc,
                                     topByte, zero);
 }
 
-// Steer `addr` to the scratch word when `isTagged` holds.
-mlir::Value guardedAddr(mlir::Operation *op, mlir::Value isTagged,
-                        mlir::Value addr, mlir::Location loc,
-                        mlir::OpBuilder &builder) {
-  auto scratch =
-      tagScratchAddr(op->getParentOfType<mlir::ModuleOp>(), loc, builder);
-  return mlir::LLVM::SelectOp::create(builder, loc, isTagged, scratch, addr);
-}
-
 // Skip a guarded refcount store entirely behind an unlikely branch. The
 // select-steered form makes the store *address* data-depend on the freshly
 // loaded count, so the store — and everything queued behind it — serializes
