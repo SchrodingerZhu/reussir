@@ -435,7 +435,8 @@ TokenType ReussirRcDecOp::getTokenType() {
   // Compute token type as in verify
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  // Per-constructor box sizing (module opt-in,). For a fused-header
+  // Per-constructor box sizing (default; `fixed` variants opt out). For a
+  // fused-header
   // variant box, the unique-path token — the cell handed to reuse or freed —
   // must match the arm actually allocated:
   //   * a *destructuring* dec knows the arm the pattern match consumed, so
@@ -512,7 +513,8 @@ TokenType ReussirRcCreateOp::getTokenType() {
                                   getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  // Per-constructor box sizing (module opt-in,): tokens are attached
+  // Per-constructor box sizing (default; `fixed` variants opt out): tokens
+  // are attached
   // while constructions are still the unfused `rc.create(record.variant)`
   // chain (RcCreateFusion runs after token instantiation and reuse), so
   // the static arm is read off the variant producer: the box only needs
@@ -676,7 +678,8 @@ TokenType ReussirRcCreateVariantOp::getTokenType() {
       RcBoxType::get(getContext(), elementType, getRegion() != nullptr);
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  // Per-constructor box sizing (module opt-in,): a fused-header
+  // Per-constructor box sizing (default; `fixed` variants opt out): a
+  // fused-header
   // variant box IS its record, and this op constructs a statically known
   // arm — size the token for `header + arm[tag]` instead of the max-arm
   // width. Alignment (hence the payload offset and every field offset) is

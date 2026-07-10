@@ -339,8 +339,17 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
         << "Record capability must be either Shared, Value, or Regional";
     return mlir::failure();
   }
+  // `fixed` pins uniform max-arm *box* sizing, which only a managed
+  // (fused-header: shared/regional) variant has — a compound has no arms and
+  // a [value] variant is never boxed.
   if (fixed && kind != reussir::RecordKind::variant) {
     emitError() << "`fixed` box sizing is only meaningful for variant records";
+    return mlir::failure();
+  }
+  if (fixed && complete && defaultCapability == reussir::Capability::value) {
+    emitError() << "`fixed` box sizing is only meaningful for managed "
+                   "(shared/regional) variants; a [value] variant is never "
+                   "boxed";
     return mlir::failure();
   }
   return mlir::success();

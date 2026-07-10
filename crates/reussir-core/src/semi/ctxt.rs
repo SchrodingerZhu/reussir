@@ -841,6 +841,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 DefaultCap::Shared
             }
         };
+        // `#[repr(fixed)]` pins uniform max-arm box sizing — a property only a
+        // *managed* (shared/regional, fused-header) enum's box has: a struct
+        // has no arms and a `[value]` enum is never boxed. Reject it elsewhere
+        // (rather than silently dropping it) and zero the flag so the "only
+        // ever set for managed enums" invariant holds from here on.
+        let repr_fixed = rec.repr_fixed
+            && rec.kind == surface::RecordKind::EnumKind
+            && default_cap != DefaultCap::Value;
+        if rec.repr_fixed && !repr_fixed {
+            self.error(
+                span,
+                "`#[repr(fixed)]` is only meaningful for managed (`shared`/`regional`) enums"
+                    .to_string(),
+            );
+        }
         let name = rec.name;
         let Some(def) = self.defs.declare_record(name) else {
             self.error(
@@ -855,7 +870,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ty_params,
             kind: rec.kind,
             default_cap,
-            repr_fixed: rec.repr_fixed,
+            repr_fixed,
             fields: None,
             regional_generics: Vec::new(),
             span,
