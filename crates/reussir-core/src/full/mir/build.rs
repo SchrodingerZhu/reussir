@@ -163,6 +163,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             symbol: self.sym(&r.symbol),
             ty: self.ty(&r.ty),
             default_cap: def_cap(r.default_cap),
+            repr_fixed: r.repr_fixed,
             layout,
         }
     }

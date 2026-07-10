@@ -101,6 +101,8 @@ pub enum SyntaxKind {
     Bang,
     /// `|`
     Pipe,
+    /// `#`
+    Pound,
     /// `_`
     Underscore,
     /// Unrecognized input or token-level error (kept in the tree for
@@ -135,6 +137,8 @@ pub enum SyntaxKind {
     FieldFlag,
     /// `[flex]` flag on parameters/return types/let bindings.
     FlexFlag,
+    /// An outer attribute `#[repr(fixed)]` on an item (e.g. an enum).
+    AttrList,
 
     // ===== Nodes: paths and types =====
     Path,
@@ -205,7 +209,7 @@ impl SyntaxKind {
     pub fn starts_stmt(self) -> bool {
         matches!(
             self,
-            FnKw | StructKw | EnumKw | PubKw | ModKw | ExternKw | RegionalKw
+            FnKw | StructKw | EnumKw | PubKw | ModKw | ExternKw | RegionalKw | Pound
         )
     }
 
@@ -289,6 +293,7 @@ impl SyntaxKind {
             Percent => "`%`",
             Bang => "`!`",
             Pipe => "`|`",
+            Pound => "`#`",
             Underscore => "`_`",
             Eof => "the end of the input",
             ErrorToken => "invalid input",

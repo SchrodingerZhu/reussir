@@ -283,11 +283,20 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                 (tys, is_field)
             }
         };
+        // `#[repr(fixed)]` pins uniform max-arm box sizing; only a *managed*
+        // (shared/regional) variant carries it — the dialect verifier rejects
+        // `fixed` on a compound or a [value] variant, and the elaborator
+        // already diagnosed misuse (this also guards MIR ingested as text,
+        // which bypasses that diagnostic).
+        let fixed = matches!(rec.layout, mir::RecordLayout::Variant(_))
+            && rec.default_cap != DefaultCap::Value
+            && rec.repr_fixed;
         record_complete_in_place(
             record,
             &member_tys,
             &member_is_field,
             capability(rec.default_cap),
+            fixed,
         );
         Ok(record)
     }
@@ -319,7 +328,15 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             field_tys.push(self.member_ty(f)?);
         }
         let is_field = vec![false; v.fields.len()];
-        record_complete_in_place(payload, &field_tys, &is_field, ReussirCapability::Value);
+        // A payload is a `[value]` compound, never a variant, so it never pins
+        // `fixed` box sizing.
+        record_complete_in_place(
+            payload,
+            &field_tys,
+            &is_field,
+            ReussirCapability::Value,
+            /* fixed = */ false,
+        );
         Ok(payload)
     }
 

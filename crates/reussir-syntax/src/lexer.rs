@@ -140,6 +140,8 @@ pub enum RawToken {
     Bang,
     #[token("|")]
     Pipe,
+    #[token("#")]
+    Pound,
     #[token("_")]
     Underscore,
 }
@@ -317,6 +319,7 @@ impl RawToken {
             RawToken::Percent => SyntaxKind::Percent,
             RawToken::Bang => SyntaxKind::Bang,
             RawToken::Pipe => SyntaxKind::Pipe,
+            RawToken::Pound => SyntaxKind::Pound,
             RawToken::Underscore => SyntaxKind::Underscore,
         }
     }

@@ -38,7 +38,6 @@
 #include "Reussir/Conversion/SCFOpsLowering.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
-#include "Reussir/Support/VariantBoxSizing.h"
 #include "Reussir/Transformation/Passes.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
 
@@ -237,13 +236,4 @@ bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
 void reussirContextSetPackRecordMembers(MlirContext context, bool enable) {
   mlir::MLIRContext *ctx = unwrap(context);
   ctx->getOrLoadDialect<reussir::ReussirDialect>()->setPackRecordMembers(enable);
-}
-
-void reussirModuleSetPerConstructorBoxSizing(MlirModule module, bool enable) {
-  mlir::ModuleOp moduleOp = unwrap(module);
-  if (enable)
-    moduleOp->setAttr(reussir::kPerConstructorBoxSizingAttr,
-                      mlir::UnitAttr::get(moduleOp.getContext()));
-  else
-    moduleOp->removeAttr(reussir::kPerConstructorBoxSizingAttr);
 }

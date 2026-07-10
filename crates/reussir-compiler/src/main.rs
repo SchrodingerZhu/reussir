@@ -77,17 +77,6 @@ enum VariantEncoding {
     Boxed,
 }
 
-/// CLI surface for the variant box-sizing contract.
-#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
-enum BoxSizing {
-    /// Opt-out: every boxed variant cell is the max-arm width (any arm's
-    /// block reuses for any other, at the cost of trailing padding).
-    Uniform,
-    /// Default: each cell is sized for its constructed arm
-    /// (`header + arm[k]`); offsets unchanged, trailing padding dropped.
-    PerConstructor,
-}
-
 impl VariantEncoding {
     /// Resolves the CLI choice against the target `triple`.
     fn resolve(self, triple: &str) -> NullaryVariantEncoding {
@@ -230,21 +219,6 @@ struct Cli {
     #[arg(long = "nullary-variant-encoding", value_enum,
           default_value_t = VariantEncoding::ArchDependent)]
     nullary_variant_encoding: VariantEncoding,
-
-    /// How boxed enum variants size their heap cells. `per-constructor`
-    /// (default) sizes each cell for its constructed arm (`header + arm[k]`):
-    /// an unpinned decrement of a non-uniform variant frees the exact runtime
-    /// size (via a dynamic `token<align, ?>`), so this is sound on any
-    /// allocator, not just the bundled mimalloc. `uniform` (opt-out) sizes
-    /// every cell at the max-arm width, so any arm's block reuses for any
-    /// other, at the cost of trailing padding. Field offsets are identical
-    /// either way — per-constructor only drops the trailing padding up to the
-    /// max arm, shrinking leaf-heavy workloads' cache footprint (nbe-closure:
-    /// the 16-byte leaf arms double to 32 under `uniform`, which measured as
-    /// ~the whole gap vs Koka).
-    #[arg(long = "variant-box-sizing", value_enum,
-          default_value_t = BoxSizing::PerConstructor)]
-    variant_box_sizing: BoxSizing,
 
     /// Split codegen into this many units. Each function's body is emitted in
     /// exactly one unit (a stable hash of its mangled symbol picks which);
@@ -609,10 +583,10 @@ fn backend_module(
     // real target sizes and alignments.
     let machine = TargetMachine::new(spec, opt, reloc)?;
     pipeline::attach_target_spec(&module, machine.data_layout(), machine.triple())?;
-    pipeline::set_per_constructor_box_sizing(
-        &module,
-        cli.variant_box_sizing == BoxSizing::PerConstructor,
-    );
+    // Variant box sizing is a per-type property now: an enum carries
+    // `#[repr(fixed)]` (uniform max-arm) or defaults to per-constructor
+    // sizing, threaded into the dialect variant record type's `fixed` flag —
+    // no module-wide switch.
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,

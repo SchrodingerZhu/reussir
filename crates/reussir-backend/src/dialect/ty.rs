@@ -148,7 +148,9 @@ pub fn str(context: &Context, life_scope: ReussirLifeScope) -> Type<'_> {
 
 /// Creates a complete `!reussir.record` type. Pass `None` for `name` to build an
 /// anonymous record, or a [`StringAttribute`] to build an identified one.
-/// `members` and `member_is_field` must have the same length.
+/// `members` and `member_is_field` must have the same length. `fixed` pins
+/// uniform max-arm box sizing on a variant (`#[repr(fixed)]`); pass `false` for
+/// compounds and for variants that use the default per-constructor sizing.
 pub fn record_complete<'c>(
     context: &'c Context,
     members: &[Type<'c>],
@@ -156,6 +158,7 @@ pub fn record_complete<'c>(
     name: Option<StringAttribute<'c>>,
     kind: ReussirRecordKind,
     default_capability: ReussirCapability,
+    fixed: bool,
 ) -> Type<'c> {
     assert_eq!(
         members.len(),
@@ -173,6 +176,7 @@ pub fn record_complete<'c>(
             raw_name,
             kind,
             default_capability,
+            fixed,
         ))
     }
 }
@@ -202,12 +206,15 @@ pub fn record_is_complete(record: Type) -> bool {
 }
 
 /// Completes a previously created incomplete record type in place. `members` and
-/// `member_is_field` must have the same length.
+/// `member_is_field` must have the same length. `fixed` pins uniform max-arm box
+/// sizing on a variant (`#[repr(fixed)]`); pass `false` for compounds and for
+/// variants that use the default per-constructor sizing.
 pub fn record_complete_in_place(
     record: Type,
     members: &[Type],
     member_is_field: &[bool],
     default_capability: ReussirCapability,
+    fixed: bool,
 ) {
     assert_eq!(
         members.len(),
@@ -222,6 +229,7 @@ pub fn record_complete_in_place(
             raw_members.as_ptr(),
             member_is_field.as_ptr(),
             default_capability,
+            fixed,
         );
     }
 }

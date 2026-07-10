@@ -69,50 +69,131 @@ mod backend {
 
 /// Fallback backend for builds without the mimalloc backend: the sanitizer
 /// runtime variants (built `--no-default-features`), `miri` (mimalloc's C can't
-/// run in the interpreter), and lean embeddings like reussir-jit. It calls libc
-/// `malloc`/`free`/`realloc` directly — size-recovering (so the unsized
-/// `token<?>` ABI works), *interposed by the sanitizers* (so ASan/LSan/MSan see
-/// the runtime's allocations, which they cannot through mimalloc's or
-/// dlmalloc's private heaps), and shimmed by miri. Never used in production.
+/// run in the interpreter), and lean embeddings like reussir-jit. It calls the
+/// platform C allocator directly — size-recovering (so the unsized `token<?>`
+/// ABI works), *interposed by the sanitizers* (so ASan/LSan/MSan see the
+/// runtime's allocations, which they cannot through mimalloc's or dlmalloc's
+/// private heaps), and shimmed by miri. Never used in production.
+///
+/// The allocator family differs by platform (see the inner impls): Unix uses
+/// `malloc`/`posix_memalign` (both released by the same `free`), while Windows
+/// uses the UCRT `_aligned_*` family (whose blocks must be released with
+/// `_aligned_free`). Either way the unsized free needs only the pointer.
 #[cfg(any(not(feature = "mimalloc"), miri))]
 mod backend {
-    use core::ffi::c_void;
+    // Unix: `malloc` for <=16-aligned requests, `posix_memalign` for the
+    // (never-hit-at-runtime — Reussir boxes are <=8-aligned) over-aligned case.
+    // Both are released by the same `free`, so the pointer-only unsized free
+    // stays unambiguous.
+    #[cfg(not(windows))]
+    mod imp {
+        use core::ffi::c_void;
 
-    /// libc `malloc` guarantees `max_align_t` (16-byte) alignment; anything
-    /// larger goes through `posix_memalign`.
-    const MALLOC_ALIGN: usize = 16;
+        /// libc `malloc` guarantees `max_align_t` (16-byte) alignment; anything
+        /// larger goes through `posix_memalign`.
+        const MALLOC_ALIGN: usize = 16;
 
-    #[inline]
-    pub unsafe fn alloc(align: usize, size: usize) -> *mut u8 {
-        // Both the language heap (`__reussir_*`) and the global allocator route
-        // here. `malloc` already returns `max_align_t` (16-byte) aligned, so it
-        // covers every request up to 16. Larger alignments go through
-        // `posix_memalign`; those are always powers of two >= 32, hence valid
-        // multiples of `sizeof(void*)`.
-        if align <= MALLOC_ALIGN {
-            unsafe { libc::malloc(size) as *mut u8 }
-        } else {
-            let mut ptr: *mut c_void = core::ptr::null_mut();
-            if unsafe { libc::posix_memalign(&mut ptr, align, size) } != 0 {
-                return core::ptr::null_mut();
+        #[inline]
+        pub unsafe fn alloc(align: usize, size: usize) -> *mut u8 {
+            // `malloc` already returns `max_align_t` (16-byte) aligned, so it
+            // covers every request up to 16. Larger alignments go through
+            // `posix_memalign`; those are always powers of two >= 32, hence
+            // valid multiples of `sizeof(void*)`.
+            if align <= MALLOC_ALIGN {
+                unsafe { libc::malloc(size) as *mut u8 }
+            } else {
+                let mut ptr: *mut c_void = core::ptr::null_mut();
+                if unsafe { libc::posix_memalign(&mut ptr, align, size) } != 0 {
+                    return core::ptr::null_mut();
+                }
+                ptr as *mut u8
             }
-            ptr as *mut u8
+        }
+
+        #[inline]
+        pub unsafe fn free(ptr: *mut u8) {
+            unsafe { libc::free(ptr as *mut c_void) }
+        }
+
+        #[inline]
+        pub unsafe fn realloc(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
+            // `realloc` preserves malloc's `max_align_t` alignment, which
+            // covers every Reussir box (all <=8-aligned; reussir never grows
+            // to a larger alignment) and every runtime-internal type. An
+            // over-16-aligned realloc CANNOT be honored here (plain `realloc`
+            // would mis-align it, and without the old size the block cannot be
+            // moved by hand) — assert the precondition instead of silently
+            // returning under-aligned memory.
+            debug_assert!(
+                new_align <= MALLOC_ALIGN,
+                "the libc fallback cannot realloc to alignment {new_align} > {MALLOC_ALIGN}"
+            );
+            let _ = new_align;
+            unsafe { libc::realloc(ptr as *mut c_void, new_size) as *mut u8 }
         }
     }
 
-    #[inline]
-    pub unsafe fn free(ptr: *mut u8) {
-        unsafe { libc::free(ptr as *mut c_void) }
+    // Windows (MSVC/UCRT): the CRT has neither `posix_memalign` nor a
+    // `free`-compatible C11 `aligned_alloc` — its only aligned family is
+    // `_aligned_malloc`/`_aligned_realloc`/`_aligned_free`, and those blocks
+    // *must* be released with `_aligned_free` (calling `free` on them, or
+    // `_aligned_free` on a `malloc` block, is undefined). The unsized free is
+    // handed only a pointer and cannot tell the two apart, so route *every*
+    // allocation through the aligned family uniformly.
+    #[cfg(windows)]
+    mod imp {
+        use core::ffi::c_void;
+
+        // Declared directly rather than via `libc` so this fallback never
+        // depends on which of the UCRT aligned entry points the `libc` crate
+        // happens to surface for the MSVC target. (msvc targets resolve these
+        // from ucrt.lib; mingw's msvcrt also exports them, but the gnu target
+        // is untested in CI.)
+        unsafe extern "C" {
+            fn _aligned_malloc(size: usize, alignment: usize) -> *mut c_void;
+            fn _aligned_free(memblock: *mut c_void);
+            fn _aligned_realloc(
+                memblock: *mut c_void,
+                size: usize,
+                alignment: usize,
+            ) -> *mut c_void;
+        }
+
+        /// `_aligned_realloc` forbids changing a block's alignment, so alloc
+        /// and realloc must normalize `align` the SAME way. Clamping every
+        /// request up to 16 makes all of today's traffic uniform — the
+        /// language heap asks <= 8 (verifier-enforced power of two, possibly
+        /// < 8) and the global allocator exactly 16 — so a realloc can never
+        /// observe a different alignment than the allocation. A > 16 request
+        /// keeps its own alignment; that too is realloc-stable because a
+        /// box's alignment is a property of its type and does not change
+        /// across `token.realloc`.
+        const MIN_ALIGN: usize = 16;
+
+        #[inline]
+        fn norm_align(align: usize) -> usize {
+            align.max(MIN_ALIGN)
+        }
+
+        #[inline]
+        pub unsafe fn alloc(align: usize, size: usize) -> *mut u8 {
+            unsafe { _aligned_malloc(size, norm_align(align)) as *mut u8 }
+        }
+
+        #[inline]
+        pub unsafe fn free(ptr: *mut u8) {
+            unsafe { _aligned_free(ptr as *mut c_void) }
+        }
+
+        #[inline]
+        pub unsafe fn realloc(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
+            unsafe {
+                _aligned_realloc(ptr as *mut c_void, new_size, norm_align(new_align)) as *mut u8
+            }
+        }
     }
 
-    #[inline]
-    pub unsafe fn realloc(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
-        // `realloc` preserves malloc's `max_align_t` alignment, which covers
-        // every Reussir box (all <=8-aligned); reussir never grows to a larger
-        // alignment.
-        let _ = new_align;
-        unsafe { libc::realloc(ptr as *mut c_void, new_size) as *mut u8 }
-    }
+    pub use imp::{alloc, free, realloc};
 }
 
 /// The runtime's `#[global_allocator]`: forwards Rust's own allocations
@@ -212,4 +293,66 @@ pub unsafe extern "C" fn __reussir_realloc_unsized(
         unsafe { crate::panic!("reallocation failed") };
     }
     ptr
+}
+
+#[cfg(test)]
+mod tests {
+    /// Alloc → grow (realloc) → free, straight through the selected backend.
+    /// Asserts only what the ABI promises: non-null, requested alignment, and
+    /// that the result is a writable block freeable by the pointer-only free.
+    /// Deliberately NO content-preservation check — the language-heap realloc
+    /// resizes a *dead* donor's storage, and a future no-copy grow (#362) may
+    /// not carry contents. Cfg-agnostic on purpose: under the default feature
+    /// this exercises the mimalloc backend, under `--no-default-features` the
+    /// platform fallback (Unix `malloc`/`posix_memalign`, Windows
+    /// `_aligned_*`), and under miri the shimmed fallback — the same paths the
+    /// language heap and `ReussirGlobalAlloc` use in each configuration.
+    /// Realloc alignments stop at 16: every caller's ceiling today (language
+    /// heap <= 8, `ReussirGlobalAlloc` exactly 16) and the libc fallback's
+    /// documented realloc limit.
+    #[test]
+    fn backend_alloc_realloc_free() {
+        for align in [1usize, 8, 16] {
+            unsafe {
+                let p = super::backend::alloc(align, 24);
+                assert!(!p.is_null());
+                assert_eq!(p as usize % align.max(1), 0, "align {align}");
+                let q = super::backend::realloc(p, align, 40);
+                assert!(!q.is_null());
+                assert_eq!(q as usize % align.max(1), 0, "align {align}");
+                // Touch the full grown extent (miri/ASan validate the block).
+                for i in 0..40 {
+                    q.add(i).write(i as u8);
+                }
+                super::backend::free(q);
+            }
+        }
+    }
+
+    /// Over-aligned allocation (no realloc — see the fallback's realloc
+    /// limit): the aligned path on every backend.
+    #[test]
+    fn backend_over_aligned_alloc() {
+        unsafe {
+            let p = super::backend::alloc(64, 24);
+            assert!(!p.is_null());
+            assert_eq!(p as usize % 64, 0);
+            super::backend::free(p);
+        }
+    }
+
+    /// The unsized entry points: free and realloc recover the block from the
+    /// pointer alone. Again no content assertion — only that the resized
+    /// block is valid and pointer-only-freeable.
+    #[test]
+    fn unsized_abi_roundtrip() {
+        unsafe {
+            let p = super::__reussir_allocate(8, 16);
+            assert!(!p.is_null());
+            let q = super::__reussir_realloc_unsized(p, 8, 32);
+            assert!(!q.is_null());
+            q.cast::<u64>().write(0xDEAD_BEEF_u64);
+            super::__reussir_dealloc_unsized(q);
+        }
+    }
 }

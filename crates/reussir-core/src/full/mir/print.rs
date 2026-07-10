@@ -169,7 +169,14 @@ impl Render<'_> {
                             + text(")")
                     })
                     .collect();
-                text("enum ") + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")
+                // `#[repr(fixed)]` prints as a `fixed` marker after `enum`; the
+                // grammar accepts it only on an enum, so this roundtrips.
+                let fixed = if rec.repr_fixed {
+                    text("fixed ")
+                } else {
+                    Doc::Null
+                };
+                text("enum ") + fixed + self.ty(rec.ty) + text(" { ") + comma_sep(parts) + text(" }")
             }
         };
         head + body + text(";")

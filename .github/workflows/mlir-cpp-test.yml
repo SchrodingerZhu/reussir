@@ -24,6 +24,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The rrc cargo test intermittently hit "No space left on device" while
+      # writing libmlir_sys.rlib. A disk probe showed the pipeline needs only
+      # ~15G of scratch, but the runner image already uses ~60G and hosted
+      # runner disks vary in size, so smaller runners tip over. Reclaim the
+      # large toolchains this C++/Rust/LLVM build never uses (~25G+) — Android
+      # SDK, .NET, Haskell (GHC), and Swift — to restore headroom. Best-effort:
+      # a missing path on any given image is not an error.
+      - name: Free up disk space
+        run: |
+          before=$(df -B1 --output=avail / | tail -1)
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/share/swift || true
+          after=$(df -B1 --output=avail / | tail -1)
+          echo "Reclaimed $(( (after - before) / 1024 / 1024 )) MiB"
+          df -h /
+
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 

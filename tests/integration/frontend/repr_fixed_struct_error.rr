@@ -1,0 +1,25 @@
+// `#[repr(fixed)]` pins uniform max-arm box sizing, which only a *managed*
+// (shared/regional, fused-header) enum's box has: a struct has no arms and a
+// `[value]` enum is never boxed. Both misuses are rejected at scan time
+// instead of being silently dropped (which would also leak a dead
+// `repr_fixed` flag into HIR that cannot roundtrip through the textual form —
+// the grammars only admit `fixed` on an enum).
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// CHECK: `#[repr(fixed)]` is only meaningful for managed (`shared`/`regional`) enums
+#[repr(fixed)]
+struct S {
+    x: i64
+}
+
+// CHECK: `#[repr(fixed)]` is only meaningful for managed (`shared`/`regional`) enums
+#[repr(fixed)]
+enum [value] V {
+    A(i64),
+    B
+}
+
+fn mk() -> S {
+    S{1}
+}

@@ -117,11 +117,6 @@ unsafe extern "C" {
     /// false = `tbi` (top-byte tag, aarch64), true = `immortal` (plain dummy
     /// address with an immortal refcount, any target).
     pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
-    /// Stamps (or removes) the module unit attribute opting the compilation
-    /// into per-constructor variant box sizing. Experimental until
-    /// the full landing plan completes (allocation/free/reuse must agree on
-    /// the per-arm size); off by default.
-    pub fn reussirModuleSetPerConstructorBoxSizing(module: MlirModule, enable: bool);
     pub fn reussirCreateRcDispatchFusionPass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
@@ -272,6 +267,7 @@ unsafe extern "C" {
         name: MlirAttribute,
         kind: ReussirRecordKind,
         default_capability: ReussirCapability,
+        fixed: bool,
     ) -> MlirType;
     pub fn reussirRecordTypeGetIncomplete(
         context: MlirContext,
@@ -284,6 +280,7 @@ unsafe extern "C" {
         members: *const MlirType,
         member_is_field: *const bool,
         default_capability: ReussirCapability,
+        fixed: bool,
     );
     pub fn reussirRecordTypeIsComplete(record: MlirType) -> bool;
 

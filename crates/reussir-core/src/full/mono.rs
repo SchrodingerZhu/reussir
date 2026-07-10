@@ -229,10 +229,14 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             ),
             None => (DefaultCap::Value, mir::RecordLayout::Compound(&[])),
         };
+        // `#[repr(fixed)]` is carried straight from the collected record; a
+        // missing definition (elaboration failure) is treated as non-fixed.
+        let repr_fixed = input.records.get(&def).is_some_and(|record| record.repr_fixed);
         records.push(mir::RecordInstance {
             symbol,
             ty,
             default_cap,
+            repr_fixed,
             layout,
         });
     }

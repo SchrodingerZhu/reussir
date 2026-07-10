@@ -307,7 +307,7 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
                    llvm::ArrayRef<mlir::Type> members,
                    llvm::ArrayRef<bool> memberIsField, mlir::StringAttr name,
                    bool complete, reussir::RecordKind kind,
-                   reussir::Capability defaultCapability) {
+                   reussir::Capability defaultCapability, bool fixed) {
   if (memberIsField.size() != members.size()) {
     emitError() << "Number of member capabilities must match number of members";
     return mlir::failure();
@@ -339,6 +339,19 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
         << "Record capability must be either Shared, Value, or Regional";
     return mlir::failure();
   }
+  // `fixed` pins uniform max-arm *box* sizing, which only a managed
+  // (fused-header: shared/regional) variant has — a compound has no arms and
+  // a [value] variant is never boxed.
+  if (fixed && kind != reussir::RecordKind::variant) {
+    emitError() << "`fixed` box sizing is only meaningful for variant records";
+    return mlir::failure();
+  }
+  if (fixed && complete && defaultCapability == reussir::Capability::value) {
+    emitError() << "`fixed` box sizing is only meaningful for managed "
+                   "(shared/regional) variants; a [value] variant is never "
+                   "boxed";
+    return mlir::failure();
+  }
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
@@ -355,6 +368,7 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
   RecordKind kind;
   StringAttr name;
   bool incomplete = true;
+  bool fixed = false;
   mlir::MLIRContext *context = parser.getContext();
 
   // Parse '<' to start the type.
@@ -418,6 +432,12 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
 
     defaultCapability = defaultCapOrError.value();
 
+    // Optional `fixed` keyword: pins uniform max-arm box sizing on a variant
+    // (default is per-constructor sizing). Placed after the capability and
+    // before the member list.
+    if (parser.parseOptionalKeyword("fixed").succeeded())
+      fixed = true;
+
     // Now parse the members and their capabilities.
     const auto delimiter = AsmParser::Delimiter::Braces;
     const auto parseElementFn = [&parser, &members, &memberIsField,
@@ -456,15 +476,15 @@ mlir::Type RecordType::parse(mlir::AsmParser &parser) {
   } else if (!name && !incomplete) {
     // Anonymous complete record.
     result = getChecked(encLoc, context, membersRef, memberIsFieldRef, kind,
-                        defaultCapability);
+                        defaultCapability, fixed);
   } else if (!incomplete) {
     // Named complete record.
     result = getChecked(encLoc, context, membersRef, memberIsFieldRef, name,
-                        kind, defaultCapability);
+                        kind, defaultCapability, fixed);
     // If the record has a self-reference, its type already exists in a
     // incomplete state. In this case, we must complete it.
     if (result && !result.getComplete())
-      result.complete(membersRef, memberIsFieldRef, defaultCapability);
+      result.complete(membersRef, memberIsFieldRef, defaultCapability, fixed);
   } else { // anonymous & incomplete
     parser.emitError(loc, "anonymous records must be complete");
     return {};
@@ -497,6 +517,8 @@ void RecordType::print(::mlir::AsmPrinter &printer) const {
   else {
     if (getDefaultCapability() != reussir::Capability::shared)
       printer << '[' << getDefaultCapability() << "] ";
+    if (getFixed())
+      printer << "fixed ";
     printer << '{';
     if (!getMembers().empty()) {
       llvm::interleaveComma(llvm::zip(getMembers(), getMemberIsField()),
@@ -529,6 +551,7 @@ reussir::RecordKind RecordType::getKind() const { return getImpl()->kind; }
 reussir::Capability RecordType::getDefaultCapability() const {
   return getImpl()->defaultCapability;
 }
+bool RecordType::getFixed() const { return getImpl()->fixed; }
 
 ::mlir::FlatSymbolRefAttr RecordType::getDtorName() const {
   auto name = getName();
@@ -562,8 +585,8 @@ bool RecordType::hasNoRegionalFields() const {
 //===----------------------------------------------------------------------===//
 void RecordType::complete(llvm::ArrayRef<mlir::Type> members,
                           llvm::ArrayRef<bool> memberCapabilities,
-                          reussir::Capability defaultCapability) {
-  if (mutate(members, memberCapabilities, defaultCapability).failed())
+                          reussir::Capability defaultCapability, bool fixed) {
+  if (mutate(members, memberCapabilities, defaultCapability, fixed).failed())
     llvm_unreachable("failed to complete record");
 }
 

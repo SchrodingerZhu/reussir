@@ -855,6 +855,9 @@ pub struct Record {
     pub kind: RecordKind,
     pub visibility: Visibility,
     pub default_cap: Capability,
+    /// `#[repr(fixed)]`: uniform max-arm box sizing for an enum instead of the
+    /// default per-constructor sizing. Only meaningful for enums.
+    pub repr_fixed: bool,
 }
 
 /// An `extern "C" trampoline` declaration. The ABI and symbol strings are
@@ -1011,6 +1014,18 @@ fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
                 .collect(),
         )
     };
+    // `#[repr(fixed)]`: the only outer attribute the surface recognizes today.
+    // An `AttrList` child holds the bracketed tokens verbatim (`repr` then its
+    // `(fixed)` args); any other attribute is ignored here.
+    let repr_fixed = nodes(node)
+        .filter(|n| n.kind() == SyntaxKind::AttrList)
+        .any(|attr| {
+            let idents: Vec<&str> = tokens(attr)
+                .filter(|t| t.kind().is_ident_like())
+                .map(|t| t.text())
+                .collect();
+            idents.first() == Some(&"repr") && idents[1..].contains(&"fixed")
+        });
     Record {
         name: key(name_after(node, intro)),
         ty_params: generics_of(node),
@@ -1018,6 +1033,7 @@ fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
         kind,
         visibility: visibility_of(node),
         default_cap,
+        repr_fixed,
     }
 }
 

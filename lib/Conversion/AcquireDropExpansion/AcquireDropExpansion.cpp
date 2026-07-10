@@ -224,8 +224,8 @@ private:
                                         nonNullBlock->getArgument(0),
                                         /*destructureTag=*/mlir::IntegerAttr{},
                                         /*boundMembers=*/mlir::DenseI64ArrayAttr{});
-      // Route through `getTokenType()` (the per-constructor source of truth,
-      //); the max-arm token above would free non-uniform arms at the
+      // Route through `getTokenType()` (the per-constructor source of
+      // truth); the max-arm token above would free non-uniform arms at the
       // wrong size. Result has no users yet — retyping in place is safe.
       if (retNullableTy) {
         TokenType correct = dec.getTokenType();
