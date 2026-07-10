@@ -671,8 +671,12 @@ def ReussirRcTaggedOp : ReussirRcOp<"tagged", [Pure]> {
         memory access; guards test the top byte.
 
     Under both encodings the op reserves one byte for the tag, `0` meaning
-    "untagged, a real box pointer" — the verifier bounds `tag + 1 <= 0xFF`
-    so the same IR stays valid under either encoding. That range is a
+    "untagged, a real box pointer". The bound exists for the *guards*: under
+    `tbi` a zero top byte is the classifier for "real box, stores may
+    proceed", so every immediate must carry a nonzero top byte — an
+    unencodable arm must stay a real box (see the scheme invariant at
+    `kSpecialPtrTagAttr`). The verifier enforces `tag + 1 <= 0xFF` under
+    both encodings so the same IR stays valid under either. The range is a
     *type-level* eligibility concern (`RcType::mayCarrySpecialPointerTag`
     refuses types whose nullary arms exceed the slot); per arm, "nullary on
     a taggable type" alone decides immediate-vs-boxed, and hence

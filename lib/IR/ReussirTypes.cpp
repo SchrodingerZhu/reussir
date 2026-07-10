@@ -926,13 +926,16 @@ bool RcType::mayCarrySpecialPointerTag() const {
     return false;
   // The type participates in the scheme iff it has a nullary arm to encode
   // AND every nullary arm fits `rc.tagged`'s one-byte tag slot (`tag + 1`,
-  // 0 reserved for "untagged real pointer" — the op verifier's bound, shared
-  // by both encodings). All-or-nothing on purpose: with the range handled
-  // here at the type level, downstream logic (the rewrite pattern, the
-  // token-type computation) may reason per-arm as simply "nullary arm of a
-  // taggable type = immediate = never a token", with no tag arithmetic. A
-  // variant whose nullary arm sits beyond the slot (a > 255-arm enum) just
-  // keeps boxing everything.
+  // 0 reserved for "untagged real pointer"). The range requirement exists
+  // for the guards, not the tags: under `tbi` a zero top byte means "real
+  // box, stores may proceed", so every immediate must carry a nonzero top
+  // byte — see the scheme invariant at `kSpecialPtrTagAttr`
+  // (Transformation/SpecialPointerTag.h). All-or-nothing on purpose: with
+  // the range handled here at the type level, downstream logic (the rewrite
+  // pattern, the token-type computation) may reason per-arm as simply
+  // "nullary arm of a taggable type = immediate = never a token", with no
+  // tag arithmetic. A variant whose nullary arm sits beyond the slot (a
+  // > 255-arm enum) just keeps boxing everything.
   bool hasNullaryArm = false;
   for (size_t idx = 0, n = variantType.getMembers().size(); idx < n; ++idx) {
     if (!variantType.isNullaryArm(idx))
