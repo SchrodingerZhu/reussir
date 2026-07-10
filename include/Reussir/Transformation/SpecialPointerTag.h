@@ -18,6 +18,25 @@ namespace reussir {
 /// unboxed immediates pointing at per-tag dummy boxes. Its value selects
 /// the encoding (`kSpecialPtrTagTBI` or `kSpecialPtrTagImmortal`); the LLVM
 /// lowering patterns read it to pick the guard strategy on taggable types.
+///
+/// THE SCHEME'S CORE INVARIANT (the one non-obvious rule everything else
+/// follows from): guards classify a value as immediate-vs-box WITHOUT a
+/// per-value fallback path, so the classifier's "this is a real box" answer
+/// must never be wrong for an immediate. Under `tbi` the classifier is the
+/// pointer's top byte alone (a register-only test — no load): ZERO MEANS
+/// "REAL BOX, STORES MAY PROCEED". That is sound only if EVERY immediate
+/// carries a nonzero top byte, i.e. `tag + 1` fits one byte. Hence an arm
+/// whose tag cannot be encoded must never become an immediate — it stays a
+/// real, allocated, token-producing box — and eligibility is enforced
+/// all-or-nothing at the type level (`RcType::mayCarrySpecialPointerTag`:
+/// every nullary arm must fit) rather than per arm, so downstream logic
+/// (the rewrite pattern, token typing) can reason simply "nullary arm of a
+/// taggable type = immediate = never a token" with no tag arithmetic.
+/// A hybrid "immortal fallback inside a tbi module" (zero-top-byte
+/// immediates recognized by refcount magnitude) would decouple eligibility
+/// from the tag range, but every guard would then need to LOAD the refcount
+/// — surrendering tbi's load-free `rc.set` guard, which is the encoding's
+/// point.
 constexpr llvm::StringLiteral kSpecialPtrTagAttr = "reussir.special_ptr_tag";
 
 /// TBI encoding (aarch64): the immediate's top byte is `tag + 1` and its low

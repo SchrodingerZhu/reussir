@@ -10,6 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include <array>
+#include <optional>
+
 #include <llvm/ADT/APInt.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallSet.h>
@@ -39,6 +41,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/SpecialPointerTag.h"
 #include "mlir/IR/PatternMatch.h"
 
 #include <llvm/ADT/DenseSet.h>
@@ -452,21 +455,54 @@ TokenType ReussirRcDecOp::getTokenType() {
           dataLayout, getDestructureTagAttr().getInt());
       return TokenType::get(getContext(), alignment, armSize.getFixedValue());
     }
-    // A variant whose arms are all the same size stays a *static* token even
-    // when unpinned: the max-arm size is exact for every arm, so it reuses
-    // and frees normally. Only a genuinely non-uniform variant needs the
-    // dynamic (runtime-carried) size.
-    uint64_t armSize0 =
-        recordType.getVariantArmAllocSize(dataLayout, 0).getFixedValue();
+    // A variant whose *token-producing* arms are all the same size stays a
+    // *static* token even when unpinned: that size is exact for every box
+    // the dec can ever free, so it reuses and frees normally. Only a
+    // genuinely non-uniform variant needs the dynamic (runtime-carried)
+    // size. Crucially, an arm only counts if a box of it can exist: under
+    // the special-pointer-tag scheme (module layout info stamped by the
+    // pass, which runs before token instantiation) a nullary arm of a
+    // taggable type is constructed as an unboxed immediate — it never
+    // allocates and its decrement never yields a token — so its phantom
+    // size must not force the dynamic path. E.g. `Tree { Branch(...), Leaf }`
+    // has exactly one real arm and keeps a static token, preserving in-place
+    // reuse instead of a runtime realloc per node (the 2x rbtree regression
+    // this rule fixes).
+    mlir::ModuleOp module = (*this)->getParentOfType<mlir::ModuleOp>();
+    bool nullaryImmediates = module && module->hasAttr(kSpecialPtrTagAttr) &&
+                             rcType.mayCarrySpecialPointerTag();
+    // An arm cannot produce a token exactly when the scheme is enabled and
+    // its constructions are rewritten to immediates — which for a taggable
+    // type (`mayCarrySpecialPointerTag`, folded into `nullaryImmediates`
+    // above and guaranteeing the tag-slot range at the type level) is
+    // simply every *nullary* arm. Same predicate as the rewrite pattern, so
+    // the two can never drift apart; encoding-agnostic (the arch/encoding
+    // choice was resolved when the pass stamped the module attribute).
+    auto producesToken = [&](size_t tag) {
+      return !(nullaryImmediates && recordType.isNullaryArm(tag));
+    };
+    std::optional<uint64_t> tokenArmSize;
     bool uniform = true;
-    for (size_t tag = 1, n = recordType.getMembers().size(); tag < n; ++tag)
-      if (recordType.getVariantArmAllocSize(dataLayout, tag).getFixedValue() !=
-          armSize0) {
+    for (size_t tag = 0, n = recordType.getMembers().size(); tag < n; ++tag) {
+      if (!producesToken(tag))
+        continue;
+      uint64_t armSize =
+          recordType.getVariantArmAllocSize(dataLayout, tag).getFixedValue();
+      if (!tokenArmSize) {
+        tokenArmSize = armSize;
+      } else if (*tokenArmSize != armSize) {
         uniform = false;
         break;
       }
-    if (uniform)
-      return TokenType::get(getContext(), alignment, armSize0);
+    }
+    if (uniform && tokenArmSize)
+      return TokenType::get(getContext(), alignment, *tokenArmSize);
+    if (!tokenArmSize) {
+      // Every arm is an immediate: no token is ever produced at runtime; the
+      // declared type is moot — keep the uniform box size (always static).
+      auto boxSize = dataLayout.getTypeSize(rcBoxType);
+      return TokenType::get(getContext(), alignment, boxSize.getFixedValue());
+    }
     return TokenType::getDynamic(getContext(), alignment);
   }
   auto size = dataLayout.getTypeSize(rcBoxType);

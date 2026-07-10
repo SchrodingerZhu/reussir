@@ -65,14 +65,14 @@ struct NullaryVariantPattern
     if (!payloadTy || !payloadTy.isCompound() ||
         !payloadTy.getMembers().empty())
       return mlir::failure();
+    // Arm-side eligibility is simply "nullary" — the shared predicate the
+    // token-type computation also consults, so "rewritten here" and
+    // "produces no token there" can never drift apart. The tag-slot range
+    // is a type-level property: `mayCarrySpecialPointerTag` (checked above)
+    // already guaranteed every nullary arm of this type is encodable.
     size_t tag = variant.getTag().getZExtValue();
-    if (tag + 1 > 0xFF)
-      return mlir::failure();
     auto variantType = llvm::dyn_cast<RecordType>(rcType.getElementType());
-    if (tag >= variantType.getMembers().size())
-      return mlir::failure();
-    auto arm = llvm::dyn_cast<RecordType>(variantType.getMembers()[tag]);
-    if (!arm || !arm.isCompound() || !arm.getMembers().empty())
+    if (!variantType || !variantType.isNullaryArm(tag))
       return mlir::failure();
     rewriter.replaceOpWithNewOp<ReussirRcTaggedOp>(op, rcType,
                                                    variant.getTagAttr());

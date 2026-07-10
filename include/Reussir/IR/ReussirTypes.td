@@ -164,6 +164,15 @@ def ReussirRecordType
       // fused-header variants.
       llvm::TypeSize getVariantArmAllocSize(const mlir::DataLayout &dataLayout,
                                             size_t tag) const;
+      // Whether arm `tag` is *nullary*: an empty compound. On a taggable box
+      // type (`RcType::mayCarrySpecialPointerTag`, which also guarantees at
+      // the type level that every nullary arm fits `rc.tagged`'s tag slot),
+      // constructions of exactly these arms are rewritten to unboxed
+      // immediates that never allocate — so under the special-pointer-tag
+      // scheme "nullary arm of a taggable type" means "never produces a
+      // token". Single source of truth shared by the rewrite pattern and
+      // the token-type computation.
+      bool isNullaryArm(size_t tag) const;
       // A shared/regional variant record carries a fused 8-byte box header:
       // `{4-byte count slot, i32 tag, payload}`. When rc-boxed, the box IS
       // the record — the refcount overlays the leading slot, so the rc
