@@ -71,8 +71,14 @@ identical pointer, whose stale invariant-group metadata must be stripped; the
 ptr-eq assume keeps value propagation across the barrier. (`token.realloc`'s
 result is always a static token, so the launder applies to a bare pointer.)
 
-Follow-up: the reuse `realloc` copies the dead donor's contents when it
-relocates — wasted work. A no-copy resize is tracked in #362.
+The reuse `realloc` is **no-copy** (#362): the donor's contents are dead (the
+acceptor overwrites the block with a freshly constructed object, and the entry
+points are declared `allockind("realloc,uninitialized,...")`), so the runtime
+keeps the block when it already satisfies the new layout (mimalloc recovers
+the usable size from the pointer; a same-bin resize is pointer-identity) and
+otherwise does a plain free + alloc — never a copying `mi_realloc`. Only the
+runtime's Rust `GlobalAlloc` keeps a copying realloc, as its contract
+requires.
 
 ## Status / follow-ups
 

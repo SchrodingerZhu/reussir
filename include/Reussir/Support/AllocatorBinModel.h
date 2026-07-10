@@ -31,8 +31,10 @@ namespace reussir {
 // This is only a *hint*, not a correctness contract: TokenReuse consults it to
 // prefer a donor that shares a bin with its acceptor (so reuse avoids a moving
 // realloc). It gates nothing in lowering — `token.realloc` always calls the
-// runtime, which copies if the block moves — so a stale or imprecise map only
-// costs a suboptimal pairing, never a miscompile. Keep it roughly in step with
+// runtime, which relocates if the block does not fit (a plain free + alloc;
+// the donor's contents are dead, so nothing is copied — #362) — so a stale or
+// imprecise map only costs a suboptimal pairing, never a miscompile. Keep it
+// roughly in step with
 // the linked allocator to keep the heuristic sharp (see #325: the previous
 // SnMalloc-derived model paired across mimalloc bins, so its reallocs copied).
 constexpr std::size_t allocatorBinSize(std::size_t size) {
