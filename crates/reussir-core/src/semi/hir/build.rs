@@ -411,6 +411,11 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .expect("known intrinsic in machine-emitted IR"),
                 args: self.exprs(args),
             },
+            raw::Kind::ArrayOp { op, args } => ExprKind::ArrayOp {
+                op: crate::intrinsic::ArrayFn::parse(op)
+                    .expect("known array op in machine-emitted IR"),
+                args: self.exprs(args),
+            },
             raw::Kind::NullableCall(inner) => {
                 ExprKind::NullableCall(inner.as_ref().map(|x| self.boxed(x)))
             }
@@ -724,6 +729,23 @@ mod tests {
         roundtrip(
             "pub fn id(a: [f64; 8]) -> [f64; 8] { a } \
              pub fn fst(m: [i32; 4, 4], n: [i32; 4, 4]) -> [i32; 4, 4] { m }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_arrays() {
+        // All five `array#…` ops; the tabulate/fold kernels are ordinary
+        // closures (literal and named) riding the closure grammar.
+        roundtrip(
+            r#"
+            pub fn make() -> [f64; 8] { core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64) }
+            pub fn ones() -> [f64; 8] { core::intrinsic::array::splat<[f64; 8]>(1.0) }
+            pub fn s(a: [f64; 8]) -> f64 { core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x) }
+            pub fn n(f: (f64, f64) -> f64, a: [f64; 8]) -> f64 { core::intrinsic::array::fold(a, 0.0, f) }
+            pub fn b(a: [f64; 8], i: i64, v: f64) -> [f64; 8] {
+                core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
+            }
+            "#,
         );
     }
 

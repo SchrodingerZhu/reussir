@@ -349,6 +349,12 @@ pub enum Kind {
         params: Vec<(u32, Ty)>,
         body: Expr,
     },
+    /// `array#<op>(args…)` — a built-in array op; a `tabulate`/`fold`
+    /// kernel closure is an ordinary argument.
+    ArrayOp {
+        op: String,
+        args: Vec<Expr>,
+    },
     Match(Expr, Box<Tree>),
 }
 
