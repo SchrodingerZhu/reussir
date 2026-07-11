@@ -36,6 +36,21 @@
 //    `token.alloc` are erased. Evals spliced out of the body are re-queued
 //    by the driver, which is what makes the reduction recursive.
 //
+//  * LOOPINLINE: the loop-carried redex. A linear chain
+//    `create → (uniqify|apply)* → %c` sits outside a loop nest
+//    (`LoopLikeOpInterface`, so `scf.for` and `affine.for` alike) and %c's
+//    remaining uses are one per-iteration `rc.inc` next to a single `eval`
+//    inside the nest plus one trailing `rc.dec` after it — a closure built
+//    once and called once per iteration. The body is spliced into the loop
+//    at the eval, and the closure box vanishes: its own create/inc/eval/dec
+//    traffic is self-contained (a fresh box nothing else can observe), so
+//    erasing all of it is count-neutral. Capture counts are preserved, not
+//    reasoned about: each rc-typed applied capture gains a per-iteration
+//    `rc.inc` at the splice point (the inlined body consumes its capture
+//    parameters each iteration; the box used to pay for this by copying
+//    captures out of a shared closure) and one `rc.dec` where the box's dec
+//    stood (the box's drop used to release the capture the apply consumed).
+//
 // Fused evals that bottom out anywhere else survive the pass; the SCF-ops
 // lowering re-expands them into unchecked applies + plain eval, so the net
 // effect of FOLD+STRIP on a chain the inliner merged is the removal of its
@@ -47,6 +62,7 @@
 #include <llvm/Support/Casting.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/PatternMatch.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 
@@ -146,6 +162,138 @@ struct InlineCreateIntoEvalPattern
   }
 };
 
+// LOOPINLINE: a beta redex carried through a loop nest. See the file
+// comment for the ownership accounting.
+struct InlineLoopCarriedCreatePattern
+    : public mlir::OpRewritePattern<ReussirClosureEvalOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirClosureEvalOp eval,
+                  mlir::PatternRewriter &rewriter) const override {
+    mlir::Value closure = eval.getClosure();
+    mlir::Operation *top = closure.getDefiningOp();
+    if (!top)
+      return mlir::failure();
+    mlir::Block *defBlock = top->getBlock();
+    if (defBlock == eval->getBlock())
+      return mlir::failure(); // straight-line redexes belong to INLINE
+
+    // Every region between the chain and the eval must be a loop (any
+    // dialect implementing `LoopLikeOpInterface`): the eval then runs once
+    // per iteration of a nest the chain dominates from outside.
+    mlir::Operation *walk = eval;
+    while (walk->getBlock() != defBlock) {
+      mlir::Operation *parent = walk->getParentOp();
+      if (!parent || !llvm::isa<mlir::LoopLikeOpInterface>(parent))
+        return mlir::failure();
+      walk = parent;
+    }
+    mlir::Operation *outermostLoop = walk;
+
+    // The chain below the loop-carried value: linear (every inner link
+    // single-use), one block, bottoming at an inlined create. Every uniqify
+    // over such a chain is a runtime no-op — the value is unique by
+    // construction, fresh from the create with no use between the links.
+    llvm::SmallVector<mlir::Operation *> chain;
+    llvm::SmallVector<mlir::Value> caps; // collected top-down
+    ReussirClosureCreateOp create;
+    mlir::Value link = closure;
+    while (true) {
+      mlir::Operation *def = link.getDefiningOp();
+      if (!def || def->getBlock() != defBlock)
+        return mlir::failure();
+      if (link != closure && !link.hasOneUse())
+        return mlir::failure();
+      if (auto apply = llvm::dyn_cast<ReussirClosureApplyOp>(def)) {
+        chain.push_back(def);
+        caps.push_back(apply.getArg());
+        link = apply.getClosure();
+      } else if (auto uniqify = llvm::dyn_cast<ReussirClosureUniqifyOp>(def)) {
+        chain.push_back(def);
+        link = uniqify.getClosure();
+      } else if ((create = llvm::dyn_cast<ReussirClosureCreateOp>(def))) {
+        chain.push_back(def);
+        break;
+      } else {
+        return mlir::failure();
+      }
+    }
+    if (!create.isInlined())
+      return mlir::failure();
+    mlir::Value token = create.getToken();
+    if (token && !token.getDefiningOp<ReussirTokenAllocOp>())
+      return mlir::failure();
+    // Walking top-down visits the last application first; the body's
+    // leading parameters bind in application order.
+    std::reverse(caps.begin(), caps.end());
+
+    mlir::Block &body = create.getBody().front();
+    if (body.getNumArguments() != caps.size() + eval.getArgs().size())
+      return mlir::failure();
+
+    // The value's remaining uses: exactly one per-iteration inc beside the
+    // eval, and exactly one plain dec after the nest at the chain's level.
+    llvm::SmallVector<ReussirRcIncOp> incs;
+    ReussirRcDecOp dec;
+    for (mlir::Operation *user : closure.getUsers()) {
+      if (user == eval)
+        continue;
+      if (auto inc = llvm::dyn_cast<ReussirRcIncOp>(user)) {
+        if (inc->getBlock() != eval->getBlock() || !inc->isBeforeInBlock(eval))
+          return mlir::failure();
+        incs.push_back(inc);
+        continue;
+      }
+      if (auto d = llvm::dyn_cast<ReussirRcDecOp>(user)) {
+        if (dec || d->getBlock() != defBlock ||
+            !outermostLoop->isBeforeInBlock(d))
+          return mlir::failure();
+        dec = d;
+        continue;
+      }
+      return mlir::failure();
+    }
+    if (incs.size() != 1 || !dec || dec.getNumResults() != 0)
+      return mlir::failure();
+
+    // Per-iteration ownership for rc-typed captures (see the file comment).
+    rewriter.setInsertionPoint(eval);
+    for (mlir::Value cap : caps)
+      if (llvm::isa<RcType>(cap.getType()))
+        ReussirRcIncOp::create(rewriter, eval.getLoc(), cap);
+
+    auto yield = llvm::cast<ReussirClosureYieldOp>(body.getTerminator());
+    mlir::Value yielded = yield.getValue();
+    llvm::SmallVector<mlir::Value> args(caps);
+    llvm::append_range(args, eval.getArgs());
+    rewriter.inlineBlockBefore(&body, eval, args);
+    rewriter.eraseOp(yield);
+    if (eval.getNumResults())
+      rewriter.replaceOp(eval, yielded);
+    else
+      rewriter.eraseOp(eval);
+
+    // The box's dec used to release the captures the applies consumed;
+    // release them directly where it stood.
+    rewriter.setInsertionPoint(dec);
+    for (mlir::Value cap : caps)
+      if (llvm::isa<RcType>(cap.getType()))
+        ReussirRcDecOp::create(rewriter, dec.getLoc(),
+                               /*nullableToken=*/NullableType{}, cap,
+                               /*destructureTag=*/mlir::IntegerAttr{},
+                               /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+    for (ReussirRcIncOp inc : incs)
+      rewriter.eraseOp(inc);
+    rewriter.eraseOp(dec);
+    for (mlir::Operation *op : chain)
+      rewriter.eraseOp(op);
+    if (token && token.use_empty())
+      rewriter.eraseOp(token.getDefiningOp());
+    return mlir::success();
+  }
+};
+
 struct ClosureBetaReductionPass
     : public impl::ReussirClosureBetaReductionPassBase<
           ClosureBetaReductionPass> {
@@ -154,7 +302,8 @@ struct ClosureBetaReductionPass
   void runOnOperation() override {
     mlir::RewritePatternSet patterns(&getContext());
     patterns.add<FoldApplyIntoEvalPattern, StripNoopUniqifyPattern,
-                 InlineCreateIntoEvalPattern>(&getContext());
+                 InlineCreateIntoEvalPattern, InlineLoopCarriedCreatePattern>(
+        &getContext());
     if (mlir::failed(
             mlir::applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
