@@ -38,6 +38,10 @@ MlirPass reussirCreateIncDecCancellationPass(void);
 MlirPass reussirCreateRcDecrementExpansionPass(void);
 MlirPass reussirCreateInferVariantTagPass(void);
 MlirPass reussirCreateSCFOpsLoweringPass(void);
+// Beta-reduces closure apply/eval chains (inlines fully visible closures,
+// collapses chained uniqueness checks). Aggressive-opt only: inlining closure
+// bodies hurts debuggability.
+MlirPass reussirCreateClosureBetaReductionPass(void);
 MlirPass reussirCreateRcCreateSinkPass(void);
 
 /// Encodes nullary variants of shared rc-boxed enums as tagged pointer

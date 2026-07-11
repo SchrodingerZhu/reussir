@@ -12,8 +12,9 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
           reussir.closure.yield %result : i32
       }
     }
-    // This should fail because the closure still has input types
-    // expected-error @+1 {{'reussir.closure.eval' op cannot evaluate closure with remaining input types, closure has 1 input types remaining}}
+    // This should fail because the closure still has input types and no
+    // `with` pack supplies them
+    // expected-error @+1 {{'reussir.closure.eval' op closure has 1 remaining input types but 0 eval arguments are supplied}}
     %result = reussir.closure.eval (%closure : !reussir.rc<!reussir.closure<(i32) -> i32>>) : i32
     return %result : i32
   }

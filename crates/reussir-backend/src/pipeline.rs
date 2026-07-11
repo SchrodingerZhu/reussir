@@ -327,6 +327,16 @@ pub fn run_lowering_pipeline(
                 module: sys::reussirCreateUniqueCarryingRecursionAnalysisPass();
             }
             module: sys::reussirCreateDefaultInlinerPass();
+            // Beta-reduce the closure chains the inliner just made visible:
+            // create→apply→eval collapses to the spliced body, and chained
+            // uniqueness checks collapse into one (fused eval). Must run
+            // before token instantiation / closure outlining, while create
+            // bodies are still inline regions. Aggressive-only: inlining
+            // closure bodies detaches the code from the closure abstraction
+            // the programmer wrote, which hurts debuggability.
+            if options.opt == OptLevel::Aggressive => {
+                func: sys::reussirCreateClosureBetaReductionPass();
+            }
         }
 
         // Reussir-level transformation and analysis.

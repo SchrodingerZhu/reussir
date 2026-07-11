@@ -15,9 +15,14 @@
 // SPECULATIVE WholeProgramDevirt versions the call: compare the loaded
 // function pointer against the sole implementation, direct call — which
 // LLVM inlines, exposing the closure body — on the likely arm, the original
-// indirect call as the fallback. The guard is what makes the transform
-// sound on any world (a foreign closure just falls back), at the price of
-// one predictable compare per dispatch.
+// indirect call as the fallback.
+//
+// Every closure below is deliberately used TWICE: a single-use
+// create→apply→eval chain is a beta redex that `-O aggressive`'s
+// beta-reduction pass folds away before any WPD artifact exists — deleting
+// the family's only vtable and (correctly) leaving nothing to devirtualize.
+// Sharing the closure makes the value multi-use, which beta reduction must
+// not fold, so the vtable and the dispatches survive to WPD.
 //
 // The `(i32) -> i32` family has TWO implementations: single-impl devirt
 // cannot fire there and speculative mode never emits branch funnels, so its
@@ -30,7 +35,7 @@ pub fn apply_single(f: (i64) -> i64, x: i64) -> i64 {
 
 pub fn run_single(n: i64) -> i64 {
     let double = |x: i64| x * 2;
-    apply_single(double, n)
+    apply_single(double, apply_single(double, n))
 }
 
 pub fn apply_multi(f: (i32) -> i32, x: i32) -> i32 {
@@ -41,6 +46,7 @@ pub fn run_multi(n: i32) -> i32 {
     let double = |x: i32| x * 2;
     let triple = |x: i32| x * 3;
     apply_multi(double, n) + apply_multi(triple, n)
+        + apply_multi(double, apply_multi(triple, n))
 }
 
 extern "C" trampoline "wpd_single_ffi" = run_single;

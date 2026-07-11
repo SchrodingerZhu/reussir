@@ -1,0 +1,47 @@
+// RUN: %rrc %s --emit llvm-ir -O aggressive -o %t.ll && %FileCheck %s < %t.ll
+// RUN: %rrc %s --emit llvm-ir -O default -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s -O aggressive -o %t.o
+
+// Closure beta reduction, end to end through rrc. At `-O aggressive` the
+// pass runs right after the MLIR inliner: a closure that is created,
+// (capture-)applied, and evaluated within one visible region is a beta
+// redex — the body is spliced in place and the closure box never exists, so
+// the compiled function is straight-line arithmetic with no allocation and
+// no dispatch. At `-O default` the pass is off (inlined closure bodies
+// detach the code from the abstraction the programmer wrote, which hurts
+// debugging), so the closure allocation survives.
+
+pub fn direct(n: i64, k: i64) -> i64 {
+    let f = |x: i64| x * 2 + k;
+    f(n)
+}
+
+fn call_it(f: (i64) -> i64, a: i64) -> i64 {
+    f(a)
+}
+
+pub fn through_hof(a: i64) -> i64 {
+    call_it(|x: i64| x + 7, a)
+}
+
+// The non-exported HOF is inlined by the MLIR inliner first, turning
+// create→apply→eval into one visible chain that then beta-reduces.
+// (It also lowers first in the module.)
+// CHECK-LABEL: define{{.*}}@_RC11through_hof(i64 %0)
+// CHECK-NOT: call
+// CHECK: add i64 {{.*}}7
+// CHECK-NOT: call
+// CHECK: ret i64
+
+// The capture `k` is a pre-applied leading parameter; after reduction the
+// body's arithmetic lands directly in the exported function with no closure
+// allocation, load, or call of any kind in between.
+// CHECK-LABEL: define{{.*}}@_RC6direct(i64 %0, i64 %1)
+// CHECK-NOT: call
+// CHECK: shl i64
+// CHECK-NOT: call
+// CHECK: ret i64
+
+// Without the pass the closure box is genuinely allocated.
+// CHECK-OFF-LABEL: define{{.*}}@_RC6direct
+// CHECK-OFF: call {{.*}}@__reussir_allocate
