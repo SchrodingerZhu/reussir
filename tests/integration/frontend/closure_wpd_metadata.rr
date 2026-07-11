@@ -2,6 +2,8 @@
 // RUN: %rrc %s --emit llvm-ir -O aggressive --no-closure-wpd -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
 // RUN: %rrc %s --emit llvm-ir -O default -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
 // RUN: %rrc %s --emit llvm-ir -O aggressive --codegen-units 2 -o %t.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.0.ll
+// RUN: %rrc %s --emit mlir-llvm -O aggressive -o %t.mlir && %FileCheck %s --check-prefix=CHECK-SITES < %t.mlir
+// RUN: %rrc %s -O aggressive -o %t.o
 
 // Closure WPD vtable metadata, end to end through rrc: every closure vtable
 // global carries its `!type` id tiers (offset 0) and translation-unit
@@ -28,14 +30,26 @@ pub fn use_adder(n: i32) -> i32 {
 // returns), the full signature, and the uid. A capturing closure therefore
 // shares its suffix tiers with any capture-free closure of the same type —
 // captures are just arguments that were applied at creation.
-// CHECK: {{.*\$closure.*}} = internal constant { ptr, ptr, ptr } { {{.*}} }, !type ![[T0:[0-9]+]], !type ![[T1:[0-9]+]], !type ![[T2:[0-9]+]], !type ![[T3:[0-9]+]], !vcall_visibility ![[VIS:[0-9]+]]
+// (`!vcall_visibility` is also stamped, but the backend pipeline's
+// LowerTypeTests consumes it together with the type tests, so the final IR
+// only retains the `!type` tiers; devirtualization firing — which requires
+// the translation-unit visibility — pins it end to end.)
+// CHECK: {{.*\$closure.*}} = internal constant { ptr, ptr, ptr } { {{.*}} }, !type ![[T0:[0-9]+]], !type ![[T1:[0-9]+]], !type ![[T2:[0-9]+]], !type ![[T3:[0-9]+]]
 
 // CHECK-DAG: ![[T0]] = !{i64 0, !"_RFK17ReussirClosureWpdE[[RET:C[0-9a-zA-Z_]+]]"}
 // CHECK-DAG: ![[T1]] = !{i64 0, !"_RFK17ReussirClosureWpd[[ARG:C[0-9a-zA-Z_]+]]E[[RET]]"}
 // CHECK-DAG: ![[T2]] = !{i64 0, !"_RFK17ReussirClosureWpd[[ARG]][[ARG]]E[[RET]]"}
 // CHECK-DAG: ![[T3]] = !{i64 0, !"_RNv{{.*}}3wpd"}
-// Translation-unit visibility: what makes devirtualization legal without LTO.
-// CHECK-DAG: ![[VIS]] = !{i64 2}
+
+// The lowered-MLIR dump (before translation) asserts the ids at the indirect
+// slot call sites; they are strengthened past the family root — at least one
+// `C` parameter segment before the `E`.
+// CHECK-SITES: reussir.closure.wpd_test{{.*}} id{{ ?}}("_RFK17ReussirClosureWpdC{{[0-9a-zA-Z_]+}}E
+
+// After the backend pipeline no type test survives (LowerTypeTests consumes
+// them), so nothing can leak into instruction selection — pinned by the
+// object-emission RUN line above.
+// CHECK-NOT: llvm.type.test
 
 // CHECK-OFF-NOT: !type
 // CHECK-OFF-NOT: !vcall_visibility

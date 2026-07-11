@@ -1614,21 +1614,24 @@ def ReussirClosureCloneOp : ReussirClosureOp<"clone", []> {
 def ReussirClosureWpdTestOp : ReussirClosureOp<"wpd_test", []> {
   let summary = "Assert a whole-program-devirtualization type id of a vtable";
   let description = [{
-    `reussir.closure.wpd_test` asserts that `vtable` (a lowered pointer to a
-    closure vtable global) carries the whole-program-devirtualization type id
-    `id` — see `ClosureWpd.h` and docs/design/closure-wpd.md for the id
-    scheme and the closed-world conditions that make the assertion sound.
+    `reussir.closure.wpd_test` asserts that the vtable backing `vtable`
+    carries the whole-program-devirtualization type id `id` — see
+    `ClosureWpd.h` and docs/design/closure-wpd.md for the id scheme and the
+    closed-world conditions that make the assertion sound.
 
-    The op is emitted by the closure conversion patterns (when the basic-ops
-    lowering runs with `closure-wpd`) next to each indirect vtable slot load,
-    and survives conversion untouched: the LLVM dialect can express neither
-    `!type` metadata nor the metadata-string operand of `llvm.type.test`, so
-    the Reussir dialect's LLVM translation interface lowers this op directly
-    to `llvm.type.test(%vtable, !"id")` + `llvm.assume` during
-    `translateModuleToLLVMIR`.
+    The op has two forms over its lifetime. The basic-ops lowering prologue
+    (under `closure-wpd`) inserts it with an **rc'd closure** operand in
+    front of each indirect vtable call site, carrying the strengthened id
+    the sparse strengthening analysis computed for that operand. Its
+    conversion pattern then loads the box's vtable slot (`invariant.group`)
+    and re-emits the op on the **loaded vtable pointer**; that form survives
+    to `translateModuleToLLVMIR`, where the dialect's LLVM translation
+    interface lowers it to `llvm.type.test(%vtable, !"id")` + `llvm.assume`
+    — the LLVM dialect can express neither `!type` metadata nor the
+    intrinsic's metadata-string operand.
   }];
   let arguments = (ins
-    Arg<AnyType, "lowered pointer to the vtable">:$vtable,
+    Arg<AnyType, "rc'd closure (pre-conversion) or vtable pointer">:$vtable,
     StrAttr:$id
   );
   let assemblyFormat = [{
