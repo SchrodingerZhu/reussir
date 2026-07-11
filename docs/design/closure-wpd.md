@@ -112,6 +112,29 @@ call site's (both are `invariant.group` loads of the same slot), runs
 `WholeProgramDevirt` before the per-module pipeline (so devirtualized calls
 inline), and lowers away the remaining type tests.
 
+## Measured results (x86-64, LLVM 22)
+
+- An **exported** higher-order function evaluating a single-implementation
+  family goes from a genuine indirect dispatch to the closure body inlined
+  outright (`closure_wpd_devirt.rr`). Locally created and consumed closures
+  already devirtualized before this work via the constant vtable store +
+  `invariant.group` loads; WPD's contribution is exactly the cases local
+  reasoning cannot see (exported functions, merges, data structures).
+- **nbe-hoas** (HOAS normalizer, one closure family in the whole program):
+  all 8 remaining indirect calls (evaluate/clone/drop in the recursive
+  evaluator) fold to direct calls and inline at `-O aggressive`.
+  Wall-clock is neutral-to-slightly-negative (~0–3%
+  slower on a small container): dispatch was never the bottleneck there —
+  the indirect branches were perfectly predictable — and inlining the large
+  evaluator body into its callers costs some code size. The expected wins
+  are small-closure HOF code (map/filter-style), where devirtualization
+  lets the body fold into the loop.
+- **Branch funnels are disabled** (`wholeprogramdevirt-branch-funnel-threshold=0`):
+  `llvm.icall.branch.funnel` only survives instruction selection when the
+  CFI-mode LowerTypeTests has rebuilt the vtables into one combined global,
+  and we run the drop-mode lowering instead. Multi-implementation families
+  simply stay indirect.
+
 ## Invariant canary
 
 Everything above rests on the `evaluate` ABI reading all arguments from the

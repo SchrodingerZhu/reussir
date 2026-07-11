@@ -1,0 +1,57 @@
+// RUN: %rrc %s --emit llvm-ir -O aggressive -o %t.ll && %FileCheck %s < %t.ll
+// RUN: %rrc %s --emit llvm-ir -O aggressive --no-closure-wpd -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s -o %t.o --relocation-mode pic -O aggressive
+// RUN: %cc %t.o %S/closure_wpd_devirt.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.off.o --relocation-mode pic -O aggressive --no-closure-wpd
+// RUN: %cc %t.off.o %S/closure_wpd_devirt.c -o %t.off.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.off.exe
+
+// Whole-program devirtualization of closures, end to end. `apply_single` is
+// EXPORTED, so nothing local pins which closure flows in — without WPD its
+// eval is a genuine indirect call (the `invariant.group` folding that
+// devirtualizes locally created closures cannot reach it). With WPD the
+// `(i64) -> i64` family has a single implementation in the whole module, so
+// the eval (and the drop on the consumed reference) fold to direct calls —
+// LLVM then inlines the closure body outright.
+//
+// The `(i32) -> i32` family has TWO implementations: single-impl devirt
+// cannot fire there, and WPD may leave indirect calls or lower them through
+// `llvm.icall.branch.funnel` comparison ladders — either way the executions
+// below pin the behavior for both families in both modes.
+
+pub fn apply_single(f: (i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+pub fn run_single(n: i64) -> i64 {
+    let double = |x: i64| x * 2;
+    apply_single(double, n)
+}
+
+pub fn apply_multi(f: (i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+pub fn run_multi(n: i32) -> i32 {
+    let double = |x: i32| x * 2;
+    let triple = |x: i32| x * 3;
+    apply_multi(double, n) + apply_multi(triple, n)
+}
+
+extern "C" trampoline "wpd_single_ffi" = run_single;
+extern "C" trampoline "wpd_multi_ffi" = run_multi;
+
+// With WPD the single-implementation evaluate is folded direct and inlined:
+// the closure body (`x * 2`, canonicalized to a shift) appears right inside
+// the exported function, with no call in between.
+// (apply_multi lowers first in the module; anchoring both labels keeps the
+// body check scoped to apply_single.)
+// CHECK-LABEL: define{{.*}}@_RC11apply_multi
+// CHECK-LABEL: define{{.*}}@_RC12apply_single
+// CHECK: shl i64
+
+// Without WPD the exported function must dispatch through the vtable: an
+// indirect call (register callee), and no trace of the closure body.
+// CHECK-OFF-LABEL: define{{.*}}@_RC12apply_single
+// CHECK-OFF: call {{.*}}%{{[0-9]+}}(

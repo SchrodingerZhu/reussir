@@ -20,7 +20,12 @@
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 
+#include <llvm/Support/CommandLine.h>
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
+#include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/IPO/WholeProgramDevirt.h>
+
+#include <mutex>
 
 #ifdef REUSSIR_HAS_TPDE
 #include <cstdint>
@@ -62,11 +67,45 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
 
   llvm::ModulePassManager mpm;
   mpm.addPass(reussir::llvmpass::RuntimeFunctionAttributorPass());
-  // Consume the closure-WPD artifacts (`llvm.type.test` + `assume` at the
-  // indirect vtable call sites) before the module pipeline: drop the assumes
-  // and fold the tests away so no `llvm.type.test` ever reaches instruction
-  // selection. A no-op for modules lowered without `closure-wpd` (REPL/JIT
-  // increments among them — this entry point serves both backends).
+  // Whole-program devirtualization of closures, ahead of the module pipeline
+  // so devirtualized slot calls can inline. The lowering tagged each closure
+  // vtable with its suffix type-id tiers (translation-unit vcall visibility —
+  // legal without LTO summaries) and asserted the strengthened id at every
+  // indirect eval/clone/drop site; when a tested id has a single
+  // implementation in the module, WPD folds the slot call direct.
+  // Branch-funnel devirtualization is OFF: `llvm.icall.branch.funnel`'s
+  // instruction selection requires every vtable operand to derive from one
+  // combined GlobalValue — the layout only the CFI-mode LowerTypeTests
+  // builds. We run the drop-mode lowering instead, so a funnel emitted for a
+  // multi-implementation family would abort at object emission ("all
+  // llvm.icall.branch.funnel operands must refer to the same GlobalValue").
+  // The threshold is a cl::opt with no pass-constructor equivalent.
+  static std::once_flag disableBranchFunnels;
+  std::call_once(disableBranchFunnels, [] {
+    auto &options = llvm::cl::getRegisteredOptions();
+    auto it = options.find("wholeprogramdevirt-branch-funnel-threshold");
+    if (it != options.end())
+      static_cast<llvm::cl::opt<unsigned> *>(it->second)->setValue(0);
+  });
+  // The lowering's type-test assertion loads the vtable slot separately from
+  // the call site it guards, and WPD only devirtualizes calls hanging off
+  // the type-tested pointer itself. Both are `invariant.group` loads of the
+  // same slot, so one GVN run — which folds redundant invariant-group loads
+  // even across the refcount store — funnels the call onto the tested value.
+  // GVN is not free, so it (and WPD) only run when the module actually
+  // carries type tests; modules lowered without `closure-wpd` (REPL/JIT
+  // increments among them) keep their pipeline unchanged.
+  if (llvm::Intrinsic::getDeclarationIfExists(&m,
+                                              llvm::Intrinsic::type_test)) {
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::GVNPass()));
+    mpm.addPass(llvm::WholeProgramDevirtPass(
+        /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr));
+  }
+  // Then consume the artifacts (`llvm.type.test` + `assume`): drop the
+  // assumes and fold the dead tests away so no `llvm.type.test` ever reaches
+  // instruction selection. Both passes are no-ops for modules lowered
+  // without `closure-wpd` (REPL/JIT increments among them — this entry point
+  // serves both backends).
   mpm.addPass(llvm::LowerTypeTestsPass(
       /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
       llvm::lowertypetests::DropTestKind::Assume));

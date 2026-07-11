@@ -46,9 +46,9 @@ pub fn use_adder(n: i32) -> i32 {
 // `C` parameter segment before the `E`.
 // CHECK-SITES: reussir.closure.wpd_test{{.*}} id{{ ?}}("_RFK17ReussirClosureWpdC{{[0-9a-zA-Z_]+}}E
 
-// After the backend pipeline no type test survives (LowerTypeTests consumes
-// them), so nothing can leak into instruction selection — pinned by the
-// object-emission RUN line above.
+// After the backend pipeline no type test survives (WholeProgramDevirt and
+// LowerTypeTests consume them), so nothing can leak into instruction
+// selection — pinned by the object-emission RUN line above.
 // CHECK-NOT: llvm.type.test
 
 // CHECK-OFF-NOT: !type
