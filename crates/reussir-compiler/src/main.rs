@@ -21,7 +21,7 @@ use palc::Parser;
 
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
-use reussir_backend::pipeline::{self, LoweringOptions, NullaryVariantEncoding, OptLevel};
+use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{CodegenUnit, LinkagePolicy, lower_program, lower_unit};
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
@@ -200,6 +200,15 @@ struct Cli {
     #[arg(long = "no-closure-wpd")]
     no_closure_wpd: bool,
 
+    /// Run a transform-dialect script at a named pipeline anchor:
+    /// `<file.mlir>[@<anchor>]`, where `<anchor>` is `entry` (pure Reussir IR,
+    /// before any pipeline pass) or `kernel` (loop nests as memref/scf/arith,
+    /// before the LLVM descent; the default). Repeatable. The script must
+    /// define `transform.named_sequence @__reussir_anchor_<anchor>` in a
+    /// module with the `transform.with_named_sequence` attribute.
+    #[arg(long = "transform-script")]
+    transform_script: Vec<String>,
+
     /// Lay out compound record members in declaration order instead of the
     /// default packed order (members sorted by descending storage alignment,
     /// eliminating inter-member padding). Packing is the shipped default and
@@ -295,6 +304,26 @@ fn parse_opt(s: &str) -> Result<OptLevel, String> {
         "size" => Ok(OptLevel::Size),
         other => Err(format!("unknown -O level `{other}`")),
     }
+}
+
+/// Parses the `--transform-script` specs: `<file>[@<anchor>]`, anchor
+/// defaulting to `kernel`. The anchor is whatever follows the *last* `@`, so
+/// a path may itself contain `@` as long as an explicit anchor is given.
+fn parse_transform_scripts(specs: &[String]) -> Result<Vec<(Anchor, PathBuf)>, String> {
+    specs
+        .iter()
+        .map(|spec| match spec.rsplit_once('@') {
+            Some((path, anchor)) => match Anchor::parse(anchor) {
+                Some(anchor) => Ok((anchor, PathBuf::from(path))),
+                None => Err(format!(
+                    "unknown anchor `{anchor}` in `--transform-script {spec}`: \
+                     expected `entry` or `kernel` (append `@kernel` explicitly \
+                     if the file name itself contains `@`)"
+                )),
+            },
+            None => Ok((Anchor::Kernel, PathBuf::from(spec))),
+        })
+        .collect()
 }
 
 fn parse_reloc(s: &str) -> Result<RelocMode, String> {
@@ -612,6 +641,7 @@ fn backend_module(
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         pack_record_members: !cli.no_pack_record_members,
         closure_wpd,
+        transform_scripts: parse_transform_scripts(&cli.transform_script)?,
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
