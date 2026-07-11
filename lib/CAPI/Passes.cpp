@@ -14,8 +14,9 @@
 #include <llvm/Support/CBindingWrapping.h>
 #include <llvm/Support/Error.h>
 
-// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
-// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+// Complete mlir::DialectVersion before MLIR C API headers reach
+// BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
+// forward declared.
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Pass.h>
@@ -113,8 +114,10 @@ MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized) {
 MlirPass reussirCreateInvariantGroupAnalysisPass(void) {
   return wrapOwned(reussir::createReussirInvariantGroupAnalysisPass());
 }
-MlirPass reussirCreateBasicOpsLoweringPass(void) {
-  return wrapOwned(reussir::createReussirBasicOpsLoweringPass());
+MlirPass reussirCreateBasicOpsLoweringPass(bool closureWpd) {
+  reussir::ReussirBasicOpsLoweringPassOptions options;
+  options.closureWpd = closureWpd;
+  return wrapOwned(reussir::createReussirBasicOpsLoweringPass(options));
 }
 MlirPass reussirCreateDebugInfoConversionPass(void) {
   return wrapOwned(reussir::createReussirDebugInfoConversionPass());
@@ -235,5 +238,6 @@ bool reussirModuleAttachTargetSpec(MlirModule module, const char *dataLayout,
 
 void reussirContextSetPackRecordMembers(MlirContext context, bool enable) {
   mlir::MLIRContext *ctx = unwrap(context);
-  ctx->getOrLoadDialect<reussir::ReussirDialect>()->setPackRecordMembers(enable);
+  ctx->getOrLoadDialect<reussir::ReussirDialect>()->setPackRecordMembers(
+      enable);
 }

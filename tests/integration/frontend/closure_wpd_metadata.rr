@@ -1,0 +1,46 @@
+// RUN: %rrc %s --emit llvm-ir -O aggressive -o %t.ll && %FileCheck %s < %t.ll
+// RUN: %rrc %s --emit llvm-ir -O aggressive --no-closure-wpd -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s --emit llvm-ir -O default -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s --emit mlir-llvm -O aggressive -o %t.mlir && %FileCheck %s --check-prefix=CHECK-SITES < %t.mlir
+// RUN: %rrc %s -O aggressive -o %t.o
+
+// Closure WPD artifacts, end to end through rrc: every closure vtable global
+// carries its `!type` return-type family id (offset 0) and translation-unit
+// `!vcall_visibility`, the artifacts LLVM's WholeProgramDevirt consumes.
+// `make_adder` is exported so the vtable provably survives optimization.
+// The devirtualization is speculative (guarded direct call with an indirect
+// fallback), hence sound on any world; the flag is a compile-time knob
+// reserved for the whole-program opt levels (`aggressive`/`size`) — the
+// artifacts vanish at `-O default` and under `--no-closure-wpd`.
+
+pub fn make_adder(k: i32) -> (i32) -> i32 {
+    |x: i32| x + k
+}
+
+pub fn use_adder(n: i32) -> i32 {
+    let f = make_adder(n);
+    f(3)
+}
+
+// The vtable global, stamped with its single return-type family id. The
+// frontend materializes the capture `k` as a pre-applied leading parameter,
+// so the outlined signature is `(i32, i32) -> i32` — but the id depends on
+// the RETURN type alone, so a capturing closure shares its id with every
+// closure returning i32: captures are just arguments applied at creation.
+// (`!vcall_visibility` is also stamped; the speculative WholeProgramDevirt
+// does not need it, but it keeps an unconditional closed-world mode a
+// pipeline switch away.)
+// CHECK: {{.*\$closure.*}} = internal constant { ptr, ptr, ptr } { {{.*}} }, !type ![[T0:[0-9]+]]
+// CHECK-DAG: ![[T0]] = !{i64 0, !"reussir.closure.wpd.{{[0-9A-Za-z]+}}"}
+
+// The lowered-MLIR dump (before translation) asserts the family id at the
+// indirect slot call sites, on the loaded vtable pointer itself.
+// CHECK-SITES: reussir.closure.wpd_test{{.*}} id{{ ?}}("reussir.closure.wpd.
+
+// After the backend pipeline no type test survives (LowerTypeTests consumes
+// them), so nothing can leak into instruction selection — pinned by the
+// object-emission RUN line above.
+// CHECK-NOT: llvm.type.test
+
+// CHECK-OFF-NOT: !type
+// CHECK-OFF-NOT: !vcall_visibility

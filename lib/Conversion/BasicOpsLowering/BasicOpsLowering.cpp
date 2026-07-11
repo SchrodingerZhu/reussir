@@ -53,6 +53,7 @@
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/Conversion/Blake3Symbol.h"
 #include "Reussir/Conversion/CABISignatureConversion.h"
+#include "Reussir/Conversion/ClosureWpd.h"
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirDialect.h"
@@ -112,7 +113,6 @@ namespace {
 //     path), so the dummy count can never decay to 1.
 // The only other guard is `rc.assume_unique`, which must neutralize its
 // assumption for immediates (an `assume(false)` would be unsound).
-
 
 enum class TagEncoding { None, TBI, Immortal };
 
@@ -236,8 +236,8 @@ void emitGuardedStore(mlir::ConversionPatternRewriter &rewriter,
   mlir::LLVM::StoreOp::create(rewriter, loc, value, addr);
   mlir::LLVM::BrOp::create(rewriter, loc, contBlock);
   rewriter.setInsertionPointToEnd(condBlock);
-  auto condBr = mlir::LLVM::CondBrOp::create(rewriter, loc, skipCond,
-                                             contBlock, storeBlock);
+  auto condBr = mlir::LLVM::CondBrOp::create(rewriter, loc, skipCond, contBlock,
+                                             storeBlock);
   condBr->setAttr("branch_weights", rewriter.getDenseI32ArrayAttr({1, 2000}));
   rewriter.setInsertionPointToStart(contBlock);
 }
@@ -455,7 +455,8 @@ struct ReussirRcReinterpretConversionPattern
     // The token is the box pointer verbatim — static and dynamic tokens alike.
     // A dynamic `token<align, ?>` (from an unpinned variant dec under
     // per-constructor sizing) carries no size: the free/realloc runtime
-    // recovers the block from this pointer, so no per-arm size is computed here.
+    // recovers the block from this pointer, so no per-arm size is computed
+    // here.
     rewriter.replaceOp(op, adaptor.getRcPtr());
     return mlir::success();
   }
@@ -679,8 +680,8 @@ struct ReussirCctxExtendConversionPattern
     mlir::Value null = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrTy);
     mlir::Value isEmpty = mlir::LLVM::ICmpOp::create(
         rewriter, loc, mlir::LLVM::ICmpPredicate::eq, hole, null);
-    mlir::Value scratch = tagScratchAddr(
-        op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
+    mlir::Value scratch =
+        tagScratchAddr(op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
     mlir::Value addr =
         mlir::LLVM::SelectOp::create(rewriter, loc, isEmpty, scratch, hole);
     mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getRcPtr(), addr);
@@ -714,13 +715,13 @@ struct ReussirCctxApplyConversionPattern
     mlir::Value null = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrTy);
     mlir::Value isEmpty = mlir::LLVM::ICmpOp::create(
         rewriter, loc, mlir::LLVM::ICmpPredicate::eq, hole, null);
-    mlir::Value scratch = tagScratchAddr(
-        op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
+    mlir::Value scratch =
+        tagScratchAddr(op->getParentOfType<mlir::ModuleOp>(), loc, rewriter);
     mlir::Value addr =
         mlir::LLVM::SelectOp::create(rewriter, loc, isEmpty, scratch, hole);
     mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getValue(), addr);
-    rewriter.replaceOpWithNewOp<mlir::LLVM::SelectOp>(
-        op, isEmpty, adaptor.getValue(), root);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::SelectOp>(op, isEmpty,
+                                                      adaptor.getValue(), root);
     return mlir::success();
   }
 };
@@ -865,8 +866,7 @@ struct ReussirRecordExtractConversionPattern
     // 3. GEP: Calculate the memory address of the specific field, mapping
     // the logical member index to its packed physical position.
     int32_t fieldIndex = static_cast<int32_t>(op.getIndex().getZExtValue());
-    if (auto recordType =
-            llvm::dyn_cast<RecordType>(op.getRecord().getType());
+    if (auto recordType = llvm::dyn_cast<RecordType>(op.getRecord().getType());
         recordType && recordType.isCompound()) {
       auto dataLayout = getDataLayout(*converter, op.getOperation());
       fieldIndex = static_cast<int32_t>(recordType.getPhysicalMemberIndex(
@@ -1046,8 +1046,7 @@ struct ReussirReferenceProjectConversionPattern
 
     // Logical member indices map to packed physical struct fields.
     int32_t fieldIndex = static_cast<int32_t>(op.getIndex().getZExtValue());
-    if (auto recordType =
-            llvm::dyn_cast<RecordType>(refType.getElementType());
+    if (auto recordType = llvm::dyn_cast<RecordType>(refType.getElementType());
         recordType && recordType.isCompound()) {
       auto dataLayout = getDataLayout(*converter, op.getOperation());
       fieldIndex = static_cast<int32_t>(recordType.getPhysicalMemberIndex(
@@ -1201,8 +1200,7 @@ struct ReussirRecordTagConversionPattern
     mlir::Value narrowTag =
         mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
     mlir::Value tagValue =
-        tagType.getWidth() <
-                llvm::cast<mlir::IntegerType>(indexType).getWidth()
+        tagType.getWidth() < llvm::cast<mlir::IntegerType>(indexType).getWidth()
             ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexType, narrowTag)
                   .getResult()
             : narrowTag;
@@ -1323,8 +1321,7 @@ struct ReussirRcIncConversionPattern
         // word, so the store doesn't data-depend on the loaded count.
         mlir::Value immortal =
             isImmortalCount(oldRefCnt, op.getLoc(), rewriter);
-        emitGuardedStore(rewriter, op.getLoc(), newRefCnt, refcntPtr,
-                         immortal);
+        emitGuardedStore(rewriter, op.getLoc(), newRefCnt, refcntPtr, immortal);
       } else {
         mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), newRefCnt,
                                     refcntPtr);
@@ -1520,9 +1517,8 @@ struct ReussirRcTaggedConversionPattern
             ->getIndexType());
     mlir::Type ptrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     TagEncoding encoding = specialPtrTagEncoding(op);
-    auto dummy =
-        tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
-                    op.getTag().getZExtValue(), encoding, rewriter);
+    auto dummy = tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
+                             op.getTag().getZExtValue(), encoding, rewriter);
     mlir::Value base = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrTy,
                                                        dummy.getSymName());
     if (encoding != TagEncoding::TBI) {
@@ -1681,12 +1677,10 @@ struct ReussirRecordCoerceConversionPattern
     RefType refType = op.getVariant().getType();
     auto elementType = llvm::cast<mlir::LLVM::LLVMStructType>(
         converter->convertType(refType.getElementType()));
-    auto variantRecord =
-        llvm::cast<RecordType>(refType.getElementType());
+    auto variantRecord = llvm::cast<RecordType>(refType.getElementType());
     int32_t payloadField = variantRecord.hasFusedHeader() ? 2 : 1;
-    bool variantHasNonZeroChild =
-        elementType.getSubelementIndexMap()->size() >
-        static_cast<size_t>(payloadField);
+    bool variantHasNonZeroChild = elementType.getSubelementIndexMap()->size() >
+                                  static_cast<size_t>(payloadField);
 
     // Get the result type (should be a pointer type after conversion)
     mlir::Type resultType = converter->convertType(op.getCoerced().getType());
@@ -1812,6 +1806,13 @@ struct ReussirClosureVtableOpConversionPattern
         rewriter, op.getLoc(), vtableType, /*isConstant=*/true,
         mlir::LLVM::Linkage::Internal, op.getSymName(), nullptr);
 
+    // With `closure-wpd` on, the basic-ops pass prologue stamped this
+    // vtable's WPD type id on the op; carry it onto the global so the
+    // dialect's LLVM translation interface can emit the `!type` /
+    // `!vcall_visibility` metadata the LLVM dialect cannot express.
+    if (mlir::Attribute id = op->getAttr(kClosureWpdTypeIdAttr))
+      vtableOp->setAttr(kClosureWpdTypeIdAttr, id);
+
     // Create initializer block
     mlir::Block *initBlock =
         rewriter.createBlock(&vtableOp.getInitializerRegion());
@@ -1900,6 +1901,23 @@ struct ReussirClosureCreateOpConversionPattern
   }
 };
 
+// Assert `closureType`'s WPD family id on `vtable` — the very SSA value the
+// indirect slot call being lowered hangs off. Testing that exact value is
+// load-bearing: `WholeProgramDevirt` discovers devirtualizable calls by a
+// pure def-use walk from the tested pointer (constant-offset GEPs → load →
+// call), so emitting the test here connects it to the call with no pipeline
+// help. Only fires when the basic-ops lowering ran with `closure-wpd` (the
+// module marker attribute).
+static void emitClosureWpdTest(mlir::ConversionPatternRewriter &rewriter,
+                               mlir::Operation *op, ClosureType closureType,
+                               mlir::Value vtable) {
+  if (!op->getParentOfType<mlir::ModuleOp>()->hasAttr(kClosureWpdModuleAttr))
+    return;
+  ReussirClosureWpdTestOp::create(
+      rewriter, op->getLoc(), vtable,
+      rewriter.getStringAttr(closureWpdTypeId(closureType)));
+}
+
 struct ReussirRcDecOpConversionPattern
     : public mlir::OpConversionPattern<ReussirRcDecOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -1948,6 +1966,7 @@ struct ReussirRcDecOpConversionPattern
       auto vtable =
           mlir::LLVM::LoadOp::create(rewriter, loc, llvmPtrType, vtablePtr);
       vtable.setInvariantGroup(true);
+      emitClosureWpdTest(rewriter, op, closureTy, vtable);
 
       // Create LLVM struct type for vtable: { void*, void*, void* }
       // representing { drop, clone, evaluate } function pointers
@@ -2259,6 +2278,9 @@ struct ReussirClosureCloneOpConversionPattern
     auto vtable =
         mlir::LLVM::LoadOp::create(rewriter, loc, llvmPtrType, vtablePtr);
     vtable.setInvariantGroup(true);
+    emitClosureWpdTest(rewriter, op,
+                       llvm::cast<ClosureType>(op.getType().getElementType()),
+                       vtable);
 
     // Create LLVM struct type for vtable: { void*, void*, void* }
     // representing { drop, clone, evaluate } function pointers
@@ -2314,6 +2336,9 @@ struct ReussirClosureEvalOpConversionPattern
     auto vtable =
         mlir::LLVM::LoadOp::create(rewriter, loc, llvmPtrType, vtablePtr);
     vtable.setInvariantGroup(true);
+    emitClosureWpdTest(rewriter, op,
+                       llvm::cast<ClosureType>(rcClosureType.getElementType()),
+                       vtable);
 
     // Create LLVM struct type for vtable: { void*, void*, void* }
     // representing { drop, clone, evaluate } function pointers
@@ -3170,9 +3195,9 @@ void ensureRuntimeFunctions(mlir::ModuleOp module,
   deallocUnsizedFunc.setArgAttr(0, "llvm.allocptr", builder.getUnitAttr());
   deallocUnsizedFunc.setArgAttr(0, "llvm.noundef", builder.getUnitAttr());
 
-  auto reallocUnsizedFunc = addRuntimeFunction(
-      body, "__reussir_realloc_unsized",
-      {llvmPtrType, indexType, indexType}, {llvmPtrType});
+  auto reallocUnsizedFunc =
+      addRuntimeFunction(body, "__reussir_realloc_unsized",
+                         {llvmPtrType, indexType, indexType}, {llvmPtrType});
   reallocUnsizedFunc->setAttr("passthrough", passthroughRealloc);
   reallocUnsizedFunc.setArgAttr(0, "llvm.allocptr", builder.getUnitAttr());
   reallocUnsizedFunc.setArgAttr(1, "llvm.allocalign", builder.getUnitAttr());
@@ -3239,16 +3264,16 @@ struct ReussirConvertToLLVMPatternInterface
         patterns.getContext(), target, typeConverter, patterns);
     populateBasicOpsLoweringToLLVMConversionPatterns(typeConverter, patterns);
     target.addIllegalOp<
-        ReussirPanicOp, ReussirExpectOp, ReussirCctxEmptyOp, ReussirCctxExtendOp,
-        ReussirCctxApplyOp, ReussirTokenAllocOp, ReussirTokenFreeOp,
-        ReussirTokenReinterpretOp, ReussirTokenReallocOp, ReussirRefLoadOp,
-        ReussirRefStoreOp, ReussirRefSpilledOp, ReussirRefToMemrefOp,
-        ReussirRefFromMemrefOp, ReussirRefDiffOp, ReussirRefCmpOp,
-        ReussirRefMemcpyOp, ReussirNullableCheckOp, ReussirNullableCreateOp,
-        ReussirNullableCoerceOp, ReussirRcIncOp, ReussirRcCreateOp,
-        ReussirRcCreateCompoundOp, ReussirRcCreateVariantOp, ReussirRcTaggedOp,
-        ReussirRcDecOp, ReussirRcBorrowOp, ReussirRcIsUniqueOp,
-        ReussirRcAssumeUniqueOp, ReussirRecordCompoundOp,
+        ReussirPanicOp, ReussirExpectOp, ReussirCctxEmptyOp,
+        ReussirCctxExtendOp, ReussirCctxApplyOp, ReussirTokenAllocOp,
+        ReussirTokenFreeOp, ReussirTokenReinterpretOp, ReussirTokenReallocOp,
+        ReussirRefLoadOp, ReussirRefStoreOp, ReussirRefSpilledOp,
+        ReussirRefToMemrefOp, ReussirRefFromMemrefOp, ReussirRefDiffOp,
+        ReussirRefCmpOp, ReussirRefMemcpyOp, ReussirNullableCheckOp,
+        ReussirNullableCreateOp, ReussirNullableCoerceOp, ReussirRcIncOp,
+        ReussirRcCreateOp, ReussirRcCreateCompoundOp, ReussirRcCreateVariantOp,
+        ReussirRcTaggedOp, ReussirRcDecOp, ReussirRcBorrowOp,
+        ReussirRcIsUniqueOp, ReussirRcAssumeUniqueOp, ReussirRecordCompoundOp,
         ReussirRecordVariantOp, ReussirRefProjectOp, ReussirArrayProjectOp,
         ReussirArrayViewOp, ReussirRecordTagOp, ReussirRecordExtractOp,
         ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
@@ -3260,17 +3285,53 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirStrGlobalOp, ReussirStrLiteralOp, ReussirStrCastOp,
         ReussirStrLenOp, ReussirStrUnsafeByteAtOp, ReussirStrUnsafeStartWithOp,
         ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
+    // `reussir.closure.wpd_test` is created BY the dispatch conversion
+    // patterns above, already in its final form (operand = the loaded vtable
+    // pointer), and must survive conversion: the LLVM dialect cannot express
+    // `llvm.type.test`'s metadata-string operand, so the dialect's LLVM
+    // translation interface lowers it at `translateModuleToLLVMIR` instead.
+    target.addDynamicallyLegalOp<ReussirClosureWpdTestOp>(
+        [](ReussirClosureWpdTestOp op) {
+          return mlir::isa<mlir::LLVM::LLVMPointerType>(
+              op.getVtable().getType());
+        });
   }
 };
 
 struct BasicOpsLoweringPass
     : public impl::ReussirBasicOpsLoweringPassBase<BasicOpsLoweringPass> {
   using Base::Base;
+
+  // Stamp each outlined closure vtable with its WPD family id — one per
+  // closure RETURN type: apply/uniqify/clone never change a vtable, only the
+  // static type, so the return type is the one thing every value the vtable
+  // backs agrees on (see ClosureWpd.h) — and mark the module so the dispatch
+  // conversion patterns assert the ids at the indirect slot call sites.
+  void stampClosureWpdTypeIds(mlir::ModuleOp moduleOp) {
+    mlir::MLIRContext *ctx = moduleOp.getContext();
+    moduleOp.walk([&](ReussirClosureCreateOp op) {
+      if (!op.isOutlined())
+        return;
+      auto vtable =
+          moduleOp.lookupSymbol<ReussirClosureVtableOp>(op.getVtableAttr());
+      if (!vtable || vtable->hasAttr(kClosureWpdTypeIdAttr))
+        return;
+      auto closureType =
+          llvm::cast<ClosureType>(op.getClosure().getType().getElementType());
+      vtable->setAttr(
+          kClosureWpdTypeIdAttr,
+          mlir::StringAttr::get(ctx, closureWpdTypeId(closureType)));
+    });
+    moduleOp->setAttr(kClosureWpdModuleAttr, mlir::UnitAttr::get(ctx));
+  }
+
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     mlir::LLVMTypeConverter converter(moduleOp.getContext(),
                                       getReussirToLLVMOptions(moduleOp));
     ensureRuntimeFunctions(moduleOp, converter);
+    if (closureWpd)
+      stampClosureWpdTypeIds(moduleOp);
     // Fused debug-info attributes are converted to LLVM DI by the separate
     // `reussir-lowering-debug-info` pass, which runs after `convert-to-llvm`
     // so the functions are already `llvm.func` (a function's DI only survives
@@ -3332,9 +3393,8 @@ void registerReussirBasicOpsLoweringInterface(mlir::DialectRegistry &registry) {
 void populateBasicOpsLoweringToLLVMConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns) {
   patterns.add<
-      ReussirExpectConversionPattern,
-      ReussirCctxEmptyConversionPattern, ReussirCctxExtendConversionPattern,
-      ReussirCctxApplyConversionPattern,
+      ReussirExpectConversionPattern, ReussirCctxEmptyConversionPattern,
+      ReussirCctxExtendConversionPattern, ReussirCctxApplyConversionPattern,
       ReussirTokenAllocConversionPattern, ReussirTokenFreeConversionPattern,
       ReussirTokenReinterpretConversionPattern,
       ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,

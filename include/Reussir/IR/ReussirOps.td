@@ -1611,6 +1611,35 @@ def ReussirClosureCloneOp : ReussirClosureOp<"clone", []> {
   let hasVerifier = 1;
 }
 
+def ReussirClosureWpdTestOp : ReussirClosureOp<"wpd_test", []> {
+  let summary = "Assert a whole-program-devirtualization type id of a vtable";
+  let description = [{
+    `reussir.closure.wpd_test` asserts that `vtable` (a lowered pointer to a
+    closure vtable global) carries the whole-program-devirtualization type id
+    `id` — see `ClosureWpd.h` and docs/design/closure-wpd.md for the id
+    scheme (one id per closure return type).
+
+    The op is created by the closure dispatch conversion patterns (when the
+    basic-ops lowering ran with `closure-wpd`) directly on the loaded vtable
+    pointer the indirect slot call hangs off. Testing that exact SSA value is
+    load-bearing: `WholeProgramDevirt` discovers devirtualizable calls by a
+    pure def-use walk from the tested pointer (constant-offset GEPs → load →
+    call), so no pipeline help is needed to connect the assertion to the
+    call. The op then survives conversion untouched — the LLVM dialect can
+    express neither `!type` metadata nor the metadata-string operand of
+    `llvm.type.test` — and the Reussir dialect's LLVM translation interface
+    lowers it to `llvm.type.test(%vtable, !"id")` + `llvm.assume` during
+    `translateModuleToLLVMIR`.
+  }];
+  let arguments = (ins
+    Arg<AnyType, "lowered pointer to the vtable">:$vtable,
+    StrAttr:$id
+  );
+  let assemblyFormat = [{
+    `(` $vtable `:` type($vtable) `)` `id` `(` $id `)` attr-dict
+  }];
+}
+
 def ReussirClosureInspectPayloadOp : ReussirClosureOp<"inspect_payload", []> {
   let summary = "Inspect closure payload";
   let description = [{

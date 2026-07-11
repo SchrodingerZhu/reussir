@@ -16,6 +16,8 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CBindingWrapping.h>
 #include <llvm/TargetParser/Triple.h>
+#include <llvm/Transforms/IPO/LowerTypeTests.h>
+#include <llvm/Transforms/IPO/WholeProgramDevirt.h>
 
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
@@ -27,7 +29,8 @@
 #include <tpde-llvm/LLVMCompiler.hpp>
 #endif
 
-void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt) {
+void reussirRunBackendLLVMPipeline(LLVMModuleRef module,
+                                   ReussirJitOptLevel opt) {
   if (opt == ReussirJitOptNone || opt == ReussirJitOptTpde)
     return;
 
@@ -60,6 +63,31 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
 
   llvm::ModulePassManager mpm;
   mpm.addPass(reussir::llvmpass::RuntimeFunctionAttributorPass());
+  // Whole-program devirtualization of closures, ahead of the module pipeline
+  // so devirtualized slot calls can inline. The lowering tagged each closure
+  // vtable with its return-type family id and asserted it — on the very
+  // vtable-pointer SSA value the slot call hangs off, which is all WPD's
+  // def-use call-site discovery needs — at every indirect eval/clone/drop
+  // site. `DevirtSpeculatively` makes each single-implementation fold
+  // GUARDED: compare the loaded function pointer against the candidate,
+  // direct call (which inlines) on the likely arm, the original indirect
+  // call as the fallback. That is sound on any world — a vtable this module
+  // has never seen simply takes the fallback — and structurally skips branch
+  // funnels and virtual const prop, neither of which survives instruction
+  // selection outside the LTO pipelines. Only added when the module actually
+  // carries type tests; modules lowered without `closure-wpd` keep their
+  // pipeline unchanged. This entry point serves both backends: the AOT
+  // compiler (`rrc`) and the JIT/REPL run their LLVM leg through here.
+  if (llvm::Intrinsic::getDeclarationIfExists(&m, llvm::Intrinsic::type_test))
+    mpm.addPass(llvm::WholeProgramDevirtPass(
+        /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
+        /*DevirtSpeculatively=*/true));
+  // Then consume the artifacts (`llvm.type.test` + `assume`): drop the
+  // assumes and fold the dead tests away so no `llvm.type.test` ever reaches
+  // instruction selection. A no-op for modules without type tests.
+  mpm.addPass(llvm::LowerTypeTestsPass(
+      /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
+      llvm::lowertypetests::DropTestKind::Assume));
   mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);

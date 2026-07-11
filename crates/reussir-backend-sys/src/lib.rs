@@ -122,7 +122,7 @@ unsafe extern "C" {
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;
     pub fn reussirCreateInvariantGroupAnalysisPass() -> MlirPass;
-    pub fn reussirCreateBasicOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateBasicOpsLoweringPass(closure_wpd: bool) -> MlirPass;
     pub fn reussirCreateDebugInfoConversionPass() -> MlirPass;
     pub fn reussirCreateAcquireDropExpansionPass(
         expand_decrement: bool,

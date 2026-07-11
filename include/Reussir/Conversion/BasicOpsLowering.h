@@ -13,20 +13,20 @@
 #ifndef REUSSIR_CONVERSION_BASICOPSLOWERING_H
 #define REUSSIR_CONVERSION_BASICOPSLOWERING_H
 
-#include <mlir/IR/DialectRegistry.h>
 #include <mlir/Conversion/LLVMCommon/ConversionTarget.h>
 #include <mlir/Conversion/LLVMCommon/Pattern.h>
+#include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/DialectRegistry.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Transforms/DialectConversion.h>
-#include <mlir/IR/BuiltinOps.h>
 
 #include "Reussir/Conversion/TypeConverter.h"
+// Pass declarations (including the options structs) come from the blanket
+// `GEN_PASS_DECL` expansion in Passes.h; re-expanding the per-pass sections
+// here would redefine `ReussirBasicOpsLoweringPassOptions`.
+#include "Reussir/Conversion/Passes.h"
 
 namespace reussir {
-
-#define GEN_PASS_DECL_REUSSIRBASICOPSLOWERINGPASS
-#define GEN_PASS_DECL_REUSSIRDEBUGINFOCONVERSIONPASS
-#include "Reussir/Conversion/Passes.h.inc"
 
 void populateBasicOpsLoweringToLLVMConversionPatterns(
     mlir::LLVMTypeConverter &converter, mlir::RewritePatternSet &patterns);

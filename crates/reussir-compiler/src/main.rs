@@ -190,6 +190,16 @@ struct Cli {
     #[arg(long = "reuse-across-call")]
     reuse_across_call: bool,
 
+    /// Disable whole-program devirtualization of closures. WPD tags every
+    /// closure vtable with its return-type family id, asserts it at the
+    /// indirect eval/clone/drop call sites, and lets the backend's
+    /// speculative WholeProgramDevirt fold single-implementation dispatches
+    /// into guarded direct calls (direct call that inlines on the expected
+    /// vtable, indirect fallback otherwise — sound on any world). Enabled by
+    /// default at `-O aggressive` and `-O size`.
+    #[arg(long = "no-closure-wpd")]
+    no_closure_wpd: bool,
+
     /// Lay out compound record members in declaration order instead of the
     /// default packed order (members sorted by descending storage alignment,
     /// eliminating inter-member padding). Packing is the shipped default and
@@ -587,11 +597,21 @@ fn backend_module(
     // `#[repr(fixed)]` (uniform max-arm) or defaults to per-constructor
     // sizing, threaded into the dialect variant record type's `fixed` flag —
     // no module-wide switch.
+    // Closure WPD is guarded (speculative WholeProgramDevirt), hence sound
+    // regardless of what other modules exist — a vtable this module has never
+    // seen just takes the indirect fallback arm. Reserve it for the opt
+    // levels that ask for whole-program effort anyway: the artifacts cost
+    // compile time, and the type-test intrinsics only lower inside the
+    // optimizing backend pipeline. Under multiple codegen units each unit
+    // still only devirtualizes the families it can see whole, so the win
+    // shrinks but nothing breaks.
+    let closure_wpd = !cli.no_closure_wpd && matches!(opt, OptLevel::Aggressive | OptLevel::Size);
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         pack_record_members: !cli.no_pack_record_members,
+        closure_wpd,
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
