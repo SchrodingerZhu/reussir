@@ -154,6 +154,8 @@ pub enum SyntaxKind {
     TypeArgList,
     /// `_` placeholder inside a type argument list.
     InferType,
+    /// A statically shaped array type: `[T; 512]`, `[T; 5, 16, 8]`.
+    ArrayType,
 
     // ===== Nodes: expressions =====
     BlockExpr,

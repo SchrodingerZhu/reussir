@@ -359,6 +359,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_array_types() {
+        // `[T; extents…]` in parameter, return, and turbofish position;
+        // rank-1 and rank-3.
+        json_of(
+            "fn f(a : [f64; 8], m : [i32; 5, 16, 8]) -> [f64; 8] { core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64) }",
+        );
+        // Extents are full expressions in the tree; whether one can be
+        // evaluated is decided during elaboration, not here.
+        json_of("fn f(a : [f64; 2 + 2], b : [f64; n]) -> i64 { 0 }");
+        // The extent list itself is mandatory.
+        assert!(!super::parse("fn f(a : [f64;]) -> i64 { 0 }").ok());
+    }
+
+    #[test]
     fn parses_regional_and_assign() {
         json_of(
             "struct [regional] L<T> { v: T, next: [field] L<T> }\nregional fn push<T>(c : [flex] L<T>, e : T) { c->next := Nullable::NonNull{c} }",
