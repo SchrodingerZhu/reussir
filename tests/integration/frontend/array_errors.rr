@@ -1,6 +1,7 @@
-// Diagnostics for the Phase A array type restrictions (issue #344). All are
-// declaration (type/record) errors that surface during scanning, so the
-// CHECKs are unordered `CHECK-DAG`s.
+// Diagnostics for the Phase A array restrictions (issue #344). Declaration
+// (type/record) errors surface during scanning, before any function body is
+// checked, so the CHECKs are grouped: `CHECK-DAG` for the scan phase,
+// ordered `CHECK`s for the body phase.
 
 // RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
 
@@ -19,3 +20,18 @@ fn expr_extent(a : [f64; 2 + 2]) -> i64 { 0 }
 
 // CHECK-DAG: this kind of array extent cannot be evaluated yet
 fn name_extent(a : [f64; n]) -> i64 { 0 }
+
+// CHECK: `core::intrinsic::array::splat` requires one explicit array type argument
+fn no_ty_args() -> [f64; 4] { core::intrinsic::array::splat(0.0) }
+
+// CHECK: `core::intrinsic::array::splat` expects an array type argument (`[T; extents…]`), found `f64`
+fn scalar_ty_arg() -> [f64; 4] { core::intrinsic::array::splat<f64>(0.0) }
+
+// CHECK: unknown array intrinsic `core::intrinsic::array::build`
+fn bad_ctor() -> [f64; 4] { core::intrinsic::array::build<[f64; 4]>(0.0) }
+
+// CHECK: `get` on `[f64; 4, 4]` expects 2 index argument(s), got 1
+fn rank_mismatch(m : [f64; 4, 4]) -> f64 { core::intrinsic::array::get(m, 0) }
+
+// CHECK: `core::intrinsic::array::get` expects an array as its first argument, found `i64`
+fn not_an_array(x : i64) -> i64 { core::intrinsic::array::get(x, 0) }
