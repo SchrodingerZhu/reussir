@@ -1875,52 +1875,126 @@ fn cmp_op(op: BinOp) -> CmpOp {
     }
 }
 
-/// Collect the free variables referenced in an expression tree.
+/// Collect the free variables of an expression tree: every `Var` occurrence
+/// minus every variable the tree itself binds (`let`s, pattern bindings,
+/// nested closure parameters). Variable ids are fresh per binder within a
+/// function body, so a single flat bound set is enough — no scoping needed.
 fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
-    use ExprKind::*;
-    let push = |out: &mut Vec<VarId>, v: VarId| {
-        if !out.contains(&v) {
+    let mut used = Vec::new();
+    let mut bound = Vec::new();
+    var_occurrences(e, &mut used, &mut bound);
+    for v in used {
+        if !bound.contains(&v) && !out.contains(&v) {
             out.push(v);
         }
-    };
+    }
+}
+
+fn var_occurrences<'tcx>(e: &Expr<'tcx>, used: &mut Vec<VarId>, bound: &mut Vec<VarId>) {
+    use ExprKind::*;
     match &e.kind {
-        Var(v) => push(out, *v),
+        Var(v) => used.push(*v),
         Intrinsic { args, .. } => {
             for a in args {
-                free_vars(a, out);
+                var_occurrences(a, used, bound);
             }
         }
-        Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => free_vars(e, out),
+        Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => {
+            var_occurrences(e, used, bound)
+        }
         Arith(l, _, r) | Cmp(l, _, r) | Assign(l, _, r) => {
-            free_vars(l, out);
-            free_vars(r, out);
+            var_occurrences(l, used, bound);
+            var_occurrences(r, used, bound);
         }
         If(c, t, f) => {
-            free_vars(c, out);
-            free_vars(t, out);
-            free_vars(f, out);
+            var_occurrences(c, used, bound);
+            var_occurrences(t, used, bound);
+            var_occurrences(f, used, bound);
         }
         Let { var, value, .. } => {
-            free_vars(value, out);
-            push(out, *var);
+            var_occurrences(value, used, bound);
+            bound.push(*var);
         }
-        Seq(es) => es.iter().for_each(|e| free_vars(e, out)),
+        Seq(es) => es.iter().for_each(|e| var_occurrences(e, used, bound)),
         FuncCall { args, .. } | CompoundCall { args, .. } | VariantCall { args, .. } => {
-            args.iter().for_each(|e| free_vars(e, out))
+            args.iter().for_each(|e| var_occurrences(e, used, bound))
         }
         NullableCall(e) => {
             if let Some(e) = e {
-                free_vars(e, out)
+                var_occurrences(e, used, bound)
             }
         }
         ClosureCall { target, args } => {
-            free_vars(target, out);
-            args.iter().for_each(|e| free_vars(e, out));
+            var_occurrences(target, used, bound);
+            args.iter().for_each(|e| var_occurrences(e, used, bound));
         }
-        Closure(c) => free_vars(&c.body, out),
-        ArrayOp { args, .. } => args.iter().for_each(|e| free_vars(e, out)),
-        Match(scrut, _) => free_vars(scrut, out),
+        Closure(c) => {
+            bound.extend(c.params.iter().map(|&(v, _)| v));
+            var_occurrences(&c.body, used, bound);
+        }
+        ArrayOp { args, .. } => args.iter().for_each(|e| var_occurrences(e, used, bound)),
+        Match(scrut, tree) => {
+            var_occurrences(scrut, used, bound);
+            tree_occurrences(tree, used, bound);
+        }
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
+    }
+}
+
+fn tree_occurrences<'tcx>(
+    t: &crate::semi::hir::DecisionTree<'tcx>,
+    used: &mut Vec<VarId>,
+    bound: &mut Vec<VarId>,
+) {
+    use crate::semi::hir::{DecisionTree, SwitchCases};
+    match t {
+        DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+        DecisionTree::Leaf { body, bindings } => {
+            bound.extend(bindings.iter().map(|&(v, _)| v));
+            var_occurrences(body, used, bound);
+        }
+        DecisionTree::Guard {
+            bindings,
+            guard,
+            success,
+            failure,
+        } => {
+            bound.extend(bindings.iter().map(|&(v, _)| v));
+            var_occurrences(guard, used, bound);
+            tree_occurrences(success, used, bound);
+            tree_occurrences(failure, used, bound);
+        }
+        DecisionTree::Switch { cases, .. } => match cases {
+            SwitchCases::Int { cases, default } => {
+                cases
+                    .iter()
+                    .for_each(|(_, t)| tree_occurrences(t, used, bound));
+                tree_occurrences(default, used, bound);
+            }
+            SwitchCases::Bool { if_true, if_false } => {
+                tree_occurrences(if_true, used, bound);
+                tree_occurrences(if_false, used, bound);
+            }
+            SwitchCases::Char { cases, default } => {
+                cases
+                    .iter()
+                    .for_each(|(_, t)| tree_occurrences(t, used, bound));
+                tree_occurrences(default, used, bound);
+            }
+            SwitchCases::Ctor(subtrees) => subtrees
+                .iter()
+                .for_each(|t| tree_occurrences(t, used, bound)),
+            SwitchCases::String { cases, default } => {
+                cases
+                    .iter()
+                    .for_each(|(_, t)| tree_occurrences(t, used, bound));
+                tree_occurrences(default, used, bound);
+            }
+            SwitchCases::Nullable { non_null, null } => {
+                tree_occurrences(non_null, used, bound);
+                tree_occurrences(null, used, bound);
+            }
+        },
     }
 }
 
