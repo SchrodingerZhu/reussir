@@ -383,7 +383,7 @@ impl OrcJit {
 
             // Run the Reussir LLVM passes in place, then add the IR module.
             tracing::trace!("running backend LLVM pass pipeline");
-            run_backend_llvm_pipeline(llvm_module, opt);
+            run_backend_llvm_pipeline(llvm_module, opt, std::ptr::null_mut());
             self.add_owned_module(context, llvm_module, tracker)?;
             tracing::debug!("added LLVM-IR module to the JIT");
             Ok(())

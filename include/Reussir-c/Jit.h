@@ -17,6 +17,7 @@
 #ifndef REUSSIR_C_JIT_H
 #define REUSSIR_C_JIT_H
 
+#include "llvm-c/TargetMachine.h"
 #include "llvm-c/Types.h"
 
 #ifdef __cplusplus
@@ -36,7 +37,14 @@ typedef enum ReussirJitOptLevel {
 // RuntimeFunctionAttributor pass, the default per-module pipeline at the
 // requested level, then the AllocationSimplification pass. A no-op for the
 // `None` and `Tpde` levels (matching the C++ backend).
-void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt);
+//
+// `machine` supplies the target model the cost-driven passes (loop/SLP
+// vectorization) work against; without one the pipeline would run on the
+// base TargetTransformInfo, which has no vector registers, and every
+// vectorization would be costed as impossible. Pass NULL to have the
+// pipeline build a host TargetMachine internally (the JIT case).
+void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
+                                   LLVMTargetMachineRef machine);
 
 // Compiles `module` to an ELF object file using TPDE, after setting the given
 // data layout and target triple on it. Returns NULL if TPDE support was not

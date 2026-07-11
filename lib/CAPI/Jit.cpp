@@ -13,8 +13,12 @@
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/TargetParser/SubtargetFeature.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CBindingWrapping.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/TargetParser/Host.h>
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
@@ -30,13 +34,58 @@
 #endif
 
 void reussirRunBackendLLVMPipeline(LLVMModuleRef module,
-                                   ReussirJitOptLevel opt) {
+                                   ReussirJitOptLevel opt,
+                                   LLVMTargetMachineRef machine) {
   if (opt == ReussirJitOptNone || opt == ReussirJitOptTpde)
     return;
 
   llvm::Module &m = *llvm::unwrap(module);
 
-  llvm::PassBuilder pb;
+  // The cost-driven passes (loop/SLP vectorization) consult the
+  // TargetTransformInfo the PassBuilder derives from its TargetMachine; a
+  // machine-less PassBuilder falls back to the base model, which has no
+  // vector registers, so vectorization would silently never fire. The AOT
+  // driver hands its machine through (faithful to --target-cpu/-triple);
+  // the JIT passes NULL and gets a host machine with the host's features.
+  llvm::TargetMachine *tm = reinterpret_cast<llvm::TargetMachine *>(machine);
+  std::unique_ptr<llvm::TargetMachine> ownedTm;
+  if (!tm) {
+    llvm::Triple triple = m.getTargetTriple();
+    if (triple.getTriple().empty())
+      triple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
+    std::string lookupError;
+    if (const llvm::Target *target =
+            llvm::TargetRegistry::lookupTarget(triple.getTriple(),
+                                               lookupError)) {
+      llvm::SubtargetFeatures features;
+      for (const auto &[name, enabled] : llvm::sys::getHostCPUFeatures())
+        features.AddFeature(name, enabled);
+      ownedTm.reset(target->createTargetMachine(
+          triple, llvm::sys::getHostCPUName(), features.getString(),
+          llvm::TargetOptions(), std::nullopt));
+      tm = ownedTm.get();
+    }
+  }
+
+  // Stamp the machine's CPU and feature set onto every function definition
+  // (mirroring clang's -march handling): the pipeline below vectorizes
+  // against this machine, and the emitted IR must declare the features it
+  // uses so a downstream compilation of the IR text (e.g. the sanitizer
+  // harnesses driving clang over rrc's .ll) selects for the same ISA.
+  if (tm) {
+    llvm::StringRef cpu = tm->getTargetCPU();
+    llvm::StringRef features = tm->getTargetFeatureString();
+    for (llvm::Function &f : m) {
+      if (f.isDeclaration())
+        continue;
+      if (!cpu.empty() && !f.hasFnAttribute("target-cpu"))
+        f.addFnAttr("target-cpu", cpu);
+      if (!features.empty() && !f.hasFnAttribute("target-features"))
+        f.addFnAttr("target-features", features);
+    }
+  }
+
+  llvm::PassBuilder pb(tm);
   llvm::LoopAnalysisManager lam;
   llvm::FunctionAnalysisManager fam;
   llvm::CGSCCAnalysisManager cgam;

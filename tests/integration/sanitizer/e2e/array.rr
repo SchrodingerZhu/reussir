@@ -1,0 +1,25 @@
+// REQUIRES: asan
+// ASan+LSan gate over frontend/array_e2e.rr. Its FFI returns only scalars,
+// so the compiled code must free every allocation itself: array boxes from
+// splat/tabulate/set-clones, and — at the unfused levels — the per-element
+// closure clones of the shared/captured kernels. Any leak (or ASan error)
+// reported here is a real ownership/lowering/backend bug.
+//
+// -Onone and -Odefault run the kernels as genuine closures (uniqify-clone,
+// apply, eval per element); -Oaggressive runs them fused by the
+// loop-carried beta reduction. Both regimes must be clean.
+
+// RUN: %rrc %S/../../frontend/array_e2e.rr -o %t.none.ll -t llvm-ir --relocation-mode pic -Onone
+// RUN: %cc %asan_flags -c -x ir %t.none.ll -o %t.none.o
+// RUN: %cc %asan_flags %t.none.o %S/../../frontend/array_e2e.c %reussir_rt_asan -o %t.none.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.none.exe
+
+// RUN: %rrc %S/../../frontend/array_e2e.rr -o %t.default.ll -t llvm-ir --relocation-mode pic -Odefault
+// RUN: %cc %asan_flags -c -x ir %t.default.ll -o %t.default.o
+// RUN: %cc %asan_flags %t.default.o %S/../../frontend/array_e2e.c %reussir_rt_asan -o %t.default.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.default.exe
+
+// RUN: %rrc %S/../../frontend/array_e2e.rr -o %t.aggr.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %asan_flags -c -x ir %t.aggr.ll -o %t.aggr.o
+// RUN: %cc %asan_flags %t.aggr.o %S/../../frontend/array_e2e.c %reussir_rt_asan -o %t.aggr.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.aggr.exe

@@ -76,6 +76,14 @@ pub struct LlvmOpaqueMemoryBuffer {
 }
 /// Mirrors `LLVMModuleRef`.
 pub type LLVMModuleRef = *mut LlvmOpaqueModule;
+
+/// Mirrors `LLVMTargetMachineRef`.
+#[repr(C)]
+pub struct LlvmOpaqueTargetMachine {
+    _private: [u8; 0],
+}
+
+pub type LLVMTargetMachineRef = *mut LlvmOpaqueTargetMachine;
 /// Mirrors `LLVMContextRef`.
 pub type LLVMContextRef = *mut LlvmOpaqueContext;
 /// Mirrors `LLVMMemoryBufferRef`.
@@ -204,7 +212,11 @@ unsafe extern "C" {
     /// Runs the Reussir LLVM optimization pipeline on `module` in place at the
     /// requested level (a no-op for `None`/`Tpde`). `opt` mirrors the backend's
     /// `ReussirOptOption`/`ReussirJitOptLevel` C enum.
-    pub fn reussirRunBackendLLVMPipeline(module: LLVMModuleRef, opt: c_int);
+    pub fn reussirRunBackendLLVMPipeline(
+        module: LLVMModuleRef,
+        opt: c_int,
+        machine: LLVMTargetMachineRef,
+    );
 
     /// Compiles `module` to an ELF object with TPDE after stamping the given data
     /// layout and triple on it. Returns null if TPDE is unavailable or
