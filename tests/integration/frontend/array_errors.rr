@@ -35,3 +35,35 @@ fn rank_mismatch(m : [f64; 4, 4]) -> f64 { core::intrinsic::array::get(m, 0) }
 
 // CHECK: `core::intrinsic::array::get` expects an array as its first argument, found `i64`
 fn not_an_array(x : i64) -> i64 { core::intrinsic::array::get(x, 0) }
+
+// CHECK: `tabulate` requires a literal lambda kernel
+fn make_it(f : i64 -> f64) -> [f64; 4] { core::intrinsic::array::tabulate<[f64; 4]>(f) }
+
+// CHECK: `fold` kernel takes 2 parameter(s), got 1
+fn short_kernel(a : [f64; 4]) -> f64 { core::intrinsic::array::fold(a, 0.0, |acc| acc) }
+
+// A kernel body may not create managed values (here: a boxed list).
+enum List { Cons(i64), Nil() }
+// CHECK: array kernel bodies are restricted to plain scalar computation
+fn managed_kernel(a : [i64; 4]) -> i64 {
+    core::intrinsic::array::fold(a, 0, |acc, x| {
+        let v = List::Cons{x};
+        match v { List::Cons(h) => acc + h, List::Nil() => acc }
+    })
+}
+
+// Only `get` is allowed inside a kernel.
+// CHECK: `set` is not allowed inside an array kernel
+fn set_in_kernel(a : [f64; 4], b : [f64; 4]) -> f64 {
+    core::intrinsic::array::fold(a, 0.0, |acc, x| {
+        let c = core::intrinsic::array::set(b, 0, x);
+        acc
+    })
+}
+
+// A nested kernel read must be directly on an array variable.
+// CHECK: an array read inside a kernel must be on an array variable
+fn temp_get_in_kernel(a : [f64; 4]) -> f64 {
+    core::intrinsic::array::fold(a, 0.0, |acc, x|
+        core::intrinsic::array::get(core::intrinsic::array::splat<[f64; 4]>(x), 0) + acc)
+}

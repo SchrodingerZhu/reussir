@@ -1144,12 +1144,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 )
             }
             ArrayFn::Tabulate => {
-                let _ = dims;
-                self.error(
+                let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
+                let param_tys = vec![i64_ty; dims.len()];
+                let Some(kernel) = self.check_kernel(&fc.args[0], &param_tys, elem, &method) else {
+                    return self.poison(span);
+                };
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op,
+                        args: Vec::new(),
+                        kernel: Some(Box::new(kernel)),
+                    },
+                    arr,
                     span,
-                    "`core::intrinsic::array::tabulate` is not available yet",
-                );
-                self.poison(span)
+                )
             }
             _ => unreachable!("filtered above"),
         }
@@ -1229,10 +1237,211 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 )
             }
             "fold" => {
-                self.error(span, "`core::intrinsic::array::fold` is not available yet");
-                self.poison(span)
+                if args.len() != 2 {
+                    self.error(
+                        span,
+                        "`fold` expects an initial accumulator and a kernel lambda",
+                    );
+                    return self.poison(span);
+                }
+                let init = self.infer_expr(&args[0]);
+                let acc_ty = init.ty;
+                let Some(kernel) = self.check_kernel(&args[1], &[acc_ty, elem], acc_ty, "fold")
+                else {
+                    return self.poison(span);
+                };
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Fold,
+                        args: vec![base, init],
+                        kernel: Some(Box::new(kernel)),
+                    },
+                    acc_ty,
+                    span,
+                )
             }
             _ => unreachable!("routed here only for get/set/fold"),
+        }
+    }
+
+    /// Check an [`ArrayOp`](ExprKind::ArrayOp) kernel: a *literal* lambda whose
+    /// parameters take the given types and whose body checks against `ret`.
+    /// The body is checked in the enclosing scope with only the params added —
+    /// free variables reference enclosing bindings directly (no captures) —
+    /// and the rc-free body restriction is enforced after zonking, once types
+    /// are resolved (see `enforce_kernel_expr`).
+    fn check_kernel(
+        &mut self,
+        arg: &surface::Expr,
+        param_tys: &[Ty<'tcx>],
+        ret: Ty<'tcx>,
+        what: &str,
+    ) -> Option<super::hir::Kernel<'tcx>> {
+        let span = Some(arg.span());
+        let surface::ExprKind::Lambda(lam) = arg.kind() else {
+            self.error(
+                span,
+                format!("`{what}` requires a literal lambda kernel (e.g. `|i| …`)"),
+            );
+            return None;
+        };
+        if lam.args.len() != param_tys.len() {
+            self.error(
+                span,
+                format!(
+                    "`{what}` kernel takes {} parameter(s), got {}",
+                    param_tys.len(),
+                    lam.args.len()
+                ),
+            );
+            return None;
+        }
+        let mark = self.vars.mark();
+        let mut params = Vec::new();
+        for ((name, ann), &pty) in lam.args.iter().zip(param_tys) {
+            if let Some(t) = ann {
+                let t = self.eval_type(t);
+                self.expect(t, pty, span);
+            }
+            let var = self.vars.fresh(*name, pty, None);
+            params.push((var, pty));
+        }
+        if let Some(rt) = &lam.ret_ty {
+            let rt = self.eval_type(rt);
+            self.expect(rt, ret, span);
+        }
+        let body = self.check_expr(&lam.body, ret);
+        self.vars.restore(mark);
+        Some(super::hir::Kernel {
+            params,
+            body: Box::new(body),
+        })
+    }
+
+    /// Whether a type may appear in an array-kernel body: a plain scalar (or a
+    /// deferred generic, matching the element-type rule), plus `Unit` for
+    /// statement positions. Managed values would need per-iteration rc ops in
+    /// the inlined loop body, defeating the point of the kernel form.
+    fn kernel_ty_allowed(&mut self, ty: Ty<'tcx>) -> bool {
+        let ty = self.infer.resolve(ty);
+        matches!(ty.kind(), TyKind::Unit) || crate::semi::ty_eval::is_plain_scalar_or_deferred(ty)
+    }
+
+    /// Enforce the kernel-body restriction on a zonked kernel body: every
+    /// subexpression computes a plain scalar; the only managed values are
+    /// enclosing arrays read through nested `get`s on plain variables. This is
+    /// what lets ownership treat kernel free vars as read-only borrows and
+    /// codegen inline the body into a loop with no rc traffic.
+    fn enforce_kernel_expr(&mut self, e: &Expr<'tcx>) {
+        use crate::intrinsic::ArrayFn;
+        match &e.kind {
+            ExprKind::ArrayOp {
+                op: ArrayFn::Get,
+                args,
+                ..
+            } => {
+                if !matches!(args[0].kind, ExprKind::Var(_)) {
+                    self.error(
+                        args[0].span,
+                        "an array read inside a kernel must be on an array variable",
+                    );
+                }
+                for a in &args[1..] {
+                    self.enforce_kernel_expr(a);
+                }
+                return;
+            }
+            ExprKind::ArrayOp { op, .. } => {
+                self.error(
+                    e.span,
+                    format!(
+                        "`{}` is not allowed inside an array kernel (only `get` reads are)",
+                        op.as_str()
+                    ),
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !self.kernel_ty_allowed(e.ty) {
+            let shown = self.infer.resolve(e.ty);
+            self.error(
+                e.span,
+                format!(
+                    "array kernel bodies are restricted to plain scalar computation; \
+                     a value of type `{}` is not allowed here",
+                    self.ty_display(shown)
+                ),
+            );
+            return; // don't cascade into children of an already-rejected node
+        }
+        match &e.kind {
+            ExprKind::Negate(x) | ExprKind::Not(x) | ExprKind::Cast(x, _) => {
+                self.enforce_kernel_expr(x)
+            }
+            ExprKind::Arith(l, _, r) | ExprKind::Cmp(l, _, r) => {
+                self.enforce_kernel_expr(l);
+                self.enforce_kernel_expr(r);
+            }
+            ExprKind::If(c, t, f) => {
+                self.enforce_kernel_expr(c);
+                self.enforce_kernel_expr(t);
+                self.enforce_kernel_expr(f);
+            }
+            ExprKind::Let { value, .. } => self.enforce_kernel_expr(value),
+            ExprKind::Seq(es) => es.iter().for_each(|e| self.enforce_kernel_expr(e)),
+            ExprKind::FuncCall { args, .. } | ExprKind::Intrinsic { args, .. } => {
+                args.iter().for_each(|e| self.enforce_kernel_expr(e))
+            }
+            ExprKind::Proj(base, _) => self.enforce_kernel_expr(base),
+            ExprKind::Match(scrut, tree) => {
+                self.enforce_kernel_expr(scrut);
+                self.enforce_kernel_tree(tree);
+            }
+            // Leaves, or forms whose own (already-allowed) type makes their
+            // children irrelevant here.
+            _ => {}
+        }
+    }
+
+    fn enforce_kernel_tree(&mut self, tree: &super::hir::DecisionTree<'tcx>) {
+        use super::hir::{DecisionTree, SwitchCases};
+        match tree {
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {}
+            DecisionTree::Leaf { body, .. } => self.enforce_kernel_expr(body),
+            DecisionTree::Guard {
+                guard,
+                success,
+                failure,
+                ..
+            } => {
+                self.enforce_kernel_expr(guard);
+                self.enforce_kernel_tree(success);
+                self.enforce_kernel_tree(failure);
+            }
+            DecisionTree::Switch { cases, .. } => match cases {
+                SwitchCases::Int { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Bool { if_true, if_false } => {
+                    self.enforce_kernel_tree(if_true);
+                    self.enforce_kernel_tree(if_false);
+                }
+                SwitchCases::Char { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Ctor(subs) => subs.iter().for_each(|t| self.enforce_kernel_tree(t)),
+                SwitchCases::String { cases, default } => {
+                    cases.iter().for_each(|(_, t)| self.enforce_kernel_tree(t));
+                    self.enforce_kernel_tree(default);
+                }
+                SwitchCases::Nullable { non_null, null } => {
+                    self.enforce_kernel_tree(non_null);
+                    self.enforce_kernel_tree(null);
+                }
+            },
         }
     }
 
@@ -1797,6 +2006,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             .collect(),
                         body: zb(self, k.body),
                     };
+                    // Types are resolved now — enforce the rc-free body rule.
+                    self.enforce_kernel_expr(&k.body);
                     Box::new(k)
                 });
                 ArrayOp { op, args, kernel }

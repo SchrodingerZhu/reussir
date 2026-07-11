@@ -27,3 +27,26 @@ pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
 pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
     core::intrinsic::array::get(m, i, j)
 }
+
+// CHECK: pub fn #make() -> [f64; 8]
+// CHECK: array#tabulate() kernel(v{{[0-9]+}}: i64) {
+pub fn make() -> [f64; 8] {
+    core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64)
+}
+
+// CHECK: pub fn #sum(v0 (a): [f64; 8]) -> f64
+// CHECK: array#fold(v0 : [f64; 8] {{.*}}, 0.0 : f64 {{.*}}) kernel(v{{[0-9]+}}: f64, v{{[0-9]+}}: f64) {
+pub fn sum(a : [f64; 8]) -> f64 {
+    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+}
+
+// Kernels may read enclosing arrays (a stencil): the reads reference the
+// enclosing binding directly — no closure, no captures.
+// CHECK: pub fn #blur(v0 (x): [f64; 8]) -> [f64; 8]
+// CHECK: array#tabulate() kernel(v{{[0-9]+}}: i64) {
+// CHECK: array#get(v0
+pub fn blur(x : [f64; 8]) -> [f64; 8] {
+    core::intrinsic::array::tabulate<[f64; 8]>(|i|
+        if i == 0 { core::intrinsic::array::get(x, i) }
+        else { (core::intrinsic::array::get(x, i - 1) + core::intrinsic::array::get(x, i)) / 2.0 })
+}
