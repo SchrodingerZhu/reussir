@@ -1,0 +1,21 @@
+// Diagnostics for the Phase A array type restrictions (issue #344). All are
+// declaration (type/record) errors that surface during scanning, so the
+// CHECKs are unordered `CHECK-DAG`s.
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// CHECK-DAG: non-scalar array element types are not supported yet
+struct S { x: i32 }
+fn bad_elem(a : [S; 4]) -> i64 { 0 }
+
+// CHECK-DAG: an array cannot be a record member in this version
+struct Holder { data: [f64; 4] }
+
+// CHECK-DAG: array extents must be positive
+fn zero_extent(a : [f64; 0]) -> i64 { 0 }
+
+// CHECK-DAG: this kind of array extent cannot be evaluated yet
+fn expr_extent(a : [f64; 2 + 2]) -> i64 { 0 }
+
+// CHECK-DAG: this kind of array extent cannot be evaluated yet
+fn name_extent(a : [f64; n]) -> i64 { 0 }

@@ -27,8 +27,8 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, closure, nullable,
-    rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
+    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, array, closure,
+    nullable, rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
     str as str_type,
 };
 use reussir_backend::melior::Context;
@@ -113,7 +113,10 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// This is the complement, among reference-counted values, of an inline
     /// `[value]` record — which is acquired/dropped through a reference instead.
     pub(super) fn is_managed_rc(&self, ty: Ty<'tcx>) -> bool {
-        self.is_shared_record(ty) || self.is_regional_record(ty) || is_closure(ty)
+        self.is_shared_record(ty)
+            || self.is_regional_record(ty)
+            || is_closure(ty)
+            || matches!(ty.kind(), TyKind::Array { .. })
     }
 
     /// Lower a ground type to MLIR: records resolve through the layout table, a
@@ -139,6 +142,9 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // A closure value is a shared `rc<closure<params -> ret>>`; captures
             // have already been supplied (see [`closure_type`](Self::closure_type)).
             TyKind::Closure { params, ret } => self.closure_type(params, ret),
+            // A statically shaped array is one shared `rc` box holding the whole
+            // payload (`!reussir.rc<!reussir.array<dims x elem>>`); see #344.
+            TyKind::Array { .. } => Ok(self.rc_type(self.array_inner_of(ty)?)),
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -369,6 +375,17 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         Ok(closure(self.context, &input_tys, output))
     }
 
+    /// The `!reussir.array<dims x elem>` payload type of an array-typed `ty`
+    /// (the type inside its `rc` box, and the element type of its views).
+    pub(super) fn array_inner_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let TyKind::Array { elem, dims } = *ty.kind() else {
+            return err("array payload requested for a non-array type");
+        };
+        let elem = scalar_ty(self.context, elem)?;
+        let shape: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
+        Ok(array(&shape, elem))
+    }
+
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,
     /// reference-counted value with the default (non-atomic) box layout.
     pub(super) fn rc_type(&self, inner: Type<'c>) -> Type<'c> {
@@ -483,6 +500,7 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Unit => err("unit has no MLIR value type"),
         TyKind::Str => Ok(str_type(context, ReussirLifeScope::Global)),
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
+        TyKind::Array { .. } => err("array type reached scalar lowering without its rc wrapper"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
         // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.
         TyKind::Closure { .. } => err("closure type reached scalar lowering without an rc wrapper"),

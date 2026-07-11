@@ -283,6 +283,14 @@ impl<'a> Printer<'a> {
             TyKind::Generic(g) => text(format!("${}", g.0)),
             TyKind::Hole(_) => unreachable!("a fully elaborated HIR carries no inference holes"),
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
+            TyKind::Array { elem, dims } => {
+                let mut d = text("[") + self.ty(elem) + text(";");
+                for (i, extent) in dims.iter().enumerate() {
+                    let sep = if i > 0 { "," } else { "" };
+                    d = d + text(format!("{sep} {extent}"));
+                }
+                d + text("]")
+            }
             TyKind::Record { def, args, flex } => {
                 let mut d = match flex {
                     Flexivity::Flex | Flexivity::Rigid | Flexivity::Regional => {

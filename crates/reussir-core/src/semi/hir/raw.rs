@@ -172,6 +172,11 @@ pub enum Ty {
         params: Vec<Ty>,
         ret: Box<Ty>,
     },
+    /// `[elem; extents…]` — a statically shaped array.
+    Array {
+        elem: Box<Ty>,
+        dims: Vec<u64>,
+    },
 }
 
 /// The four raw words of an interned `StringToken`.

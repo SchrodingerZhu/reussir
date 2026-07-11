@@ -145,6 +145,18 @@ impl<'a> Mangler<'a> {
                 // to its inner type.
                 self.path_with_args_segs(out, &["Nullable"], &[inner]);
             }
+            TyKind::Array { elem, dims } => {
+                // An array mangles as a synthetic record whose identifier
+                // carries the extents (`Array512x512`), applied to the element.
+                let mut name = String::from("Array");
+                for (i, d) in dims.iter().enumerate() {
+                    if i > 0 {
+                        name.push('x');
+                    }
+                    name.push_str(&d.to_string());
+                }
+                self.path_with_args_segs(out, &[&name], &[elem]);
+            }
             TyKind::Record { def, args, .. } => {
                 // The per-use capability (`flex`) is irrelevant to the ABI.
                 self.path_with_args(out, def, args);

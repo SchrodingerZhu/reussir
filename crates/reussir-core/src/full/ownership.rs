@@ -307,6 +307,9 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
         // Overwritten with the real answer below.
         self.memo.borrow_mut().insert(ty, false);
         let b = match *ty.kind() {
+            // An array is one rc-managed box regardless of its (Plain)
+            // element type.
+            TyKind::Array { .. } => true,
             // The management class is the record table's call (keyed by the
             // canonical, flexivity-erased type); the per-use flexivity then refines
             // the one case where it matters — a regional record.
