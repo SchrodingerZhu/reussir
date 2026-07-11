@@ -1,0 +1,37 @@
+// Closure capture computation: captures are the body's free variables —
+// `Var` occurrences minus everything the body itself binds. Regression
+// coverage for three binder kinds the old occurrence walk got wrong: a
+// `let`-bound local leaked into the capture list (unbound at the creation
+// site), match arms were skipped entirely (so a variable used only inside
+// an arm was never captured), and a nested lambda's parameters were not
+// subtracted.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+
+enum E { A(i64), B }
+
+fn apply1(f : i64 -> i64, x : i64) -> i64 { f(x) }
+fn apply_e(f : E -> i64, e : E) -> i64 { f(e) }
+
+// A `let`-bound local is not a capture; only `k` crosses the boundary.
+// CHECK: fn #let_in_lambda(v0 (k): i64, v1 (x): i64) -> i64 {
+// CHECK: closure[v0: i64](v2: i64) { { let v3 (t)
+fn let_in_lambda(k : i64, x : i64) -> i64 {
+    apply1(|y| { let t = y + 1; t * k }, x)
+}
+
+// A variable used only inside match arms is still a capture, and the
+// pattern binding `v` is not.
+// CHECK: fn #match_in_lambda(v0 (k): i64, v1 (e): #E) -> i64 {
+// CHECK: closure[v0: i64](v2: #E) { match v2 : #E {
+fn match_in_lambda(k : i64, e : E) -> i64 {
+    apply_e(|x : E| match x { E::A(v) => v + k, E::B => k }, e)
+}
+
+// An inner lambda's parameter is bound, not free: both closures capture
+// exactly `k`.
+// CHECK: fn #nested_lambda(v0 (k): i64, v1 (x): i64) -> i64 {
+// CHECK: closure[v0: i64](v2: i64) { #apply1(closure[v0: i64](v3: i64)
+fn nested_lambda(k : i64, x : i64) -> i64 {
+    apply1(|y| apply1(|z| z + k, y), x)
+}
