@@ -280,11 +280,30 @@ pub fn emit_to_file(
     out_path: &Path,
 ) -> Result<(), String> {
     unsafe {
-        run_backend_llvm_pipeline(finalized.module, opt);
+        // Stamp the target before the pass pipeline runs: the module's triple
+        // and data layout feed the pipeline's queries, and the machine feeds
+        // the TargetTransformInfo the cost-driven passes (vectorization)
+        // decide against.
+        stamp_target(finalized.module, machine);
+        run_backend_llvm_pipeline(finalized.module, opt, machine.machine);
         let result = emit(finalized.module, machine, kind, out_path);
         LLVMDisposeModule(finalized.module);
         LLVMContextDispose(finalized.context);
         result
+    }
+}
+
+/// Stamps `machine`'s target triple and data layout onto the module, so the
+/// emitted artifact's ABI matches the target (and so `%cc` and downstream
+/// tools can consume the IR-text form).
+unsafe fn stamp_target(llvm_module: LLVMModuleRef, machine: &TargetMachine) {
+    unsafe {
+        LLVMSetTarget(llvm_module, machine.triple.as_ptr());
+        let target_data = LLVMCreateTargetDataLayout(machine.machine);
+        // `LLVMSetModuleDataLayout` copies the layout into the module, so the
+        // target-data handle is ours to dispose.
+        LLVMSetModuleDataLayout(llvm_module, target_data);
+        LLVMDisposeTargetData(target_data);
     }
 }
 
@@ -295,17 +314,6 @@ unsafe fn emit(
     out_path: &Path,
 ) -> Result<(), String> {
     unsafe {
-        // Stamp the module with the target triple and data layout so the emitted
-        // object's ABI matches the target (and so `%cc` can link it). The IR-text
-        // path needs this too: it carries the target as `target triple`/`target
-        // datalayout` lines, which downstream tools (and `%FileCheck`) rely on.
-        LLVMSetTarget(llvm_module, machine.triple.as_ptr());
-        let target_data = LLVMCreateTargetDataLayout(machine.machine);
-        // `LLVMSetModuleDataLayout` copies the layout into the module, so the
-        // target-data handle is ours to dispose.
-        LLVMSetModuleDataLayout(llvm_module, target_data);
-        LLVMDisposeTargetData(target_data);
-
         // LLVM IR text needs no target-machine emission — just print the module.
         if kind == OutputKind::LlvmIr {
             let s = LLVMPrintModuleToString(llvm_module);

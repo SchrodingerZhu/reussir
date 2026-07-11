@@ -126,3 +126,34 @@ pub fn write(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
 // FUSED-NOT: closure
 // FUSED-LABEL: llvm.func @_RC4ones
 // FUSED-NOT: closure
+
+// The backend pipeline runs against the real TargetMachine, so rrc's own
+// -Oaggressive artifacts vectorize (no external opt run needed). The small
+// arrays above fully unroll instead; this fill loop is wide enough to be
+// worth vectorizing on any SIMD baseline.
+// RUN: %rrc %s --emit llvm-ir -Oaggressive -o %t.vec.ll
+// RUN: %FileCheck %s --check-prefix=VEC < %t.vec.ll
+// VEC: <{{(vscale x )?[0-9]+}} x float>
+pub fn big() -> [f32; 1024] {
+    core::intrinsic::array::splat<[f32; 1024]>(1.0)
+}
+
+// The same shape isolated for inspection: take an array parameter, add one
+// to every element by tail recursion over get/set, return the result — no
+// construction, no reduction. At -Oaggressive the recursion becomes a
+// loop, the unique-carrying specialization drops the count checks, the
+// bounds guards fold (the index is provably in range), and the in-place
+// update vectorizes.
+// VEC-LABEL: @_RC8plus_one
+// VEC: <{{(vscale x )?[0-9]+}} x float>
+fn bump_from(a : [f32; 1024], i : i64) -> [f32; 1024] {
+    if i == 1024 {
+        a
+    } else {
+        let v = core::intrinsic::array::get(a, i);
+        bump_from(core::intrinsic::array::set(a, i, v + 1.0), i + 1)
+    }
+}
+pub fn plus_one(a : [f32; 1024]) -> [f32; 1024] {
+    bump_from(a, 0)
+}

@@ -55,13 +55,25 @@ pub unsafe fn translate_to_llvm_ir(
 /// Runs the Reussir backend LLVM pass pipeline on `module` in place (a no-op for
 /// [`OptLevel::None`]/[`OptLevel::Tpde`], matching the C++ backend).
 ///
+/// `machine` supplies the target model the cost-driven passes (loop/SLP
+/// vectorization) work against; without one they would run on the base
+/// TargetTransformInfo, which has no vector registers, and never fire. Pass
+/// null to have the pipeline build a host TargetMachine internally (the JIT
+/// case).
+///
 /// # Safety
-/// `module` must be a valid `LLVMModuleRef`.
-pub unsafe fn run_backend_llvm_pipeline(module: LLVMModuleRef, opt: OptLevel) {
+/// `module` must be a valid `LLVMModuleRef`, and `machine` a valid
+/// `LLVMTargetMachineRef` or null.
+pub unsafe fn run_backend_llvm_pipeline(
+    module: LLVMModuleRef,
+    opt: OptLevel,
+    machine: llvm_sys::target_machine::LLVMTargetMachineRef,
+) {
     unsafe {
         sys::reussirRunBackendLLVMPipeline(
             module as sys::LLVMModuleRef,
             opt.as_reussir_opt_option(),
+            machine as sys::LLVMTargetMachineRef,
         );
     }
 }
