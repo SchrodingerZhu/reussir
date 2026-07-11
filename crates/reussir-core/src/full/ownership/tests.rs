@@ -361,6 +361,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
         let body = self.tcx.alloc(body);
         Function {
             symbol,
+            transform_anchor: false,
             visibility: Visibility::Private,
             is_regional: false,
             params,

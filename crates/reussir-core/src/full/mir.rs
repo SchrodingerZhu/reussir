@@ -20,7 +20,7 @@ use reussir_syntax::kind::TokenKey;
 use reussir_syntax::source::FileId;
 
 use crate::literal::{FloatLit, Integer};
-use crate::semi::ctxt::DefaultCap;
+use crate::semi::ctxt::{DefaultCap, TransformScript};
 use crate::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use crate::semi::ty::Ty;
 use crate::surface::{Span, Visibility};
@@ -58,6 +58,7 @@ pub struct Program<'tcx> {
     pub records: Vec<RecordInstance<'tcx>>,
     pub trampolines: Vec<Trampoline>,
     pub string_literals: Vec<(StringToken, String)>,
+    pub transform_scripts: Vec<TransformScript>,
     /// Interner backing every [`Symbol`] in this program.
     pub symbols: Rodeo,
 }
@@ -73,6 +74,7 @@ impl<'tcx> Program<'tcx> {
 #[derive(Clone, Debug)]
 pub struct Function<'tcx> {
     pub symbol: Symbol,
+    pub transform_anchor: bool,
     pub visibility: Visibility,
     pub is_regional: bool,
     pub params: Vec<Param<'tcx>>,

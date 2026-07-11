@@ -839,6 +839,8 @@ fn frontend<'c, 'tcx>(
                 elaborated: &parsed.funcs,
                 records: &parsed.records,
                 trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
                 strings: parsed.strings.clone(),
             };
             let (full, reports) = monomorphize(&input);

@@ -68,6 +68,7 @@ pub struct Program {
     pub records: Vec<RecordDecl>,
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
+    pub transforms: Vec<Transform>,
 }
 
 /// One top-level item, as the grammar yields them before partitioning.
@@ -78,6 +79,7 @@ pub enum Item {
     Record(RecordDecl),
     Func(Func),
     Tramp(Tramp),
+    Transform(Transform),
 }
 
 /// A ground record declaration: its v0 symbol, the capability it declares by
@@ -141,6 +143,7 @@ impl Program {
             records: Vec::new(),
             funcs: Vec::new(),
             trampolines: Vec::new(),
+            transforms: Vec::new(),
         };
         for item in items {
             match item {
@@ -149,6 +152,7 @@ impl Program {
                 Item::Record(r) => p.records.push(r),
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
+                Item::Transform(t) => p.transforms.push(t),
             }
         }
         p
@@ -157,6 +161,7 @@ impl Program {
 
 #[derive(Clone, Debug)]
 pub struct Func {
+    pub transform_anchor: bool,
     pub is_pub: bool,
     pub regional: bool,
     pub symbol: String,
@@ -180,6 +185,13 @@ pub struct Tramp {
     pub abi: String,
     pub export: String,
     pub target: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Transform {
+    pub body: String,
+    pub file: Option<u32>,
+    pub span: Option<Span>,
 }
 
 #[derive(Clone, Debug)]

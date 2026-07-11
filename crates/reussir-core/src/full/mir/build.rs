@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 
 use crate::full::mir::{self, grammar as ir, raw};
 use crate::ir_lex::lex;
-use crate::semi::ctxt::DefaultCap;
+use crate::semi::ctxt::{DefaultCap, TransformScript};
 use crate::semi::hir::{ArithOp, CmpOp, VarId};
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyCtxt, TyKind};
@@ -80,6 +80,11 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     }
     for f in &raw.funcs {
         if let Some(id) = file_ref_check(&files, f.file) {
+            return Err(id);
+        }
+    }
+    for t in &raw.transforms {
+        if let Some(id) = file_ref_check(&files, t.file) {
             return Err(id);
         }
     }
@@ -185,6 +190,21 @@ impl<'tcx> Builder<'_, 'tcx> {
             })
             .collect();
         let functions: Vec<mir::Function<'tcx>> = raw.funcs.iter().map(|f| self.func(f)).collect();
+        let transform_scripts = raw
+            .transforms
+            .into_iter()
+            .map(|script| TransformScript {
+                body: script.body,
+                span: script
+                    .span
+                    .map(|(start, end)| crate::surface::Span { start, end }),
+                file: script
+                    .file
+                    .map_or(reussir_syntax::source::FileId::ROOT, |index| {
+                        reussir_syntax::source::FileId::from_index(index)
+                    }),
+            })
+            .collect();
 
         // Move the freshly-built symbol interner into the program.
         let symbols = std::mem::take(&mut self.symbols);
@@ -193,6 +213,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             records,
             trampolines,
             string_literals,
+            transform_scripts,
             symbols,
         }
     }
@@ -215,6 +236,7 @@ impl<'tcx> Builder<'_, 'tcx> {
         let body = f.body.as_ref().map(|b| self.expr_ref(b));
         mir::Function {
             symbol,
+            transform_anchor: f.transform_anchor,
             visibility: if f.is_pub {
                 crate::surface::Visibility::Public
             } else {
@@ -547,7 +569,7 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
 fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
     match file {
         Some(id) if id as usize >= files.len() => Some(format!(
-            "function references file {id}, but the source-file table has {} entr(y/ies)",
+            "item references file {id}, but the source-file table has {} entr(y/ies)",
             files.len()
         )),
         _ => None,
@@ -577,6 +599,30 @@ mod tests {
 
             let text = Printer::new(&elab.defs, elab.resolver).program(&full);
             let parsed = parse_program(tcx, &text).expect("re-parse");
+            assert_eq!(
+                parsed
+                    .program
+                    .functions
+                    .iter()
+                    .filter(|function| function.transform_anchor)
+                    .count(),
+                full.functions
+                    .iter()
+                    .filter(|function| function.transform_anchor)
+                    .count()
+            );
+            assert_eq!(
+                parsed
+                    .program
+                    .transform_scripts
+                    .iter()
+                    .map(|script| &script.body)
+                    .collect::<Vec<_>>(),
+                full.transform_scripts
+                    .iter()
+                    .map(|script| &script.body)
+                    .collect::<Vec<_>>()
+            );
             let text2 = Printer::new(&parsed.defs, &parsed.names).program(&parsed.program);
             assert_eq!(
                 text, text2,
@@ -608,6 +654,18 @@ mod tests {
             assert!(text.contains(" in 0"), "fn file reference missing:\n{text}");
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.files, vec!["<test>".to_string()]);
+            assert_eq!(
+                parsed
+                    .program
+                    .transform_scripts
+                    .iter()
+                    .map(|script| (&script.body, script.file, script.span))
+                    .collect::<Vec<_>>(),
+                full.transform_scripts
+                    .iter()
+                    .map(|script| (&script.body, script.file, script.span))
+                    .collect::<Vec<_>>()
+            );
             let mut cache2 = SourceCache::new();
             for name in &parsed.files {
                 cache2.add_unavailable(name);
@@ -681,6 +739,15 @@ mod tests {
                 core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
             }
             "#,
+        );
+    }
+
+    #[test]
+    fn roundtrips_transform_metadata() {
+        roundtrip_with_locations(
+            "#[transform_anchor]\n\
+             pub fn transform(transform_anchor: i32) -> i32 { transform_anchor }\n\
+             transform [{\n  transform.yield\n}];",
         );
     }
 

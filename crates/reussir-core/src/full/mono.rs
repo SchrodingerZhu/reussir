@@ -52,7 +52,7 @@ use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
 use crate::literal;
 use crate::semi::ctxt::{
-    DefaultCap, Elaborator, Record, RecordFields, Report, Severity, TrampolineRoot,
+    DefaultCap, Elaborator, Record, RecordFields, Report, Severity, TrampolineRoot, TransformScript,
 };
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
@@ -72,6 +72,8 @@ pub struct MonoInput<'a, 'tcx> {
     pub elaborated: &'a [Function<'tcx>],
     pub records: &'a FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: &'a [TrampolineRoot<'tcx>],
+    pub transform_anchors: &'a [DefId],
+    pub transform_scripts: &'a [TransformScript],
     pub strings: Vec<(StringToken, String)>,
 }
 
@@ -85,6 +87,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             elaborated: &self.elaborated,
             records: &self.records,
             trampolines: &self.trampolines,
+            transform_anchors: &self.transform_anchors,
+            transform_scripts: &self.transform_scripts,
             strings: self.strings.entries(),
         }
     }
@@ -172,6 +176,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         let symbol = driver.symbol_of(inst.def, inst.ty_args);
         functions.push(mir::Function {
             symbol,
+            transform_anchor: input.transform_anchors.contains(&func.def),
             visibility: func.visibility,
             is_regional: func.is_regional,
             params,
@@ -267,6 +272,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             records,
             trampolines,
             string_literals: input.strings.clone(),
+            transform_scripts: input.transform_scripts.to_vec(),
             symbols,
         },
         reports,
@@ -1058,12 +1064,9 @@ mod tests {
 
             // Serialize the HIR, parse it back, and monomorphize *that*.
             let strings = elab.strings.entries();
-            let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
-                &elab.elaborated,
-                &strings,
-                &elab.records,
-                &elab.trampolines,
-            );
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
             let input = MonoInput {
                 tcx,
@@ -1072,6 +1075,8 @@ mod tests {
                 elaborated: &parsed.funcs,
                 records: &parsed.records,
                 trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
                 strings: parsed.strings.clone(),
             };
             let (mir1, r1) = monomorphize(&input);
@@ -1153,19 +1158,13 @@ mod tests {
 
             // ----- print HIR + round-trip it through the parser -----
             let strings = elab.strings.entries();
-            let hir_text = HirPrinter::new(&elab.defs, elab.resolver).program(
-                &elab.elaborated,
-                &strings,
-                &elab.records,
-                &elab.trampolines,
-            );
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let hir = parse_hir(tcx, &hir_text).expect("re-parse HIR");
-            let hir_text2 = HirPrinter::new(&hir.defs, &hir.names).program(
-                &hir.funcs,
-                &hir.strings,
-                &hir.records,
-                &hir.trampolines,
-            );
+            let hir_text2 = HirPrinter::new(&hir.defs, &hir.names)
+                .with_transform_metadata(&hir.transform_anchors, &hir.transform_scripts)
+                .program(&hir.funcs, &hir.strings, &hir.records, &hir.trampolines);
             assert_eq!(
                 hir_text, hir_text2,
                 "HIR round-trip mismatch\n=== printed ===\n{hir_text}\n=== reparsed ===\n{hir_text2}"
@@ -1179,6 +1178,8 @@ mod tests {
                 elaborated: &hir.funcs,
                 records: &hir.records,
                 trampolines: &hir.trampolines,
+                transform_anchors: &hir.transform_anchors,
+                transform_scripts: &hir.transform_scripts,
                 strings: hir.strings.clone(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
@@ -1292,6 +1293,28 @@ mod tests {
             let mut sorted = syms.clone();
             sorted.dedup();
             assert_eq!(sorted.len(), syms.len(), "duplicate instances: {syms:?}");
+        });
+    }
+
+    #[test]
+    fn transform_anchor_marks_each_generic_instance() {
+        let src = r#"
+            #[transform_anchor]
+            fn id<T>(x: T) -> T { x }
+            pub fn use_i32(n: i32) -> i32 { id(n) }
+            pub fn use_bool(b: bool) -> bool { id(b) }
+            transform [{ transform.yield }];
+        "#;
+        with_full(src, |full| {
+            assert_eq!(
+                full.functions
+                    .iter()
+                    .filter(|function| function.transform_anchor)
+                    .count(),
+                2
+            );
+            assert_eq!(full.transform_scripts.len(), 1);
+            assert_eq!(full.transform_scripts[0].body, "{ transform.yield }");
         });
     }
 
