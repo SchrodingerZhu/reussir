@@ -1,0 +1,49 @@
+// Inline schedules survive HIR/MIR reload and run at the kernel anchor. The
+// rank-2 array splat supplies a predictable perfect loop nest. Navigating from
+// its store to the outer loop and unrolling-and-jamming it proves that the
+// schedule rewrites payload IR rather than merely being parsed.
+//
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=EMBED
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit mir --no-source-locations -o %t.mir
+// RUN: %rrc %t.mir --from mir --emit mlir-llvm --no-source-locations -O none -o - \
+// RUN:   | %FileCheck %s --check-prefix=LOWER
+// RUN: %rrc %t.mir --from mir --emit llvm-ir -O none -o %t.ll
+
+#[transform_anchor]
+pub fn target() -> [i64; 4, 16] {
+    core::intrinsic::array::splat<[i64; 4, 16]>(7)
+}
+
+transform [{
+    transform.annotate %target "reussir.inline_ran" : !transform.any_op
+    %stores = transform.structured.match ops{["memref.store"]} in %target
+        : (!transform.any_op) -> !transform.op<"memref.store">
+    %outer = transform.get_parent_op %stores {
+        op_name = "scf.for", nth_parent = 2 : i64, deduplicate
+    } : (!transform.op<"memref.store">) -> !transform.op<"scf.for">
+    transform.loop.unroll_and_jam %outer { factor = 2 }
+        : !transform.op<"scf.for">
+    transform.yield
+}];
+
+// EMBED: module attributes {reussir.inline_transform, transform.with_named_sequence}
+// EMBED: func.func @_RC6target
+// EMBED-SAME: attributes {no_inline, reussir.transform_anchor}
+// EMBED: transform.named_sequence @__reussir_inline_0
+// EMBED: transform.annotate
+// EMBED: transform.structured.match ops{["memref.store"]}
+// EMBED: transform.get_parent_op
+// EMBED: transform.loop.unroll_and_jam
+// EMBED: transform.named_sequence @__reussir_inline_transform
+
+// LOWER-NOT: transform.named_sequence
+// LOWER-LABEL: llvm.func @_RC6target
+// LOWER-SAME: attributes {reussir.inline_ran, reussir.transform_anchor}
+// LOWER-DAG: %[[OUTER_STEP:.+]] = llvm.mlir.constant(2 : index) : i64
+// LOWER-COUNT-2: llvm.store %{{.+}}, %{{.+}} : i64, !llvm.ptr
+// LOWER-NOT: llvm.store %{{.+}}, %{{.+}} : i64, !llvm.ptr
+// LOWER: llvm.add %{{.+}}, %[[OUTER_STEP]] : i64
+// LOWER-NOT: llvm.store %{{.+}}, %{{.+}} : i64, !llvm.ptr
+// LOWER: llvm.return
+// LOWER-NOT: transform.named_sequence

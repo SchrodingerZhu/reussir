@@ -9,7 +9,8 @@
 use std::path::PathBuf;
 
 use melior::Context;
-use melior::ir::Module;
+use melior::ir::operation::{OperationLike, OperationMutLike};
+use melior::ir::{BlockLike, Identifier, Module, Operation};
 use melior::pass::{Pass, PassManager};
 
 use reussir_backend_sys as sys;
@@ -266,6 +267,12 @@ pub fn run_lowering_pipeline(
     module: &mut Module,
     options: &LoweringOptions,
 ) -> Result<(), melior::Error> {
+    let inline_transform = module.as_operation().has_attribute(INLINE_TRANSFORM_ATTR);
+    if inline_transform {
+        let _ = module
+            .as_operation_mut()
+            .remove_attribute(INLINE_TRANSFORM_ATTR);
+    }
     let _span = tracing::debug_span!(
         "reussir_lowering",
         opt = ?options.opt,
@@ -273,6 +280,7 @@ pub fn run_lowering_pipeline(
         enable_invariant_analysis = options.enable_invariant_analysis,
         nullary_variant_encoding = ?options.nullary_variant_encoding,
         pack_record_members = options.pack_record_members,
+        inline_transform,
     )
     .entered();
 
@@ -375,6 +383,11 @@ pub fn run_lowering_pipeline(
         // begun — array kernels are plain memref/scf/arith loop nests, the
         // transform dialect's home turf. Runs before the invariant analysis
         // so that pass sees the scheduled IR.
+        if inline_transform => {
+            module: sys::reussirCreateTransformInterpreterPass(
+                string_ref(INLINE_TRANSFORM_ENTRY_POINT),
+            );
+        }
         if at_anchor(Anchor::Kernel) => {
             module: sys::reussirCreateTransformInterpreterPass(
                 string_ref(Anchor::Kernel.entry_point()),
@@ -402,11 +415,33 @@ pub fn run_lowering_pipeline(
 
     tracing::trace!("running Reussir lowering pipeline");
     let result = manager.run(module);
+    if result.is_ok() && inline_transform {
+        erase_inline_transform_schedule(context, module);
+    }
     match &result {
         Ok(()) => tracing::debug!("lowered module to the LLVM dialect"),
         Err(error) => tracing::error!(?error, "lowering pipeline failed"),
     }
     result
+}
+
+fn erase_inline_transform_schedule(context: &Context, module: &mut Module) {
+    let sequence = Identifier::new(context, "transform.named_sequence");
+    let body = module.body();
+    let mut operation = body.first_operation_mut();
+    while let Some(mut current) = operation {
+        operation = current.next_in_block_mut();
+        if current.name() == sequence {
+            let raw = current.to_raw();
+            current.remove_from_parent();
+            // SAFETY: detaching leaves this live operation without an owner;
+            // wrapping it transfers ownership so dropping destroys it.
+            drop(unsafe { Operation::from_raw(raw) });
+        }
+    }
+    let _ = module
+        .as_operation_mut()
+        .remove_attribute("transform.with_named_sequence");
 }
 
 #[cfg(test)]
@@ -435,6 +470,47 @@ mod tests {
         // After lowering, the function is an llvm.func rather than a func.func.
         let rendered = module.as_operation().to_string();
         assert!(rendered.contains("llvm.func @answer"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn runs_and_erases_inline_transform_schedule() {
+        let context = crate::context();
+        let source = r#"
+            module attributes {
+                reussir.inline_transform,
+                transform.with_named_sequence
+            } {
+              func.func @answer() -> i32 attributes {reussir.transform_anchor} {
+                %0 = arith.constant 42 : i32
+                func.return %0 : i32
+              }
+              transform.named_sequence @__reussir_inline_0(
+                  %target: !transform.any_op {transform.readonly}) {
+                transform.annotate %target "reussir.inline_ran" : !transform.any_op
+                transform.yield
+              }
+              transform.named_sequence @__reussir_inline_transform(
+                  %module: !transform.any_op {transform.readonly}) {
+                %target = transform.structured.match ops{["func.func"]}
+                    attributes{reussir.transform_anchor} in %module
+                    : (!transform.any_op) -> !transform.any_op
+                transform.include @__reussir_inline_0 failures(propagate) (%target)
+                    : (!transform.any_op) -> ()
+                transform.yield
+              }
+            }
+        "#;
+        let mut module = Module::parse(&context, source).expect("module should parse");
+        run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
+            .expect("pipeline should succeed");
+        let rendered = module.as_operation().to_string();
+        assert!(rendered.contains("reussir.inline_ran"), "{rendered}");
+        assert!(!rendered.contains("transform.named_sequence"), "{rendered}");
+        assert!(
+            !rendered.contains("transform.with_named_sequence"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(INLINE_TRANSFORM_ATTR), "{rendered}");
     }
 
     // A loop-nest kernel of the shape the `kernel` anchor guarantees: by the
