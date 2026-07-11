@@ -115,11 +115,12 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
   }
 
   // The general frontend shape: a capture bound outside the loop through
-  // its own uniqify+apply (with the caller's inc keeping the captured value
-  // alive), and a genuine per-iteration uniqify+apply+eval chain over the
-  // shared box inside the loop. The per-iteration uniqify clones — the
-  // clone is invisible to the fused form, which reproduces its capture
-  // accounting with the splice-point inc and the trailing dec.
+  // its own uniqify+apply — rc arguments are owned by the callee, so with
+  // no later use the apply consumes %box's original ref directly — and a
+  // genuine per-iteration uniqify+apply+eval chain over the shared box
+  // inside the loop. The per-iteration uniqify clones; the clone is
+  // invisible to the fused form, which reproduces its capture accounting
+  // with the splice-point inc and the trailing dec.
   func.func @general(%box: !reussir.rc<i64>, %n: index) -> i64 {
     %token = reussir.token.alloc : !reussir.token<align: 8, size: 48>
     %c = reussir.closure.create -> !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>> {
@@ -131,7 +132,6 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
           reussir.closure.yield %s : i64
       }
     }
-    reussir.rc.inc (%box : !reussir.rc<i64>)
     %u0 = reussir.closure.uniqify (%c : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>
     %c1 = reussir.closure.apply (%box : !reussir.rc<i64>) to (%u0 : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>
     %lb = arith.constant 0 : index
@@ -262,8 +262,8 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
 // CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
 
 // CHECK-LABEL: func.func @general
-// CHECK: reussir.rc.inc(%arg0 : !reussir.rc<i64>)
 // CHECK-NOT: reussir.closure
+// CHECK-NOT: reussir.rc.inc
 // CHECK: scf.for
 // CHECK: reussir.rc.inc(%arg0 : !reussir.rc<i64>)
 // CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
