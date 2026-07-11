@@ -69,6 +69,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.tcx.mk_closure(&args, ret)
             }
             TypeKind::TypeExpr(path, args) => self.eval_type_expr(path, args, ty.span()),
+            TypeKind::TypeArray(elem, extents) => self.eval_array_type(elem, extents, ty.span()),
         }
     }
 
@@ -125,6 +126,76 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         // A user record, resolved to its def — bare in the current module, or
         // module-qualified (`utils::math::Cell`, `root::…`, `super::…`).
+        return self.eval_record_type_expr(path, args, span, key);
+    }
+
+    /// Evaluate a statically shaped array type (`[f64; 512]`,
+    /// `[f64; 5, 16, 8]`) into a [`TyKind::Array`].
+    pub(crate) fn eval_array_type(
+        &mut self,
+        elem: &surface::Type,
+        extents: &[surface::Expr],
+        span: surface::Span,
+    ) -> Ty<'tcx> {
+        if extents.is_empty() {
+            // Only reachable through parser recovery (`[T; ]` is a syntax
+            // error); avoid constructing a rank-0 array on top of it.
+            return self.tcx.mk(TyKind::Bottom);
+        }
+        let elem = self.eval_type(elem);
+        // Phase A restricts elements to plain scalars: views over the
+        // payload must be free of reference-count traffic.
+        if !is_plain_scalar_or_deferred(elem) {
+            self.error(
+                Some(span),
+                format!(
+                    "non-scalar array element types are not supported yet; found `{}`",
+                    self.ty_display(elem)
+                ),
+            );
+        }
+        let mut dims = Vec::with_capacity(extents.len());
+        let mut product: u128 = 1;
+        for e in extents {
+            let extent = self.eval_extent(e);
+            if extent == 0 {
+                self.error(Some(e.span()), "array extents must be positive");
+            }
+            product = product.saturating_mul(u128::from(extent.max(1)));
+            dims.push(extent.max(1));
+        }
+        if product > (1u128 << 32) {
+            self.error(Some(span), "array is too large (more than 2^32 elements)");
+        }
+        self.tcx.mk_array(elem, &dims)
+    }
+
+    /// Evaluate one array extent expression. The grammar admits any
+    /// expression; for now only an integer literal evaluates — everything
+    /// else reports and recovers with extent 1. An out-of-range literal
+    /// clamps; the product check reports it as too large.
+    fn eval_extent(&mut self, e: &surface::Expr) -> u64 {
+        match e.kind() {
+            surface::ExprKind::ConstExpr(crate::surface::Const::ConstInt(n)) => {
+                u64::try_from(&n).unwrap_or(u64::MAX)
+            }
+            _ => {
+                self.error(
+                    Some(e.span()),
+                    "this kind of array extent cannot be evaluated yet (only integer literals are supported)",
+                );
+                1
+            }
+        }
+    }
+
+    fn eval_record_type_expr(
+        &mut self,
+        path: &surface::Path,
+        args: &[surface::Type],
+        span: surface::Span,
+        key: reussir_syntax::kind::TokenKey,
+    ) -> Ty<'tcx> {
         let Some(def) = self.resolve_record_ref(path) else {
             let hint = if path.segments.is_empty() {
                 self.record_suggestion(key)
@@ -214,6 +285,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// rejected; `Record`/`Closure` are valid inners, and `Generic`/`Hole`/`Bottom`
 /// are deferred (resolved/checked later) so this never reports a false positive
 /// on a not-yet-ground type.
+/// Whether `t` qualifies as a Phase-A array element: a plain scalar, or a
+/// generic/hole deferred to the monomorphization-time groundness check.
+pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
+    matches!(
+        t.kind(),
+        TyKind::Int(_)
+            | TyKind::Fp(_)
+            | TyKind::Bool
+            | TyKind::Char
+            | TyKind::Generic(_)
+            | TyKind::Hole(_)
+            | TyKind::Bottom
+    )
+}
+
 fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
     matches!(
         t.kind(),

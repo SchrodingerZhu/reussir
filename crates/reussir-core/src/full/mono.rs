@@ -231,7 +231,10 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         };
         // `#[repr(fixed)]` is carried straight from the collected record; a
         // missing definition (elaboration failure) is treated as non-fixed.
-        let repr_fixed = input.records.get(&def).is_some_and(|record| record.repr_fixed);
+        let repr_fixed = input
+            .records
+            .get(&def)
+            .is_some_and(|record| record.repr_fixed);
         records.push(mir::RecordInstance {
             symbol,
             ty,
@@ -346,6 +349,7 @@ const RECURSION_LIMIT: usize = 128;
 fn ty_depth(ty: Ty<'_>) -> usize {
     match *ty.kind() {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
+        TyKind::Array { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
             1 + params
@@ -478,6 +482,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.note_records(ret);
             }
             TyKind::Nullable(inner) => self.note_records(inner),
+            TyKind::Array { elem, .. } => self.note_records(elem),
             _ => {}
         }
     }
@@ -511,6 +516,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.discover_records(ret, worklist);
             }
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
+            TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
             _ => {}
         }
     }
@@ -1216,6 +1222,7 @@ mod tests {
                 params.iter().all(|&p| is_ground(p)) && is_ground(ret)
             }
             TyKind::Nullable(inner) => is_ground(inner),
+            TyKind::Array { elem, .. } => is_ground(elem),
             _ => true,
         }
     }

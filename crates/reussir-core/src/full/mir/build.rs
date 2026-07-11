@@ -257,6 +257,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let ret = self.ty(ret);
                 self.tcx.mk_closure(&params, ret)
             }
+            raw::Ty::Array { elem, dims } => {
+                let elem = self.ty(elem);
+                self.tcx.mk_array(elem, dims)
+            }
         }
     }
 
@@ -645,6 +649,16 @@ mod tests {
             "pub fn fib(n: u64) -> u64 { \
              let m = n + 1; \
              if n <= 1 { m } else { fib(n - 1) + fib(n - 2) } }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_array_types() {
+        // The `[elem; extents…]` type in parameter and return position;
+        // rank-1 and rank-2. The array *ops* have their own round-trip test.
+        roundtrip(
+            "pub fn id(a: [f64; 8]) -> [f64; 8] { a } \
+             pub fn fst(m: [i32; 4, 4], n: [i32; 4, 4]) -> [i32; 4, 4] { m }",
         );
     }
 

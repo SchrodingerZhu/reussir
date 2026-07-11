@@ -1,0 +1,18 @@
+// Statically shaped arrays (issue #344, Phase A): the `[elem; extents…]`
+// type, end to end through elaboration, monomorphization, and codegen. The
+// `core::intrinsic::array` operations have their own tests.
+
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+
+// CHECK: pub fn #id(v0 (a): [f64; 8]) -> [f64; 8]
+pub fn id(a : [f64; 8]) -> [f64; 8] {
+    a
+}
+
+// An array is one reference-counted box: passing it around is rc traffic
+// only, and the extents are part of the type.
+// CHECK: pub fn #fst(v0 (m): [i32; 4, 4], v1 (n): [i32; 4, 4]) -> [i32; 4, 4]
+pub fn fst(m : [i32; 4, 4], n : [i32; 4, 4]) -> [i32; 4, 4] {
+    m
+}

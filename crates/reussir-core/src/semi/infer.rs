@@ -209,6 +209,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let inner = self.resolve(*inner);
                 self.tcx.mk_nullable(inner)
             }
+            TyKind::Array { elem, dims } => {
+                let elem = self.resolve(*elem);
+                self.tcx.mk_array(elem, dims)
+            }
             _ => ty,
         }
     }
@@ -295,6 +299,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify(*r1, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify(*x, *y),
+            (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
+                if d1 == d2 =>
+            {
+                self.unify(*e1, *e2)
+            }
 
             (TyKind::Int(x), TyKind::Int(y)) if x == y => Ok(()),
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
@@ -343,6 +352,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.occurs(h, *ret)
             }
             TyKind::Nullable(inner) => self.occurs(h, *inner),
+            TyKind::Array { elem, .. } => self.occurs(h, *elem),
             _ => false,
         }
     }
@@ -493,6 +503,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify_instantiated(*r1, inst, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify_instantiated(*x, inst, *y),
+            (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
+                if d1 == d2 =>
+            {
+                self.unify_instantiated(*e1, inst, *e2)
+            }
 
             (TyKind::Int(x), TyKind::Int(y)) if x == y => Ok(()),
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
@@ -545,6 +560,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 let inner = self.materialize(*inner, inst);
                 self.tcx.mk_nullable(inner)
+            }
+            TyKind::Array { elem, dims } => {
+                let elem = self.materialize(*elem, inst);
+                self.tcx.mk_array(elem, dims)
             }
             _ => template,
         }

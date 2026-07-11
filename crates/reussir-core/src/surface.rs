@@ -217,7 +217,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
 }
 
 fn is_type_kind(kind: SyntaxKind) -> bool {
-    matches!(kind, PrimType | PathType | ArrowType | ParenTypeList)
+    matches!(
+        kind,
+        PrimType | PathType | ArrowType | ParenTypeList | SyntaxKind::ArrayType
+    )
 }
 
 fn expr_children(node: &ResolvedNode) -> impl Iterator<Item = &ResolvedNode> {
@@ -382,6 +385,10 @@ pub enum TypeKind {
     TypeExpr(Path, SmallVec<[Type; 2]>),
     /// A closure type: argument types and a result.
     TypeArrow(SmallVec<[Type; 2]>, Type),
+    /// A statically shaped array: an element type and one extent expression
+    /// per dimension (`[f64; 512]`, `[f64; 5, 16, 8]`). The extents are kept
+    /// as expressions; the elaborator decides which forms it can evaluate.
+    TypeArray(Type, SmallVec<[Expr; 2]>),
 }
 
 /// A type expression (a view over a `PrimType` / `PathType` / `ArrowType` node).
@@ -412,6 +419,13 @@ impl Type {
         let node = &self.node;
         match node.kind() {
             PrimType => prim_type(tokens(node).next().expect("prim type token").text()),
+            SyntaxKind::ArrayType => {
+                let elem = nodes(node)
+                    .find(|n| is_type_kind(n.kind()))
+                    .expect("array element type");
+                let extents = expr_children(node).map(Expr::new).collect();
+                TypeKind::TypeArray(Type::new(elem), extents)
+            }
             PathType => {
                 let path = child_node(node, PathKind).expect("type path");
                 let args = child_node(node, TypeArgList)

@@ -164,6 +164,8 @@ Ty: raw::Ty = {
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     <cap:Cap> "#" <path:PathArgs>
         => raw::Ty::Record { cap, path: path.0, args: path.1 },
+    "[" <elem:Ty> ";" <dims:CommaPlus<"int">> "]"
+        => raw::Ty::Array { elem: Box::new(elem), dims: dims.iter().map(raw::small_u64).collect() },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
