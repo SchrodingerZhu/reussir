@@ -1,4 +1,4 @@
-// Codegen for the array access ops (issue #344): `get` borrows the rc box,
+// Codegen for the array ops (issue #344). Access: `get` borrows the rc box,
 // materializes a memref view, and sinks the load into a bounds guard; `set`
 // sinks the `array.with_unique_view` store the same way, its implicit
 // result being the (cloned-if-shared) updated array. Each index gets one
@@ -6,13 +6,34 @@
 // huge value, so `ult` covers both sides), and-reduced per op into a single
 // verdict; the access is the guard's then-branch, and the failure branch
 // panics then yields a poison of the result type. Constant indices fold
-// away at canonicalization.
+// away at canonicalization. Constructors and fold are check-free loop
+// nests calling the kernel closure per element; at -Oaggressive the
+// loop-carried beta reduction inlines literal lambdas (FUSED lines).
 //
 // Functions appear in the module sorted by mangled name; the CHECK blocks
 // follow that order.
 
 // RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s --emit llvm-ir -o %t.ll
+// RUN: %rrc %s --emit mlir-llvm --no-source-locations -Oaggressive -o - | %FileCheck %s --check-prefix=FUSED
+
+// A fold: borrow + view, the accumulator threaded through iter_args, and
+// the kernel closure called on (acc, element); no bounds checks anywhere in
+// the nest (the loop iterates exactly the extents).
+// CHECK-LABEL: func.func @_RC3sum
+// CHECK: %[[FVIEW:.+]] = reussir.array.view
+// CHECK: reussir.closure.create
+// CHECK: %[[RES:.+]] = scf.for %[[FIV:.+]] = %{{.+}} iter_args(%[[ACC:.+]] = %{{.+}}) -> (f64) {
+// CHECK: reussir.rc.inc
+// CHECK: %[[X:.+]] = memref.load %[[FVIEW]][%[[FIV]]]
+// CHECK: reussir.closure.apply(%[[ACC]] : f64)
+// CHECK: reussir.closure.apply(%[[X]] : f64)
+// CHECK: %[[NEXT:.+]] = reussir.closure.eval
+// CHECK: scf.yield %[[NEXT]] : f64
+// CHECK: reussir.rc.dec
+pub fn sum(a : [f64; 8]) -> f64 {
+    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+}
 
 // Rank-2 access: one bounds compare per dimension, and-reduced into one guard.
 // CHECK-LABEL: func.func @_RC4cell
@@ -23,6 +44,42 @@
 // CHECK: memref.load %{{.+}}[%{{.+}}, %{{.+}}] : memref<4x4xi32>
 pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
     core::intrinsic::array::get(m, i, j)
+}
+
+// A tabulate constructor: a fresh rc.create over a poison payload (uniquely
+// owned by construction, so the plain borrowed view is mutable), filled by a
+// check-free loop calling the kernel closure per element through the
+// standard per-call chain — a per-iteration rc.inc pre-paying the consume,
+// then uniqify → apply… → eval. That is exactly the loop-carried redex the
+// closure beta reduction inlines at -Oaggressive (see the FUSED lines).
+// CHECK-LABEL: func.func @_RC4iota
+// CHECK: reussir.closure.create
+// CHECK: %[[POISON:.+]] = ub.poison : !reussir.array<8 x f64>
+// CHECK: %[[ARR:.+]] = reussir.rc.create value(%[[POISON]]
+// CHECK: %[[TVIEW:.+]] = reussir.array.view
+// CHECK: scf.for %[[IV:.+]] = %{{.+}} to %{{.+}} step %{{.+}} {
+// CHECK: reussir.rc.inc
+// CHECK: %[[I64:.+]] = arith.index_cast %[[IV]] : index to i64
+// CHECK: reussir.closure.uniqify
+// CHECK: reussir.closure.apply(%[[I64]] : i64)
+// CHECK: %[[ELT:.+]] = reussir.closure.eval
+// CHECK: memref.store %[[ELT]], %[[TVIEW]][%[[IV]]]
+// CHECK: reussir.rc.dec
+// CHECK: return %[[ARR]]
+pub fn iota() -> [f64; 8] {
+    core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64)
+}
+
+// A splat constructor: the same fresh box, one value stored everywhere — no
+// kernel, no closure ops anywhere.
+// CHECK-LABEL: func.func @_RC4ones
+// CHECK-NOT: reussir.closure
+// CHECK: ub.poison
+// CHECK: reussir.rc.create
+// CHECK: scf.for
+// CHECK: memref.store
+pub fn ones() -> [f64; 8] {
+    core::intrinsic::array::splat<[f64; 8]>(1.0)
 }
 
 // CHECK-LABEL: func.func @_RC4read
@@ -58,3 +115,14 @@ pub fn read(a : [f64; 8], i : i64) -> f64 {
 pub fn write(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
     core::intrinsic::array::set(a, i, v)
 }
+
+// At -Oaggressive the loop-carried beta reduction inlines the literal
+// lambda kernels: no closure machinery survives anywhere in the module.
+// FUSED-NOT: closure
+// FUSED-LABEL: llvm.func @_RC3sum
+// FUSED-NOT: closure
+// FUSED: llvm.fadd
+// FUSED-LABEL: llvm.func @_RC4iota
+// FUSED-NOT: closure
+// FUSED-LABEL: llvm.func @_RC4ones
+// FUSED-NOT: closure
