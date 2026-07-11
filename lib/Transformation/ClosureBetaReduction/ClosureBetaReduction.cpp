@@ -36,20 +36,29 @@
 //    `token.alloc` are erased. Evals spliced out of the body are re-queued
 //    by the driver, which is what makes the reduction recursive.
 //
-//  * LOOPINLINE: the loop-carried redex. A linear chain
-//    `create → (uniqify|apply)* → %c` sits outside a loop nest
-//    (`LoopLikeOpInterface`, so `scf.for` and `affine.for` alike) and %c's
-//    remaining uses are one per-iteration `rc.inc` next to a single `eval`
-//    inside the nest plus one trailing `rc.dec` after it — a closure built
-//    once and called once per iteration. The body is spliced into the loop
-//    at the eval, and the closure box vanishes: its own create/inc/eval/dec
-//    traffic is self-contained (a fresh box nothing else can observe), so
-//    erasing all of it is count-neutral. Capture counts are preserved, not
-//    reasoned about: each rc-typed applied capture gains a per-iteration
-//    `rc.inc` at the splice point (the inlined body consumes its capture
-//    parameters each iteration; the box used to pay for this by copying
-//    captures out of a shared closure) and one `rc.dec` where the box's dec
-//    stood (the box's drop used to release the capture the apply consumed).
+//  * LOOPINLINE: the loop-carried redex, in its general frontend shape —
+//
+//      %c = create {body}; (uniqify; apply cap)*     // capture binding
+//      loop* {                                       // any LoopLike nest
+//        rc.inc %c; (uniqify; apply x_i)*; eval(...) // per-iteration chain
+//      }
+//      rc.dec %c
+//
+//    (`scf.for` and `affine.for` alike). The body is spliced into the loop
+//    at the eval and the closure box vanishes: its create / per-iteration
+//    inc+chain / trailing dec traffic is self-contained (a fresh box
+//    nothing else can observe), so erasing all of it is count-neutral. The
+//    per-iteration uniqify is a *genuine* guard — the carried box is
+//    shared, so it clones every iteration — but the clone is itself a fresh
+//    box the chain consumes whole: cloning inc'd the stored captures out
+//    and the eval consumed them, a wash the fused form reproduces. Capture
+//    counts are preserved, not reasoned about: each rc-typed capture bound
+//    *outside* the loop gains a per-iteration `rc.inc` at the splice point
+//    (the inlined body consumes its capture parameters each iteration) and
+//    one `rc.dec` where the box's dec stood (the box's drop used to release
+//    the ref the apply consumed). Captures bound *inside* the loop were
+//    consumed once per iteration before and still are — they just take
+//    their seat in the substitution pack.
 //
 // Fused evals that bottom out anywhere else survive the pass; the SCF-ops
 // lowering re-expands them into unchecked applies + plain eval, so the net
@@ -171,17 +180,43 @@ struct InlineLoopCarriedCreatePattern
   mlir::LogicalResult
   matchAndRewrite(ReussirClosureEvalOp eval,
                   mlir::PatternRewriter &rewriter) const override {
-    mlir::Value closure = eval.getClosure();
-    mlir::Operation *top = closure.getDefiningOp();
-    if (!top)
-      return mlir::failure();
+    // Peel the per-iteration links: single-use `uniqify | apply` ops in the
+    // eval's own block, down to the value carried across iterations. The
+    // uniqify here is a *genuine* guard (the carried box is shared, so it
+    // clones every iteration) — but the clone is a fresh box the fused
+    // chain consumes whole, so erasing it is count-neutral; cloning used to
+    // inc the stored captures out and the eval consumed them, a wash the
+    // fused form reproduces exactly. Per-iteration applied args were
+    // consumed once per iteration before and still are: they need no
+    // adjustment, only a seat in the substitution pack.
+    llvm::SmallVector<mlir::Operation *> innerChain;
+    llvm::SmallVector<mlir::Value> innerCaps; // collected top-down
+    mlir::Value carried = eval.getClosure();
+    while (true) {
+      mlir::Operation *def = carried.getDefiningOp();
+      if (!def)
+        return mlir::failure();
+      if (def->getBlock() != eval->getBlock())
+        break; // left the loop body: `carried` is the loop-carried value
+      if (!carried.hasOneUse())
+        return mlir::failure();
+      if (auto apply = llvm::dyn_cast<ReussirClosureApplyOp>(def)) {
+        innerChain.push_back(def);
+        innerCaps.push_back(apply.getArg());
+        carried = apply.getClosure();
+      } else if (auto uniqify = llvm::dyn_cast<ReussirClosureUniqifyOp>(def)) {
+        innerChain.push_back(def);
+        carried = uniqify.getClosure();
+      } else {
+        return mlir::failure();
+      }
+    }
+    mlir::Operation *top = carried.getDefiningOp();
     mlir::Block *defBlock = top->getBlock();
-    if (defBlock == eval->getBlock())
-      return mlir::failure(); // straight-line redexes belong to INLINE
 
-    // Every region between the chain and the eval must be a loop (any
-    // dialect implementing `LoopLikeOpInterface`): the eval then runs once
-    // per iteration of a nest the chain dominates from outside.
+    // Every region between the carried value and the eval must be a loop
+    // (any dialect implementing `LoopLikeOpInterface`): the eval then runs
+    // once per iteration of a nest the chain dominates from outside.
     mlir::Operation *walk = eval;
     while (walk->getBlock() != defBlock) {
       mlir::Operation *parent = walk->getParentOp();
@@ -195,25 +230,25 @@ struct InlineLoopCarriedCreatePattern
     // single-use), one block, bottoming at an inlined create. Every uniqify
     // over such a chain is a runtime no-op — the value is unique by
     // construction, fresh from the create with no use between the links.
-    llvm::SmallVector<mlir::Operation *> chain;
-    llvm::SmallVector<mlir::Value> caps; // collected top-down
+    llvm::SmallVector<mlir::Operation *> outerChain;
+    llvm::SmallVector<mlir::Value> outerCaps; // collected top-down
     ReussirClosureCreateOp create;
-    mlir::Value link = closure;
+    mlir::Value link = carried;
     while (true) {
       mlir::Operation *def = link.getDefiningOp();
       if (!def || def->getBlock() != defBlock)
         return mlir::failure();
-      if (link != closure && !link.hasOneUse())
+      if (link != carried && !link.hasOneUse())
         return mlir::failure();
       if (auto apply = llvm::dyn_cast<ReussirClosureApplyOp>(def)) {
-        chain.push_back(def);
-        caps.push_back(apply.getArg());
+        outerChain.push_back(def);
+        outerCaps.push_back(apply.getArg());
         link = apply.getClosure();
       } else if (auto uniqify = llvm::dyn_cast<ReussirClosureUniqifyOp>(def)) {
-        chain.push_back(def);
+        outerChain.push_back(def);
         link = uniqify.getClosure();
       } else if ((create = llvm::dyn_cast<ReussirClosureCreateOp>(def))) {
-        chain.push_back(def);
+        outerChain.push_back(def);
         break;
       } else {
         return mlir::failure();
@@ -225,19 +260,25 @@ struct InlineLoopCarriedCreatePattern
     if (token && !token.getDefiningOp<ReussirTokenAllocOp>())
       return mlir::failure();
     // Walking top-down visits the last application first; the body's
-    // leading parameters bind in application order.
-    std::reverse(caps.begin(), caps.end());
+    // parameters bind in application order — outer applies first, then the
+    // per-iteration ones, then the eval's pack.
+    std::reverse(outerCaps.begin(), outerCaps.end());
+    std::reverse(innerCaps.begin(), innerCaps.end());
 
     mlir::Block &body = create.getBody().front();
-    if (body.getNumArguments() != caps.size() + eval.getArgs().size())
+    if (body.getNumArguments() !=
+        outerCaps.size() + innerCaps.size() + eval.getArgs().size())
       return mlir::failure();
 
-    // The value's remaining uses: exactly one per-iteration inc beside the
-    // eval, and exactly one plain dec after the nest at the chain's level.
+    // The carried value's remaining uses: exactly one per-iteration inc
+    // beside the eval, and exactly one plain dec after the nest at the
+    // chain's level.
+    mlir::Operation *firstLink =
+        innerChain.empty() ? eval.getOperation() : innerChain.back();
     llvm::SmallVector<ReussirRcIncOp> incs;
     ReussirRcDecOp dec;
-    for (mlir::Operation *user : closure.getUsers()) {
-      if (user == eval)
+    for (mlir::Operation *user : carried.getUsers()) {
+      if (user == firstLink)
         continue;
       if (auto inc = llvm::dyn_cast<ReussirRcIncOp>(user)) {
         if (inc->getBlock() != eval->getBlock() || !inc->isBeforeInBlock(eval))
@@ -257,15 +298,18 @@ struct InlineLoopCarriedCreatePattern
     if (incs.size() != 1 || !dec || dec.getNumResults() != 0)
       return mlir::failure();
 
-    // Per-iteration ownership for rc-typed captures (see the file comment).
+    // Per-iteration ownership for the rc-typed captures the box stored:
+    // the inlined body consumes its capture parameters each iteration (see
+    // the file comment).
     rewriter.setInsertionPoint(eval);
-    for (mlir::Value cap : caps)
+    for (mlir::Value cap : outerCaps)
       if (llvm::isa<RcType>(cap.getType()))
         ReussirRcIncOp::create(rewriter, eval.getLoc(), cap);
 
     auto yield = llvm::cast<ReussirClosureYieldOp>(body.getTerminator());
     mlir::Value yielded = yield.getValue();
-    llvm::SmallVector<mlir::Value> args(caps);
+    llvm::SmallVector<mlir::Value> args(outerCaps);
+    llvm::append_range(args, innerCaps);
     llvm::append_range(args, eval.getArgs());
     rewriter.inlineBlockBefore(&body, eval, args);
     rewriter.eraseOp(yield);
@@ -274,19 +318,21 @@ struct InlineLoopCarriedCreatePattern
     else
       rewriter.eraseOp(eval);
 
-    // The box's dec used to release the captures the applies consumed;
-    // release them directly where it stood.
+    // The box's dec used to release the captures the outer applies
+    // consumed; release them directly where it stood.
     rewriter.setInsertionPoint(dec);
-    for (mlir::Value cap : caps)
+    for (mlir::Value cap : outerCaps)
       if (llvm::isa<RcType>(cap.getType()))
         ReussirRcDecOp::create(rewriter, dec.getLoc(),
                                /*nullableToken=*/NullableType{}, cap,
                                /*destructureTag=*/mlir::IntegerAttr{},
                                /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+    for (mlir::Operation *op : innerChain)
+      rewriter.eraseOp(op);
     for (ReussirRcIncOp inc : incs)
       rewriter.eraseOp(inc);
     rewriter.eraseOp(dec);
-    for (mlir::Operation *op : chain)
+    for (mlir::Operation *op : outerChain)
       rewriter.eraseOp(op);
     if (token && token.use_empty())
       rewriter.eraseOp(token.getDefiningOp());

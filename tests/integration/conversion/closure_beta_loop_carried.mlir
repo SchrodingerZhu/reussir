@@ -114,6 +114,72 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
     return
   }
 
+  // The general frontend shape: a capture bound outside the loop through
+  // its own uniqify+apply (with the caller's inc keeping the captured value
+  // alive), and a genuine per-iteration uniqify+apply+eval chain over the
+  // shared box inside the loop. The per-iteration uniqify clones — the
+  // clone is invisible to the fused form, which reproduces its capture
+  // accounting with the splice-point inc and the trailing dec.
+  func.func @general(%box: !reussir.rc<i64>, %n: index) -> i64 {
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 48>
+    %c = reussir.closure.create -> !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>> {
+      token(%token : !reussir.token<align: 8, size: 48>)
+      body {
+        ^bb0(%b : !reussir.rc<i64>, %x : i64, %a : i64):
+          reussir.rc.dec (%b : !reussir.rc<i64>)
+          %s = arith.muli %x, %a : i64
+          reussir.closure.yield %s : i64
+      }
+    }
+    reussir.rc.inc (%box : !reussir.rc<i64>)
+    %u0 = reussir.closure.uniqify (%c : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>
+    %c1 = reussir.closure.apply (%box : !reussir.rc<i64>) to (%u0 : !reussir.rc<!reussir.closure<(!reussir.rc<i64>, i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>
+    %lb = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
+    %r = scf.for %i = %lb to %n step %step iter_args(%acc = %zero) -> (i64) {
+      reussir.rc.inc (%c1 : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>)
+      %iv = arith.index_cast %i : index to i64
+      %u1 = reussir.closure.uniqify (%c1 : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>
+      %b1 = reussir.closure.apply (%iv : i64) to (%u1 : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(i64) -> i64>>
+      %y = reussir.closure.eval (%b1 : !reussir.rc<!reussir.closure<(i64) -> i64>>) with (%iv : i64) : i64
+      %acc2 = arith.addi %acc, %y : i64
+      scf.yield %acc2 : i64
+    }
+    reussir.rc.dec (%c1 : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>)
+    return %r : i64
+  }
+
+  // A capture bound INSIDE the loop: a per-iteration apply on the hoisted
+  // create. LOOPINLINE alone cannot fire (the eval's operand is loop-local);
+  // it composes with FOLD, which folds the apply into the eval's pack, after
+  // which the chain is the bare create and the loop-varying capture rides
+  // the substituted pack.
+  func.func @loop_varying_capture(%n: index) -> i64 {
+    %token = reussir.token.alloc : !reussir.token<align: 8, size: 40>
+    %c = reussir.closure.create -> !reussir.rc<!reussir.closure<(i64, i64) -> i64>> {
+      token(%token : !reussir.token<align: 8, size: 40>)
+      body {
+        ^bb0(%cap : i64, %a : i64):
+          %s = arith.muli %cap, %a : i64
+          reussir.closure.yield %s : i64
+      }
+    }
+    %lb = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %zero = arith.constant 0 : i64
+    %r = scf.for %i = %lb to %n step %step iter_args(%acc = %zero) -> (i64) {
+      reussir.rc.inc (%c : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>)
+      %iv = arith.index_cast %i : index to i64
+      %bound = reussir.closure.apply (%iv : i64) to (%c : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>) : !reussir.rc<!reussir.closure<(i64) -> i64>>
+      %y = reussir.closure.eval (%bound : !reussir.rc<!reussir.closure<(i64) -> i64>>) with (%iv : i64) : i64
+      %acc2 = arith.addi %acc, %y : i64
+      scf.yield %acc2 : i64
+    }
+    reussir.rc.dec (%c : !reussir.rc<!reussir.closure<(i64, i64) -> i64>>)
+    return %r : i64
+  }
+
   // NEGATIVE: a second eval of the same closure in the loop — the use set
   // is not the carried-redex shape; everything stays.
   func.func @two_evals(%n: index) {
@@ -194,6 +260,24 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
 // CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
 // CHECK: }
 // CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
+
+// CHECK-LABEL: func.func @general
+// CHECK: reussir.rc.inc(%arg0 : !reussir.rc<i64>)
+// CHECK-NOT: reussir.closure
+// CHECK: scf.for
+// CHECK: reussir.rc.inc(%arg0 : !reussir.rc<i64>)
+// CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
+// CHECK: arith.muli
+// CHECK: scf.yield
+// CHECK: }
+// CHECK: reussir.rc.dec(%arg0 : !reussir.rc<i64>)
+
+// CHECK-LABEL: func.func @loop_varying_capture
+// CHECK-NOT: reussir.closure
+// CHECK: scf.for
+// CHECK: %[[LV:[0-9a-z_]+]] = arith.index_cast
+// CHECK: arith.muli %[[LV]], %[[LV]] : i64
+// CHECK-NOT: reussir.rc.dec
 
 // CHECK-LABEL: func.func @two_evals
 // CHECK: reussir.closure.create
