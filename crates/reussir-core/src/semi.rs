@@ -31,8 +31,8 @@ pub mod resolve;
 pub mod ty_eval;
 
 pub use ctxt::{
-    Checkpoint, DefaultCap, Elaborator, PackageFile, Report, Severity, render_reports,
-    render_reports_to,
+    Checkpoint, DefaultCap, Elaborator, PackageFile, Report, Severity, TransformScript,
+    render_reports, render_reports_to,
 };
 
 use reussir_syntax::kind::{Resolver, TokenKey};
@@ -138,6 +138,49 @@ mod tests {
             let elab = elaborate_package(tcx, &pkg_files, &interner);
             f(&elab, tcx);
         });
+    }
+
+    #[test]
+    fn collects_transform_anchors_and_scripts() {
+        check(
+            "#[transform_anchor]\nfn selected() {}\nfn plain() {}\n\
+             transform [{\n  transform.yield\n}];",
+            |elab, _| {
+                assert_eq!(elab.transform_anchors.len(), 1);
+                let proto = elab
+                    .functions
+                    .get(&elab.transform_anchors[0])
+                    .expect("anchored function");
+                assert_eq!(elab.sym(proto.name), "selected");
+                assert_eq!(elab.transform_scripts.len(), 1);
+                assert_eq!(elab.transform_scripts[0].body, "{\n  transform.yield\n}");
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_transform_anchors() {
+        let reports = reports_of(
+            "#[transform_anchor(argument)] fn with_arg() {}\n\
+             #[transform_anchor] struct S {}\n\
+             #[transform_anchor] fn declaration();\n\
+             #[transform_anchor] #[transform_anchor] fn duplicate() {}",
+        );
+        let messages: Vec<&str> = reports
+            .iter()
+            .map(|report| report.message.as_str())
+            .collect();
+        for expected in [
+            "does not accept arguments",
+            "only be attached to a function",
+            "requires a function body",
+            "only be specified once",
+        ] {
+            assert!(
+                messages.iter().any(|message| message.contains(expected)),
+                "missing {expected:?}: {messages:#?}"
+            );
+        }
     }
 
     #[test]
@@ -392,7 +435,9 @@ mod tests {
             // Input 2: a batch containing a duplicate is rejected wholesale —
             // including its error-free items.
             let p2 = parse(
-                "fn triple(x: i32) -> i32 { 3 * x }\n\
+                "#[transform_anchor]\n\
+                 fn triple(x: i32) -> i32 { 3 * x }\n\
+                 transform [{ transform.yield }];\n\
                  fn double(x: i32) -> i32 { x }",
             );
             let errs = elab
@@ -404,6 +449,8 @@ mod tests {
                 "{errs:#?}"
             );
             assert_eq!(elab.elaborated.len(), 1, "batch rolled back");
+            assert!(elab.transform_anchors.is_empty(), "anchors rolled back");
+            assert!(elab.transform_scripts.is_empty(), "scripts rolled back");
             assert!(!elab.has_errors(), "rejected reports don't persist");
 
             // Input 3: `triple` was rolled back, so its name is free again,

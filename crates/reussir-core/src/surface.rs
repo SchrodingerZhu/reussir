@@ -841,6 +841,14 @@ fn let_name(node: &ResolvedNode) -> Option<&ResolvedToken> {
 
 // ===== statements =====
 
+/// An outer item attribute such as `#[transform_anchor]`.
+#[derive(Clone, Debug)]
+pub struct Attribute {
+    pub name: TokenKey,
+    pub args: Vec<TokenKey>,
+    pub span: Span,
+}
+
 /// A function definition. `params`/`return` carry the `[flex]` flag as a bool.
 #[derive(Clone, Debug)]
 pub struct Function {
@@ -884,6 +892,13 @@ pub struct ExternTrampoline {
     pub ty_args: SmallVec<[Type; 2]>,
 }
 
+/// An opaque MLIR transform script. `body` includes its surrounding braces.
+#[derive(Clone, Debug)]
+pub struct TransformScript {
+    pub body: String,
+    pub body_span: Span,
+}
+
 #[derive(Clone, Debug)]
 pub enum StmtKind {
     Function(Function),
@@ -891,6 +906,7 @@ pub enum StmtKind {
     /// `mod` declaration: `(visibility, name)`.
     Mod(Visibility, TokenKey),
     ExternTrampoline(ExternTrampoline),
+    Transform(TransformScript),
 }
 
 /// A statement (a view over a top-level item node).
@@ -908,6 +924,13 @@ impl Stmt {
         node_span(&self.node)
     }
 
+    pub fn attributes(&self) -> Vec<Attribute> {
+        nodes(&self.node)
+            .filter(|node| node.kind() == AttrList)
+            .map(attribute_of)
+            .collect()
+    }
+
     pub fn kind(&self) -> StmtKind {
         let node = &self.node;
         match node.kind() {
@@ -916,8 +939,18 @@ impl Stmt {
             EnumStmt => StmtKind::Record(record_of(node, RecordKind::EnumKind)),
             ModStmt => StmtKind::Mod(visibility_of(node), key(name_after(node, ModKw))),
             ExternTrampolineStmt => StmtKind::ExternTrampoline(extern_of(node)),
+            TransformStmt => StmtKind::Transform(transform_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
         }
+    }
+}
+
+fn attribute_of(node: &ResolvedNode) -> Attribute {
+    let mut names = tokens(node).filter(|token| token.kind().is_ident_like());
+    Attribute {
+        name: key(names.next().expect("attribute name")),
+        args: names.map(key).collect(),
+        span: node_span(node),
     }
 }
 
@@ -1072,6 +1105,21 @@ fn extern_of(node: &ResolvedNode) -> ExternTrampoline {
     }
 }
 
+fn transform_of(node: &ResolvedNode) -> TransformScript {
+    let token = tokens(node)
+        .find(|token| token.kind() == RawMlirLiteral)
+        .expect("transform literal");
+    let text = token.text();
+    let span = token_span(token);
+    TransformScript {
+        body: text[1..text.len() - 1].to_owned(),
+        body_span: Span {
+            start: span.start + 1,
+            end: span.end - 1,
+        },
+    }
+}
+
 // ===== program =====
 
 /// A whole parsed source file: the top-level statement views.
@@ -1151,5 +1199,26 @@ mod tests {
         assert!(f.is_regional);
         // The `[flex]` flag on the first parameter is preserved.
         assert!(f.params[0].2);
+    }
+
+    #[test]
+    fn views_attributes_and_transform_scripts() {
+        let source = "#[transform_anchor]\nfn f() {}\ntransform [{\n  transform.yield\n}];";
+        let parse = parse(source);
+        let prog = program(&parse.root);
+
+        let attrs = prog[0].attributes();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(parse.resolver().resolve(attrs[0].name), "transform_anchor");
+        assert!(attrs[0].args.is_empty());
+
+        let StmtKind::Transform(script) = prog[1].kind() else {
+            panic!("expected a transform script");
+        };
+        assert_eq!(script.body, "{\n  transform.yield\n}");
+        assert_eq!(
+            &source[script.body_span.start as usize..script.body_span.end as usize],
+            script.body
+        );
     }
 }
