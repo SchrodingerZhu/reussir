@@ -23,19 +23,19 @@ use reussir_backend::dialect;
 use reussir_backend::dialect::ty::{ReussirCapability, ReussirLifeScope};
 use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
-use reussir_backend::melior::dialect::{func, scf};
+use reussir_backend::melior::dialect::{func, memref, scf};
 use reussir_backend::melior::ir::attribute::{
     Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
     TypeAttribute,
 };
-use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType};
+use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType, MemRefType};
 use reussir_backend::melior::ir::{
     Block, BlockLike, Identifier, Location, Operation, Region, RegionLike, Type, Value,
 };
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
-use reussir_core::intrinsic::IntrinsicOp;
+use reussir_core::intrinsic::{ArrayFn, IntrinsicOp};
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
@@ -688,7 +688,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
             Closure(c) => self.closure(block, env, c).map(Some),
             ClosureCall { target, args } => self.closure_call(block, env, target, args),
-            ArrayOp { .. } => err("array operations are not lowered yet"),
+            ArrayOp { op, args } => self.lower_array_op(block, env, e, *op, args),
             GlobalStr(token) => self.global_str(block, e, *token).map(Some),
             Poison => err("poison expression reached lowering"),
         }
@@ -2653,5 +2653,215 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let region = Region::new();
         region.append_block(block);
         Ok(region)
+    }
+
+    // ----- built-in array operations (issue #344) -----
+
+    /// Lower an [`ArrayOp`](ExprKind::ArrayOp). The shapes:
+    ///
+    /// * `get` — borrow + view + bounds-checked `memref.load`;
+    /// * `set` — bounds checks, then `array.with_unique_view` storing the
+    ///   element (the empty-yield implicit result is the updated array).
+    ///
+    /// The constructors and `fold` — the loop nests calling the kernel
+    /// closure per element — land separately.
+    fn lower_array_op<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        op: ArrayFn,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Option<Value<'c, 'b>>> {
+        match op {
+            ArrayFn::Get => self.array_get(block, env, e, args).map(Some),
+            ArrayFn::Set => self.array_set(block, env, args).map(Some),
+            ArrayFn::Splat | ArrayFn::Tabulate | ArrayFn::Fold => {
+                err("array constructors and fold are not lowered yet")
+            }
+        }
+    }
+
+    /// The extents of an array-typed MIR type.
+    fn array_dims(ty: Ty<'tcx>) -> Result<&'tcx [u64]> {
+        match *ty.kind() {
+            TyKind::Array { dims, .. } => Ok(dims),
+            _ => err("array operation on a non-array type"),
+        }
+    }
+
+    /// The `memref<dims x elem>` view type of an array-typed `ty`.
+    fn memref_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let TyKind::Array { elem, dims } = *ty.kind() else {
+            return err("array view requested for a non-array type");
+        };
+        let elem = self.tys.mlir_ty(elem)?;
+        let shape: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
+        Ok(MemRefType::new(elem, &shape, None, None).into())
+    }
+
+    /// Borrow an rc array and materialize the memref view of its payload.
+    fn array_view_of<'b>(
+        &self,
+        block: &'b Block<'c>,
+        rc_val: Value<'c, 'b>,
+        arr_ty: Ty<'tcx>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let inner = self.tys.array_inner_of(arr_ty)?;
+        let ref_ty = self.tys.unspecified_ref_type(inner);
+        let borrowed = self.append(
+            block,
+            dialect::rc_borrow(self.context, ref_ty, rc_val, loc).into(),
+        );
+        let view_ty = self.memref_of(arr_ty)?;
+        Ok(self.append(
+            block,
+            dialect::array_view(self.context, view_ty, borrowed, loc).into(),
+        ))
+    }
+
+    /// Lower `i64` index expressions and bounds-check them against `dims`:
+    /// each index is cast to `index` (a negative value wraps to a huge
+    /// unsigned one) and compared `ult` against its extent, the verdicts
+    /// and-reduced into one guard. The caller sinks the access into the
+    /// guarded branch ([`Self::guarded`]); statically provable checks fold
+    /// away downstream (the comparisons are against constant extents).
+    fn checked_indices<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        idx_exprs: &'tcx [Expr<'tcx>],
+        dims: &[u64],
+    ) -> Result<(Vec<Value<'c, 'b>>, Value<'c, 'b>)> {
+        let loc = self.loc();
+        let index_ty = Type::index(self.context);
+        let mut idxs = Vec::with_capacity(idx_exprs.len());
+        let mut ok: Option<Value<'c, 'b>> = None;
+        for (ie, &d) in idx_exprs.iter().zip(dims) {
+            let raw = self
+                .expr(block, env, ie)?
+                .ok_or_else(|| LoweringError("array index is unit".into()))?;
+            let idx = self.append(block, arith::index_cast(raw, index_ty, loc));
+            let ext = self.index_const(block, d as i64);
+            let in_range = self.append(
+                block,
+                arith::cmpi(self.context, CmpiPredicate::Ult, idx, ext, loc),
+            );
+            ok = Some(match ok {
+                None => in_range,
+                Some(acc) => self.append(block, arith::andi(acc, in_range, loc)),
+            });
+            idxs.push(idx);
+        }
+        let ok = ok.ok_or_else(|| LoweringError("array access without indices".into()))?;
+        Ok((idxs, ok))
+    }
+
+    /// An access guarded by a bounds verdict: an `scf.if` whose then-branch
+    /// is the access itself (built by `body`, yielding the result) and whose
+    /// else-branch panics — yielding a poison of the result type, since the
+    /// branch must still produce one past the (aborting) panic.
+    fn guarded<'b>(
+        &self,
+        block: &'b Block<'c>,
+        ok: Value<'c, 'b>,
+        result_ty: Type<'c>,
+        body: impl FnOnce(&Block<'c>) -> Result<()>,
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let then_block = Block::new(&[]);
+        body(&then_block)?;
+        let then_region = Region::new();
+        then_region.append_block(then_block);
+        let else_block = Block::new(&[]);
+        else_block.append_operation(
+            dialect::panic(
+                self.context,
+                StringAttribute::new(self.context, "array index out of bounds"),
+                loc,
+            )
+            .into(),
+        );
+        let poison = else_block
+            .append_operation(builders::poison(self.context, result_ty, loc))
+            .result(0)
+            .expect("poison result")
+            .into();
+        else_block.append_operation(scf::r#yield(&[poison], loc));
+        let else_region = Region::new();
+        else_region.append_block(else_block);
+        let guard =
+            block.append_operation(scf::r#if(ok, &[result_ty], then_region, else_region, loc));
+        Ok(guard.result(0).expect("guarded access result").into())
+    }
+
+    fn array_get<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let base = &args[0];
+        let dims = Self::array_dims(base.ty)?;
+        let rc_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("array base is unit".into()))?;
+        // A temporary base (e.g. `tabulate(…).get(i)`) is released *after*
+        // this node by a value-keyed drop; stash it where that op looks.
+        self.remember_temp(env, base, rc_val);
+        let view = self.array_view_of(block, rc_val, base.ty)?;
+        let (idxs, ok) = self.checked_indices(block, env, &args[1..], dims)?;
+        let elem_ty = self.tys.mlir_ty(e.ty)?;
+        self.guarded(block, ok, elem_ty, |then| {
+            let loaded = then
+                .append_operation(memref::load(view, &idxs, loc))
+                .result(0)
+                .expect("load result")
+                .into();
+            then.append_operation(scf::r#yield(&[loaded], loc));
+            Ok(())
+        })
+    }
+
+    fn array_set<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Value<'c, 'b>> {
+        let loc = self.loc();
+        let base = &args[0];
+        let dims = Self::array_dims(base.ty)?;
+        let rank = dims.len();
+        let rc_val = self
+            .expr(block, env, base)?
+            .ok_or_else(|| LoweringError("array base is unit".into()))?;
+        let (idxs, ok) = self.checked_indices(block, env, &args[1..=rank], dims)?;
+        let value = self
+            .expr(block, env, &args[rank + 1])?
+            .ok_or_else(|| LoweringError("array element is unit".into()))?;
+        let memref_ty = self.memref_of(base.ty)?;
+        let rc_ty = self.tys.mlir_ty(base.ty)?;
+        self.guarded(block, ok, rc_ty, |then| {
+            let body = Block::new(&[(memref_ty, loc)]);
+            let view = body
+                .argument(0)
+                .expect("with_unique_view body takes the view")
+                .into();
+            body.append_operation(memref::store(value, view, &idxs, loc));
+            body.append_operation(builders::scf_yield(None, loc));
+            let region = Region::new();
+            region.append_block(body);
+            let updated = then
+                .append_operation(builders::array_with_unique_view(rc_val, rc_ty, region, loc))
+                .result(0)
+                .expect("with_unique_view result")
+                .into();
+            then.append_operation(scf::r#yield(&[updated], loc));
+            Ok(())
+        })
     }
 }

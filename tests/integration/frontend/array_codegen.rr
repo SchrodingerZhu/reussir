@@ -1,0 +1,60 @@
+// Codegen for the array access ops (issue #344): `get` borrows the rc box,
+// materializes a memref view, and sinks the load into a bounds guard; `set`
+// sinks the `array.with_unique_view` store the same way, its implicit
+// result being the (cloned-if-shared) updated array. Each index gets one
+// unsigned compare against its constant extent (a negative index wraps to a
+// huge value, so `ult` covers both sides), and-reduced per op into a single
+// verdict; the access is the guard's then-branch, and the failure branch
+// panics then yields a poison of the result type. Constant indices fold
+// away at canonicalization.
+//
+// Functions appear in the module sorted by mangled name; the CHECK blocks
+// follow that order.
+
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --emit llvm-ir -o %t.ll
+
+// Rank-2 access: one bounds compare per dimension, and-reduced into one guard.
+// CHECK-LABEL: func.func @_RC4cell
+// CHECK: arith.cmpi ult
+// CHECK: arith.cmpi ult
+// CHECK: %[[OK2:.+]] = arith.andi
+// CHECK: scf.if %[[OK2]] -> (i32) {
+// CHECK: memref.load %{{.+}}[%{{.+}}, %{{.+}}] : memref<4x4xi32>
+pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
+    core::intrinsic::array::get(m, i, j)
+}
+
+// CHECK-LABEL: func.func @_RC4read
+// CHECK: %[[REF:.+]] = reussir.rc.borrow(%arg0 : !reussir.rc<!reussir.array<8 x f64>>)
+// CHECK: %[[VIEW:.+]] = reussir.array.view(%[[REF]] : {{.*}}) : memref<8xf64>
+// CHECK: %[[IDX:.+]] = arith.index_cast %arg1 : i64 to index
+// CHECK: %[[OK:.+]] = arith.cmpi ult, %[[IDX]], %{{.+}} : index
+// CHECK: %[[R:.+]] = scf.if %[[OK]] -> (f64) {
+// CHECK: %[[V:.+]] = memref.load %[[VIEW]][%[[IDX]]] : memref<8xf64>
+// CHECK: scf.yield %[[V]] : f64
+// CHECK: } else {
+// CHECK: reussir.panic "array index out of bounds"
+// CHECK: %[[P:.+]] = ub.poison : f64
+// CHECK: scf.yield %[[P]] : f64
+// CHECK: reussir.rc.dec(%arg0
+// CHECK: return %[[R]]
+pub fn read(a : [f64; 8], i : i64) -> f64 {
+    core::intrinsic::array::get(a, i)
+}
+
+// CHECK-LABEL: func.func @_RC5write
+// CHECK: %[[WOK:.+]] = arith.cmpi ult
+// CHECK: %[[OUT:.+]] = scf.if %[[WOK]] -> (!reussir.rc<!reussir.array<8 x f64>>) {
+// CHECK: %[[U:.+]] = reussir.array.with_unique_view(%arg0 : {{.*}}) -> !reussir.rc<!reussir.array<8 x f64>> {
+// CHECK: ^bb0(%[[MUT:.+]]: memref<8xf64>):
+// CHECK: memref.store %arg2, %[[MUT]][%{{.+}}] : memref<8xf64>
+// CHECK: reussir.scf.yield
+// CHECK: scf.yield %[[U]]
+// CHECK: } else {
+// CHECK: reussir.panic "array index out of bounds"
+// CHECK: ub.poison : !reussir.rc<!reussir.array<8 x f64>>
+// CHECK: return %[[OUT]]
+pub fn write(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
+    core::intrinsic::array::set(a, i, v)
+}
