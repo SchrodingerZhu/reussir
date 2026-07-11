@@ -935,6 +935,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         match *family {
             "math" => Some(self.infer_math_intrinsic(fc, span)),
+            "array" => Some(self.infer_array_intrinsic(fc, span)),
             other => {
                 self.error(
                     span,
@@ -1027,6 +1028,212 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         let op = IntrinsicOp::Math { func, flag };
         self.mk_expr(ExprKind::Intrinsic { op, args }, result, span)
+    }
+
+    /// (ARR) The `core::intrinsic::array` family (issue #344) — special
+    /// *vararg* functions over statically shaped arrays:
+    ///
+    /// * `splat<[T; e…]>(v)` / `tabulate<[T; e…]>(|i…| e)` construct an
+    ///   array; the explicit array type argument carries the shape (there is
+    ///   nothing to infer it from);
+    /// * `get(a, i…)` / `set(a, i…, v)` / `fold(a, init, |acc, x| e)` take the
+    ///   array as their first argument and one `i64` index per dimension.
+    fn infer_array_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let name = self.sym(fc.name.basename).to_string();
+        match ArrayFn::parse(&name) {
+            Some(ArrayFn::Splat | ArrayFn::Tabulate) => self.infer_array_ctor(fc, span),
+            Some(_) => {
+                if !fc.ty_args.is_empty() {
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` takes no type arguments \
+                             (the shape comes from its array argument)"
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                if fc.args.is_empty() {
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` expects an array as its \
+                             first argument"
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let base = self.infer_expr(&fc.args[0]);
+                if !matches!(
+                    self.infer.shallow_resolve(base.ty).kind(),
+                    TyKind::Array { .. }
+                ) {
+                    let shown = self.infer.resolve(base.ty);
+                    self.error(
+                        span,
+                        format!(
+                            "`core::intrinsic::array::{name}` expects an array as its \
+                             first argument, found `{}`",
+                            self.ty_display(shown)
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                self.infer_array_op(base, &name, &fc.args[1..], span)
+            }
+            None => {
+                self.error(
+                    span,
+                    format!("unknown array intrinsic `core::intrinsic::array::{name}`"),
+                );
+                self.poison(span)
+            }
+        }
+    }
+
+    /// The constructing array intrinsics: `splat` checks its one argument
+    /// against the element type, `tabulate` checks a literal kernel lambda of
+    /// one `i64` parameter per dimension against it.
+    fn infer_array_ctor(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let method = self.sym(fc.name.basename).to_string();
+        let op = ArrayFn::parse(&method).expect("routed here for splat/tabulate only");
+        let [Some(targ)] = fc.ty_args.as_slice() else {
+            self.error(
+                span,
+                format!(
+                    "`core::intrinsic::array::{method}` requires one explicit array type \
+                     argument, e.g. `core::intrinsic::array::{method}<[f64; 512]>(…)`"
+                ),
+            );
+            return self.poison(span);
+        };
+        let arr = self.eval_type(targ);
+        let TyKind::Array { elem, dims } = *arr.kind() else {
+            if !matches!(arr.kind(), TyKind::Bottom) {
+                self.error(
+                    Some(targ.span()),
+                    format!(
+                        "`core::intrinsic::array::{method}` expects an array type argument \
+                         (`[T; extents…]`), found `{}`",
+                        self.ty_display(arr)
+                    ),
+                );
+            }
+            return self.poison(span);
+        };
+        if fc.args.len() != 1 {
+            self.error(
+                span,
+                format!("`core::intrinsic::array::{method}` expects exactly one argument"),
+            );
+            return self.poison(span);
+        }
+        match op {
+            ArrayFn::Splat => {
+                let v = self.check_expr(&fc.args[0], elem);
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op,
+                        args: vec![v],
+                        kernel: None,
+                    },
+                    arr,
+                    span,
+                )
+            }
+            ArrayFn::Tabulate => {
+                let _ = dims;
+                self.error(
+                    span,
+                    "`core::intrinsic::array::tabulate` is not available yet",
+                );
+                self.poison(span)
+            }
+            _ => unreachable!("filtered above"),
+        }
+    }
+
+    /// The accessing array intrinsics over an already-inferred array `base`:
+    /// `get(a, i…)`, `set(a, i…, v)`, `fold(a, init, |acc, x| e)`. Indices are
+    /// `i64` (checked against the extents at runtime); `get` borrows and
+    /// yields the element, `set` consumes the array and yields the updated
+    /// one, `fold` borrows and reduces row-major.
+    fn infer_array_op(
+        &mut self,
+        base: Expr<'tcx>,
+        method: &str,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        use crate::intrinsic::ArrayFn;
+        let bty = self.infer.shallow_resolve(base.ty);
+        let TyKind::Array { elem, dims } = *bty.kind() else {
+            unreachable!("routed here only for array bases");
+        };
+        let rank = dims.len();
+        let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
+        match method {
+            "get" => {
+                if args.len() != rank {
+                    self.error(
+                        span,
+                        format!(
+                            "`get` on `{}` expects {rank} index argument(s), got {}",
+                            self.ty_display(bty),
+                            args.len()
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let mut hargs = vec![base];
+                for a in args {
+                    hargs.push(self.check_expr(a, i64_ty));
+                }
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Get,
+                        args: hargs,
+                        kernel: None,
+                    },
+                    elem,
+                    span,
+                )
+            }
+            "set" => {
+                if args.len() != rank + 1 {
+                    self.error(
+                        span,
+                        format!(
+                            "`set` on `{}` expects {rank} index argument(s) and a value, got {} argument(s)",
+                            self.ty_display(bty),
+                            args.len()
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let mut hargs = vec![base];
+                for a in &args[..rank] {
+                    hargs.push(self.check_expr(a, i64_ty));
+                }
+                hargs.push(self.check_expr(&args[rank], elem));
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Set,
+                        args: hargs,
+                        kernel: None,
+                    },
+                    bty,
+                    span,
+                )
+            }
+            "fold" => {
+                self.error(span, "`core::intrinsic::array::fold` is not available yet");
+                self.poison(span)
+            }
+            _ => unreachable!("routed here only for get/set/fold"),
+        }
     }
 
     /// Dispatch a constructor path: `Nullable::…` → [`Self::infer_nullable`]; a
@@ -1579,6 +1786,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 body: zb(self, c.body),
             }),
             Match(scrut, tree) => Match(zb(self, scrut), self.zonk_tree(tree)),
+            ArrayOp { op, args, kernel } => {
+                let args = args.into_iter().map(|e| self.zonk_expr(e)).collect();
+                let kernel = kernel.map(|k| {
+                    let k = super::hir::Kernel {
+                        params: k
+                            .params
+                            .into_iter()
+                            .map(|(v, t)| (v, self.zonk_ty(t, span)))
+                            .collect(),
+                        body: zb(self, k.body),
+                    };
+                    Box::new(k)
+                });
+                ArrayOp { op, args, kernel }
+            }
             other => other,
         }
     }

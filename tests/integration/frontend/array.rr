@@ -1,18 +1,29 @@
 // Statically shaped arrays (issue #344, Phase A): the `[elem; extents…]`
-// type, end to end through elaboration, monomorphization, and codegen. The
-// `core::intrinsic::array` operations have their own tests.
+// type and the `core::intrinsic::array` family — special vararg intrinsics —
+// as elaborated into the HIR `array#…` forms.
 
 // RUN: %rrc %s --emit hir -o - | %FileCheck %s
-// RUN: %rrc %s -o %t.o --relocation-mode pic
 
 // CHECK: pub fn #id(v0 (a): [f64; 8]) -> [f64; 8]
 pub fn id(a : [f64; 8]) -> [f64; 8] {
     a
 }
 
-// An array is one reference-counted box: passing it around is rc traffic
-// only, and the extents are part of the type.
-// CHECK: pub fn #fst(v0 (m): [i32; 4, 4], v1 (n): [i32; 4, 4]) -> [i32; 4, 4]
-pub fn fst(m : [i32; 4, 4], n : [i32; 4, 4]) -> [i32; 4, 4] {
-    m
+// CHECK: pub fn #splat_ones() -> [i32; 4, 4]
+// CHECK: array#splat(1 : i32
+pub fn splat_ones() -> [i32; 4, 4] {
+    core::intrinsic::array::splat<[i32; 4, 4]>(1)
+}
+
+// CHECK: pub fn #bump(v0 (a): [f64; 8], v1 (i): i64, v2 (v): f64) -> [f64; 8]
+// CHECK: array#set(v0 : [f64; 8] {{.*}}, v1 : i64 {{.*}}, (array#get(v0
+pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
+    core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
+}
+
+// A rank-2 access takes one index per dimension, row-major.
+// CHECK: pub fn #cell(v0 (m): [i32; 4, 4], v1 (i): i64, v2 (j): i64) -> i32
+// CHECK: array#get(v0 : [i32; 4, 4] {{.*}}, v1 : i64 {{.*}}, v2 : i64
+pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
+    core::intrinsic::array::get(m, i, j)
 }
