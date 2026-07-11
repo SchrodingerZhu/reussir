@@ -1,0 +1,15 @@
+// RUN: %not %rrc %s --emit mlir -o - 2>&1 | %FileCheck %s
+
+#[transform_anchor]
+fn target(x: i32) -> i32 { x }
+
+transform [{
+    transform.not_a_real_operation %target
+    transform.yield
+}];
+
+// The MLIR parser diagnoses inside a generated validation wrapper. The compiler
+// maps that location back to this source and uses the normal caret renderer.
+// CHECK: invalid inline transform: custom op 'transform.not_a_real_operation' is unknown
+// CHECK: inline_transform_invalid.rr:7:5
+// CHECK: transform.not_a_real_operation %target

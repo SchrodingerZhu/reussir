@@ -56,18 +56,25 @@ mod math;
 mod ty;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
 
 use xxhash_rust::xxh3::xxh3_64;
 
 use reussir_backend::builders;
 use reussir_backend::melior::Context;
+use reussir_backend::melior::ir::attribute::Attribute;
+use reussir_backend::melior::ir::operation::{OperationLike, OperationMutLike};
 use reussir_backend::melior::ir::{BlockLike, Location, Module};
+use reussir_backend::pipeline::{INLINE_TRANSFORM_ATTR, INLINE_TRANSFORM_ENTRY_POINT};
 
 use reussir_core::full::mir;
+use reussir_core::semi::TransformScript;
 use reussir_core::semi::ty::TyCtxt;
+use reussir_core::surface::Span;
 use reussir_syntax::kind::{Resolver, TokenKey};
 
-use crate::source::SourceCache;
+use crate::source::{FileId, SourceCache};
 use expr::Lowerer;
 
 /// How lowered functions map to LLVM linkage.
@@ -108,12 +115,92 @@ impl LinkagePolicy {
 }
 
 /// A construct the current lowering subset does not handle.
+///
+/// Most lowering failures are internal and therefore carry only a message. A
+/// failure originating in source-owned metadata, such as an inline transform,
+/// additionally carries its file and byte span so drivers can render it through
+/// the same source-caret path as parser and elaboration diagnostics.
 #[derive(Debug, Clone)]
-pub struct LoweringError(pub Cow<'static, str>);
+pub struct LoweringError(LoweringErrorKind);
+
+#[derive(Debug, Clone)]
+enum LoweringErrorKind {
+    Message(Cow<'static, str>),
+    Source {
+        message: Cow<'static, str>,
+        file: FileId,
+        span: Option<Span>,
+    },
+}
+
+impl From<&'static str> for LoweringErrorKind {
+    fn from(message: &'static str) -> Self {
+        Self::Message(Cow::Borrowed(message))
+    }
+}
+
+impl From<String> for LoweringErrorKind {
+    fn from(message: String) -> Self {
+        Self::Message(Cow::Owned(message))
+    }
+}
+
+impl From<Cow<'static, str>> for LoweringErrorKind {
+    fn from(message: Cow<'static, str>) -> Self {
+        Self::Message(message)
+    }
+}
+
+impl LoweringError {
+    fn at_source(
+        message: impl Into<Cow<'static, str>>,
+        file: FileId,
+        span: Option<Span>,
+    ) -> Self {
+        Self(LoweringErrorKind::Source {
+            message: message.into(),
+            file,
+            span,
+        })
+    }
+
+    /// The diagnostic text without a source-name prefix.
+    pub fn message(&self) -> &str {
+        match &self.0 {
+            LoweringErrorKind::Message(message) | LoweringErrorKind::Source { message, .. } => {
+                message
+            }
+        }
+    }
+
+    /// The source file and byte span, when lowering traced this failure back to
+    /// source-owned metadata. A missing span still retains the file identity for
+    /// a named plain-text fallback.
+    pub fn source_location(&self) -> Option<(FileId, Option<Span>)> {
+        match &self.0 {
+            LoweringErrorKind::Message(_) => None,
+            LoweringErrorKind::Source { file, span, .. } => Some((*file, *span)),
+        }
+    }
+}
 
 impl std::fmt::Display for LoweringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "lowering error: {}", self.0)
+        write!(f, "lowering error: {}", self.message())?;
+        if let Some((file, span)) = self.source_location() {
+            match span {
+                Some(span) => write!(
+                    f,
+                    " (file {}, bytes {}..{})",
+                    file.index(),
+                    span.start,
+                    span.end
+                ),
+                None => write!(f, " (file {})", file.index()),
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -122,7 +209,7 @@ impl std::error::Error for LoweringError {}
 type Result<T> = std::result::Result<T, LoweringError>;
 
 fn err<T>(msg: impl Into<Cow<'static, str>>) -> Result<T> {
-    Err(LoweringError(msg.into()))
+    Err(LoweringError(LoweringErrorKind::Message(msg.into())))
 }
 
 /// One codegen unit of a partitioned compilation: this unit's index and the
@@ -229,8 +316,228 @@ pub fn lower_unit<'c, 'tcx>(
             Location::unknown(context),
         ));
     }
+    embed_inline_transforms(context, &mut module, &program.transform_scripts)?;
     tracing::debug!(mlir = %module.as_operation(), "lowered program to MLIR");
     Ok(module)
+}
+
+fn embed_inline_transforms<'c>(
+    context: &'c Context,
+    module: &mut Module<'c>,
+    scripts: &[TransformScript],
+) -> Result<()> {
+    if scripts.is_empty() {
+        return Ok(());
+    }
+
+    for script in scripts {
+        let (validation, body_start, body_end) = validation_module(&script.body);
+        parse_transform_module(
+            context,
+            &validation,
+            "inline transform",
+            Some(TransformSource {
+                script,
+                body_start,
+                body_end,
+            }),
+        )?;
+    }
+
+    let parsed = parse_transform_module(
+        context,
+        &inline_transform_module(scripts),
+        "compiler-generated inline transform dispatcher",
+        None,
+    )?;
+    let target = module.body();
+    let mut operation = parsed.body().first_operation();
+    while let Some(current) = operation {
+        operation = current.next_in_block();
+        target.append_operation(unsafe { current.to_ref() }.clone());
+    }
+
+    let mut module = module.as_operation_mut();
+    module.set_attribute("transform.with_named_sequence", Attribute::unit(context));
+    module.set_attribute(INLINE_TRANSFORM_ATTR, Attribute::unit(context));
+    Ok(())
+}
+
+fn inline_transform_module(scripts: &[TransformScript]) -> String {
+    let mut module = String::from("module attributes {transform.with_named_sequence} {\n");
+    for (index, script) in scripts.iter().enumerate() {
+        let _ = writeln!(
+            module,
+            r#"transform.named_sequence @__reussir_inline_{index}(
+%target: !transform.any_op {{transform.readonly}}) {}"#,
+            script.body
+        );
+    }
+    let _ = writeln!(
+        module,
+        r#"transform.named_sequence @{INLINE_TRANSFORM_ENTRY_POINT}(
+%module: !transform.any_op {{transform.readonly}}) {{
+%target = transform.structured.match ops{{["func.func"]}}
+attributes{{reussir.transform_anchor}} in %module
+: (!transform.any_op) -> !transform.any_op"#
+    );
+    for index in 0..scripts.len() {
+        let _ = writeln!(
+            module,
+            r#"transform.include @__reussir_inline_{index} failures(propagate) (%target)
+: (!transform.any_op) -> ()"#
+        );
+    }
+    module.push_str("transform.yield\n}\n}\n");
+    module
+}
+
+fn validation_module(body: &str) -> (String, usize, usize) {
+    const PREFIX: &str = r#"module attributes {transform.with_named_sequence} {
+transform.named_sequence @__reussir_validate(
+%target: !transform.any_op {transform.readonly}) "#;
+    let mut module = String::with_capacity(PREFIX.len() + body.len() + 2);
+    module.push_str(PREFIX);
+    let body_start = module.len();
+    module.push_str(body);
+    let body_end = module.len();
+    module.push_str("\n}");
+    (module, body_start, body_end)
+}
+
+#[derive(Clone, Copy)]
+struct TransformSource<'a> {
+    script: &'a TransformScript,
+    /// Half-open byte range occupied by `script.body` in the generated wrapper.
+    body_start: usize,
+    body_end: usize,
+}
+
+impl TransformSource<'_> {
+    fn source_span(self, wrapper_offset: usize) -> Option<Span> {
+        let script_span = self.script.span?;
+        if self.script.body.is_empty()
+            || wrapper_offset < self.body_start
+            || wrapper_offset > self.body_end
+        {
+            return None;
+        }
+        // A parser error at the body's closing boundary should still point at
+        // the final source byte rather than escaping the transform span.
+        let relative = (wrapper_offset - self.body_start).min(self.script.body.len() - 1);
+        let tail = self.script.body.get(relative..)?;
+        let width = tail.chars().next()?.len_utf8();
+        let start = script_span
+            .start
+            .checked_add(u32::try_from(relative).ok()?)?;
+        let end = start.checked_add(u32::try_from(width).ok()?)?;
+        (end <= script_span.end).then_some(Span { start, end })
+    }
+}
+
+#[derive(Debug)]
+struct CapturedDiagnostic {
+    message: String,
+    /// One-based coordinates in the generated validation module.
+    line_col: Option<(usize, usize)>,
+}
+
+fn parse_transform_module<'c>(
+    context: &'c Context,
+    text: &str,
+    description: &str,
+    source: Option<TransformSource<'_>>,
+) -> Result<Module<'c>> {
+    if let Some(offset) = text.find('\0') {
+        return Err(transform_error(
+            description,
+            "transform contains a NUL byte".to_string(),
+            source,
+            source.and_then(|source| source.source_span(offset)),
+        ));
+    }
+    let diagnostics = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&diagnostics);
+    let handler = context.attach_diagnostic_handler(move |diagnostic| {
+        let line_col = diagnostic_line_col(diagnostic.location());
+        captured
+            .lock()
+            .expect("diagnostic lock")
+            .push(CapturedDiagnostic {
+                message: diagnostic.to_string(),
+                line_col,
+            });
+        true
+    });
+    let module = Module::parse(context, text);
+    let verified = module
+        .as_ref()
+        .is_some_and(|module| module.as_operation().verify());
+    context.detach_diagnostic_handler(handler);
+    if verified {
+        return Ok(module.expect("verified module"));
+    }
+    let diagnostics = diagnostics.lock().expect("diagnostic lock");
+    let detail = if diagnostics.is_empty() {
+        "MLIR rejected the transform module".to_string()
+    } else {
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let span = source.and_then(|source| {
+        diagnostics.iter().find_map(|diagnostic| {
+            diagnostic
+                .line_col
+                .and_then(|(line, column)| byte_offset_at(text, line, column))
+                .and_then(|offset| source.source_span(offset))
+        })
+    });
+    Err(transform_error(description, detail, source, span))
+}
+
+fn transform_error(
+    description: &str,
+    detail: String,
+    source: Option<TransformSource<'_>>,
+    span: Option<Span>,
+) -> LoweringError {
+    let message = format!("invalid {description}: {detail}");
+    match source {
+        Some(source) => {
+            LoweringError::at_source(message, source.script.file, span.or(source.script.span))
+        }
+        None => LoweringError(LoweringErrorKind::Message(message.into())),
+    }
+}
+
+fn diagnostic_line_col(location: Location<'_>) -> Option<(usize, usize)> {
+    // MLIR's C API exposes construction but not decomposition of a plain
+    // FileLineColLoc. Its canonical textual form is `loc("file":line:column)`;
+    // split from the right so Windows drive-letter colons remain harmless.
+    let location = location.to_string();
+    let location = location.strip_prefix("loc(")?.strip_suffix(')')?;
+    let (prefix, column) = location.rsplit_once(':')?;
+    let (_, line) = prefix.rsplit_once(':')?;
+    Some((line.parse().ok()?, column.parse().ok()?))
+}
+
+fn byte_offset_at(text: &str, line: usize, column: usize) -> Option<usize> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+    let mut line_start = 0;
+    for _ in 1..line {
+        line_start += text.get(line_start..)?.find('\n')? + 1;
+    }
+    let line_end = text
+        .get(line_start..)?
+        .find('\n')
+        .map_or(text.len(), |offset| line_start + offset);
+    let offset = line_start.checked_add(column - 1)?;
+    (offset <= line_end).then_some(offset)
 }
 
 #[cfg(test)]
@@ -261,6 +568,72 @@ mod tests {
             );
             module.as_operation().to_string()
         })
+    }
+
+    #[test]
+    fn embeds_inline_transform_dispatcher() {
+        let printed = lower_source(
+            r#"#[transform_anchor]
+fn target(x: i32) -> i32 { x }
+transform [{
+  transform.annotate %target "test.first" : !transform.any_op
+  transform.yield
+}];
+transform [{
+  transform.annotate %target "test.second" : !transform.any_op
+  transform.yield
+}];"#,
+        );
+        for expected in [
+            "reussir.inline_transform",
+            "reussir.transform_anchor",
+            "no_inline",
+            "@__reussir_inline_0",
+            "@__reussir_inline_1",
+            "@__reussir_inline_transform",
+        ] {
+            assert!(printed.contains(expected), "missing {expected}:\n{printed}");
+        }
+        let first = printed.find("include @__reussir_inline_0").unwrap();
+        let second = printed.find("include @__reussir_inline_1").unwrap();
+        assert!(first < second, "scripts must dispatch in source order");
+    }
+
+    #[test]
+    fn reports_invalid_inline_transform_at_source() {
+        let source = r#"#[transform_anchor]
+fn target(x: i32) -> i32 { x }
+transform [{
+  transform.not_a_real_op %target
+  transform.yield
+}];"#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let program = surface::program(&parse.root);
+            let elab = elaborate(tcx, &program, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let error = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit)
+                .expect_err("Melior must reject the transform body");
+            assert!(
+                error.message().contains("transform.not_a_real_op"),
+                "{error}"
+            );
+            let (file, span) = error
+                .source_location()
+                .expect("source-owned diagnostic");
+            assert_eq!(file, crate::source::FileId::ROOT);
+            let span = span.expect("exact malformed-operation span");
+            let expected = u32::try_from(source.find("transform.not_a_real_op").unwrap()).unwrap();
+            assert_eq!(span.start, expected);
+            assert_eq!(span.end, expected + 1);
+            // The structured fallback remains usable by embedders that do not
+            // have a SourceCache to render against.
+            assert!(error.to_string().contains("file 0"), "{error}");
+        });
     }
 
     #[test]
