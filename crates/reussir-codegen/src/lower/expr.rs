@@ -688,6 +688,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             NullableCall(inner) => self.nullable_call(block, env, e, *inner).map(Some),
             Closure(c) => self.closure(block, env, c).map(Some),
             ClosureCall { target, args } => self.closure_call(block, env, target, args),
+            ArrayOp { .. } => err("array operations are not lowered yet"),
             GlobalStr(token) => self.global_str(block, e, *token).map(Some),
             Poison => err("poison expression reached lowering"),
         }

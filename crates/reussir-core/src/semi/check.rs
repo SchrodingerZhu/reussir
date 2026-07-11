@@ -1653,6 +1653,19 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
             args.iter().for_each(|e| free_vars(e, out));
         }
         Closure(c) => free_vars(&c.body, out),
+        ArrayOp { args, kernel, .. } => {
+            args.iter().for_each(|e| free_vars(e, out));
+            if let Some(k) = kernel {
+                // Kernel params are binders, not free uses.
+                let mut body = Vec::new();
+                free_vars(&k.body, &mut body);
+                for v in body {
+                    if !k.params.iter().any(|&(p, _)| p == v) {
+                        push(out, v);
+                    }
+                }
+            }
+        }
         Match(scrut, _) => free_vars(scrut, out),
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
     }

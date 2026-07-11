@@ -415,6 +415,7 @@ fn kind_name(kind: &ExprKind<'_>) -> &'static str {
         ExprKind::NullableCall(_) => "NullableCall",
         ExprKind::Closure(_) => "Closure",
         ExprKind::ClosureCall { .. } => "ClosureCall",
+        ExprKind::ArrayOp { .. } => "ArrayOp",
         ExprKind::Match(..) => "Match",
         ExprKind::Poison => "Poison",
     }
@@ -806,6 +807,26 @@ fn interp<'tcx>(
                 interp(a, ot, rr, rc);
             }
         }
+        // An array op consumes its operands like call args, except a
+        // borrowing op's (`get`/`fold`) array base, which follows the `Proj`
+        // borrow rule. A kernel body only reads enclosing vars — interpreting
+        // it must leave ownership untouched.
+        ExprKind::ArrayOp { op, args, kernel } => {
+            use crate::intrinsic::ArrayFn;
+            let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold);
+            for (i, a) in args.iter().enumerate() {
+                if i == 0 && borrows_base {
+                    interp_borrow(a, ot, rr, rc);
+                } else {
+                    interp(a, ot, rr, rc);
+                }
+            }
+            if let Some(k) = kernel {
+                let before = rc.clone();
+                interp(k.body, ot, rr, rc);
+                assert_eq!(before, *rc, "kernel body must not change ownership");
+            }
+        }
         ExprKind::GlobalStr(_)
         | ExprKind::ConstChar(_)
         | ExprKind::ConstInt(_)
@@ -921,6 +942,7 @@ fn uses_var(e: &Expr<'_>, y: VarId) -> bool {
 fn children<'tcx>(e: &Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
     use ExprKind::*;
     match e.kind {
+        ArrayOp { args, kernel, .. } => args.iter().chain(kernel.map(|k| k.body)).collect(),
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
         | Poison => vec![],
         Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],

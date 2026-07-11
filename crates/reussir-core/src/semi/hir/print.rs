@@ -508,6 +508,24 @@ impl<'a> Printer<'a> {
                     + self.value(&c.body)
                     + text(" }")
             }
+            ExprKind::ArrayOp { op, args, kernel } => {
+                let mut d =
+                    text(format!("array#{}(", op.as_str())) + self.arg_list(args) + text(")");
+                if let Some(k) = kernel {
+                    let params: Vec<Doc<'static>> = k
+                        .params
+                        .iter()
+                        .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
+                        .collect();
+                    d = d
+                        + text(" kernel(")
+                        + comma_sep(params)
+                        + text(") { ")
+                        + self.value(&k.body)
+                        + text(" }");
+                }
+                d
+            }
             ExprKind::Let { .. } | ExprKind::Seq(_) | ExprKind::If(..) | ExprKind::Match(..) => {
                 unreachable!("structural forms are rendered by `value`")
             }
