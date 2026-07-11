@@ -151,8 +151,33 @@ pub enum ExprKind<'tcx> {
         target: Box<Expr<'tcx>>,
         args: Vec<Expr<'tcx>>,
     },
+    /// A built-in operation on a statically shaped array (issue #344): the
+    /// resolved op, its value operands (see [`crate::intrinsic::ArrayFn`] for
+    /// each op's operand list), and — for `Tabulate`/`Fold` — an inline kernel.
+    ///
+    /// The kernel is *not* a closure: its body is checked in the enclosing
+    /// scope with only the kernel params added, so free variables reference
+    /// enclosing bindings directly (read-only for the op's duration) and no
+    /// capture list exists. Codegen inlines the body into the loop nest.
+    ArrayOp {
+        op: crate::intrinsic::ArrayFn,
+        args: Vec<Expr<'tcx>>,
+        kernel: Option<Box<Kernel<'tcx>>>,
+    },
     /// Error-recovery placeholder.
     Poison,
+}
+
+/// The inline kernel of an [`ArrayOp`](ExprKind::ArrayOp): parameters bound
+/// per element/iteration (`Tabulate`: one `i64` per dimension; `Fold`:
+/// `(acc, elem)`) and the body producing the element / next accumulator.
+/// The type checker restricts the body to be rc-free — every subexpression is
+/// of plain (unmanaged) type except array reads (`get`) of enclosing arrays —
+/// so inlining it into a loop introduces no per-iteration ownership work.
+#[derive(Clone, Debug)]
+pub struct Kernel<'tcx> {
+    pub params: Vec<(VarId, Ty<'tcx>)>,
+    pub body: Box<Expr<'tcx>>,
 }
 
 // ===== decision trees (compiled pattern matches) =====
