@@ -41,6 +41,8 @@ pub enum LexErrorKind {
     UnterminatedChar,
     InvalidChar,
     UnterminatedBlockComment,
+    UnterminatedRawMlirLiteral,
+    InvalidRawMlirLiteralTerminator,
 }
 
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,8 @@ pub enum RawToken {
     String,
     #[token("'", lex_char)]
     Char,
+    #[token("[{", lex_raw_mlir_literal)]
+    RawMlirLiteral,
 
     #[token("::")]
     PathSep,
@@ -202,6 +206,64 @@ fn lex_block_comment(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKin
     }
 }
 
+/// Scan an opaque `[{ ... }]` block. Braces inside strings and comments do
+/// not affect the nesting depth; every other byte is deliberately left to
+/// MLIR's parser.
+fn lex_raw_mlir_literal(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKind> {
+    let bytes = lex.remainder().as_bytes();
+    let mut depth = 1usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && &bytes[i..i + 2] != b"*/" {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    if bytes.get(i) == Some(&b']') {
+                        lex.bump(i + 1);
+                        return Ok(());
+                    }
+                    lex.bump(i);
+                    return Err(LexErrorKind::InvalidRawMlirLiteralTerminator);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    lex.bump(bytes.len());
+    Err(LexErrorKind::UnterminatedRawMlirLiteral)
+}
+
 /// Scan a string literal after the opening quote (it may span newlines) and
 /// validate the whole token against Rust's string escape grammar.
 fn lex_string(lex: &mut logos::Lexer<RawToken>) -> Result<(), LexErrorKind> {
@@ -288,6 +350,7 @@ impl RawToken {
             RawToken::Float => SyntaxKind::FloatLit,
             RawToken::String => SyntaxKind::StringLit,
             RawToken::Char => SyntaxKind::CharLit,
+            RawToken::RawMlirLiteral => SyntaxKind::RawMlirLiteral,
             RawToken::PathSep => SyntaxKind::PathSep,
             RawToken::Arrow => SyntaxKind::Arrow,
             RawToken::FatArrow => SyntaxKind::FatArrow,
@@ -361,6 +424,10 @@ pub fn tokenize(source: &str) -> (Vec<Token>, Vec<LexError>) {
                     LexErrorKind::UnterminatedChar => "unterminated character literal",
                     LexErrorKind::InvalidChar => "invalid character literal",
                     LexErrorKind::UnterminatedBlockComment => "unterminated block comment",
+                    LexErrorKind::UnterminatedRawMlirLiteral => "unterminated MLIR literal block",
+                    LexErrorKind::InvalidRawMlirLiteralTerminator => {
+                        "MLIR literal block must end with `}]`"
+                    }
                     LexErrorKind::Unrecognized => {
                         if lexer.slice().starts_with(|c: char| c.is_ascii_digit()) {
                             // e.g. a radix prefix with no digits (`0x`, `0b_`).
@@ -405,6 +472,28 @@ mod tests {
         assert_eq!(kinds("if lettuce"), vec![K::IfKw, K::Ident]);
         // Contextual keywords stay identifiers.
         assert_eq!(kinds("shared trampoline i32 bool"), vec![K::Ident; 4]);
+    }
+
+    #[test]
+    fn raw_mlir_literal_is_one_opaque_token() {
+        let source = r#"[{
+            %x = transform.structured.match ops{["scf.for"]} in %target
+            transform.include @tail failures(propagate) (%x)
+            // braces in comments do not count: {
+            transform.test "string with }]" ^bb0 $opaque
+        }]"#;
+        assert_eq!(kinds(source), vec![K::RawMlirLiteral]);
+    }
+
+    #[test]
+    fn malformed_raw_mlir_literal_is_reported() {
+        let (_, errors) = tokenize("[{ transform.yield }");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("must end"));
+
+        let (_, errors) = tokenize("[{ transform.yield");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("unterminated"));
     }
 
     #[test]

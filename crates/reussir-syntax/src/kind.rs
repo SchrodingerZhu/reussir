@@ -21,6 +21,8 @@ pub enum SyntaxKind {
     FloatLit,
     StringLit,
     CharLit,
+    /// An opaque MLIR literal block: `[{ ... }]`.
+    RawMlirLiteral,
 
     // ===== Tokens: hard keywords =====
     FnKw,
@@ -120,6 +122,8 @@ pub enum SyntaxKind {
     EnumStmt,
     ModStmt,
     ExternTrampolineStmt,
+    /// A module-level `transform [{ ... }];` item.
+    TransformStmt,
     GenericParamList,
     GenericParam,
     ParamList,
@@ -250,6 +254,7 @@ impl SyntaxKind {
             FloatLit => "a floating-point literal",
             StringLit => "a string literal",
             CharLit => "a character literal",
+            RawMlirLiteral => "an MLIR literal block",
             FnKw => "`fn`",
             StructKw => "`struct`",
             EnumKw => "`enum`",

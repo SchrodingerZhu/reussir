@@ -128,6 +128,7 @@ impl Emitter<'_> {
             EnumStmt => self.record_stmt(node, "EnumKind"),
             ModStmt => self.mod_stmt(node),
             ExternTrampolineStmt => self.extern_stmt(node),
+            TransformStmt => self.transform_stmt(node),
             k => unreachable!("unexpected statement node {k:?}"),
         };
         tagged("SpannedStmt", self.with_node_span(node, inner))
@@ -311,6 +312,13 @@ impl Emitter<'_> {
             "etsFunc": self.path(func),
             "etsFuncTyArgs": ty_args,
         })
+    }
+
+    fn transform_stmt(&self, node: &ResolvedNode) -> Value {
+        let body = tokens(node)
+            .find(|token| token.kind() == RawMlirLiteral)
+            .expect("transform body");
+        tagged("TransformStmt", Value::String(body.text().into()))
     }
 
     // ===== paths and types =====
