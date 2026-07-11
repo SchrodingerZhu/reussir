@@ -723,7 +723,8 @@ fn frontend_package<'c, 'tcx>(
             hir::print::Printer::new(&elab.defs, elab.resolver)
         } else {
             hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
-        };
+        }
+        .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts);
         let strings = elab.strings.entries();
         let text = printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         return Ok(Produced::Text(text));
@@ -784,7 +785,8 @@ fn frontend<'c, 'tcx>(
                     hir::print::Printer::new(&elab.defs, elab.resolver)
                 } else {
                     hir::print::Printer::with_sources(&elab.defs, elab.resolver, sources)
-                };
+                }
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts);
                 let strings = elab.strings.entries();
                 let text =
                     printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
@@ -820,7 +822,8 @@ fn frontend<'c, 'tcx>(
                         hir::print::Printer::with_sources(&parsed.defs, &parsed.names, cache)
                     }
                     _ => hir::print::Printer::new(&parsed.defs, &parsed.names),
-                };
+                }
+                .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts);
                 let text = printer.program(
                     &parsed.funcs,
                     &parsed.strings,

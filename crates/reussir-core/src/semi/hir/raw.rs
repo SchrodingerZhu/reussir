@@ -19,6 +19,7 @@ pub struct Program {
     pub strings: Vec<StringEntry>,
     pub records: Vec<Record>,
     pub trampolines: Vec<Tramp>,
+    pub transforms: Vec<Transform>,
     pub funcs: Vec<Func>,
 }
 
@@ -29,6 +30,7 @@ pub enum Item {
     String(StringEntry),
     Record(Record),
     Tramp(Tramp),
+    Transform(Transform),
     Func(Func),
 }
 
@@ -39,6 +41,7 @@ impl Program {
             strings: Vec::new(),
             records: Vec::new(),
             trampolines: Vec::new(),
+            transforms: Vec::new(),
             funcs: Vec::new(),
         };
         for item in items {
@@ -47,6 +50,7 @@ impl Program {
                 Item::String(s) => p.strings.push(s),
                 Item::Record(r) => p.records.push(r),
                 Item::Tramp(t) => p.trampolines.push(t),
+                Item::Transform(t) => p.transforms.push(t),
                 Item::Func(f) => p.funcs.push(f),
             }
         }
@@ -121,7 +125,15 @@ pub struct Tramp {
 }
 
 #[derive(Clone, Debug)]
+pub struct Transform {
+    pub body: String,
+    pub file: Option<u32>,
+    pub span: Option<Span>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Func {
+    pub transform_anchor: bool,
     pub is_pub: bool,
     pub regional: bool,
     pub path: String,

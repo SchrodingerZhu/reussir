@@ -48,7 +48,7 @@ pub struct Report {
 #[derive(Clone, Debug)]
 pub struct TransformScript {
     pub body: String,
-    pub span: Span,
+    pub span: Option<Span>,
     pub file: FileId,
 }
 
@@ -832,7 +832,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         self.validate_transform_anchor(&attrs, None);
                         self.transform_scripts.push(TransformScript {
                             body: script.body,
-                            span: script.body_span,
+                            span: Some(script.body_span),
                             file: *file,
                         });
                     }

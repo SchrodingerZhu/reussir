@@ -64,12 +64,9 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                     .map(|(k, v)| (*k, v.clone()))
                     .collect();
                 let strings = elab.strings.entries();
-                let text = Printer::new(&elab.defs, elab.resolver).program(
-                    &funcs,
-                    &strings,
-                    &records,
-                    &elab.trampolines,
-                );
+                let text = Printer::new(&elab.defs, elab.resolver)
+                    .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                    .program(&funcs, &strings, &records, &elab.trampolines);
                 Outcome::Text(text)
             }
             Some("compiled") => {

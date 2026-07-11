@@ -16,7 +16,7 @@ use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::SourceCache;
 
-use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot};
+use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot, TransformScript};
 use crate::semi::hir::{
     ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
 };
@@ -41,6 +41,8 @@ pub struct Printer<'a> {
     /// Without it the dump is the bare program (human display, e.g. the
     /// REPL's `:dump context`).
     sources: Option<&'a SourceCache>,
+    transform_anchors: &'a [DefId],
+    transform_scripts: &'a [TransformScript],
 }
 
 impl<'a> Printer<'a> {
@@ -49,6 +51,8 @@ impl<'a> Printer<'a> {
             defs,
             resolver,
             sources: None,
+            transform_anchors: &[],
+            transform_scripts: &[],
         }
     }
 
@@ -62,7 +66,20 @@ impl<'a> Printer<'a> {
             defs,
             resolver,
             sources: Some(sources),
+            transform_anchors: &[],
+            transform_scripts: &[],
         }
+    }
+
+    /// Attach module transform metadata to the next program rendering.
+    pub fn with_transform_metadata(
+        mut self,
+        anchors: &'a [DefId],
+        scripts: &'a [TransformScript],
+    ) -> Self {
+        self.transform_anchors = anchors;
+        self.transform_scripts = scripts;
+        self
     }
 
     /// Render the resumable Semi output: record declarations, trampoline roots,
@@ -77,26 +94,33 @@ impl<'a> Printer<'a> {
     ) -> String {
         let mut items: Vec<Doc<'static>> = Vec::new();
         if let Some(cache) = self.sources {
-            for id in cache.ids() {
-                items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
-            }
+            items.extend(
+                cache
+                    .ids()
+                    .map(|id| text(format!("{} = {:?};", id.index(), cache.name(id)))),
+            );
         }
-        for (token, payload) in strings {
-            items.push(string_decl(*token, payload));
-        }
+        items.extend(
+            strings
+                .iter()
+                .map(|(token, payload)| string_decl(*token, payload)),
+        );
         let mut recs: Vec<&Record<'_>> = records.values().collect();
         // Sort by qualified path (phase-canonical: identical across the original
         // elaboration and a reparse, unlike the session-local `DefId`).
         recs.sort_by_key(|r| self.path(r.def));
-        for r in recs {
-            items.push(self.record(r));
-        }
-        for t in trampolines {
-            items.push(self.trampoline(t));
-        }
-        for f in funcs {
-            items.push(self.function(f));
-        }
+        items.extend(recs.into_iter().map(|record| self.record(record)));
+        items.extend(
+            trampolines
+                .iter()
+                .map(|trampoline| self.trampoline(trampoline)),
+        );
+        items.extend(
+            self.transform_scripts
+                .iter()
+                .map(|script| self.transform(script)),
+        );
+        items.extend(funcs.iter().map(|function| self.function(function)));
 
         let mut doc = Doc::Null;
         for (i, item) in items.into_iter().enumerate() {
@@ -212,8 +236,17 @@ impl<'a> Printer<'a> {
             + text(";")
     }
 
+    fn transform(&self, script: &TransformScript) -> Doc<'static> {
+        text(format!("transform {:?}", script.body))
+            + self.item_loc(script.file, script.span)
+            + text(";")
+    }
+
     fn function(&self, f: &Function<'_>) -> Doc<'static> {
         let mut head = String::new();
+        if self.transform_anchors.contains(&f.def) {
+            head.push_str("#[transform_anchor] ");
+        }
         if f.visibility == Visibility::Public {
             head.push_str("pub ");
         }
