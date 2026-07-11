@@ -1,0 +1,89 @@
+// Functional in-place quicksort over [i64; 65536] — a sophisticated array
+// workload built from plain get/set only, no tabulate/fold kernels in the
+// hot path. The array is threaded linearly through mutual recursion, so
+// uniqueness makes every set an in-place store; the partition base case
+// performs the recursive sort calls directly, avoiding the need to return
+// an (array, pivot-index) pair (records cannot hold arrays yet).
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/example_qsort.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %t.opt.o %S/example_qsort.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+fn lcg(x : i64) -> i64 {
+    (x * 48271) % 2147483647
+}
+
+fn fill(a : [i64; 65536], i : i64, x : i64) -> [i64; 65536] {
+    if i == 65536 {
+        a
+    } else {
+        let x1 = lcg(x);
+        fill(core::intrinsic::array::set(a, i, x1), i + 1, x1)
+    }
+}
+
+fn swap(a : [i64; 65536], i : i64, j : i64) -> [i64; 65536] {
+    let x = core::intrinsic::array::get(a, i);
+    let y = core::intrinsic::array::get(a, j);
+    core::intrinsic::array::set(core::intrinsic::array::set(a, i, y), j, x)
+}
+
+fn qsort_go(a : [i64; 65536], lo : i64, hi : i64) -> [i64; 65536] {
+    if lo >= hi {
+        a
+    } else {
+        let p = core::intrinsic::array::get(a, hi);
+        partition(a, lo, hi, p, lo, lo)
+    }
+}
+
+// Lomuto partition with pivot at hi; invariant: [lo, i) < p, [i, j) >= p.
+fn partition(a : [i64; 65536], lo : i64, hi : i64, p : i64, i : i64, j : i64) -> [i64; 65536] {
+    if j == hi {
+        let a1 = swap(a, i, hi);
+        qsort_go(qsort_go(a1, lo, i - 1), i + 1, hi)
+    } else {
+        if core::intrinsic::array::get(a, j) < p {
+            partition(swap(a, i, j), lo, hi, p, i + 1, j + 1)
+        } else {
+            partition(a, lo, hi, p, i, j + 1)
+        }
+    }
+}
+
+// Sortedness check plus checksum; returns -1 on an ordering violation.
+fn check(a : [i64; 65536], i : i64, prev : i64, acc : i64) -> i64 {
+    if i == 65536 {
+        acc
+    } else {
+        let v = core::intrinsic::array::get(a, i);
+        if prev > v {
+            0 - 1
+        } else {
+            check(a, i + 1, v, (acc + v) % 1000000007)
+        }
+    }
+}
+
+fn round(seed : i64) -> i64 {
+    let a = fill(core::intrinsic::array::splat<[i64; 65536]>(0), 0, seed);
+    let s = qsort_go(a, 0, 65535);
+    check(s, 0, 0 - 1, 0)
+}
+
+fn rounds(r : i64, acc : i64) -> i64 {
+    if r == 0 {
+        acc
+    } else {
+        rounds(r - 1, (acc + round(42 + r)) % 1000000007)
+    }
+}
+
+fn qsort_test(r : i64) -> i64 {
+    rounds(r, 0)
+}
+
+extern "C" trampoline "qsort_test_ffi" = qsort_test;
