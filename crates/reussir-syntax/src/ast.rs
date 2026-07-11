@@ -79,7 +79,10 @@ fn is_expr_kind(kind: SyntaxKind) -> bool {
 }
 
 fn is_type_kind(kind: SyntaxKind) -> bool {
-    matches!(kind, PrimType | PathType | ArrowType | ParenTypeList)
+    matches!(
+        kind,
+        PrimType | PathType | ArrowType | ParenTypeList | ArrayType
+    )
 }
 
 fn expr_children(node: &ResolvedNode) -> impl Iterator<Item = &ResolvedNode> {
@@ -358,6 +361,13 @@ impl Emitter<'_> {
                     .find(|n| is_type_kind(n.kind()))
                     .expect("parenthesized type");
                 return self.type_(inner);
+            }
+            ArrayType => {
+                let elem = nodes(node)
+                    .find(|n| is_type_kind(n.kind()))
+                    .expect("array element type");
+                let extents: Vec<Value> = expr_children(node).map(|e| self.expr(e)).collect();
+                tagged("TypeArray", json!([self.type_(elem), extents]))
             }
             k => unreachable!("unexpected type node {k:?}"),
         };

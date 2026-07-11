@@ -11,7 +11,7 @@
 //! mod-stmt    ::= 'mod' name ';'
 //! extern-stmt ::= 'extern' STRING 'trampoline' STRING '=' path ('<' type,* '>')? ';'
 //! type        ::= segment ('->' type)?          (right associative)
-//! segment     ::= '(' type,+ ')' | prim | path ('<' type,+ '>')?
+//! segment     ::= '(' type,+ ')' | '[' type ';' expr,+ ']' | prim | path ('<' type,+ '>')?
 //! pattern     ::= pattern-kind ('if' expr)?
 //! ```
 //!
@@ -415,6 +415,9 @@ impl Parser<'_> {
             let done = m.complete(self, ParenTypeList);
             return Some((done, arity));
         }
+        if self.at(LBracket) {
+            return Some((self.array_type(), 1));
+        }
         self.type_atom().map(|m| (m, 1))
     }
 
@@ -444,6 +447,24 @@ impl Parser<'_> {
             args.complete(self, TypeArgList);
         }
         Some(m.complete(self, PathType))
+    }
+
+    /// A statically shaped array type: `[T; e1, e2, ...]` with one extent
+    /// expression per dimension. The grammar accepts any expression so the
+    /// tree stays forward-compatible with constant expressions; what an
+    /// extent may evaluate to is the elaborator's concern.
+    fn array_type(&mut self) -> CompletedMarker {
+        let m = self.start();
+        self.bump();
+        self.type_();
+        self.expect(Semicolon);
+        self.expr();
+        while self.at(Comma) {
+            self.bump();
+            self.expr();
+        }
+        self.expect(RBracket);
+        m.complete(self, ArrayType)
     }
 
     // ===== Patterns =====
