@@ -261,28 +261,16 @@ pub enum ExprKind<'tcx> {
         args: &'tcx [Expr<'tcx>],
     },
     /// A built-in operation on a statically shaped array, mirroring
-    /// [`crate::semi::hir::ExprKind::ArrayOp`]: the resolved op, its value
-    /// operands, and — for `Tabulate`/`Fold` — an inline kernel. The kernel is
-    /// not a closure: its body references enclosing bindings directly
-    /// (read-only borrows for the op's duration) and codegen inlines it into
-    /// the element loop nest.
+    /// [`crate::semi::hir::ExprKind::ArrayOp`]: the resolved op and its value
+    /// operands. `Tabulate`/`Fold` carry their kernel as an ordinary
+    /// closure-typed operand (the last one).
     ArrayOp {
         op: crate::intrinsic::ArrayFn,
         args: &'tcx [Expr<'tcx>],
-        kernel: Option<&'tcx Kernel<'tcx>>,
     },
     Match(&'tcx Expr<'tcx>, DecisionTree<'tcx>),
     /// Error-recovery placeholder.
     Poison,
-}
-
-/// The inline kernel of an [`ArrayOp`](ExprKind::ArrayOp); see
-/// [`crate::semi::hir::Kernel`]. The type checker guarantees the body is
-/// rc-free (plain-typed throughout, except `get` reads of enclosing arrays).
-#[derive(Clone, Copy, Debug)]
-pub struct Kernel<'tcx> {
-    pub params: &'tcx [(VarId, Ty<'tcx>)],
-    pub body: &'tcx Expr<'tcx>,
 }
 
 /// A pattern binding: a local variable bound to a scrutinee [`Path`].

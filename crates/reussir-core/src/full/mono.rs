@@ -744,14 +744,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 args: self.lower_slice(args, subst),
             },
             ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst)),
-            ExprKind::ArrayOp { op, args, kernel } => M::ArrayOp {
+            ExprKind::ArrayOp { op, args } => M::ArrayOp {
                 op: *op,
                 args: self.lower_slice(args, subst),
-                kernel: kernel.as_ref().map(|k| {
-                    let params = self.lower_var_tys(&k.params, subst);
-                    let body = self.lower_ref(&k.body, subst);
-                    &*self.tcx.alloc(mir::Kernel { params, body })
-                }),
             },
             ExprKind::Match(scrut, tree) => {
                 M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
@@ -1240,7 +1235,7 @@ mod tests {
     fn children<'tcx>(e: &mir::Expr<'tcx>) -> Vec<&'tcx mir::Expr<'tcx>> {
         use mir::ExprKind::*;
         match e.kind {
-            ArrayOp { args, kernel, .. } => args.iter().chain(kernel.map(|k| k.body)).collect(),
+            ArrayOp { args, .. } => args.iter().collect(),
             GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
             | Poison => vec![],
             Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],
