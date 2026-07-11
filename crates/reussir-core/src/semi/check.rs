@@ -161,6 +161,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// The **checking** judgment `Γ ⊢ e ⇐ T ⇒ h`: synthesize `e`, then [`Self::expect`]
     /// its type against `T` (the CHECK rule). Always produces a node.
     pub(super) fn check_expr(&mut self, e: &surface::Expr, expected: Ty<'tcx>) -> Expr<'tcx> {
+        // (LAM⇐) a literal lambda checks against an expected closure type:
+        // unannotated parameters take the expected parameter types and the
+        // body checks against the expected result, so lambdas in argument
+        // position need no annotations.
+        if let surface::ExprKind::Lambda(lam) = e.kind()
+            && let TyKind::Closure { params, ret } = *self.infer.shallow_resolve(expected).kind()
+            && params.len() == lam.args.len()
+        {
+            let h = self.lambda(&lam, Some((params, ret)), Some(e.span()));
+            self.expect(h.ty, expected, h.span);
+            return h;
+        }
         let h = self.infer_expr(e);
         self.expect(h.ty, expected, h.span);
         h
@@ -693,21 +705,47 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// minus the params. Capturing or returning a flex value is a diagnostic (a flex
     /// value cannot escape its region).
     fn infer_lambda(&mut self, lam: &surface::Lambda, span: Option<Span>) -> Expr<'tcx> {
+        self.lambda(lam, None, span)
+    }
+
+    /// The shared lambda rule: synthesis when `expected` is `None`, checking
+    /// against an expected `(params) -> ret` otherwise (unannotated
+    /// parameters take the expected types; annotations must agree with them).
+    fn lambda(
+        &mut self,
+        lam: &surface::Lambda,
+        expected: Option<(&'tcx [Ty<'tcx>], Ty<'tcx>)>,
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
         let mark = self.vars.mark();
         let mut params = Vec::new();
-        for (name, ty) in &lam.args {
+        for (i, (name, ty)) in lam.args.iter().enumerate() {
+            let exp_p = expected.map(|(ps, _)| ps[i]);
             let pty = match ty {
-                Some(t) => self.eval_type(t),
-                None => self.infer.new_hole_ty(),
+                Some(t) => {
+                    let t = self.eval_type(t);
+                    if let Some(exp_p) = exp_p {
+                        self.expect(t, exp_p, span);
+                    }
+                    t
+                }
+                None => exp_p.unwrap_or_else(|| self.infer.new_hole_ty()),
             };
             let var = self.vars.fresh(*name, pty, None);
             params.push((var, pty));
         }
-        let body = match &lam.ret_ty {
+        let ret = match &lam.ret_ty {
             Some(rt) => {
-                let expected = self.eval_type(rt);
-                self.check_expr(&lam.body, expected)
+                let rt = self.eval_type(rt);
+                if let Some((_, exp_r)) = expected {
+                    self.expect(rt, exp_r, span);
+                }
+                Some(rt)
             }
+            None => expected.map(|(_, r)| r),
+        };
+        let body = match ret {
+            Some(expected) => self.check_expr(&lam.body, expected),
             None => self.infer_expr(&lam.body),
         };
         self.vars.restore(mark);
@@ -1093,8 +1131,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// The constructing array intrinsics: `splat` checks its one argument
-    /// against the element type, `tabulate` checks a literal kernel lambda of
-    /// one `i64` parameter per dimension against it.
+    /// against the element type, `tabulate` checks its kernel — an ordinary
+    /// closure taking one `i64` index per dimension — against
+    /// `(i64, …) -> elem`. Any closure-typed expression works (a literal
+    /// lambda fuses into the loop nest under optimization; anything else is
+    /// called per element).
     fn infer_array_ctor(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         use crate::intrinsic::ArrayFn;
         let method = self.sym(fc.name.basename).to_string();
@@ -1133,23 +1174,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match op {
             ArrayFn::Splat => {
                 let v = self.check_expr(&fc.args[0], elem);
+                self.mk_expr(ExprKind::ArrayOp { op, args: vec![v] }, arr, span)
+            }
+            ArrayFn::Tabulate => {
+                let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
+                let params = vec![i64_ty; dims.len()];
+                let kernel_ty = self.tcx.mk_closure(&params, elem);
+                let kernel = self.check_expr(&fc.args[0], kernel_ty);
                 self.mk_expr(
                     ExprKind::ArrayOp {
                         op,
-                        args: vec![v],
-                        kernel: None,
+                        args: vec![kernel],
                     },
                     arr,
                     span,
                 )
-            }
-            ArrayFn::Tabulate => {
-                let _ = dims;
-                self.error(
-                    span,
-                    "`core::intrinsic::array::tabulate` is not available yet",
-                );
-                self.poison(span)
             }
             _ => unreachable!("filtered above"),
         }
@@ -1195,7 +1234,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     ExprKind::ArrayOp {
                         op: ArrayFn::Get,
                         args: hargs,
-                        kernel: None,
                     },
                     elem,
                     span,
@@ -1222,15 +1260,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     ExprKind::ArrayOp {
                         op: ArrayFn::Set,
                         args: hargs,
-                        kernel: None,
                     },
                     bty,
                     span,
                 )
             }
             "fold" => {
-                self.error(span, "`core::intrinsic::array::fold` is not available yet");
-                self.poison(span)
+                if args.len() != 2 {
+                    self.error(
+                        span,
+                        "`fold` expects an initial accumulator and a kernel closure",
+                    );
+                    return self.poison(span);
+                }
+                let init = self.infer_expr(&args[0]);
+                let acc_ty = init.ty;
+                let kernel_ty = self.tcx.mk_closure(&[acc_ty, elem], acc_ty);
+                let kernel = self.check_expr(&args[1], kernel_ty);
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Fold,
+                        args: vec![base, init, kernel],
+                    },
+                    acc_ty,
+                    span,
+                )
             }
             _ => unreachable!("routed here only for get/set/fold"),
         }
@@ -1786,21 +1840,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 body: zb(self, c.body),
             }),
             Match(scrut, tree) => Match(zb(self, scrut), self.zonk_tree(tree)),
-            ArrayOp { op, args, kernel } => {
-                let args = args.into_iter().map(|e| self.zonk_expr(e)).collect();
-                let kernel = kernel.map(|k| {
-                    let k = super::hir::Kernel {
-                        params: k
-                            .params
-                            .into_iter()
-                            .map(|(v, t)| (v, self.zonk_ty(t, span)))
-                            .collect(),
-                        body: zb(self, k.body),
-                    };
-                    Box::new(k)
-                });
-                ArrayOp { op, args, kernel }
-            }
+            ArrayOp { op, args } => ArrayOp {
+                op,
+                args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
+            },
             other => other,
         }
     }
@@ -1875,19 +1918,7 @@ fn free_vars<'tcx>(e: &Expr<'tcx>, out: &mut Vec<VarId>) {
             args.iter().for_each(|e| free_vars(e, out));
         }
         Closure(c) => free_vars(&c.body, out),
-        ArrayOp { args, kernel, .. } => {
-            args.iter().for_each(|e| free_vars(e, out));
-            if let Some(k) = kernel {
-                // Kernel params are binders, not free uses.
-                let mut body = Vec::new();
-                free_vars(&k.body, &mut body);
-                for v in body {
-                    if !k.params.iter().any(|&(p, _)| p == v) {
-                        push(out, v);
-                    }
-                }
-            }
-        }
+        ArrayOp { args, .. } => args.iter().for_each(|e| free_vars(e, out)),
         Match(scrut, _) => free_vars(scrut, out),
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Poison => {}
     }

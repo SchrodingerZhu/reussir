@@ -450,23 +450,8 @@ impl Render<'_> {
                     + self.value(c.body)
                     + text(" }")
             }
-            ArrayOp { op, args, kernel } => {
-                let mut d =
-                    text(format!("array#{}(", op.as_str())) + self.arg_list(args) + text(")");
-                if let Some(k) = kernel {
-                    let params: Vec<Doc<'static>> = k
-                        .params
-                        .iter()
-                        .map(|(v, t)| var(*v) + text(": ") + self.ty(*t))
-                        .collect();
-                    d = d
-                        + text(" kernel(")
-                        + comma_sep(params)
-                        + text(") { ")
-                        + self.value(k.body)
-                        + text(" }");
-                }
-                d
+            ArrayOp { op, args } => {
+                text(format!("array#{}(", op.as_str())) + self.arg_list(args) + text(")")
             }
             Let { .. } | Seq(_) | If(..) | Match(..) => {
                 unreachable!("structural forms are rendered by `value`")

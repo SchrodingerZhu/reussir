@@ -27,3 +27,34 @@ pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
 pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
     core::intrinsic::array::get(m, i, j)
 }
+
+// CHECK: pub fn #make() -> [f64; 8]
+// CHECK: array#tabulate(closure[](v{{[0-9]+}}: i64) {
+pub fn make() -> [f64; 8] {
+    core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64)
+}
+
+// CHECK: pub fn #sum(v0 (a): [f64; 8]) -> f64
+// CHECK: array#fold(v0 : [f64; 8]{{.*}}, 0.0 : f64{{.*}}, closure[](v{{[0-9]+}}: f64, v{{[0-9]+}}: f64) {
+pub fn sum(a : [f64; 8]) -> f64 {
+    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+}
+
+// The kernel is an ordinary closure: a stencil reading the enclosing array
+// captures it like any lambda would.
+// CHECK: pub fn #blur(v0 (x): [f64; 8]) -> [f64; 8]
+// CHECK: array#tabulate(closure[v0: [f64; 8]](v{{[0-9]+}}: i64) {
+// CHECK: array#get(v0
+pub fn blur(x : [f64; 8]) -> [f64; 8] {
+    core::intrinsic::array::tabulate<[f64; 8]>(|i|
+        if i == 0 { core::intrinsic::array::get(x, i) }
+        else { (core::intrinsic::array::get(x, i - 1) + core::intrinsic::array::get(x, i)) / 2.0 })
+}
+
+// A named closure works too — the kernel operand is any closure-typed
+// expression, not only a literal lambda.
+// CHECK: pub fn #apply_named(v0 (f): (f64, f64) -> f64, v1 (a): [f64; 8]) -> f64
+// CHECK: array#fold(v1 : [f64; 8]{{.*}}, 1.0 : f64{{.*}}, v0 : (f64, f64) -> f64
+pub fn apply_named(f : (f64, f64) -> f64, a : [f64; 8]) -> f64 {
+    core::intrinsic::array::fold(a, 1.0, f)
+}
