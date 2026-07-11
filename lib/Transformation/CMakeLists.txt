@@ -1,3 +1,4 @@
+add_subdirectory(ClosureBetaReduction)
 add_subdirectory(RcCreateSink)
 add_subdirectory(RcCreateFusion)
 add_subdirectory(RcDispatchFusion)
@@ -10,6 +11,7 @@ add_subdirectory(UniqueCarryingRecursionAnalysis)
 add_subdirectory(TRMCRecursionAnalysis)
 
 set(REUSSIR_TRANSFORMATION_AGGREGATE_LIBS
+  MLIRReussirClosureBetaReduction
   MLIRReussirRcCreateSink
   MLIRReussirRcCreateFusion
   MLIRReussirRcDispatchFusion

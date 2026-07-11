@@ -94,6 +94,9 @@ MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent) {
   return wrapOwned(reussir::createReussirSpecialPointerTagPass(options));
 }
 
+MlirPass reussirCreateClosureBetaReductionPass(void) {
+  return wrapOwned(reussir::createReussirClosureBetaReductionPass());
+}
 MlirPass reussirCreateRcCreateSinkPass(void) {
   return wrapOwned(reussir::createReussirRcCreateSinkPass());
 }

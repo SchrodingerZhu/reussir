@@ -17,9 +17,12 @@ pub fn make_adder(k: i32) -> (i32) -> i32 {
     |x: i32| x + k
 }
 
-pub fn use_adder(n: i32) -> i32 {
-    let f = make_adder(n);
-    f(3)
+// The closure arrives as a parameter, so the eval chain roots at a value
+// beta reduction cannot see through — the dispatch (and its type test)
+// survives to the backend. (An eval of a locally created closure would be
+// beta-reduced away at `-O aggressive` before any WPD artifact is emitted.)
+pub fn call_adder(f: (i32) -> i32, n: i32) -> i32 {
+    f(n)
 }
 
 // The vtable global, stamped with its single return-type family id. The

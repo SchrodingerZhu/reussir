@@ -1565,13 +1565,34 @@ def ReussirClosureEvalOp : ReussirClosureOp<"eval", []> {
   let description = [{
     `reussir.closure.eval` evaluates a closure.
 
-    This operation takes a fully applied closure and evaluates it.
-    The output is the result of the closure if exists.
+    Without `with` arguments, the operation takes a fully applied closure and
+    evaluates it. The output is the result of the closure if exists.
+
+    With `with` arguments, the operation is the FUSED form of apply-then-eval:
+    the arguments must match the closure's remaining input types exactly, and
+    the operation behaves as one `closure.uniqify` followed by one
+    `closure.apply` per argument followed by the plain eval — i.e. a single
+    uniqueness resolution for the whole pack instead of one per application
+    (the SCF-ops lowering expands it exactly so). The fused form is produced
+    by `reussir-closure-beta-reduction`, which folds single-use
+    uniqify/apply chains into the pack; like the plain form it CONSUMES the
+    closure and its argument pack, so argument ownership needs no special
+    handling.
+
+    ```mlir
+    %r = reussir.closure.eval (%f : !reussir.rc<!reussir.closure<(i32, i32) -> i32>>)
+      with (%a, %b : i32, i32) : i32
+    ```
   }];
-  let arguments = (ins Arg<RcClosureType, "closure to evaluate">:$closure);
+  let arguments = (ins
+    Arg<RcClosureType, "closure to evaluate">:$closure,
+    Variadic<AnyType>:$args
+  );
   let results = (outs Res<Optional<AnyType>, "result of the closure">:$result);
   let assemblyFormat = [{
-    `(` $closure `:` qualified(type($closure)) `)` (`:` qualified(type($result))^)? attr-dict
+    `(` $closure `:` qualified(type($closure)) `)`
+    (`with` `(` $args^ `:` type($args) `)`)?
+    (`:` qualified(type($result))^)? attr-dict
   }];
   let hasVerifier = 1;
 }

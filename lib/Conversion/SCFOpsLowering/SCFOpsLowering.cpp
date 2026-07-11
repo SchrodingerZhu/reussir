@@ -567,6 +567,48 @@ struct ReussirClosureUniqifyOpRewritePattern
   }
 };
 
+// Expand a FUSED `closure.eval` (one carrying a `with` pack — see the op
+// documentation and `reussir-closure-beta-reduction`) into its defining
+// sequence: an unchecked `closure.apply` per argument and the plain eval.
+// No `closure.uniqify` is emitted: the fused form carries `apply`'s
+// contract — uniqueness is the producer's obligation, and whenever a check
+// was genuinely needed the beta-reduction pass left the original
+// bottom-most uniqify in place as this op's operand. Only the redundant
+// intermediate checks of the folded chain were removed.
+struct ReussirClosureEvalOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirClosureEvalOp> {
+  using OpConversionPattern::OpConversionPattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirClosureEvalOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (op.getArgs().empty())
+      return mlir::failure();
+    RcType rcType = op.getClosure().getType();
+    auto closureType = llvm::cast<ClosureType>(rcType.getEleTy());
+    auto inputTypes = closureType.getInputTypes();
+    mlir::Value cur = op.getClosure();
+    for (auto [index, arg] : llvm::enumerate(op.getArgs())) {
+      auto appliedType = RcType::get(
+          rewriter.getContext(),
+          ClosureType::get(rewriter.getContext(),
+                           inputTypes.drop_front(index + 1),
+                           closureType.getOutputType()),
+          rcType.getCapability(), rcType.getAtomicKind());
+      cur = ReussirClosureApplyOp::create(rewriter, op.getLoc(), appliedType,
+                                          arg, cur);
+    }
+    if (op.getNumResults()) {
+      rewriter.replaceOpWithNewOp<ReussirClosureEvalOp>(
+          op, op.getResult().getType(), cur, mlir::ValueRange{});
+    } else {
+      ReussirClosureEvalOp::create(rewriter, op.getLoc(), mlir::Type(), cur,
+                                   mlir::ValueRange{});
+      rewriter.eraseOp(op);
+    }
+    return mlir::success();
+  }
+};
+
 static void cloneArrayWithUniqueViewBody(ReussirArrayWithUniqueViewOp op,
                                          mlir::Value arrayValue,
                                          mlir::Value viewValue,
@@ -966,6 +1008,10 @@ struct SCFOpsLoweringPass
         [](ReussirTokenFreeOp op) {
           return llvm::isa<TokenType>(op.getToken().getType());
         });
+    // A fused eval (non-empty `with` pack) must be expanded here — the
+    // basic-ops lowering only dispatches the plain, fully-applied form.
+    target.addDynamicallyLegalOp<ReussirClosureEvalOp>(
+        [](ReussirClosureEvalOp op) { return op.getArgs().empty(); });
 
     target.addIllegalOp<ReussirNullableDispatchOp, ReussirRecordDispatchOp,
                         ReussirScfYieldOp, ReussirClosureUniqifyOp,
@@ -988,6 +1034,7 @@ void populateSCFOpsLoweringConversionPatterns(
            ReussirArrayViewOpRewritePattern,
            ReussirRecordDispatchOpRewritePattern,
            ReussirClosureUniqifyOpRewritePattern,
+           ReussirClosureEvalOpRewritePattern,
            ReussirArrayWithUniqueViewOpRewritePattern,
            ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
            ReussirNullableTokenFreeOpRewritePattern,

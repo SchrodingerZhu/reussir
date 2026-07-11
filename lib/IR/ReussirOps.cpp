@@ -299,8 +299,7 @@ mlir::LogicalResult ReussirRcReinterpretOp::verify() {
   // an unpinned dec at a *dynamic* size (`token<align, ?>`) carried at
   // runtime — accept both for such variants.
   if (tokenType.getSize() != size) {
-    if (auto recordType =
-            llvm::dyn_cast<RecordType>(rcType.getElementType());
+    if (auto recordType = llvm::dyn_cast<RecordType>(rcType.getElementType());
         recordType && recordType.isVariant() && recordType.getComplete() &&
         rcBoxType.isHeaderFused() && !recordType.getFixed()) {
       if (tokenType.isDynamicSize())
@@ -325,8 +324,7 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
   if (bool(getDestructureTagAttr()) != bool(getBoundMembersAttr()))
-    return emitOpError(
-        "destructureTag and boundMembers must be set together");
+    return emitOpError("destructureTag and boundMembers must be set together");
   if (isDestructuring()) {
     if (RcType.getAtomicKind() != AtomicKind::normal)
       return emitOpError("destructuring decrement requires a nonatomic box");
@@ -339,8 +337,7 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
     int64_t tag = getDestructureTagAttr().getInt();
     if (tag < 0 || static_cast<size_t>(tag) >= recordType.getMembers().size())
       return emitOpError("destructure tag out of range: ") << tag;
-    auto payload =
-        llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
+    auto payload = llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
     if (!payload || !payload.getComplete())
       return emitOpError("destructured arm must have a complete payload");
     for (int64_t index : getBoundMembersAttr().asArrayRef())
@@ -558,8 +555,7 @@ TokenType ReussirRcCreateOp::getTokenType() {
   // reports the same size, keeping the token verifier's invariant.
   if (auto recordType = llvm::dyn_cast<RecordType>(getValue().getType());
       recordType && recordType.isVariant() && recordType.getComplete() &&
-      rcBoxType.isHeaderFused() && !getRegion() &&
-      !recordType.getFixed()) {
+      rcBoxType.isHeaderFused() && !getRegion() && !recordType.getFixed()) {
     if (auto variant = llvm::dyn_cast_if_present<ReussirRecordVariantOp>(
             getValue().getDefiningOp())) {
       llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
@@ -723,8 +719,7 @@ TokenType ReussirRcCreateVariantOp::getTokenType() {
   // header/lifecycle is handled separately (phase 4 of the landing plan).
   if (auto recordType = llvm::dyn_cast<RecordType>(elementType);
       recordType && recordType.isVariant() && recordType.getComplete() &&
-      rcBoxType.isHeaderFused() && !getRegion() &&
-      !recordType.getFixed()) {
+      rcBoxType.isHeaderFused() && !getRegion() && !recordType.getFixed()) {
     llvm::TypeSize armSize =
         recordType.getVariantArmAllocSize(dataLayout, getTag().getZExtValue());
     return TokenType::get(getContext(), alignment, armSize.getFixedValue());
@@ -2116,11 +2111,20 @@ mlir::LogicalResult ReussirClosureEvalOp::verify() {
   ClosureType closureType =
       llvm::cast<ClosureType>(getClosure().getType().getElementType());
 
-  // Check that the closure has no input types (fully applied)
+  // The `with` pack must supply every remaining input exactly (the plain
+  // form is the empty pack: a fully applied closure).
   auto inputTypes = closureType.getInputTypes();
-  if (!inputTypes.empty())
-    return emitOpError("cannot evaluate closure with remaining input types, ")
-           << "closure has " << inputTypes.size() << " input types remaining";
+  if (inputTypes.size() != getArgs().size())
+    return emitOpError("closure has ")
+           << inputTypes.size() << " remaining input types but "
+           << getArgs().size() << " eval arguments are supplied";
+  for (auto [index, pair] : llvm::enumerate(llvm::zip(getArgs(), inputTypes))) {
+    auto [arg, inputType] = pair;
+    if (arg.getType() != inputType)
+      return emitOpError("eval argument ")
+             << index << " has type " << arg.getType()
+             << " but the closure expects " << inputType;
+  }
 
   // Check that the result type matches the closure's output type
   mlir::Type closureOutputType = closureType.getOutputType();

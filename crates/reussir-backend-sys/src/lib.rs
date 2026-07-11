@@ -117,6 +117,7 @@ unsafe extern "C" {
     /// false = `tbi` (top-byte tag, aarch64), true = `immortal` (plain dummy
     /// address with an immortal refcount, any target).
     pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
+    pub fn reussirCreateClosureBetaReductionPass() -> MlirPass;
     pub fn reussirCreateRcDispatchFusionPass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;

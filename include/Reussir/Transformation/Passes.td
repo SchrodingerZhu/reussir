@@ -38,6 +38,33 @@ def ReussirSpecialPointerTagPass
 }
 
 //===----------------------------------------------------------------------===//
+// ClosureBetaReduction
+//===----------------------------------------------------------------------===//
+def ReussirClosureBetaReductionPass
+    : Pass<"reussir-closure-beta-reduction", "::mlir::func::FuncOp"> {
+  let summary = "beta-reduce closure apply/eval chains";
+  let description = [{
+    `reussir-closure-beta-reduction` walks each `closure.eval`'s operand up
+    the def-use chain, folding single-use `closure.uniqify`/`closure.apply`
+    links into the eval's fused `with` pack. A chain bottoming at a
+    single-use inlined `closure.create` is a visible beta redex: the body is
+    spliced in place of the eval with the pack substituted for its
+    parameters, and every intermediate operation (chain, create, dead token)
+    is erased. Any other root leaves the fused eval, which the SCF-ops
+    lowering expands as ONE uniqueness resolution + unchecked applies +
+    plain eval — the intermediate uniqueness checks of the folded chain
+    collapse into one.
+
+    Runs after the inliner (so cross-function create→eval pairs are visible)
+    and before token instantiation / closure outlining (bodies are still
+    inline regions). Intended for aggressive optimization only: inlining
+    closure bodies detaches the code from the closure abstraction the
+    programmer wrote, which hurts debuggability.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // RcCreateSink
 //===----------------------------------------------------------------------===//
 def ReussirRcCreateSinkPass
