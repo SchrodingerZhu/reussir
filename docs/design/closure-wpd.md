@@ -61,11 +61,16 @@ vtable/slot load is `invariant.group`-tagged).
 **family root** id — whose candidate set is every closure in the program
 returning `c`. The hierarchy only pays off by strengthening: since
 apply/uniqify/clone preserve the vtable, any id valid before an apply is
-valid after it. At lowering time the eval walks its operand's SSA chain back
-through those ops (and through block arguments, meeting over predecessors)
-to the fullest statically visible suffix, and tests *that* id — e.g. a
-parameter typed `(a, b) -> c` applied twice locally lets the eval test
-`closure<(a,b)->c>` instead of `closure<()->c>`.
+valid after it. The basic-ops pass prologue runs a sparse forward dataflow
+analysis (`SparseForwardDataFlowAnalysis`) whose lattice per SSA closure
+value is the fullest statically known suffix of its backing vtable's
+original signature: apply/uniqify/clone forward their operand's view
+unchanged, every other producer contributes the static type, and merge
+points (block arguments, over live predecessors only) join by longest
+common suffix — loop-carried closures reach the fixpoint instead of being
+given up on. Each indirect call site then asserts its operand's resolved
+view — e.g. a parameter typed `(a, b) -> c` applied twice locally lets the
+eval test `closure<(a,b)->c>` instead of `closure<()->c>`.
 
 ## Closed-world soundness
 
@@ -94,16 +99,18 @@ what makes devirtualization legal without LTO summaries.
 
 `rrc` (on by default at `-O aggressive`/`-O size`; `--no-closure-wpd` opts
 out) → `LoweringOptions::closure_wpd` → the basic-ops lowering records
-`reussir.wpd.vtables` (vtable symbol → id tiers) on the module; the
-conversion patterns carry each vtable's tiers onto its global
-(`reussir.wpd.type_ids`) and assert the strengthened id at each indirect
-slot call site with `reussir.closure.wpd_test` → at
-`translateModuleToLLVMIR`, the dialect's LLVM translation interface — the
-LLVM dialect can express neither `!type` metadata nor `llvm.type.test`'s
-metadata-string operand — stamps the metadata and lowers each `wpd_test`
-into `llvm.type.test` + `llvm.assume` → the backend LLVM pipeline runs
+`reussir.wpd.vtables` (vtable symbol → id tiers) on the module and inserts
+a `reussir.closure.wpd_test` with the strengthened id in front of each
+indirect slot call site → the conversion patterns carry each vtable's tiers
+onto its global (`reussir.wpd.type_ids`) and rewrite each `wpd_test` onto
+its loaded vtable pointer → at `translateModuleToLLVMIR`, the dialect's
+LLVM translation interface — the LLVM dialect can express neither `!type`
+metadata nor `llvm.type.test`'s metadata-string operand — stamps the
+metadata and lowers each `wpd_test` into `llvm.type.test` + `llvm.assume`
+→ the backend LLVM pipeline folds the assertion's vtable load into the
+call site's (both are `invariant.group` loads of the same slot), runs
 `WholeProgramDevirt` before the per-module pipeline (so devirtualized calls
-inline) and lowers away the remaining type tests.
+inline), and lowers away the remaining type tests.
 
 ## Invariant canary
 

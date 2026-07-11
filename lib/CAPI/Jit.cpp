@@ -20,6 +20,8 @@
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 
+#include <llvm/Transforms/IPO/LowerTypeTests.h>
+
 #ifdef REUSSIR_HAS_TPDE
 #include <cstdint>
 #include <vector>
@@ -60,6 +62,14 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt)
 
   llvm::ModulePassManager mpm;
   mpm.addPass(reussir::llvmpass::RuntimeFunctionAttributorPass());
+  // Consume the closure-WPD artifacts (`llvm.type.test` + `assume` at the
+  // indirect vtable call sites) before the module pipeline: drop the assumes
+  // and fold the tests away so no `llvm.type.test` ever reaches instruction
+  // selection. A no-op for modules lowered without `closure-wpd` (REPL/JIT
+  // increments among them — this entry point serves both backends).
+  mpm.addPass(llvm::LowerTypeTestsPass(
+      /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
+      llvm::lowertypetests::DropTestKind::Assume));
   mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);

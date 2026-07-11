@@ -47,6 +47,10 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h>
+#include <mlir/Analysis/DataFlow/DeadCodeAnalysis.h>
+#include <mlir/Analysis/DataFlow/SparseAnalysis.h>
+#include <mlir/Analysis/DataFlowFramework.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Transforms/DialectConversion.h>
@@ -1912,6 +1916,40 @@ struct ReussirClosureCreateOpConversionPattern
   }
 };
 
+// Lowers a prologue-inserted `reussir.closure.wpd_test` from its rc'd-closure
+// form onto the vtable pointer: loads the vtable slot (`invariant.group`, like
+// every other vtable load) and re-emits the op on the loaded pointer, the form
+// the dialect's LLVM translation interface turns into `llvm.type.test` +
+// `llvm.assume`. The load duplicates the one the adjacent call site emits;
+// both are `invariant.group` loads of the same slot, folded to one by the
+// backend pipeline before WholeProgramDevirt consumes the test.
+struct ReussirClosureWpdTestOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirClosureWpdTestOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirClosureWpdTestOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto rcType = llvm::dyn_cast<RcType>(op.getVtable().getType());
+    if (!rcType)
+      return mlir::failure(); // Already the lowered vtable-pointer form.
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto converter =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+    auto structType = converter->convertType(rcType.getInnerBoxType());
+    auto vtablePtr = mlir::LLVM::GEPOp::create(
+        rewriter, op.getLoc(), llvmPtrType, structType, adaptor.getVtable(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1, ClosureBoxType::VTABLE_INDEX});
+    auto vtable = mlir::LLVM::LoadOp::create(rewriter, op.getLoc(), llvmPtrType,
+                                             vtablePtr);
+    vtable.setInvariantGroup(true);
+    ReussirClosureWpdTestOp::create(rewriter, op.getLoc(), vtable,
+                                    op.getIdAttr());
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
 struct ReussirRcDecOpConversionPattern
     : public mlir::OpConversionPattern<ReussirRcDecOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -3250,6 +3288,15 @@ struct ReussirConvertToLLVMPatternInterface
     populateLLVMInterfaceForDialect<mlir::ub::UBDialect>(
         patterns.getContext(), target, typeConverter, patterns);
     populateBasicOpsLoweringToLLVMConversionPatterns(typeConverter, patterns);
+    // `reussir.closure.wpd_test` converts from its rc'd-closure form onto the
+    // loaded vtable pointer, and THAT form stays in the LLVM-dialect module
+    // until `translateModuleToLLVMIR`, where the dialect's LLVM translation
+    // interface lowers it to `llvm.type.test` + `llvm.assume` — neither of
+    // which the LLVM dialect can express.
+    target.addDynamicallyLegalOp<ReussirClosureWpdTestOp>(
+        [](ReussirClosureWpdTestOp op) {
+          return !llvm::isa<RcType>(op.getVtable().getType());
+        });
     target.addIllegalOp<
         ReussirPanicOp, ReussirExpectOp, ReussirCctxEmptyOp, ReussirCctxExtendOp,
         ReussirCctxApplyOp, ReussirTokenAllocOp, ReussirTokenFreeOp,
@@ -3274,6 +3321,139 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Closure WPD: suffix strengthening as a sparse forward dataflow analysis
+//===----------------------------------------------------------------------===//
+
+// The strengthened view of one SSA closure value: the fullest suffix of its
+// backing vtable's ORIGINAL signature statically known to be valid for it —
+// the strongest type id an indirect call site on the value may assert.
+// apply/uniqify/clone never change a closure's vtable, so the knowledge
+// survives them unchanged; where control flow merges, the sound view is the
+// longest common suffix of the incoming views (the meet in the suffix
+// hierarchy). This is what makes the tiered ids pay off: an eval operand is
+// always typed `() -> c` (the family root, backed by every closure returning
+// c), but a parameter typed `(a, b) -> c` applied twice locally lets the
+// eval test the far smaller `(a, b) -> c` set.
+class ClosureStrength {
+public:
+  // The uninitialized (bottom) state: nothing propagated here yet.
+  ClosureStrength() = default;
+  explicit ClosureStrength(ClosureType type)
+      : initialized(true), type(type) {}
+
+  // The pessimistic view of a value: its static type for rc'd closures, "no
+  // information" (a null type) for everything else.
+  static ClosureStrength pessimistic(mlir::Value value) {
+    if (auto rcType = llvm::dyn_cast<RcType>(value.getType()))
+      if (auto closure = llvm::dyn_cast<ClosureType>(rcType.getElementType()))
+        return ClosureStrength(closure);
+    return ClosureStrength(ClosureType());
+  }
+
+  bool isUninitialized() const { return !initialized; }
+  ClosureType getType() const { return type; }
+
+  bool operator==(const ClosureStrength &rhs) const {
+    return initialized == rhs.initialized && type == rhs.type;
+  }
+
+  // The longest common suffix — the strongest view sound for a value merging
+  // from both sides. Outputs agree whenever suffix-related views of the same
+  // static type meet; anything else (including a null "no information" side)
+  // collapses to no information.
+  static ClosureStrength join(const ClosureStrength &lhs,
+                              const ClosureStrength &rhs) {
+    if (lhs.isUninitialized())
+      return rhs;
+    if (rhs.isUninitialized())
+      return lhs;
+    if (lhs.type == rhs.type)
+      return lhs;
+    if (!lhs.type || !rhs.type ||
+        lhs.type.getOutputType() != rhs.type.getOutputType())
+      return ClosureStrength(ClosureType());
+    auto lhsIn = lhs.type.getInputTypes();
+    auto rhsIn = rhs.type.getInputTypes();
+    size_t common = 0;
+    while (common < lhsIn.size() && common < rhsIn.size() &&
+           lhsIn[lhsIn.size() - 1 - common] == rhsIn[rhsIn.size() - 1 - common])
+      ++common;
+    return ClosureStrength(ClosureType::get(
+        lhs.type.getContext(), lhsIn.take_back(common), lhs.type.getOutputType()));
+  }
+
+  void print(llvm::raw_ostream &os) const {
+    if (!initialized)
+      os << "<uninitialized>";
+    else if (!type)
+      os << "<no info>";
+    else
+      os << type;
+  }
+
+private:
+  bool initialized = false;
+  ClosureType type = nullptr;
+};
+
+using ClosureStrengthLattice = mlir::dataflow::Lattice<ClosureStrength>;
+
+// Forward propagation of ClosureStrength over the SSA graph. The framework
+// handles the control-flow plumbing — block arguments join over their
+// (live) predecessors, loop-carried closures reach a fixpoint instead of
+// being given up on — so the transfer function only encodes the one domain
+// fact: apply/uniqify/clone are vtable-preserving.
+class ClosureStrengthAnalysis
+    : public mlir::dataflow::SparseForwardDataFlowAnalysis<
+          ClosureStrengthLattice> {
+public:
+  using SparseForwardDataFlowAnalysis::SparseForwardDataFlowAnalysis;
+
+  mlir::LogicalResult
+  visitOperation(mlir::Operation *op,
+                 llvm::ArrayRef<const ClosureStrengthLattice *> operands,
+                 llvm::ArrayRef<ClosureStrengthLattice *> results) override {
+    unsigned chased;
+    if (llvm::isa<ReussirClosureUniqifyOp, ReussirClosureCloneOp>(op))
+      chased = 0;
+    else if (llvm::isa<ReussirClosureApplyOp>(op))
+      chased = 1; // (arg, closure)
+    else {
+      // Any other op contributes only static knowledge to its results.
+      setAllToEntryStates(results);
+      return mlir::success();
+    }
+    const ClosureStrength &in = operands[chased]->getValue();
+    if (in.isUninitialized())
+      return mlir::success(); // Revisited once the operand resolves.
+    propagateIfChanged(results[0], results[0]->join(in));
+    return mlir::success();
+  }
+
+  // Values the analysis cannot see past (entry arguments, external calls,
+  // unhandled producers) carry exactly their static type.
+  void setToEntryState(ClosureStrengthLattice *lattice) override {
+    propagateIfChanged(
+        lattice, lattice->join(ClosureStrength::pessimistic(lattice->getAnchor())));
+  }
+};
+
+// The strengthened type of a closure value after the solver ran: the lattice
+// view when one was computed, the static type otherwise.
+static ClosureType strengthenedClosureType(mlir::DataFlowSolver &solver,
+                                           mlir::Value closure) {
+  auto staticType = llvm::cast<ClosureType>(
+      llvm::cast<RcType>(closure.getType()).getElementType());
+  auto *lattice = solver.lookupState<ClosureStrengthLattice>(closure);
+  if (!lattice)
+    return staticType;
+  const ClosureStrength &strength = lattice->getValue();
+  if (strength.isUninitialized() || !strength.getType())
+    return staticType;
+  return strength.getType();
+}
 
 struct BasicOpsLoweringPass
     : public impl::ReussirBasicOpsLoweringPassBase<BasicOpsLoweringPass> {
@@ -3310,13 +3490,54 @@ struct BasicOpsLoweringPass
                       mlir::DictionaryAttr::get(ctx, entries));
   }
 
+  // Run the strengthening analysis, then insert a `reussir.closure.wpd_test`
+  // asserting the strengthened id in front of every indirect vtable call
+  // site — eval (evaluate slot), closure.clone (clone slot), rc.dec of a
+  // closure (drop slot). The op is inserted here, on clean pre-conversion
+  // IR; its own conversion pattern later rewrites it onto the loaded vtable
+  // pointer, and the dialect's LLVM translation interface lowers that to
+  // `llvm.type.test` + `llvm.assume`.
+  mlir::LogicalResult insertClosureWpdTypeTests(mlir::ModuleOp moduleOp) {
+    mlir::DataFlowSolver solver;
+    // Dead-code + constant-propagation feed the sparse framework's
+    // reachability (dead predecessors do not weaken a merge).
+    solver.load<mlir::dataflow::DeadCodeAnalysis>();
+    solver.load<mlir::dataflow::SparseConstantPropagation>();
+    solver.load<ClosureStrengthAnalysis>();
+    if (mlir::failed(solver.initializeAndRun(moduleOp)))
+      return mlir::failure();
+    mlir::OpBuilder builder(moduleOp.getContext());
+    auto testBefore = [&](mlir::Operation *op, mlir::Value closure) {
+      builder.setInsertionPoint(op);
+      std::string id =
+          closureWpdTypeId(strengthenedClosureType(solver, closure));
+      ReussirClosureWpdTestOp::create(builder, op->getLoc(), closure,
+                                      builder.getStringAttr(id));
+    };
+    moduleOp.walk([&](mlir::Operation *op) {
+      if (auto eval = llvm::dyn_cast<ReussirClosureEvalOp>(op))
+        return testBefore(op, eval.getClosure());
+      if (auto clone = llvm::dyn_cast<ReussirClosureCloneOp>(op))
+        return testBefore(op, clone.getClosure());
+      if (auto dec = llvm::dyn_cast<ReussirRcDecOp>(op)) {
+        auto rcType = llvm::dyn_cast<RcType>(dec.getRcPtr().getType());
+        if (rcType && llvm::isa<ClosureType>(rcType.getElementType()))
+          testBefore(op, dec.getRcPtr());
+      }
+    });
+    return mlir::success();
+  }
+
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     mlir::LLVMTypeConverter converter(moduleOp.getContext(),
                                       getReussirToLLVMOptions(moduleOp));
     ensureRuntimeFunctions(moduleOp, converter);
-    if (closureWpd)
+    if (closureWpd) {
       buildClosureWpdVtableMap(moduleOp);
+      if (mlir::failed(insertClosureWpdTypeTests(moduleOp)))
+        return signalPassFailure();
+    }
     // Fused debug-info attributes are converted to LLVM DI by the separate
     // `reussir-lowering-debug-info` pass, which runs after `convert-to-llvm`
     // so the functions are already `llvm.func` (a function's DI only survives
@@ -3410,6 +3631,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirClosureApplyOpConversionPattern,
       ReussirClosureCloneOpConversionPattern,
       ReussirClosureEvalOpConversionPattern,
+      ReussirClosureWpdTestOpConversionPattern,
       ReussirClosureInspectPayloadOpConversionPattern,
       ReussirClosureCursorOpConversionPattern,
       ReussirClosureTransferOpConversionPattern,
