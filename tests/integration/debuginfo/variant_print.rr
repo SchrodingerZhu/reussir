@@ -1,0 +1,142 @@
+// REQUIRES: lldb
+// UNSUPPORTED: windows
+// RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
+// RUN: %cc %t.o %S/variant_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %lldb -s %S/variant_print.lldb %t.exe | %FileCheck %s
+
+// These are DWARF tests: on windows the MSVC target's debug flow (and the
+// MinGW debuggers that happen to sit on CI runners' PATH) is a different
+// world, hence UNSUPPORTED there.
+//
+// Debug-info rescan, end to end: compile with `-g`, run under lldb with the
+// Reussir formatters (tool/lldb/reussir_formatters.py) loaded, and check the
+// debugger's *printed variables* — not just the emitted IR. This pins the
+// whole contract at once: the DWARF `DW_TAG_variant_part` encoding
+// (rustc-shaped: full-size case structs, absolute field offsets, cases at
+// offset 0 — the only shape lldb's variant support reads correctly), the
+// fused-header box layout (`{i32 count, i32 tag, payload}` — the rc pointer
+// aims at the record itself, no header skip), the plain shared-box header
+// skip, packed member offsets, and the formatters' active-case collapse.
+//
+// The scenarios below are deliberately layered: a by-value enum (minimal i8
+// tag) across all three arms including the nullary one (which used to crash
+// lldb outright), a boxed recursive enum (pointer chase through a fused
+// header), a two-way recursive tree, and a boxed struct nesting a value
+// struct, a value enum, and a bool.
+
+enum [value] Shape {
+    Dot,
+    Circle(i64),
+    Rect(i64, i64)
+}
+
+enum List {
+    Nil,
+    Cons(i64, List)
+}
+
+enum Tree {
+    Leaf(i64),
+    Node(Tree, Tree)
+}
+
+struct [value] Point {
+    x: i64,
+    y: i64
+}
+
+struct Snapshot {
+    origin: Point,
+    shape: Shape,
+    flag: bool
+}
+
+fn inspect_shape(s: Shape) -> i64 {
+    let probe = 41;
+    probe + 1
+}
+
+fn inspect_list(l: List) -> i64 {
+    let depth = 3;
+    depth
+}
+
+fn inspect_tree(t: Tree) -> i64 {
+    let mark = 11;
+    mark
+}
+
+fn inspect_snapshot(snap: Snapshot) -> i64 {
+    let here = 7;
+    here
+}
+
+fn run(n: i64) -> i64 {
+    let a = inspect_shape(Shape::Rect{n, n + 1});
+    let b = inspect_shape(Shape::Circle{n * 2});
+    let c = inspect_shape(Shape::Dot);
+    let d = inspect_list(List::Cons{n, List::Cons{n + 1, List::Nil}});
+    let e = inspect_snapshot(Snapshot{
+        origin: Point{x: n, y: n + 1},
+        shape: Shape::Circle{n + 2},
+        flag: true
+    });
+    let f = inspect_tree(Tree::Node{
+        Tree::Leaf{1},
+        Tree::Node{Tree::Leaf{2}, Tree::Leaf{3}}
+    });
+    a + b + c + d + e + f
+}
+
+extern "C" trampoline "variant_print_ffi" = run;
+
+// The value enum, all three arms. The formatters collapse the variant to the
+// active case and name it in the summary, gdb-style; the synthetic children
+// are the case's fields.
+// CHECK: (lldb) frame variable s
+// CHECK-NEXT: (_RC5Shape) s = Rect {f0: 7, f1: 8} {
+// CHECK-NEXT: f0 = 7
+// CHECK-NEXT: f1 = 8
+// CHECK-NEXT: }
+
+// CHECK: (lldb) frame variable s
+// CHECK-NEXT: (_RC5Shape) s = Circle {f0: 14} {
+// CHECK-NEXT: f0 = 14
+// CHECK-NEXT: }
+
+// The nullary arm: summary only, no children (this shape used to crash lldb
+// when the case struct was emitted zero-sized).
+// CHECK: (lldb) frame variable s
+// CHECK-NEXT: (_RC5Shape) s = Dot
+
+// The boxed recursive enum: `l` is presented as the pointee record (the
+// fused-header box IS the record), and the recursive `f1` field is a pointer
+// whose pointee renders with the same active-case summary — a pointer chase
+// in one `frame variable`.
+// CHECK: (lldb) frame variable l
+// CHECK-NEXT: (_RC4List) l = Cons {f0: 7, f1: {{0x[0-9a-f]+}}} {
+// CHECK-NEXT: f0 = 7
+// CHECK-NEXT: f1 = {{0x[0-9a-f]+}} Cons {f0: 8, f1: {{0x[0-9a-f]+}}}
+// CHECK-NEXT: }
+
+// The boxed struct: one shared-box header skip, then a nested value struct, a
+// value enum member (collapsed to its active case), and a real `bool`.
+// CHECK: (lldb) frame variable snap
+// CHECK-NEXT: (_RC8Snapshot) snap = {
+// CHECK-NEXT: origin = {
+// CHECK-NEXT: x = 7
+// CHECK-NEXT: y = 8
+// CHECK-NEXT: }
+// CHECK-NEXT: shape = Circle {f0: 9} {
+// CHECK-NEXT: f0 = 9
+// CHECK-NEXT: }
+// CHECK-NEXT: flag = true
+// CHECK-NEXT: }
+
+// The two-way recursive tree: both children are boxed pointers, each with its
+// own active-case summary.
+// CHECK: (lldb) frame variable t
+// CHECK-NEXT: (_RC4Tree) t = Node {f0: {{0x[0-9a-f]+}}, f1: {{0x[0-9a-f]+}}} {
+// CHECK-NEXT: f0 = {{0x[0-9a-f]+}} Leaf {f0: 1}
+// CHECK-NEXT: f1 = {{0x[0-9a-f]+}} Node {f0: {{0x[0-9a-f]+}}, f1: {{0x[0-9a-f]+}}}
+// CHECK-NEXT: }

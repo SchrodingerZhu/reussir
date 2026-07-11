@@ -1,0 +1,14 @@
+# Companion command script for advanced_print.rr — see the RUN lines there.
+breakpoint set --name observe_cell
+breakpoint set --name observe_rtag
+breakpoint set --name observe_fixed
+breakpoint set --name observe_ping
+run
+frame variable c
+continue
+frame variable r
+continue
+frame variable f
+continue
+frame variable p
+continue

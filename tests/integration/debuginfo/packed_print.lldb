@@ -1,0 +1,7 @@
+# Companion command script for packed_print.rr — see the RUN lines there.
+# The breakpoint lands on `probe`'s result expression, after both `let`
+# bindings have run.
+breakpoint set --file packed_print.rr --line 24
+run
+frame variable
+continue

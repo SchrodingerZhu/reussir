@@ -1,0 +1,41 @@
+// REQUIRES: lldb
+// UNSUPPORTED: windows
+// RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
+// RUN: %cc %t.o %S/packed_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %lldb -s %S/packed_print.lldb %t.exe | %FileCheck %s
+
+// Debug-info rescan for *packed* member offsets and `let` locals. Compound
+// records are laid out in descending storage-alignment order, not declaration
+// order (`big` physically precedes `small` and `tiny` here); the DWARF must
+// report the packed offsets or every mixed-alignment field read is shifted.
+// The debugger output below is checked against the declared names with the
+// constructed values — that only holds when the offsets are right. Locals
+// (`sum`, `twice`) are checked at the line after their bindings ran.
+
+struct [value] Packed {
+    small: i32,
+    big: i64,
+    tiny: bool
+}
+
+fn probe(p: Packed) -> i64 {
+    let sum = p.big + 1;
+    let twice = sum * 2;
+    twice - sum       // packed_print.lldb breaks on this line (line 24)
+}
+
+fn run(n: i64) -> i64 {
+    probe(Packed{small: 33, big: n, tiny: true})
+}
+
+extern "C" trampoline "packed_print_ffi" = run;
+
+// All three fields must read back with their constructed values despite the
+// packed physical order, and the locals must be live at the breakpoint line.
+// CHECK: (lldb) frame variable
+// CHECK-DAG: (_RC6Packed) p = {
+// CHECK-DAG: small = 33
+// CHECK-DAG: big = 500
+// CHECK-DAG: tiny = true
+// CHECK-DAG: sum = 501
+// CHECK-DAG: twice = 1002

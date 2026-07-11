@@ -8,12 +8,57 @@ and present only the live case — the same active-arm view gdb gives.
 Load with:  command script import /path/to/reussir_formatters.py
 """
 
+import re
+
 import lldb
+
+
+def _case_name(case):
+    """The active case's display name, cleaned of lldb artifacts.
+
+    lldb renders a variant member's type name with a bitfield-style ``:<n>``
+    suffix (e.g. ``Cons:32``) and, for namespaced types, a scope prefix; strip
+    both so the summary reads like gdb's (``Cons {...}``).
+    """
+    name = case.GetTypeName() or ""
+    name = name.rsplit("::", 1)[-1]
+    return re.sub(r":\d+$", "", name)
 
 
 def _active(valobj):
     """Return (case_value, discr) for a variant_part value, or (None, None)."""
-    variants = valobj.GetChildMemberWithName("$variants$")
+    # Read through the raw view: once the synthetic provider is installed, the
+    # summary (and any re-entry) sees the *synthetic* children — the active
+    # case's fields — and `$variants$` is no longer reachable there.
+    raw = valobj.GetNonSyntheticValue()
+    # Rebuild the value memory-backed at its own address before descending.
+    # lldb gives the variant-part nodes (`$discr$`, each case's `value`) no
+    # load address of their own: their bytes come from the ANCESTOR value's
+    # host buffer. For a plain frame variable that buffer is right, but for
+    # anything derived — a boxed field's pointer (buffer = the pointer bytes)
+    # or a Dereference() result — the reads are garbage: the discriminant
+    # comes out as the box refcount. CreateValueFromAddress always reads
+    # target memory at the right base.
+    if raw.GetType().IsPointerType():
+        addr = raw.GetValueAsUnsigned()
+        pointee = raw.GetType().GetPointeeType()
+    else:
+        addr = raw.GetLoadAddress()
+        pointee = raw.GetType()
+    if addr in (0, lldb.LLDB_INVALID_ADDRESS):
+        return None, None
+    target = raw.GetTarget()
+    raw = target.CreateValueFromAddress(
+        raw.GetName() or "value", lldb.SBAddress(addr, target),
+        pointee).GetNonSyntheticValue()
+    if not raw.IsValid():
+        return None, None
+    # A boxed member points at the box wrapper `{ value }`, whose `value`
+    # member is the payload composite at its view offset — descend into it.
+    value = raw.GetChildMemberWithName("value")
+    if value.IsValid() and raw.GetNumChildren() == 1:
+        raw = value.GetNonSyntheticValue()
+    variants = raw.GetChildMemberWithName("$variants$")
     if not variants.IsValid() or variants.GetNumChildren() == 0:
         return None, None
     first = variants.GetChildAtIndex(0)
@@ -57,7 +102,7 @@ def variant_summary(valobj, internal_dict):
     case, _ = _active(valobj)
     if case is None or not case.IsValid():
         return ""  # not a variant → fall back to the default rendering
-    name = case.GetTypeName() or ""
+    name = _case_name(case)
     fields = []
     for i in range(case.GetNumChildren()):
         child = case.GetChildAtIndex(i)

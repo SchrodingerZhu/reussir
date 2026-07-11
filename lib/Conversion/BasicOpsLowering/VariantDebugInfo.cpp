@@ -76,10 +76,13 @@ void rewriteVariant(LLVMContext &ctx, DICompositeType *composite,
 
   // The discriminant is the tag member, marked artificial (compiler-synthesised,
   // not a source field). Scoped to the enum itself, matching what rustc emits.
+  // It keeps the tag's own offset: 0 for a value variant, 4 for a fused-header
+  // one (past the overlaid refcount slot).
   auto *discriminator = DIDerivedType::get(
       ctx, dwarf::DW_TAG_member, /*Name=*/StringRef(), file, /*Line=*/0,
       /*Scope=*/composite, /*BaseType=*/v.tag->getBaseType(),
-      v.tag->getSizeInBits(), v.tag->getAlignInBits(), /*OffsetInBits=*/0,
+      v.tag->getSizeInBits(), v.tag->getAlignInBits(),
+      v.tag->getOffsetInBits(),
       /*DWARFAddressSpace=*/std::nullopt, /*PtrAuthData=*/std::nullopt,
       DINode::FlagArtificial);
 

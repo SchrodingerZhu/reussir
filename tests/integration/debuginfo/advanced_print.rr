@@ -1,0 +1,110 @@
+// REQUIRES: lldb
+// UNSUPPORTED: windows
+// RUN: %rrc %s -O none -g --relocation-mode pic -o %t.o
+// RUN: %cc %t.o %S/advanced_print.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %lldb -s %S/advanced_print.lldb %t.exe | %FileCheck %s
+
+// Debug-info rescan for the layouts variant_print.rr does not reach:
+//
+// - regional (`[regional]`) records — the box carries a three-word
+//   `{status, next, vtable}` header, so the variable's `DIExpression` skips
+//   24 bytes (and 24 + 4 to the tag-first view for a regional *enum*), and a
+//   `regional` function's debug arguments must bind past the implicit region
+//   parameter (they used to describe the region pointer instead);
+// - a `#[repr(fixed)]` (uniform max-arm sizing) enum — same fused-header
+//   debug shape as the per-constructor default, pinned here so a sizing-mode
+//   change can never silently drop the variant encoding;
+// - mutually recursive enums — the recursion placeholder crosses TWO record
+//   composites before it resolves, and the boxed pointer chase must still
+//   land on the right active case.
+
+struct [regional] RCell {
+    tag: i64,
+    peer: i64
+}
+
+enum [regional] RTag {
+    Zero,
+    Pair(i64, i64)
+}
+
+#[repr(fixed)]
+enum Fixed {
+    One(i64),
+    Two(i64, i64, i64)
+}
+
+enum Ping {
+    Stop,
+    Next(Pong)
+}
+
+enum Pong {
+    Wrap(i64, Ping)
+}
+
+regional fn observe_cell(c: [flex] RCell) -> i64 {
+    let z = 1;
+    z
+}
+
+regional fn observe_rtag(r: [flex] RTag) -> i64 {
+    let z = 2;
+    z
+}
+
+fn observe_fixed(f: Fixed) -> i64 {
+    let z = 3;
+    z
+}
+
+fn observe_ping(p: Ping) -> i64 {
+    let z = 4;
+    z
+}
+
+fn run(n: i64) -> i64 {
+    let a = regional {
+        let cell : [flex] RCell = RCell{tag: n, peer: n + 1};
+        observe_cell(cell)
+    };
+    let b = regional {
+        let r : [flex] RTag = RTag::Pair{n, n + 1};
+        observe_rtag(r)
+    };
+    let c = observe_fixed(Fixed::Two{n, n + 1, n + 2});
+    let d = observe_ping(Ping::Next{Pong::Wrap{n * 3, Ping::Stop}});
+    a + b + c + d
+}
+
+extern "C" trampoline "advanced_print_ffi" = run;
+
+// The regional struct: three-word header skipped, fields at their packed
+// offsets, bound to the source argument (not the implicit region parameter).
+// CHECK: (lldb) frame variable c
+// CHECK-NEXT: (_RC5RCell) c = {
+// CHECK-NEXT: tag = 7
+// CHECK-NEXT: peer = 8
+// CHECK-NEXT: }
+
+// The regional enum: tag-first view past the header (offset 28).
+// CHECK: (lldb) frame variable r
+// CHECK-NEXT: (_RC4RTag) r = Pair {f0: 7, f1: 8} {
+// CHECK-NEXT: f0 = 7
+// CHECK-NEXT: f1 = 8
+// CHECK-NEXT: }
+
+// The #[repr(fixed)] enum: same variant encoding as per-constructor sizing.
+// CHECK: (lldb) frame variable f
+// CHECK-NEXT: (_RC5Fixed) f = Two {f0: 7, f1: 8, f2: 9} {
+// CHECK-NEXT: f0 = 7
+// CHECK-NEXT: f1 = 8
+// CHECK-NEXT: f2 = 9
+// CHECK-NEXT: }
+
+// Mutual recursion: Ping's payload is a boxed Pong whose payload is a boxed
+// Ping — the chase across both composites shows each active case.
+// CHECK: (lldb) frame variable p
+// CHECK-NEXT: (_RC4Ping) p = Next {f0: {{0x[0-9a-f]+}}} {
+// CHECK-NEXT: f0 = {{0x[0-9a-f]+}} Wrap {f0: 21, f1: {{0x[0-9a-f]+}}}
+// CHECK-NEXT: }
