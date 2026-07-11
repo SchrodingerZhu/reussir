@@ -63,6 +63,8 @@ pub fn context() -> Context {
     context.get_or_load_dialect("reussir");
     context.get_or_load_dialect("func");
     context.get_or_load_dialect("cf");
+    // The array ops (issue #344) build `memref` views/loads/stores directly.
+    context.get_or_load_dialect("memref");
     context
 }
 
