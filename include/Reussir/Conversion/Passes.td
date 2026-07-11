@@ -29,7 +29,23 @@ def ReussirBasicOpsLoweringPass
     materializing the Reussir runtime declarations and normalizing fused debug
     information. The actual lowering of Reussir basic operations is provided by
     the registered LLVM lowering interface and is driven by `convert-to-llvm`.
+
+    With `closure-wpd` enabled, the pass also records the whole-program
+    devirtualization type ids of every outlined closure vtable on the module
+    (`reussir.wpd.vtables`); the vtable conversion pattern carries them onto
+    the vtable globals (`reussir.wpd.type_ids`) and the conversion patterns
+    assert them at the indirect vtable call sites (eval/clone/drop) with
+    `reussir.closure.wpd_test`. The dialect's LLVM translation interface
+    turns both into the real artifacts — `!type` / `!vcall_visibility`
+    metadata and `llvm.type.test` + `llvm.assume` — during
+    `translateModuleToLLVMIR`. Only enable this on a closed world: one module
+    carrying every closure vtable the tested call sites can observe (see
+    docs/design/closure-wpd.md).
   }];
+  let options = [
+    Option<"closureWpd", "closure-wpd", "bool", /*default=*/"false",
+        "emit whole-program devirtualization artifacts for closure vtables">,
+  ];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::memref::MemRefDialect",
                            "::mlir::scf::SCFDialect",

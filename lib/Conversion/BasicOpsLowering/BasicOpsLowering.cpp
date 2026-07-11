@@ -8,6 +8,7 @@
 
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringSet.h>
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/DebugInfo/DWARF/DWARFAttribute.h>
 #include <llvm/Support/Casting.h>
@@ -53,6 +54,7 @@
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/Conversion/Blake3Symbol.h"
 #include "Reussir/Conversion/CABISignatureConversion.h"
+#include "Reussir/Conversion/ClosureWpd.h"
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirDialect.h"
@@ -1812,6 +1814,16 @@ struct ReussirClosureVtableOpConversionPattern
         rewriter, op.getLoc(), vtableType, /*isConstant=*/true,
         mlir::LLVM::Linkage::Internal, op.getSymName(), nullptr);
 
+    // With `closure-wpd` on, the basic-ops pass prologue recorded this
+    // vtable's type-id tiers on the module; carry them on the global so the
+    // dialect's LLVM translation interface can stamp the `!type` /
+    // `!vcall_visibility` metadata the LLVM dialect cannot express.
+    if (auto map =
+            op->getParentOfType<mlir::ModuleOp>()->getAttrOfType<
+                mlir::DictionaryAttr>(kClosureWpdVtableMapAttr))
+      if (mlir::Attribute ids = map.get(op.getSymName()))
+        vtableOp->setAttr(kClosureWpdTypeIdsAttr, ids);
+
     // Create initializer block
     mlir::Block *initBlock =
         rewriter.createBlock(&vtableOp.getInitializerRegion());
@@ -3266,11 +3278,45 @@ struct ReussirConvertToLLVMPatternInterface
 struct BasicOpsLoweringPass
     : public impl::ReussirBasicOpsLoweringPassBase<BasicOpsLoweringPass> {
   using Base::Base;
+
+  // Record every outlined closure's WPD type-id tiers on the module, keyed by
+  // vtable symbol: `apply` never changes a closure's vtable, so a vtable
+  // carries one id per *suffix* of its original signature (plus its own uid
+  // tier) — see ClosureWpd.h. The map's presence is also the switch the
+  // conversion patterns key their WPD emission off: the vtable pattern copies
+  // its entry onto the vtable global (as `reussir.wpd.type_ids`, which the
+  // dialect's LLVM translation interface turns into `!type` /
+  // `!vcall_visibility` metadata).
+  void buildClosureWpdVtableMap(mlir::ModuleOp moduleOp) {
+    llvm::SmallVector<mlir::NamedAttribute> entries;
+    llvm::StringSet<> seen;
+    mlir::MLIRContext *ctx = moduleOp.getContext();
+    moduleOp.walk([&](ReussirClosureCreateOp op) {
+      if (!op.isOutlined())
+        return;
+      llvm::StringRef vtableSym = op.getVtableAttr().getValue();
+      if (!seen.insert(vtableSym).second)
+        return;
+      auto closureType =
+          llvm::cast<ClosureType>(op.getClosure().getType().getElementType());
+      llvm::SmallVector<mlir::Attribute> ids;
+      for (const std::string &id :
+           closureWpdVtableTypeIds(closureType, vtableSym))
+        ids.push_back(mlir::StringAttr::get(ctx, id));
+      entries.emplace_back(mlir::StringAttr::get(ctx, vtableSym),
+                           mlir::ArrayAttr::get(ctx, ids));
+    });
+    moduleOp->setAttr(kClosureWpdVtableMapAttr,
+                      mlir::DictionaryAttr::get(ctx, entries));
+  }
+
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     mlir::LLVMTypeConverter converter(moduleOp.getContext(),
                                       getReussirToLLVMOptions(moduleOp));
     ensureRuntimeFunctions(moduleOp, converter);
+    if (closureWpd)
+      buildClosureWpdVtableMap(moduleOp);
     // Fused debug-info attributes are converted to LLVM DI by the separate
     // `reussir-lowering-debug-info` pass, which runs after `convert-to-llvm`
     // so the functions are already `llvm.func` (a function's DI only survives

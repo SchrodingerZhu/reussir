@@ -113,8 +113,10 @@ MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized) {
 MlirPass reussirCreateInvariantGroupAnalysisPass(void) {
   return wrapOwned(reussir::createReussirInvariantGroupAnalysisPass());
 }
-MlirPass reussirCreateBasicOpsLoweringPass(void) {
-  return wrapOwned(reussir::createReussirBasicOpsLoweringPass());
+MlirPass reussirCreateBasicOpsLoweringPass(bool closureWpd) {
+  reussir::ReussirBasicOpsLoweringPassOptions options;
+  options.closureWpd = closureWpd;
+  return wrapOwned(reussir::createReussirBasicOpsLoweringPass(options));
 }
 MlirPass reussirCreateDebugInfoConversionPass(void) {
   return wrapOwned(reussir::createReussirDebugInfoConversionPass());

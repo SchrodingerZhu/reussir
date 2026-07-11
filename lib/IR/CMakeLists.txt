@@ -10,4 +10,7 @@ add_mlir_dialect_library(MLIRReussir
     Core
   LINK_LIBS PUBLIC
     ${dialect_libs}
+    # The dialect's LLVMTranslationDialectInterface (ReussirInterfaces.cpp)
+    # emits LLVM IR for the ops/attributes the LLVM dialect cannot express.
+    MLIRTargetLLVMIRExport
 )

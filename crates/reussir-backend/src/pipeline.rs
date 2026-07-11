@@ -142,6 +142,14 @@ pub struct LoweringOptions {
     /// zero overhead: no transform pass is added and the pipeline is exactly
     /// the fixed pass list. `rrc` exposes this as `--transform-script`.
     pub transform_scripts: Vec<(Anchor, PathBuf)>,
+    /// Emit whole-program devirtualization artifacts for closures (vtable
+    /// type ids + call-site type tests). Sound only on a CLOSED WORLD: a
+    /// single module that contains every closure vtable its call sites can
+    /// observe — whole-program AOT with one codegen unit and no closure type
+    /// in any exported signature. Off by default so embedders whose modules
+    /// exchange closures (REPL/JIT increments) never opt in accidentally;
+    /// `rrc` enables it under `--closure-wpd` when the conditions hold.
+    pub closure_wpd: bool,
 }
 
 impl Default for LoweringOptions {
@@ -160,6 +168,9 @@ impl Default for LoweringOptions {
             // layout contract; only an explicit driver flag turns it off.
             pack_record_members: true,
             transform_scripts: Vec::new(),
+            // Off by default: only `rrc` can see that the closed-world
+            // conditions hold (whole-program AOT, one codegen unit).
+            closure_wpd: false,
         }
     }
 }
@@ -362,7 +373,7 @@ pub fn run_lowering_pipeline(
         module: sys::reussirCreateCanonicalizerPass();
         module: sys::reussirCreateControlFlowSinkPass();
         module: sys::reussirCreateSCFToControlFlowPass();
-        module: sys::reussirCreateBasicOpsLoweringPass();
+        module: sys::reussirCreateBasicOpsLoweringPass(options.closure_wpd);
         module: sys::reussirCreateConvertToLLVMPass();
         module: sys::reussirCreateReconcileUnrealizedCastsPass();
         // Convert fused Reussir debug-info attributes to LLVM DI now that

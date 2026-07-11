@@ -43,9 +43,11 @@ int main(int argc, char **argv) {
         return mlir::success();
       },
       [](mlir::DialectRegistry &registry) {
+        // The Reussir dialect carries its own LLVM translation interface
+        // (registered by the dialect itself), so inserting it suffices for
+        // the ops/attributes that survive conversion into the LLVM module.
         registry.insert<mlir::DLTIDialect, mlir::func::FuncDialect,
                         reussir::ReussirDialect>();
-        // reussir::registerReussirDialectTranslation(registry);
         mlir::registerAllToLLVMIRTranslations(registry);
       });
   return failed(

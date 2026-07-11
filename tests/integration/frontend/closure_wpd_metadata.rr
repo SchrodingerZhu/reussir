@@ -1,0 +1,41 @@
+// RUN: %rrc %s --emit llvm-ir -O aggressive -o %t.ll && %FileCheck %s < %t.ll
+// RUN: %rrc %s --emit llvm-ir -O aggressive --no-closure-wpd -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s --emit llvm-ir -O default -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s --emit llvm-ir -O aggressive --codegen-units 2 -o %t.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.0.ll
+
+// Closure WPD vtable metadata, end to end through rrc: every closure vtable
+// global carries its `!type` id tiers (offset 0) and translation-unit
+// `!vcall_visibility`, the artifacts LLVM's whole-program devirtualization
+// consumes. `make_adder` is exported so the vtable provably survives
+// optimization. WPD is reserved for the whole-program opt levels
+// (`aggressive`/`size`): the artifacts vanish at `-O default`, under
+// `--no-closure-wpd`, and in partitioned builds (`--codegen-units 2`),
+// where the closed-world precondition does not hold.
+
+pub fn make_adder(k: i32) -> (i32) -> i32 {
+    |x: i32| x + k
+}
+
+pub fn use_adder(n: i32) -> i32 {
+    let f = make_adder(n);
+    f(3)
+}
+
+// The vtable global, stamped with the id tiers. The frontend materializes
+// the capture `k` as a pre-applied leading parameter, so the outlined
+// signature is `(i32, i32) -> i32` and the vtable carries FOUR tiers: the
+// family root `() -> i32`, `(i32) -> i32` (the static type `make_adder`
+// returns), the full signature, and the uid. A capturing closure therefore
+// shares its suffix tiers with any capture-free closure of the same type —
+// captures are just arguments that were applied at creation.
+// CHECK: {{.*\$closure.*}} = internal constant { ptr, ptr, ptr } { {{.*}} }, !type ![[T0:[0-9]+]], !type ![[T1:[0-9]+]], !type ![[T2:[0-9]+]], !type ![[T3:[0-9]+]], !vcall_visibility ![[VIS:[0-9]+]]
+
+// CHECK-DAG: ![[T0]] = !{i64 0, !"_RFK17ReussirClosureWpdE[[RET:C[0-9a-zA-Z_]+]]"}
+// CHECK-DAG: ![[T1]] = !{i64 0, !"_RFK17ReussirClosureWpd[[ARG:C[0-9a-zA-Z_]+]]E[[RET]]"}
+// CHECK-DAG: ![[T2]] = !{i64 0, !"_RFK17ReussirClosureWpd[[ARG]][[ARG]]E[[RET]]"}
+// CHECK-DAG: ![[T3]] = !{i64 0, !"_RNv{{.*}}3wpd"}
+// Translation-unit visibility: what makes devirtualization legal without LTO.
+// CHECK-DAG: ![[VIS]] = !{i64 2}
+
+// CHECK-OFF-NOT: !type
+// CHECK-OFF-NOT: !vcall_visibility

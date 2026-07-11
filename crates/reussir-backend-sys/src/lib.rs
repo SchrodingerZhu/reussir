@@ -122,7 +122,7 @@ unsafe extern "C" {
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;
     pub fn reussirCreateInvariantGroupAnalysisPass() -> MlirPass;
-    pub fn reussirCreateBasicOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateBasicOpsLoweringPass(closure_wpd: bool) -> MlirPass;
     pub fn reussirCreateDebugInfoConversionPass() -> MlirPass;
     pub fn reussirCreateAcquireDropExpansionPass(
         expand_decrement: bool,
@@ -176,7 +176,6 @@ unsafe extern "C" {
     /// into a real DWARF `DW_TAG_variant_part`, so a debugger shows only the
     /// active case. Operates in place; a no-op when `module` has no debug info.
     pub fn reussirFixupVariantDebugInfo(module: LLVMModuleRef);
-
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
 
