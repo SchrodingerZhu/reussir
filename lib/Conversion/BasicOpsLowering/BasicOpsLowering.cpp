@@ -2887,10 +2887,16 @@ struct ReussirRefMemcpyConversionPattern
     mlir::Type elementType = converter->convertType(srcType.getElementType());
     size_t size = dataLayout.getTypeSize(elementType);
 
-    // Create LLVM memcpy intrinsic (non-overlapping, so isVolatile = false)
-    rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyInlineOp>(
-        op, adaptor.getDst(), adaptor.getSrc(),
-        rewriter.getIntegerAttr(converter->getIndexType(), size),
+    // Create LLVM memcpy intrinsic (non-overlapping, so isVolatile = false).
+    // The plain form, not memcpy.inline: with a constant length LLVM already
+    // expands small copies to loads/stores and picks the best strategy
+    // (expansion or libcall) for large ones — forcing inline expansion on a
+    // big payload (e.g. a whole array clone) just unrolls it.
+    auto sizeVal = mlir::LLVM::ConstantOp::create(
+        rewriter, op.getLoc(), converter->getIndexType(),
+        rewriter.getIntegerAttr(converter->getIndexType(), size));
+    rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyOp>(
+        op, adaptor.getDst(), adaptor.getSrc(), sizeVal,
         /*isVolatile=*/false);
     return mlir::success();
   }

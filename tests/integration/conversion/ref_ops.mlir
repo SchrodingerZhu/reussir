@@ -70,7 +70,8 @@ module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense
       return
   }
   // CHECK-LABEL: llvm.func @reference_memcpy(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
-  // CHECK: "llvm.intr.memcpy.inline"(%arg1, %arg0) <{isVolatile = false, len = 8 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+  // CHECK: %[[LEN:.+]] = llvm.mlir.constant(8 : i64) : i64
+  // CHECK: "llvm.intr.memcpy"(%arg1, %arg0, %[[LEN]]) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
   // CHECK: llvm.return
   // CHECK: }
 
