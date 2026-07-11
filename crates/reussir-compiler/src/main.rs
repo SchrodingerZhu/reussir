@@ -190,6 +190,16 @@ struct Cli {
     #[arg(long = "reuse-across-call")]
     reuse_across_call: bool,
 
+    /// Disable whole-program devirtualization of closures. WPD tags every
+    /// closure vtable with its type-id tiers and asserts them at the indirect
+    /// eval/clone/drop call sites, letting LLVM replace single-implementation
+    /// dispatches with direct calls. It is enabled by default at `-O
+    /// aggressive` and `-O size` whenever the closed-world conditions hold (a
+    /// whole-program AOT build with a single codegen unit) and silently
+    /// disabled otherwise.
+    #[arg(long = "no-closure-wpd")]
+    no_closure_wpd: bool,
+
     /// Lay out compound record members in declaration order instead of the
     /// default packed order (members sorted by descending storage alignment,
     /// eliminating inter-member padding). Packing is the shipped default and
@@ -587,11 +597,25 @@ fn backend_module(
     // `#[repr(fixed)]` (uniform max-arm) or defaults to per-constructor
     // sizing, threaded into the dialect variant record type's `fixed` flag —
     // no module-wide switch.
+    // Closure WPD is sound only on a closed world: this module must contain
+    // every closure vtable its type tests can observe. A whole-program AOT
+    // build with one codegen unit satisfies that (vtables are internal and
+    // closures never cross the C ABI); a partitioned build does not — a
+    // closure created in one unit flows into another whose type tests have
+    // never seen its vtable. It is reserved for the opt levels that ask for
+    // whole-program effort — `aggressive`, and `size`, where devirtualized
+    // vtables become dead and their outlined functions collectible — and the
+    // type-test intrinsics only lower inside the optimizing backend pipeline
+    // anyway.
+    let closure_wpd = !cli.no_closure_wpd
+        && cli.codegen_units == 1
+        && matches!(opt, OptLevel::Aggressive | OptLevel::Size);
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         pack_record_members: !cli.no_pack_record_members,
+        closure_wpd,
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
