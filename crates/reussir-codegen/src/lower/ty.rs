@@ -153,14 +153,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// by its bare element type, never an `rc` pointer: the dialect boxes a member
     /// whose element capability is `shared`/`regional` to a pointer on its own (a
     /// `!reussir.rc<…>` member is rejected — "use capability instead"). This holds
-    /// for a `shared`/`regional` record member (its inner record type) and for a
+    /// for a `shared`/`regional` record member (its inner record type), for a
     /// closure member (its bare `closure` type — a closure is a shared `rc` value
-    /// just like a shared record). A scalar or `[value]` record member is the same
-    /// as [`mlir_ty`](Self::mlir_ty).
+    /// just like a shared record), and for an array member (its bare `array`
+    /// payload type — an array is one shared `rc` box too). A scalar or `[value]`
+    /// record member is the same as [`mlir_ty`](Self::mlir_ty).
     fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Record { .. } => self.record_inner_of(ty),
             TyKind::Closure { params, ret } => self.closure_inner(params, ret),
+            TyKind::Array { .. } => self.array_inner_of(ty),
             _ => self.mlir_ty(ty),
         }
     }
