@@ -108,7 +108,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
 // CHECK-LABEL: define ptr @mk_compound
 // CHECK-NOT: alloca %"List::Cons"
-// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate(i64 8, i64 24)
+// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate_small(i64 24)
 // CHECK: %[[COUNT:.*]] = getelementptr { i32, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 0
 // CHECK: %[[PAYLOAD:.*]] = getelementptr { i32, %"List::Cons" }, ptr %[[ALLOC]], i32 0, i32 1
 // CHECK: %[[FIELD0:.*]] = getelementptr %"List::Cons", ptr %[[PAYLOAD]], i32 0, i32 0
@@ -122,7 +122,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 // CHECK-NOT: alloca %"List::Cons"
 // The box IS the fused-header variant: the count overlays field 0 and is
 // stored after the element is initialized.
-// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate(i64 8, i64 24)
+// CHECK: %[[ALLOC:.*]] = call ptr @__reussir_allocate_small(i64 24)
 // CHECK: %[[COUNT:.*]] = getelementptr %List, ptr %[[ALLOC]], i32 0, i32 0
 // CHECK: %[[VARIANT:.*]] = getelementptr %List, ptr %[[ALLOC]], i32 0, i32 0
 // CHECK: %[[TAGPTR:.*]] = getelementptr %List, ptr %[[VARIANT]], i32 0, i32 1

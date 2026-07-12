@@ -57,6 +57,19 @@ mod backend {
         }
     }
 
+    /// Allocate a *small, naturally aligned* block: the compiler only emits
+    /// calls with a constant `size <= MI_SMALL_SIZE_MAX` (1024) whose
+    /// requested alignment is natural (`align <= 8` and dividing `size`), so
+    /// the generic wrapper's alignment/divisibility checks and mimalloc's
+    /// own size classification are all discharged statically. `mi_malloc_small`
+    /// indexes the heap's direct small-page table without a bounds check in
+    /// release builds — the size precondition is load-bearing.
+    #[inline]
+    pub unsafe fn alloc_small(size: usize) -> *mut u8 {
+        debug_assert!(size <= ffi::MI_SMALL_SIZE_MAX);
+        unsafe { ffi::mi_malloc_small(size).cast() }
+    }
+
     #[inline]
     pub unsafe fn free(ptr: *mut u8) {
         unsafe { ffi::mi_free(ptr.cast()) }
@@ -223,6 +236,16 @@ mod backend {
 
     pub use imp::{alloc, free, realloc};
 
+    /// The small-block entry under the fallback backend: the platform
+    /// allocators have no small fast path, so this is the plain (sanitizer-
+    /// interposable) allocation at natural alignment. The compiler-side
+    /// contract (size <= 1024, natural alignment) still holds; it is simply
+    /// not needed here.
+    #[inline]
+    pub unsafe fn alloc_small(size: usize) -> *mut u8 {
+        unsafe { imp::alloc(8, size) }
+    }
+
     /// Resize a block whose contents are dead — the language-heap realloc.
     /// The platform allocators expose no portable usable-size query, so this
     /// is always free + alloc. That is not just simple but *diagnostic*: the
@@ -285,6 +308,21 @@ unsafe impl std::alloc::GlobalAlloc for ReussirGlobalAlloc {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __reussir_allocate(align: usize, size: usize) -> *mut u8 {
     let ptr = unsafe { backend::alloc(align, size) };
+    if ptr.is_null() {
+        unsafe { crate::panic!("allocation failed") };
+    }
+    ptr
+}
+
+/// Allocate a block whose layout the compiler proved *small and naturally
+/// aligned*: constant `size <= 1024` (mimalloc's `MI_SMALL_SIZE_MAX` — the
+/// shared contract in `include/Reussir/Support/AllocatorBinModel.h`) with
+/// `align <= 8` dividing it. This is the sized fast path of
+/// `__reussir_allocate` with every runtime check discharged at compile time;
+/// the OOM contract is identical.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __reussir_allocate_small(size: usize) -> *mut u8 {
+    let ptr = unsafe { backend::alloc_small(size) };
     if ptr.is_null() {
         unsafe { crate::panic!("allocation failed") };
     }
