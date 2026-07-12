@@ -4,7 +4,9 @@
 //!
 //! ```text
 //! source-file ::= stmt*
-//! stmt        ::= 'pub'? (fn-stmt | struct-stmt | enum-stmt | mod-stmt | extern-stmt)
+//! stmt        ::= 'pub'? (fn-stmt | struct-stmt | enum-stmt | mod-stmt
+//!                           | extern-stmt | transform-stmt)
+//! transform-stmt ::= 'transform' RAW-MLIR-LITERAL ';'
 //! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)? (block | ';')
 //! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields)
 //! enum-stmt   ::= 'enum' capability? name generics? '{' variant,* '}'
@@ -34,7 +36,7 @@ impl Parser<'_> {
     pub(crate) fn source_file(&mut self) {
         let m = self.start();
         while !self.at_eof() {
-            if self.current().starts_stmt() {
+            if self.current().starts_stmt() || self.at_transform_stmt() {
                 self.stmt();
             } else {
                 // Statement-level recovery: collect the unexpected tokens
@@ -42,10 +44,10 @@ impl Parser<'_> {
                 // again.
                 let e = self.start();
                 self.error(format!(
-                    "expected a top-level item (fn, struct, enum, mod, or extern), found {}",
+                    "expected a top-level item (fn, struct, enum, mod, extern, or transform), found {}",
                     self.current().describe()
                 ));
-                while !self.at_eof() && !self.current().starts_stmt() {
+                while !self.at_eof() && !self.current().starts_stmt() && !self.at_transform_stmt() {
                     self.bump();
                 }
                 e.complete(self, ErrorNode);
@@ -67,15 +69,28 @@ impl Parser<'_> {
             EnumKw => self.enum_stmt(m),
             ModKw => self.mod_stmt(m),
             ExternKw => self.extern_trampoline_stmt(m),
+            Ident if self.at_transform_stmt() => self.transform_stmt(m),
             _ => {
                 self.error(format!(
-                    "expected `fn`, `struct`, `enum`, `mod`, or `extern` after visibility, found {}",
+                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, or `transform` after visibility, found {}",
                     self.current().describe()
                 ));
                 // Consume nothing further; the outer loop recovers.
                 m.complete(self, ErrorNode);
             }
         }
+    }
+
+    fn at_transform_stmt(&self) -> bool {
+        self.at_ctx_kw("transform") && self.nth(1) == RawMlirLiteral
+    }
+
+    /// `transform [{ opaque MLIR }];`.
+    fn transform_stmt(&mut self, m: Marker) {
+        self.bump();
+        self.expect(RawMlirLiteral);
+        self.expect(Semicolon);
+        m.complete(self, TransformStmt);
     }
 
     fn fn_stmt(&mut self, m: Marker) {

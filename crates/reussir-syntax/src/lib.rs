@@ -155,6 +155,7 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         RegionalKw => p.nth(1) == FnKw,
         // An outer attribute `#[...]` only ever heads an item.
         Pound => true,
+        Ident if p.current_text() == "transform" && p.nth(1) == RawMlirLiteral => true,
         _ => false,
     };
     if starts_item {
@@ -383,6 +384,39 @@ mod tests {
     fn parses_trampoline_and_mod() {
         json_of(
             "pub mod utils;\nfn fib<T>(n: T) -> T { n }\nextern \"C\" trampoline \"fib_ffi\" = fib<u64>;",
+        );
+    }
+
+    #[test]
+    fn parses_opaque_transform_item() {
+        let source = r#"transform [{
+    %loops = transform.structured.match ops{["scf.for"]} in %target
+        : (!transform.op<"func.func">) -> !transform.any_op
+    transform.loop.unroll %loops { factor = 4 } : !transform.any_op
+    transform.yield
+}];"#;
+        let json = json_of(source);
+        let item = unwrap_span(&json[0]);
+        assert_eq!(item["tag"], "TransformStmt");
+        assert_eq!(
+            item["contents"],
+            &source["transform ".len()..source.len() - 1]
+        );
+    }
+
+    #[test]
+    fn transform_remains_a_contextual_word() {
+        json_of("fn transform(transform: i32) -> i32 { transform }");
+    }
+
+    #[test]
+    fn transform_item_requires_a_semicolon() {
+        let parse = parse("transform [{ transform.yield }]");
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|error| error.message.contains("`;`"))
         );
     }
 
