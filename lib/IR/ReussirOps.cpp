@@ -702,6 +702,22 @@ mlir::LogicalResult ReussirRcTaggedOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult ReussirRcCompareImmortalOp::verify() {
+  RcType rcType = getRcPtr().getType();
+  auto variantType = llvm::dyn_cast<RecordType>(rcType.getElementType());
+  if (!variantType || !variantType.isVariant() || !variantType.getComplete())
+    return emitOpError("RC element type must be a complete variant record");
+  size_t tag = getTag().getZExtValue();
+  if (tag >= variantType.getMembers().size())
+    return emitOpError("tag out of bounds");
+  auto arm = llvm::dyn_cast<RecordType>(variantType.getMembers()[tag]);
+  if (!arm || !arm.isCompound() || !arm.getMembers().empty())
+    return emitOpError("only nullary variant arms have immediates");
+  if (!rcType.mayCarrySpecialPointerTag())
+    return emitOpError("the box type cannot carry a special pointer tag");
+  return mlir::success();
+}
+
 mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
   RecordType variantType = getRecordType();
   if (!variantType)

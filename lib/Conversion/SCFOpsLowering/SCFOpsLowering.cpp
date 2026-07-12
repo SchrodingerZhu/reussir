@@ -13,6 +13,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/SpecialPointerTag.h"
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/SmallVector.h>
@@ -426,126 +427,220 @@ struct ReussirRecordDispatchOpRewritePattern
   using OpConversionPattern::OpConversionPattern;
 
 private:
-  static mlir::DenseI64ArrayAttr
-  getAllTagsAsSingletons(ReussirRecordDispatchOp op) {
-    llvm::SmallVector<int64_t> allTags;
-    for (auto tagSet : op.getTagSets()) {
-      mlir::DenseI64ArrayAttr tagArray =
-          llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
-      if (tagArray.size() != 1)
-        return {};
-      allTags.push_back(tagArray[0]);
-    }
-    return mlir::DenseI64ArrayAttr::get(op.getContext(), allTags);
-  }
-  static mlir::Value buildPreDispatcher(ReussirRecordTagOp tag,
-                                        ReussirRecordDispatchOp op,
-                                        mlir::PatternRewriter &rewriter) {
+  // Inline the arm region `idx` into `block`; a singleton arm receives the
+  // scrutinee coerced to its payload type as the block argument.
+  static void inlineArm(ReussirRecordDispatchOp op,
+                        mlir::PatternRewriter &rewriter, unsigned idx,
+                        std::optional<int64_t> singletonTag,
+                        mlir::Block *block) {
     mlir::OpBuilder::InsertionGuard guard(rewriter);
-    llvm::DenseMap<int64_t, int64_t> tagToRegionIdx;
-    llvm::SmallVector<int64_t> allTags;
-    for (auto [idx, tagSet] : llvm::enumerate(op.getTagSets())) {
-      mlir::DenseI64ArrayAttr tagArray =
-          llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
-      for (auto tag : tagArray.asArrayRef()) {
-        allTags.push_back(tag);
-        tagToRegionIdx[tag] = idx;
-      }
-    };
-    auto indexSwitchOp = mlir::scf::IndexSwitchOp::create(rewriter, 
-        op.getLoc(), rewriter.getIndexType(), tag.getResult(), allTags,
-        allTags.size());
-
-    for (auto [tag, region] :
-         llvm::zip(allTags, indexSwitchOp.getCaseRegions())) {
-      mlir::Block *block = rewriter.createBlock(&region, region.begin());
-      rewriter.setInsertionPointToStart(block);
-      auto constantIdx = mlir::arith::ConstantIndexOp::create(rewriter, 
-          op.getLoc(), tagToRegionIdx[tag]);
-      mlir::scf::YieldOp::create(rewriter, op.getLoc(),
-                                          constantIdx->getResults());
+    rewriter.setInsertionPointToStart(block);
+    llvm::SmallVector<mlir::Value, 1> args;
+    if (singletonTag) {
+      RefType variantRef = op.getVariant().getType();
+      RecordType recordType =
+          llvm::cast<RecordType>(variantRef.getElementType());
+      mlir::Type targetVariantType =
+          getProjectedType(recordType.getMembers()[*singletonTag],
+                           recordType.getMemberIsField()[*singletonTag],
+                           variantRef.getCapability());
+      RefType coercedType = RefType::get(rewriter.getContext(),
+                                         targetVariantType,
+                                         variantRef.getCapability());
+      auto coerced = reussir::ReussirRecordCoerceOp::create(
+          rewriter, op.getLoc(), coercedType,
+          rewriter.getIndexAttr(*singletonTag), op.getVariant());
+      args.push_back(coerced);
     }
-    {
-      mlir::Block *block =
-          rewriter.createBlock(&indexSwitchOp.getDefaultRegion(),
-                               indexSwitchOp.getDefaultRegion().begin());
-      rewriter.setInsertionPointToStart(block);
-      auto poison = mlir::ub::PoisonOp::create(rewriter, 
-          op.getLoc(), rewriter.getIndexType());
-      mlir::scf::YieldOp::create(rewriter, op.getLoc(), poison->getResults());
-    }
-    return indexSwitchOp.getResult(0);
+    rewriter.inlineBlockBefore(&op->getRegion(idx).front(), block,
+                               block->end(), args);
   }
 
-public:
-  mlir::LogicalResult
-  matchAndRewrite(ReussirRecordDispatchOp op,
-                  OpAdaptor adaptor,
-                  mlir::ConversionPatternRewriter &rewriter) const override {
-    // First, create a RecordTagOps operation to get the tag from the input.
+  // The generic dispatch over the arm subset `setIndices`: read the tag and
+  // switch on it (through a pre-dispatcher when an arm covers several
+  // tags). Emitted at the rewriter's insertion point; returns the switch's
+  // results.
+  static mlir::scf::IndexSwitchOp
+  emitTagDispatch(ReussirRecordDispatchOp op, mlir::PatternRewriter &rewriter,
+                  llvm::ArrayRef<unsigned> setIndices) {
     auto tag = reussir::ReussirRecordTagOp::create(rewriter, op.getLoc(),
-                                                            op.getVariant());
+                                                   op.getVariant());
+    bool allSingletons = llvm::all_of(setIndices, [&](unsigned idx) {
+      return llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx])
+                 .size() == 1;
+    });
 
     mlir::Value outerSwitchValue;
-    mlir::DenseI64ArrayAttr outerSwitchCases;
-
-    if (auto allTags = getAllTagsAsSingletons(op)) {
+    llvm::SmallVector<int64_t> outerSwitchCases;
+    if (allSingletons) {
       outerSwitchValue = tag.getResult();
-      outerSwitchCases = allTags;
+      for (unsigned idx : setIndices)
+        outerSwitchCases.push_back(
+            llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx])[0]);
     } else {
-      outerSwitchValue = buildPreDispatcher(tag, op, rewriter);
-      outerSwitchCases = mlir::DenseI64ArrayAttr::get(
-          op.getContext(),
-          llvm::to_vector(llvm::seq<int64_t>(0, op.getTagSets().size())));
+      // Pre-dispatch: map every covered tag to its arm's case position.
+      llvm::SmallVector<int64_t> allTags;
+      llvm::DenseMap<int64_t, int64_t> tagToCase;
+      for (auto [pos, idx] : llvm::enumerate(setIndices))
+        for (int64_t t :
+             llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx])
+                 .asArrayRef()) {
+          allTags.push_back(t);
+          tagToCase[t] = static_cast<int64_t>(pos);
+        }
+      auto preDispatch = mlir::scf::IndexSwitchOp::create(
+          rewriter, op.getLoc(), rewriter.getIndexType(), tag.getResult(),
+          allTags, allTags.size());
+      for (auto [t, region] :
+           llvm::zip(allTags, preDispatch.getCaseRegions())) {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *block = rewriter.createBlock(&region, region.begin());
+        rewriter.setInsertionPointToStart(block);
+        auto constantIdx = mlir::arith::ConstantIndexOp::create(
+            rewriter, op.getLoc(), tagToCase[t]);
+        mlir::scf::YieldOp::create(rewriter, op.getLoc(),
+                                   constantIdx->getResults());
+      }
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *block =
+            rewriter.createBlock(&preDispatch.getDefaultRegion(),
+                                 preDispatch.getDefaultRegion().begin());
+        rewriter.setInsertionPointToStart(block);
+        auto poison = mlir::ub::PoisonOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getIndexType());
+        mlir::scf::YieldOp::create(rewriter, op.getLoc(),
+                                   poison->getResults());
+      }
+      outerSwitchValue = preDispatch.getResult(0);
+      outerSwitchCases = llvm::to_vector(
+          llvm::seq<int64_t>(0, static_cast<int64_t>(setIndices.size())));
     }
 
-    auto indexSwitchOp = mlir::scf::IndexSwitchOp::create(rewriter, 
-        op.getLoc(), op->getResultTypes(), outerSwitchValue, outerSwitchCases,
-        outerSwitchCases.size());
+    auto indexSwitchOp = mlir::scf::IndexSwitchOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), outerSwitchValue,
+        outerSwitchCases, outerSwitchCases.size());
     // mark default region as unreachable
     {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
       mlir::Block *block =
           rewriter.createBlock(&indexSwitchOp.getDefaultRegion(),
                                indexSwitchOp.getDefaultRegion().begin());
       rewriter.setInsertionPointToStart(block);
       llvm::SmallVector<mlir::Value, 1> poisonValues;
       if (op.getValue()) {
-        auto poison = mlir::ub::PoisonOp::create(rewriter, 
-            op.getLoc(), op.getValue().getType());
+        auto poison = mlir::ub::PoisonOp::create(rewriter, op.getLoc(),
+                                                 op.getValue().getType());
         poisonValues.push_back(poison);
       }
       mlir::scf::YieldOp::create(rewriter, op.getLoc(), poisonValues);
     }
-    for (auto [idx, tagSet, region] :
-         llvm::enumerate(op.getTagSets(), indexSwitchOp.getCaseRegions())) {
-      mlir::DenseI64ArrayAttr tagArray =
-          llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
-      llvm::SmallVector<mlir::Value, 1> args;
+    for (auto [idx, region] :
+         llvm::zip(setIndices, indexSwitchOp.getCaseRegions())) {
+      // `createBlock` moves the insertion point into the case; keep the
+      // caller's position (right after the switch) intact.
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      auto tagArray =
+          llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx]);
       mlir::Block *block = rewriter.createBlock(&region, region.begin());
-      rewriter.setInsertionPointToStart(block);
-      // if we know exact variant, we need to coerce the variant to the exact
-      // type
-      if (tagArray.size() == 1) {
-        RefType variantRef = op.getVariant().getType();
-        RecordType recordType =
-            llvm::cast<RecordType>(variantRef.getElementType());
-        mlir::Type targetVariantType =
-            getProjectedType(recordType.getMembers()[tagArray[0]],
-                             recordType.getMemberIsField()[tagArray[0]],
-                             variantRef.getCapability());
-        RefType coercedType =
-            RefType::get(rewriter.getContext(), targetVariantType,
-                         variantRef.getCapability());
-        auto coerced = reussir::ReussirRecordCoerceOp::create(rewriter, 
-            op.getLoc(), coercedType, rewriter.getIndexAttr(tagArray[0]),
-            op.getVariant());
-        args.push_back(coerced);
-      }
-      // inline the block, supplying coerced value as the argument
-      rewriter.inlineBlockBefore(&op->getRegion(idx).front(), block,
-                                 block->end(), args);
+      inlineArm(op, rewriter, idx,
+                tagArray.size() == 1
+                    ? std::optional<int64_t>(tagArray[0])
+                    : std::nullopt,
+                block);
     }
-    rewriter.replaceOp(op, indexSwitchOp);
+    return indexSwitchOp;
+  }
+
+public:
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRecordDispatchOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    // Under the immortal encoding a nullary arm's value is always the
+    // per-tag immediate (the scheme invariant at `kSpecialPtrTagAttr`), so
+    // membership is one pointer compare — while the generic tag read is a
+    // dependent *load* through the dummy box on every dispatch (issue
+    // #400). Peel such arms off into `rc.compare_immortal` guards and keep
+    // the unchanged tag dispatch for the rest. The TBI encoding already
+    // reads tags from the pointer's top byte without touching memory, so
+    // only `immortal` peels.
+    auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
+    auto encoding =
+        moduleOp->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr);
+    mlir::TypedValue<RcType> scrutinee;
+    llvm::SmallVector<unsigned> peeled;
+    llvm::SmallVector<unsigned> remaining;
+    RecordType recordType = llvm::cast<RecordType>(
+        op.getVariant().getType().getElementType());
+    if (encoding && encoding.getValue() == kSpecialPtrTagImmortal)
+      if (auto borrow = op.getVariant().getDefiningOp<ReussirRcBorrowOp>();
+          borrow && borrow.getRcPtr().getType().mayCarrySpecialPointerTag())
+        scrutinee = borrow.getRcPtr();
+    for (auto [idx, tagSet] : llvm::enumerate(op.getTagSets())) {
+      auto tagArray = llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
+      auto arm = tagArray.size() == 1
+                     ? llvm::dyn_cast<RecordType>(
+                           recordType.getMembers()[tagArray[0]])
+                     : RecordType{};
+      if (scrutinee && arm && arm.isCompound() && arm.getComplete() &&
+          arm.getMembers().empty())
+        peeled.push_back(idx);
+      else
+        remaining.push_back(idx);
+    }
+
+    if (peeled.empty()) {
+      auto dispatch = emitTagDispatch(op, rewriter, remaining);
+      rewriter.replaceOp(op, dispatch->getResults());
+      return mlir::success();
+    }
+
+    // One `scf.if` per peeled arm; the innermost else carries the tag
+    // dispatch over the remaining arms (or nothing — the guards are then
+    // exhaustive).
+    mlir::scf::IfOp outermost;
+    for (unsigned idx : peeled) {
+      int64_t tag =
+          llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx])[0];
+      auto isImmediate = ReussirRcCompareImmortalOp::create(
+          rewriter, op.getLoc(), rewriter.getI1Type(), scrutinee,
+          rewriter.getIndexAttr(tag));
+      auto ifOp = mlir::scf::IfOp::create(rewriter, op.getLoc(),
+                                          op->getResultTypes(),
+                                          isImmediate.getResult(), true, true);
+      inlineArm(op, rewriter, idx, tag, ifOp.thenBlock());
+      if (!outermost)
+        outermost = ifOp;
+      else
+        mlir::scf::YieldOp::create(rewriter, op.getLoc(), ifOp->getResults());
+      rewriter.setInsertionPointToStart(ifOp.elseBlock());
+    }
+    if (remaining.empty()) {
+      llvm::SmallVector<mlir::Value, 1> poisonValues;
+      if (op.getValue())
+        poisonValues.push_back(mlir::ub::PoisonOp::create(
+            rewriter, op.getLoc(), op.getValue().getType()));
+      mlir::scf::YieldOp::create(rewriter, op.getLoc(), poisonValues);
+    } else if (remaining.size() == 1) {
+      // The guards decided the dispatch: the last arm needs no tag read at
+      // all — inline it as the residual else (its own yield terminates the
+      // branch). This is the common two-arm shape (rbtree's Leaf/Branch,
+      // QList's Nil/Cons): the hot recursive arm keeps its exact
+      // pre-rewrite body with zero dispatch memory traffic.
+      auto tagArray = llvm::cast<mlir::DenseI64ArrayAttr>(
+          op.getTagSets()[remaining.front()]);
+      mlir::Block *elseBlock = rewriter.getInsertionBlock();
+      inlineArm(op, rewriter, remaining.front(),
+                tagArray.size() == 1 ? std::optional<int64_t>(tagArray[0])
+                                     : std::nullopt,
+                elseBlock);
+    } else {
+      auto dispatch = emitTagDispatch(op, rewriter, remaining);
+      rewriter.setInsertionPointAfter(dispatch);
+      mlir::scf::YieldOp::create(rewriter, op.getLoc(),
+                                 dispatch->getResults());
+    }
+    rewriter.replaceOp(op, outermost->getResults());
     return mlir::success();
   }
 };
