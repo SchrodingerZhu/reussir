@@ -24,14 +24,16 @@ module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<
     // The widened decrement: condition %[[UNIQ]], own token + escaped token.
     // CHECK: %[[UNIQ:.+]] = reussir.expect
     // CHECK: %[[TOKS:.+]]:2 = scf.if %[[UNIQ]]
-    // The escaped token (%[[TOKS]]#1): its ensure keeps a real null check.
-    // CHECK: %[[CHK:.+]] = reussir.nullable.check(%[[TOKS]]#1
-    // CHECK: %[[CHKEXP:.+]] = reussir.expect(%[[CHK]]
-    // CHECK: scf.if %[[CHKEXP]]
-    // The own token (%[[TOKS]]#0): its ensure reuses the decrement's
-    // condition directly.
-    // CHECK: reussir.nullable.check(%[[TOKS]]#0
-    // CHECK: scf.if %[[UNIQ]]
+    // The two ensures lower in pattern-application order, which is not
+    // deterministic across platforms — match them as a DAG. The escaped
+    // token (%[[TOKS]]#1) keeps a real null check; the own token
+    // (%[[TOKS]]#0) reuses the decrement's condition directly (its if
+    // yields a bare token, unlike the widened if's nullables, so the
+    // `scf.if %[[UNIQ]] -> (!reussir.token` line is unambiguous).
+    // CHECK-DAG: %[[CHK:.+]] = reussir.nullable.check(%[[TOKS]]#1
+    // CHECK-DAG: %[[CHKEXP:.+]] = reussir.expect(%[[CHK]]
+    // CHECK-DAG: scf.if %[[CHKEXP]]
+    // CHECK-DAG: scf.if %[[UNIQ]] -> (!reussir.token
     func.func @escape(%o: !rcOuter, %va: !inner, %vb: !inner) -> (!rcInner, !rcInner) {
         %prev = reussir.rc.fetch (%o : !rcOuter) : index
         %c1 = arith.constant 1 : index
