@@ -1,0 +1,18 @@
+// RUN: %rrc %s -O aggressive -o %t.o
+
+// Issue #396: beta reduction cached an identity closure's yielded block
+// argument before inlining destroyed that block. Exercise the loop-carried
+// array kernels from the report and the same stale-value bug in direct inlining.
+
+pub fn no_get() -> [i64; 8] {
+    core::intrinsic::array::tabulate<[i64; 8]>(|i| i)
+}
+
+pub fn fold_id(a: [i64; 8]) -> i64 {
+    core::intrinsic::array::fold(a, 0, |acc, x| acc)
+}
+
+pub fn direct_id(x: i64) -> i64 {
+    let f = |y: i64| y;
+    f(x)
+}

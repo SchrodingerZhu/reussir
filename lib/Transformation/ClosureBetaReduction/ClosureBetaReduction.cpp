@@ -157,8 +157,10 @@ struct InlineCreateIntoEvalPattern
     assert(body.getNumArguments() == eval.getArgs().size() &&
            "eval pack must cover the create's full signature");
     auto yield = llvm::cast<ReussirClosureYieldOp>(body.getTerminator());
-    mlir::Value yielded = yield.getValue();
     rewriter.inlineBlockBefore(&body, eval, eval.getArgs());
+    // Read the operand after inlining, once block arguments have been replaced
+    // with the eval pack and before the moved terminator is erased.
+    mlir::Value yielded = yield.getValue();
     rewriter.eraseOp(yield);
     if (eval.getNumResults())
       rewriter.replaceOp(eval, yielded);
@@ -307,11 +309,13 @@ struct InlineLoopCarriedCreatePattern
         ReussirRcIncOp::create(rewriter, eval.getLoc(), cap);
 
     auto yield = llvm::cast<ReussirClosureYieldOp>(body.getTerminator());
-    mlir::Value yielded = yield.getValue();
     llvm::SmallVector<mlir::Value> args(outerCaps);
     llvm::append_range(args, innerCaps);
     llvm::append_range(args, eval.getArgs());
     rewriter.inlineBlockBefore(&body, eval, args);
+    // The yield may refer directly to a body argument; fetch it only after
+    // inlining has replaced that argument with its value from `args`.
+    mlir::Value yielded = yield.getValue();
     rewriter.eraseOp(yield);
     if (eval.getNumResults())
       rewriter.replaceOp(eval, yielded);
