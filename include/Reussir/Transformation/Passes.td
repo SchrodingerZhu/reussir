@@ -225,4 +225,26 @@ def ReussirTRMCRecursionAnalysisPass
                            "::mlir::LLVM::LLVMDialect"];
 }
 
+def ReussirSelfTailCallEliminationPass
+    : Pass<"reussir-self-tail-call-elimination", "::mlir::func::FuncOp"> {
+  let summary = "rewrite direct self tail recursion into scf.while loops";
+  let description = [{
+    `reussir-self-tail-call-elimination` rewrites a function whose
+    return-position spine (`scf.if`/`scf.index_switch` chains) contains
+    direct self tail calls into an `scf.while` loop carrying the function
+    arguments, independent of the return type. TRMC covers recursion that
+    builds an rc-boxed result; this pass covers the rest — notably `[value]`
+    returns, where relying on LLVM's TailCallElimination is heuristic (it
+    bails on non-static allocas and DeadArgumentElimination's
+    aggregate-return shrinking hides the ret from it), so deep recursion
+    could keep a frame per call and overflow the stack. Runs after TRMC so
+    the `.trmc` helpers' plain self tail calls loop as well.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::arith::ArithDialect",
+                           "::mlir::func::FuncDialect",
+                           "::mlir::scf::SCFDialect",
+                           "::mlir::ub::UBDialect"];
+}
+
 #endif // REUSSIR_TRANSFORMATION_PASSES_TD

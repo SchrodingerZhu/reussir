@@ -9,6 +9,7 @@ add_subdirectory(SpecialPointerTag)
 add_subdirectory(InvariantGroupAnalysis)
 add_subdirectory(UniqueCarryingRecursionAnalysis)
 add_subdirectory(TRMCRecursionAnalysis)
+add_subdirectory(SelfTailCallElimination)
 
 set(REUSSIR_TRANSFORMATION_AGGREGATE_LIBS
   MLIRReussirClosureBetaReduction
@@ -22,6 +23,7 @@ set(REUSSIR_TRANSFORMATION_AGGREGATE_LIBS
   MLIRReussirInvariantGroupAnalysis
   MLIRReussirUniqueCarryingRecursionAnalysis
   MLIRReussirTRMCRecursionAnalysis
+  MLIRReussirSelfTailCallElimination
 )
 
 add_library(MLIRReussirTransformation INTERFACE)

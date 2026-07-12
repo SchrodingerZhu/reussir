@@ -43,6 +43,7 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirInvariantGroupAnalysis",
     "MLIRReussirUniqueCarryingRecursionAnalysis",
     "MLIRReussirTRMCRecursionAnalysis",
+    "MLIRReussirSelfTailCallElimination",
     // The custom LLVM passes run by the JIT codegen helper (Jit.cpp).
     "ReussirLLVMAllocationSimplicationPass",
 ];

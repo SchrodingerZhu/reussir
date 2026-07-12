@@ -376,6 +376,11 @@ pub fn run_lowering_pipeline(
         func:   sys::reussirCreateRcCreateSinkPass();
         func:   sys::reussirCreateRcCreateFusionPass();
         module: sys::reussirCreateTRMCRecursionAnalysisPass();
+        // Loop the remaining plain self tail calls (any return type,
+        // including the .trmc helpers TRMC just introduced) while control
+        // flow is still structured — the stack guarantee must not depend on
+        // LLVM TailCallElimination's eligibility heuristics.
+        func:   sys::reussirCreateSelfTailCallEliminationPass();
         module: sys::reussirCreateCompilePolymorphicFFIPass(false);
 
         // `kernel` anchor: the Reussir-level work is done (both

@@ -48,7 +48,8 @@ set(REUSSIR_BACKEND_ARCHIVES
   MLIRReussirTokenReuse
   MLIRReussirInvariantGroupAnalysis
   MLIRReussirUniqueCarryingRecursionAnalysis
-  MLIRReussirTRMCRecursionAnalysis)
+  MLIRReussirTRMCRecursionAnalysis
+  MLIRReussirSelfTailCallElimination)
 add_dependencies(ReussirCAPI ${REUSSIR_BACKEND_ARCHIVES})
 
 # Aggregate target the Rust crates depend on.

@@ -54,6 +54,7 @@ MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
 MlirPass reussirCreateRcDispatchFusionPass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);
+MlirPass reussirCreateSelfTailCallEliminationPass(void);
 MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized);
 MlirPass reussirCreateInvariantGroupAnalysisPass(void);
 MlirPass reussirCreateBasicOpsLoweringPass(bool closureWpd);

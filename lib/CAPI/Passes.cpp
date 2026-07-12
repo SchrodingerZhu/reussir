@@ -106,6 +106,9 @@ MlirPass reussirCreateRcDispatchFusionPass(void) {
 MlirPass reussirCreateRcCreateFusionPass(void) {
   return wrapOwned(reussir::createReussirRcCreateFusionPass());
 }
+MlirPass reussirCreateSelfTailCallEliminationPass(void) {
+  return wrapOwned(reussir::createReussirSelfTailCallEliminationPass());
+}
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void) {
   return wrapOwned(reussir::createReussirTRMCRecursionAnalysisPass());
 }

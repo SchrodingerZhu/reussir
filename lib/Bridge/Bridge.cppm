@@ -185,6 +185,8 @@ void createLoweringPipeline(mlir::PassManager &pm,
   pm.addNestedPass<mlir::func::FuncOp>(
       reussir::createReussirRcCreateFusionPass());
   pm.addPass(reussir::createReussirTRMCRecursionAnalysisPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      reussir::createReussirSelfTailCallEliminationPass());
   pm.addPass(reussir::createReussirCompilePolymorphicFFIPass());
 
   if (enableInvariantAnalysis) {
