@@ -407,6 +407,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // linkage is external either way, which is what cross-unit resolution
         // needs).
         let mut attributes = Vec::new();
+        if func.transform_anchor && emit_body {
+            attributes.push((
+                Identifier::new(self.context, "reussir.transform_anchor"),
+                Attribute::unit(self.context),
+            ));
+            attributes.push((
+                Identifier::new(self.context, "no_inline"),
+                Attribute::unit(self.context),
+            ));
+        }
         if !emit_body || (func.visibility == Visibility::Private && !self.unit.is_split()) {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),

@@ -22,7 +22,9 @@ use palc::Parser;
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
-use reussir_codegen::lower::{CodegenUnit, LinkagePolicy, lower_program, lower_unit};
+use reussir_codegen::lower::{
+    CodegenUnit, LinkagePolicy, LoweringError, lower_program, lower_unit,
+};
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
 use reussir_compiler::{
@@ -907,6 +909,42 @@ fn refetch_sources(files: &[String]) -> Option<SourceCache> {
     Some(cache)
 }
 
+/// Return a lowered value, rendering a source-owned lowering failure through
+/// the same ariadne path as parser and elaboration diagnostics. A lowering
+/// failure without usable source metadata retains the traditional plain-text
+/// driver error.
+fn lower_or_render<T>(
+    result: std::result::Result<T, LoweringError>,
+    sources: Option<&SourceCache>,
+    name: &str,
+) -> Result<T, String> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            if let (Some(sources), Some((file, span))) = (sources, error.source_location())
+                && file.index() < sources.len()
+            {
+                let diagnostic = diagnostics::Diagnostic {
+                    file,
+                    span: span.map(|span| (span.start, span.end)),
+                    severity: diagnostics::Severity::Error,
+                    message: error.message(),
+                };
+                let color = std::io::stderr().is_terminal();
+                let _ = diagnostics::render(
+                    sources,
+                    std::slice::from_ref(&diagnostic),
+                    color,
+                    std::io::stderr().lock(),
+                );
+                Err(String::new())
+            } else {
+                Err(format!("{name}: {error}"))
+            }
+        }
+    }
+}
+
 /// Finish the front leg from a ground MIR program: a `mir` dump, or lowering to
 /// an MLIR module for `mlir` and beyond.
 #[allow(clippy::too_many_arguments)]
@@ -942,13 +980,19 @@ fn finish_mir<'c, 'tcx>(
                 index,
                 count: cli.codegen_units,
             };
-            let module = lower_unit(context, tcx, program, sources, names, unit, linkage)
-                .map_err(|e| format!("{name}: {e}"))?;
+            let module = lower_or_render(
+                lower_unit(context, tcx, program, sources, names, unit, linkage),
+                sources,
+                name,
+            )?;
             units.push(module);
         }
         return Ok(Produced::Units(units));
     }
-    let module = lower_program(context, tcx, program, sources, names, linkage)
-        .map_err(|e| format!("{name}: {e}"))?;
+    let module = lower_or_render(
+        lower_program(context, tcx, program, sources, names, linkage),
+        sources,
+        name,
+    )?;
     Ok(Produced::Module(module))
 }

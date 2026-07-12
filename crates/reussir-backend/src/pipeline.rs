@@ -14,6 +14,11 @@ use melior::pass::{Pass, PassManager};
 
 use reussir_backend_sys as sys;
 
+/// Temporary module marker set by codegen when source contains inline transforms.
+pub const INLINE_TRANSFORM_ATTR: &str = "reussir.inline_transform";
+/// Embedded transform entry point invoked at the kernel anchor.
+pub const INLINE_TRANSFORM_ENTRY_POINT: &str = "__reussir_inline_transform";
+
 /// Optimization level for the lowering pipeline, matching the backend's
 /// `ReussirOptOption` C enum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
