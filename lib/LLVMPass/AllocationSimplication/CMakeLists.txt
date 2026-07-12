@@ -1,5 +1,6 @@
 add_library(ReussirLLVMAllocationSimplicationPass STATIC
   AllocationSimplication.cpp
+  MustTailMarking.cpp
   RuntimeFunctionAttributor.cpp
 )
 

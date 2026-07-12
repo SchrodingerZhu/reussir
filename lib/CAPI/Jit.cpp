@@ -22,8 +22,10 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
+#include <llvm/Transforms/Scalar/TailRecursionElimination.h>
 
 #include "Reussir/LLVMPass/AllocationSimplication.h"
+#include "Reussir/LLVMPass/MustTailMarking.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 
 #ifdef REUSSIR_HAS_TPDE
@@ -137,6 +139,18 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module,
   mpm.addPass(llvm::LowerTypeTestsPass(
       /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
       llvm::lowertypetests::DropTestKind::Assume));
+  // Guarantee constant stack usage for direct self tail recursion before the
+  // module pipeline reshapes the single-exit CFG: the freshly translated IR
+  // still has the plain `call @self; br ... ret` shape this marking
+  // recognizes. Register-trivial returns get `musttail` (instruction
+  // selection must emit a real tail call); aggregate returns get the
+  // duplicated `ret` plus the plain `tail` marker, which is exactly the
+  // shape the TailCallElimination run right behind folds into a loop —
+  // before DeadArgumentElimination's aggregate-return shrinking can wrap
+  // the call in the extract/insert chains that used to hide it.
+  mpm.addPass(reussir::llvmpass::MustTailMarkingPass());
+  mpm.addPass(
+      llvm::createModuleToFunctionPassAdaptor(llvm::TailCallElimPass()));
   mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);
