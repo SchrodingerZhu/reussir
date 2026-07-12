@@ -39,17 +39,19 @@ module {
 // Members are packed by descending alignment (the tail pointer precedes the
 // i32 head); a shared variant carries the fused 8-byte box header
 // {i32 count slot, i32 tag} and the box IS the record.
-// CHECK: %"List::Cons" = type { ptr, i32, [4 x i8] }
-// CHECK: %List = type { i32, i32, %"List::Cons" }
+// CHECK-DAG: %"List::Cons" = type { ptr, i32, [4 x i8] }
+// CHECK-DAG: %List = type { i32, i32, %"List::Cons" }
 
 // CHECK-LABEL: define ptr @cons(i32 %0, ptr %1)
+// Stack slots are hoisted to the entry block (static allocas); the fills
+// stay at the use sites.
+// CHECK: %[[alloca:[0-9]+]] = alloca %List, i64 1, align 8
 // CHECK: %[[cons_alloca:[0-9]+]] = alloca %"List::Cons", align 8
 // CHECK: %[[cons_ptr0:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 1
 // CHECK: store i32 %0, ptr %[[cons_ptr0]], align 4
 // CHECK: %[[cons_ptr1:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 0
 // CHECK: store ptr %1, ptr %[[cons_ptr1]], align 8
 // CHECK: %[[cons_loaded:[0-9]+]] = load %"List::Cons", ptr %[[cons_alloca]], align 8
-// CHECK: %[[alloca:[0-9]+]] = alloca %List, i64 1, align 8
 // CHECK: call void @llvm.lifetime.start.p0({{.*}}ptr %[[alloca]])
 // CHECK: %[[tag_ptr:[0-9]+]] = getelementptr %List, ptr %[[alloca]], i32 0, i32 1
 // CHECK: store i32 0, ptr %[[tag_ptr]], align 4

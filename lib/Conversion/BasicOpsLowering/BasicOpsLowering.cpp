@@ -278,6 +278,46 @@ void addLifetimeOrInvariantOp(
   Op::create(rewriter, loc, value);
 }
 
+// Materializes a stack slot in the enclosing function's entry block. A
+// fixed-size alloca outside the entry block is not a static alloca: it is
+// lowered as a dynamic stack adjustment — growing the frame on every
+// execution of the site once a loop encloses it — and its mere presence
+// makes TailCallElimination refuse to fold the function's self tail
+// recursion into a loop (`canTRE` requires every alloca to be static).
+// Only the slot is hoisted; the stores that fill it stay at the use site.
+mlir::Value createEntryBlockAlloca(mlir::ConversionPatternRewriter &rewriter,
+                                   mlir::Location loc, mlir::Type elemType,
+                                   unsigned alignment, mlir::Operation *op) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+  mlir::OpBuilder::InsertionGuard guard(rewriter);
+  if (auto func = op->getParentOfType<mlir::FunctionOpInterface>();
+      func && !func.getFunctionBody().empty())
+    rewriter.setInsertionPointToStart(&func.getFunctionBody().front());
+  mlir::Value one = mlir::LLVM::ConstantOp::create(
+      rewriter, loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(1));
+  return mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, elemType, one,
+                                      alignment);
+}
+
+// Whether `op`'s enclosing function contains a direct self call. A stack
+// slot in such a function can end up inside a loop TailCallElimination
+// later builds around the recursion, so a fill-once claim about the slot
+// (invariant.start) would be violated by the next iteration's store.
+bool enclosingFunctionIsSelfRecursive(mlir::Operation *op) {
+  auto func = op->getParentOfType<mlir::FunctionOpInterface>();
+  if (!func)
+    return true;
+  llvm::StringRef name = mlir::SymbolTable::getSymbolName(func).getValue();
+  bool found = false;
+  func.walk([&](mlir::CallOpInterface call) {
+    auto callee = llvm::dyn_cast_if_present<mlir::SymbolRefAttr>(
+        call.getCallableForCallee());
+    if (callee && callee.getLeafReference().getValue() == name)
+      found = true;
+  });
+  return found;
+}
+
 struct ReussirPanicConversionPattern
     : public mlir::OpConversionPattern<ReussirPanicOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -743,20 +783,22 @@ struct ReussirRefSpilledConversionPattern
     auto dataLayout = getDataLayout(*converter, op.getOperation());
 
     auto valueType = converter->convertType(op.getValue().getType());
-    auto llvmPtrType = converter->convertType(op.getSpilled().getType());
     auto alignment = dataLayout.getTypePreferredAlignment(valueType);
 
     // Allocate stack space using llvm.alloca
-    auto convertedIndexType = converter->getIndexType();
-    auto constantArraySize = mlir::arith::ConstantOp::create(
-        rewriter, loc, rewriter.getIntegerAttr(convertedIndexType, 1));
-    auto allocaOp = mlir::LLVM::AllocaOp::create(
-        rewriter, loc, llvmPtrType, valueType, constantArraySize, alignment);
+    mlir::Value allocaOp =
+        createEntryBlockAlloca(rewriter, loc, valueType, alignment, op);
 
-    // Store the value to the allocated space
+    // Store the value to the allocated space. The spilled aggregate never
+    // changes after this store, but claiming so with invariant.start is only
+    // sound when the fill executes once: in a self recursive function
+    // TailCallElimination may fold the recursion into a loop around this
+    // very site, and the next iteration's refill of the (entry-block,
+    // per-frame) slot would violate the invariant.
     mlir::LLVM::StoreOp::create(rewriter, loc, value, allocaOp);
-    mlir::LLVM::InvariantStartOp::create(
-        rewriter, loc, dataLayout.getTypeABIAlignment(valueType), allocaOp);
+    if (!enclosingFunctionIsSelfRecursive(op))
+      mlir::LLVM::InvariantStartOp::create(
+          rewriter, loc, dataLayout.getTypeABIAlignment(valueType), allocaOp);
     rewriter.replaceOp(op, allocaOp);
 
     return mlir::success();
@@ -849,13 +891,11 @@ struct ReussirRecordExtractConversionPattern
     // Create an opaque pointer type for memory operations
     auto ptrType = mlir::LLVM::LLVMPointerType::get(ctx);
 
-    // Constant '1' for the alloca array size
-    mlir::Value one = mlir::LLVM::ConstantOp::create(
-        rewriter, loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
-
     // 1. Spill: Allocate memory for the struct on the stack
-    mlir::Value alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType,
-                                                      llvmStructType, one);
+    auto dataLayout = getDataLayout(*converter, op.getOperation());
+    mlir::Value alloca = createEntryBlockAlloca(
+        rewriter, loc, llvmStructType,
+        dataLayout.getTypePreferredAlignment(llvmStructType), op);
 
     addLifetimeOrInvariantOp<mlir::LLVM::LifetimeStartOp>(
         rewriter, loc, llvmStructType, alloca, *converter, op.getOperation());
@@ -907,7 +947,6 @@ struct ReussirRecordVariantConversionPattern
 
     if (!llvmStructType)
       return op.emitOpError("failed to convert record type to LLVM type");
-    auto indexType = converter->getIndexType();
     // Get the tag (at the record's minimal tag width) and value (already
     // converted by the type converter)
     mlir::Value tag = mlir::arith::ConstantOp::create(
@@ -920,11 +959,9 @@ struct ReussirRecordVariantConversionPattern
     auto dataLayout = getDataLayout(*converter, op.getOperation());
     auto alignment = dataLayout.getTypePreferredAlignment(llvmStructType);
     auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto one = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, 1));
     // Allocate stack space for the struct
-    auto allocaOp = mlir::LLVM::AllocaOp::create(
-        rewriter, loc, ptrType, llvmStructType, one, alignment);
+    mlir::Value allocaOp =
+        createEntryBlockAlloca(rewriter, loc, llvmStructType, alignment, op);
     addLifetimeOrInvariantOp<mlir::LLVM::LifetimeStartOp>(
         rewriter, loc, llvmStructType, allocaOp, *converter, op.getOperation());
     // Store the tag (past the count slot for fused-header variants).
@@ -2139,15 +2176,15 @@ struct ReussirRegionCreateOpConversionPattern
     auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
     auto converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
-    auto one = mlir::arith::ConstantOp::create(
-        rewriter, op.getLoc(),
-        mlir::IntegerAttr::get(converter->getIndexType(), 1));
-    auto alloca = rewriter.replaceOpWithNewOp<mlir::LLVM::AllocaOp>(
-        op, ptrType, ptrType, one);
+    auto dataLayout = getDataLayout(*converter, op.getOperation());
+    mlir::Value alloca = createEntryBlockAlloca(
+        rewriter, op.getLoc(), ptrType,
+        dataLayout.getTypePreferredAlignment(ptrType), op);
     addLifetimeOrInvariantOp<mlir::LLVM::LifetimeStartOp>(
         rewriter, op.getLoc(), ptrType, alloca, *converter, op.getOperation());
     auto nullValue = mlir::LLVM::ZeroOp::create(rewriter, op.getLoc(), ptrType);
     mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), nullValue, alloca);
+    rewriter.replaceOp(op, alloca);
     return mlir::success();
   }
 };

@@ -1,0 +1,38 @@
+// Deep self tail recursion returning a `[value]` enum — the shape TRMC
+// skips (no rc-boxed result), so the loop conversion is LLVM
+// TailCallElimination's job. TCE refuses to touch a function whose stack
+// slots are not static allocas, and the record/spill lowering used to
+// materialize them at the use site (functional-queue's `churn` kept a
+// frame per round and overflowed the default stack). With every slot
+// hoisted to the entry block, a million-deep recursion must complete
+// within the default stack rlimit at every optimizing level.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.o %S/deep_value_tail_recursion.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.default.o --relocation-mode pic
+// RUN: %cc %t.default.o %S/deep_value_tail_recursion.c -o %t.default.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.default.exe
+
+// Three words of payload so the return is too large for registers: the
+// sret-demoted aggregate is the case every IR-level tail-call rewrite
+// historically failed on.
+enum [value] Out {
+    Done(i64, i64, i64)
+}
+
+fn spin(n : i64, acc : i64) -> Out {
+    if n == 0 {
+        Out::Done{acc, acc, acc}
+    } else {
+        spin(n - 1, (acc + n) % 1000000007)
+    }
+}
+
+fn deep_test(n : i64) -> i64 {
+    match spin(n, 0) {
+        Out::Done(a, _, _) => a
+    }
+}
+
+extern "C" trampoline "deep_test_ffi" = deep_test;
