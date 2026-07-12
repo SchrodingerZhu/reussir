@@ -44,6 +44,14 @@ pub struct Report {
     pub file: FileId,
 }
 
+/// A module-level transform script collected from source.
+#[derive(Clone, Debug)]
+pub struct TransformScript {
+    pub body: String,
+    pub span: Span,
+    pub file: FileId,
+}
+
 /// Render `reports` to stderr with source-caret context and return whether any
 /// was an error (warnings alone do not fail a compile). A report the middle-end
 /// could not trace back to a span — an internal/whole-program error — prints as
@@ -273,6 +281,10 @@ pub struct Elaborator<'a, 'tcx> {
     pub functions: FxHashMap<DefId, FuncProto<'tcx>>,
     /// Resolved extern-trampoline roots (mono seeds). See [`TrampolineRoot`].
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
+    /// Functions explicitly marked with `#[transform_anchor]`, in source order.
+    pub transform_anchors: Vec<DefId>,
+    /// Inline transform scripts, in source order.
+    pub transform_scripts: Vec<TransformScript>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
@@ -308,6 +320,8 @@ pub struct Checkpoint {
     pub(super) defs: usize,
     pub(super) generics: usize,
     pub(super) trampolines: usize,
+    pub(super) transform_anchors: usize,
+    pub(super) transform_scripts: usize,
     pub(super) elaborated: usize,
     pub(super) reports: usize,
 }
@@ -335,6 +349,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             builtins,
             trait_names,
             trampolines: Vec::new(),
+            transform_anchors: Vec::new(),
+            transform_scripts: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
             generics: Vec::new(),
@@ -697,6 +713,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             defs: self.defs.len(),
             generics: self.generics.len(),
             trampolines: self.trampolines.len(),
+            transform_anchors: self.transform_anchors.len(),
+            transform_scripts: self.transform_scripts.len(),
             elaborated: self.elaborated.len(),
             reports: self.reports.len(),
         }
@@ -714,6 +732,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.functions.retain(|def, _| def.0 < live);
         self.generics.truncate(cp.generics);
         self.trampolines.truncate(cp.trampolines);
+        self.transform_anchors.truncate(cp.transform_anchors);
+        self.transform_scripts.truncate(cp.transform_scripts);
         self.elaborated.truncate(cp.elaborated);
         self.reports.truncate(cp.reports);
     }
@@ -771,6 +791,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // Project each item once — `kind()` re-walks the node and is not
         // memoized — then run the passes over the typed collections, each item
         // tagged with its file/module scope.
+        #[derive(Clone, Copy)]
         struct Scope<'p> {
             file: FileId,
             module: &'p [TokenKey],
@@ -785,14 +806,36 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     module,
                 };
                 let span = span_of(stmt);
+                let attrs = stmt.attributes();
+                self.set_current_file(*file);
                 match stmt.kind() {
-                    surface::StmtKind::Record(rec) => records.push((rec, span, scope)),
-                    surface::StmtKind::Function(func) => functions.push((func, span, scope)),
-                    surface::StmtKind::ExternTrampoline(t) => trampolines.push((t, span, scope)),
+                    surface::StmtKind::Record(rec) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        records.push((rec, span, scope));
+                    }
+                    surface::StmtKind::Function(func) => {
+                        let anchor =
+                            self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
+                        functions.push((func, span, scope, anchor));
+                    }
+                    surface::StmtKind::ExternTrampoline(t) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        trampolines.push((t, span, scope));
+                    }
                     // `mod` declarations drive package *discovery* (the driver
                     // maps them to files before elaboration); here they carry
                     // no items.
-                    surface::StmtKind::Mod(..) => {}
+                    surface::StmtKind::Mod(..) => {
+                        self.validate_transform_anchor(&attrs, None);
+                    }
+                    surface::StmtKind::Transform(script) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        self.transform_scripts.push(TransformScript {
+                            body: script.body,
+                            span: script.body_span,
+                            file: *file,
+                        });
+                    }
                 }
             }
         }
@@ -810,12 +853,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect();
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span, scope)| {
+            .map(|(func, span, scope, _)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
                 self.scan_function(func, *span)
             })
             .collect();
+        functions
+            .iter()
+            .zip(&function_defs)
+            .filter_map(|((_, _, _, anchor), def)| if *anchor { *def } else { None })
+            .for_each(|def| self.transform_anchors.push(def));
         records
             .iter()
             .zip(record_defs)
@@ -826,7 +874,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span, _), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
@@ -835,6 +883,47 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.defs.set_module(scope.module.to_vec());
             self.collect_trampoline(tramp, *span);
         });
+    }
+
+    fn validate_transform_anchor(
+        &mut self,
+        attrs: &[surface::Attribute],
+        function_has_body: Option<bool>,
+    ) -> bool {
+        let mut seen = false;
+        let mut valid = true;
+        let mut span = None;
+        for attr in attrs {
+            if self.sym(attr.name) != "transform_anchor" {
+                continue;
+            }
+            span = Some(attr.span);
+            if function_has_body.is_none() {
+                self.error(
+                    span,
+                    "`#[transform_anchor]` may only be attached to a function",
+                );
+                valid = false;
+                continue;
+            }
+            if seen {
+                self.error(
+                    span,
+                    "`#[transform_anchor]` may only be specified once per function",
+                );
+                valid = false;
+            }
+            seen = true;
+            if !attr.args.is_empty() {
+                self.error(span, "`#[transform_anchor]` does not accept arguments");
+                valid = false;
+            }
+        }
+        if seen && function_has_body == Some(false) {
+            self.error(span, "`#[transform_anchor]` requires a function body");
+            valid = false;
+        }
+        seen && valid
     }
 
     fn scan_record(&mut self, rec: &surface::Record, span: Option<Span>) -> Option<DefId> {
