@@ -33,6 +33,27 @@
 // (borrow semantics), which is what turns inlined read-only predicates like
 // rbtree's `is_red` into pure tag reads.
 //
+// The same consumption shape appears without a pattern match: a
+// rebuild-style update of a compound box reads its fields, retains the ones
+// it keeps, and releases the box —
+//
+//   %front = ref.load(ref.project(rc.borrow %q, 1))
+//   rc.inc %front                    // keeps the front list
+//   %state = ref.load(ref.project(rc.borrow %q, 2))
+//   ref.acquire (ref.spilled %state) // keeps the [value] state's children
+//   ...
+//   rc.dec %q
+//   ... build the updated box from the loaded fields ...
+//
+// (functional-queue's snoc/uncons over its Hood-Melville Queue). On the hot
+// unique path every one of those retains is answered by the release of the
+// same member inside the whole-record drop — pure count traffic, and for a
+// [value] member a whole tag-switch of child increments each way. The
+// second walk below fuses these into a *tagless* destructuring decrement
+// whose bound members index the compound record itself: unique — the kept
+// members transfer, only unkept managed members release; shared — the
+// retains rematerialize (see `rematerializeBoundRetains`).
+//
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/Transformation/Passes.h"
@@ -122,6 +143,102 @@ bool fuseArm(mlir::Region &region, int64_t tag,
   return true;
 }
 
+// The member index a value was extracted from, when it is a direct
+// `ref.load(ref.project(rc.borrow(box), i))`.
+std::optional<int64_t> loadedMemberIndex(mlir::Value value,
+                                         mlir::TypedValue<RcType> box) {
+  auto load =
+      llvm::dyn_cast_if_present<ReussirRefLoadOp>(value.getDefiningOp());
+  if (!load)
+    return std::nullopt;
+  auto project = llvm::dyn_cast_if_present<ReussirRefProjectOp>(
+      load.getRef().getDefiningOp());
+  if (!project)
+    return std::nullopt;
+  auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
+      project.getRef().getDefiningOp());
+  if (!borrow || borrow.getRcPtr() != box)
+    return std::nullopt;
+  return project.getIndex().getSExtValue();
+}
+
+// The member index a `ref.acquire` retains, when its reference is the
+// member's slot itself or a spilled copy of the loaded member.
+std::optional<int64_t> acquiredMemberIndex(ReussirRefAcquireOp acquire,
+                                           mlir::TypedValue<RcType> box) {
+  mlir::Value ref = acquire.getRef();
+  if (auto spilled = llvm::dyn_cast_if_present<ReussirRefSpilledOp>(
+          ref.getDefiningOp()))
+    return loadedMemberIndex(spilled.getValue(), box);
+  auto project =
+      llvm::dyn_cast_if_present<ReussirRefProjectOp>(ref.getDefiningOp());
+  if (!project)
+    return std::nullopt;
+  auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
+      project.getRef().getDefiningOp());
+  if (!borrow || borrow.getRcPtr() != box)
+    return std::nullopt;
+  return project.getIndex().getSExtValue();
+}
+
+// Fuse a rebuild-style consumption of a compound box: scan backward from a
+// plain `rc.dec` collecting member retains, stopping at the first op the
+// retains cannot soundly move past (into the decrement's shared branch).
+// Within the window only reads, spills, and unrelated retains may appear —
+// nothing that could free the box, mutate its fields, or observe a count.
+void fuseCompoundConsumption(ReussirRcDecOp dec) {
+  if (dec.isDestructuring())
+    return;
+  RcType type = dec.getRcPtr().getType();
+  if (type.getCapability() != Capability::shared ||
+      type.getAtomicKind() != AtomicKind::normal || type.isRegional())
+    return;
+  auto recordType = llvm::dyn_cast<RecordType>(type.getElementType());
+  if (!recordType || !recordType.isCompound() || !recordType.getComplete() ||
+      !recordType.hasNoRegionalFields())
+    return;
+
+  llvm::SmallVector<mlir::Operation *> retains;
+  llvm::SmallVector<int64_t> bound;
+  for (mlir::Operation *cursor = dec->getPrevNode(); cursor;
+       cursor = cursor->getPrevNode()) {
+    if (auto inc = llvm::dyn_cast<ReussirRcIncOp>(cursor)) {
+      // An increment of the box itself belongs to the plain inc/dec
+      // cancellation; do not shadow it.
+      if (inc.getRcPtr() == dec.getRcPtr())
+        return;
+      if (auto idx = loadedMemberIndex(inc.getRcPtr(), dec.getRcPtr())) {
+        retains.push_back(cursor);
+        bound.push_back(*idx);
+      }
+      continue;
+    }
+    if (auto acquire = llvm::dyn_cast<ReussirRefAcquireOp>(cursor)) {
+      if (auto idx = acquiredMemberIndex(acquire, dec.getRcPtr())) {
+        retains.push_back(cursor);
+        bound.push_back(*idx);
+      }
+      continue;
+    }
+    // Reads of any box and spills of loaded values commute with the
+    // retains; so does anything without memory effects.
+    if (llvm::isa<ReussirRcBorrowOp, ReussirRefProjectOp, ReussirRefLoadOp,
+                  ReussirRefSpilledOp, ReussirRecordCoerceOp,
+                  ReussirRecordTagOp>(cursor))
+      continue;
+    if (cursor->getNumRegions() == 0 && mlir::isMemoryEffectFree(cursor))
+      continue;
+    break;
+  }
+  if (bound.empty())
+    return;
+
+  mlir::OpBuilder builder(dec);
+  dec.setBoundMembersAttr(builder.getDenseI64ArrayAttr(bound));
+  for (mlir::Operation *retain : retains)
+    retain->erase();
+}
+
 struct RcDispatchFusionPass
     : public impl::ReussirRcDispatchFusionPassBase<RcDispatchFusionPass> {
   using Base::Base;
@@ -154,6 +271,8 @@ struct RcDispatchFusionPass
         fuseArm(region, tagSet[0], scrutinee);
       }
     });
+    getOperation()->walk(
+        [&](ReussirRcDecOp dec) { fuseCompoundConsumption(dec); });
   }
 };
 

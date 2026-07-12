@@ -95,6 +95,23 @@ struct ReussirInlinerInterface : public mlir::DialectInlinerInterface {
                        mlir::IRMapping &) const final {
     return true;
   }
+  // Calls nested in reussir regions (a `record.dispatch` arm, an ensure
+  // branch) are as inlinable as anywhere else; without this overload the
+  // default answer is *false*, and a callee whose only call sites live in
+  // match arms — functional-queue's `invalidate` — silently never inlines,
+  // paying a by-value aggregate call each round. The one structural
+  // constraint to preserve: `region.run` must not become nested under
+  // another `region.run` (its verifier forbids intra-function nesting), so
+  // a body carrying one only inlines outside any enclosing `region.run`.
+  bool isLegalToInline(mlir::Region *dest, mlir::Region *src, bool,
+                       mlir::IRMapping &) const final {
+    bool sourceRunsRegion =
+        src->walk([](ReussirRegionRunOp) {
+             return mlir::WalkResult::interrupt();
+           }).wasInterrupted();
+    return !sourceRunsRegion ||
+           !dest->getParentOfType<ReussirRegionRunOp>();
+  }
 };
 } // namespace
 
