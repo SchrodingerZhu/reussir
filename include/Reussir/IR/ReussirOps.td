@@ -420,16 +420,33 @@ def ReussirRcDecOp : ReussirRcOp<"dec", [
       (outs Res<Optional<ReussirNullableTokenType>, "Nullable token">:$nullableToken);
 
   let extraClassDeclaration = [{
-    /// Whether this decrement *destructures* its box: a pattern match on the
-    /// variant arm `destructureTag` consumed the box, taking ownership of the
-    /// `boundMembers` (their retain/release pairs were fused away). It
-    /// expands shallowly instead of through the transitive drop glue: on the
-    /// unique path the bound members transfer with the arm (only unbound rc
-    /// members are released) and the box becomes a token; on the shared path
-    /// the bound members are retained and the count drops. Introduced by
-    /// `reussir-rc-dispatch-fusion`; cancelled against a preceding increment
-    /// (bound retains rematerialize) by `reussir-inc-dec-cancellation`.
-    bool isDestructuring() { return getDestructureTagAttr() != nullptr; }
+    /// Whether this decrement *destructures* its box: the consumer took
+    /// ownership of the `boundMembers` (their retain/release pairs were
+    /// fused away). It expands shallowly instead of through the transitive
+    /// drop glue: on the unique path the bound members transfer with the
+    /// consumer (only unbound managed members are released) and the box
+    /// becomes a token; on the shared path the bound members are retained
+    /// and the count drops. Two shapes exist: a pattern match on the variant
+    /// arm `destructureTag` (introduced by `reussir-rc-dispatch-fusion`),
+    /// and a tagless *compound* destructuring whose bound members index the
+    /// record itself (a rebuild-style consumer that reads fields and then
+    /// releases the box). Cancelled against a preceding increment (bound
+    /// retains rematerialize) by `reussir-inc-dec-cancellation`.
+    bool isDestructuring() { return getBoundMembersAttr() != nullptr; }
+    bool isVariantDestructuring() {
+      return getDestructureTagAttr() != nullptr;
+    }
+    /// The record view whose members a destructuring decrement transfers —
+    /// the variant arm's payload behind a tag coerce, or the compound
+    /// record itself — materialized as (payload type, payload reference) at
+    /// the builder's insertion point.
+    std::pair<reussir::RecordType, mlir::Value>
+    destructuredPayloadAndRef(mlir::OpBuilder &builder);
+    /// Rematerializes the fused-away bound-member retains at the builder's
+    /// insertion point: the shared path (or a cancelled release) keeps the
+    /// box alive, so the consumer needs its own references — an `rc.inc`
+    /// per shared member, a `ref.acquire` per value-record member.
+    void rematerializeBoundRetains(mlir::OpBuilder &builder);
   }];
 
   let assemblyFormat = [{

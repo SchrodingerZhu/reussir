@@ -317,29 +317,90 @@ mlir::LogicalResult ReussirRcReinterpretOp::verify() {
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
+// RcDecOp destructuring helpers
+//===----------------------------------------------------------------------===//
+std::pair<reussir::RecordType, mlir::Value>
+ReussirRcDecOp::destructuredPayloadAndRef(mlir::OpBuilder &builder) {
+  RcType rcType = getRcPtr().getType();
+  auto recordType = llvm::cast<RecordType>(rcType.getElementType());
+  auto refType = builder.getType<RefType>(
+      recordType, Capability::unspecified, rcType.getAtomicKind());
+  mlir::Value ref =
+      ReussirRcBorrowOp::create(builder, getLoc(), refType, getRcPtr());
+  if (!isVariantDestructuring())
+    return {recordType, ref};
+  int64_t tag = getDestructureTagAttr().getInt();
+  auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
+  auto payloadRefType = builder.getType<RefType>(
+      payload, Capability::unspecified, rcType.getAtomicKind());
+  mlir::Value coerced = ReussirRecordCoerceOp::create(
+      builder, getLoc(), payloadRefType, builder.getIndexAttr(tag), ref);
+  return {payload, coerced};
+}
+
+void ReussirRcDecOp::rematerializeBoundRetains(mlir::OpBuilder &builder) {
+  if (getBoundMembersAttr().empty())
+    return;
+  RcType rcType = getRcPtr().getType();
+  auto [payload, payloadRef] = destructuredPayloadAndRef(builder);
+  for (int64_t idx : getBoundMembersAttr().asArrayRef()) {
+    auto projectedTy =
+        getProjectedType(payload.getMembers()[idx],
+                         payload.getMemberIsField()[idx],
+                         Capability::unspecified);
+    auto projectedRefTy = builder.getType<RefType>(
+        projectedTy, Capability::unspecified, rcType.getAtomicKind());
+    mlir::Value slot = ReussirRefProjectOp::create(
+        builder, getLoc(), projectedRefTy, payloadRef,
+        builder.getIndexAttr(idx));
+    // A shared member retains through a count bump on the loaded pointer; a
+    // value-record member retains its embedded children through the slot's
+    // acquire (expanded member-wise later); anything trivially copyable
+    // needs nothing.
+    if (llvm::isa<RcType>(projectedTy)) {
+      mlir::Value member = ReussirRefLoadOp::create(builder, getLoc(),
+                                                    projectedTy, slot);
+      ReussirRcIncOp::create(builder, getLoc(), member);
+    } else if (!isTriviallyCopyable(projectedTy)) {
+      ReussirRefAcquireOp::create(builder, getLoc(), slot);
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // RcDecOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcDecOp::verify() {
   RcType RcType = getRcPtr().getType();
   if (RcType.getCapability() == reussir::Capability::flex)
     return emitOpError("cannot decrease reference count of a flex RC type");
-  if (bool(getDestructureTagAttr()) != bool(getBoundMembersAttr()))
-    return emitOpError("destructureTag and boundMembers must be set together");
+  if (getDestructureTagAttr() && !getBoundMembersAttr())
+    return emitOpError("destructureTag requires boundMembers");
   if (isDestructuring()) {
     if (RcType.getAtomicKind() != AtomicKind::normal)
       return emitOpError("destructuring decrement requires a nonatomic box");
     if (RcType.isRegional())
       return emitOpError("destructuring decrement must not be regional");
     auto recordType = llvm::dyn_cast<RecordType>(RcType.getElementType());
-    if (!recordType || !recordType.isVariant() || !recordType.getComplete())
+    if (!recordType || !recordType.getComplete())
       return emitOpError(
-          "destructuring decrement requires a complete variant box");
-    int64_t tag = getDestructureTagAttr().getInt();
-    if (tag < 0 || static_cast<size_t>(tag) >= recordType.getMembers().size())
-      return emitOpError("destructure tag out of range: ") << tag;
-    auto payload = llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
-    if (!payload || !payload.getComplete())
-      return emitOpError("destructured arm must have a complete payload");
+          "destructuring decrement requires a complete record box");
+    RecordType payload = recordType;
+    if (isVariantDestructuring()) {
+      if (!recordType.isVariant())
+        return emitOpError(
+            "tagged destructuring decrement requires a variant box");
+      int64_t tag = getDestructureTagAttr().getInt();
+      if (tag < 0 ||
+          static_cast<size_t>(tag) >= recordType.getMembers().size())
+        return emitOpError("destructure tag out of range: ") << tag;
+      payload = llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
+      if (!payload || !payload.getComplete())
+        return emitOpError("destructured arm must have a complete payload");
+    } else if (!recordType.isCompound()) {
+      return emitOpError(
+          "tagless destructuring decrement requires a compound box");
+    }
     for (int64_t index : getBoundMembersAttr().asArrayRef())
       if (index < 0 ||
           static_cast<size_t>(index) >= payload.getMembers().size())
@@ -447,7 +508,7 @@ TokenType ReussirRcDecOp::getTokenType() {
   if (auto recordType = llvm::dyn_cast<RecordType>(rcType.getElementType());
       recordType && recordType.isVariant() && recordType.getComplete() &&
       rcBoxType.isHeaderFused() && !recordType.getFixed()) {
-    if (isDestructuring()) {
+    if (isVariantDestructuring()) {
       llvm::TypeSize armSize = recordType.getVariantArmAllocSize(
           dataLayout, getDestructureTagAttr().getInt());
       return TokenType::get(getContext(), alignment, armSize.getFixedValue());

@@ -158,36 +158,8 @@ bool cancelIntoDispatch(ReussirRcIncOp incOp,
 
   for (ReussirRcDecOp dec : releases) {
     if (dec.isDestructuring()) {
-      RcType rcType = dec.getRcPtr().getType();
-      auto recordType = llvm::cast<RecordType>(rcType.getElementType());
-      int64_t tag = dec.getDestructureTagAttr().getInt();
-      auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
       mlir::OpBuilder builder(dec);
-      if (!dec.getBoundMembersAttr().empty()) {
-        auto refType = builder.getType<RefType>(recordType,
-                                                Capability::unspecified,
-                                                rcType.getAtomicKind());
-        auto payloadRefType = builder.getType<RefType>(
-            payload, Capability::unspecified, rcType.getAtomicKind());
-        mlir::Value ref = ReussirRcBorrowOp::create(builder, dec.getLoc(),
-                                                    refType, dec.getRcPtr());
-        mlir::Value coerced = ReussirRecordCoerceOp::create(
-            builder, dec.getLoc(), payloadRefType, builder.getIndexAttr(tag),
-            ref);
-        for (int64_t idx : dec.getBoundMembersAttr().asArrayRef()) {
-          auto projectedTy = getProjectedType(
-              payload.getMembers()[idx], payload.getMemberIsField()[idx],
-              Capability::unspecified);
-          auto projectedRefTy = builder.getType<RefType>(
-              projectedTy, Capability::unspecified, rcType.getAtomicKind());
-          mlir::Value slot = ReussirRefProjectOp::create(
-              builder, dec.getLoc(), projectedRefTy, coerced,
-              builder.getIndexAttr(idx));
-          mlir::Value member = ReussirRefLoadOp::create(
-              builder, dec.getLoc(), projectedTy, slot);
-          ReussirRcIncOp::create(builder, dec.getLoc(), member);
-        }
-      }
+      dec.rematerializeBoundRetains(builder);
     }
     eraseOrReplaceDecOp(dec);
   }

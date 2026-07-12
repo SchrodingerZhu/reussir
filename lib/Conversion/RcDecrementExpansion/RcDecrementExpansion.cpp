@@ -85,19 +85,10 @@ struct RcDecrementExpansionPattern
     {
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
       if (op.isDestructuring()) {
-        int64_t tag = op.getDestructureTagAttr().getInt();
-        auto recordType = llvm::cast<RecordType>(type.getElementType());
-        auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
         llvm::SmallDenseSet<int64_t> bound;
         for (int64_t index : op.getBoundMembersAttr().asArrayRef())
           bound.insert(index);
-        auto payloadRefType = rewriter.getType<RefType>(
-            payload, Capability::unspecified, type.getAtomicKind());
-        mlir::Value ref = ReussirRcBorrowOp::create(
-            rewriter, op.getLoc(), borrowedRefType, op.getRcPtr());
-        mlir::Value coerced = ReussirRecordCoerceOp::create(
-            rewriter, op.getLoc(), payloadRefType, rewriter.getIndexAttr(tag),
-            ref);
+        auto [payload, coerced] = op.destructuredPayloadAndRef(rewriter);
         for (auto [idx, memberTy, memberIsField] : llvm::enumerate(
                  payload.getMembers(), payload.getMemberIsField())) {
           if (bound.contains(static_cast<int64_t>(idx)) || memberIsField)
@@ -139,31 +130,10 @@ struct RcDecrementExpansionPattern
       ReussirRcSetOp::create(rewriter, op.getLoc(), op.getRcPtr(),
                                       decremented.getResult());
       if (op.isDestructuring()) {
-        // The shared path keeps the box alive, so the arm's bound members
-        // need their own references — the retains the fusion erased.
-        int64_t tag = op.getDestructureTagAttr().getInt();
-        auto recordType = llvm::cast<RecordType>(type.getElementType());
-        auto payload = llvm::cast<RecordType>(recordType.getMembers()[tag]);
-        auto payloadRefType = rewriter.getType<RefType>(
-            payload, Capability::unspecified, type.getAtomicKind());
-        mlir::Value ref = ReussirRcBorrowOp::create(
-            rewriter, op.getLoc(), borrowedRefType, op.getRcPtr());
-        mlir::Value coerced = ReussirRecordCoerceOp::create(
-            rewriter, op.getLoc(), payloadRefType, rewriter.getIndexAttr(tag),
-            ref);
-        for (int64_t idx : op.getBoundMembersAttr().asArrayRef()) {
-          auto projectedTy = getProjectedType(
-              payload.getMembers()[idx], payload.getMemberIsField()[idx],
-              Capability::unspecified);
-          auto projectedRefTy = rewriter.getType<RefType>(
-              projectedTy, Capability::unspecified, type.getAtomicKind());
-          mlir::Value slot = ReussirRefProjectOp::create(
-              rewriter, op.getLoc(), projectedRefTy, coerced,
-              rewriter.getIndexAttr(idx));
-          mlir::Value member = ReussirRefLoadOp::create(
-              rewriter, op.getLoc(), projectedTy, slot);
-          ReussirRcIncOp::create(rewriter, op.getLoc(), member);
-        }
+        // The shared path keeps the box alive, so the consumer's bound
+        // members need their own references — the retains the fusion
+        // erased.
+        op.rematerializeBoundRetains(rewriter);
       }
       auto null = ReussirNullableCreateOp::create(rewriter, 
           op.getLoc(), op.getNullableToken().getType(), nullptr);
