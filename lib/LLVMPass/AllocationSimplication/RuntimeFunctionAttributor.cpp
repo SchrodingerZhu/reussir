@@ -51,6 +51,42 @@ bool setAllocateAttributes(llvm::Function &fn) {
   return changed;
 }
 
+// `__reussir_allocate_small(size)`: same allocation family and kind as the
+// generic entry, but the size is the sole argument (allocsize index 0) and
+// there is no alignment parameter — the natural-alignment contract is
+// discharged by the compiler at every call site.
+bool setAllocateSmallAttributes(llvm::Function &fn) {
+  bool changed = false;
+  llvm::LLVMContext &ctx = fn.getContext();
+  constexpr auto allocKind =
+      llvm::AllocFnKind::Alloc | llvm::AllocFnKind::Uninitialized;
+
+  if (!fn.hasFnAttribute(llvm::Attribute::AllocKind) ||
+      fn.getFnAttribute(llvm::Attribute::AllocKind).getAllocKind() !=
+          allocKind) {
+    fn.addFnAttr(llvm::Attribute::getWithAllocKind(ctx, allocKind));
+    changed = true;
+  }
+
+  auto hasExpectedAllocSize = [&] {
+    if (!fn.hasFnAttribute(llvm::Attribute::AllocSize))
+      return false;
+    auto args = fn.getFnAttribute(llvm::Attribute::AllocSize).getAllocSizeArgs();
+    return args.first == 0 && !args.second.has_value();
+  };
+  if (!hasExpectedAllocSize()) {
+    fn.addFnAttr(llvm::Attribute::getWithAllocSizeArgs(ctx, 0, std::nullopt));
+    changed = true;
+  }
+
+  if (fn.getFnAttribute("alloc-family").getValueAsString() != "reussir") {
+    fn.addFnAttr("alloc-family", "reussir");
+    changed = true;
+  }
+
+  return changed;
+}
+
 bool setReallocateAttributes(llvm::Function &fn) {
   bool changed = false;
   llvm::LLVMContext &ctx = fn.getContext();
@@ -119,6 +155,9 @@ RuntimeFunctionAttributorPass::run(llvm::Module &module,
 
   if (auto *allocate = module.getFunction("__reussir_allocate"))
     changed |= setAllocateAttributes(*allocate);
+
+  if (auto *allocateSmall = module.getFunction("__reussir_allocate_small"))
+    changed |= setAllocateSmallAttributes(*allocateSmall);
 
   if (auto *deallocate = module.getFunction("__reussir_deallocate"))
     changed |= setDeallocateAttributes(*deallocate);

@@ -59,7 +59,7 @@ module {
 // CHECK: store %"List::Cons" %[[cons_loaded]], ptr %[[value_ptr]], align 8
 // CHECK: %[[loaded:[0-9]+]] = load %List, ptr %[[alloca]], align 8
 // CHECK: call void @llvm.lifetime.end.p0({{.*}}ptr %[[alloca]])
-// CHECK: %[[allocated:[0-9]+]] = call ptr @__reussir_allocate(i64 8, i64 24)
+// CHECK: %[[allocated:[0-9]+]] = call ptr @__reussir_allocate_small(i64 24)
 // CHECK: %[[count_ptr:[0-9]+]] = getelementptr %List, ptr %[[allocated]], i32 0, i32 0
 // CHECK: %[[box_ptr:[0-9]+]] = getelementptr %List, ptr %[[allocated]], i32 0, i32 0
 // CHECK: store %List %[[loaded]], ptr %[[box_ptr]], align 8

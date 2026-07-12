@@ -49,6 +49,14 @@ constexpr std::size_t allocatorBinSize(std::size_t size) {
 // huge segments where the bin model (and in-place reuse) no longer applies.
 inline constexpr std::size_t kAllocatorBinModelMax = 64 * 1024;
 
+// The `__reussir_allocate_small` contract, shared with the runtime
+// (crates/reussir-rt/src/alloc.rs): mimalloc's MI_SMALL_SIZE_MAX
+// (128 * sizeof(void*)). `mi_malloc_small` indexes the heap's direct
+// small-page table without a bounds check in release builds, so the compiler
+// must only emit the small entry point for constant layouts within this
+// bound (and at natural alignment: align <= 8 dividing size).
+inline constexpr std::size_t kSmallAllocationLimit = 1024;
+
 // Whether two (align, size) layouts are served from the same allocator bin,
 // i.e. a block allocated for one satisfies the other in place. Restricted to
 // the natural-alignment path (align <= 16): over-aligned allocations go

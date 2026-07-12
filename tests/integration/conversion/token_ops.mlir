@@ -1,10 +1,9 @@
 // RUN: %reussir-opt %s --convert-to-llvm | %FileCheck %s
 module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {
   // CHECK-LABEL: llvm.func @token_alloc() -> !llvm.ptr attributes {sym_visibility = "private"} {
-  // CHECK: %0 = llvm.mlir.constant(8 : [[INDEX_T:i[0-9]+]]) : [[INDEX_T]]
-  // CHECK: %1 = llvm.mlir.constant(64 : [[INDEX_T]]) : [[INDEX_T]]
-  // CHECK: %2 = llvm.call @__reussir_allocate(%0, %1) : ([[INDEX_T]], [[INDEX_T]]) -> !llvm.ptr
-  // CHECK: llvm.return %2 : !llvm.ptr
+  // CHECK: %0 = llvm.mlir.constant(64 : [[INDEX_T:i[0-9]+]]) : [[INDEX_T]]
+  // CHECK: %1 = llvm.call @__reussir_allocate_small(%0) : ([[INDEX_T]]) -> !llvm.ptr
+  // CHECK: llvm.return %1 : !llvm.ptr
   // CHECK: }
   func.func private @token_alloc() 
     -> !reussir.token<align: 8, size: 64> {

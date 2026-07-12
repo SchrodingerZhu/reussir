@@ -57,6 +57,7 @@
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirDialect.h"
+#include "Reussir/Support/AllocatorBinModel.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
@@ -396,15 +397,26 @@ struct ReussirTokenAllocConversionPattern
     uint64_t alignment = tokenType.getAlign();
     uint64_t size = tokenType.getSize();
     auto indexType = converter->getIndexType();
+    auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
 
-    // Create constants for alignment and size
-    auto alignConst = mlir::arith::ConstantOp::create(
-        rewriter, loc, mlir::IntegerAttr::get(indexType, alignment));
+    // A statically small, naturally aligned layout takes the sized fast
+    // path: `__reussir_allocate_small(size)` is `mi_malloc_small` behind an
+    // OOM check — no alignment/divisibility recheck, no size
+    // classification. The generic wrapper stays for everything else.
     auto sizeConst = mlir::arith::ConstantOp::create(
         rewriter, loc, mlir::IntegerAttr::get(indexType, size));
+    if (alignment <= 8 && size % alignment == 0 &&
+        size <= kSmallAllocationLimit) {
+      auto allocSmallFunc = moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+          "__reussir_allocate_small");
+      auto funcOp = mlir::LLVM::CallOp::create(rewriter, loc, allocSmallFunc,
+                                               mlir::ValueRange{sizeConst});
+      rewriter.replaceOp(op, funcOp.getResult());
+      return mlir::success();
+    }
 
-    // Create the runtime function call
-    auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
+    auto alignConst = mlir::arith::ConstantOp::create(
+        rewriter, loc, mlir::IntegerAttr::get(indexType, alignment));
     auto allocFunc =
         moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>("__reussir_allocate");
     auto funcOp = mlir::LLVM::CallOp::create(
@@ -3189,6 +3201,8 @@ void ensureRuntimeFunctions(mlir::ModuleOp module,
   addRuntimeFunction(body, "__reussir_release_rigid_object", {llvmPtrType}, {});
   auto allocFunc = addRuntimeFunction(body, "__reussir_allocate",
                                       {indexType, indexType}, {llvmPtrType});
+  auto allocSmallFunc = addRuntimeFunction(body, "__reussir_allocate_small",
+                                           {indexType}, {llvmPtrType});
   auto deallocFunc = addRuntimeFunction(
       body, "__reussir_deallocate", {llvmPtrType, indexType, indexType}, {});
   // Add common runtime attributes.
@@ -3202,6 +3216,14 @@ void ensureRuntimeFunctions(mlir::ModuleOp module,
   allocFunc.setResultAttr(0, "llvm.noundef", builder.getUnitAttr());
   allocFunc.setArgAttr(0, "llvm.noundef", builder.getUnitAttr());
   allocFunc.setArgAttr(1, "llvm.noundef", builder.getUnitAttr());
+
+  // The small entry has no alignment parameter — its contract (natural
+  // alignment, size <= kSmallAllocationLimit) is discharged by the compiler
+  // at emission; see ReussirTokenAllocConversionPattern.
+  allocSmallFunc->setAttr("passthrough", passthroughAlloc);
+  allocSmallFunc.setResultAttr(0, "llvm.noalias", builder.getUnitAttr());
+  allocSmallFunc.setResultAttr(0, "llvm.noundef", builder.getUnitAttr());
+  allocSmallFunc.setArgAttr(0, "llvm.noundef", builder.getUnitAttr());
 
   auto passthroughDealloc = builder.getStrArrayAttr(
       {"mustprogress", "nounwind", "willreturn", "nocallback"});
