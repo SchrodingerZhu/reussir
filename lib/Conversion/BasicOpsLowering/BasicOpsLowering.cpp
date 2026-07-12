@@ -115,7 +115,7 @@ namespace {
 // The only other guard is `rc.assume_unique`, which must neutralize its
 // assumption for immediates (an `assume(false)` would be unsound).
 
-enum class TagEncoding { None, TBI, Immortal };
+enum class TagEncoding { None, TBI, Immortal, Lsb };
 
 // The immortal encoding's dummy refcount initializer and recognition
 // threshold for a `width`-bit refcount word.
@@ -133,8 +133,52 @@ TagEncoding specialPtrTagEncoding(mlir::Operation *op) {
   auto attr = module->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr);
   if (!attr)
     return TagEncoding::None;
-  return attr.getValue() == kSpecialPtrTagImmortal ? TagEncoding::Immortal
-                                                   : TagEncoding::TBI;
+  if (attr.getValue() == kSpecialPtrTagImmortal)
+    return TagEncoding::Immortal;
+  if (attr.getValue() == kSpecialPtrTagLsb)
+    return TagEncoding::Lsb;
+  return TagEncoding::TBI;
+}
+
+// Under the low-bit encoding a value of a taggable type may duplicate its
+// nullary tag in the low three pointer bits; the count ops and the payload
+// gateway (record.coerce) align the pointer down before touching memory.
+// Real boxes are 8-aligned (the allocator's natural path guarantees it for
+// the <=8-aligned, 8-granular box layouts), so the mask is a no-op there.
+constexpr uint64_t kLsbTagMask = 0x7;
+
+bool needsLsbStrip(mlir::Operation *op, RcType rcType) {
+  return specialPtrTagEncoding(op) == TagEncoding::Lsb &&
+         rcType.mayCarrySpecialPointerTag();
+}
+
+// Whether refs to this record may carry low tag bits under the low-bit
+// encoding. Requires >= 8-byte alloc alignment: then every legal reference
+// to the record (a box root, an embedded field) is 8-aligned and nonzero
+// low bits are exclusively an immediate's tag. The SpecialPointerTag pass
+// enforces the same bound when creating immediates.
+bool lsbTaggableRecord(mlir::Operation *op, RecordType recordType) {
+  if (specialPtrTagEncoding(op) != TagEncoding::Lsb)
+    return false;
+  auto rcType = RcType::get(recordType.getContext(), recordType,
+                            Capability::unspecified);
+  if (!rcType.mayCarrySpecialPointerTag())
+    return false;
+  auto dataLayout = mlir::DataLayout::closest(op);
+  return dataLayout.getTypeABIAlignment(recordType) >= 8;
+}
+
+mlir::Value stripLsbTag(mlir::ConversionPatternRewriter &rewriter,
+                        mlir::Location loc, mlir::Value ptr,
+                        mlir::Type indexTy) {
+  // llvm.ptrmask, not a ptrtoint/inttoptr round trip: the mask must not
+  // launder the pointer's provenance, or every masked access aliases the
+  // world and the optimizer's noalias/invariant reasoning dies with it.
+  mlir::Value mask = mlir::LLVM::ConstantOp::create(
+      rewriter, loc, indexTy,
+      rewriter.getIntegerAttr(indexTy, ~static_cast<int64_t>(kLsbTagMask)));
+  return mlir::LLVM::PtrMaskOp::create(rewriter, loc, ptr.getType(), ptr,
+                                       mask);
 }
 
 // The per-tag dummy box a tagged immediate points at: `{refcount, tag}`,
@@ -158,7 +202,7 @@ mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
     auto countTy = mlir::IntegerType::get(module.getContext(), 32);
     auto arrTy = mlir::LLVM::LLVMArrayType::get(countTy, 2);
     uint64_t refCount =
-        encoding == TagEncoding::Immortal ? immortalRefCount(32) : 2;
+        encoding == TagEncoding::TBI ? 2 : immortalRefCount(32);
     auto init = mlir::DenseElementsAttr::get(
         mlir::RankedTensorType::get({2}, countTy),
         llvm::ArrayRef<llvm::APInt>{llvm::APInt(32, refCount),
@@ -166,6 +210,9 @@ mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
     global = mlir::LLVM::GlobalOp::create(
         builder, loc, arrTy,
         /*isConstant=*/false, mlir::LLVM::Linkage::Internal, name, init);
+    // The low-bit encoding steals the low three pointer bits, so the dummy
+    // must be 8-aligned like every real box (harmless elsewhere).
+    global.setAlignment(8);
   }
   return global;
 }
@@ -529,8 +576,11 @@ struct ReussirRcFetchConversionPattern
     // hits the dummy box's refcount, which is pinned >= 2 — exactly what
     // routes the expanded decrement to its shared branch and answers
     // `is_unique` with false (see the special-pointer-tag notes above).
+    mlir::Value addr = adaptor.getRcPtr();
+    if (needsLsbStrip(op, op.getRcPtr().getType()))
+      addr = stripLsbTag(rewriter, loc, addr, indexTy);
     mlir::Value loaded = mlir::LLVM::LoadOp::create(
-        rewriter, loc, rewriter.getI32Type(), adaptor.getRcPtr());
+        rewriter, loc, rewriter.getI32Type(), addr);
     mlir::Value widened =
         llvm::cast<mlir::IntegerType>(indexTy).getWidth() > 32
             ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, loaded)
@@ -549,6 +599,11 @@ struct ReussirRcSetConversionPattern
   matchAndRewrite(ReussirRcSetOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Value addr = adaptor.getRcPtr();
+    if (needsLsbStrip(op, op.getRcPtr().getType()))
+      addr = stripLsbTag(
+          rewriter, op.getLoc(), addr,
+          static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
+              ->getIndexType());
     mlir::Value narrowCount =
         adaptor.getRefCount().getType().getIntOrFloatBitWidth() > 32
             ? mlir::LLVM::TruncOp::create(rewriter, op.getLoc(),
@@ -1244,15 +1299,79 @@ struct ReussirRecordTagConversionPattern
     // the op's index result. Under the special-pointer-tag scheme a tagged
     // immediate scrutinee needs no decode: the load lands in its per-tag
     // dummy box (TBI masks the top byte) and reads the real tag — so the
-    // match hot path is identical with and without the scheme.
+    // match hot path is identical with and without the scheme. The low-bit
+    // encoding is the exception: the tag is duplicated in the reference's
+    // low bits, so an encodable immediate answers with pure pointer
+    // arithmetic and only real boxes (and unencodable dummies) take the
+    // load — through the aligned-down pointer.
     mlir::IntegerType tagType = recordType.getTagType();
-    mlir::Value narrowTag =
-        mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
-    mlir::Value tagValue =
-        tagType.getWidth() < llvm::cast<mlir::IntegerType>(indexType).getWidth()
-            ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexType, narrowTag)
-                  .getResult()
-            : narrowTag;
+    mlir::Value tagValue;
+    if (lsbTaggableRecord(op, recordType)) {
+      mlir::Value asInt =
+          mlir::LLVM::PtrToIntOp::create(rewriter, loc, indexType, refPtr);
+      mlir::Value lowMask = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, indexType,
+          rewriter.getIntegerAttr(indexType,
+                                  static_cast<int64_t>(kLsbTagMask)));
+      mlir::Value low =
+          mlir::LLVM::AndOp::create(rewriter, loc, asInt, lowMask);
+      mlir::Value zero = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, indexType, rewriter.getIntegerAttr(indexType, 0));
+      mlir::Value isImmediate = mlir::LLVM::ICmpOp::create(
+          rewriter, loc, mlir::LLVM::ICmpPredicate::ne, low, zero);
+
+      mlir::Block *condBlock = rewriter.getInsertionBlock();
+      mlir::Block *contBlock =
+          rewriter.splitBlock(condBlock, rewriter.getInsertionPoint());
+      contBlock->addArgument(indexType, loc);
+      mlir::Block *slowBlock = rewriter.createBlock(
+          contBlock->getParent(), mlir::Region::iterator(contBlock));
+      {
+        // Real box (or unencodable dummy): align down, read the stored tag.
+        rewriter.setInsertionPointToEnd(slowBlock);
+        mlir::Value stripped =
+            stripLsbTag(rewriter, loc, refPtr, indexType);
+        auto slowTagPtr = mlir::LLVM::GEPOp::create(
+            rewriter, loc, tagPtrType, elementType, stripped,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{0, tagField});
+        mlir::Value narrow =
+            mlir::LLVM::LoadOp::create(rewriter, loc, tagType, slowTagPtr);
+        mlir::Value wide =
+            tagType.getWidth() <
+                    llvm::cast<mlir::IntegerType>(indexType).getWidth()
+                ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexType, narrow)
+                      .getResult()
+                : narrow;
+        mlir::LLVM::BrOp::create(rewriter, loc, mlir::ValueRange{wide},
+                                 contBlock);
+      }
+      mlir::Block *fastBlock = rewriter.createBlock(
+          contBlock->getParent(), mlir::Region::iterator(slowBlock));
+      {
+        // Immediate: the low bits are `tag + 1`.
+        rewriter.setInsertionPointToEnd(fastBlock);
+        mlir::Value one = mlir::LLVM::ConstantOp::create(
+            rewriter, loc, indexType, rewriter.getIntegerAttr(indexType, 1));
+        mlir::Value fastTag =
+            mlir::LLVM::SubOp::create(rewriter, loc, low, one);
+        mlir::LLVM::BrOp::create(rewriter, loc, mlir::ValueRange{fastTag},
+                                 contBlock);
+      }
+      rewriter.setInsertionPointToEnd(condBlock);
+      mlir::LLVM::CondBrOp::create(rewriter, loc, isImmediate, fastBlock,
+                                   slowBlock);
+      rewriter.setInsertionPointToStart(contBlock);
+      tagValue = contBlock->getArgument(0);
+    } else {
+      mlir::Value narrowTag =
+          mlir::LLVM::LoadOp::create(rewriter, loc, tagType, tagPtr);
+      tagValue =
+          tagType.getWidth() <
+                  llvm::cast<mlir::IntegerType>(indexType).getWidth()
+              ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexType, narrowTag)
+                    .getResult()
+              : narrowTag;
+    }
     rewriter.replaceOp(op, tagValue);
 
     // Assume that the tag is always in bounds
@@ -1330,11 +1449,17 @@ struct ReussirRcIncConversionPattern
           op, acquireFunc, mlir::ValueRange{adaptor.getRcPtr()});
       return mlir::success();
     }
+    mlir::Value base = adaptor.getRcPtr();
+    if (needsLsbStrip(op, rcPtrTy))
+      base = stripLsbTag(
+          rewriter, op.getLoc(), base,
+          static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
+              ->getIndexType());
     mlir::Value refcntPtr;
     // If inner element type is a FFI object, we do not reuse gep to expose
     // the struct.
     if (auto eleTy = mlir::dyn_cast<FFIObjectType>(rcPtrTy.getElementType())) {
-      refcntPtr = adaptor.getRcPtr();
+      refcntPtr = base;
     } else {
       RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
       // GEP [0].1
@@ -1342,8 +1467,8 @@ struct ReussirRcIncConversionPattern
       auto llvmPtrType =
           mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
       refcntPtr = mlir::LLVM::GEPOp::create(
-          rewriter, op.getLoc(), llvmPtrType, convertedBoxType,
-          adaptor.getRcPtr(), llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
+          rewriter, op.getLoc(), llvmPtrType, convertedBoxType, base,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
     }
     // Usually no guard for tagged immediates: the increment lands on the
     // dummy box's refcount — a benign write that only ever grows it (rc.set,
@@ -1354,7 +1479,8 @@ struct ReussirRcIncConversionPattern
     // instead (the load stays plain, so nothing on the read path changes).
     auto countType = rewriter.getI32Type();
     TagEncoding encoding = specialPtrTagEncoding(op);
-    bool steerNarrowImmortal = encoding == TagEncoding::Immortal &&
+    bool steerNarrowImmortal = (encoding == TagEncoding::Immortal ||
+                                encoding == TagEncoding::Lsb) &&
                                rcPtrTy.mayCarrySpecialPointerTag();
     auto one = mlir::arith::ConstantOp::create(
         rewriter, op.getLoc(), mlir::IntegerAttr::get(countType, 1));
@@ -1570,6 +1696,25 @@ struct ReussirRcTaggedConversionPattern
                              op.getTag().getZExtValue(), encoding, rewriter);
     mlir::Value base = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrTy,
                                                        dummy.getSymName());
+    if (encoding == TagEncoding::Lsb) {
+      // Duplicate the tag into the low alignment bits when it fits; an
+      // unencodable arm keeps the plain dummy address and classifies
+      // through the dummy's in-memory tag like the immortal encoding.
+      uint64_t tag = op.getTag().getZExtValue();
+      if (tag + 1 > kLsbTagMask) {
+        rewriter.replaceOp(op, base);
+        return mlir::success();
+      }
+      mlir::Value baseInt =
+          mlir::LLVM::PtrToIntOp::create(rewriter, loc, indexTy, base);
+      mlir::Value tagBits = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, indexTy,
+          rewriter.getIntegerAttr(indexTy, static_cast<int64_t>(tag + 1)));
+      mlir::Value imm =
+          mlir::LLVM::OrOp::create(rewriter, loc, baseInt, tagBits);
+      rewriter.replaceOpWithNewOp<mlir::LLVM::IntToPtrOp>(op, ptrTy, imm);
+      return mlir::success();
+    }
     if (encoding != TagEncoding::TBI) {
       rewriter.replaceOp(op, base);
       return mlir::success();
@@ -1724,6 +1869,18 @@ struct ReussirRecordCoerceConversionPattern
 
     // Get the element type that the reference points to (the variant record)
     RefType refType = op.getVariant().getType();
+    // The coerce is the gateway from a variant reference into payload
+    // access: under the low-bit encoding align the pointer down here so
+    // every projection and load below sees a clean address. (A coerce of an
+    // actual immediate only feeds unreachable arms — nullary payloads have
+    // no fields — but the mask keeps even those paths well-defined.)
+    if (auto variantRecordType =
+            llvm::dyn_cast<RecordType>(refType.getElementType());
+        variantRecordType && lsbTaggableRecord(op, variantRecordType))
+      variantPtr = stripLsbTag(
+          rewriter, op.getLoc(), variantPtr,
+          static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
+              ->getIndexType());
     auto elementType = llvm::cast<mlir::LLVM::LLVMStructType>(
         converter->convertType(refType.getElementType()));
     auto variantRecord = llvm::cast<RecordType>(refType.getElementType());
@@ -2077,7 +2234,7 @@ struct ReussirRcIsUniqueOpConversionPattern
   // rc.assume_unique's immortal neutralization).
   static mlir::Value
   buildUniquenessCondition(mlir::Location loc, RcType rcPtrTy,
-                           mlir::Value rcPtr,
+                           mlir::Value rcPtr, mlir::Operation *scopeOp,
                            const mlir::TypeConverter *typeConverter,
                            mlir::ConversionPatternRewriter &rewriter,
                            mlir::Value *outCount = nullptr) {
@@ -2085,6 +2242,11 @@ struct ReussirRcIsUniqueOpConversionPattern
     auto convertedBoxType = typeConverter->convertType(rcBoxType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
 
+    if (needsLsbStrip(scopeOp, rcPtrTy))
+      rcPtr = stripLsbTag(
+          rewriter, loc, rcPtr,
+          static_cast<const mlir::LLVMTypeConverter *>(typeConverter)
+              ->getIndexType());
     auto refcntPtr = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedBoxType, rcPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
@@ -2108,7 +2270,8 @@ struct ReussirRcIsUniqueOpConversionPattern
                   mlir::ConversionPatternRewriter &rewriter) const override {
     RcType rcPtrTy = op.getRcPtr().getType();
     auto isUnique = buildUniquenessCondition(
-        op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(), rewriter);
+        op.getLoc(), rcPtrTy, adaptor.getRcPtr(), op, getTypeConverter(),
+        rewriter);
     rewriter.replaceOp(op, isUnique);
     return mlir::success();
   }
@@ -2130,7 +2293,7 @@ struct ReussirRcAssumeUniqueOpConversionPattern
     mlir::Value count;
     mlir::Value isUnique =
         ReussirRcIsUniqueOpConversionPattern::buildUniquenessCondition(
-            op.getLoc(), rcPtrTy, adaptor.getRcPtr(), getTypeConverter(),
+            op.getLoc(), rcPtrTy, adaptor.getRcPtr(), op, getTypeConverter(),
             rewriter, &count);
     TagEncoding encoding = specialPtrTagEncoding(op);
     if (encoding != TagEncoding::None && rcPtrTy.mayCarrySpecialPointerTag()) {

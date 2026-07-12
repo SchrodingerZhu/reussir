@@ -72,6 +72,23 @@ pub enum NullaryVariantEncoding {
     /// dependency (works on any target, including wasm32); foreign code
     /// sees a layout-compatible box.
     Immortal,
+    /// The immortal encoding with the tag duplicated into the pointer's low
+    /// alignment bits (`dummy | (tag + 1)` when it fits) — tag
+    /// classification without a memory access on targets without TBI; every
+    /// access through a possibly-tagged value aligns the pointer down.
+    Lsb,
+}
+
+impl NullaryVariantEncoding {
+    /// The module-attribute / pass-option spelling of this encoding.
+    fn as_pass_option(self) -> &'static str {
+        match self {
+            NullaryVariantEncoding::Boxed => "boxed",
+            NullaryVariantEncoding::Tbi => "tbi",
+            NullaryVariantEncoding::Immortal => "immortal",
+            NullaryVariantEncoding::Lsb => "lsb",
+        }
+    }
 }
 
 /// A named interception point in the lowering pipeline where user-supplied
@@ -330,7 +347,7 @@ pub fn run_lowering_pipeline(
         // construction.
         if options.nullary_variant_encoding != NullaryVariantEncoding::Boxed => {
             module: sys::reussirCreateSpecialPointerTagPass(
-                options.nullary_variant_encoding == NullaryVariantEncoding::Immortal,
+                string_ref(options.nullary_variant_encoding.as_pass_option()),
             );
         }
 

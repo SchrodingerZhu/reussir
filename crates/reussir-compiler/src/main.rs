@@ -77,6 +77,11 @@ enum VariantEncoding {
     ArchIndependent,
     /// Legacy heap-boxed layout; no immediates.
     Boxed,
+    /// The immortal encoding with the tag duplicated into the pointer's low
+    /// alignment bits: tag dispatch of nullary arms is pure pointer
+    /// arithmetic (like TBI, without the hardware dependency); every access
+    /// through a possibly-tagged value aligns the pointer down first.
+    Lsb,
 }
 
 impl VariantEncoding {
@@ -92,6 +97,7 @@ impl VariantEncoding {
             }
             VariantEncoding::ArchIndependent => NullaryVariantEncoding::Immortal,
             VariantEncoding::Boxed => NullaryVariantEncoding::Boxed,
+            VariantEncoding::Lsb => NullaryVariantEncoding::Lsb,
         }
     }
 }

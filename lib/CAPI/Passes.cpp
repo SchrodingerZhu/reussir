@@ -87,10 +87,9 @@ MlirPass reussirCreateInferVariantTagPass(void) {
 MlirPass reussirCreateSCFOpsLoweringPass(void) {
   return wrapOwned(reussir::createReussirSCFOpsLoweringPass());
 }
-MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent) {
+MlirPass reussirCreateSpecialPointerTagPass(MlirStringRef encoding) {
   reussir::ReussirSpecialPointerTagPassOptions options;
-  options.encoding = archIndependent ? reussir::kSpecialPtrTagImmortal.str()
-                                     : reussir::kSpecialPtrTagTBI.str();
+  options.encoding = std::string(encoding.data, encoding.length);
   return wrapOwned(reussir::createReussirSpecialPointerTagPass(options));
 }
 

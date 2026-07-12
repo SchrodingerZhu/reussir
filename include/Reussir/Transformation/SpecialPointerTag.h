@@ -53,6 +53,17 @@ constexpr llvm::StringLiteral kSpecialPtrTagTBI = "tbi";
 /// value (2^62); guards test refcount magnitude instead of pointer bits.
 constexpr llvm::StringLiteral kSpecialPtrTagImmortal = "immortal";
 
+/// Low-bit encoding (any 64-bit target): the immortal encoding with the tag
+/// *duplicated* into the pointer's low alignment bits — the immediate is
+/// `dummy address | (tag + 1)` when `tag + 1 < 8` (every rc box is 8-aligned)
+/// and the plain dummy address otherwise. Tag classification of an
+/// encodable nullary arm is then pure pointer arithmetic (`ptr & 7`),
+/// like TBI but without a hardware dependency; the price is an align-down
+/// mask at every access through a possibly-tagged value. The dummy box
+/// still answers any access after the mask, so unencodable arms and
+/// generic paths fall back to the immortal behavior uniformly.
+constexpr llvm::StringLiteral kSpecialPtrTagLsb = "lsb";
+
 } // namespace reussir
 
 #endif // REUSSIR_TRANSFORMATION_SPECIALPOINTERTAG_H

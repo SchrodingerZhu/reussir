@@ -57,6 +57,18 @@ struct NullaryVariantPattern
     RcType rcType = op.getRcPtr().getType();
     if (!rcType.mayCarrySpecialPointerTag())
       return mlir::failure();
+    // The low-bit encoding additionally needs >= 8-byte alloc alignment:
+    // refs to the record must never have meaningful low bits of their own.
+    if (auto module = op->getParentOfType<mlir::ModuleOp>();
+        module &&
+        module->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr) &&
+        module->getAttrOfType<mlir::StringAttr>(kSpecialPtrTagAttr)
+                .getValue() == kSpecialPtrTagLsb) {
+      auto recordType = llvm::cast<RecordType>(rcType.getElementType());
+      auto dataLayout = mlir::DataLayout::closest(op);
+      if (dataLayout.getTypeABIAlignment(recordType) < 8)
+        return mlir::failure();
+    }
     auto variant = op.getValue().getDefiningOp<ReussirRecordVariantOp>();
     if (!variant)
       return mlir::failure();
@@ -85,7 +97,8 @@ struct SpecialPointerTagPass
   using Base::Base;
   void runOnOperation() override {
     mlir::ModuleOp module = getOperation();
-    if (encoding != kSpecialPtrTagTBI && encoding != kSpecialPtrTagImmortal) {
+    if (encoding != kSpecialPtrTagTBI && encoding != kSpecialPtrTagImmortal &&
+        encoding != kSpecialPtrTagLsb) {
       module.emitError("unknown special-pointer-tag encoding: ") << encoding;
       return signalPassFailure();
     }

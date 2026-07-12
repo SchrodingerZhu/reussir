@@ -124,7 +124,7 @@ unsafe extern "C" {
     /// when the scheme is enabled; `arch_independent` selects the encoding:
     /// false = `tbi` (top-byte tag, aarch64), true = `immortal` (plain dummy
     /// address with an immortal refcount, any target).
-    pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
+    pub fn reussirCreateSpecialPointerTagPass(encoding: mlir_sys::MlirStringRef) -> MlirPass;
     pub fn reussirCreateClosureBetaReductionPass() -> MlirPass;
     pub fn reussirCreateRcDispatchFusionPass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;

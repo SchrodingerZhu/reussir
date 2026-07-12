@@ -50,7 +50,7 @@ MlirPass reussirCreateRcCreateSinkPass(void);
 /// the scheme is enabled; `archIndependent` selects the encoding: false =
 /// `tbi` (top-byte tag, requires hardware top-byte-ignore, aarch64), true =
 /// `immortal` (plain dummy address with an immortal refcount, any target).
-MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
+MlirPass reussirCreateSpecialPointerTagPass(MlirStringRef encoding);
 MlirPass reussirCreateRcDispatchFusionPass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);
