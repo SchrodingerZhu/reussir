@@ -360,24 +360,45 @@ namespace {
 struct ReussirNullableDispatchOpRewritePattern
     : public mlir::OpConversionPattern<ReussirNullableDispatchOp> {
   using OpConversionPattern::OpConversionPattern;
+
+  // Whether `result` of an expanded decrement's scf.if is non-null exactly
+  // when the if's condition holds — i.e. it is the decrement's *own* token
+  // (then yields `nullable.create` of a pointer, else yields a null
+  // `nullable.create`). Token reuse widens these ifs with extra results that
+  // carry *inner* member-decrement tokens out (see `escapeTrappedTokensOnce`);
+  // such a result is yielded from a nested if and its nullness depends on the
+  // inner decrement's count, not this condition, so it must not match.
+  static bool tokenMatchesCondition(mlir::scf::IfOp ifOp,
+                                    mlir::OpResult result) {
+    unsigned idx = result.getResultNumber();
+    auto thenCreate =
+        ifOp.thenYield().getOperand(idx).getDefiningOp<ReussirNullableCreateOp>();
+    auto elseCreate =
+        ifOp.elseYield().getOperand(idx).getDefiningOp<ReussirNullableCreateOp>();
+    return thenCreate && elseCreate && thenCreate.getPtr() &&
+           !elseCreate.getPtr();
+  }
+
   mlir::LogicalResult
   matchAndRewrite(ReussirNullableDispatchOp op,
                   OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     // First, create a check operation to get the null flag from the input.
-    mlir::Value flag = reussir::ReussirNullableCheckOp::create(rewriter, 
+    mlir::Value flag = reussir::ReussirNullableCheckOp::create(rewriter,
         op.getLoc(), op.getNullable());
     // mark expect not null
     if (op->hasAttr(REUSSIR_EXPANDED_ENSURE_ATTR))
       flag = reussir::ReussirExpectOp::create(rewriter, op.getLoc(), flag, true);
 
-    auto scfIfOp = mlir::scf::IfOp::create(rewriter, 
+    auto scfIfOp = mlir::scf::IfOp::create(rewriter,
         op.getLoc(), op->getResultTypes(), flag, /*addThenRegion=*/true,
         /*addElseRegion=*/true);
     if (op->hasAttr(REUSSIR_EXPANDED_ENSURE_ATTR))
       if (auto producerIf = mlir::dyn_cast_if_present<mlir::scf::IfOp>(
               op.getNullable().getDefiningOp()))
-        if (producerIf->hasAttr(kExpandedDecrementAttr))
+        if (producerIf->hasAttr(kExpandedDecrementAttr) &&
+            tokenMatchesCondition(producerIf,
+                                  llvm::cast<mlir::OpResult>(op.getNullable())))
           scfIfOp.getConditionMutable().assign(producerIf.getCondition());
     // first, do the easy part, for else region, we can just inline the
     // operation
