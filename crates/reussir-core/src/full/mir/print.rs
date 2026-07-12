@@ -78,27 +78,39 @@ impl<'a> Printer<'a> {
 
         let mut items: Vec<Doc<'static>> = Vec::new();
         if let Some(cache) = self.sources {
-            for id in cache.ids() {
-                items.push(text(format!("{} = {:?};", id.index(), cache.name(id))));
-            }
+            items.extend(
+                cache
+                    .ids()
+                    .map(|id| text(format!("{} = {:?};", id.index(), cache.name(id)))),
+            );
         }
-        for (token, payload) in &program.string_literals {
-            items.push(string_decl(*token, payload));
-        }
-        for rec in &program.records {
-            items.push(r.record(rec));
-        }
-        for func in &program.functions {
-            items.push(r.function(func));
-        }
-        for t in &program.trampolines {
-            items.push(text(format!(
+        items.extend(
+            program
+                .string_literals
+                .iter()
+                .map(|(token, payload)| string_decl(*token, payload)),
+        );
+        items.extend(program.records.iter().map(|record| r.record(record)));
+        items.extend(
+            program
+                .transform_scripts
+                .iter()
+                .map(|script| r.transform(script)),
+        );
+        items.extend(
+            program
+                .functions
+                .iter()
+                .map(|function| r.function(function)),
+        );
+        items.extend(program.trampolines.iter().map(|trampoline| {
+            text(format!(
                 "extern \"{}\" trampoline \"{}\" = @{};",
-                t.abi,
-                r.sym(t.export),
-                r.sym(t.target),
-            )));
-        }
+                trampoline.abi,
+                r.sym(trampoline.export),
+                r.sym(trampoline.target),
+            ))
+        }));
 
         // One blank line between top-level items.
         let mut doc = Doc::Null;
@@ -189,6 +201,9 @@ impl Render<'_> {
 
     fn function(&self, func: &mir::Function<'_>) -> Doc<'static> {
         let mut head = String::new();
+        if func.transform_anchor {
+            head.push_str("#[transform_anchor] ");
+        }
         if func.visibility == Visibility::Public {
             head.push_str("pub ");
         }
@@ -220,6 +235,18 @@ impl Render<'_> {
             }
             None => sig + text(";"),
         }
+    }
+
+    fn transform(&self, script: &crate::semi::ctxt::TransformScript) -> Doc<'static> {
+        let loc = if self.sources.is_some() {
+            let span = script.span.map_or_else(String::new, |span| {
+                format!(" [{}..{}]", span.start, span.end)
+            });
+            format!(" in {}{span}", script.file.index())
+        } else {
+            String::new()
+        };
+        text(format!("transform {:?}{loc};", script.body))
     }
 
     // ----- types -----

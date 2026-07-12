@@ -610,7 +610,7 @@ fn file_of(f: Option<u32>) -> FileId {
 fn file_ref_check(files: &[String], file: Option<u32>) -> Option<String> {
     match file {
         Some(id) if id as usize >= files.len() => Some(format!(
-            "function references file {id}, but the source-file table has {} entr(y/ies)",
+            "item references file {id}, but the source-file table has {} entr(y/ies)",
             files.len()
         )),
         _ => None,

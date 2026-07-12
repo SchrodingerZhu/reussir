@@ -22,6 +22,7 @@ Item: raw::Item = {
     <f:Func> => raw::Item::Func(f),
     "extern" <abi:"quoted"> "trampoline" <export:"quoted"> "=" "@" <target:Sym> ";"
         => raw::Item::Tramp(raw::Tramp { abi: abi.into(), export: export.into(), target }),
+    <t:TransformDecl> => raw::Item::Transform(t),
 };
 
 /// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
@@ -33,8 +34,19 @@ FileDecl: raw::FileEntry = <id:"int"> "=" <name:"quoted"> ";"
 StringDecl: raw::StringEntry = <token:StrWords> "=" <payload:"quoted"> ";"
     => raw::StringEntry { token, payload: unescape_debug_str(payload).into_owned() };
 
+TransformDecl: raw::Transform =
+    "transform" <body:"quoted"> <loc:ItemLoc?> ";"
+    => raw::Transform {
+        body: unescape_debug_str(body).into_owned(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+    };
+
 /// A source span: `[start..end]`, byte offsets into the owning item's file.
 Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::small_u32(&e));
+
+ItemLoc: (u32, Option<raw::Span>) =
+    "in" <f:"int"> <sp:Span?> => (raw::small_u32(&f), sp);
 
 /// The capability a record declares by default.
 DefCap: raw::DefCap = {
@@ -61,16 +73,24 @@ Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
 /// An enum variant: its mangled payload symbol, source name, and ordered field
 /// types.
 Variant: raw::Variant =
-    "@" <symbol:Sym> <name:"ident"> "(" <fs:Comma<Ty>> ")"
+    "@" <symbol:Sym> <name:Name> "(" <fs:Comma<Ty>> ")"
         => raw::Variant { symbol, name: name.into(), fields: fs };
 
 /// A symbol body (after `@`).
 Sym: String = <s:"ident"> => s.into();
 
+Name: &'input str = {
+    <name:"ident"> => name,
+    "transform" => "transform",
+    "transform_anchor" => "transform_anchor",
+};
+
 Func: raw::Func =
-    <p:"pub"?> <r:"regional"?> "fn" "@" <symbol:Sym>
+    <a:("#" "[" "transform_anchor" "]")?> <p:"pub"?> <r:"regional"?>
+    "fn" "@" <symbol:Sym>
     "(" <params:Comma<Param>> ")" "->" <ret:Ty> <file:("in" <"int">)?> <body:Body>
     => raw::Func {
+        transform_anchor: a.is_some(),
         is_pub: p.is_some(),
         regional: r.is_some(),
         symbol,
@@ -86,7 +106,7 @@ Body: Option<raw::Expr> = {
 };
 
 Param: raw::Param =
-    <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
+    <var:"var"> "(" <name:Name> ")" ":" <ty:Ty>
     => raw::Param { var, name: name.into(), ty };
 
 // ----- types -----
@@ -115,14 +135,14 @@ Ty: raw::Ty = {
 /// (`pkg::m::Cell::<u64>`), factored into one recursive production so the
 /// grammar stays LR(1): after each `::` the next token — an identifier vs
 /// `<` — decides between another path segment and the type-argument list.
-TyPathArgs: (String, Vec<raw::Ty>) = <first:"ident"> <tail:TyPathArgsTail> => {
+TyPathArgs: (String, Vec<raw::Ty>) = <first:Name> <tail:TyPathArgsTail> => {
     let (rest, args) = tail;
     (format!("{first}{rest}"), args)
 };
 
 TyPathArgsTail: (String, Vec<raw::Ty>) = {
     => (String::new(), Vec::new()),
-    "::" <seg:"ident"> <tail:TyPathArgsTail> => {
+    "::" <seg:Name> <tail:TyPathArgsTail> => {
         let (rest, args) = tail;
         (format!("::{seg}{rest}"), args)
     },
@@ -161,7 +181,7 @@ Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
 /// block (a `Seq`) are the two structural exceptions.
 Expr: raw::Expr = {
     <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
-    "let" <sp:Span?> <var:"var"> "(" <name:"ident"> ")" "=" <value:Expr>
+    "let" <sp:Span?> <var:"var"> "(" <name:Name> ")" "=" <value:Expr>
         => raw::Expr::new(raw::Kind::Let { var, name: name.into(), value }, raw::Ty::Unit)
             .with_span(sp),
     "{" <b:Block> "}" => b,
@@ -191,7 +211,7 @@ Atom: raw::Kind = {
     "@" <symbol:Sym> "{" <args:Comma<Expr>> "}" => raw::Kind::Ctor { symbol, args },
     "@" <symbol:Sym> "::" "#" <v:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Variant { symbol, variant: raw::small_usize(&v), args },
-    "intrinsic" "#" <family:"ident"> "#" <name:"ident"> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
+    "intrinsic" "#" <family:Name> "#" <name:Name> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Intrinsic { family: family.to_string(), name: name.to_string(), imm: raw::small_u32(&imm), args },
     "array" "#" <op:"ident"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::ArrayOp { op: op.to_string(), args },
@@ -308,6 +328,8 @@ extern {
         "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
+        "transform" => Token::Transform,
+        "transform_anchor" => Token::TransformAnchor,
         "let" => Token::Let,
         "if" => Token::If,
         "then" => Token::Then,
