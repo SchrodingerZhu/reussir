@@ -957,18 +957,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect()
     }
 
-    /// Phase A of the array design (issue #344) supports arrays as locals,
-    /// parameters, and returns only — a record member of array type has no
-    /// dialect-level member representation yet.
-    fn reject_array_member(&mut self, fty: Ty<'tcx>, span: Option<Span>) {
-        if matches!(fty.kind(), crate::semi::ty::TyKind::Array { .. }) {
-            self.error(
-                span,
-                "an array cannot be a record member in this version (see issue #344)",
-            );
-        }
-    }
-
     fn populate_record(&mut self, rec: &surface::Record, def: DefId) {
         let Some(record) = self.records.get(&def) else {
             return;
@@ -991,7 +979,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
-                        self.reject_array_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1004,7 +991,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
-                        self.reject_array_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1020,11 +1006,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             name: *name,
                             fields: tys
                                 .iter()
-                                .map(|t| {
-                                    let fty = self.eval_type(t);
-                                    self.reject_array_member(fty, span);
-                                    fty
-                                })
+                                .map(|t| self.eval_type(t))
                                 .collect(),
                         }
                     })
@@ -1146,6 +1128,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 flex: Flexivity::Irrelevant,
                 ..
             } => self.error(span, "a `[field]` link element must be a regional record"),
+            // An array is pointer-like (one shared rc box), so the `Nullable`
+            // check below would let it through — but a `[field]` link stores a
+            // regional record, never a shared box.
+            TyKind::Array { .. } => {
+                self.error(span, "a `[field]` link element must be a regional record")
+            }
             // Regional records are fine; non-record elements are already rejected
             // by the `Nullable` pointer-like check.
             _ => {}
