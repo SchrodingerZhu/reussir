@@ -1,0 +1,155 @@
+// The Hood-Melville real-time queue from issue #398: a shared `Queue`
+// record whose `[value]` rotation state embeds shared `QList` members.
+// Regression coverage for the ensure-lowering condition-reuse bug: the
+// queue's expanded decrement is widened with escaped member-dec tokens
+// (a dead `QList` inside the unique branch), and the ensure of such an
+// escaped token must null-check it rather than reuse the outer condition —
+// a `Nil` tagged immediate never takes the unique path, so its escaped
+// token is always null even when the queue box itself is unique.
+// Exercised under both nullary-variant encodings.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/example_hm_queue.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %t.opt.o %S/example_hm_queue.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+// RUN: %rrc %s -o %t.boxed.o --relocation-mode pic -Oaggressive --nullary-variant-encoding boxed
+// RUN: %cc %t.boxed.o %S/example_hm_queue.c -o %t.boxed.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.boxed.exe
+
+enum QList {
+    Nil,
+    Cons(i64, QList)
+}
+
+enum [value] Rotation {
+    Idle,
+    Reversing(i64, QList, QList, QList, QList),
+    Appending(i64, QList, QList),
+    Done(QList)
+}
+
+struct Queue {
+    lenf : i64,
+    front : QList,
+    state : Rotation,
+    lenr : i64,
+    rear : QList
+}
+
+enum [value] Pop {
+    Pop(i64, Queue),
+    Empty
+}
+
+fn exec(state : Rotation) -> Rotation {
+    match state {
+        Rotation::Reversing(ok, QList::Cons(x, f), f1, QList::Cons(y, r), r1) =>
+            Rotation::Reversing{ok + 1, f, QList::Cons{x, f1}, r, QList::Cons{y, r1}},
+        Rotation::Reversing(ok, QList::Nil, f1, QList::Cons(y, QList::Nil), r1) =>
+            Rotation::Appending{ok, f1, QList::Cons{y, r1}},
+        Rotation::Appending(0, _, r1) => Rotation::Done{r1},
+        Rotation::Appending(ok, QList::Cons(x, f1), r1) =>
+            Rotation::Appending{ok - 1, f1, QList::Cons{x, r1}},
+        other => other
+    }
+}
+
+fn invalidate(state : Rotation) -> Rotation {
+    match state {
+        Rotation::Reversing(ok, f, f1, r, r1) => Rotation::Reversing{ok - 1, f, f1, r, r1},
+        Rotation::Appending(0, _, QList::Cons(_, r1)) => Rotation::Done{r1},
+        Rotation::Appending(ok, f1, r1) => Rotation::Appending{ok - 1, f1, r1},
+        other => other
+    }
+}
+
+fn exec2(q : Queue) -> Queue {
+    match exec(exec(q.state)) {
+        Rotation::Done(front1) => Queue {
+            lenf: q.lenf, front: front1, state: Rotation::Idle,
+            lenr: q.lenr, rear: q.rear
+        },
+        state1 => Queue {
+            lenf: q.lenf, front: q.front, state: state1,
+            lenr: q.lenr, rear: q.rear
+        }
+    }
+}
+
+fn check(q : Queue) -> Queue {
+    if q.lenr <= q.lenf {
+        exec2(q)
+    } else {
+        exec2(Queue {
+            lenf: q.lenf + q.lenr,
+            front: q.front,
+            state: Rotation::Reversing{0, q.front, QList::Nil, q.rear, QList::Nil},
+            lenr: 0,
+            rear: QList::Nil
+        })
+    }
+}
+
+fn snoc(q : Queue, value : i64) -> Queue {
+    check(Queue {
+        lenf: q.lenf,
+        front: q.front,
+        state: q.state,
+        lenr: q.lenr + 1,
+        rear: QList::Cons{value, q.rear}
+    })
+}
+
+fn uncons(q : Queue) -> Pop {
+    match q.front {
+        QList::Cons(value, front) => Pop::Pop{value, check(Queue {
+            lenf: q.lenf - 1,
+            front,
+            state: invalidate(q.state),
+            lenr: q.lenr,
+            rear: q.rear
+        })},
+        QList::Nil => Pop::Empty
+    }
+}
+
+fn drain(n : i64, q : Queue, acc : i64) -> i64 {
+    if n == 0 {
+        acc
+    } else {
+        match uncons(q) {
+            Pop::Pop(x, rest) => drain(n - 1, rest, acc + x),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+
+
+// Interleave enqueues and dequeues so rotations start, execute, and finish
+// while both encodings' Nil immediates flow through every state field.
+fn pump(i : i64, n : i64, q : Queue, acc : i64) -> i64 {
+    if i == n {
+        drain(n, q, acc)
+    } else {
+        match uncons(snoc(snoc(q, i * 2), i * 2 + 1)) {
+            Pop::Pop(x, rest) => pump(i + 1, n, rest, acc + x),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+fn queue_test() -> i64 {
+    let empty = Queue {
+        lenf: 0, front: QList::Nil, state: Rotation::Idle,
+        lenr: 0, rear: QList::Nil
+    };
+    // 64 rounds each enqueue {2i, 2i+1} and dequeue one, leaving a 64-deep
+    // backlog that drain empties. Sum of all values 0..127 = 8128, verified
+    // by the driver.
+    pump(0, 64, empty, 0)
+}
+
+extern "C" trampoline "queue_test_ffi" = queue_test;
