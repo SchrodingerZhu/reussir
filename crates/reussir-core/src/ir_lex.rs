@@ -40,6 +40,10 @@ pub enum Token<'a> {
     Extern,
     #[token("trampoline")]
     Trampoline,
+    #[token("transform")]
+    Transform,
+    #[token("transform_anchor")]
+    TransformAnchor,
     #[token("let")]
     Let,
     #[token("in")]

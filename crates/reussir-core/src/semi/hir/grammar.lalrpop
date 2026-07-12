@@ -20,6 +20,7 @@ Item: raw::Item = {
     <s:StringDecl> => raw::Item::String(s),
     <r:RecordDecl> => raw::Item::Record(r),
     <t:TrampDecl> => raw::Item::Tramp(t),
+    <t:TransformDecl> => raw::Item::Transform(t),
     <f:Func> => raw::Item::Func(f),
 };
 
@@ -79,7 +80,7 @@ Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
 
 /// An enum variant: its source name and ordered field types.
 Variant: raw::Variant =
-    <name:"ident"> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
+    <name:Name> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
 
 TrampDecl: raw::Tramp =
     "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:PathArgs> ";"
@@ -90,10 +91,20 @@ TrampDecl: raw::Tramp =
         ty_args: target.1,
     };
 
+TransformDecl: raw::Transform =
+    "transform" <body:"quoted"> <loc:ItemLoc?> ";"
+    => raw::Transform {
+        body: unescape_debug_str(body).into_owned(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+    };
+
 Func: raw::Func =
-    <p:"pub"?> <r:"regional"?> "fn" "#" <path:QPath> <generics:Generics?>
+    <a:("#" "[" "transform_anchor" "]")?> <p:"pub"?> <r:"regional"?>
+    "fn" "#" <path:QPath> <generics:Generics?>
     "(" <params:Comma<Param>> ")" "->" <ret:Ty> <loc:ItemLoc?> <body:Body>
     => raw::Func {
+        transform_anchor: a.is_some(),
         is_pub: p.is_some(),
         regional: r.is_some(),
         path,
@@ -109,7 +120,7 @@ Generics: Vec<raw::Generic> = "<" <CommaPlus<Generic>> ">";
 
 /// A fully-qualified item path: `a::b::Name`. Serialized with its segments
 /// joined; the rebuild pass splits them back into module + item name.
-QPath: String = <first:"ident"> <rest:("::" <"ident">)*> => {
+QPath: String = <first:Name> <rest:("::" <Name>)*> => {
     let mut s = first.to_string();
     for seg in rest {
         s.push_str("::");
@@ -122,14 +133,14 @@ QPath: String = <first:"ident"> <rest:("::" <"ident">)*> => {
 /// into one recursive production: after each `::` the next token — an
 /// identifier vs `<` — decides between another path segment and the
 /// type-argument list, which keeps the grammar LR(1).
-PathArgs: (String, Vec<raw::Ty>) = <first:"ident"> <tail:PathArgsTail> => {
+PathArgs: (String, Vec<raw::Ty>) = <first:Name> <tail:PathArgsTail> => {
     let (rest, args) = tail;
     (format!("{first}{rest}"), args)
 };
 
 PathArgsTail: (String, Vec<raw::Ty>) = {
     => (String::new(), Vec::new()),
-    "::" <seg:"ident"> <tail:PathArgsTail> => {
+    "::" <seg:Name> <tail:PathArgsTail> => {
         let (rest, args) = tail;
         (format!("::{seg}{rest}"), args)
     },
@@ -139,12 +150,19 @@ PathArgsTail: (String, Vec<raw::Ty>) = {
 Generic: raw::Generic = <r:"regional"?> <g:"generic">
     => raw::Generic { id: g, regional: r.is_some() };
 
+/// Source identifiers remain legal when they spell a transform directive.
+Name: &'input str = {
+    <name:"ident"> => name,
+    "transform" => "transform",
+    "transform_anchor" => "transform_anchor",
+};
+
 Body: Option<raw::Expr> = {
     "{" <b:Block> "}" => Some(b),
     ";" => None,
 };
 
-Param: raw::Param = <var:"var"> "(" <name:"ident"> ")" ":" <ty:Ty>
+Param: raw::Param = <var:"var"> "(" <name:Name> ")" ":" <ty:Ty>
     => raw::Param { var, name: name.into(), ty };
 
 // ----- types -----
@@ -198,7 +216,7 @@ Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
 /// block (a `Seq`) are the structural exceptions whose type is not printed.
 Expr: raw::Expr = {
     <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
-    "let" <sp:Span?> <var:"var"> "(" <name:"ident"> <nsp:Span?> ")" "=" <value:Expr>
+    "let" <sp:Span?> <var:"var"> "(" <name:Name> <nsp:Span?> ")" "=" <value:Expr>
         => raw::Expr::new(
             raw::Kind::Let { var, name: name.into(), name_span: nsp, value },
             raw::Ty::Unit,
@@ -231,7 +249,7 @@ Atom: raw::Kind = {
         => raw::Kind::CompoundCall { path: path.0, ty_args: path.1, args },
     "#" <path:PathArgs> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::VariantCall { path: path.0, ty_args: path.1, variant: raw::small_usize(&v), args },
-    "intrinsic" "#" <family:"ident"> "#" <name:"ident"> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
+    "intrinsic" "#" <family:Name> "#" <name:Name> "#" <imm:"int"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::Intrinsic { family: family.to_string(), name: name.to_string(), imm: raw::small_u32(&imm), args },
     "array" "#" <op:"ident"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::ArrayOp { op: op.to_string(), args },
@@ -343,6 +361,8 @@ extern {
         "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
+        "transform" => Token::Transform,
+        "transform_anchor" => Token::TransformAnchor,
         "quoted" => Token::Quoted(<Cow<'input, str>>),
         "let" => Token::Let,
         "if" => Token::If,

@@ -16,7 +16,9 @@ use reussir_syntax::source::FileId;
 use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
-use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot, Variant};
+use crate::semi::ctxt::{
+    DefaultCap, Record, RecordFields, TrampolineRoot, TransformScript, Variant,
+};
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
 use crate::semi::hir::{
@@ -34,6 +36,8 @@ use crate::utils::string::StringToken;
 /// [`crate::full::mono::monomorphize`] via a `MonoInput`.
 pub struct Parsed<'tcx> {
     pub funcs: Vec<Function<'tcx>>,
+    pub transform_anchors: Vec<DefId>,
+    pub transform_scripts: Vec<TransformScript>,
     pub strings: Vec<(StringToken, String)>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
@@ -99,6 +103,11 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             return Err(id);
         }
     }
+    for t in &raw.transforms {
+        if let Some(id) = file_ref_check(&files, t.file) {
+            return Err(id);
+        }
+    }
     let strings = raw::string_entries(&raw.strings)?;
     let mut b = Builder {
         tcx,
@@ -108,10 +117,27 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     };
     // Records first so their `DefId`s exist before function bodies reference them.
     let records: FxHashMap<DefId, Record<'tcx>> = raw.records.iter().map(|r| b.record(r)).collect();
-    let funcs = raw.funcs.iter().map(|f| b.func(f)).collect();
+    let funcs: Vec<Function<'tcx>> = raw.funcs.iter().map(|f| b.func(f)).collect();
+    let transform_anchors = raw
+        .funcs
+        .iter()
+        .zip(&funcs)
+        .filter_map(|(raw, func)| raw.transform_anchor.then_some(func.def))
+        .collect();
+    let transform_scripts = raw
+        .transforms
+        .iter()
+        .map(|script| TransformScript {
+            body: script.body.clone(),
+            span: span_of(script.span),
+            file: file_of(script.file),
+        })
+        .collect();
     let trampolines = raw.trampolines.iter().map(|t| b.trampoline(t)).collect();
     Ok(Parsed {
         funcs,
+        transform_anchors,
+        transform_scripts,
         strings,
         records,
         trampolines,
@@ -609,19 +635,30 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();
-            let text = Printer::new(&elab.defs, elab.resolver).program(
-                &elab.elaborated,
-                &strings,
-                &elab.records,
-                &elab.trampolines,
-            );
+            let text = Printer::new(&elab.defs, elab.resolver)
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
-            let text2 = Printer::new(&parsed.defs, &parsed.names).program(
-                &parsed.funcs,
-                &parsed.strings,
-                &parsed.records,
-                &parsed.trampolines,
+            assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
+            assert_eq!(
+                parsed
+                    .transform_scripts
+                    .iter()
+                    .map(|script| &script.body)
+                    .collect::<Vec<_>>(),
+                elab.transform_scripts
+                    .iter()
+                    .map(|script| &script.body)
+                    .collect::<Vec<_>>()
             );
+            let text2 = Printer::new(&parsed.defs, &parsed.names)
+                .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .program(
+                    &parsed.funcs,
+                    &parsed.strings,
+                    &parsed.records,
+                    &parsed.trampolines,
+                );
             assert_eq!(
                 text, text2,
                 "round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
@@ -644,12 +681,9 @@ mod tests {
 
             let cache = SourceCache::single("<test>", source);
             let strings = elab.strings.entries();
-            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache).program(
-                &elab.elaborated,
-                &strings,
-                &elab.records,
-                &elab.trampolines,
-            );
+            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             assert!(
                 text.contains("0 = \"<test>\";"),
                 "file table missing:\n{text}"
@@ -657,17 +691,31 @@ mod tests {
             assert!(text.contains(" in 0"), "item location missing:\n{text}");
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.files, vec!["<test>".to_string()]);
+            assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
+            assert_eq!(
+                parsed
+                    .transform_scripts
+                    .iter()
+                    .map(|script| (&script.body, script.file, script.span))
+                    .collect::<Vec<_>>(),
+                elab.transform_scripts
+                    .iter()
+                    .map(|script| (&script.body, script.file, script.span))
+                    .collect::<Vec<_>>()
+            );
             // Rebuild the render cache exactly as a driver would from the table.
             let mut cache2 = SourceCache::new();
             for name in &parsed.files {
                 cache2.add_unavailable(name);
             }
-            let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2).program(
-                &parsed.funcs,
-                &parsed.strings,
-                &parsed.records,
-                &parsed.trampolines,
-            );
+            let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2)
+                .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .program(
+                    &parsed.funcs,
+                    &parsed.strings,
+                    &parsed.records,
+                    &parsed.trampolines,
+                );
             assert_eq!(
                 text, text2,
                 "lossless round-trip mismatch\n=== printed ===\n{text}\n=== reparsed ===\n{text2}"
@@ -757,6 +805,15 @@ mod tests {
         );
         roundtrip_with_locations(
             "pub fn g(x: f64) -> f64 { core::intrinsic::math::fpowi(x, 3, 1) }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_transform_metadata() {
+        roundtrip_with_locations(
+            "#[transform_anchor]\n\
+             pub fn transform(transform_anchor: i32) -> i32 { transform_anchor }\n\
+             transform [{\n  transform.yield\n}];",
         );
     }
 
