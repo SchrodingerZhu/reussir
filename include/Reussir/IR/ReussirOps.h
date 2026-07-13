@@ -36,6 +36,29 @@
 namespace reussir {
 
 //===----------------------------------------------------------------------===//
+// inheritSanitizerPassthrough
+//===----------------------------------------------------------------------===//
+//
+// When a build targets sanitizers, codegen stamps the module with this
+// attribute — an array of the LLVM sanitizer function-attribute strings
+// (e.g. "sanitize_address", "sanitize_thread") — and annotates every function
+// it emits with the same strings via `passthrough` (mirrored in
+// crates/reussir-codegen/src/lower/mod.rs). LLVM's sanitizer passes only
+// instrument plain memory accesses in functions carrying the attribute, so
+// every pass that CREATES a function after codegen (outlined closure bodies,
+// outlined drop/acquire glue, trampolines) must call this helper on it, or
+// the new function's accesses would silently escape instrumentation.
+//
+//===----------------------------------------------------------------------===//
+inline constexpr llvm::StringRef kSanitizeAttr = "reussir.sanitize";
+
+// Appends the module's sanitizer attribute strings (if any) to `func`'s
+// `passthrough` attribute. `func` may be a `func.func` or an
+// `llvm.func` — both carry `passthrough` onto the translated LLVM function.
+void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
+                                 mlir::Operation *func);
+
+//===----------------------------------------------------------------------===//
 // emitOwnershipAcquisition
 //===----------------------------------------------------------------------===//
 //

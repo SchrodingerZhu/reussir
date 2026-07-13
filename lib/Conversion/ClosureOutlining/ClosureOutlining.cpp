@@ -173,6 +173,8 @@ mlir::func::FuncOp ClosureOutliningPass::createFunctionAndInlineRegion(
   funcOp->setAttr("passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
+  inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),
+                              funcOp);
   funcOp.setArgAttr(0, "llvm.noalias", rewriter.getUnitAttr());
   funcOp.setArgAttr(0, "llvm.nonnull", rewriter.getUnitAttr());
   funcOp.setArgAttr(0, "llvm.noundef", rewriter.getUnitAttr());
@@ -292,6 +294,8 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureDropFunction(
   funcOp->setAttr("passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
+  inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),
+                              funcOp);
 
   funcOp.setArgAttr(0, "llvm.noalias", rewriter.getUnitAttr());
   funcOp.setArgAttr(0, "llvm.nonnull", rewriter.getUnitAttr());
@@ -412,6 +416,8 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
   funcOp->setAttr("passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
+  inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),
+                              funcOp);
 
   funcOp.setArgAttr(0, "llvm.noalias", rewriter.getUnitAttr());
   funcOp.setArgAttr(0, "llvm.nonnull", rewriter.getUnitAttr());

@@ -2586,6 +2586,24 @@ emitArrayOwnershipAcquisition(mlir::Value view, mlir::OpBuilder &builder,
 }
 
 //===----------------------------------------------------------------------===//
+// inheritSanitizerPassthrough
+//===----------------------------------------------------------------------===//
+void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
+                                 mlir::Operation *func) {
+  auto attrs = moduleOp->getAttrOfType<mlir::ArrayAttr>(kSanitizeAttr);
+  if (!attrs || attrs.empty())
+    return;
+  llvm::SmallVector<mlir::Attribute> merged;
+  if (auto existing = func->getAttrOfType<mlir::ArrayAttr>("passthrough"))
+    merged.append(existing.begin(), existing.end());
+  for (mlir::Attribute attr : attrs)
+    if (!llvm::is_contained(merged, attr))
+      merged.push_back(attr);
+  func->setAttr("passthrough",
+                mlir::ArrayAttr::get(moduleOp.getContext(), merged));
+}
+
+//===----------------------------------------------------------------------===//
 // createDtorIfNotExists
 //===----------------------------------------------------------------------===//
 mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
@@ -2610,6 +2628,9 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
   dtor->setAttr("passthrough",
                 builder.getStrArrayAttr(
                     {"mustprogress", "nounwind", "willreturn", "nocallback"}));
+  // Drop glue is where a stale box's memory is actually touched; it must be
+  // instrumented like the code it was outlined from.
+  inheritSanitizerPassthrough(moduleOp, dtor);
   dtor.setArgAttr(0, "llvm.noalias", builder.getUnitAttr());
   dtor.setArgAttr(0, "llvm.nonnull", builder.getUnitAttr());
   dtor.setArgAttr(0, "llvm.noundef", builder.getUnitAttr());
@@ -2650,6 +2671,7 @@ mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
   funcOp->setAttr("llvm.linkage",
                   builder.getAttr<mlir::LLVM::LinkageAttr>(
                       mlir::LLVM::linkage::Linkage::LinkonceODR));
+  inheritSanitizerPassthrough(moduleOp, funcOp);
 
   mlir::Block *entryBlock = funcOp.addEntryBlock();
   builder.setInsertionPointToStart(entryBlock);

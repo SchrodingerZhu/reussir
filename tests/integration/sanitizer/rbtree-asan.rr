@@ -1,5 +1,5 @@
 // REQUIRES: asan
-// RUN: %rrc %S/../frontend/rbtree2.rr -o %t.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %rrc %S/../frontend/rbtree2.rr -o %t.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call --sanitizer address --nullary-variant-encoding arch-independent
 // RUN: %cc %asan_flags -c -x ir %t.ll -o %t.o
 // RUN: %cc %asan_flags %t.o %S/rbtree2-harness.c %reussir_rt_asan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
 // RUN: %asan_env %t.exe

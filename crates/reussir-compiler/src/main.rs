@@ -23,7 +23,7 @@ use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{
-    CodegenUnit, LinkagePolicy, LoweringError, lower_program, lower_unit,
+    CodegenUnit, LinkagePolicy, LoweringError, Sanitizer, lower_program, lower_unit,
 };
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
@@ -63,6 +63,35 @@ enum Stage {
     Asm,
     /// A relocatable object file (`.o`).
     Obj,
+}
+
+/// CLI surface for [`Sanitizer`]: the kinds a build may declare via
+/// `--sanitizer` (matching `REUSSIR_RUNTIME_SANITIZERS` plus `undefined`).
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum SanitizerCli {
+    /// AddressSanitizer: annotates functions `sanitize_address`.
+    Address,
+    /// LeakSanitizer: no function attribute (pure runtime mechanism).
+    Leak,
+    /// MemorySanitizer: annotates functions `sanitize_memory`.
+    Memory,
+    /// ThreadSanitizer: annotates functions `sanitize_thread`.
+    Thread,
+    /// UndefinedBehaviorSanitizer: no function attribute (UBSan checks are
+    /// emitted by the C/C++ frontend, not an attribute-driven LLVM pass).
+    Undefined,
+}
+
+impl From<SanitizerCli> for Sanitizer {
+    fn from(kind: SanitizerCli) -> Self {
+        match kind {
+            SanitizerCli::Address => Sanitizer::Address,
+            SanitizerCli::Leak => Sanitizer::Leak,
+            SanitizerCli::Memory => Sanitizer::Memory,
+            SanitizerCli::Thread => Sanitizer::Thread,
+            SanitizerCli::Undefined => Sanitizer::Undefined,
+        }
+    }
 }
 
 /// CLI surface for [`NullaryVariantEncoding`], with the extra
@@ -223,6 +252,23 @@ struct Cli {
     /// backend's worker threads (e.g. some sanitizers/debuggers).
     #[arg(long = "disable-backend-multithreading")]
     disable_backend_multithreading: bool,
+
+    /// Declare the sanitizers this build targets (repeatable). Every emitted
+    /// function definition — including backend-outlined closure bodies and
+    /// drop/acquire glue — is annotated with the matching LLVM function
+    /// attribute (`sanitize_address`/`sanitize_memory`/`sanitize_thread`), so
+    /// a downstream `clang -fsanitize=… -x ir` compile actually instruments
+    /// the generated code: LLVM's sanitizer passes skip plain memory accesses
+    /// in unannotated functions, while atomics and allocator interceptors
+    /// stay visible either way — deceptively so. `leak` and `undefined` are
+    /// accepted for uniformity but carry no function attribute (leak checking
+    /// is a pure runtime mechanism; UBSan checks are emitted by the C/C++
+    /// frontend, not an attribute-driven LLVM pass). The shadow-based kinds
+    /// (`address`/`memory`/`thread`) require an explicit untagged
+    /// `--nullary-variant-encoding` (`arch-independent` or `boxed`): a
+    /// TBI-tagged immediate's top byte breaks shadow-address arithmetic.
+    #[arg(long = "sanitizer", value_enum)]
+    sanitizer: Vec<SanitizerCli>,
 
     /// Emit DWARF debug info (source locations, function/variable debug types).
     #[arg(short = 'g', long = "debug")]
@@ -439,6 +485,27 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
     if cli.codegen_units == 0 {
         return Err("--codegen-units must be at least 1".into());
+    }
+    // Shadow-based sanitizers (ASan/MSan/TSan) compute a shadow address
+    // arithmetically from the pointer; a TBI-tagged nullary immediate's top
+    // byte — which the hardware ignores on the data access — bleeds into
+    // that arithmetic and lands the shadow lookup in unmapped space. The
+    // `arch-dependent` default may resolve to the TBI encoding, so require
+    // an explicit untagged choice rather than silently downgrading.
+    if cli.sanitizer.iter().any(|s| {
+        matches!(
+            s,
+            SanitizerCli::Address | SanitizerCli::Memory | SanitizerCli::Thread
+        )
+    }) && cli.nullary_variant_encoding == VariantEncoding::ArchDependent
+    {
+        return Err(
+            "--sanitizer address/memory/thread cannot be combined with the (default) \
+             `arch-dependent` nullary-variant encoding: on aarch64 it resolves to \
+             TBI-tagged immediates, whose tag byte breaks the sanitizers' shadow-address \
+             arithmetic; pass --nullary-variant-encoding arch-independent (or boxed)"
+                .into(),
+        );
     }
     if cli.codegen_units > 1 && cli.output.as_os_str() == "-" {
         return Err(
@@ -973,6 +1040,7 @@ fn finish_mir<'c, 'tcx>(
     // AOT linkage: internal / linkonce_odr definitions per the policy; the
     // trampolines and pub functions stay the object's external ABI surface.
     let linkage = LinkagePolicy::aot_for_triple(cli.target_triple.as_deref());
+    let sanitizers: Vec<Sanitizer> = cli.sanitizer.iter().map(|&s| s.into()).collect();
     if cli.codegen_units > 1 {
         let mut units = Vec::with_capacity(cli.codegen_units as usize);
         for index in 0..cli.codegen_units {
@@ -981,7 +1049,9 @@ fn finish_mir<'c, 'tcx>(
                 count: cli.codegen_units,
             };
             let module = lower_or_render(
-                lower_unit(context, tcx, program, sources, names, unit, linkage),
+                lower_unit(
+                    context, tcx, program, sources, names, unit, linkage, &sanitizers,
+                ),
                 sources,
                 name,
             )?;
@@ -990,7 +1060,7 @@ fn finish_mir<'c, 'tcx>(
         return Ok(Produced::Units(units));
     }
     let module = lower_or_render(
-        lower_program(context, tcx, program, sources, names, linkage),
+        lower_program(context, tcx, program, sources, names, linkage, &sanitizers),
         sources,
         name,
     )?;
