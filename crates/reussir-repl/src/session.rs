@@ -514,7 +514,7 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             return Ok(None);
         }
 
-        let mut module = match lower_program(self.context, self.tcx, &program, None, None, LinkagePolicy::Jit) {
+        let mut module = match lower_program(self.context, self.tcx, &program, None, None, LinkagePolicy::Jit, &[]) {
             Ok(module) => module,
             Err(error) => {
                 self.elab.rollback(cp);

@@ -1,0 +1,68 @@
+// RUN: %rrc %s --emit llvm-ir -O default --sanitizer address --sanitizer thread -o %t.ll && %FileCheck %s < %t.ll
+// RUN: %rrc %s --emit llvm-ir -O default -o %t.off.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.off.ll
+// RUN: %rrc %s --emit llvm-ir -O default --sanitizer leak --sanitizer undefined -o %t.noattr.ll && %FileCheck %s --check-prefix=CHECK-OFF < %t.noattr.ll
+// RUN: %rrc %s -O default --sanitizer address --sanitizer memory --sanitizer thread --sanitizer leak --sanitizer undefined -o %t.o
+
+// `--sanitizer` annotates every emitted function definition with the LLVM
+// attribute its sanitizer's instrumentation pass keys on. This matters
+// because the ASan/MSan/TSan passes only instrument PLAIN memory accesses in
+// functions carrying `sanitize_address`/`sanitize_memory`/`sanitize_thread`
+// — atomics, function entries, and allocator interceptors are visible either
+// way, which makes an unannotated `-x ir` build look deceptively
+// instrumented. Backend-CREATED functions must be covered too: the outlined
+// drop glue below is exactly where a stale box's memory is touched.
+//
+// `leak`/`undefined` are accepted for interface uniformity but carry no
+// function attribute (leak checking is a pure runtime mechanism; UBSan
+// checks are emitted by the C/C++ frontend), pinned by the third RUN line
+// reusing CHECK-OFF.
+
+enum Tree {
+    Leaf,
+    Node(Tree, i64, Tree)
+}
+
+fn insert(t: Tree, v: i64) -> Tree {
+    match t {
+        Tree::Leaf => Tree::Node{Tree::Leaf{}, v, Tree::Leaf{}},
+        Tree::Node(l, x, r) =>
+            if v < x { Tree::Node{insert(l, v), x, r} }
+            else { Tree::Node{l, x, insert(r, v)} }
+    }
+}
+
+fn total(t: Tree) -> i64 {
+    match t {
+        Tree::Leaf => 0,
+        Tree::Node(l, x, r) => total(l) + x + total(r)
+    }
+}
+
+pub fn test_sum(n: i64) -> i64 {
+    let f = |acc: i64, v: i64| acc + v;
+    let t = insert(insert(insert(Tree::Leaf{}, 3), 1), 2);
+    f(total(t), n)
+}
+extern "C" trampoline "test_sum_ffi" = test_sum;
+
+// A frontend-emitted function definition carries both attributes, and so do
+// the backend-CREATED functions — the outlined closure evaluate/clone/drop
+// (born in the closure-outlining pass, after codegen) and the C-ABI
+// trampoline wrapper — via the module-level `reussir.sanitize` inheritance.
+// The `; Function Attrs:` comment precedes each define, in emission order.
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}@_RC5total(
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}@_RC6insert(
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}@_RC8test_sum(
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}@test_sum_ffi(
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}$closure8evaluate
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}$closure5clone
+// CHECK: Function Attrs: {{.*}}sanitize_address sanitize_thread
+// CHECK-NEXT: define{{.*}}$closure4drop
+
+// CHECK-OFF-NOT: sanitize_

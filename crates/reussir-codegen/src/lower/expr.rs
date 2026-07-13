@@ -25,8 +25,8 @@ use reussir_backend::melior::Context;
 use reussir_backend::melior::dialect::arith::{self, CmpfPredicate, CmpiPredicate};
 use reussir_backend::melior::dialect::{func, memref, scf};
 use reussir_backend::melior::ir::attribute::{
-    Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute, StringAttribute,
-    TypeAttribute,
+    ArrayAttribute, Attribute, DenseI64ArrayAttribute, FlatSymbolRefAttribute, IntegerAttribute,
+    StringAttribute, TypeAttribute,
 };
 use reussir_backend::melior::ir::r#type::{FunctionType, IntegerType, MemRefType};
 use reussir_backend::melior::ir::{
@@ -241,6 +241,11 @@ pub(super) struct Lowerer<'c, 'p, 'tcx> {
     string_payloads: RapidHashMap<StringToken, &'p str>,
     /// How definitions map to LLVM linkage (see [`LinkagePolicy`]).
     linkage: LinkagePolicy,
+    /// Sanitizer function-attribute strings (e.g. `sanitize_address`) each
+    /// emitted function definition carries via the `passthrough` attribute —
+    /// LLVM's sanitizer passes only instrument plain memory accesses in
+    /// functions attributed for them (see [`super::Sanitizer`]).
+    sanitize_attrs: Vec<&'static str>,
 }
 
 impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
@@ -273,12 +278,19 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 .map(|(token, payload)| (*token, payload.as_str()))
                 .collect(),
             linkage,
+            sanitize_attrs: Vec::new(),
         }
     }
 
     /// Restrict this lowerer to one codegen unit of a partitioned build.
     pub(super) fn with_unit(mut self, unit: super::CodegenUnit) -> Self {
         self.unit = unit;
+        self
+    }
+
+    /// Set the sanitizer attribute strings each emitted definition carries.
+    pub(super) fn with_sanitize_attrs(mut self, attrs: Vec<&'static str>) -> Self {
+        self.sanitize_attrs = attrs;
         self
     }
 
@@ -421,6 +433,21 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
                 StringAttribute::new(self.context, "private").into(),
+            ));
+        }
+        // Sanitizer attributes ride the `passthrough` attribute FuncToLLVM
+        // copies onto the `llvm.func` verbatim; LLVM's sanitizer passes only
+        // instrument plain memory accesses in functions carrying them. A
+        // declaration needs none — its home unit annotates the body.
+        if emit_body && !self.sanitize_attrs.is_empty() {
+            let strings: Vec<Attribute> = self
+                .sanitize_attrs
+                .iter()
+                .map(|a| StringAttribute::new(self.context, a).into())
+                .collect();
+            attributes.push((
+                Identifier::new(self.context, "passthrough"),
+                ArrayAttribute::new(self.context, &strings).into(),
             ));
         }
         // The function's LLVM linkage (an `llvm.linkage` attribute FuncToLLVM

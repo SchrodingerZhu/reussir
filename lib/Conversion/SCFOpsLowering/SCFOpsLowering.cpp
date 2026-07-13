@@ -332,6 +332,7 @@ std::string emitDecisionFunction(mlir::ModuleOp module,
   func->setAttr("llvm.linkage",
                 mlir::LLVM::LinkageAttr::get(builder.getContext(),
                                              mlir::LLVM::Linkage::Internal));
+  inheritSanitizerPassthrough(module, func);
   mlir::Block *entry = func.addEntryBlock();
   builder.setInsertionPointToStart(entry);
 

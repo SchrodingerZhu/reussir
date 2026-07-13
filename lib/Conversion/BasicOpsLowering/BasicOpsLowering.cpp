@@ -3044,6 +3044,10 @@ struct ReussirTrampolineOpConversionPattern
         cabiSig.abiReturnType, cabiSig.abiParamTypes);
     auto trampoline = mlir::LLVM::LLVMFuncOp::create(
         rewriter, op.getLoc(), op.getSymName(), trampolineTy);
+    // The wrapper copies arguments/results through memory; instrument it
+    // like the functions it fronts.
+    inheritSanitizerPassthrough(op->getParentOfType<mlir::ModuleOp>(),
+                                trampoline);
 
     mlir::Block *entry = trampoline.addEntryBlock(rewriter);
     rewriter.setInsertionPointToStart(entry);
