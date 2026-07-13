@@ -263,7 +263,10 @@ struct Cli {
     /// stay visible either way — deceptively so. `leak` and `undefined` are
     /// accepted for uniformity but carry no function attribute (leak checking
     /// is a pure runtime mechanism; UBSan checks are emitted by the C/C++
-    /// frontend, not an attribute-driven LLVM pass).
+    /// frontend, not an attribute-driven LLVM pass). The shadow-based kinds
+    /// (`address`/`memory`/`thread`) require an explicit untagged
+    /// `--nullary-variant-encoding` (`arch-independent` or `boxed`): a
+    /// TBI-tagged immediate's top byte breaks shadow-address arithmetic.
     #[arg(long = "sanitizer", value_enum)]
     sanitizer: Vec<SanitizerCli>,
 
@@ -482,6 +485,27 @@ fn run(cli: &Cli) -> Result<bool, String> {
     }
     if cli.codegen_units == 0 {
         return Err("--codegen-units must be at least 1".into());
+    }
+    // Shadow-based sanitizers (ASan/MSan/TSan) compute a shadow address
+    // arithmetically from the pointer; a TBI-tagged nullary immediate's top
+    // byte — which the hardware ignores on the data access — bleeds into
+    // that arithmetic and lands the shadow lookup in unmapped space. The
+    // `arch-dependent` default may resolve to the TBI encoding, so require
+    // an explicit untagged choice rather than silently downgrading.
+    if cli.sanitizer.iter().any(|s| {
+        matches!(
+            s,
+            SanitizerCli::Address | SanitizerCli::Memory | SanitizerCli::Thread
+        )
+    }) && cli.nullary_variant_encoding == VariantEncoding::ArchDependent
+    {
+        return Err(
+            "--sanitizer address/memory/thread cannot be combined with the (default) \
+             `arch-dependent` nullary-variant encoding: on aarch64 it resolves to \
+             TBI-tagged immediates, whose tag byte breaks the sanitizers' shadow-address \
+             arithmetic; pass --nullary-variant-encoding arch-independent (or boxed)"
+                .into(),
+        );
     }
     if cli.codegen_units > 1 && cli.output.as_os_str() == "-" {
         return Err(
