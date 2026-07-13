@@ -1,0 +1,10 @@
+# libomp is not TSan-instrumented, so its thread suspend/resume machinery
+# (worker parking between parallel regions) reports as races on its own
+# bookkeeping. Suppress those specific internals by name. Deliberately NOT a
+# blanket `race:libomp.so` / `race:^__kmp`: every worker stack bottoms out in
+# __kmp_invoke_microtask, so a whole-stack module pattern would also swallow
+# genuine races in the code under test.
+race:__kmp_lock_suspend_mx
+race:__kmp_unlock_suspend_mx
+race:__kmp_suspend_
+race:__kmp_resume_

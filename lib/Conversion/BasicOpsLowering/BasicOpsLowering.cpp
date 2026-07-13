@@ -529,13 +529,57 @@ struct ReussirRcFetchConversionPattern
     // hits the dummy box's refcount, which is pinned >= 2 — exactly what
     // routes the expanded decrement to its shared branch and answers
     // `is_unique` with false (see the special-pointer-tag notes above).
-    mlir::Value loaded = mlir::LLVM::LoadOp::create(
-        rewriter, loc, rewriter.getI32Type(), adaptor.getRcPtr());
+    //
+    // An atomic box's count is loaded with acquire ordering: observing 1
+    // proves exclusivity only if every other thread's uses (published by
+    // their release decrements) happen-before this read — that is what
+    // keeps the copy-on-write and uniqify probes sound when the box is
+    // shared across threads. (Atomic boxes never carry tagged immediates.)
+    mlir::Value loaded;
+    if (op.getRcPtr().getType().getAtomicKind() == AtomicKind::atomic)
+      loaded = mlir::LLVM::LoadOp::create(
+          rewriter, loc, rewriter.getI32Type(), adaptor.getRcPtr(),
+          /*alignment=*/4, /*isVolatile=*/false, /*isNonTemporal=*/false,
+          /*isInvariant=*/false, /*isInvariantGroup=*/false,
+          mlir::LLVM::AtomicOrdering::acquire);
+    else
+      loaded = mlir::LLVM::LoadOp::create(rewriter, loc, rewriter.getI32Type(),
+                                          adaptor.getRcPtr());
     mlir::Value widened =
         llvm::cast<mlir::IntegerType>(indexTy).getWidth() > 32
             ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, loaded)
                   .getResult()
             : loaded;
+    rewriter.replaceOp(op, widened);
+    return mlir::success();
+  }
+};
+
+struct ReussirRcFetchSubConversionPattern
+    : public mlir::OpConversionPattern<ReussirRcFetchSubOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRcFetchSubOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto indexTy =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter())
+            ->getIndexType();
+    mlir::Location loc = op.getLoc();
+    auto countType = rewriter.getI32Type();
+    auto one = mlir::LLVM::ConstantOp::create(
+        rewriter, loc, mlir::IntegerAttr::get(countType, 1));
+    // Acquire-release (see the op description): release orders this thread's
+    // uses before the decrement, acquire lets the final decrementer see every
+    // other thread's uses before destroying the box.
+    mlir::Value old = mlir::LLVM::AtomicRMWOp::create(
+        rewriter, loc, mlir::LLVM::AtomicBinOp::sub, adaptor.getRcPtr(), one,
+        mlir::LLVM::AtomicOrdering::acq_rel);
+    mlir::Value widened =
+        llvm::cast<mlir::IntegerType>(indexTy).getWidth() > 32
+            ? mlir::LLVM::ZExtOp::create(rewriter, loc, indexTy, old)
+                  .getResult()
+            : old;
     rewriter.replaceOp(op, widened);
     return mlir::success();
   }
@@ -1417,8 +1461,13 @@ initializeRcCreateStorage(OpT op, AdaptorT adaptor,
                           mlir::ConversionPatternRewriter &rewriter) {
   RcType rcPtrTy = op.getRcPtr().getType();
   RcBoxType rcBoxType = rcPtrTy.getInnerBoxType();
-  if (rcPtrTy.getAtomicKind() == AtomicKind::atomic)
-    return op->emitError("TODO: atomic rc create"), mlir::failure();
+  // An atomic shared box is created exactly like a normal one — the box is
+  // unpublished until the create's result escapes, so the initial count
+  // store needs no atomic ordering. Regional boxes have no atomic flavor.
+  if (rcPtrTy.getAtomicKind() == AtomicKind::atomic && rcBoxType.isRegional())
+    return op->emitError("atomic rc create is not supported for regional "
+                         "boxes"),
+           mlir::failure();
 
   auto convertedBoxType = typeConverter->convertType(rcBoxType);
   auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
@@ -3388,7 +3437,8 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirClosureApplyOp, ReussirClosureCloneOp, ReussirClosureEvalOp,
         ReussirClosureInspectPayloadOp, ReussirClosureCursorOp,
         ReussirClosureInstantiateOp, ReussirClosureVtableOp,
-        ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcSetOp,
+        ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcFetchSubOp,
+        ReussirRcSetOp,
         ReussirStrGlobalOp, ReussirStrLiteralOp, ReussirStrCastOp,
         ReussirStrLenOp, ReussirStrUnsafeByteAtOp, ReussirStrUnsafeStartWithOp,
         ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
@@ -3545,6 +3595,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirStrUnsafeByteAtOpConversionPattern,
       ReussirStrUnsafeStartWithOpConversionPattern,
       ReussirStrSliceOpConversionPattern, ReussirTrampolineOpConversionPattern,
-      ReussirTokenLaunderOpConversionPattern>(converter, patterns.getContext());
+      ReussirTokenLaunderOpConversionPattern,
+      ReussirRcFetchSubConversionPattern>(converter, patterns.getContext());
 }
 } // namespace reussir
