@@ -175,6 +175,10 @@ pub enum Ty {
     Bottom,
     Generic(u32),
     Nullable(Box<Ty>),
+    Cell {
+        inner: Box<Ty>,
+        exclusive: bool,
+    },
     Record {
         cap: Cap,
         path: String,

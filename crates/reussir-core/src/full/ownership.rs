@@ -290,7 +290,7 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
 
     /// Is a value of `ty` reference-counted (needs `dup`/`drop`)?
     ///
-    /// A `Shared` record and a closure are always RR; a `Value` record is RR iff
+    /// A `Shared` record, closure, array, or cell is always RR; a `Value` record is RR iff
     /// some field transitively is; a `Regional` record is RR only when its
     /// [`Flexivity`] is `Rigid` (frozen into a managed object — a `Flex` or
     /// unrefined-regional value is freed with its region); `Nullable(inner)`
@@ -310,6 +310,9 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
             // An array is one rc-managed box regardless of its (Plain)
             // element type.
             TyKind::Array { .. } => true,
+            // A cell is always one shared rc-managed box, independent of its
+            // element type (which the cell's drop recursively releases).
+            TyKind::Cell { .. } => true,
             // The management class is the record table's call (keyed by the
             // canonical, flexivity-erased type); the per-use flexivity then refines
             // the one case where it matters — a regional record.

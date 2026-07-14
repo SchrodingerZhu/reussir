@@ -1017,6 +1017,11 @@ fn is_rr_classification() {
             "frozen rigid value is a managed object ⇒ rc"
         );
         assert!(rr.is_rr(tcx.mk_nullable(rc)), "nullable rc is RR");
+        assert!(rr.is_rr(tcx.mk_cell(i64t, false)), "a cell is always RR");
+        assert!(
+            rr.is_rr(tcx.mk_cell(i64t, true)),
+            "an exclusive cell is always RR"
+        );
         assert!(
             !rr.is_rr(tcx.mk_nullable(i64t)),
             "nullable scalar is not RR"

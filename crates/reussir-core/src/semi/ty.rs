@@ -146,6 +146,15 @@ pub enum TyKind<'tcx> {
         elem: Ty<'tcx>,
         dims: &'tcx [u64],
     },
+    /// A shared mutable cell. The cell box is always reference-counted; `T`
+    /// may itself contain reference-counted ownership. An `exclusive` cell is
+    /// the surface `RefCell<T>`: it additionally supports in-place
+    /// read-modify-write, guarded at runtime by an in-use flag while the
+    /// element is moved out through the updater.
+    Cell {
+        elem: Ty<'tcx>,
+        exclusive: bool,
+    },
     Nullable(Ty<'tcx>),
     /// A rigid type parameter in scope.
     Generic(GenericId),
@@ -265,6 +274,10 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn mk_array(&self, elem: Ty<'tcx>, dims: &[u64]) -> Ty<'tcx> {
         let dims = self.alloc_slice(dims);
         self.mk(TyKind::Array { elem, dims })
+    }
+
+    pub fn mk_cell(&self, elem: Ty<'tcx>, exclusive: bool) -> Ty<'tcx> {
+        self.mk(TyKind::Cell { elem, exclusive })
     }
 
     pub fn mk_nullable(&self, inner: Ty<'tcx>) -> Ty<'tcx> {

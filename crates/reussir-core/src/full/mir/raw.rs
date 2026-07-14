@@ -207,6 +207,10 @@ pub enum Ty {
     Unit,
     Bottom,
     Nullable(Box<Ty>),
+    Cell {
+        inner: Box<Ty>,
+        exclusive: bool,
+    },
     /// `[cap] path<args>` — a regional/value record type.
     Record {
         cap: Cap,

@@ -175,7 +175,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// map an unknown hole to its class representative). `resolve` realizes the
     /// judgment σ ⊢ τ ⇓ τ′ ("τ zonks to τ′"), a read-only pass that leaves σ
     /// unchanged. K ranges over the structural constructors with children —
-    /// Record, Closure, Nullable — and the rebuilt node is re-interned:
+    /// Record, Closure, Array, Cell, Nullable — and the rebuilt node is re-interned:
     ///
     /// ```text
     ///   ⟦τ⟧ = K(τ₁ … τₙ)      σ ⊢ τᵢ ⇓ τ′ᵢ   (1 ≤ i ≤ n)
@@ -212,6 +212,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Array { elem, dims } => {
                 let elem = self.resolve(*elem);
                 self.tcx.mk_array(elem, dims)
+            }
+            TyKind::Cell { elem, exclusive } => {
+                let elem = self.resolve(*elem);
+                self.tcx.mk_cell(elem, *exclusive)
             }
             _ => ty,
         }
@@ -299,6 +303,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify(*r1, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify(*x, *y),
+            (
+                TyKind::Cell {
+                    elem: x,
+                    exclusive: e1,
+                },
+                TyKind::Cell {
+                    elem: y,
+                    exclusive: e2,
+                },
+            ) if e1 == e2 => self.unify(*x, *y),
             (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
                 if d1 == d2 =>
             {
@@ -352,6 +366,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.occurs(h, *ret)
             }
             TyKind::Nullable(inner) => self.occurs(h, *inner),
+            TyKind::Cell { elem: inner, .. } => self.occurs(h, *inner),
             TyKind::Array { elem, .. } => self.occurs(h, *elem),
             _ => false,
         }
@@ -503,6 +518,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify_instantiated(*r1, inst, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify_instantiated(*x, inst, *y),
+            (
+                TyKind::Cell {
+                    elem: x,
+                    exclusive: e1,
+                },
+                TyKind::Cell {
+                    elem: y,
+                    exclusive: e2,
+                },
+            ) if e1 == e2 => self.unify_instantiated(*x, inst, *y),
             (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
                 if d1 == d2 =>
             {
@@ -564,6 +589,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Array { elem, dims } => {
                 let elem = self.materialize(*elem, inst);
                 self.tcx.mk_array(elem, dims)
+            }
+            TyKind::Cell { elem, exclusive } => {
+                let elem = self.materialize(*elem, inst);
+                self.tcx.mk_cell(elem, *exclusive)
             }
             _ => template,
         }
