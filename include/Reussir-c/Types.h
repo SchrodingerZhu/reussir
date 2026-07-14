@@ -81,8 +81,10 @@ MlirType reussirRcTypeGet(MlirType elementType, ReussirCapability capability,
 // `!reussir.nullable<ptrTy>`. The context is taken from `pointerType`.
 MlirType reussirNullableTypeGet(MlirType pointerType);
 
-// `!reussir.cell<elementType>`. The context is taken from `elementType`.
-MlirType reussirCellTypeGet(MlirType elementType);
+// `!reussir.cell<elementType [exclusive]>`. The context is taken from
+// `elementType`. An exclusive cell supports `reussir.cell.rmw` and carries a
+// trailing in-use flag.
+MlirType reussirCellTypeGet(MlirType elementType, bool exclusive);
 
 // `!reussir.ref<eleTy [, capability [, atomicKind]]>`. The context is taken
 // from `elementType`.

@@ -7,7 +7,7 @@
 // loop nests; this file covers rmw alone, rmw nested under a loop, ownership
 // accounting for an rc capture, and rejection of an unrelated region op.
 
-!rc_cell = !reussir.rc<!reussir.cell<i64>>
+!rc_cell = !reussir.rc<!reussir.cell<i64 exclusive>>
 !rc_i64 = !reussir.rc<i64>
 
 module @test attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {

@@ -68,9 +68,9 @@ MlirType reussirNullableTypeGet(MlirType pointerType) {
   return wrap(NullableType::get(ptr.getContext(), ptr));
 }
 
-MlirType reussirCellTypeGet(MlirType elementType) {
+MlirType reussirCellTypeGet(MlirType elementType, bool exclusive) {
   mlir::Type ele = unwrap(elementType);
-  return wrap(CellType::get(ele.getContext(), ele));
+  return wrap(CellType::get(ele.getContext(), ele, exclusive));
 }
 
 MlirType reussirRefTypeGet(MlirType elementType, ReussirCapability capability,

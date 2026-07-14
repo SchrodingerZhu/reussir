@@ -56,10 +56,12 @@ pub fn nullable(pointer: Type) -> Type {
     unsafe { Type::from_raw(sys::reussirNullableTypeGet(pointer.to_raw())) }
 }
 
-/// Creates a `!reussir.cell<element>` payload type. Values of this type are
-/// managed through a shared `!reussir.rc` cell box.
-pub fn cell(element: Type) -> Type {
-    unsafe { Type::from_raw(sys::reussirCellTypeGet(element.to_raw())) }
+/// Creates a `!reussir.cell<element [exclusive]>` payload type. Values of
+/// this type are managed through a shared `!reussir.rc` cell box. An
+/// exclusive cell supports `reussir.cell.rmw` and carries a trailing in-use
+/// flag guarding every access.
+pub fn cell(element: Type, exclusive: bool) -> Type {
+    unsafe { Type::from_raw(sys::reussirCellTypeGet(element.to_raw(), exclusive)) }
 }
 
 /// Creates a `!reussir.ref<element, capability, atomicKind>` type.

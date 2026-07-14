@@ -234,6 +234,21 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
         break;
       if (llvm::isa<ReussirRegionCleanupOp>(next))
         break;
+      // `reussir.cell.set` implicitly releases the old cell element. Like
+      // `ref.drop`, the released rc is reachable only *through* the cell, so
+      // no operand alias query can prove it disjoint from the incremented
+      // pointer; cancelling across it could let the release hit zero while
+      // the value is still live. A set of a trivially-copyable element
+      // expands to a plain store and stays transparent.
+      if (auto setOp = llvm::dyn_cast<ReussirCellSetOp>(next);
+          setOp &&
+          !isTriviallyCopyable(setOp.getCell().getType().getElementType()))
+        break;
+      // A `reussir.cell.rmw` body is arbitrary nested code (it may drop the
+      // moved-out element or anything else) that this same-block scan never
+      // visits — treat the whole op as opaque.
+      if (llvm::isa<ReussirCellRmwOp>(next))
+        break;
       // Count-*observing* ops: `array.with_unique_view`, `closure.uniqify`
       // and a standalone `rc.is_unique` read `count == 1` to decide between
       // in-place mutation and a defensive clone. The inc/dec pair around them

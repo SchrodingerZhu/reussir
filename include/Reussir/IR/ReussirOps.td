@@ -1072,6 +1072,11 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     `reussir.cell.get` loads the cell element with clone semantics. Managed
     ownership reachable from the element is acquired before the value is
     returned.
+
+    On an exclusive cell, the access lowers to a branch on the in-use flag:
+    when the element is currently moved out into a `reussir.cell.rmw` body,
+    the access panics and the result is a poison value on that (unreachable)
+    path; otherwise the element is loaded and acquired.
   }];
   let arguments = (ins Arg<ReussirRcCellType, "cell to read">:$cell);
   let results = (outs Res<AnyType, "cloned value">:$value);
@@ -1088,6 +1093,11 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     It does not acquire or otherwise adjust ownership of the incoming value;
     the caller is responsible for supplying the ownership transferred into the
     cell.
+
+    On an exclusive cell, the access lowers to a branch on the in-use flag
+    and panics when the element is currently moved out into a
+    `reussir.cell.rmw` body; the replacement is only performed on the
+    not-in-use path.
   }];
   let arguments = (ins Arg<AnyType, "replacement value">:$value,
       Arg<ReussirRcCellType, "cell to update">:$cell);
@@ -1104,6 +1114,14 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     `reussir.cell.rmw` moves the current element into its single-block body.
     The body yields the replacement element and may additionally yield one
     operation result. This transfer performs no implicit acquire or drop.
+
+    The operation requires an exclusive cell: the whole read-modify-write is
+    the not-in-use arm of a branch on the cell's trailing in-use flag. The
+    flag is raised while the body runs, so any reentrant access through an
+    alias of the same cell (another `rmw`, or a `get`/`set`) panics — with a
+    poison result on the panicked path — instead of observing or
+    double-releasing the moved-out element. The flag is cleared once the
+    replacement element is stored back.
   }];
   let arguments = (ins Arg<ReussirRcCellType, "cell to update">:$cell);
   let results = (outs Res<Optional<AnyType>, "body output">:$output);
@@ -1111,6 +1129,22 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
   let assemblyFormat = [{
     `(` $cell `:` qualified(type($cell)) `)`
     (`->` type($output)^)? $body attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirCellInUseOp : ReussirCellOp<"in_use", []> {
+  let summary = "Observe whether an exclusive cell is currently in use";
+  let description = [{
+    `reussir.cell.in_use` loads the trailing in-use flag of an exclusive
+    cell. It returns true while the cell element is moved out into an active
+    `reussir.cell.rmw` body, letting front ends implement checked access
+    instead of panicking.
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "cell to query">:$cell);
+  let results = (outs Res<I1, "whether the cell is in use">:$inUse);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)` `:` type($inUse) attr-dict
   }];
   let hasVerifier = 1;
 }
