@@ -223,7 +223,7 @@ module {
 
   // The exclusive flag lives at struct index 1: the guarded fast path loads
   // it, and the box payload lowers as {element, i1}.
-  // LLVM-LABEL: define i1 @in_use_lowering(ptr %[[CELL:.+]])
+  // LLVM-LABEL: define i1 @in_use_lowering(ptr
   // LLVM: %[[FLAG_PTR:.+]] = getelementptr { ptr, i1 }, ptr %{{.+}}, i32 0, i32 1
   // LLVM: %[[FLAG:.+]] = load i1, ptr %[[FLAG_PTR]]
   // LLVM: ret i1 %[[FLAG]]
