@@ -1125,12 +1125,12 @@ mod tests {
                 }
             }
 
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
 
-            regional fn fresh<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }
+            regional fn fresh<T>(x: T) -> [flex] TestCell<T> { TestCell { v: x, next: Nullable::Null } }
 
             regional fn loop_back(seed: i32) -> i32 {
-                let c = Cell { v: seed, next: Nullable::Null };
+                let c = TestCell { v: seed, next: Nullable::Null };
                 c->next := Nullable::NonNull{c};
                 c.v
             }
@@ -1460,9 +1460,9 @@ mod tests {
         // `foo<T>(bar: [flex] T)` requires T to be regional; instantiating it at a
         // regional record is accepted (no diagnostic).
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
-            regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }
+            regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }
         "#;
         with_full(src, |full| {
             let syms = symbols(full);
@@ -1475,7 +1475,7 @@ mod tests {
         // The same `[flex] T` parameter instantiated at a value record is rejected
         // at the call boundary — only regional records may be flex.
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             struct Pair { a: i32 }
             regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
             regional fn use_bad(p: Pair) -> i32 { foo(p) }
@@ -1504,9 +1504,9 @@ mod tests {
     fn field_link_generic_accepts_regional() {
         // `Wrapper<T>` with `[field] T` instantiated at a regional record is fine.
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             struct [regional] Wrapper<T> { inner: [field] T }
-            regional fn use_ok(w: [flex] Wrapper<Cell<i32>>) -> i32 { 0 }
+            regional fn use_ok(w: [flex] Wrapper<TestCell<i32>>) -> i32 { 0 }
         "#;
         with_full(src, |full| {
             let syms = symbols(full);

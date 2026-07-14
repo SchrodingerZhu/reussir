@@ -898,9 +898,9 @@ mod tests {
         // A generic `[flex]`-bound function (so `regional_generics` is non-empty)
         // and a turbofished regional call.
         roundtrip(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
-             regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
+             regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );
     }
 }

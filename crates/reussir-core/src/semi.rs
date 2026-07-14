@@ -606,8 +606,8 @@ mod tests {
     #[test]
     fn colors_regional_struct_fields() {
         check(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
-             regional fn make<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }",
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }\n\
+             regional fn make<T>(x: T) -> [flex] TestCell<T> { TestCell { v: x, next: Nullable::Null } }",
             |elab, _tcx| {
                 let f = function(elab, "make");
                 // The return type was colored Flex by the `[flex]` annotation.
@@ -626,9 +626,9 @@ mod tests {
         // Before the fix the construction was `Regional`, and the assignment was
         // rejected with "assignment target must be a flex record".
         check(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }\n\
              regional fn build(seed: i32) -> i32 {\n\
-                 let c = Cell { v: seed, next: Nullable::Null };\n\
+                 let c = TestCell { v: seed, next: Nullable::Null };\n\
                  c->next := Nullable::NonNull{c};\n\
                  0\n\
              }",
@@ -683,7 +683,7 @@ mod tests {
     }
 
     /// Diagnostics spell types the way the surface does (`i32`, `bool`,
-    /// `Nullable<Cell<u64>>`, `[rigid] …`), never the internal `Debug` form
+    /// `Nullable<TestCell<u64>>`, `[rigid] …`), never the internal `Debug` form
     /// (`Int(Signed(32))`).
     #[test]
     fn diagnostics_render_types_in_surface_syntax() {
@@ -710,12 +710,12 @@ mod tests {
 
         let m = messages(
             r#"
-            struct [regional] Cell<T> { v: T }
-            fn f(c: Cell<u64>) -> bool { c }
+            struct [regional] TestCell<T> { v: T }
+            fn f(c: TestCell<u64>) -> bool { c }
             "#,
         );
         assert!(
-            m.contains("expected `bool`, found `[rigid] Cell<u64>`"),
+            m.contains("expected `bool`, found `[rigid] TestCell<u64>`"),
             "record spelling expected: {m}"
         );
 
@@ -833,18 +833,18 @@ mod tests {
     fn field_link_takes_the_bases_view() {
         check(
             r#"
-            struct [regional] Cell { v: u64, next: [field] Cell }
+            struct [regional] TestCell { v: u64, next: [field] TestCell }
 
-            regional fn mk(v: u64) -> [flex] Cell {
-                Cell { v: v, next: Nullable::Null }
+            regional fn mk(v: u64) -> [flex] TestCell {
+                TestCell { v: v, next: Nullable::Null }
             }
 
-            fn frozen_view(v: u64) -> Nullable<Cell> {
+            fn frozen_view(v: u64) -> Nullable<TestCell> {
                 let c = regional { mk(v) };
                 c.next
             }
 
-            regional fn flex_view(c: [flex] Cell) -> [flex] Nullable<Cell> {
+            regional fn flex_view(c: [flex] TestCell) -> [flex] Nullable<TestCell> {
                 c.next
             }
             "#,
@@ -930,8 +930,8 @@ mod tests {
         with_tcx(|tcx| {
             // `c` is a flex regional value; a closure cannot capture it (a flex
             // value cannot be materialized, so it cannot escape its region).
-            let source = "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
-                          regional fn f(c: [flex] Cell<i32>) -> i32 { let g = || c; 0 }";
+            let source = "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }\n\
+                          regional fn f(c: [flex] TestCell<i32>) -> i32 { let g = || c; 0 }";
             let parse = reussir_syntax::parse(source);
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, parse.resolver());
@@ -1014,8 +1014,8 @@ mod tests {
     fn rejects_closure_returning_flex() {
         // The closure body is a captured flex value; returning it would let a
         // non-materializable value escape the region.
-        let src = "struct [regional] Cell<T> { v: T, next: [field] Cell<T> }\n\
-                   regional fn f(c: [flex] Cell<i32>) -> i32 { let g = || c; 0 }";
+        let src = "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }\n\
+                   regional fn f(c: [flex] TestCell<i32>) -> i32 { let g = || c; 0 }";
         assert!(
             has_error(src, "closure cannot return a flex value"),
             "{:#?}",
@@ -1064,8 +1064,8 @@ mod tests {
         // `Nullable::Null` stored into a `[field]` slot of a flex record must be
         // colored `flex` (a freshly-built region-local value), not left at the
         // record's default `Regional` — otherwise it reaches the backend uncolored.
-        let src = "struct [regional] Cell { v: i32, next: [field] Cell }\n\
-                   regional fn clear(c: [flex] Cell) -> i32 { c->next := Nullable::Null; c.v }";
+        let src = "struct [regional] TestCell { v: i32, next: [field] TestCell }\n\
+                   regional fn clear(c: [flex] TestCell) -> i32 { c->next := Nullable::Null; c.v }";
         check(src, |elab, _| {
             // Body is `Seq[ Assign(c, next, Nullable::Null), c.v ]`.
             let body = function(elab, "clear").body.as_ref().unwrap();
@@ -1096,9 +1096,9 @@ mod tests {
         // A `[field]` link on a flex record holds region-local (flex) values. A
         // frozen (`rigid`) value — here the result of a `region { }` that escaped
         // its region — is a flexivity mismatch against that flex slot.
-        let src = "struct [regional] Cell { v: i32, next: [field] Cell }\n\
-                   fn frozen() -> Cell { regional { Cell { v: 0, next: Nullable::Null } } }\n\
-                   regional fn t(c: [flex] Cell) -> i32 { c->next := Nullable::NonNull{ frozen() }; c.v }";
+        let src = "struct [regional] TestCell { v: i32, next: [field] TestCell }\n\
+                   fn frozen() -> TestCell { regional { TestCell { v: 0, next: Nullable::Null } } }\n\
+                   regional fn t(c: [flex] TestCell) -> i32 { c->next := Nullable::NonNull{ frozen() }; c.v }";
         assert!(
             has_error(src, "flexivity mismatch"),
             "{:#?}",

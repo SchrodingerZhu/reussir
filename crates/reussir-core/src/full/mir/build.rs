@@ -782,10 +782,10 @@ mod tests {
     #[test]
     fn roundtrips_regional_flex_signature() {
         // Exercises a turbofished, capability-prefixed record type:
-        // `[flex] Cell::<i32>`.
+        // `[flex] TestCell::<i32>`.
         roundtrip(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
-             regional fn id(c: [flex] Cell<i32>) -> i32 { 0 }",
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
+             regional fn id(c: [flex] TestCell<i32>) -> i32 { 0 }",
         );
     }
 
@@ -838,9 +838,9 @@ mod tests {
     fn roundtrips_regional_generics() {
         // Mono'd regional record type + flex capability in a signature.
         roundtrip(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
-             regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
+             regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );
     }
 
