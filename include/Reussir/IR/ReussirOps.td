@@ -1062,6 +1062,101 @@ def ReussirArrayWithUniqueViewOp : ReussirArrayOp<"with_unique_view", []> {
 }
 
 //===----------------------------------------------------------------------===//
+// Reussir cell operations
+//===----------------------------------------------------------------------===//
+class ReussirCellOp<string mnemonic, list<Trait> traits>
+    : ReussirOp<"cell."#mnemonic, traits>;
+
+def ReussirCellCreateOp : ReussirCellOp<"create", [
+  DeclareOpInterfaceMethods<TokenAcceptorInterface>
+]> {
+  let summary = "Create a shared reference-counted cell";
+  let description = [{
+    `reussir.cell.create` stores `value` in a fresh shared RC cell. The
+    allocation token is optional until token instantiation assigns one, and
+    must match the complete RC cell box layout when present.
+  }];
+  let arguments = (ins
+    Arg<AnyType, "initial value">:$value,
+    Optional<ReussirTokenType>:$token
+  );
+  let results = (outs Res<ReussirRcCellType, "created cell">:$cell);
+  let assemblyFormat = [{
+    `value` `(` $value `:` type($value) `)`
+    oilist (`token` `(` $token `:` type($token) `)`)
+    `:` qualified(type($cell)) attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirCellGetOp : ReussirCellOp<"get", []> {
+  let summary = "Clone the value stored in a cell";
+  let description = [{
+    `reussir.cell.get` loads the cell element with clone semantics. Managed
+    ownership reachable from the element is acquired before the value is
+    returned.
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "cell to read">:$cell);
+  let results = (outs Res<AnyType, "cloned value">:$value);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)` `:` type($value) attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirCellSetOp : ReussirCellOp<"set", []> {
+  let summary = "Replace the value stored in a cell";
+  let description = [{
+    `reussir.cell.set` drops the old cell element in place and stores `value`.
+    It does not acquire or otherwise adjust ownership of the incoming value;
+    the caller is responsible for supplying the ownership transferred into the
+    cell.
+  }];
+  let arguments = (ins
+    Arg<AnyType, "replacement value">:$value,
+    Arg<ReussirRcCellType, "cell to update">:$cell
+  );
+  let assemblyFormat = [{
+    `(` $value `:` type($value) `,` $cell `:` qualified(type($cell)) `)`
+    attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
+  let summary = "Read, transform, and replace a cell value";
+  let description = [{
+    `reussir.cell.rmw` moves the current element into its single-block body.
+    The body yields the replacement element and may additionally yield one
+    operation result. This transfer performs no implicit acquire or drop.
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "cell to update">:$cell);
+  let results = (outs Res<Optional<AnyType>, "body output">:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)`
+    (`->` type($output)^)? $body attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def ReussirCellYieldOp : ReussirCellOp<"yield", [
+  ReturnLike, Terminator,
+  ParentOneOf<["::reussir::ReussirCellRmwOp"]>
+]> {
+  let summary = "Yield a replacement and optional output from cell.rmw";
+  let arguments = (ins
+    Arg<AnyType, "replacement value">:$newValue,
+    Arg<Optional<AnyType>, "optional operation output">:$output
+  );
+  let assemblyFormat = [{
+    `(` $newValue `:` type($newValue) `)`
+    (`output` `(` $output^ `:` type($output) `)`)? attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir reference operations
 //===----------------------------------------------------------------------===//
 class ReussirReferenceOp<string mnemonic, list<Trait> traits>

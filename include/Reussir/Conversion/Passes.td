@@ -124,8 +124,9 @@ def ReussirAcquireDropExpansionPass
     : Pass<"reussir-acquire-drop-expansion"> {
   let summary = "expand Reussir acquire and drop operations";
   let description = [{
-    `reussir-acquire-drop-expansion` expands Reussir acquire and drop operations.
-    This is a greedy pattern conversion pass.
+    `reussir-acquire-drop-expansion` expands Reussir acquire and drop operations,
+    together with the ownership-aware Cell operations that produce them. This is
+    a greedy pattern conversion pass.
 
     For drop operations:
     1. it eliminates no-op drop operations.
@@ -135,6 +136,11 @@ def ReussirAcquireDropExpansionPass
     1. it eliminates no-op acquire operations (trivially copyable types).
     2. for normal acquire, it emits ownership acquisition (e.g., rc.inc for Rc
        fields, recursive acquisition for compound/variant records).
+
+    Cell create/get/set/rmw operations are lowered to RC borrow and mutable slot
+    accesses. Get acquires the exact loaded value, set drops the old slot before
+    storing the caller-owned replacement, and rmw moves the old and replacement
+    values through its region without implicit ownership traffic.
 
     Notice that this pass terminates normally for recursive types, as such types
     are backed by RC pointers. The decrement operation will not be inlined at
@@ -157,7 +163,8 @@ def ReussirAcquireDropExpansionPass
     Option<"expandDecrement", "expand-decrement", "bool", /*default=*/"false",
         "whether to expand rc decrement operations (using the `rc-decrement-expansion` pass)">,
   ];
-  let dependentDialects = ["::reussir::ReussirDialect"];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::ub::UBDialect"];
 }
 
 //===----------------------------------------------------------------------===//

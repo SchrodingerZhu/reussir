@@ -318,6 +318,29 @@ def ReussirNullableType
   let parameters = (ins ReussirNonNullPointerType:$ptrTy);
   let assemblyFormat = "`<` $ptrTy `>`";
 }
+
+//===----------------------------------------------------------------------===//
+// Reussir Cell Type
+//===----------------------------------------------------------------------===//
+def ReussirCellType
+    : ReussirType<
+          "Cell", "cell",
+          [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>, MutableType]> {
+  let summary = "Reussir mutable cell payload type";
+  let description = [{
+    `reussir.cell` is the one-element mutable payload of a shared reference
+    counted cell. A cell value is always managed through
+    `!reussir.rc<!reussir.cell<T>>`; when a cell occurs as a record member it
+    is represented by that shared RC pointer, like closures and arrays.
+
+    The element is stored inline in the cell box and may itself be an RC type.
+  }];
+  let parameters = (ins "mlir::Type":$eleTy);
+  let assemblyFormat = "`<` $eleTy `>`";
+  let extraClassDeclaration = [{
+    mlir::Type getElementType() const { return getEleTy(); }
+  }];
+}
 //===----------------------------------------------------------------------===//
 // Reussir Reference Type
 //===----------------------------------------------------------------------===//
@@ -649,5 +672,12 @@ def ReussirRcArrayType
     ::llvm::isa<::reussir::ArrayType>(
       ::llvm::cast<::reussir::RcType>($_self).getElementType())
     }]>, "Reussir rc array type", "::reussir::RcType">;
+
+def ReussirRcCellType
+    : Type<CPred<[{
+    ::llvm::isa<::reussir::RcType>($_self) &&
+    ::llvm::isa<::reussir::CellType>(
+      ::llvm::cast<::reussir::RcType>($_self).getElementType())
+    }]>, "Reussir rc cell type", "::reussir::RcType">;
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD

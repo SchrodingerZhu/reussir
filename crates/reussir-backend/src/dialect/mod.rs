@@ -69,6 +69,7 @@ mod tests {
             ),
             (ty::region(&context), "!reussir.region"),
             (ty::raw_ptr(i32_ty), "!reussir.raw_ptr<"),
+            (ty::cell(i32_ty), "!reussir.cell<"),
             (ty::array(&[2, 3], i32_ty), "!reussir.array<"),
             (
                 ty::str(&context, ty::ReussirLifeScope::Global),

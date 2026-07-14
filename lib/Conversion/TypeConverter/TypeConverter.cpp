@@ -229,6 +229,14 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
     return converter.convertType(type.getPtrTy());
   });
 
+  // A cell is a semantic one-field wrapper. Keeping the wrapper in the LLVM
+  // type makes `ref.project [0]` the uniform way to address its mutable slot,
+  // while its data-layout interface intentionally matches the inner value.
+  converter.addConversion([&converter](CellType type) {
+    return mlir::LLVM::LLVMStructType::getLiteral(
+        type.getContext(), {converter.convertType(type.getElementType())});
+  });
+
   converter.addConversion([&converter](RcBoxType type) -> mlir::Type {
     // A box of a fused-header variant IS the variant record: its refcount
     // lives in the record's leading count slot.

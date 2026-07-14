@@ -3438,6 +3438,8 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirArrayViewOp, ReussirRecordTagOp, ReussirRecordExtractOp,
         ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
         ReussirRegionCleanupOp, ReussirRegionCreateOp, ReussirRcReinterpretOp,
+        ReussirCellCreateOp, ReussirCellGetOp, ReussirCellSetOp,
+        ReussirCellRmwOp, ReussirCellYieldOp,
         ReussirClosureApplyOp, ReussirClosureCloneOp, ReussirClosureEvalOp,
         ReussirClosureInspectPayloadOp, ReussirClosureCursorOp,
         ReussirClosureInstantiateOp, ReussirClosureVtableOp,

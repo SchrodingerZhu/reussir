@@ -56,6 +56,12 @@ pub fn nullable(pointer: Type) -> Type {
     unsafe { Type::from_raw(sys::reussirNullableTypeGet(pointer.to_raw())) }
 }
 
+/// Creates a `!reussir.cell<element>` payload type. Values of this type are
+/// managed through a shared `!reussir.rc` cell box.
+pub fn cell(element: Type) -> Type {
+    unsafe { Type::from_raw(sys::reussirCellTypeGet(element.to_raw())) }
+}
+
 /// Creates a `!reussir.ref<element, capability, atomicKind>` type.
 pub fn r#ref(element: Type, capability: ReussirCapability, atomic_kind: ReussirAtomicKind) -> Type {
     unsafe {

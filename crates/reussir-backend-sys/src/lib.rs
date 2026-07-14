@@ -241,6 +241,7 @@ unsafe extern "C" {
         atomic_kind: ReussirAtomicKind,
     ) -> MlirType;
     pub fn reussirNullableTypeGet(pointer_type: MlirType) -> MlirType;
+    pub fn reussirCellTypeGet(element_type: MlirType) -> MlirType;
     pub fn reussirRefTypeGet(
         element_type: MlirType,
         capability: ReussirCapability,
