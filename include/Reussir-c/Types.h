@@ -81,6 +81,9 @@ MlirType reussirRcTypeGet(MlirType elementType, ReussirCapability capability,
 // `!reussir.nullable<ptrTy>`. The context is taken from `pointerType`.
 MlirType reussirNullableTypeGet(MlirType pointerType);
 
+// `!reussir.cell<elementType>`. The context is taken from `elementType`.
+MlirType reussirCellTypeGet(MlirType elementType);
+
 // `!reussir.ref<eleTy [, capability [, atomicKind]]>`. The context is taken
 // from `elementType`.
 MlirType reussirRefTypeGet(MlirType elementType, ReussirCapability capability,

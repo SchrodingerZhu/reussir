@@ -209,6 +209,9 @@ bool isTriviallyCopyable(mlir::Type type) {
       .Case<ArrayType>([](ArrayType arrayType) {
         return isTriviallyCopyable(arrayType.getElementType());
       })
+      .Case<CellType>([](CellType cellType) {
+        return isTriviallyCopyable(cellType.getElementType());
+      })
       // Record types need to check all their members
       .Case<RecordType>([](RecordType recordType) {
         // Incomplete records are considered non-trivially copyable
@@ -242,12 +245,12 @@ bool isTriviallyCopyable(mlir::Type type) {
 // 1. it is a mutable field (isField == true)
 // 2. it is a referential record (either shared or regional)
 // 3. it is a closure
-// 4. it is an array — one shared rc box, like a closure
+// 4. it is an array or cell — one shared rc box, like a closure
 // unless this layout is derived for memory box internal layout, which forces
-// the structure to expand in place. That exemption covers the array case (an
-// array box's payload IS the bare array, laid out inline) but not the closure
-// case (a closure box is a ClosureBoxType — a raw ClosureType is always the
-// pointer to one).
+// the structure to expand in place. That exemption covers arrays and cells
+// (their box payload is the bare value, laid out inline) but not closures (a
+// closure box is a ClosureBoxType — a raw ClosureType is always a pointer to
+// one).
 mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
                              bool isField, bool memBoxInternal) {
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
@@ -258,7 +261,7 @@ mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
        (recordTy &&
         (recordTy.getDefaultCapability() == Capability::shared ||
          recordTy.getDefaultCapability() == Capability::regional)) ||
-       llvm::isa<ArrayType>(rawMember)))
+       llvm::isa<ArrayType, CellType>(rawMember)))
     member = ptrTy;
   if (llvm::isa<ClosureType>(member))
     member = ptrTy;
@@ -977,6 +980,27 @@ void RcType::print(mlir::AsmPrinter &printer) const {
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 
 //===----------------------------------------------------------------------===//
+// Reussir Cell Type DataLayoutInterface
+//===----------------------------------------------------------------------===//
+llvm::TypeSize
+CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                            mlir::DataLayoutEntryListRef params) const {
+  return dataLayout.getTypeSizeInBits(getElementType());
+}
+
+uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                                   mlir::DataLayoutEntryListRef params) const {
+  return dataLayout.getTypeABIAlignment(getElementType());
+}
+
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t CellType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout, mlir::DataLayoutEntryListRef params)
+        const {
+          return dataLayout.getTypePreferredAlignment(getElementType());
+        })
+
+//===----------------------------------------------------------------------===//
 // Reussir Reference Type
 //===----------------------------------------------------------------------===//
 // RefType Parse/Print
@@ -1300,8 +1324,8 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap) {
               return Capability::field;
             return type.getDefaultCapability();
           })
-          // A closure or an array member is one shared rc box.
-          .Case<ClosureType, ArrayType>(
+          // A closure, array, or cell member is one shared rc box.
+          .Case<ClosureType, ArrayType, CellType>(
               [](mlir::Type) -> Capability { return Capability::shared; })
           .Default([](mlir::Type) { return Capability::unspecified; });
   if (targetCap == Capability::field) {

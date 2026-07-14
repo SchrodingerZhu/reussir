@@ -100,6 +100,21 @@ static mlir::LogicalResult verifyArrayViewType(mlir::Operation *op,
          << " must be a statically shaped memref or tensor";
 }
 
+static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
+                                                         RcType rcType) {
+  auto cellType = llvm::dyn_cast<CellType>(rcType.getElementType());
+  if (!cellType) {
+    op->emitOpError("expected an RC pointer to a cell, got ") << rcType;
+    return mlir::failure();
+  }
+  if (rcType.getCapability() != Capability::shared) {
+    op->emitOpError("cell RC pointer must have shared capability, got ")
+        << stringifyCapability(rcType.getCapability());
+    return mlir::failure();
+  }
+  return cellType;
+}
+
 mlir::LogicalResult verifyRcCreateLikeOp(mlir::Operation *op, RcType rcType,
                                          mlir::Type valueType,
                                          mlir::Value token,
@@ -1181,6 +1196,110 @@ mlir::LogicalResult ReussirArrayWithUniqueViewOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// Reussir Cell Operations
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirCellCreateOp::verify() {
+  RcType rcType = getCell().getType();
+  auto cellType = verifySharedCellOperand(getOperation(), rcType);
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (getValue().getType() != (*cellType).getElementType())
+    return emitOpError("initial value type must match cell element type, got ")
+           << getValue().getType() << " and " << (*cellType).getElementType();
+
+  if (!getToken())
+    return mlir::success();
+  TokenType expected = getTokenType();
+  TokenType actual = getToken().getType();
+  if (actual.getAlign() != expected.getAlign() ||
+      actual.getSize() != expected.getSize())
+    return emitOpError("token type must match RC cell box layout, expected ")
+           << expected << ", got " << actual;
+  return mlir::success();
+}
+
+TokenType ReussirCellCreateOp::getTokenType() {
+  RcType rcType = getCell().getType();
+  RcBoxType boxType = rcType.getInnerBoxType();
+  auto dataLayout = mlir::DataLayout::closest(getOperation());
+  auto size = dataLayout.getTypeSize(boxType);
+  return TokenType::get(getContext(), dataLayout.getTypeABIAlignment(boxType),
+                        size.getFixedValue());
+}
+
+mlir::LogicalResult ReussirCellGetOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (getValue().getType() != (*cellType).getElementType())
+    return emitOpError("result type must match cell element type, expected ")
+           << (*cellType).getElementType() << ", got " << getValue().getType();
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirCellSetOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (getValue().getType() != (*cellType).getElementType())
+    return emitOpError(
+               "replacement value type must match cell element type, expected ")
+           << (*cellType).getElementType() << ", got " << getValue().getType();
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirCellRmwOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (!llvm::hasSingleElement(getBody()))
+    return emitOpError("body must contain exactly one block");
+  mlir::Block &block = getBody().front();
+  if (block.getNumArguments() != 1)
+    return emitOpError("body must accept exactly one cell element argument");
+  if (block.getArgument(0).getType() != (*cellType).getElementType())
+    return emitOpError(
+               "body argument type must match cell element type, expected ")
+           << (*cellType).getElementType() << ", got "
+           << block.getArgument(0).getType();
+  if (block.empty() || !llvm::isa<ReussirCellYieldOp>(block.getTerminator()))
+    return emitOpError("body must terminate with reussir.cell.yield");
+
+  auto yield = llvm::cast<ReussirCellYieldOp>(block.getTerminator());
+  if (yield.getNewValue().getType() != (*cellType).getElementType())
+    return emitOpError("yielded replacement type must match cell element type, "
+                       "expected ")
+           << (*cellType).getElementType() << ", got "
+           << yield.getNewValue().getType();
+  if (static_cast<bool>(getOutput()) != static_cast<bool>(yield.getOutput()))
+    return emitOpError("body must yield exactly one optional output when the "
+                       "operation has a result");
+  if (getOutput() && getOutput().getType() != yield.getOutput().getType())
+    return emitOpError(
+               "body output type must match operation result type, got ")
+           << yield.getOutput().getType() << " and " << getOutput().getType();
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirCellYieldOp::verify() {
+  auto parent = getOperation()->getParentOfType<ReussirCellRmwOp>();
+  if (!parent)
+    return emitOpError("must be nested directly in reussir.cell.rmw");
+  auto cellType =
+      llvm::cast<CellType>(parent.getCell().getType().getElementType());
+  if (getNewValue().getType() != cellType.getElementType())
+    return emitOpError(
+               "replacement type must match cell element type, expected ")
+           << cellType.getElementType() << ", got " << getNewValue().getType();
+  if (static_cast<bool>(getOutput()) != static_cast<bool>(parent.getOutput()))
+    return emitOpError("optional output must match the parent result");
+  if (getOutput() && getOutput().getType() != parent.getOutput().getType())
+    return emitOpError("output type must match parent result type, expected ")
+           << parent.getOutput().getType() << ", got " << getOutput().getType();
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Reference Operations
 //===----------------------------------------------------------------------===//
 // ReferenceProjectOp verification
@@ -1189,8 +1308,24 @@ mlir::LogicalResult ReussirRefProjectOp::verify() {
   RefType refType = getRef().getType();
   RefType projectedType = getProjected().getType();
 
-  // Check that the reference element type is a record type
   mlir::Type elementType = refType.getElementType();
+  if (auto cellType = llvm::dyn_cast<CellType>(elementType)) {
+    size_t index = getIndex().getZExtValue();
+    if (index != 0)
+      return emitOpError("cell projection index must be zero, got ") << index;
+    if (projectedType.getElementType() != cellType.getElementType())
+      return emitOpError("projected cell element type mismatch: expected ")
+             << cellType.getElementType() << ", got "
+             << projectedType.getElementType();
+    if (projectedType.getCapability() != Capability::field)
+      return emitOpError("a cell slot projection must have field capability");
+    if (projectedType.getAtomicKind() != refType.getAtomicKind())
+      return emitOpError("projected cell reference atomic kind must match the "
+                         "source reference");
+    return mlir::success();
+  }
+
+  // Check that the reference element type is a record type
   RecordType recordType = llvm::dyn_cast<RecordType>(elementType);
   if (!recordType)
     return emitOpError("reference element type must be a record type, got: ")
@@ -2413,7 +2548,7 @@ mlir::LogicalResult ReussirRefAcquireOp::verify() {
     return mlir::success();
   }
 
-  if (llvm::isa<ArrayType>(elementType))
+  if (llvm::isa<ArrayType, CellType>(elementType))
     return mlir::success();
 
   return emitOpError("unsupported element type for acquisition: ")
@@ -2502,6 +2637,18 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                   builder, loc, getArrayViewMemRefType(arrayType), value)
                   .getView();
           return emitArrayOwnershipAcquisition(view, builder, loc);
+        }
+
+        // A cell is a one-field mutable payload. Projecting its slot also
+        // deliberately breaks invariant-group propagation: the same address
+        // may hold different values over the cell's lifetime.
+        if (auto cellType = llvm::dyn_cast<CellType>(elementType)) {
+          RefType slotType =
+              RefType::get(builder.getContext(), cellType.getElementType(),
+                           Capability::field, refType.getAtomicKind());
+          mlir::Value slot = ReussirRefProjectOp::create(
+              builder, loc, slotType, value, builder.getIndexAttr(0));
+          return emitOwnershipAcquisition(slot, builder, loc);
         }
 
         // If reference points to a record, handle fields directly

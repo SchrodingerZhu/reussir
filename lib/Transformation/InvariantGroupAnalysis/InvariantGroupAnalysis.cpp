@@ -135,11 +135,21 @@ mlir::LogicalResult InvariantGroupAnalysis::visitOperation(
     assert(operands.size() >= 1 && "ref.project must have at least 1 operand");
     const auto &inputState = operands[0]->getValue();
 
+    // A cell projection exposes the mutable slot. Even though rc.borrow makes
+    // the containing box identity stable, repeated accesses through this
+    // address may observe different values, so invariant.group must never
+    // propagate across the cell boundary.
+    auto inputRefType = llvm::cast<RefType>(projectOp.getRef().getType());
+    if (llvm::isa<CellType>(inputRefType.getElementType())) {
+      for (auto *result : results)
+        propagateIfChanged(result,
+                           result->join(InvariantGroupValue::getUnsafe()));
+      return mlir::success();
+    }
+
     if (inputState.state == InvariantState::Safe) {
       // Check whether the input ref has flex capability AND the projected
       // field is mutable (memberIsField). If so → Unsafe.
-      auto inputRefType =
-          llvm::cast<RefType>(projectOp.getRef().getType());
       auto recordType =
           llvm::dyn_cast<RecordType>(inputRefType.getElementType());
 

@@ -20,6 +20,7 @@
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/UB/IR/UBOps.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Block.h>
 #include <mlir/IR/Builders.h>
@@ -46,8 +47,43 @@ namespace reussir {
 //===----------------------------------------------------------------------===//
 
 namespace {
+struct CellSlot {
+  CellType cellType;
+  mlir::Value slotRef;
+};
+
+static CellSlot materializeCellSlot(mlir::Value cell, mlir::Location loc,
+                                    mlir::PatternRewriter &rewriter) {
+  RcType rcType = llvm::cast<RcType>(cell.getType());
+  CellType cellType = llvm::cast<CellType>(rcType.getElementType());
+  RefType cellRefType =
+      RefType::get(rewriter.getContext(), cellType, Capability::unspecified,
+                   rcType.getAtomicKind());
+  mlir::Value cellRef =
+      ReussirRcBorrowOp::create(rewriter, loc, cellRefType, cell);
+  RefType slotRefType =
+      RefType::get(rewriter.getContext(), cellType.getElementType(),
+                   Capability::field, rcType.getAtomicKind());
+  mlir::Value slotRef = ReussirRefProjectOp::create(
+      rewriter, loc, slotRefType, cellRef, rewriter.getIndexAttr(0));
+  return {cellType, slotRef};
+}
+
 class DropExpansionPattern : public mlir::OpRewritePattern<ReussirRefDropOp> {
 private:
+  mlir::LogicalResult rewriteDropCell(CellType cellType, ReussirRefDropOp op,
+                                      mlir::PatternRewriter &rewriter) const {
+    RefType refType = op.getRef().getType();
+    RefType slotType =
+        RefType::get(rewriter.getContext(), cellType.getElementType(),
+                     Capability::field, refType.getAtomicKind());
+    mlir::Value slot = ReussirRefProjectOp::create(
+        rewriter, op.getLoc(), slotType, op.getRef(), rewriter.getIndexAttr(0));
+    ReussirRefDropOp::create(rewriter, op.getLoc(), slot);
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
   mlir::LogicalResult rewriteDropArray(ArrayType arrayType, ReussirRefDropOp op,
                                        mlir::PatternRewriter &rewriter) const {
     mlir::Value view =
@@ -280,6 +316,9 @@ public:
         .Case<ArrayType>([&](ArrayType arrayType) {
           return rewriteDropArray(arrayType, op, rewriter);
         })
+        .Case<CellType>([&](CellType cellType) {
+          return rewriteDropCell(cellType, op, rewriter);
+        })
         .Case<RecordType>([&](RecordType recordType) {
           if (shouldOutline(op, recordType)) {
             mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
@@ -378,6 +417,109 @@ public:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Cell operation expansion patterns
+//===----------------------------------------------------------------------===//
+
+class CellCreateExpansionPattern
+    : public mlir::OpRewritePattern<ReussirCellCreateOp> {
+public:
+  using mlir::OpRewritePattern<ReussirCellCreateOp>::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellCreateOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    CellType cellType =
+        llvm::cast<CellType>(op.getCell().getType().getElementType());
+    mlir::Value poison =
+        mlir::ub::PoisonOp::create(rewriter, op.getLoc(), cellType);
+    auto created = ReussirRcCreateOp::create(
+        rewriter, op.getLoc(), op.getCell().getType(), poison, op.getToken(),
+        mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+    CellSlot access =
+        materializeCellSlot(created.getRcPtr(), op.getLoc(), rewriter);
+    ReussirRefStoreOp::create(rewriter, op.getLoc(), access.slotRef,
+                              op.getValue());
+    rewriter.replaceOp(op, created.getRcPtr());
+    return mlir::success();
+  }
+};
+
+class CellGetExpansionPattern
+    : public mlir::OpRewritePattern<ReussirCellGetOp> {
+public:
+  using mlir::OpRewritePattern<ReussirCellGetOp>::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellGetOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    CellSlot access = materializeCellSlot(op.getCell(), op.getLoc(), rewriter);
+    mlir::Value value = ReussirRefLoadOp::create(
+        rewriter, op.getLoc(), access.cellType.getElementType(),
+        access.slotRef);
+    mlir::Type valueType = value.getType();
+    if (auto rcType = llvm::dyn_cast<RcType>(valueType)) {
+      ReussirRcIncOp::create(rewriter, op.getLoc(), value);
+    } else if (!isTriviallyCopyable(valueType)) {
+      // Acquire the exact SSA value loaded above, rather than loading the
+      // mutable slot a second time. The spill only provides addressability for
+      // recursive aggregate acquisition and is eliminated after lowering.
+      RefType spilledType = RefType::get(rewriter.getContext(), valueType);
+      mlir::Value spilled = ReussirRefSpilledOp::create(rewriter, op.getLoc(),
+                                                        spilledType, value);
+      ReussirRefAcquireOp::create(rewriter, op.getLoc(), spilled);
+    }
+    rewriter.replaceOp(op, value);
+    return mlir::success();
+  }
+};
+
+class CellSetExpansionPattern
+    : public mlir::OpRewritePattern<ReussirCellSetOp> {
+public:
+  using mlir::OpRewritePattern<ReussirCellSetOp>::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellSetOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    CellSlot access = materializeCellSlot(op.getCell(), op.getLoc(), rewriter);
+    ReussirRefDropOp::create(rewriter, op.getLoc(), access.slotRef);
+    ReussirRefStoreOp::create(rewriter, op.getLoc(), access.slotRef,
+                              op.getValue());
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+class CellRmwExpansionPattern
+    : public mlir::OpRewritePattern<ReussirCellRmwOp> {
+public:
+  using mlir::OpRewritePattern<ReussirCellRmwOp>::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellRmwOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    CellSlot access = materializeCellSlot(op.getCell(), op.getLoc(), rewriter);
+    mlir::Value oldValue = ReussirRefLoadOp::create(
+        rewriter, op.getLoc(), access.cellType.getElementType(),
+        access.slotRef);
+
+    mlir::Block &body = op.getBody().front();
+    auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+    rewriter.inlineBlockBefore(&body, op, mlir::ValueRange{oldValue});
+    rewriter.setInsertionPoint(yield);
+    ReussirRefStoreOp::create(rewriter, yield.getLoc(), access.slotRef,
+                              yield.getNewValue());
+    mlir::Value output = yield.getOutput();
+    rewriter.eraseOp(yield);
+    if (output)
+      rewriter.replaceOp(op, output);
+    else
+      rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -407,6 +549,9 @@ void populateAcquireDropExpansionConversionPatterns(
     mlir::RewritePatternSet &patterns, bool outlineRecord) {
   patterns.add<DropExpansionPattern>(patterns.getContext(), outlineRecord);
   patterns.add<AcquireExpansionPattern>(patterns.getContext(), outlineRecord);
+  patterns.add<CellCreateExpansionPattern, CellGetExpansionPattern,
+               CellSetExpansionPattern, CellRmwExpansionPattern>(
+      patterns.getContext());
 }
 
 } // namespace reussir
