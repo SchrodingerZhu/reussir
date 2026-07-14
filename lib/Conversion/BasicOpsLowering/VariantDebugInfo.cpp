@@ -74,15 +74,14 @@ void rewriteVariant(LLVMContext &ctx, DICompositeType *composite,
   DIFile *file = composite->getFile();
   uint64_t payloadOffset = v.payload->getOffsetInBits();
 
-  // The discriminant is the tag member, marked artificial (compiler-synthesised,
-  // not a source field). Scoped to the enum itself, matching what rustc emits.
-  // It keeps the tag's own offset: 0 for a value variant, 4 for a fused-header
-  // one (past the overlaid refcount slot).
+  // The discriminant is the tag member, marked artificial
+  // (compiler-synthesised, not a source field). Scoped to the enum itself,
+  // matching what rustc emits. It keeps the tag's own offset: 0 for a value
+  // variant, 4 for a fused-header one (past the overlaid refcount slot).
   auto *discriminator = DIDerivedType::get(
       ctx, dwarf::DW_TAG_member, /*Name=*/StringRef(), file, /*Line=*/0,
       /*Scope=*/composite, /*BaseType=*/v.tag->getBaseType(),
-      v.tag->getSizeInBits(), v.tag->getAlignInBits(),
-      v.tag->getOffsetInBits(),
+      v.tag->getSizeInBits(), v.tag->getAlignInBits(), v.tag->getOffsetInBits(),
       /*DWARFAddressSpace=*/std::nullopt, /*PtrAuthData=*/std::nullopt,
       DINode::FlagArtificial);
 
@@ -104,7 +103,8 @@ void rewriteVariant(LLVMContext &ctx, DICompositeType *composite,
         /*Scope=*/composite, caseMember->getBaseType(),
         caseMember->getSizeInBits(), caseMember->getAlignInBits(),
         payloadOffset, /*DWARFAddressSpace=*/std::nullopt,
-        /*PtrAuthData=*/std::nullopt, DINode::FlagZero, /*ExtraData=*/discrValue));
+        /*PtrAuthData=*/std::nullopt, DINode::FlagZero,
+        /*ExtraData=*/discrValue));
     ++index;
   }
 

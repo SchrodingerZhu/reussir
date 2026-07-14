@@ -639,18 +639,17 @@ RecordType::getPackedOrder(const mlir::DataLayout &dataLayout) const {
     return order;
   llvm::SmallVector<uint64_t> aligns(order.size());
   for (uint32_t i = 0; i < order.size(); ++i) {
-    mlir::Type storage = memberStorageType(getContext(), getMembers()[i],
-                                           getMemberIsField()[i]);
+    mlir::Type storage =
+        memberStorageType(getContext(), getMembers()[i], getMemberIsField()[i]);
     aligns[i] = dataLayout.getTypeABIAlignment(storage);
   }
-  llvm::stable_sort(order,
-                    [&](uint32_t a, uint32_t b) { return aligns[a] > aligns[b]; });
+  llvm::stable_sort(
+      order, [&](uint32_t a, uint32_t b) { return aligns[a] > aligns[b]; });
   return order;
 }
 
-uint32_t
-RecordType::getPhysicalMemberIndex(const mlir::DataLayout &dataLayout,
-                                   uint32_t index) const {
+uint32_t RecordType::getPhysicalMemberIndex(const mlir::DataLayout &dataLayout,
+                                            uint32_t index) const {
   llvm::SmallVector<uint32_t> order = getPackedOrder(dataLayout);
   auto *it = llvm::find(order, index);
   assert(it != order.end() && "member index out of range");
@@ -712,9 +711,8 @@ RecordType::getVariantArmAllocSize(const mlir::DataLayout &dataLayout,
   // payload size replaced by arm `tag`'s.
   auto [maxSize, align, _] = getElementRegionLayoutInfo(dataLayout);
   (void)maxSize;
-  mlir::Type member = getProjectedType(getMembers()[tag],
-                                       getMemberIsField()[tag],
-                                       Capability::value);
+  mlir::Type member = getProjectedType(
+      getMembers()[tag], getMemberIsField()[tag], Capability::value);
   llvm::TypeSize armSize = dataLayout.getTypeSize(member);
   llvm::Align finalAlign = std::max(align, llvm::Align(8));
   llvm::TypeSize headerSize =

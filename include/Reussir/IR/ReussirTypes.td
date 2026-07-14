@@ -258,10 +258,9 @@ def ReussirRegionType
 // Reussir Rc Type
 //===----------------------------------------------------------------------===//
 def ReussirRcType
-    : ReussirType<
-          "Rc", "rc",
-          [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-           MemRefElementTypeInterface]> {
+    : ReussirType<"Rc", "rc",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+                   MemRefElementTypeInterface]> {
   let summary = "Reussir Reference Counted Type";
   let description = [{
     `reussir.rc` represents a reference counted object. It is used to manage the
@@ -323,9 +322,9 @@ def ReussirNullableType
 // Reussir Cell Type
 //===----------------------------------------------------------------------===//
 def ReussirCellType
-    : ReussirType<
-          "Cell", "cell",
-          [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>, MutableType]> {
+    : ReussirType<"Cell", "cell",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+                   MutableType]> {
   let summary = "Reussir mutable cell payload type";
   let description = [{
     `reussir.cell` is the one-element mutable payload of a shared reference
@@ -407,8 +406,7 @@ def ReussirHoleType
 //===----------------------------------------------------------------------===//
 // Reussir Constructor Context Type
 //===----------------------------------------------------------------------===//
-def ReussirCctxType
-    : ReussirType<"Cctx", "cctx"> {
+def ReussirCctxType : ReussirType<"Cctx", "cctx"> {
   let summary = "Reussir first-class constructor context";
   let description = [{
     `reussir.cctx` is a first-class constructor context (Koka-style `ctx`): a
@@ -502,8 +500,7 @@ def ReussirRcBoxType
 //===----------------------------------------------------------------------===//
 // Reussir Closure Type
 //===----------------------------------------------------------------------===//
-def ReussirClosureType
-    : ReussirType<"Closure", "closure"> {
+def ReussirClosureType : ReussirType<"Closure", "closure"> {
   let summary = "Reussir Closure Type";
   let description = [{
     `reussir.closure` represents a closure. 
@@ -511,10 +508,8 @@ def ReussirClosureType
     RcBox wrapping a ClosureBox. The ClosureBox contains the payload values
     captured by the closure.
   }];
-  let parameters = (ins
-    ArrayRefParameter<"::mlir::Type">:$inputTypes,
-    OptionalParameter<"::mlir::Type">:$outputType
-  );
+  let parameters = (ins ArrayRefParameter<"::mlir::Type">:$inputTypes,
+      OptionalParameter<"::mlir::Type">:$outputType);
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     static constexpr size_t VTABLE_DROP_INDEX = 0;
@@ -524,7 +519,8 @@ def ReussirClosureType
 }
 
 def ReussirClosureBoxType
-    : ReussirType<"ClosureBox", "closure_box", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+    : ReussirType<"ClosureBox", "closure_box",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Closure Box Type";
   let description = [{
     `reussir.closure` represents a closure. It roughly corresponds to the 
@@ -537,9 +533,7 @@ def ReussirClosureBoxType
     }
     ```
   }];
-  let parameters = (ins
-    ArrayRefParameter<"::mlir::Type">:$payloadTypes
-  );
+  let parameters = (ins ArrayRefParameter<"::mlir::Type">:$payloadTypes);
   let assemblyFormat = "`<` $payloadTypes `>`";
   let extraClassDeclaration = [{
     static constexpr size_t VTABLE_INDEX = 0;
@@ -548,10 +542,9 @@ def ReussirClosureBoxType
 }
 
 def ReussirArrayType
-    : ReussirType<
-          "Array", "array",
-          [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-           ShapedTypeInterface]> {
+    : ReussirType<"Array", "array",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
+                   ShapedTypeInterface]> {
   let summary = "Reussir fixed-size inline array type";
   let description = [{
     `reussir.array` represents a statically shaped inline array payload.
@@ -573,8 +566,8 @@ def ReussirArrayType
 
 def ReussirViewType
     : ReussirType<
-          "View", "view",
-          [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
+          "View",
+          "view", [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir array view type";
   let description = [{
     `reussir.view` represents a temporary region-scoped view of an array payload.
@@ -590,31 +583,25 @@ def ReussirViewType
   }];
 }
 
-def ReussirFFIObjectType
-    : ReussirType<"FFIObject", "ffi_object", []> {
+def ReussirFFIObjectType : ReussirType<"FFIObject", "ffi_object", []> {
   let summary = "Reussir FFIObject Object Type";
   let description = [{
     `reussir.ffi_object` is a special opaque type that is always
     behind a RC pointer. Its dec operation, however, is handled by an FFI call.
   }];
-  let parameters = (ins
-    "::mlir::StringAttr":$ffiName,
-    "::mlir::FlatSymbolRefAttr":$cleanupHook
-  );
+  let parameters = (ins "::mlir::StringAttr":$ffiName,
+      "::mlir::FlatSymbolRefAttr":$cleanupHook);
   let assemblyFormat = "`<` $ffiName `,` $cleanupHook `>`";
 }
 
-def ReussirStrType
-  : ReussirType<"Str", "str", []> {
+def ReussirStrType : ReussirType<"Str", "str", []> {
   let summary = "Reussir String Reference Type";
   let description = [{
     `reussir.str` is for str reference. Unlike rust, it only has two variants:
     - *global*: can be materialized
     - *local*: should not be materialized
   }];
-  let parameters = (ins
-    "::reussir::LifeScope":$lifeScope
-  );
+  let parameters = (ins "::reussir::LifeScope":$lifeScope);
   let assemblyFormat = "`<` $lifeScope `>`";
 }
 
@@ -627,13 +614,16 @@ def RcClosureType : Type<CPred<[{
   ::llvm::isa<::reussir::ClosureType>(
     ::llvm::cast<::reussir::RcType>($_self).getElementType()) &&
   !::llvm::cast<::reussir::RcType>($_self).isRegional()
-  }]>, "Reussir rc closure type", "::reussir::RcType">;
+  }]>,
+                         "Reussir rc closure type", "::reussir::RcType">;
 
-def ReussirNullableTokenType : Type<CPred<[{
+def ReussirNullableTokenType
+    : Type<CPred<[{
   ::llvm::isa<::reussir::NullableType>($_self) && 
   ::llvm::isa<::reussir::TokenType>(
     ::llvm::cast<::reussir::NullableType>($_self).getPtrTy())
-  }]>, "Reussir nullable token type", "::reussir::NullableType">;
+  }]>,
+           "Reussir nullable token type", "::reussir::NullableType">;
 
 def ReussirCompoundType
     : Type<CPred<[{
@@ -644,40 +634,43 @@ def ReussirVariantType : Type<CPred<[{
   ::llvm::cast<::reussir::RecordType>($_self).isVariant()}]>,
                               "Reussir variant type", "::reussir::RecordType">;
 
-def ReussirRcClosureType
-    : Type<CPred<[{
+def ReussirRcClosureType : Type<CPred<[{
     ::llvm::isa<::reussir::ClosureType>(
       ::llvm::cast<::reussir::RcType>($_self).getElementType())
-    }]>, "Reussir rc closure type", "::reussir::RcType">;
+    }]>,
+                                "Reussir rc closure type", "::reussir::RcType">;
 
 def ReussirClosureBoxRefType
     : Type<CPred<[{
     ::llvm::isa<::reussir::ClosureBoxType>(
       ::llvm::cast<::reussir::RefType>($_self).getElementType())
-    }]>, "Reussir closure box reference type", "::reussir::RefType">;
+    }]>,
+           "Reussir closure box reference type", "::reussir::RefType">;
 
 def ReussirArrayPayloadType
     : Type<CPred<[{
     ::llvm::isa<::reussir::ArrayType>($_self)
-    }]>, "Reussir array payload type", "::reussir::ArrayType">;
+    }]>,
+           "Reussir array payload type", "::reussir::ArrayType">;
 
 def ReussirArrayViewType
     : Type<CPred<[{
     ::llvm::isa<::reussir::ViewType>($_self)
-    }]>, "Reussir array view type", "::reussir::ViewType">;
+    }]>,
+           "Reussir array view type", "::reussir::ViewType">;
 
-def ReussirRcArrayType
-    : Type<CPred<[{
+def ReussirRcArrayType : Type<CPred<[{
     ::llvm::isa<::reussir::RcType>($_self) &&
     ::llvm::isa<::reussir::ArrayType>(
       ::llvm::cast<::reussir::RcType>($_self).getElementType())
-    }]>, "Reussir rc array type", "::reussir::RcType">;
+    }]>,
+                              "Reussir rc array type", "::reussir::RcType">;
 
-def ReussirRcCellType
-    : Type<CPred<[{
+def ReussirRcCellType : Type<CPred<[{
     ::llvm::isa<::reussir::RcType>($_self) &&
     ::llvm::isa<::reussir::CellType>(
       ::llvm::cast<::reussir::RcType>($_self).getElementType())
-    }]>, "Reussir rc cell type", "::reussir::RcType">;
+    }]>,
+                             "Reussir rc cell type", "::reussir::RcType">;
 
 #endif // REUSSIR_IR_REUSSIRTYPES_TD

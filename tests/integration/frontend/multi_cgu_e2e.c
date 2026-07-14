@@ -16,8 +16,8 @@ extern int64_t run_mixed_ffi(void);
   } while (0)
 
 int main() {
-  ASSERT_EQ("cube", run_cube_ffi(), 729);            // cube(9) = 9^3
+  ASSERT_EQ("cube", run_cube_ffi(), 729);               // cube(9) = 9^3
   ASSERT_EQ("sum_squares", run_sum_squares_ffi(), 385); // 1^2 + ... + 10^2
-  ASSERT_EQ("mixed", run_mixed_ffi(), 110);          // 64 + 16 + (1+4+9+16)
+  ASSERT_EQ("mixed", run_mixed_ffi(), 110);             // 64 + 16 + (1+4+9+16)
   return 0;
 }

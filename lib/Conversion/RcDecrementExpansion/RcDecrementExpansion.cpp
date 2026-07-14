@@ -70,19 +70,19 @@ struct RcDecrementExpansionPattern
     // never target atomic boxes (rejected by the `rc.dec` verifier).
     const bool atomic = type.getAtomicKind() == AtomicKind::atomic;
     mlir::Value prevRcCount =
-        atomic ? ReussirRcFetchSubOp::create(rewriter, op.getLoc(),
-                                             op.getRcPtr())
-                     .getRefCount()
-               : ReussirRcFetchOp::create(rewriter, op.getLoc(), op.getRcPtr())
-                     .getRefCount();
-    auto isOne = mlir::arith::CmpIOp::create(rewriter,
-        op.getLoc(), mlir::arith::CmpIPredicate::eq, prevRcCount,
+        atomic
+            ? ReussirRcFetchSubOp::create(rewriter, op.getLoc(), op.getRcPtr())
+                  .getRefCount()
+            : ReussirRcFetchOp::create(rewriter, op.getLoc(), op.getRcPtr())
+                  .getRefCount();
+    auto isOne = mlir::arith::CmpIOp::create(
+        rewriter, op.getLoc(), mlir::arith::CmpIPredicate::eq, prevRcCount,
         mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
     auto likelyUnique =
         ReussirExpectOp::create(rewriter, op.getLoc(), isOne.getResult(), true);
     auto ifOp =
         mlir::scf::IfOp::create(rewriter, op.getLoc(), op->getResultTypes(),
-                                         likelyUnique.getLikely(), true, true);
+                                likelyUnique.getLikely(), true, true);
     RefType borrowedRefType = rewriter.getType<RefType>(
         type.getElementType(), Capability::unspecified, type.getAtomicKind());
     TokenType tokenType = llvm::cast<TokenType>(
@@ -117,30 +117,30 @@ struct RcDecrementExpansionPattern
           // immediately and hide it from that optimization.
           auto projectedRefTy = rewriter.getType<RefType>(
               projectedTy, Capability::unspecified, type.getAtomicKind());
-          mlir::Value slot = ReussirRefProjectOp::create(
-              rewriter, op.getLoc(), projectedRefTy, coerced,
-              rewriter.getIndexAttr(idx));
+          mlir::Value slot =
+              ReussirRefProjectOp::create(rewriter, op.getLoc(), projectedRefTy,
+                                          coerced, rewriter.getIndexAttr(idx));
           ReussirRefDropOp::create(rewriter, op.getLoc(), slot);
         }
       } else {
-        mlir::Value ref = ReussirRcBorrowOp::create(rewriter, 
-            op.getLoc(), borrowedRefType, op.getRcPtr());
+        mlir::Value ref = ReussirRcBorrowOp::create(
+            rewriter, op.getLoc(), borrowedRefType, op.getRcPtr());
         ReussirRefDropOp::create(rewriter, op.getLoc(), ref);
       }
-      mlir::Value token = ReussirRcReinterpretOp::create(rewriter, 
-          op.getLoc(), tokenType, op.getRcPtr());
-      mlir::Value nonnull = ReussirNullableCreateOp::create(rewriter, 
-          op.getLoc(), op.getNullableToken().getType(), token);
+      mlir::Value token = ReussirRcReinterpretOp::create(
+          rewriter, op.getLoc(), tokenType, op.getRcPtr());
+      mlir::Value nonnull = ReussirNullableCreateOp::create(
+          rewriter, op.getLoc(), op.getNullableToken().getType(), token);
       mlir::scf::YieldOp::create(rewriter, op.getLoc(), nonnull);
     }
     {
       rewriter.setInsertionPointToStart(ifOp.elseBlock());
       if (!atomic) {
-        auto decremented = mlir::arith::SubIOp::create(rewriter,
-            op.getLoc(), prevRcCount,
+        auto decremented = mlir::arith::SubIOp::create(
+            rewriter, op.getLoc(), prevRcCount,
             mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
         ReussirRcSetOp::create(rewriter, op.getLoc(), op.getRcPtr(),
-                                        decremented.getResult());
+                               decremented.getResult());
       }
       if (op.isDestructuring()) {
         // The shared path keeps the box alive, so the consumer's bound
@@ -148,8 +148,8 @@ struct RcDecrementExpansionPattern
         // erased.
         op.rematerializeBoundRetains(rewriter);
       }
-      auto null = ReussirNullableCreateOp::create(rewriter, 
-          op.getLoc(), op.getNullableToken().getType(), nullptr);
+      auto null = ReussirNullableCreateOp::create(
+          rewriter, op.getLoc(), op.getNullableToken().getType(), nullptr);
       mlir::scf::YieldOp::create(rewriter, op.getLoc(), null->getResults());
     }
     ifOp->setAttr(kExpandedDecrementAttr, rewriter.getUnitAttr());

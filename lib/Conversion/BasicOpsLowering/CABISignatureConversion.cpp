@@ -1,4 +1,5 @@
-//===-- CABISignatureConversion.cpp - C ABI signature conversion -*- C++ -*-===//
+//===-- CABISignatureConversion.cpp - C ABI signature conversion -*- C++
+//-*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -26,11 +27,12 @@ CABISignature evaluateCABISignatureForC(mlir::Type returnType,
   sig.abiReturnType = returnType;
   sig.returnStorageType = returnType;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(returnType.getContext());
-  const bool trivialReturn =
-      mlir::isa<mlir::LLVM::LLVMVoidType>(returnType) || isTrivialFFIType(returnType);
+  const bool trivialReturn = mlir::isa<mlir::LLVM::LLVMVoidType>(returnType) ||
+                             isTrivialFFIType(returnType);
   const bool trivialParams =
       paramTypes.size() < 4 &&
-      llvm::all_of(paramTypes, [](mlir::Type type) { return isTrivialFFIType(type); });
+      llvm::all_of(
+          paramTypes, [](mlir::Type type) { return isTrivialFFIType(type); });
 
   sig.isTrivial = trivialReturn && trivialParams;
   if (sig.isTrivial) {
@@ -38,7 +40,8 @@ CABISignature evaluateCABISignatureForC(mlir::Type returnType,
     return sig;
   }
 
-  if (!mlir::isa<mlir::LLVM::LLVMVoidType>(returnType) && !isTrivialFFIType(returnType)) {
+  if (!mlir::isa<mlir::LLVM::LLVMVoidType>(returnType) &&
+      !isTrivialFFIType(returnType)) {
     sig.hasReturnPtr = true;
     sig.returnPtrIndex = 0;
     sig.abiReturnType = mlir::LLVM::LLVMVoidType::get(returnType.getContext());
@@ -48,8 +51,8 @@ CABISignature evaluateCABISignatureForC(mlir::Type returnType,
   if (!paramTypes.empty()) {
     sig.hasPackedArgs = true;
     sig.packedArgsIndex = sig.abiParamTypes.size();
-    sig.packedArgsType =
-        mlir::LLVM::LLVMStructType::getLiteral(returnType.getContext(), paramTypes);
+    sig.packedArgsType = mlir::LLVM::LLVMStructType::getLiteral(
+        returnType.getContext(), paramTypes);
     sig.abiParamTypes.push_back(ptrType);
   }
 

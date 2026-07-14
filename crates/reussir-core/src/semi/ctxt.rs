@@ -1093,10 +1093,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (name, tys) = &v.value;
                         Variant {
                             name: *name,
-                            fields: tys
-                                .iter()
-                                .map(|t| self.eval_type(t))
-                                .collect(),
+                            fields: tys.iter().map(|t| self.eval_type(t)).collect(),
                         }
                     })
                     .collect(),

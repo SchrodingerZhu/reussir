@@ -63,7 +63,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use reussir_backend::builders;
 use reussir_backend::melior::Context;
-use reussir_backend::melior::ir::attribute::{Attribute, ArrayAttribute, StringAttribute};
+use reussir_backend::melior::ir::attribute::{ArrayAttribute, Attribute, StringAttribute};
 use reussir_backend::melior::ir::operation::{OperationLike, OperationMutLike};
 use reussir_backend::melior::ir::{BlockLike, Location, Module};
 use reussir_backend::pipeline::{INLINE_TRANSFORM_ATTR, INLINE_TRANSFORM_ENTRY_POINT};
@@ -152,11 +152,7 @@ impl From<Cow<'static, str>> for LoweringErrorKind {
 }
 
 impl LoweringError {
-    fn at_source(
-        message: impl Into<Cow<'static, str>>,
-        file: FileId,
-        span: Option<Span>,
-    ) -> Self {
+    fn at_source(message: impl Into<Cow<'static, str>>, file: FileId, span: Option<Span>) -> Self {
         Self(LoweringErrorKind::Source {
             message: message.into(),
             file,
@@ -364,10 +360,9 @@ pub fn lower_unit<'c, 'tcx>(
             .iter()
             .map(|a| StringAttribute::new(context, a).into())
             .collect();
-        module.as_operation_mut().set_attribute(
-            SANITIZE_ATTR,
-            ArrayAttribute::new(context, &strings).into(),
-        );
+        module
+            .as_operation_mut()
+            .set_attribute(SANITIZE_ATTR, ArrayAttribute::new(context, &strings).into());
     }
     let body = module.body();
     for (token, payload) in &program.string_literals {
@@ -638,8 +633,8 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
-            let module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+            let module = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                .expect("lowering succeeds");
             assert!(
                 module.as_operation().verify(),
                 "module verifies:\n{}",
@@ -701,9 +696,7 @@ transform [{
                 error.message().contains("transform.not_a_real_op"),
                 "{error}"
             );
-            let (file, span) = error
-                .source_location()
-                .expect("source-owned diagnostic");
+            let (file, span) = error.source_location().expect("source-owned diagnostic");
             assert_eq!(file, crate::source::FileId::ROOT);
             let span = span.expect("exact malformed-operation span");
             let expected = u32::try_from(source.find("transform.not_a_real_op").unwrap()).unwrap();
@@ -730,8 +723,16 @@ transform [{
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut map = crate::source::SourceCache::new();
             map.add_file("add.rr", src);
-            let module =
-                lower_program(&context, tcx, &full, Some(&map), None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+            let module = lower_program(
+                &context,
+                tcx,
+                &full,
+                Some(&map),
+                None,
+                LinkagePolicy::Jit,
+                &[],
+            )
+            .expect("lowering succeeds");
             let printed = module
                 .as_operation()
                 .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
@@ -768,8 +769,16 @@ transform [{
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut map = crate::source::SourceCache::new();
             map.add_file("pt.rr", src);
-            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()), LinkagePolicy::Jit, &[])
-                .expect("lowering succeeds");
+            let module = lower_program(
+                &context,
+                tcx,
+                &full,
+                Some(&map),
+                Some(parse.resolver()),
+                LinkagePolicy::Jit,
+                &[],
+            )
+            .expect("lowering succeeds");
             let printed = module
                 .as_operation()
                 .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
@@ -816,8 +825,16 @@ transform [{
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut map = crate::source::SourceCache::new();
             map.add_file("variant.rr", src);
-            let module = lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()), LinkagePolicy::Jit, &[])
-                .expect("lowering succeeds");
+            let module = lower_program(
+                &context,
+                tcx,
+                &full,
+                Some(&map),
+                Some(parse.resolver()),
+                LinkagePolicy::Jit,
+                &[],
+            )
+            .expect("lowering succeeds");
             let printed = module
                 .as_operation()
                 .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
@@ -1126,7 +1143,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -1235,7 +1253,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The null field and the self-link both build nullable rc values.
             assert!(printed.contains("reussir.nullable.create"), "{printed}");
@@ -1264,7 +1283,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -1326,7 +1346,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The frozen `rigid` box is dropped with a direct reference-count
             // decrement, not spilled and dropped as an inline record.
@@ -1370,7 +1391,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             let printed = module.as_operation().to_string();
             // The reused frozen box is retained with a direct reference-count
             // increment, and dropped (by the callees / at last use) with a
@@ -1447,7 +1469,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,
@@ -1510,7 +1533,8 @@ transform [{
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
             let mut module =
-                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("lowering succeeds");
+                lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                    .expect("lowering succeeds");
             reussir_backend::pipeline::run_lowering_pipeline(
                 &context,
                 &mut module,

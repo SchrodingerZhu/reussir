@@ -86,35 +86,37 @@ private:
 
   mlir::LogicalResult rewriteDropArray(ArrayType arrayType, ReussirRefDropOp op,
                                        mlir::PatternRewriter &rewriter) const {
-    mlir::Value view =
-        ReussirArrayViewOp::create(rewriter, 
-                op.getLoc(),
-                mlir::MemRefType::get(arrayType.getShape(), arrayType.getElementType()),
-                op.getRef())
-            .getView();
-    auto recurse =
-        [&](auto &&self, mlir::Value currentView,
-            ArrayType currentType) -> mlir::LogicalResult {
-      for (int64_t index : llvm::seq<int64_t>(0, currentType.getShape().front())) {
-        auto idx = mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), index);
+    mlir::Value view = ReussirArrayViewOp::create(
+                           rewriter, op.getLoc(),
+                           mlir::MemRefType::get(arrayType.getShape(),
+                                                 arrayType.getElementType()),
+                           op.getRef())
+                           .getView();
+    auto recurse = [&](auto &&self, mlir::Value currentView,
+                       ArrayType currentType) -> mlir::LogicalResult {
+      for (int64_t index :
+           llvm::seq<int64_t>(0, currentType.getShape().front())) {
+        auto idx =
+            mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), index);
         if (currentType.getRank() == 1) {
           RefType projectedRefType = rewriter.getType<RefType>(
               currentType.getElementType(), Capability::unspecified);
-          auto projected = ReussirArrayProjectOp::create(rewriter, 
-              op.getLoc(), projectedRefType, currentView, idx.getResult());
+          auto projected = ReussirArrayProjectOp::create(
+              rewriter, op.getLoc(), projectedRefType, currentView,
+              idx.getResult());
           if (!isTriviallyCopyable(currentType.getElementType()))
             ReussirRefDropOp::create(rewriter, op.getLoc(),
-                                              projected.getProjected());
+                                     projected.getProjected());
           continue;
         }
         auto droppedType = currentType.dropFront();
-        auto projected = ReussirArrayProjectOp::create(rewriter, 
-            op.getLoc(),
+        auto projected = ReussirArrayProjectOp::create(
+            rewriter, op.getLoc(),
             mlir::MemRefType::get(droppedType.getShape(),
                                   droppedType.getElementType()),
             currentView, idx.getResult());
-        if (mlir::failed(self(self, projected.getProjected(),
-                              currentType.dropFront())))
+        if (mlir::failed(
+                self(self, projected.getProjected(), currentType.dropFront())))
           return mlir::failure();
       }
       return mlir::success();
@@ -141,10 +143,10 @@ private:
     }
     mlir::Value loaded =
         ReussirRefLoadOp::create(rewriter, op.getLoc(), rcType, op.getRef());
-    auto dec = ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType,
-                                      loaded,
-                                      /*destructureTag=*/mlir::IntegerAttr{},
-                                      /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+    auto dec =
+        ReussirRcDecOp::create(rewriter, op.getLoc(), nullableType, loaded,
+                               /*destructureTag=*/mlir::IntegerAttr{},
+                               /*boundMembers=*/mlir::DenseI64ArrayAttr{});
     // This leaf member-decrement is created *after* token instantiation, so
     // the max-arm token computed above never saw `getTokenType()` — the
     // single source of truth for the box's per-constructor layout.
@@ -176,8 +178,8 @@ private:
       RefType projectedRefTy =
           RefType::get(op.getContext(), projectedTy, refCap);
       mlir::IntegerAttr index = rewriter.getIndexAttr(idx);
-      mlir::Value projectedVal = ReussirRefProjectOp::create(rewriter, 
-          op.getLoc(), projectedRefTy, op.getRef(), index);
+      mlir::Value projectedVal = ReussirRefProjectOp::create(
+          rewriter, op.getLoc(), projectedRefTy, op.getRef(), index);
       ReussirRefDropOp::create(rewriter, op.getLoc(), projectedVal);
     }
     rewriter.eraseOp(op);
@@ -193,8 +195,9 @@ private:
     for (auto idx : llvm::seq<int64_t>(0, recordType.getMembers().size()))
       tagSets.push_back(rewriter.getDenseI64ArrayAttr({idx}));
     auto tagSetsAttr = rewriter.getArrayAttr(tagSets);
-    auto dispatcher = ReussirRecordDispatchOp::create(rewriter, 
-        op.getLoc(), mlir::Type{}, op.getRef(), tagSetsAttr, tagSets.size());
+    auto dispatcher = ReussirRecordDispatchOp::create(
+        rewriter, op.getLoc(), mlir::Type{}, op.getRef(), tagSetsAttr,
+        tagSets.size());
     for (auto [idx, memberTy, memberIsField] : llvm::enumerate(
              recordType.getMembers(), recordType.getMemberIsField())) {
       auto projectedTy = getProjectedType(memberTy, memberIsField, refCap);
@@ -206,7 +209,7 @@ private:
       rewriter.setInsertionPointToStart(block);
       if (!memberIsField && !isTriviallyCopyable(projectedTy))
         ReussirRefDropOp::create(rewriter, op.getLoc(), block->getArgument(0),
-                                          true, nullptr);
+                                 true, nullptr);
 
       ReussirScfYieldOp::create(rewriter, op.getLoc(), nullptr);
     }
@@ -221,8 +224,9 @@ private:
     assert(recordType.isVariant());
     auto targetType = recordType.getMembers()[tag];
     auto targetRefType = rewriter.getType<RefType>(targetType, refCap);
-    auto targetRef = ReussirRecordCoerceOp::create(rewriter, 
-        op.getLoc(), targetRefType, rewriter.getIndexAttr(tag), op.getRef());
+    auto targetRef =
+        ReussirRecordCoerceOp::create(rewriter, op.getLoc(), targetRefType,
+                                      rewriter.getIndexAttr(tag), op.getRef());
     ReussirRefDropOp::create(rewriter, op.getLoc(), targetRef);
     rewriter.eraseOp(op);
     return mlir::success();
@@ -232,10 +236,10 @@ private:
   rewriteDropNullable(NullableType nullableType, ReussirRefDropOp op,
                       mlir::PatternRewriter &rewriter) const {
     if (auto rcType = llvm::dyn_cast<RcType>(nullableType.getPtrTy())) {
-      mlir::Value loaded = ReussirRefLoadOp::create(rewriter, 
-          op.getLoc(), nullableType, op.getRef());
-      auto dispatcher = ReussirNullableDispatchOp::create(rewriter, 
-          op.getLoc(), mlir::Type{}, loaded);
+      mlir::Value loaded = ReussirRefLoadOp::create(rewriter, op.getLoc(),
+                                                    nullableType, op.getRef());
+      auto dispatcher = ReussirNullableDispatchOp::create(rewriter, op.getLoc(),
+                                                          mlir::Type{}, loaded);
       // do nothing if null
       mlir::Block *nullBlock = rewriter.createBlock(
           &dispatcher.getNullRegion(), dispatcher.getNullRegion().begin());
@@ -256,10 +260,10 @@ private:
         TokenType tokenType = TokenType::get(op.getContext(), align, size);
         retNullableTy = NullableType::get(op.getContext(), tokenType);
       }
-      auto dec = ReussirRcDecOp::create(rewriter, op.getLoc(), retNullableTy,
-                                        nonNullBlock->getArgument(0),
-                                        /*destructureTag=*/mlir::IntegerAttr{},
-                                        /*boundMembers=*/mlir::DenseI64ArrayAttr{});
+      auto dec = ReussirRcDecOp::create(
+          rewriter, op.getLoc(), retNullableTy, nonNullBlock->getArgument(0),
+          /*destructureTag=*/mlir::IntegerAttr{},
+          /*boundMembers=*/mlir::DenseI64ArrayAttr{});
       // Route through `getTokenType()` (the per-constructor source of
       // truth); the max-arm token above would free non-uniform arms at the
       // wrong size. Result has no users yet — retyping in place is safe.
@@ -324,7 +328,8 @@ public:
             mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
             mlir::func::FuncOp dtor =
                 createDtorIfNotExists(moduleOp, recordType, rewriter);
-            mlir::func::CallOp::create(rewriter, op.getLoc(), dtor, op.getRef());
+            mlir::func::CallOp::create(rewriter, op.getLoc(), dtor,
+                                       op.getRef());
             rewriter.eraseOp(op);
             return llvm::success();
           }
@@ -388,7 +393,7 @@ public:
             emitOwnershipAcquisitionFuncIfNotExists(moduleOp, recordType,
                                                     rewriter);
         mlir::func::CallOp::create(rewriter, op.getLoc(), acquireFunc,
-                                            op.getRef());
+                                   op.getRef());
         rewriter.eraseOp(op);
         return mlir::success();
       }
@@ -399,8 +404,8 @@ public:
         auto targetType = recordType.getMembers()[tag];
         auto targetRefType =
             rewriter.getType<RefType>(targetType, refType.getCapability());
-        auto targetRef = ReussirRecordCoerceOp::create(rewriter, 
-            op.getLoc(), targetRefType, rewriter.getIndexAttr(tag),
+        auto targetRef = ReussirRecordCoerceOp::create(
+            rewriter, op.getLoc(), targetRefType, rewriter.getIndexAttr(tag),
             op.getRef());
         ReussirRefAcquireOp::create(rewriter, op.getLoc(), targetRef);
         rewriter.eraseOp(op);

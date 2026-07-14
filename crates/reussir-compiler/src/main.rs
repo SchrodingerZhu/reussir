@@ -1050,7 +1050,14 @@ fn finish_mir<'c, 'tcx>(
             };
             let module = lower_or_render(
                 lower_unit(
-                    context, tcx, program, sources, names, unit, linkage, &sanitizers,
+                    context,
+                    tcx,
+                    program,
+                    sources,
+                    names,
+                    unit,
+                    linkage,
+                    &sanitizers,
                 ),
                 sources,
                 name,

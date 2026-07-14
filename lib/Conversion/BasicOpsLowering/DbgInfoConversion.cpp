@@ -153,9 +153,9 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
             // A record reached recursively reappears with the same name (the
             // frontend's forward-declared placeholder). If this name is already
             // being built, emit a `rec-self` placeholder tied to that
-            // occurrence's `recId` instead of expanding again — LLVM resolves it
-            // back to the enclosing composite, giving the recursive field a real
-            // pointee type the debugger can descend.
+            // occurrence's `recId` instead of expanding again — LLVM resolves
+            // it back to the enclosing composite, giving the recursive field a
+            // real pointee type the debugger can descend.
             RecursionState localState;
             RecursionState *state = recState ? recState : &localState;
             if (auto it = state->ancestors.find(name);
@@ -164,8 +164,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               return mlir::Attribute(
                   mlir::LLVM::DICompositeTypeAttr::getRecSelf(it->second));
             }
-            auto recId =
-                mlir::DistinctAttr::create(mlir::UnitAttr::get(ctx));
+            auto recId = mlir::DistinctAttr::create(mlir::UnitAttr::get(ctx));
             state->ancestors.insert({name, recId});
 
             auto makeComposite =
@@ -181,15 +180,15 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   /*associated=*/nullptr, members);
             };
 
-            // The debug type, size, and alignment (bits) for one member. A boxed
-            // (rc) member is a *pointer* to the payload composite — not the
-            // composite inlined: the `DW_OP_deref` expression that presents a
-            // boxed *variable* as its payload applies only to that variable's
-            // slot, never to a field. Emitting it as a pointer is also what keeps
-            // a recursive record (a field whose box points back to the record)
-            // from sending the debugger into an unbounded layout recursion.
-            auto memberType =
-                [&](mlir::Attribute typeAttr)
+            // The debug type, size, and alignment (bits) for one member. A
+            // boxed (rc) member is a *pointer* to the payload composite — not
+            // the composite inlined: the `DW_OP_deref` expression that presents
+            // a boxed *variable* as its payload applies only to that variable's
+            // slot, never to a field. Emitting it as a pointer is also what
+            // keeps a recursive record (a field whose box points back to the
+            // record) from sending the debugger into an unbounded layout
+            // recursion.
+            auto memberType = [&](mlir::Attribute typeAttr)
                 -> std::optional<
                     std::tuple<mlir::LLVM::DITypeAttr, uint64_t, uint64_t>> {
               auto diType = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
@@ -209,16 +208,15 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 // at the view offset: past the refcount word (one shared,
                 // three regional), or at the tag (record + 4) for a
                 // fused-header variant whose composite is the tag-first view.
-                auto payloadUnderlying =
-                    getUnderlyingTypeFromDbgAttr(typeAttr);
+                auto payloadUnderlying = getUnderlyingTypeFromDbgAttr(typeAttr);
                 if (!payloadUnderlying)
                   return std::nullopt;
                 uint64_t payloadBits =
                     dataLayout.getTypeSizeInBits(payloadUnderlying);
                 uint64_t payloadAlignBytes =
                     dataLayout.getTypeABIAlignment(payloadUnderlying);
-                uint64_t valueOffBytes = boxedViewOffset(
-                    dataLayout, ctx, boxed, payloadUnderlying);
+                uint64_t valueOffBytes =
+                    boxedViewOffset(dataLayout, ctx, boxed, payloadUnderlying);
                 uint64_t valueBits =
                     boxedFusedVariant(boxed) ? payloadBits - 32 : payloadBits;
                 auto valueMember = mlir::LLVM::DIDerivedTypeAttr::get(
@@ -230,21 +228,23 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 // match engages on the wrapper (and its pointers) and can
                 // collapse the box to its payload's active case.
                 mlir::StringAttr boxName = mlir::StringAttr::get(ctx, "");
-                if (auto payloadRec = llvm::dyn_cast_if_present<
-                        DBGRecordTypeAttr>(boxed.getDbgType()))
+                if (auto payloadRec =
+                        llvm::dyn_cast_if_present<DBGRecordTypeAttr>(
+                            boxed.getDbgType()))
                   boxName = mlir::StringAttr::get(
                       ctx, payloadRec.getDbgName().getValue() + "$box");
-                auto pointee = makeComposite(
-                    llvm::dwarf::DW_TAG_structure_type, boxName,
-                    valueOffBytes * 8 + valueBits, payloadAlignBytes * 8,
-                    {valueMember});
+                auto pointee =
+                    makeComposite(llvm::dwarf::DW_TAG_structure_type, boxName,
+                                  valueOffBytes * 8 + valueBits,
+                                  payloadAlignBytes * 8, {valueMember});
                 auto pointer = mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_pointer_type,
                     /*name=*/mlir::StringAttr{}, pointee, ptrBits, ptrAlignBits,
                     /*offsetInBits=*/0, /*address space=*/std::nullopt,
                     /*extraData=*/nullptr);
-                return std::make_tuple(mlir::cast<mlir::LLVM::DITypeAttr>(pointer),
-                                       ptrBits, ptrAlignBits);
+                return std::make_tuple(
+                    mlir::cast<mlir::LLVM::DITypeAttr>(pointer), ptrBits,
+                    ptrAlignBits);
               }
               auto underlying = getUnderlyingTypeFromDbgAttr(typeAttr);
               if (!underlying)
@@ -354,9 +354,8 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                     auto [fieldTy, fieldBits, fieldAlignBits] = *fieldInfo;
                     payloadAlignBytes =
                         std::max(payloadAlignBytes, fieldAlignBits / 8);
-                    info.fields.push_back(
-                        {fieldAttr.getName(), fieldTy, fieldBits,
-                         fieldAlignBits});
+                    info.fields.push_back({fieldAttr.getName(), fieldTy,
+                                           fieldBits, fieldAlignBits});
                   }
                 } else {
                   // Not a record payload: model it as the case's single field.
@@ -378,9 +377,9 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               // variant `{minimal-width tag, payload}` (tag at 0, payload at
               // its natural alignment past the tag). Every offset below is
               // view-relative.
-              mlir::Type tagIntTy =
-                  recordTy ? mlir::Type(recordTy.getTagType())
-                           : mlir::Type(mlir::IndexType::get(ctx));
+              mlir::Type tagIntTy = recordTy
+                                        ? mlir::Type(recordTy.getTagType())
+                                        : mlir::Type(mlir::IndexType::get(ctx));
               uint64_t tagSizeBits = dataLayout.getTypeSizeInBits(tagIntTy);
               uint64_t tagSizeBytes = dataLayout.getTypeSize(tagIntTy);
               bool fusedHeader = recordTy && recordTy.hasFusedHeader();
@@ -410,34 +409,35 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   fieldSizes.push_back(field.sizeBits);
                   fieldAligns.push_back(field.alignBits);
                 }
-                auto offsets = physicalOffsets(info.record, fieldSizes,
-                                               fieldAligns,
-                                               payloadOffsetBytes * 8);
+                auto offsets =
+                    physicalOffsets(info.record, fieldSizes, fieldAligns,
+                                    payloadOffsetBytes * 8);
                 llvm::SmallVector<mlir::LLVM::DINodeAttr> fields;
                 for (auto [field, offset] : llvm::zip(info.fields, offsets))
                   fields.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
                       ctx, llvm::dwarf::DW_TAG_member, field.name, field.type,
                       field.sizeBits, field.alignBits, offset,
                       /*address space=*/std::nullopt, /*extraData=*/nullptr));
-                auto caseComposite = makeComposite(
-                    llvm::dwarf::DW_TAG_structure_type, info.name,
-                    viewSizeBits, alignInBits, fields);
+                auto caseComposite =
+                    makeComposite(llvm::dwarf::DW_TAG_structure_type, info.name,
+                                  viewSizeBits, alignInBits, fields);
                 cases.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_member, info.name, caseComposite,
                     viewSizeBits, alignInBits, /*offsetInBits=*/0,
                     /*address space=*/std::nullopt, /*extraData=*/nullptr));
               }
-              auto payloadUnion = makeComposite(
-                  llvm::dwarf::DW_TAG_union_type, mlir::StringAttr::get(ctx, ""),
-                  viewSizeBits, payloadAlignBytes * 8, cases);
+              auto payloadUnion =
+                  makeComposite(llvm::dwarf::DW_TAG_union_type,
+                                mlir::StringAttr::get(ctx, ""), viewSizeBits,
+                                payloadAlignBytes * 8, cases);
               auto payloadMember = mlir::LLVM::DIDerivedTypeAttr::get(
                   ctx, llvm::dwarf::DW_TAG_member,
                   mlir::StringAttr::get(ctx, "payload"), payloadUnion,
                   viewSizeBits, payloadAlignBytes * 8,
                   /*offsetInBits=*/0, /*address space=*/std::nullopt,
                   /*extraData=*/nullptr);
-              llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {tagMember,
-                                                                   payloadMember};
+              llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {
+                  tagMember, payloadMember};
               auto composite =
                   makeComposite(llvm::dwarf::DW_TAG_structure_type, name,
                                 viewSizeBits, alignInBits, members);
@@ -502,40 +502,38 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                     moduleOp, boxed.getDbgType(), diFile, diCU, funcOp,
                     funcScope, loc, recState);
               })
-          .template Case<DBGSubprogramAttr>(
-              [&](DBGSubprogramAttr spAttr) -> mlir::Attribute {
-                auto linkageName = funcOp.getSymNameAttr();
-                llvm::SmallVector<mlir::LLVM::DINodeAttr> argTypes;
-                for (auto paramAttr : spAttr.getTypeParams()) {
-                  auto paramTy = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
-                      moduleOp, paramAttr, diFile, diCU, funcOp, funcScope,
-                      loc);
-                  if (!paramTy)
-                    return nullptr;
-                  argTypes.push_back(paramTy);
-                }
-                // TODO: function type is not emitted now
-                auto emptyRoutine = mlir::LLVM::DISubroutineTypeAttr::get(
-                    moduleOp.getContext(), {});
-                // Extract the line from the function's location. The fifth and
-                // sixth arguments are `line` and `scopeLine` (both lines) — not
-                // line/column.
-                auto [line, col] = extractLineCol(loc);
-                (void)col;
-                auto res = mlir::LLVM::DISubprogramAttr::get(
-                    moduleOp.getContext(),
-                    mlir::DistinctAttr::create(
-                        mlir::UnitAttr::get(moduleOp.getContext())),
-                    false,
-                    mlir::DistinctAttr::create(
-                        mlir::UnitAttr::get(moduleOp.getContext())),
-                    diCU, diFile, spAttr.getRawName(), linkageName, diFile,
-                    line, /*scopeLine=*/line,
-                    mlir::LLVM::DISubprogramFlags::Definition, emptyRoutine, {},
-                    {});
+          .template Case<DBGSubprogramAttr>([&](DBGSubprogramAttr spAttr)
+                                                -> mlir::Attribute {
+            auto linkageName = funcOp.getSymNameAttr();
+            llvm::SmallVector<mlir::LLVM::DINodeAttr> argTypes;
+            for (auto paramAttr : spAttr.getTypeParams()) {
+              auto paramTy = translateDBGAttrToLLVM<mlir::LLVM::DITypeAttr>(
+                  moduleOp, paramAttr, diFile, diCU, funcOp, funcScope, loc);
+              if (!paramTy)
+                return nullptr;
+              argTypes.push_back(paramTy);
+            }
+            // TODO: function type is not emitted now
+            auto emptyRoutine = mlir::LLVM::DISubroutineTypeAttr::get(
+                moduleOp.getContext(), {});
+            // Extract the line from the function's location. The fifth and
+            // sixth arguments are `line` and `scopeLine` (both lines) — not
+            // line/column.
+            auto [line, col] = extractLineCol(loc);
+            (void)col;
+            auto res = mlir::LLVM::DISubprogramAttr::get(
+                moduleOp.getContext(),
+                mlir::DistinctAttr::create(
+                    mlir::UnitAttr::get(moduleOp.getContext())),
+                false,
+                mlir::DistinctAttr::create(
+                    mlir::UnitAttr::get(moduleOp.getContext())),
+                diCU, diFile, spAttr.getRawName(), linkageName, diFile, line,
+                /*scopeLine=*/line, mlir::LLVM::DISubprogramFlags::Definition,
+                emptyRoutine, {}, {});
 
-                return res;
-              })
+            return res;
+          })
           .template Case<DBGLocalVarAttr>(
               [&](DBGLocalVarAttr localVarAttr) -> mlir::Attribute {
                 auto underlyingTy =
@@ -595,8 +593,8 @@ void spillAndDeclare(mlir::OpBuilder &builder, mlir::Location loc,
   auto one = mlir::LLVM::ConstantOp::create(builder, loc, builder.getI32Type(),
                                             builder.getI32IntegerAttr(1));
   auto ptrType = mlir::LLVM::LLVMPointerType::get(context);
-  auto slot = mlir::LLVM::AllocaOp::create(builder, loc, ptrType,
-                                           value.getType(), one);
+  auto slot =
+      mlir::LLVM::AllocaOp::create(builder, loc, ptrType, value.getType(), one);
   mlir::LLVM::StoreOp::create(builder, loc, value, slot);
   mlir::LLVM::DbgDeclareOp::create(builder, loc, slot, varInfo, expr);
 }
@@ -709,14 +707,15 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
               auto &entryBlock = funcOp.getBody().front();
               builder.setInsertionPointToStart(&entryBlock);
               // Spill the argument to a stack slot and describe *that* with
-              // `dbg.declare`. A `dbg.value` on the SSA argument goes stale once
-              // its registers are reused (right after the prologue spills it),
-              // so a debugger reads garbage; a stack slot is a stable location.
+              // `dbg.declare`. A `dbg.value` on the SSA argument goes stale
+              // once its registers are reused (right after the prologue spills
+              // it), so a debugger reads garbage; a stack slot is a stable
+              // location.
               //
               // The spill is emitted at a line-0 (prologue) location so it is
-              // covered by the function prologue: a debugger setting a breakpoint
-              // on the function skips to the first body statement, by which point
-              // the argument has been stored and is inspectable.
+              // covered by the function prologue: a debugger setting a
+              // breakpoint on the function skips to the first body statement,
+              // by which point the argument has been stored and is inspectable.
               mlir::Location prologueLoc = mlir::FileLineColLoc::get(
                   context, funcFileAttr.getName().getValue(),
                   /*line=*/0, /*column=*/0);
@@ -730,13 +729,13 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
         funcOp->removeAttr("reussir.dbg_func_args");
       }
       // Local variables: codegen tags the op defining a `let` binding with a
-      // `DBGLocalVar` on its fused location. Conversion copies that location onto
-      // every op it expands the definition into, so to describe the variable just
-      // once we pick the op whose result *escapes* the tagged group — i.e. is
-      // used by an op that does not carry the same metadata; that is the value
-      // the rest of the program sees. We spill it and `dbg.declare` it (declaring
-      // each variable once), then strip the Reussir metadata off every tagged op
-      // so they translate cleanly.
+      // `DBGLocalVar` on its fused location. Conversion copies that location
+      // onto every op it expands the definition into, so to describe the
+      // variable just once we pick the op whose result *escapes* the tagged
+      // group — i.e. is used by an op that does not carry the same metadata;
+      // that is the value the rest of the program sees. We spill it and
+      // `dbg.declare` it (declaring each variable once), then strip the Reussir
+      // metadata off every tagged op so they translate cleanly.
       //
       // Declaration is deferred to after the walk so the escape check sees the
       // original, un-stripped locations.
@@ -774,8 +773,9 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
         }
         if (escapes) {
           auto localVarAttr = llvm::dyn_cast<DBGLocalVarAttr>(meta);
-          auto expr = localVarAttr ? boxedExpr(moduleOp, localVarAttr.getDbgType())
-                                   : mlir::LLVM::DIExpressionAttr{};
+          auto expr = localVarAttr
+                          ? boxedExpr(moduleOp, localVarAttr.getDbgType())
+                          : mlir::LLVM::DIExpressionAttr{};
           toDeclare.push_back({op, varLoc, localVar, expr});
         } else {
           declared.erase(localVar);
@@ -793,11 +793,11 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
 }
 
 namespace {
-// Runs the fused-debug-info → LLVM DI conversion as a standalone pass. It must be
-// scheduled after `convert-to-llvm`, when functions are `llvm.func` (carrying the
-// fused subprogram location and `reussir.dbg_func_args` the conversion preserves):
-// a function's debug info only survives LLVM-IR translation once its `llvm.func`
-// has a `DISubprogram`.
+// Runs the fused-debug-info → LLVM DI conversion as a standalone pass. It must
+// be scheduled after `convert-to-llvm`, when functions are `llvm.func`
+// (carrying the fused subprogram location and `reussir.dbg_func_args` the
+// conversion preserves): a function's debug info only survives LLVM-IR
+// translation once its `llvm.func` has a `DISubprogram`.
 struct DebugInfoConversionPass
     : public impl::ReussirDebugInfoConversionPassBase<DebugInfoConversionPass> {
   using Base::Base;

@@ -93,8 +93,7 @@ bool isSingleShotTrivialBranch(mlir::Operation *op) {
 // all of whose paths release. Everything before the release must leave the
 // box's count alone (borrows are fine; anything else touching the pointer,
 // or an opaque op, disqualifies the path).
-bool armReleasesOnAllPaths(mlir::Region &region,
-                           mlir::TypedValue<RcType> rcPtr,
+bool armReleasesOnAllPaths(mlir::Region &region, mlir::TypedValue<RcType> rcPtr,
                            mlir::AliasAnalysis &aliasAnalysis,
                            llvm::SmallVectorImpl<ReussirRcDecOp> &releases) {
   if (!region.hasOneBlock())
@@ -141,8 +140,7 @@ bool armReleasesOnAllPaths(mlir::Region &region,
 // certainly-shared path the arm still needs its own references, so they are
 // rematerialized at the release's position. This is what reduces an inlined
 // read-only predicate (rbtree's `is_red`) to pure tag loads.
-bool cancelIntoDispatch(ReussirRcIncOp incOp,
-                        ReussirRecordDispatchOp dispatch,
+bool cancelIntoDispatch(ReussirRcIncOp incOp, ReussirRecordDispatchOp dispatch,
                         mlir::AliasAnalysis &aliasAnalysis) {
   auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
       dispatch.getVariant().getDefiningOp());

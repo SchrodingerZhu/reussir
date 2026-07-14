@@ -8,8 +8,9 @@
 
 #include "Reussir-c/Types.h"
 
-// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
-// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+// Complete mlir::DialectVersion before MLIR C API headers reach
+// BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
+// forward declared.
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -126,13 +127,11 @@ MlirType reussirStrTypeGet(MlirContext context, ReussirLifeScope lifeScope) {
   return wrap(StrType::get(unwrap(context), static_cast<LifeScope>(lifeScope)));
 }
 
-MlirType reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
-                                      MlirType const *members,
-                                      bool const *memberIsField,
-                                      MlirAttribute name,
-                                      ReussirRecordKind kind,
-                                      ReussirCapability defaultCapability,
-                                      bool fixed) {
+MlirType
+reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
+                             MlirType const *members, bool const *memberIsField,
+                             MlirAttribute name, ReussirRecordKind kind,
+                             ReussirCapability defaultCapability, bool fixed) {
   llvm::SmallVector<mlir::Type> memberTypes = unwrapTypes(nMembers, members);
   llvm::ArrayRef<bool> fields(memberIsField, nMembers);
   if (name.ptr)
@@ -155,7 +154,8 @@ MlirType reussirRecordTypeGetIncomplete(MlirContext context, MlirAttribute name,
 void reussirRecordTypeComplete(MlirType record, intptr_t nMembers,
                                MlirType const *members,
                                bool const *memberIsField,
-                               ReussirCapability defaultCapability, bool fixed) {
+                               ReussirCapability defaultCapability,
+                               bool fixed) {
   llvm::SmallVector<mlir::Type> memberTypes = unwrapTypes(nMembers, members);
   llvm::ArrayRef<bool> fields(memberIsField, nMembers);
   llvm::cast<RecordType>(unwrap(record))

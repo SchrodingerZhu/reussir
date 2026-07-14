@@ -33,7 +33,8 @@ fn jit_run<R>(source: &str, run: impl FnOnce(&OrcJit) -> R) -> R {
         );
         let (full, reports) = monomorphize(&elab.mono_input());
         assert!(reports.is_empty(), "mono reports: {reports:#?}");
-        lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[]).expect("scalar lowering succeeds")
+        lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+            .expect("scalar lowering succeeds")
     });
 
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
@@ -222,8 +223,16 @@ fn lowers_variant_debug_info_through_the_pipeline() {
         assert!(reports.is_empty(), "mono reports: {reports:#?}");
         let mut map = reussir_codegen::source::SourceCache::new();
         map.add_file("variant.rr", src);
-        lower_program(&context, tcx, &full, Some(&map), Some(parse.resolver()), LinkagePolicy::Jit, &[])
-            .expect("variant lowering with debug info succeeds")
+        lower_program(
+            &context,
+            tcx,
+            &full,
+            Some(&map),
+            Some(parse.resolver()),
+            LinkagePolicy::Jit,
+            &[],
+        )
+        .expect("variant lowering with debug info succeeds")
     });
 
     // Pin the optimization prologue off: the DI shapes under test hang off

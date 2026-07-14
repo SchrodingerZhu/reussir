@@ -295,12 +295,7 @@ unsafe impl std::alloc::GlobalAlloc for ReussirGlobalAlloc {
         unsafe { backend::free(ptr) }
     }
     #[inline]
-    unsafe fn realloc(
-        &self,
-        ptr: *mut u8,
-        layout: std::alloc::Layout,
-        new_size: usize,
-    ) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
         unsafe { backend::realloc(ptr, layout.align().max(GLOBAL_MAX_ALIGN), new_size) }
     }
 }

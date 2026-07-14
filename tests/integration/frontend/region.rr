@@ -1,19 +1,19 @@
 // RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
-// CHECK: record @_RIC4CellyE : regional struct Cell::<u64> { "value": u64 };
+// CHECK: record @_RIC8TestCellyE : regional struct TestCell::<u64> { "value": u64 };
 // CHECK-EMPTY:
-// CHECK: fn @_RC11freeze_cell() -> [rigid] Cell::<u64> {
-// CHECK-NEXT: region { @_RIC4CellyE{1 : u64} : [flex] Cell::<u64> } : [rigid] Cell::<u64>
+// CHECK: fn @_RC11freeze_cell() -> [rigid] TestCell::<u64> {
+// CHECK-NEXT: region { @_RIC8TestCellyE{1 : u64} : [flex] TestCell::<u64> } : [rigid] TestCell::<u64>
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK: regional fn @_RC17regional_function(v0 (x): u64) -> [flex] Cell::<u64> {
-// CHECK-NEXT: @_RIC4CellyE{v0 : u64} : [flex] Cell::<u64>
+// CHECK: regional fn @_RC17regional_function(v0 (x): u64) -> [flex] TestCell::<u64> {
+// CHECK-NEXT: @_RIC8TestCellyE{v0 : u64} : [flex] TestCell::<u64>
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK: fn @_RC25freeze_cell_with_let_expr() -> [rigid] Cell::<u64> {
-// CHECK-NEXT: region { { let v0 (x) = regional @_RC17regional_function(42 : u64) : [flex] Cell::<u64>;
-// CHECK-NEXT: v0 : [flex] Cell::<u64> } } : [rigid] Cell::<u64>
+// CHECK: fn @_RC25freeze_cell_with_let_expr() -> [rigid] TestCell::<u64> {
+// CHECK-NEXT: region { { let v0 (x) = regional @_RC17regional_function(42 : u64) : [flex] TestCell::<u64>;
+// CHECK-NEXT: v0 : [flex] TestCell::<u64> } } : [rigid] TestCell::<u64>
 // CHECK-NEXT: }
 // CHECK-EMPTY:
 // CHECK: fn @_RC7trivial() -> u64 {
@@ -26,27 +26,27 @@ fn trivial() -> u64 {
     }
 }
 
-struct [regional] Cell<T> {
+struct [regional] TestCell<T> {
     value: T
 }
 
 struct [regional] Container<T> {
-    cell: [field] Cell<T>
+    cell: [field] TestCell<T>
 }
 
-fn freeze_cell() -> Cell<u64> {
+fn freeze_cell() -> TestCell<u64> {
     regional {
-        Cell{value: 1}
+        TestCell{value: 1}
     }
 }
 
-fn freeze_cell_with_let_expr() -> Cell<u64> {
+fn freeze_cell_with_let_expr() -> TestCell<u64> {
     regional {
-        let x : [flex] Cell<u64> = regional_function(42);
+        let x : [flex] TestCell<u64> = regional_function(42);
         x
     }
 }
 
-regional fn regional_function(x : u64) -> [flex] Cell<u64> {
-    Cell{value: x}
+regional fn regional_function(x : u64) -> [flex] TestCell<u64> {
+    TestCell{value: x}
 }

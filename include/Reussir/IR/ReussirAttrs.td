@@ -17,7 +17,7 @@ include "Reussir/IR/ReussirDialect.td"
 include "mlir/IR/EnumAttr.td"
 
 class ReussirAttr<string name, string attrMnemonic, list<Trait> traits = [],
-  string baseCppClass = "::mlir::Attribute">
+                  string baseCppClass = "::mlir::Attribute">
     : AttrDef<ReussirDialect, name, traits, baseCppClass> {
   let mnemonic = attrMnemonic;
 }
@@ -43,7 +43,6 @@ def CAP_Rigid : I32EnumAttrCase<"rigid", 4>;
 def CAP_Field : I32EnumAttrCase<"field", 5>;
 def CAP_Regional : I32EnumAttrCase<"regional", 6>;
 
-
 def Capability : I32EnumAttr<"Capability", "capability",
                              [CAP_Default, CAP_Value, CAP_Shared, CAP_Flex,
                               CAP_Rigid, CAP_Field, CAP_Regional]> {
@@ -67,8 +66,7 @@ def RecordKind
 def LS_Global : I32EnumAttrCase<"global", 0>;
 def LS_Local : I32EnumAttrCase<"local", 1>;
 
-def LifeScope
-    : I32EnumAttr<"LifeScope", "life scope", [LS_Global, LS_Local]> {
+def LifeScope : I32EnumAttr<"LifeScope", "life scope", [LS_Global, LS_Local]> {
   let cppNamespace = "::reussir";
 }
 
@@ -79,8 +77,8 @@ def TD_Import : I32EnumAttrCase<"Import", 0, "import">;
 def TD_Export : I32EnumAttrCase<"Export", 1, "export">;
 
 def TrampolineDirection
-    : I32EnumAttr<"TrampolineDirection", "trampoline direction",
-                  [TD_Import, TD_Export]> {
+    : I32EnumAttr<"TrampolineDirection",
+                  "trampoline direction", [TD_Import, TD_Export]> {
   let cppNamespace = "::reussir";
 }
 
@@ -91,28 +89,25 @@ def TrampolineDirection
 //===----------------------------------------------------------------------===//
 def Reussir_DBGIntType : ReussirAttr<"DBGIntType", "dbg_inttype"> {
   let description = "Debug integer type attribute";
-  let parameters = (ins 
-    "::mlir::Type":$innerType, 
-    "bool":$isSigned, 
-    "::mlir::StringAttr":$dbgName);
+  let parameters = (ins "::mlir::Type":$innerType, "bool":$isSigned,
+      "::mlir::StringAttr":$dbgName);
   let assemblyFormat = [{
     `<` `signed` `:`  $isSigned `,` $innerType `,` `name` `:` $dbgName `>`
   }];
 }
 def Reussir_DBGFPType : ReussirAttr<"DBGFPType", "dbg_fptype"> {
   let description = "Debug floating point type attribute";
-  let parameters = (ins "::mlir::Type":$innerType, 
-                    "::mlir::StringAttr":$dbgName);
+  let parameters = (ins "::mlir::Type":$innerType,
+      "::mlir::StringAttr":$dbgName);
   let assemblyFormat = [{
     `<` $innerType `,` `name` `:` $dbgName `>`
   }];
 }
-def Reussir_DBGRecordMember : ReussirAttr<"DBGRecordMember", "dbg_record_member"> {
+def Reussir_DBGRecordMember
+    : ReussirAttr<"DBGRecordMember", "dbg_record_member"> {
   let description = "Debug record type attribute";
-  let parameters = (
-    ins "::mlir::StringAttr":$name,
-    "::mlir::Attribute":$typeAttr
-  );
+  let parameters = (ins "::mlir::StringAttr":$name,
+      "::mlir::Attribute":$typeAttr);
   let assemblyFormat = [{
     `<` `name` `:` $name `,` 
         `type` `:` $typeAttr
@@ -121,12 +116,8 @@ def Reussir_DBGRecordMember : ReussirAttr<"DBGRecordMember", "dbg_record_member"
 }
 def Reussir_DBGRecordType : ReussirAttr<"DBGRecordType", "dbg_recordtype"> {
   let description = "Debug record type attribute";
-  let parameters = (ins 
-    "::mlir::ArrayAttr":$members,
-    "bool":$isVariant,
-    "::mlir::Type":$underlyingType,
-    "::mlir::StringAttr":$dbgName
-  );
+  let parameters = (ins "::mlir::ArrayAttr":$members, "bool":$isVariant,
+      "::mlir::Type":$underlyingType, "::mlir::StringAttr":$dbgName);
   let assemblyFormat = [{
     `<` 
         `members` `:` $members `,`
@@ -138,10 +129,9 @@ def Reussir_DBGRecordType : ReussirAttr<"DBGRecordType", "dbg_recordtype"> {
 }
 def Reussir_DBGSubprogram : ReussirAttr<"DBGSubprogram", "dbg_subprogram"> {
   let description = "Debug subprogram attribute";
-  let parameters = (ins
-    "::mlir::StringAttr":$rawName,
-    "::mlir::ArrayAttr":$typeParams
-    
+  let parameters = (ins "::mlir::StringAttr":$rawName,
+      "::mlir::ArrayAttr":$typeParams
+
   );
   let assemblyFormat = [{
     `<`
@@ -154,10 +144,8 @@ def Reussir_DBGSubprogram : ReussirAttr<"DBGSubprogram", "dbg_subprogram"> {
 // For now, let's focus on basic types and unboxed record types
 def Reussir_DBGLocalVar : ReussirAttr<"DBGLocalVar", "dbg_localvar"> {
   let description = "Debug local variable attribute";
-  let parameters = (ins
-    "::mlir::Attribute":$dbgType,
-    "::mlir::StringAttr":$varName
-  );
+  let parameters = (ins "::mlir::Attribute":$dbgType,
+      "::mlir::StringAttr":$varName);
   let assemblyFormat = [{
     `<`
         `type` `:` $dbgType `,`
@@ -169,26 +157,20 @@ def Reussir_DBGLocalVar : ReussirAttr<"DBGLocalVar", "dbg_localvar"> {
 // pointer to a box `{ header, payload }`. `dbgType` describes the payload; the
 // debug-info pass presents the variable as the payload, reached by
 // dereferencing the pointer and skipping the box header (a `DW_OP_deref,
-// DW_OP_plus_uconst` expression on the `dbg.declare`). The two box flavours have
-// different header sizes — a shared box has a single ref-count word, a regional
-// box a three-word `{ status, next, vtable }` header — so `regional` selects
-// which to skip past. Once the `rc` is lowered to an opaque pointer the box type
-// is unrecoverable, hence the flag is carried here.
+// DW_OP_plus_uconst` expression on the `dbg.declare`). The two box flavours
+// have different header sizes — a shared box has a single ref-count word, a
+// regional box a three-word `{ status, next, vtable }` header — so `regional`
+// selects which to skip past. Once the `rc` is lowered to an opaque pointer the
+// box type is unrecoverable, hence the flag is carried here.
 def Reussir_DBGBoxedType : ReussirAttr<"DBGBoxedType", "dbg_boxedtype"> {
   let description = "Debug type for a reference-counted (boxed) value";
-  let parameters = (ins
-    "::mlir::Attribute":$dbgType,
-    "bool":$regional
-  );
+  let parameters = (ins "::mlir::Attribute":$dbgType, "bool":$regional);
   let assemblyFormat = [{ `<` $dbgType `,` `regional` `:` $regional `>` }];
 }
 def Reussir_DBGFuncArg : ReussirAttr<"DBGFuncArg", "dbg_func_arg"> {
   let description = "Debug function argument attribute";
-  let parameters = (ins
-    "::mlir::Attribute":$dbgType,
-    "::mlir::StringAttr":$argName,
-    "unsigned":$argIndex
-  );
+  let parameters = (ins "::mlir::Attribute":$dbgType,
+      "::mlir::StringAttr":$argName, "unsigned":$argIndex);
   let assemblyFormat = [{
     `<`
         `type` `:` $dbgType `,`

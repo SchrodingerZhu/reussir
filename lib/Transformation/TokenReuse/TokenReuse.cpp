@@ -267,8 +267,8 @@ bool isEscapableTokenResult(mlir::OpResult result) {
 mlir::TypedValue<RcType> expandedDecProducerRc(mlir::scf::IfOp scfIf,
                                                unsigned resultIndex) {
   if (resultIndex == 0) {
-    auto expectOp = dyn_cast_or_null<ReussirExpectOp>(
-        scfIf.getCondition().getDefiningOp());
+    auto expectOp =
+        dyn_cast_or_null<ReussirExpectOp>(scfIf.getCondition().getDefiningOp());
     if (!expectOp)
       return nullptr;
     auto cmp = dyn_cast_or_null<mlir::arith::CmpIOp>(
@@ -284,8 +284,7 @@ mlir::TypedValue<RcType> expandedDecProducerRc(mlir::scf::IfOp scfIf,
       continue;
     mlir::Value yielded =
         region.front().getTerminator()->getOperand(resultIndex);
-    auto inner =
-        dyn_cast_or_null<mlir::scf::IfOp>(yielded.getDefiningOp());
+    auto inner = dyn_cast_or_null<mlir::scf::IfOp>(yielded.getDefiningOp());
     if (inner && inner->hasAttr(kExpandedDecrementAttr))
       return expandedDecProducerRc(
           inner, llvm::cast<mlir::OpResult>(yielded).getResultNumber());
@@ -487,10 +486,9 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                     dyn_cast<TokenType>(nullableType.getPtrTy());
                 if (!producedType)
                   continue;
-                mlir::TypedValue<RcType> producerRc =
-                    expandedDecProducerRc(scfIf, llvm::cast<mlir::OpResult>(
-                                                     tokenVal)
-                                                     .getResultNumber());
+                mlir::TypedValue<RcType> producerRc = expandedDecProducerRc(
+                    scfIf,
+                    llvm::cast<mlir::OpResult>(tokenVal).getResultNumber());
                 int score = hueristic(producedType, producerRc, acceptor,
                                       aliasAnalyzer);
                 if (score >= 0 && (score > bestScore ||
@@ -568,11 +566,11 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
       mlir::Value newToken;
       mlir::Value oldToken = reuse.anchor.getToken();
       if (reuse.realloc)
-        newToken = ReussirTokenReallocOp::create(rewriter, 
-            reuse.anchor->getLoc(), targetType, reuse.token);
+        newToken = ReussirTokenReallocOp::create(
+            rewriter, reuse.anchor->getLoc(), targetType, reuse.token);
       else
-        newToken = ReussirTokenEnsureOp::create(rewriter, 
-            reuse.anchor->getLoc(), targetType, reuse.token);
+        newToken = ReussirTokenEnsureOp::create(
+            rewriter, reuse.anchor->getLoc(), targetType, reuse.token);
       reuse.anchor.assignToken(newToken);
       auto allocOp = llvm::cast<ReussirTokenAllocOp>(oldToken.getDefiningOp());
       rewriter.eraseOp(allocOp);

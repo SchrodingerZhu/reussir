@@ -45,17 +45,17 @@ def ReussirBasicOpsLoweringPass
     world: a vtable the module has never seen takes the indirect fallback
     arm). See docs/design/closure-wpd.md.
   }];
-  let options = [
-    Option<"closureWpd", "closure-wpd", "bool", /*default=*/"false",
-        "emit whole-program devirtualization artifacts for closure vtables">,
+  let options =
+      [Option<
+           "closureWpd", "closure-wpd", "bool", /*default=*/"false",
+           "emit whole-program devirtualization artifacts for closure vtables">,
   ];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::memref::MemRefDialect",
                            "::mlir::scf::SCFDialect",
                            "::mlir::math::MathDialect",
                            "::mlir::LLVM::LLVMDialect",
-                           "::mlir::func::FuncDialect",
-                           "::mlir::ub::UBDialect",
+                           "::mlir::func::FuncDialect", "::mlir::ub::UBDialect",
                            "::reussir::ReussirDialect"];
 }
 
@@ -80,8 +80,7 @@ def ReussirDebugInfoConversionPass
 //===----------------------------------------------------------------------===//
 // SCFOpsLowering
 //===----------------------------------------------------------------------===//
-def ReussirSCFOpsLoweringPass
-    : ReussirLoweringPass<"scf-ops"> {
+def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
   let summary = "lower Reussir SCF operations to MLIR SCF operations";
   let description = [{
     `reussir-lowering-scf-ops` lowers Reussir SCF operations to MLIR SCF
@@ -102,8 +101,7 @@ def ReussirSCFOpsLoweringPass
 //===----------------------------------------------------------------------===//
 // AttachRegionVtables
 //===----------------------------------------------------------------------===//
-def ReussirRegionPatternsPass
-    : ReussirLoweringPass<"region-patterns"> {
+def ReussirRegionPatternsPass : ReussirLoweringPass<"region-patterns"> {
   let summary = "attach vtables to regions";
   let description = [{
     `reussir-lowering-region-patterns` will do the following converions:
@@ -111,17 +109,14 @@ def ReussirRegionPatternsPass
     2. convert region run operations to memref alloca_scope operations.
     3. convert yield operations to freeze operations.
   }];
-  let dependentDialects = [
-    "::reussir::ReussirDialect", 
-    "::mlir::memref::MemRefDialect"
-  ];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::memref::MemRefDialect"];
 }
 
 //===----------------------------------------------------------------------===//
 // AcquireDropExpansion
 //===----------------------------------------------------------------------===//
-def ReussirAcquireDropExpansionPass
-    : Pass<"reussir-acquire-drop-expansion"> {
+def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
   let summary = "expand Reussir acquire and drop operations";
   let description = [{
     `reussir-acquire-drop-expansion` expands Reussir acquire and drop operations,
@@ -157,11 +152,13 @@ def ReussirAcquireDropExpansionPass
     should enable `outline-record` option, which converts record destructions to
     outline function calls.
   }];
-  let options = [
-    Option<"outlineRecord", "outline-record", "bool", /*default=*/"false",
-        "whether to outline record destruction and acquisition">,
-    Option<"expandDecrement", "expand-decrement", "bool", /*default=*/"false",
-        "whether to expand rc decrement operations (using the `rc-decrement-expansion` pass)">,
+  let options =
+      [Option<"outlineRecord", "outline-record", "bool", /*default=*/"false",
+              "whether to outline record destruction and acquisition">,
+       Option<"expandDecrement", "expand-decrement", "bool",
+              /*default=*/"false",
+              "whether to expand rc decrement operations (using the "
+              "`rc-decrement-expansion` pass)">,
   ];
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::ub::UBDialect"];
@@ -170,8 +167,7 @@ def ReussirAcquireDropExpansionPass
 //===----------------------------------------------------------------------===//
 // RcDecrementExpansion
 //===----------------------------------------------------------------------===//
-def ReussirRcDecrementExpansionPass
-    : Pass<"reussir-rc-decrement-expansion"> {
+def ReussirRcDecrementExpansionPass : Pass<"reussir-rc-decrement-expansion"> {
   let summary = "expand Reussir rc decrement operations";
   let description = [{
     `reussir-rc-decrement-expansion` expands Reussir rc decrement operations.
@@ -179,8 +175,8 @@ def ReussirRcDecrementExpansionPass
     of the pipeline.
   }];
 
-  let dependentDialects = ["::reussir::ReussirDialect", 
-                           "::mlir::arith::ArithDialect", 
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::arith::ArithDialect",
                            "::mlir::scf::SCFDialect"];
 }
 
@@ -213,8 +209,7 @@ def ReussirClosureOutliningPass
 
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::func::FuncDialect",
-                           "::mlir::LLVM::LLVMDialect"
-                          ];
+                           "::mlir::LLVM::LLVMDialect"];
 }
 
 //===----------------------------------------------------------------------===//
@@ -227,12 +222,11 @@ def ReussirCompilePolymorphicFFIPass
     `reussir-compile-polymorphic-ffi` compiles polymorphic FFI template
     into concrete LLVM bitcode and embeds them into the module.
   }];
-  let options = [
-    Option<"optimized", "optimized", "bool", /*default=*/"false",
-        "enable optimizations when compiling FFI templates">,
+  let options = [Option<"optimized", "optimized", "bool", /*default=*/"false",
+                        "enable optimizations when compiling FFI templates">,
   ];
-  let dependentDialects = ["::reussir::ReussirDialect", 
-                           "::mlir::func::FuncDialect", 
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::func::FuncDialect",
                            "::mlir::scf::SCFDialect"];
 }
 
@@ -241,7 +235,8 @@ def ReussirCompilePolymorphicFFIPass
 //===----------------------------------------------------------------------===//
 def ReussirConvertToLLVMPass
     : Pass<"reussir-convert-to-llvm", "::mlir::ModuleOp"> {
-  let summary = "interface-driven convert-to-llvm honoring the module data layout";
+  let summary =
+      "interface-driven convert-to-llvm honoring the module data layout";
   let description = [{
     `reussir-convert-to-llvm` runs the same `ConvertToLLVMPatternInterface`
     driven conversion as the upstream `convert-to-llvm`, but builds its
@@ -279,8 +274,7 @@ def ReussirAttachNativeTargetPass
     - `llvm.target_triple`: The target triple string of the native target.
     - `dlti.dl_spec`: The data layout spec of the native target.
   }];
-  let dependentDialects = ["::mlir::LLVM::LLVMDialect", 
-                           "::mlir::DLTIDialect"];
+  let dependentDialects = ["::mlir::LLVM::LLVMDialect", "::mlir::DLTIDialect"];
 }
 
 #endif // REUSSIR_CONVERSION_PASSES_TD

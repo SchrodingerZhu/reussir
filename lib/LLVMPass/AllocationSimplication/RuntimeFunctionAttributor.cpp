@@ -71,7 +71,8 @@ bool setAllocateSmallAttributes(llvm::Function &fn) {
   auto hasExpectedAllocSize = [&] {
     if (!fn.hasFnAttribute(llvm::Attribute::AllocSize))
       return false;
-    auto args = fn.getFnAttribute(llvm::Attribute::AllocSize).getAllocSizeArgs();
+    auto args =
+        fn.getFnAttribute(llvm::Attribute::AllocSize).getAllocSizeArgs();
     return args.first == 0 && !args.second.has_value();
   };
   if (!hasExpectedAllocSize()) {

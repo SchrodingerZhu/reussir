@@ -129,13 +129,11 @@ MlirType reussirStrTypeGet(MlirContext context, ReussirLifeScope lifeScope);
 // of `nMembers` booleans. `fixed` pins uniform max-arm box sizing on a variant
 // (`#[repr(fixed)]`); pass false for compounds and for variants that use the
 // default per-constructor sizing.
-MlirType reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
-                                      MlirType const *members,
-                                      bool const *memberIsField,
-                                      MlirAttribute name,
-                                      ReussirRecordKind kind,
-                                      ReussirCapability defaultCapability,
-                                      bool fixed);
+MlirType
+reussirRecordTypeGetComplete(MlirContext context, intptr_t nMembers,
+                             MlirType const *members, bool const *memberIsField,
+                             MlirAttribute name, ReussirRecordKind kind,
+                             ReussirCapability defaultCapability, bool fixed);
 
 // An identified, incomplete record type. `name` must be a `StringAttr`.
 // Complete it later with `reussirRecordTypeComplete`.
