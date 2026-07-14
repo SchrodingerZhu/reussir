@@ -978,12 +978,42 @@ void RcType::print(mlir::AsmPrinter &printer) const {
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 
 //===----------------------------------------------------------------------===//
+// Reussir Cell Type Parse/Print
+//===----------------------------------------------------------------------===//
+mlir::Type CellType::parse(mlir::AsmParser &parser) {
+  if (parser.parseLess())
+    return {};
+  mlir::Type eleTy;
+  if (parser.parseType(eleTy))
+    return {};
+  bool exclusive = mlir::succeeded(parser.parseOptionalKeyword("exclusive"));
+  if (parser.parseGreater())
+    return {};
+  return CellType::get(parser.getContext(), eleTy, exclusive);
+}
+
+void CellType::print(mlir::AsmPrinter &printer) const {
+  printer << "<" << getElementType();
+  if (getExclusive())
+    printer << " exclusive";
+  printer << ">";
+}
+
+//===----------------------------------------------------------------------===//
 // Reussir Cell Type DataLayoutInterface
 //===----------------------------------------------------------------------===//
+// A plain cell is layout-identical to its element. An exclusive cell carries
+// a trailing i1 in-use flag: one byte after the element, padded to the
+// element's alignment — the same layout LLVM derives for `{element, i1}`.
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
-  return dataLayout.getTypeSizeInBits(getElementType());
+  llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
+  if (!getExclusive())
+    return dataLayout.getTypeSizeInBits(getElementType());
+  uint64_t align = dataLayout.getTypeABIAlignment(getElementType());
+  return llvm::TypeSize::getFixed(
+      8 * llvm::alignTo(elementSize.getFixedValue() + 1, align));
 }
 
 uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,

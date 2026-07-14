@@ -323,8 +323,7 @@ def ReussirNullableType
 //===----------------------------------------------------------------------===//
 def ReussirCellType
     : ReussirType<"Cell", "cell",
-                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-                   MutableType]> {
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir mutable cell payload type";
   let description = [{
     `reussir.cell` is the one-element mutable payload of a shared reference
@@ -333,9 +332,24 @@ def ReussirCellType
     is represented by that shared RC pointer, like closures and arrays.
 
     The element is stored inline in the cell box and may itself be an RC type.
+
+    A plain cell (`!reussir.cell<T>`) supports only whole-element access
+    (`reussir.cell.get`/`reussir.cell.set`). An exclusive cell
+    (`!reussir.cell<T exclusive>`) additionally supports in-place
+    read-modify-write (`reussir.cell.rmw`): its storage carries a trailing
+    `i1` in-use flag recording whether the element is currently moved out
+    into an rmw body, and every access is guarded against that state. The
+    flag is addressed as slot `[1]` of the cell reference and can be
+    observed with `reussir.cell.in_use`.
   }];
-  let parameters = (ins "mlir::Type":$eleTy);
-  let assemblyFormat = "`<` $eleTy `>`";
+  let parameters = (ins "mlir::Type":$eleTy, "bool":$exclusive);
+  let hasCustomAssemblyFormat = 1;
+  let skipDefaultBuilders = 1;
+  let builders = [TypeBuilder<(ins "mlir::Type":$eleTy,
+                                  CArg<"bool", "false">:$exclusive),
+                              [{
+      return $_get($_ctxt, eleTy, exclusive);
+    }]>];
   let extraClassDeclaration = [{
     mlir::Type getElementType() const { return getEleTy(); }
   }];
@@ -345,8 +359,7 @@ def ReussirCellType
 //===----------------------------------------------------------------------===//
 def ReussirRefType
     : ReussirType<"Ref", "ref",
-                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>,
-                   MutableType]> {
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir Reference Type";
   let description = [{
     A reference type that is used to represent a reference to an object in Reussir.

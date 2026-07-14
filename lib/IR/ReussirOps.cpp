@@ -1250,6 +1250,9 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (!(*cellType).getExclusive())
+    return emitOpError(
+        "read-modify-write requires an exclusive cell, got a plain cell");
   if (!llvm::hasSingleElement(getBody()))
     return emitOpError("body must contain exactly one block");
   mlir::Block &block = getBody().front();
@@ -1276,6 +1279,16 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
     return emitOpError(
                "body output type must match operation result type, got ")
            << yield.getOutput().getType() << " and " << getOutput().getType();
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirCellInUseOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (!(*cellType).getExclusive())
+    return emitOpError(
+        "in-use flag only exists on an exclusive cell, got a plain cell");
   return mlir::success();
 }
 
@@ -1309,12 +1322,20 @@ mlir::LogicalResult ReussirRefProjectOp::verify() {
   mlir::Type elementType = refType.getElementType();
   if (auto cellType = llvm::dyn_cast<CellType>(elementType)) {
     size_t index = getIndex().getZExtValue();
-    if (index != 0)
-      return emitOpError("cell projection index must be zero, got ") << index;
-    if (projectedType.getElementType() != cellType.getElementType())
-      return emitOpError("projected cell element type mismatch: expected ")
-             << cellType.getElementType() << ", got "
-             << projectedType.getElementType();
+    mlir::Type expectedSlotType;
+    if (index == 0) {
+      expectedSlotType = cellType.getElementType();
+    } else if (index == 1 && cellType.getExclusive()) {
+      expectedSlotType = mlir::IntegerType::get(getContext(), 1);
+    } else {
+      return emitOpError("cell projection index must be zero")
+             << (cellType.getExclusive() ? " (element) or one (in-use flag)"
+                                         : "")
+             << ", got " << index;
+    }
+    if (projectedType.getElementType() != expectedSlotType)
+      return emitOpError("projected cell slot type mismatch: expected ")
+             << expectedSlotType << ", got " << projectedType.getElementType();
     if (projectedType.getCapability() != Capability::field)
       return emitOpError("a cell slot projection must have field capability");
     if (projectedType.getAtomicKind() != refType.getAtomicKind())
@@ -2549,6 +2570,12 @@ mlir::LogicalResult ReussirRefAcquireOp::verify() {
   if (llvm::isa<ArrayType, CellType>(elementType))
     return mlir::success();
 
+  // A nullable RC pointer acquires by dispatching on nullness and retaining
+  // the wrapped box on the nonnull path.
+  if (auto nullableType = llvm::dyn_cast<NullableType>(elementType);
+      nullableType && llvm::isa<RcType>(nullableType.getPtrTy()))
+    return mlir::success();
+
   return emitOpError("unsupported element type for acquisition: ")
          << elementType;
 }
@@ -2635,6 +2662,31 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                   builder, loc, getArrayViewMemRefType(arrayType), value)
                   .getView();
           return emitArrayOwnershipAcquisition(view, builder, loc);
+        }
+
+        // A nullable RC pointer is the drop-side dual of
+        // `rewriteDropNullable`: dispatch on nullness and retain the wrapped
+        // box on the nonnull path. Without this branch a non-trivial
+        // nullable would silently fall through as a no-op and lose its +1.
+        if (auto nullableType = llvm::dyn_cast<NullableType>(elementType)) {
+          if (!llvm::isa<RcType>(nullableType.getPtrTy()))
+            return mlir::success();
+          auto loaded =
+              ReussirRefLoadOp::create(builder, loc, nullableType, value);
+          auto dispatcher = ReussirNullableDispatchOp::create(
+              builder, loc, mlir::Type{}, loaded);
+          mlir::Block *nullBlock = builder.createBlock(
+              &dispatcher.getNullRegion(), dispatcher.getNullRegion().begin());
+          builder.setInsertionPointToStart(nullBlock);
+          ReussirScfYieldOp::create(builder, loc, nullptr);
+          mlir::Block *nonNullBlock =
+              builder.createBlock(&dispatcher.getNonNullRegion(),
+                                  dispatcher.getNonNullRegion().begin(),
+                                  {nullableType.getPtrTy()}, {loc});
+          builder.setInsertionPointToStart(nonNullBlock);
+          ReussirRcIncOp::create(builder, loc, nonNullBlock->getArgument(0));
+          ReussirScfYieldOp::create(builder, loc, nullptr);
+          return mlir::success();
         }
 
         // A cell is a one-field mutable payload. Projecting its slot also

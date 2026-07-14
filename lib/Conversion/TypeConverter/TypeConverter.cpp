@@ -233,9 +233,14 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   // A cell is a semantic one-field wrapper. Keeping the wrapper in the LLVM
   // type makes `ref.project [0]` the uniform way to address its mutable slot,
   // while its data-layout interface intentionally matches the inner value.
-  converter.addConversion([&converter](CellType type) {
-    return mlir::LLVM::LLVMStructType::getLiteral(
-        type.getContext(), {converter.convertType(type.getElementType())});
+  // An exclusive cell additionally carries a trailing i1 in-use flag,
+  // addressed as `ref.project [1]`.
+  converter.addConversion([&converter](CellType type) -> mlir::Type {
+    llvm::SmallVector<mlir::Type> members{
+        converter.convertType(type.getElementType())};
+    if (type.getExclusive())
+      members.push_back(mlir::IntegerType::get(type.getContext(), 1));
+    return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
   });
 
   converter.addConversion([&converter](RcBoxType type) -> mlir::Type {
