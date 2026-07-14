@@ -626,36 +626,37 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             // builder over the (scalar) operands. Each family owns its own
             // dialect ops and attributes; the backend pipeline's dialect
             // conversions take the emitted op from there.
-            Intrinsic { op, args } => {
-                let mut operands = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    let v = self.expr(block, env, a)?.ok_or_else(|| {
-                        LoweringError("intrinsic operand produced no value".into())
-                    })?;
-                    operands.push(v);
-                }
-                let result = self.tys.mlir_ty(e.ty)?;
-                let built = match op {
-                    IntrinsicOp::Math { func, flag } => {
-                        let fastmath =
-                            reussir_core::intrinsic::FastMath(*flag)
-                                .mlir_attr()
-                                .map(|text| {
-                                    Attribute::parse(self.context, &text)
-                                        .expect("valid fastmath attribute")
-                                });
-                        super::math::math_operation(
-                            self.context,
-                            *func,
-                            &operands,
-                            result,
-                            fastmath,
-                            loc,
-                        )
+            Intrinsic { op, args } => match op {
+                IntrinsicOp::Math { func, flag } => {
+                    let mut operands = Vec::with_capacity(args.len());
+                    for a in args.iter() {
+                        let v = self.expr(block, env, a)?.ok_or_else(|| {
+                            LoweringError("intrinsic operand produced no value".into())
+                        })?;
+                        operands.push(v);
                     }
-                };
-                Ok(Some(self.append(block, built)))
-            }
+                    let result = self.tys.mlir_ty(e.ty)?;
+                    let fastmath =
+                        reussir_core::intrinsic::FastMath(*flag)
+                            .mlir_attr()
+                            .map(|text| {
+                                Attribute::parse(self.context, &text)
+                                    .expect("valid fastmath attribute")
+                            });
+                    let built = super::math::math_operation(
+                        self.context,
+                        *func,
+                        &operands,
+                        result,
+                        fastmath,
+                        loc,
+                    );
+                    Ok(Some(self.append(block, built)))
+                }
+                IntrinsicOp::Cell { .. } => {
+                    err("Cell intrinsic lowering is introduced in the next stack layer")
+                }
+            },
             Cmp(l, op, r) => self.cmp(block, env, l, *op, r).map(Some),
             Cast(x, t) => self.cast(block, env, x, *t),
             If(c, t, f) => self.lower_if(block, env, c, t, f, e.ty),

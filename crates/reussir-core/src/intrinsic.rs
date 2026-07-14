@@ -1,15 +1,10 @@
-//! The built-in `core` package's math intrinsics.
+//! The built-in `core::intrinsic` operation families.
 //!
-//! Reussir source reaches them as `core::intrinsic::math::<name>(args…, flag)`
-//! — the package name `core` is reserved, so the path can never collide with
-//! user code. Each intrinsic maps 1:1 onto an MLIR `math` dialect op; the
-//! trailing argument is always a **constant** `i32` fast-math flag
-//! ([`FastMath`]), and the value operands share one `FloatingPoint`-bounded
-//! type (given as an optional explicit type argument, or inferred).
-//!
-//! The surfaced set matches the reference frontend: the float unary group,
-//! the `is*` classification checks (returning `bool`), the float binary
-//! group, `fma`, and `fpowi` (float base, `i32` exponent).
+//! Reussir source reaches these as `core::intrinsic::<family>::<name>(…)` — the
+//! package name `core` is reserved, so the path cannot collide with user code.
+//! [`IntrinsicOp`] is the resolved family-independent representation carried by
+//! HIR and MIR; each family defines its own names, checking, ownership contract,
+//! and code generation.
 
 /// The shape of a math intrinsic's value arguments (the fast-math flag is an
 /// extra trailing argument in the surface form, not counted here).
@@ -175,6 +170,62 @@ pub enum ArrayFn {
     Fold,
 }
 
+/// A built-in operation on a shared mutable [`Cell`](crate::semi::ty::TyKind::Cell),
+/// spelled `core::intrinsic::cell::<fn>` and dispatched on the operand's
+/// cell flavor. A plain `Cell` supports only whole-element
+/// `alloc`/`get`/`set`; an exclusive `RefCell` additionally supports the
+/// guarded `rmw` and the `in_use` observation of its guard flag. The
+/// operation itself does not record the flavor — operand and result types
+/// carry it, the checker enforces it, and the dialect verifier re-checks
+/// it after lowering.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CellFn {
+    /// `alloc(value)`: move `value` into a fresh cell.
+    Alloc,
+    /// `get(cell)`: clone the value currently stored in `cell`.
+    Get,
+    /// `set(cell, value)`: replace and drop the old value.
+    Set,
+    /// `rmw(cell, update)`: move the value through `update` and store its
+    /// result. Exclusive cells (`RefCell`) only.
+    Rmw,
+    /// `in_use(cell)`: whether the element is currently moved out into an
+    /// active `rmw` updater. Exclusive cells (`RefCell`) only.
+    InUse,
+}
+
+impl CellFn {
+    /// Parse a surface / textual-IR name.
+    pub fn parse(name: &str) -> Option<CellFn> {
+        match name {
+            "alloc" => Some(CellFn::Alloc),
+            "get" => Some(CellFn::Get),
+            "set" => Some(CellFn::Set),
+            "rmw" => Some(CellFn::Rmw),
+            "in_use" => Some(CellFn::InUse),
+            _ => None,
+        }
+    }
+
+    /// The surface name, also used by the textual IR.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CellFn::Alloc => "alloc",
+            CellFn::Get => "get",
+            CellFn::Set => "set",
+            CellFn::Rmw => "rmw",
+            CellFn::InUse => "in_use",
+        }
+    }
+
+    /// Whether this operation exists only on an exclusive cell (`RefCell`).
+    /// The checker rejects these on a plain `Cell` operand, and lowering
+    /// re-derives the flavor from the monomorphized operand type.
+    pub fn requires_exclusive(self) -> bool {
+        matches!(self, CellFn::Rmw | CellFn::InUse)
+    }
+}
+
 impl ArrayFn {
     /// Parse a surface / textual-IR name.
     pub fn parse(name: &str) -> Option<ArrayFn> {
@@ -219,6 +270,9 @@ impl ArrayFn {
 pub enum IntrinsicOp {
     /// `core::intrinsic::math::<func>`, with an `arith.fastmath` flag.
     Math { func: MathFn, flag: u32 },
+    /// `core::intrinsic::cell::<func>`; cell operations have no immediates
+    /// and dispatch on the operand's cell flavor rather than encoding it.
+    Cell { func: CellFn },
 }
 
 impl IntrinsicOp {
@@ -226,6 +280,7 @@ impl IntrinsicOp {
     pub fn family(self) -> &'static str {
         match self {
             IntrinsicOp::Math { .. } => "math",
+            IntrinsicOp::Cell { .. } => "cell",
         }
     }
 
@@ -233,6 +288,7 @@ impl IntrinsicOp {
     pub fn name(self) -> &'static str {
         match self {
             IntrinsicOp::Math { func, .. } => func.as_str(),
+            IntrinsicOp::Cell { func, .. } => func.as_str(),
         }
     }
 
@@ -240,6 +296,7 @@ impl IntrinsicOp {
     pub fn imm(self) -> u32 {
         match self {
             IntrinsicOp::Math { flag, .. } => flag,
+            IntrinsicOp::Cell { .. } => 0,
         }
     }
 
@@ -250,6 +307,9 @@ impl IntrinsicOp {
             "math" => Some(IntrinsicOp::Math {
                 func: MathFn::parse(name)?,
                 flag: imm,
+            }),
+            "cell" if imm == 0 => Some(IntrinsicOp::Cell {
+                func: CellFn::parse(name)?,
             }),
             _ => None,
         }
@@ -271,6 +331,13 @@ mod tests {
                 func: MathFn::Fma,
                 flag: 127,
             },
+            IntrinsicOp::Cell {
+                func: CellFn::Alloc,
+            },
+            IntrinsicOp::Cell { func: CellFn::Rmw },
+            IntrinsicOp::Cell {
+                func: CellFn::InUse,
+            },
         ] {
             assert_eq!(
                 IntrinsicOp::parse(op.family(), op.name(), op.imm()),
@@ -278,6 +345,12 @@ mod tests {
             );
         }
         assert_eq!(IntrinsicOp::parse("math", "nope", 0), None);
+        assert_eq!(IntrinsicOp::parse("cell", "get", 1), None);
+        assert!(
+            IntrinsicOp::parse("cell", "in_use", 0).is_some(),
+            "one textual family; the operand type carries the flavor"
+        );
+        assert_eq!(IntrinsicOp::parse("refcell", "in_use", 0), None);
         assert_eq!(IntrinsicOp::parse("atomic", "sqrt", 0), None);
     }
 
@@ -294,6 +367,15 @@ mod tests {
         }
         assert_eq!(MathFn::parse("log"), None);
         assert_eq!(MathFn::parse("sincos"), None);
+        for f in [
+            CellFn::Alloc,
+            CellFn::Get,
+            CellFn::Set,
+            CellFn::Rmw,
+            CellFn::InUse,
+        ] {
+            assert_eq!(CellFn::parse(f.as_str()), Some(f));
+        }
     }
 
     #[test]
