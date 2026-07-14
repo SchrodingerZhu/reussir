@@ -41,11 +41,10 @@ struct SinkRcCreateIntoExpandedEnsurePattern
     return true;
   }
 
-  static ReussirRcCreateOp cloneCreateIntoBranch(mlir::PatternRewriter &rewriter,
-                                                 ReussirRcCreateOp create,
-                                                 mlir::Value branchToken,
-                                                 mlir::scf::YieldOp yieldOp,
-                                                 bool skipRc) {
+  static ReussirRcCreateOp
+  cloneCreateIntoBranch(mlir::PatternRewriter &rewriter,
+                        ReussirRcCreateOp create, mlir::Value branchToken,
+                        mlir::scf::YieldOp yieldOp, bool skipRc) {
     rewriter.setInsertionPoint(yieldOp);
     auto *clonedOp = rewriter.clone(*create.getOperation());
     auto clonedCreate = llvm::cast<ReussirRcCreateOp>(clonedOp);
@@ -59,9 +58,8 @@ struct SinkRcCreateIntoExpandedEnsurePattern
                                  ReussirRcCreateOp create, mlir::Block &block,
                                  bool skipRc) {
     auto yieldOp = llvm::cast<mlir::scf::YieldOp>(block.getTerminator());
-    auto sunkCreate =
-        cloneCreateIntoBranch(rewriter, create, yieldOp.getOperand(0), yieldOp,
-                              skipRc);
+    auto sunkCreate = cloneCreateIntoBranch(
+        rewriter, create, yieldOp.getOperand(0), yieldOp, skipRc);
     rewriter.replaceOpWithNewOp<mlir::scf::YieldOp>(yieldOp,
                                                     sunkCreate.getRcPtr());
   }
@@ -74,8 +72,9 @@ struct SinkRcCreateIntoExpandedEnsurePattern
     if (!isMatchCandidate(create, ifOp))
       return mlir::failure();
 
-    auto newIf = mlir::scf::IfOp::create(rewriter, 
-        ifOp.getLoc(), create.getRcPtr().getType(), ifOp.getCondition(),
+    auto newIf = mlir::scf::IfOp::create(
+        rewriter, ifOp.getLoc(), create.getRcPtr().getType(),
+        ifOp.getCondition(),
         /*addThenRegion=*/true, /*addElseRegion=*/true);
     newIf->setAttrs(ifOp->getAttrs());
     newIf->removeAttr(REUSSIR_EXPANDED_ENSURE_ATTR);

@@ -14,8 +14,8 @@ extern int32_t test_rc_capture_and_consume_ffi(void);
 #define ASSERT_EQ(name, actual, expected)                                      \
   do {                                                                         \
     if ((actual) != (expected)) {                                              \
-      fprintf(stderr, "FAIL: %s: expected %lld, got %lld\n", name,            \
-              (long long)(expected), (long long)(actual));                      \
+      fprintf(stderr, "FAIL: %s: expected %lld, got %lld\n", name,             \
+              (long long)(expected), (long long)(actual));                     \
       abort();                                                                 \
     }                                                                          \
   } while (0)

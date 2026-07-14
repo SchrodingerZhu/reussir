@@ -26,10 +26,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Transformation/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/Passes.h"
 
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
@@ -100,13 +100,11 @@ static ReussirRcCreateCompoundOp createCompoundWithHoles(
   return llvm::cast<ReussirRcCreateCompoundOp>(builder.create(state));
 }
 
-static ReussirRcCreateVariantOp
-createVariantWithHoles(mlir::OpBuilder &builder, mlir::Location loc,
-                       RcType rcType, mlir::IntegerAttr tag,
-                       mlir::ValueRange fields, mlir::Value token,
-                       mlir::Value region, mlir::FlatSymbolRefAttr vtable,
-                       bool skipRc, mlir::DenseI64ArrayAttr skipFields,
-                       mlir::DenseI64ArrayAttr holeFields) {
+static ReussirRcCreateVariantOp createVariantWithHoles(
+    mlir::OpBuilder &builder, mlir::Location loc, RcType rcType,
+    mlir::IntegerAttr tag, mlir::ValueRange fields, mlir::Value token,
+    mlir::Value region, mlir::FlatSymbolRefAttr vtable, bool skipRc,
+    mlir::DenseI64ArrayAttr skipFields, mlir::DenseI64ArrayAttr holeFields) {
   mlir::OperationState state(loc, ReussirRcCreateVariantOp::getOperationName());
   state.addAttribute("tag", tag);
   state.addOperands(fields);
@@ -121,10 +119,10 @@ createVariantWithHoles(mlir::OpBuilder &builder, mlir::Location loc,
       resultTypes.push_back(HoleType::get(
           builder.getContext(), fields[static_cast<size_t>(index)].getType()));
   state.addTypes(resultTypes);
-  state.addAttribute("operandSegmentSizes",
-                     builder.getDenseI32ArrayAttr(
-                         {0, static_cast<int32_t>(fields.size()), token ? 1 : 0,
-                          region ? 1 : 0}));
+  state.addAttribute(
+      "operandSegmentSizes",
+      builder.getDenseI32ArrayAttr({0, static_cast<int32_t>(fields.size()),
+                                    token ? 1 : 0, region ? 1 : 0}));
   addOptionalAttr(state, "vtable", vtable);
   if (skipRc)
     state.addAttribute("skipRc", builder.getUnitAttr());
@@ -281,8 +279,7 @@ static TrmcPlan buildPlan(mlir::func::FuncOp funcOp, llvm::StringRef callee) {
   // of the same site: the branches consume the shared call exactly once each
   // along mutually exclusive paths, so after every user is rewritten the
   // call itself dies.
-  auto isLinearizable = [&](mlir::func::CallOp call,
-                            mlir::Operation *create) {
+  auto isLinearizable = [&](mlir::func::CallOp call, mlir::Operation *create) {
     for (mlir::Operation *user : call->getUsers())
       if (!candidates.contains(user) || !isSameCreateSite(create, user, callee))
         return false;
@@ -320,10 +317,10 @@ static void setLeafValue(mlir::Operation *terminator, mlir::Value oldValue,
 // field, recurse into the non-designated fields through fresh single-node
 // contexts, and turn the designated (last) field into the context-threaded
 // tail call.
-static void
-rewriteConstructorLeaf(mlir::Operation *terminator, mlir::Value value,
-                       llvm::ArrayRef<RecursiveFieldInfo> planned,
-                       TrmcRewriteContext &ctx) {
+static void rewriteConstructorLeaf(mlir::Operation *terminator,
+                                   mlir::Value value,
+                                   llvm::ArrayRef<RecursiveFieldInfo> planned,
+                                   TrmcRewriteContext &ctx) {
   mlir::Operation *def = value.getDefiningOp();
   auto compound = llvm::dyn_cast_if_present<ReussirRcCreateCompoundOp>(def);
   auto variant = llvm::dyn_cast_if_present<ReussirRcCreateVariantOp>(def);
@@ -390,10 +387,9 @@ rewriteConstructorLeaf(mlir::Operation *terminator, mlir::Value value,
       holes[recursiveFields.size() - 1]);
   llvm::SmallVector<mlir::Value> args(designated.call.getOperands());
   args.push_back(extended);
-  auto tailCall =
-      mlir::func::CallOp::create(rewriter, designated.call.getLoc(),
-                                 ctx.helperName, mlir::TypeRange{resultType},
-                                 args);
+  auto tailCall = mlir::func::CallOp::create(rewriter, designated.call.getLoc(),
+                                             ctx.helperName,
+                                             mlir::TypeRange{resultType}, args);
 
   setLeafValue(terminator, value, tailCall.getResult(0));
   rewriter.eraseOp(def);
@@ -545,9 +541,9 @@ struct TRMCRecursionAnalysisPass
     });
 
     for (mlir::func::FuncOp funcOp : candidates) {
-      auto ctxType = CctxType::get(
-          funcOp.getContext(),
-          llvm::cast<RcType>(funcOp.getResultTypes().front()));
+      auto ctxType =
+          CctxType::get(funcOp.getContext(),
+                        llvm::cast<RcType>(funcOp.getResultTypes().front()));
       mlir::func::FuncOp helper =
           createTrmcHelper(funcOp, symbolTable, ctxType);
       rewriteOriginalToWrapper(funcOp, helper.getName(), ctxType);

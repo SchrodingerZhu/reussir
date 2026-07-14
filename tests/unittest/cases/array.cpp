@@ -46,45 +46,43 @@ TEST_F(ReussirTest, RcTypeIsValidMemRefElementType) {
 }
 
 TEST_F(ReussirValueTransformTest, RefToArrayOfRcAcquisition) {
-  testValueAcquisition(
-      "!reussir.ref<!reussir.array<2 x !reussir.rc<i32>>>",
-      [](mlir::func::FuncOp funcOp) {
-        size_t projectCount = 0;
-        size_t incCount = 0;
-        bool foundView = false;
-        for (auto &op : funcOp.getFunctionBody().front()) {
-          if (llvm::isa<ReussirArrayViewOp>(op))
-            foundView = true;
-          if (llvm::isa<ReussirArrayProjectOp>(op))
-            ++projectCount;
-          if (llvm::isa<ReussirRcIncOp>(op))
-            ++incCount;
-        }
-        EXPECT_TRUE(foundView);
-        EXPECT_EQ(projectCount, 2u);
-        EXPECT_EQ(incCount, 2u);
-      });
+  testValueAcquisition("!reussir.ref<!reussir.array<2 x !reussir.rc<i32>>>",
+                       [](mlir::func::FuncOp funcOp) {
+                         size_t projectCount = 0;
+                         size_t incCount = 0;
+                         bool foundView = false;
+                         for (auto &op : funcOp.getFunctionBody().front()) {
+                           if (llvm::isa<ReussirArrayViewOp>(op))
+                             foundView = true;
+                           if (llvm::isa<ReussirArrayProjectOp>(op))
+                             ++projectCount;
+                           if (llvm::isa<ReussirRcIncOp>(op))
+                             ++incCount;
+                         }
+                         EXPECT_TRUE(foundView);
+                         EXPECT_EQ(projectCount, 2u);
+                         EXPECT_EQ(incCount, 2u);
+                       });
 }
 
 TEST_F(ReussirValueTransformTest, RefToNestedArrayOfRcAcquisition) {
-  testValueAcquisition(
-      "!reussir.ref<!reussir.array<2 x 2 x !reussir.rc<i32>>>",
-      [](mlir::func::FuncOp funcOp) {
-        size_t projectCount = 0;
-        size_t incCount = 0;
-        bool foundView = false;
-        for (auto &op : funcOp.getFunctionBody().front()) {
-          if (llvm::isa<ReussirArrayViewOp>(op))
-            foundView = true;
-          if (llvm::isa<ReussirArrayProjectOp>(op))
-            ++projectCount;
-          if (llvm::isa<ReussirRcIncOp>(op))
-            ++incCount;
-        }
-        EXPECT_TRUE(foundView);
-        EXPECT_EQ(projectCount, 6u);
-        EXPECT_EQ(incCount, 4u);
-      });
+  testValueAcquisition("!reussir.ref<!reussir.array<2 x 2 x !reussir.rc<i32>>>",
+                       [](mlir::func::FuncOp funcOp) {
+                         size_t projectCount = 0;
+                         size_t incCount = 0;
+                         bool foundView = false;
+                         for (auto &op : funcOp.getFunctionBody().front()) {
+                           if (llvm::isa<ReussirArrayViewOp>(op))
+                             foundView = true;
+                           if (llvm::isa<ReussirArrayProjectOp>(op))
+                             ++projectCount;
+                           if (llvm::isa<ReussirRcIncOp>(op))
+                             ++incCount;
+                         }
+                         EXPECT_TRUE(foundView);
+                         EXPECT_EQ(projectCount, 6u);
+                         EXPECT_EQ(incCount, 4u);
+                       });
 }
 
 TEST_F(ReussirTest, ArrayViewAllowsTensorResult) {

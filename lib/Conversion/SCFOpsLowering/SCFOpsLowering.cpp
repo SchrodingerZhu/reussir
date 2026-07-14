@@ -85,27 +85,27 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
     mlir::Value condition;
     if (p.pattern.empty()) {
       auto len = ReussirStrLenOp::create(builder, loc, builder.getIndexType(),
-                                                 currentSlice);
+                                         currentSlice);
       auto zero = mlir::arith::ConstantIndexOp::create(builder, loc, 0);
-      condition = mlir::arith::CmpIOp::create(builder, 
-          loc, mlir::arith::CmpIPredicate::eq, len.getResult(),
+      condition = mlir::arith::CmpIOp::create(
+          builder, loc, mlir::arith::CmpIPredicate::eq, len.getResult(),
           zero.getResult());
     } else {
-      auto startswith = ReussirStrUnsafeStartWithOp::create(builder, 
-          loc, i1Type, currentSlice, builder.getStringAttr(p.pattern));
+      auto startswith = ReussirStrUnsafeStartWithOp::create(
+          builder, loc, i1Type, currentSlice, builder.getStringAttr(p.pattern));
       auto len = ReussirStrLenOp::create(builder, loc, builder.getIndexType(),
-                                                 currentSlice);
+                                         currentSlice);
       auto expectedLen =
           mlir::arith::ConstantIndexOp::create(builder, loc, p.pattern.size());
-      auto lenOk = mlir::arith::CmpIOp::create(builder, 
-          loc, mlir::arith::CmpIPredicate::eq, len.getResult(),
+      auto lenOk = mlir::arith::CmpIOp::create(
+          builder, loc, mlir::arith::CmpIPredicate::eq, len.getResult(),
           expectedLen.getResult());
-      condition = mlir::arith::AndIOp::create(builder, 
-          loc, startswith.getResult(), lenOk.getResult());
+      condition = mlir::arith::AndIOp::create(
+          builder, loc, startswith.getResult(), lenOk.getResult());
     }
 
-    auto ifOp = mlir::scf::IfOp::create(builder, 
-        loc, mlir::TypeRange{indexType, i1Type}, condition,
+    auto ifOp = mlir::scf::IfOp::create(
+        builder, loc, mlir::TypeRange{indexType, i1Type}, condition,
         /*addThenRegion=*/true, /*addElseRegion=*/true);
 
     {
@@ -114,8 +114,8 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
       auto idx =
           mlir::arith::ConstantIndexOp::create(builder, loc, p.originalIdx);
       auto trueVal = mlir::arith::ConstantIntOp::create(builder, loc, 1, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{idx.getResult(), trueVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc, mlir::ValueRange{idx.getResult(), trueVal.getResult()});
     }
 
     {
@@ -123,8 +123,9 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
       auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
       auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc,
+          mlir::ValueRange{poison.getResult(), falseVal.getResult()});
     }
     return {ifOp.getResult(0), ifOp.getResult(1)};
   }
@@ -144,33 +145,36 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
   if (lcpLen > 0) {
     auto lcp = first.substr(0, lcpLen);
     auto len = ReussirStrLenOp::create(builder, loc, builder.getIndexType(),
-                                               currentSlice);
+                                       currentSlice);
     auto minLen = mlir::arith::ConstantIndexOp::create(builder, loc, lcpLen);
-    auto lenOk = mlir::arith::CmpIOp::create(builder, 
-        loc, mlir::arith::CmpIPredicate::uge, len.getResult(),
+    auto lenOk = mlir::arith::CmpIOp::create(
+        builder, loc, mlir::arith::CmpIPredicate::uge, len.getResult(),
         minLen.getResult());
 
-    auto ifLen = mlir::scf::IfOp::create(builder, 
-        loc, mlir::TypeRange{indexType, i1Type}, lenOk.getResult(),
+    auto ifLen = mlir::scf::IfOp::create(
+        builder, loc, mlir::TypeRange{indexType, i1Type}, lenOk.getResult(),
         /*addThenRegion=*/true, /*addElseRegion=*/true);
 
     {
       mlir::OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToStart(&ifLen.getThenRegion().front());
 
-      auto startswith = ReussirStrUnsafeStartWithOp::create(builder, 
-          loc, i1Type, currentSlice, builder.getStringAttr(lcp));
+      auto startswith = ReussirStrUnsafeStartWithOp::create(
+          builder, loc, i1Type, currentSlice, builder.getStringAttr(lcp));
 
-      auto ifMatch = mlir::scf::IfOp::create(builder, 
-          loc, mlir::TypeRange{indexType, i1Type}, startswith.getResult(),
+      auto ifMatch = mlir::scf::IfOp::create(
+          builder, loc, mlir::TypeRange{indexType, i1Type},
+          startswith.getResult(),
           /*addThenRegion=*/true, /*addElseRegion=*/true);
 
       {
         mlir::OpBuilder::InsertionGuard thenGuard(builder);
         builder.setInsertionPointToStart(&ifMatch.getThenRegion().front());
-        auto offset = mlir::arith::ConstantIndexOp::create(builder, loc, lcpLen);
-        auto nextSlice = ReussirStrSliceOp::create(builder, 
-            loc, currentSlice.getType(), currentSlice, offset.getResult());
+        auto offset =
+            mlir::arith::ConstantIndexOp::create(builder, loc, lcpLen);
+        auto nextSlice =
+            ReussirStrSliceOp::create(builder, loc, currentSlice.getType(),
+                                      currentSlice, offset.getResult());
 
         llvm::SmallVector<PatternInfo> nextPatterns;
         for (const auto &p : patterns) {
@@ -178,8 +182,8 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
         }
         auto res = buildDecisionTree(loc, builder, indexType, i1Type,
                                      nextSlice.getResult(), nextPatterns);
-        mlir::scf::YieldOp::create(builder, 
-            loc, mlir::ValueRange{res.first, res.second});
+        mlir::scf::YieldOp::create(builder, loc,
+                                   mlir::ValueRange{res.first, res.second});
       }
 
       {
@@ -187,8 +191,9 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
         builder.setInsertionPointToStart(&ifMatch.getElseRegion().front());
         auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
         auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-        mlir::scf::YieldOp::create(builder, 
-            loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+        mlir::scf::YieldOp::create(
+            builder, loc,
+            mlir::ValueRange{poison.getResult(), falseVal.getResult()});
       }
       mlir::scf::YieldOp::create(builder, loc, ifMatch.getResults());
     }
@@ -198,8 +203,9 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
       builder.setInsertionPointToStart(&ifLen.getElseRegion().front());
       auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
       auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc,
+          mlir::ValueRange{poison.getResult(), falseVal.getResult()});
     }
 
     return {ifLen.getResult(0), ifLen.getResult(1)};
@@ -217,13 +223,14 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
   }
 
   auto len = ReussirStrLenOp::create(builder, loc, builder.getIndexType(),
-                                             currentSlice);
+                                     currentSlice);
   auto zero = mlir::arith::ConstantIndexOp::create(builder, loc, 0);
-  auto isZero = mlir::arith::CmpIOp::create(builder, 
-      loc, mlir::arith::CmpIPredicate::eq, len.getResult(), zero.getResult());
+  auto isZero =
+      mlir::arith::CmpIOp::create(builder, loc, mlir::arith::CmpIPredicate::eq,
+                                  len.getResult(), zero.getResult());
 
-  auto ifZero = mlir::scf::IfOp::create(builder, 
-      loc, mlir::TypeRange{indexType, i1Type}, isZero.getResult(),
+  auto ifZero = mlir::scf::IfOp::create(
+      builder, loc, mlir::TypeRange{indexType, i1Type}, isZero.getResult(),
       /*addThenRegion=*/true, /*addElseRegion=*/true);
 
   // Then: len == 0
@@ -231,16 +238,17 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
     mlir::OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(&ifZero.getThenRegion().front());
     if (!emptyPatterns.empty()) {
-      auto idx = mlir::arith::ConstantIndexOp::create(builder, 
-          loc, emptyPatterns[0].originalIdx);
+      auto idx = mlir::arith::ConstantIndexOp::create(
+          builder, loc, emptyPatterns[0].originalIdx);
       auto trueVal = mlir::arith::ConstantIntOp::create(builder, loc, 1, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{idx.getResult(), trueVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc, mlir::ValueRange{idx.getResult(), trueVal.getResult()});
     } else {
       auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
       auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc,
+          mlir::ValueRange{poison.getResult(), falseVal.getResult()});
     }
   }
 
@@ -252,13 +260,14 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
     if (nonEmptyPatterns.empty()) {
       auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
       auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-      mlir::scf::YieldOp::create(builder, 
-          loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+      mlir::scf::YieldOp::create(
+          builder, loc,
+          mlir::ValueRange{poison.getResult(), falseVal.getResult()});
     } else {
-      auto byteAtZero = ReussirStrUnsafeByteAtOp::create(builder, 
-          loc, builder.getI8Type(), currentSlice, zero.getResult());
-      auto byteIndex = mlir::arith::IndexCastOp::create(builder, 
-          loc, builder.getIndexType(), byteAtZero.getResult());
+      auto byteAtZero = ReussirStrUnsafeByteAtOp::create(
+          builder, loc, builder.getI8Type(), currentSlice, zero.getResult());
+      auto byteIndex = mlir::arith::IndexCastOp::create(
+          builder, loc, builder.getIndexType(), byteAtZero.getResult());
 
       llvm::SmallVector<int64_t> cases;
       llvm::MapVector<uint8_t, llvm::SmallVector<PatternInfo>> groups;
@@ -272,12 +281,12 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
       }
 
       auto one = mlir::arith::ConstantIndexOp::create(builder, loc, 1);
-      auto nextSlice = ReussirStrSliceOp::create(builder, 
-          loc, currentSlice.getType(), currentSlice, one.getResult());
+      auto nextSlice = ReussirStrSliceOp::create(
+          builder, loc, currentSlice.getType(), currentSlice, one.getResult());
 
-      auto switchOp = mlir::scf::IndexSwitchOp::create(builder, 
-          loc, mlir::TypeRange{indexType, i1Type}, byteIndex.getResult(), cases,
-          cases.size());
+      auto switchOp = mlir::scf::IndexSwitchOp::create(
+          builder, loc, mlir::TypeRange{indexType, i1Type},
+          byteIndex.getResult(), cases, cases.size());
 
       for (auto [idx, b] : llvm::enumerate(cases)) {
         auto &region = switchOp.getCaseRegions()[idx];
@@ -286,8 +295,8 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
         builder.setInsertionPointToStart(&region.front());
         auto res = buildDecisionTree(loc, builder, indexType, i1Type,
                                      nextSlice.getResult(), groups[b]);
-        mlir::scf::YieldOp::create(builder, 
-            loc, mlir::ValueRange{res.first, res.second});
+        mlir::scf::YieldOp::create(builder, loc,
+                                   mlir::ValueRange{res.first, res.second});
       }
 
       // Default region
@@ -298,8 +307,9 @@ buildDecisionTree(mlir::Location loc, mlir::OpBuilder &builder,
         builder.setInsertionPointToStart(&region.front());
         auto poison = mlir::ub::PoisonOp::create(builder, loc, indexType);
         auto falseVal = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
-        mlir::scf::YieldOp::create(builder, 
-            loc, mlir::ValueRange{poison.getResult(), falseVal.getResult()});
+        mlir::scf::YieldOp::create(
+            builder, loc,
+            mlir::ValueRange{poison.getResult(), falseVal.getResult()});
       }
       mlir::scf::YieldOp::create(builder, loc, switchOp.getResults());
     }
@@ -346,7 +356,7 @@ std::string emitDecisionFunction(mlir::ModuleOp module,
                                entry->getArgument(0), patternInfos);
 
   mlir::func::ReturnOp::create(builder, module.getLoc(),
-                                       mlir::ValueRange{res.first, res.second});
+                               mlir::ValueRange{res.first, res.second});
 
   return funcName;
 }
@@ -373,28 +383,31 @@ struct ReussirNullableDispatchOpRewritePattern
   static bool tokenMatchesCondition(mlir::scf::IfOp ifOp,
                                     mlir::OpResult result) {
     unsigned idx = result.getResultNumber();
-    auto thenCreate =
-        ifOp.thenYield().getOperand(idx).getDefiningOp<ReussirNullableCreateOp>();
-    auto elseCreate =
-        ifOp.elseYield().getOperand(idx).getDefiningOp<ReussirNullableCreateOp>();
+    auto thenCreate = ifOp.thenYield()
+                          .getOperand(idx)
+                          .getDefiningOp<ReussirNullableCreateOp>();
+    auto elseCreate = ifOp.elseYield()
+                          .getOperand(idx)
+                          .getDefiningOp<ReussirNullableCreateOp>();
     return thenCreate && elseCreate && thenCreate.getPtr() &&
            !elseCreate.getPtr();
   }
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirNullableDispatchOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirNullableDispatchOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     // First, create a check operation to get the null flag from the input.
-    mlir::Value flag = reussir::ReussirNullableCheckOp::create(rewriter,
-        op.getLoc(), op.getNullable());
+    mlir::Value flag = reussir::ReussirNullableCheckOp::create(
+        rewriter, op.getLoc(), op.getNullable());
     // mark expect not null
     if (op->hasAttr(REUSSIR_EXPANDED_ENSURE_ATTR))
-      flag = reussir::ReussirExpectOp::create(rewriter, op.getLoc(), flag, true);
+      flag =
+          reussir::ReussirExpectOp::create(rewriter, op.getLoc(), flag, true);
 
-    auto scfIfOp = mlir::scf::IfOp::create(rewriter,
-        op.getLoc(), op->getResultTypes(), flag, /*addThenRegion=*/true,
-        /*addElseRegion=*/true);
+    auto scfIfOp =
+        mlir::scf::IfOp::create(rewriter, op.getLoc(), op->getResultTypes(),
+                                flag, /*addThenRegion=*/true,
+                                /*addElseRegion=*/true);
     if (op->hasAttr(REUSSIR_EXPANDED_ENSURE_ATTR))
       if (auto producerIf = mlir::dyn_cast_if_present<mlir::scf::IfOp>(
               op.getNullable().getDefiningOp()))
@@ -410,8 +423,9 @@ struct ReussirNullableDispatchOpRewritePattern
 
     // Now, for the then region, we first create the coerced value
     rewriter.setInsertionPointToStart(&scfIfOp.getThenRegion().front());
-    auto coerced = reussir::ReussirNullableCoerceOp::create(rewriter, 
-        op.getLoc(), op.getNullable().getType().getPtrTy(), op.getNullable());
+    auto coerced = reussir::ReussirNullableCoerceOp::create(
+        rewriter, op.getLoc(), op.getNullable().getType().getPtrTy(),
+        op.getNullable());
     // Then we inline the region, supplying coerced value as the argument
     rewriter.inlineBlockBefore(
         &*op.getNonNullRegion().begin(), &*scfIfOp.getThenRegion().begin(),
@@ -445,16 +459,15 @@ private:
           getProjectedType(recordType.getMembers()[*singletonTag],
                            recordType.getMemberIsField()[*singletonTag],
                            variantRef.getCapability());
-      RefType coercedType = RefType::get(rewriter.getContext(),
-                                         targetVariantType,
-                                         variantRef.getCapability());
+      RefType coercedType = RefType::get(
+          rewriter.getContext(), targetVariantType, variantRef.getCapability());
       auto coerced = reussir::ReussirRecordCoerceOp::create(
           rewriter, op.getLoc(), coercedType,
           rewriter.getIndexAttr(*singletonTag), op.getVariant());
       args.push_back(coerced);
     }
-    rewriter.inlineBlockBefore(&op->getRegion(idx).front(), block,
-                               block->end(), args);
+    rewriter.inlineBlockBefore(&op->getRegion(idx).front(), block, block->end(),
+                               args);
   }
 
   // The generic dispatch over the arm subset `setIndices`: read the tag and
@@ -467,8 +480,8 @@ private:
     auto tag = reussir::ReussirRecordTagOp::create(rewriter, op.getLoc(),
                                                    op.getVariant());
     bool allSingletons = llvm::all_of(setIndices, [&](unsigned idx) {
-      return llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx])
-                 .size() == 1;
+      return llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx]).size() ==
+             1;
     });
 
     mlir::Value outerSwitchValue;
@@ -510,8 +523,7 @@ private:
         rewriter.setInsertionPointToStart(block);
         auto poison = mlir::ub::PoisonOp::create(rewriter, op.getLoc(),
                                                  rewriter.getIndexType());
-        mlir::scf::YieldOp::create(rewriter, op.getLoc(),
-                                   poison->getResults());
+        mlir::scf::YieldOp::create(rewriter, op.getLoc(), poison->getResults());
       }
       outerSwitchValue = preDispatch.getResult(0);
       outerSwitchCases = llvm::to_vector(
@@ -541,13 +553,11 @@ private:
       // `createBlock` moves the insertion point into the case; keep the
       // caller's position (right after the switch) intact.
       mlir::OpBuilder::InsertionGuard guard(rewriter);
-      auto tagArray =
-          llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx]);
+      auto tagArray = llvm::cast<mlir::DenseI64ArrayAttr>(op.getTagSets()[idx]);
       mlir::Block *block = rewriter.createBlock(&region, region.begin());
       inlineArm(op, rewriter, idx,
-                tagArray.size() == 1
-                    ? std::optional<int64_t>(tagArray[0])
-                    : std::nullopt,
+                tagArray.size() == 1 ? std::optional<int64_t>(tagArray[0])
+                                     : std::nullopt,
                 block);
     }
     return indexSwitchOp;
@@ -571,18 +581,18 @@ public:
     mlir::TypedValue<RcType> scrutinee;
     llvm::SmallVector<unsigned> peeled;
     llvm::SmallVector<unsigned> remaining;
-    RecordType recordType = llvm::cast<RecordType>(
-        op.getVariant().getType().getElementType());
+    RecordType recordType =
+        llvm::cast<RecordType>(op.getVariant().getType().getElementType());
     if (encoding && encoding.getValue() == kSpecialPtrTagImmortal)
       if (auto borrow = op.getVariant().getDefiningOp<ReussirRcBorrowOp>();
           borrow && borrow.getRcPtr().getType().mayCarrySpecialPointerTag())
         scrutinee = borrow.getRcPtr();
     for (auto [idx, tagSet] : llvm::enumerate(op.getTagSets())) {
       auto tagArray = llvm::cast<mlir::DenseI64ArrayAttr>(tagSet);
-      auto arm = tagArray.size() == 1
-                     ? llvm::dyn_cast<RecordType>(
-                           recordType.getMembers()[tagArray[0]])
-                     : RecordType{};
+      auto arm =
+          tagArray.size() == 1
+              ? llvm::dyn_cast<RecordType>(recordType.getMembers()[tagArray[0]])
+              : RecordType{};
       if (scrutinee && arm && arm.isCompound() && arm.getComplete() &&
           arm.getMembers().empty())
         peeled.push_back(idx);
@@ -606,9 +616,9 @@ public:
       auto isImmediate = ReussirRcCompareImmortalOp::create(
           rewriter, op.getLoc(), rewriter.getI1Type(), scrutinee,
           rewriter.getIndexAttr(tag));
-      auto ifOp = mlir::scf::IfOp::create(rewriter, op.getLoc(),
-                                          op->getResultTypes(),
-                                          isImmediate.getResult(), true, true);
+      auto ifOp =
+          mlir::scf::IfOp::create(rewriter, op.getLoc(), op->getResultTypes(),
+                                  isImmediate.getResult(), true, true);
       inlineArm(op, rewriter, idx, tag, ifOp.thenBlock());
       if (!outermost)
         outermost = ifOp;
@@ -638,8 +648,7 @@ public:
     } else {
       auto dispatch = emitTagDispatch(op, rewriter, remaining);
       rewriter.setInsertionPointAfter(dispatch);
-      mlir::scf::YieldOp::create(rewriter, op.getLoc(),
-                                 dispatch->getResults());
+      mlir::scf::YieldOp::create(rewriter, op.getLoc(), dispatch->getResults());
     }
     rewriter.replaceOp(op, outermost->getResults());
     return mlir::success();
@@ -650,17 +659,17 @@ struct ReussirClosureUniqifyOpRewritePattern
     : public mlir::OpConversionPattern<ReussirClosureUniqifyOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirClosureUniqifyOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirClosureUniqifyOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     // Create a check operation to see if the closure is unique
-    auto isUnique = reussir::ReussirRcIsUniqueOp::create(rewriter, 
-        op.getLoc(), op.getClosure());
+    auto isUnique = reussir::ReussirRcIsUniqueOp::create(rewriter, op.getLoc(),
+                                                         op.getClosure());
 
     // Create an SCF if-else operation
-    auto scfIfOp = mlir::scf::IfOp::create(rewriter, 
-        op.getLoc(), op->getResultTypes(), isUnique, /*addThenRegion=*/true,
-        /*addElseRegion=*/true);
+    auto scfIfOp =
+        mlir::scf::IfOp::create(rewriter, op.getLoc(), op->getResultTypes(),
+                                isUnique, /*addThenRegion=*/true,
+                                /*addElseRegion=*/true);
 
     // In the then region (closure is unique), just return the original
     // closure
@@ -670,8 +679,8 @@ struct ReussirClosureUniqifyOpRewritePattern
     // In the else region (closure is not unique), clone the closure, dec the
     // original rc pointer
     rewriter.setInsertionPointToStart(&scfIfOp.getElseRegion().front());
-    auto cloned = reussir::ReussirClosureCloneOp::create(rewriter, 
-        op.getLoc(), op.getClosure().getType(), op.getClosure());
+    auto cloned = reussir::ReussirClosureCloneOp::create(
+        rewriter, op.getLoc(), op.getClosure().getType(), op.getClosure());
     reussir::ReussirRcDecOp::create(rewriter, op.getLoc(),
                                     /*nullableToken=*/mlir::Type{},
                                     op.getClosure(),
@@ -705,12 +714,12 @@ struct ReussirClosureEvalOpRewritePattern
     auto inputTypes = closureType.getInputTypes();
     mlir::Value cur = op.getClosure();
     for (auto [index, arg] : llvm::enumerate(op.getArgs())) {
-      auto appliedType = RcType::get(
-          rewriter.getContext(),
-          ClosureType::get(rewriter.getContext(),
-                           inputTypes.drop_front(index + 1),
-                           closureType.getOutputType()),
-          rcType.getCapability(), rcType.getAtomicKind());
+      auto appliedType =
+          RcType::get(rewriter.getContext(),
+                      ClosureType::get(rewriter.getContext(),
+                                       inputTypes.drop_front(index + 1),
+                                       closureType.getOutputType()),
+                      rcType.getCapability(), rcType.getAtomicKind());
       cur = ReussirClosureApplyOp::create(rewriter, op.getLoc(), appliedType,
                                           arg, cur);
     }
@@ -750,15 +759,14 @@ static void cloneArrayWithUniqueViewBody(ReussirArrayWithUniqueViewOp op,
 }
 
 static mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType) {
-  return mlir::MemRefType::get(arrayType.getShape(), arrayType.getElementType());
+  return mlir::MemRefType::get(arrayType.getShape(),
+                               arrayType.getElementType());
 }
 
-static mlir::Value materializeArrayViewValue(mlir::Location loc,
-                                             mlir::PatternRewriter &rewriter,
-                                             ArrayType arrayType,
-                                             mlir::Value ref,
-                                             mlir::Type viewType,
-                                             bool writable) {
+static mlir::Value
+materializeArrayViewValue(mlir::Location loc, mlir::PatternRewriter &rewriter,
+                          ArrayType arrayType, mlir::Value ref,
+                          mlir::Type viewType, bool writable) {
   auto memrefType = getArrayViewMemRefType(arrayType);
   auto memrefView =
       ReussirArrayViewOp::create(rewriter, loc, memrefType, ref).getView();
@@ -766,8 +774,9 @@ static mlir::Value materializeArrayViewValue(mlir::Location loc,
     return memrefView;
 
   auto tensorType = llvm::cast<mlir::RankedTensorType>(viewType);
-  return mlir::bufferization::ToTensorOp::create(rewriter, loc, tensorType, memrefView,
-                                               /*restrict=*/true, writable)
+  return mlir::bufferization::ToTensorOp::create(rewriter, loc, tensorType,
+                                                 memrefView,
+                                                 /*restrict=*/true, writable)
       .getResult();
 }
 
@@ -778,12 +787,13 @@ struct ReussirArrayViewOpRewritePattern
   mlir::LogicalResult
   matchAndRewrite(ReussirArrayViewOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    auto tensorType = llvm::dyn_cast<mlir::RankedTensorType>(op.getView().getType());
+    auto tensorType =
+        llvm::dyn_cast<mlir::RankedTensorType>(op.getView().getType());
     if (!tensorType)
       return rewriter.notifyMatchFailure(op, "expected tensor array view");
 
-    auto arrayType =
-        llvm::cast<ArrayType>(llvm::cast<RefType>(op.getRef().getType()).getElementType());
+    auto arrayType = llvm::cast<ArrayType>(
+        llvm::cast<RefType>(op.getRef().getType()).getElementType());
     auto value = materializeArrayViewValue(op.getLoc(), rewriter, arrayType,
                                            adaptor.getRef(), tensorType,
                                            /*writable=*/false);
@@ -797,8 +807,7 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
   using OpConversionPattern::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirArrayWithUniqueViewOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirArrayWithUniqueViewOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
     RcType rcType = op.getArray().getType();
@@ -814,43 +823,42 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
                                        /*writable=*/true);
     };
 
-    auto makeClonedArray =
-        [&]() -> std::pair<mlir::Value, mlir::Value> {
+    auto makeClonedArray = [&]() -> std::pair<mlir::Value, mlir::Value> {
       auto borrowedType = RefType::get(rewriter.getContext(), arrayType);
       auto srcRef =
           ReussirRcBorrowOp::create(rewriter, loc, borrowedType, op.getArray());
       RcBoxType rcBoxType = RcBoxType::get(rewriter.getContext(), arrayType,
                                            /*regional=*/false);
       auto dataLayout = mlir::DataLayout::closest(op.getOperation());
-      TokenType tokenType =
-          TokenType::get(rewriter.getContext(),
-                         dataLayout.getTypeABIAlignment(rcBoxType),
-                         dataLayout.getTypeSize(rcBoxType).getFixedValue());
+      TokenType tokenType = TokenType::get(
+          rewriter.getContext(), dataLayout.getTypeABIAlignment(rcBoxType),
+          dataLayout.getTypeSize(rcBoxType).getFixedValue());
       auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType);
       auto poison = mlir::ub::PoisonOp::create(rewriter, loc, arrayType);
-      auto cloned = ReussirRcCreateOp::create(rewriter, 
-          loc, rcType, poison.getResult(), token.getResult(), mlir::Value{},
-          mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
-      auto dstRef =
-          ReussirRcBorrowOp::create(rewriter, loc, borrowedType, cloned.getResult());
+      auto cloned = ReussirRcCreateOp::create(
+          rewriter, loc, rcType, poison.getResult(), token.getResult(),
+          mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+      auto dstRef = ReussirRcBorrowOp::create(rewriter, loc, borrowedType,
+                                              cloned.getResult());
       ReussirRefMemcpyOp::create(rewriter, loc, srcRef.getResult(),
-                                          dstRef.getResult());
+                                 dstRef.getResult());
       ReussirRefAcquireOp::create(rewriter, loc, dstRef.getResult(), false,
-                                           nullptr);
+                                  nullptr);
 
       auto refCount = ReussirRcFetchOp::create(rewriter, loc, op.getArray());
-      auto decremented = mlir::arith::SubIOp::create(rewriter, 
-          loc, refCount.getRefCount(),
+      auto decremented = mlir::arith::SubIOp::create(
+          rewriter, loc, refCount.getRefCount(),
           mlir::arith::ConstantIndexOp::create(rewriter, loc, 1));
-      ReussirRcSetOp::create(rewriter, loc, op.getArray(), decremented.getResult());
+      ReussirRcSetOp::create(rewriter, loc, op.getArray(),
+                             decremented.getResult());
       return {cloned.getResult(), dstRef.getResult()};
     };
 
     auto isUnique =
         reussir::ReussirRcIsUniqueOp::create(rewriter, loc, op.getArray());
-    auto scfIfOp = mlir::scf::IfOp::create(rewriter, 
-        loc, op->getResultTypes(), isUnique, /*addThenRegion=*/true,
-        /*addElseRegion=*/true);
+    auto scfIfOp = mlir::scf::IfOp::create(rewriter, loc, op->getResultTypes(),
+                                           isUnique, /*addThenRegion=*/true,
+                                           /*addElseRegion=*/true);
 
     rewriter.setInsertionPointToStart(&scfIfOp.getThenRegion().front());
     cloneArrayWithUniqueViewBody(op, op.getArray(),
@@ -858,9 +866,9 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
 
     rewriter.setInsertionPointToStart(&scfIfOp.getElseRegion().front());
     auto [clonedArray, clonedRef] = makeClonedArray();
-    auto clonedView = materializeArrayViewValue(loc, rewriter, arrayType,
-                                                clonedRef, viewType,
-                                                /*writable=*/true);
+    auto clonedView =
+        materializeArrayViewValue(loc, rewriter, arrayType, clonedRef, viewType,
+                                  /*writable=*/true);
     cloneArrayWithUniqueViewBody(op, clonedArray, clonedView, rewriter);
 
     rewriter.replaceOp(op, scfIfOp.getResults());
@@ -872,8 +880,7 @@ struct ReussirScfYieldOpRewritePattern
     : public mlir::OpConversionPattern<ReussirScfYieldOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirScfYieldOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirScfYieldOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<mlir::scf::YieldOp>(op, op->getOperands());
     return mlir::success();
@@ -884,11 +891,10 @@ struct ReussirTokenEnsureOpRewritePattern
     : public mlir::OpConversionPattern<ReussirTokenEnsureOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirTokenEnsureOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirTokenEnsureOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
-    auto nullableDispatchOp = ReussirNullableDispatchOp::create(rewriter, 
-        op.getLoc(), op.getType(), op.getNullableToken());
+    auto nullableDispatchOp = ReussirNullableDispatchOp::create(
+        rewriter, op.getLoc(), op.getType(), op.getNullableToken());
 
     {
       mlir::Block *thenBlock =
@@ -920,13 +926,13 @@ struct ReussirTokenEnsureOpRewritePattern
                   : nullptr;
           // it is safe since RC must dominate this path
           if (reinterpretOp)
-            tokenSrc = reussir::ReussirRcReinterpretOp::create(rewriter, 
-                op.getLoc(), op.getType(), reinterpretOp.getRcPtr());
+            tokenSrc = reussir::ReussirRcReinterpretOp::create(
+                rewriter, op.getLoc(), op.getType(), reinterpretOp.getRcPtr());
         }
-      auto launderedToken = ReussirTokenLaunderOp::create(rewriter, 
-          op.getLoc(), op.getType(), tokenSrc);
+      auto launderedToken = ReussirTokenLaunderOp::create(
+          rewriter, op.getLoc(), op.getType(), tokenSrc);
       mlir::scf::YieldOp::create(rewriter, op.getLoc(),
-                                          launderedToken->getResults());
+                                 launderedToken->getResults());
     }
     {
       mlir::Block *elseBlock =
@@ -935,7 +941,7 @@ struct ReussirTokenEnsureOpRewritePattern
       auto allocatedToken =
           ReussirTokenAllocOp::create(rewriter, op.getLoc(), op.getType());
       mlir::scf::YieldOp::create(rewriter, op.getLoc(),
-                                          allocatedToken->getResults());
+                                 allocatedToken->getResults());
     }
     nullableDispatchOp->setAttr(REUSSIR_EXPANDED_ENSURE_ATTR,
                                 rewriter.getUnitAttr());
@@ -986,30 +992,30 @@ struct ReussirStrByteAtOpRewritePattern
     : public mlir::OpConversionPattern<ReussirStrByteAtOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirStrByteAtOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirStrByteAtOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
 
     // Get string length
-    auto lenOp = reussir::ReussirStrLenOp::create(rewriter, 
-        loc, rewriter.getIndexType(), op.getStr());
+    auto lenOp = reussir::ReussirStrLenOp::create(
+        rewriter, loc, rewriter.getIndexType(), op.getStr());
 
     // Check if index is within bounds (index < len)
-    auto inBounds = mlir::arith::CmpIOp::create(rewriter, 
-        loc, mlir::arith::CmpIPredicate::ult, op.getIndex(), lenOp.getResult());
+    auto inBounds = mlir::arith::CmpIOp::create(
+        rewriter, loc, mlir::arith::CmpIPredicate::ult, op.getIndex(),
+        lenOp.getResult());
 
     // Create if-else block
-    auto ifOp = mlir::scf::IfOp::create(rewriter, 
-        loc, op.getResult().getType(), inBounds, /*addThenRegion=*/true,
-        /*addElseRegion=*/true);
+    auto ifOp = mlir::scf::IfOp::create(rewriter, loc, op.getResult().getType(),
+                                        inBounds, /*addThenRegion=*/true,
+                                        /*addElseRegion=*/true);
 
     // Then region: Unsafe access
     {
       auto &thenBlock = ifOp.getThenRegion().front();
       rewriter.setInsertionPointToStart(&thenBlock);
-      auto unsafeByte = reussir::ReussirStrUnsafeByteAtOp::create(rewriter, 
-          loc, rewriter.getI8Type(), op.getStr(), op.getIndex());
+      auto unsafeByte = reussir::ReussirStrUnsafeByteAtOp::create(
+          rewriter, loc, rewriter.getI8Type(), op.getStr(), op.getIndex());
       mlir::scf::YieldOp::create(rewriter, loc, unsafeByte.getResult());
     }
 
@@ -1029,14 +1035,13 @@ struct ReussirStrSelectOpRewritePattern
     : public mlir::OpConversionPattern<ReussirStrSelectOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirStrSelectOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirStrSelectOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     auto module = op->getParentOfType<mlir::ModuleOp>();
     auto funcName = emitDecisionFunction(module, rewriter, op.getPatterns());
     auto func = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-    auto call = mlir::func::CallOp::create(rewriter, 
-        op.getLoc(), func, mlir::ValueRange{op.getStr()});
+    auto call = mlir::func::CallOp::create(rewriter, op.getLoc(), func,
+                                           mlir::ValueRange{op.getStr()});
 
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
@@ -1046,8 +1051,7 @@ struct ReussirStrStartWithOpRewritePattern
     : public mlir::OpConversionPattern<ReussirStrStartWithOp> {
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult
-  matchAndRewrite(ReussirStrStartWithOp op,
-                  OpAdaptor adaptor,
+  matchAndRewrite(ReussirStrStartWithOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
     auto indexType = rewriter.getIndexType();
@@ -1062,20 +1066,21 @@ struct ReussirStrStartWithOpRewritePattern
         mlir::arith::ConstantIndexOp::create(rewriter, loc, prefixLen);
 
     // Check if len >= prefixLen
-    auto isSufficientLen = mlir::arith::CmpIOp::create(rewriter, 
-        loc, mlir::arith::CmpIPredicate::uge, lenOp.getResult(), prefixLenVal);
+    auto isSufficientLen = mlir::arith::CmpIOp::create(
+        rewriter, loc, mlir::arith::CmpIPredicate::uge, lenOp.getResult(),
+        prefixLenVal);
 
     auto resultType = op.getResult().getType();
-    auto ifOp = mlir::scf::IfOp::create(rewriter, 
-        loc, resultType, isSufficientLen, /*addThenRegion=*/true,
-        /*addElseRegion=*/true);
+    auto ifOp = mlir::scf::IfOp::create(rewriter, loc, resultType,
+                                        isSufficientLen, /*addThenRegion=*/true,
+                                        /*addElseRegion=*/true);
 
     // Then region: Unsafe check
     {
       auto &thenBlock = ifOp.getThenRegion().front();
       rewriter.setInsertionPointToStart(&thenBlock);
-      auto unsafeCheck = reussir::ReussirStrUnsafeStartWithOp::create(rewriter, 
-          loc, resultType, op.getStr(), op.getPrefixAttr());
+      auto unsafeCheck = reussir::ReussirStrUnsafeStartWithOp::create(
+          rewriter, loc, resultType, op.getStr(), op.getPrefixAttr());
       mlir::scf::YieldOp::create(rewriter, loc, unsafeCheck.getResult());
     }
 
@@ -1113,18 +1118,16 @@ struct SCFOpsLoweringPass
                            mlir::math::MathDialect, mlir::memref::MemRefDialect,
                            mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
                            mlir::ub::UBDialect, reussir::ReussirDialect>();
-    target.addDynamicallyLegalOp<ReussirArrayViewOp>(
-        [](ReussirArrayViewOp op) {
-          return llvm::isa<mlir::MemRefType>(op.getView().getType());
-        });
+    target.addDynamicallyLegalOp<ReussirArrayViewOp>([](ReussirArrayViewOp op) {
+      return llvm::isa<mlir::MemRefType>(op.getView().getType());
+    });
     // `token.realloc` is a real resize; it always lowers to the direct
     // `__reussir_reallocate` call (BasicOpsLowering), sound on any allocator.
     // A free of a still-nullable token must be null-guarded here; a free of a
     // plain token is legal and lowers to the runtime call directly.
-    target.addDynamicallyLegalOp<ReussirTokenFreeOp>(
-        [](ReussirTokenFreeOp op) {
-          return llvm::isa<TokenType>(op.getToken().getType());
-        });
+    target.addDynamicallyLegalOp<ReussirTokenFreeOp>([](ReussirTokenFreeOp op) {
+      return llvm::isa<TokenType>(op.getToken().getType());
+    });
     // A fused eval (non-empty `with` pack) must be expanded here — the
     // basic-ops lowering only dispatches the plain, fully-applied form.
     target.addDynamicallyLegalOp<ReussirClosureEvalOp>(
@@ -1132,9 +1135,9 @@ struct SCFOpsLoweringPass
 
     target.addIllegalOp<ReussirNullableDispatchOp, ReussirRecordDispatchOp,
                         ReussirScfYieldOp, ReussirClosureUniqifyOp,
-                        ReussirArrayWithUniqueViewOp,
-                        ReussirTokenEnsureOp, ReussirStrByteAtOp,
-                        ReussirStrSelectOp, ReussirStrStartWithOp>();
+                        ReussirArrayWithUniqueViewOp, ReussirTokenEnsureOp,
+                        ReussirStrByteAtOp, ReussirStrSelectOp,
+                        ReussirStrStartWithOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -1146,17 +1149,15 @@ struct SCFOpsLoweringPass
 void populateSCFOpsLoweringConversionPatterns(
     mlir::RewritePatternSet &patterns) {
   // Add conversion patterns for Reussir SCF operations
-  patterns
-      .add<ReussirNullableDispatchOpRewritePattern,
-           ReussirArrayViewOpRewritePattern,
-           ReussirRecordDispatchOpRewritePattern,
-           ReussirClosureUniqifyOpRewritePattern,
-           ReussirClosureEvalOpRewritePattern,
-           ReussirArrayWithUniqueViewOpRewritePattern,
-           ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
-           ReussirNullableTokenFreeOpRewritePattern,
-           ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
-           ReussirStrStartWithOpRewritePattern>(patterns.getContext());
+  patterns.add<
+      ReussirNullableDispatchOpRewritePattern, ReussirArrayViewOpRewritePattern,
+      ReussirRecordDispatchOpRewritePattern,
+      ReussirClosureUniqifyOpRewritePattern, ReussirClosureEvalOpRewritePattern,
+      ReussirArrayWithUniqueViewOpRewritePattern,
+      ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
+      ReussirNullableTokenFreeOpRewritePattern,
+      ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
+      ReussirStrStartWithOpRewritePattern>(patterns.getContext());
 }
 
 } // namespace reussir

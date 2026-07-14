@@ -149,9 +149,10 @@ def ReussirTokenReusePass
     `reussir-token-reuse` reuses tokens for operations.
   }];
 
-  let options = [
-    Option<"reuseAcrossCall", "reuse-across-call", "bool", /*default=*/"false",
-        "allow token reuse across function calls (may increase peak heap usage)">,
+  let options = [Option<"reuseAcrossCall", "reuse-across-call", "bool",
+                        /*default=*/"false",
+                        "allow token reuse across function calls (may increase "
+                        "peak heap usage)">,
   ];
 
   let dependentDialects = ["::reussir::ReussirDialect"];
@@ -175,7 +176,8 @@ def ReussirInvariantGroupAnalysisPass
 
 def ReussirUniqueCarryingRecursionAnalysisPass
     : Pass<"reussir-unique-carrying-recursion-analysis", "::mlir::ModuleOp"> {
-  let summary = "analyze uniqueness-carrying recursion and outline unique clones";
+  let summary =
+      "analyze uniqueness-carrying recursion and outline unique clones";
   let description = [{
     `reussir-unique-carrying-recursion-analysis` computes, per rc-typed
     function result, whether the returned value is on every path either
@@ -203,7 +205,8 @@ def ReussirUniqueCarryingRecursionAnalysisPass
 
 def ReussirTRMCRecursionAnalysisPass
     : Pass<"reussir-trmc-recursion-analysis", "::mlir::ModuleOp"> {
-  let summary = "tail recursion modulo constructors via first-class constructor contexts";
+  let summary =
+      "tail recursion modulo constructors via first-class constructor contexts";
   let description = [{
     `reussir-trmc-recursion-analysis` splits every directly self-recursive
     function returning an rc-boxed value whose recursion feeds a fused
@@ -220,8 +223,7 @@ def ReussirTRMCRecursionAnalysisPass
   }];
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::func::FuncDialect",
-                           "::mlir::scf::SCFDialect",
-                           "::mlir::ub::UBDialect",
+                           "::mlir::scf::SCFDialect", "::mlir::ub::UBDialect",
                            "::mlir::LLVM::LLVMDialect"];
 }
 

@@ -131,8 +131,8 @@ void ClosureOutliningPass::runOnOperation() {
         rewriter.getContext(), evaluateFunction.getName());
 
     ReussirClosureVtableOp::create(rewriter, op.getLoc(),
-                                            rewriter.getStringAttr(vtableName),
-                                            evaluateAttr, dropAttr, cloneAttr);
+                                   rewriter.getStringAttr(vtableName),
+                                   evaluateAttr, dropAttr, cloneAttr);
 
     // Fourth, update the closure to use
     // outlined version (e.g. remove the
@@ -164,8 +164,8 @@ mlir::func::FuncOp ClosureOutliningPass::createFunctionAndInlineRegion(
       rewriter.getFunctionType(specializedRcType, resultTypes);
 
   // Create the function
-  auto funcOp = mlir::func::FuncOp::create(rewriter, op.getLoc(), invokeName,
-                                           funcType);
+  auto funcOp =
+      mlir::func::FuncOp::create(rewriter, op.getLoc(), invokeName, funcType);
   funcOp.setPrivate();
   funcOp->setAttr("llvm.linkage",
                   mlir::LLVM::LinkageAttr::get(rewriter.getContext(),
@@ -201,8 +201,8 @@ mlir::func::FuncOp ClosureOutliningPass::createFunctionAndInlineRegion(
         rewriter.getType<RefType>(payloadType, Capability::unspecified);
 
     // Get reference to this payload field
-    mlir::Value payloadRef = ReussirClosureInspectPayloadOp::create(rewriter, 
-        loc, payloadRefType, rewriter.getIndexAttr(i), closureBoxRef);
+    mlir::Value payloadRef = ReussirClosureInspectPayloadOp::create(
+        rewriter, loc, payloadRefType, rewriter.getIndexAttr(i), closureBoxRef);
 
     // Load the payload value
     mlir::Value payloadValue =
@@ -229,18 +229,19 @@ mlir::func::FuncOp ClosureOutliningPass::createFunctionAndInlineRegion(
 
     // Only write the decremented count when the closure remains shared.
     auto one = mlir::arith::ConstantIndexOp::create(rewriter, yieldLoc, 1);
-    auto isShared = mlir::arith::CmpIOp::create(rewriter, 
-        yieldLoc, mlir::arith::CmpIPredicate::ugt, fetch.getRefCount(), one);
+    auto isShared = mlir::arith::CmpIOp::create(rewriter, yieldLoc,
+                                                mlir::arith::CmpIPredicate::ugt,
+                                                fetch.getRefCount(), one);
 
     auto ifOp =
         mlir::scf::IfOp::create(rewriter, yieldLoc, mlir::TypeRange{}, isShared,
-                                         /*addThenRegion=*/true,
-                                         /*addElseRegion=*/true);
+                                /*addThenRegion=*/true,
+                                /*addElseRegion=*/true);
 
     // Inside the then block: decrement the refcount and skip the free.
     rewriter.setInsertionPointToStart(ifOp.thenBlock());
-    auto decremented = mlir::arith::SubIOp::create(rewriter, 
-        yieldLoc, fetch.getRefCount(), one);
+    auto decremented = mlir::arith::SubIOp::create(rewriter, yieldLoc,
+                                                   fetch.getRefCount(), one);
     ReussirRcSetOp::create(rewriter, yieldLoc, rcPtr, decremented.getResult());
     mlir::scf::YieldOp::create(rewriter, yieldLoc);
 
@@ -311,12 +312,13 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureDropFunction(
 
   // Only write the decremented count when the closure remains shared.
   auto one = mlir::arith::ConstantIndexOp::create(rewriter, loc, 1);
-  auto isShared = mlir::arith::CmpIOp::create(rewriter, 
-      loc, mlir::arith::CmpIPredicate::ugt, fetch.getRefCount(), one);
+  auto isShared = mlir::arith::CmpIOp::create(
+      rewriter, loc, mlir::arith::CmpIPredicate::ugt, fetch.getRefCount(), one);
 
-  auto ifOp = mlir::scf::IfOp::create(rewriter, loc, mlir::TypeRange{}, isShared,
-                                               /*addThenRegion=*/true,
-                                               /*addElseRegion=*/true);
+  auto ifOp =
+      mlir::scf::IfOp::create(rewriter, loc, mlir::TypeRange{}, isShared,
+                              /*addThenRegion=*/true,
+                              /*addElseRegion=*/true);
 
   // Inside the then block: decrement the refcount and skip the drop.
   rewriter.setInsertionPointToStart(ifOp.thenBlock());
@@ -339,8 +341,8 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureDropFunction(
   auto payloadTypes = closureBoxType.getPayloadTypes();
   RefType cursorRefType =
       rewriter.getType<RefType>(rewriter.getI8Type(), Capability::unspecified);
-  mlir::Value cursorRef = ReussirClosureCursorOp::create(rewriter, 
-      loc, cursorRefType, rewriter.getIndexAttr(0), closureBoxRef);
+  mlir::Value cursorRef = ReussirClosureCursorOp::create(
+      rewriter, loc, cursorRefType, rewriter.getIndexAttr(0), closureBoxRef);
 
   // For each payload field, check if cursor is strictly greater than the field
   // pointer and if so, add a drop operation for the field
@@ -352,19 +354,20 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureDropFunction(
         rewriter.getType<RefType>(payloadType, Capability::unspecified);
 
     // Get reference to this payload field
-    mlir::Value payloadRef = ReussirClosureInspectPayloadOp::create(rewriter, 
-        loc, payloadRefType, rewriter.getIndexAttr(i), closureBoxRef);
+    mlir::Value payloadRef = ReussirClosureInspectPayloadOp::create(
+        rewriter, loc, payloadRefType, rewriter.getIndexAttr(i), closureBoxRef);
 
     // Compare cursor with payload reference: if cursor > payload, the field
     // was initialized and needs to be dropped
-    auto cursorGtPayload = ReussirRefCmpOp::create(rewriter, 
-        loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::ugt, cursorRef,
-        payloadRef);
+    auto cursorGtPayload = ReussirRefCmpOp::create(
+        rewriter, loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::ugt,
+        cursorRef, payloadRef);
 
     // Conditionally drop the field if it was initialized
-    auto dropIfOp = mlir::scf::IfOp::create(rewriter, 
-        loc, mlir::TypeRange{}, cursorGtPayload, /*addThenRegion=*/true,
-        /*addElseRegion=*/false);
+    auto dropIfOp =
+        mlir::scf::IfOp::create(rewriter, loc, mlir::TypeRange{},
+                                cursorGtPayload, /*addThenRegion=*/true,
+                                /*addElseRegion=*/false);
     rewriter.setInsertionPointToStart(dropIfOp.thenBlock());
     ReussirRefDropOp::create(rewriter, loc, payloadRef);
     mlir::scf::YieldOp::create(rewriter, loc);
@@ -444,8 +447,8 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
   mlir::Value token = ReussirTokenAllocOp::create(rewriter, loc, tokenType);
 
   // Allocate assemble space on stack first
-  mlir::Value dstRc = ReussirClosureInstantiateOp::create(rewriter, 
-      loc, specializedRcType, token);
+  mlir::Value dstRc = ReussirClosureInstantiateOp::create(
+      rewriter, loc, specializedRcType, token);
 
   // Borrow the destination closure box
   mlir::Value dstClosureBoxRef =
@@ -459,12 +462,12 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
   auto payloadTypes = closureBoxType.getPayloadTypes();
   RefType cursorRefType =
       rewriter.getType<RefType>(rewriter.getI8Type(), Capability::unspecified);
-  mlir::Value srcCursorRef = ReussirClosureCursorOp::create(rewriter, 
-      loc, cursorRefType, rewriter.getIndexAttr(0), srcClosureBoxRef);
+  mlir::Value srcCursorRef = ReussirClosureCursorOp::create(
+      rewriter, loc, cursorRefType, rewriter.getIndexAttr(0), srcClosureBoxRef);
 
   // Transfer the closure box contents, including header and applied arguments
   ReussirClosureTransferOp::create(rewriter, loc, srcClosureBoxRef,
-                                            dstClosureBoxRef);
+                                   dstClosureBoxRef);
 
   // For each payload field, check if cursor is greater than the field
   // pointer and if so, copy the data and emit ownership acquisition
@@ -476,23 +479,26 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
         rewriter.getType<RefType>(payloadType, Capability::unspecified);
 
     // Get reference to source payload field
-    mlir::Value srcPayloadRef = ReussirClosureInspectPayloadOp::create(rewriter, 
-        loc, payloadRefType, rewriter.getIndexAttr(i), srcClosureBoxRef);
+    mlir::Value srcPayloadRef = ReussirClosureInspectPayloadOp::create(
+        rewriter, loc, payloadRefType, rewriter.getIndexAttr(i),
+        srcClosureBoxRef);
 
     // Get reference to destination payload field
-    mlir::Value dstPayloadRef = ReussirClosureInspectPayloadOp::create(rewriter, 
-        loc, payloadRefType, rewriter.getIndexAttr(i), dstClosureBoxRef);
+    mlir::Value dstPayloadRef = ReussirClosureInspectPayloadOp::create(
+        rewriter, loc, payloadRefType, rewriter.getIndexAttr(i),
+        dstClosureBoxRef);
 
     // Compare cursor with payload reference: if cursor > payload, the field
     // was initialized and needs to be copied
-    auto cursorGtPayload = ReussirRefCmpOp::create(rewriter, 
-        loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::ugt,
+    auto cursorGtPayload = ReussirRefCmpOp::create(
+        rewriter, loc, rewriter.getI1Type(), mlir::arith::CmpIPredicate::ugt,
         srcCursorRef, srcPayloadRef);
 
     // Conditionally copy the field if it was initialized
-    auto copyIfOp = mlir::scf::IfOp::create(rewriter, 
-        loc, mlir::TypeRange{}, cursorGtPayload, /*addThenRegion=*/true,
-        /*addElseRegion=*/false);
+    auto copyIfOp =
+        mlir::scf::IfOp::create(rewriter, loc, mlir::TypeRange{},
+                                cursorGtPayload, /*addThenRegion=*/true,
+                                /*addElseRegion=*/false);
     rewriter.setInsertionPointToStart(copyIfOp.thenBlock());
 
     // Emit ownership acquisition for non-trivially copyable types

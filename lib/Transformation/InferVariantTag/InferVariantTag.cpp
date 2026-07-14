@@ -1,4 +1,5 @@
-//===-- InferVariantTag.cpp - Reussir variant tag inference impl -*- C++ -*-===//
+//===-- InferVariantTag.cpp - Reussir variant tag inference impl -*- C++
+//-*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.

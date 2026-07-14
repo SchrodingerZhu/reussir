@@ -57,10 +57,10 @@
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirDialect.h"
-#include "Reussir/Support/AllocatorBinModel.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Support/AllocatorBinModel.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LLVM.h"
@@ -1660,8 +1660,8 @@ struct ReussirRcCompareImmortalConversionPattern
     TagEncoding encoding = specialPtrTagEncoding(op);
     auto dummy = tagDummyBox(op->getParentOfType<mlir::ModuleOp>(), loc,
                              op.getTag().getZExtValue(), encoding, rewriter);
-    mlir::Value expected = mlir::LLVM::AddressOfOp::create(
-        rewriter, loc, ptrTy, dummy.getSymName());
+    mlir::Value expected = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrTy,
+                                                           dummy.getSymName());
     if (encoding == TagEncoding::TBI) {
       if (indexTy.getWidth() != 64)
         return op.emitOpError(
@@ -3035,9 +3035,9 @@ struct ReussirRefMemcpyConversionPattern
     auto sizeVal = mlir::LLVM::ConstantOp::create(
         rewriter, op.getLoc(), converter->getIndexType(),
         rewriter.getIntegerAttr(converter->getIndexType(), size));
-    rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyOp>(
-        op, adaptor.getDst(), adaptor.getSrc(), sizeVal,
-        /*isVolatile=*/false);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyOp>(op, adaptor.getDst(),
+                                                      adaptor.getSrc(), sizeVal,
+                                                      /*isVolatile=*/false);
     return mlir::success();
   }
 };
@@ -3439,15 +3439,15 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
         ReussirRegionCleanupOp, ReussirRegionCreateOp, ReussirRcReinterpretOp,
         ReussirCellCreateOp, ReussirCellGetOp, ReussirCellSetOp,
-        ReussirCellRmwOp, ReussirCellYieldOp,
-        ReussirClosureApplyOp, ReussirClosureCloneOp, ReussirClosureEvalOp,
+        ReussirCellRmwOp, ReussirCellYieldOp, ReussirClosureApplyOp,
+        ReussirClosureCloneOp, ReussirClosureEvalOp,
         ReussirClosureInspectPayloadOp, ReussirClosureCursorOp,
         ReussirClosureInstantiateOp, ReussirClosureVtableOp,
         ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcFetchSubOp,
-        ReussirRcSetOp,
-        ReussirStrGlobalOp, ReussirStrLiteralOp, ReussirStrCastOp,
-        ReussirStrLenOp, ReussirStrUnsafeByteAtOp, ReussirStrUnsafeStartWithOp,
-        ReussirStrSliceOp, ReussirTrampolineOp, ReussirTokenLaunderOp>();
+        ReussirRcSetOp, ReussirStrGlobalOp, ReussirStrLiteralOp,
+        ReussirStrCastOp, ReussirStrLenOp, ReussirStrUnsafeByteAtOp,
+        ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirTrampolineOp,
+        ReussirTokenLaunderOp>();
     // `reussir.closure.wpd_test` is created BY the dispatch conversion
     // patterns above, already in its final form (operand = the loaded vtable
     // pointer), and must survive conversion: the LLVM dialect cannot express
@@ -3569,8 +3569,8 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirNullableCreateConversionPattern,
       ReussirNullableCoerceConversionPattern, ReussirRcIncConversionPattern,
       ReussirRcTaggedConversionPattern,
-      ReussirRcCompareImmortalConversionPattern, ReussirRcDecOpConversionPattern,
-      ReussirRcCreateOpConversionPattern,
+      ReussirRcCompareImmortalConversionPattern,
+      ReussirRcDecOpConversionPattern, ReussirRcCreateOpConversionPattern,
       ReussirRcCreateCompoundOpConversionPattern,
       ReussirRcCreateVariantOpConversionPattern,
       ReussirRcBorrowOpConversionPattern, ReussirRcIsUniqueOpConversionPattern,

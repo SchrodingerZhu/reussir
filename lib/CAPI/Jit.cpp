@@ -14,11 +14,11 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/PassManager.h>
 #include <llvm/MC/TargetRegistry.h>
-#include <llvm/TargetParser/SubtargetFeature.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/CBindingWrapping.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/SubtargetFeature.h>
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
@@ -33,8 +33,7 @@
 #include <tpde-llvm/LLVMCompiler.hpp>
 #endif
 
-void reussirRunBackendLLVMPipeline(LLVMModuleRef module,
-                                   ReussirJitOptLevel opt,
+void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
                                    LLVMTargetMachineRef machine) {
   if (opt == ReussirJitOptNone || opt == ReussirJitOptTpde)
     return;
@@ -54,9 +53,8 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module,
     if (triple.getTriple().empty())
       triple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
     std::string lookupError;
-    if (const llvm::Target *target =
-            llvm::TargetRegistry::lookupTarget(triple.getTriple(),
-                                               lookupError)) {
+    if (const llvm::Target *target = llvm::TargetRegistry::lookupTarget(
+            triple.getTriple(), lookupError)) {
       llvm::SubtargetFeatures features;
       for (const auto &[name, enabled] : llvm::sys::getHostCPUFeatures())
         features.AddFeature(name, enabled);

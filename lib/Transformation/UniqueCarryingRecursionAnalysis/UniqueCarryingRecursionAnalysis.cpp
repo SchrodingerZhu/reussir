@@ -83,10 +83,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Transformation/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/Passes.h"
 
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
@@ -318,7 +318,8 @@ private:
       return mapped;
     }
 
-    if (auto withUniqueView = llvm::dyn_cast<ReussirArrayWithUniqueViewOp>(op)) {
+    if (auto withUniqueView =
+            llvm::dyn_cast<ReussirArrayWithUniqueViewOp>(op)) {
       auto yieldOp = llvm::dyn_cast<ReussirScfYieldOp>(
           withUniqueView.getBody().front().getTerminator());
       if (!yieldOp)
@@ -357,8 +358,7 @@ private:
     for (mlir::Region &region : op->getRegions()) {
       if (region.empty())
         continue;
-      auto yieldOp =
-          llvm::dyn_cast<YieldOpT>(region.front().getTerminator());
+      auto yieldOp = llvm::dyn_cast<YieldOpT>(region.front().getTerminator());
       if (!yieldOp || resultIndex >= yieldOp->getNumOperands())
         return UniqueCarryingValue::getUnknown();
       joined = UniqueCarryingValue::join(
@@ -424,9 +424,8 @@ computeFunctionSummary(mlir::func::FuncOp funcOp,
 static bool isCarryingUniquenessRegionOp(mlir::Operation *op,
                                          const FunctionSummaryMap &summaries) {
   auto *dialect = op->getDialect();
-  bool supportedOp =
-      (dialect && dialect->getNamespace() == "scf") ||
-      llvm::isa<ReussirArrayWithUniqueViewOp>(op);
+  bool supportedOp = (dialect && dialect->getNamespace() == "scf") ||
+                     llvm::isa<ReussirArrayWithUniqueViewOp>(op);
   if (!supportedOp || !hasRcResults(op->getResultTypes()))
     return false;
   ProvenanceEvaluator evaluator(summaries);
@@ -707,7 +706,8 @@ struct UniqueCarryingRecursionAnalysisPass
     moduleOp.walk([&](mlir::Operation *op) {
       if (llvm::isa<mlir::func::FuncOp>(op))
         return;
-      setCarryingUniquenessAttr(op, isCarryingUniquenessRegionOp(op, summaries));
+      setCarryingUniquenessAttr(op,
+                                isCarryingUniquenessRegionOp(op, summaries));
     });
 
     mlir::SymbolTable symbolTable(moduleOp);

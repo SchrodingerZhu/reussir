@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // C API constructors for the Reussir debug-info attributes. These attributes
-// describe a value's debug type / variable so the debug-info conversion pass can
-// emit LLVM DI; they use custom storage that the generic MLIR C API cannot
+// describe a value's debug type / variable so the debug-info conversion pass
+// can emit LLVM DI; they use custom storage that the generic MLIR C API cannot
 // build, so the code generator constructs them through these entry points.
 //
 //===----------------------------------------------------------------------===//
@@ -39,8 +39,8 @@ MlirAttribute reussirDBGIntTypeAttrGet(MlirContext context, MlirType innerType,
 MlirAttribute reussirDBGFPTypeAttrGet(MlirContext context, MlirType innerType,
                                       MlirAttribute dbgName);
 
-// One member of a debug record type: a field `name` (`StringAttr`) and its debug
-// type attribute (a `DBG*Type` attribute).
+// One member of a debug record type: a field `name` (`StringAttr`) and its
+// debug type attribute (a `DBG*Type` attribute).
 MlirAttribute reussirDBGRecordMemberAttrGet(MlirContext context,
                                             MlirAttribute name,
                                             MlirAttribute typeAttr);
@@ -48,13 +48,13 @@ MlirAttribute reussirDBGRecordMemberAttrGet(MlirContext context,
 // A debug record (struct / variant) type. `members` is an array of
 // `reussirDBGRecordMemberAttrGet` results; `underlyingType` is the lowered MLIR
 // record used for size/offset computation.
-MlirAttribute reussirDBGRecordTypeAttrGet(MlirContext context, intptr_t nMembers,
-                                          MlirAttribute const *members,
-                                          bool isVariant,
-                                          MlirType underlyingType,
-                                          MlirAttribute dbgName);
+MlirAttribute
+reussirDBGRecordTypeAttrGet(MlirContext context, intptr_t nMembers,
+                            MlirAttribute const *members, bool isVariant,
+                            MlirType underlyingType, MlirAttribute dbgName);
 
-// A debug subprogram (function) attribute: `rawName` is the source function name
+// A debug subprogram (function) attribute: `rawName` is the source function
+// name
 // (`StringAttr`); `typeParams` an array of parameter debug-type attributes.
 MlirAttribute reussirDBGSubprogramAttrGet(MlirContext context,
                                           MlirAttribute rawName,
@@ -62,8 +62,8 @@ MlirAttribute reussirDBGSubprogramAttrGet(MlirContext context,
                                           MlirAttribute const *typeParams);
 
 // A debug type for a reference-counted (boxed) value, wrapping the payload's
-// debug type. `regional` selects the box header to skip past: a shared box has a
-// single ref-count word, a regional box a three-word header.
+// debug type. `regional` selects the box header to skip past: a shared box has
+// a single ref-count word, a regional box a three-word header.
 MlirAttribute reussirDBGBoxedTypeAttrGet(MlirContext context,
                                          MlirAttribute dbgType, bool regional);
 
@@ -76,7 +76,8 @@ MlirAttribute reussirDBGLocalVarAttrGet(MlirContext context,
 // argument index.
 MlirAttribute reussirDBGFuncArgAttrGet(MlirContext context,
                                        MlirAttribute dbgType,
-                                       MlirAttribute argName, unsigned argIndex);
+                                       MlirAttribute argName,
+                                       unsigned argIndex);
 
 // Set an operation's location. Used by the code generator to attach a fused
 // debug-info location (carrying a `DBGLocalVar`) to the op that defines a local

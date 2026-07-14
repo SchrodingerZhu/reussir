@@ -38,7 +38,7 @@ def ReussirDialect : Dialect {
       "mlir::LLVM::LLVMDialect",
       // UB Dialect
       "mlir::ub::UBDialect",
-    ];
+  ];
   let extraClassDeclaration = [{
   private:
     // Register the builtin Attributes.

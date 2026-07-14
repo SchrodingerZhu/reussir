@@ -91,10 +91,10 @@ def ReussirCctxExtendOp : ReussirCctxOp<"extend", []> {
     context.
   }];
 
-  let arguments = (ins
-      Arg<ReussirCctxType, "context to extend">:$ctx,
+  let arguments = (ins Arg<ReussirCctxType, "context to extend">:$ctx,
       Arg<ReussirRcType, "constructor plugged into the hole">:$rcPtr,
-      Arg<ReussirHoleType, "the plugged constructor's hole to refocus on">:$hole);
+      Arg<ReussirHoleType,
+          "the plugged constructor's hole to refocus on">:$hole);
   let results = (outs Res<ReussirCctxType, "extended context">:$newCtx);
   let hasVerifier = 1;
   let assemblyFormat = [{
@@ -113,8 +113,7 @@ def ReussirCctxApplyOp : ReussirCctxOp<"apply", []> {
     yields `value` itself. The context is consumed.
   }];
 
-  let arguments = (ins
-      Arg<ReussirCctxType, "context to complete">:$ctx,
+  let arguments = (ins Arg<ReussirCctxType, "context to complete">:$ctx,
       Arg<ReussirRcType, "value filling the final hole">:$value);
   let results = (outs Res<ReussirRcType, "completed value">:$result);
   let hasVerifier = 1;
@@ -221,9 +220,8 @@ def ReussirTokenLaunderOp : ReussirTokenOp<"launder", []> {
   }];
   let results = (outs Res<ReussirTokenType,
                           "output token", [MemAlloc<DefaultResource>]>:$result);
-  let arguments =
-      (ins Arg<ReussirTokenType,
-               "input token", [MemFree<DefaultResource>]>:$token);
+  let arguments = (ins Arg<ReussirTokenType,
+                           "input token", [MemFree<DefaultResource>]>:$token);
   let assemblyFormat = [{
     `(` $token `:` type($token) `)` `:` type($result) attr-dict
   }];
@@ -303,9 +301,11 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
   }];
 }
 
-// this is a high-level scf operation, 
+// this is a high-level scf operation,
 // should be expanded before basic ops lowering pass
-def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+def ReussirNullableDispatchOp
+    : ReussirNullableOp<
+          "dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a nullable token";
   let description = [{
     `reussir.nullable.dispatch` is a high-level structured control flow operation.
@@ -329,11 +329,11 @@ def ReussirNullableDispatchOp : ReussirNullableOp<"dispatch", [DeclareOpInterfac
     }
     ```
   }];
-  
+
   let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
   let results = (outs Res<Optional<AnyType>, "dispatched value">:$value);
   let regions = (region SizedRegion<1>:$nonNullRegion,
-                 SizedRegion<1>:$nullRegion);
+      SizedRegion<1>:$nullRegion);
 
   let assemblyFormat = [{
     `(` $nullable `:` type($nullable) `)` ( `->` type($value)^)? `{` `\n`
@@ -360,9 +360,9 @@ def ReussirNullableCoerceOp : ReussirNullableOp<"coerce", []> {
     ```
   }];
 
-  let results = (outs Res<ReussirNonNullPointerType, "non-null pointer">:$nonnull);
-  let arguments =
-      (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
+  let results =
+      (outs Res<ReussirNonNullPointerType, "non-null pointer">:$nonnull);
+  let arguments = (ins Arg<ReussirNullableType, "nullable pointer">:$nullable);
   let assemblyFormat = [{
     `(` $nullable `:` type($nullable) `)` `:` type($nonnull) attr-dict
   }];
@@ -393,10 +393,9 @@ def ReussirRcIncOp : ReussirRcOp<"inc", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRcDecOp : ReussirRcOp<"dec", [
-  DeclareOpInterfaceMethods<TokenProducerInterface>,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>
-]> {
+def ReussirRcDecOp
+    : ReussirRcOp<"dec", [DeclareOpInterfaceMethods<TokenProducerInterface>,
+                          DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Decrement reference count";
   let description = [{
     `reussir.rc.dec` decrements the reference count of a RC pointer.
@@ -411,13 +410,11 @@ def ReussirRcDecOp : ReussirRcOp<"dec", [
     __reussir_release_rigid_object. There is no token shall be returned.
   }];
 
-  let arguments = (
-    ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr,
-    OptionalAttr<IndexAttr>:$destructureTag,
-    OptionalAttr<DenseI64ArrayAttr>:$boundMembers
-  );
-  let results =
-      (outs Res<Optional<ReussirNullableTokenType>, "Nullable token">:$nullableToken);
+  let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr,
+      OptionalAttr<IndexAttr>:$destructureTag,
+      OptionalAttr<DenseI64ArrayAttr>:$boundMembers);
+  let results = (outs Res<Optional<ReussirNullableTokenType>,
+                          "Nullable token">:$nullableToken);
 
   let extraClassDeclaration = [{
     /// Whether this decrement *destructures* its box: the consumer took
@@ -516,11 +513,8 @@ def ReussirRcSetOp : ReussirRcOp<"set", []> {
     stored — atomic boxes are decremented with `reussir.rc.fetch_sub`.
   }];
 
-  let arguments = (
-    ins
-      Arg<ReussirRcType, "Reference to update">:$rcPtr,
-      Arg<Index, "New reference count">:$refCount
-  );
+  let arguments = (ins Arg<ReussirRcType, "Reference to update">:$rcPtr,
+      Arg<Index, "New reference count">:$refCount);
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `,`
@@ -530,11 +524,11 @@ def ReussirRcSetOp : ReussirRcOp<"set", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRcCreateOp : ReussirRcOp<"create", [
-  AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<TokenAcceptorInterface>
-]> {
+def ReussirRcCreateOp
+    : ReussirRcOp<
+          "create", [AttrSizedOperandSegments,
+                     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+                     DeclareOpInterfaceMethods<TokenAcceptorInterface>]> {
   let summary = "Create a RC pointer";
   let description = [{
     `reussir.rc.create` creates a RC pointer from a value.
@@ -572,13 +566,9 @@ def ReussirRcCreateOp : ReussirRcOp<"create", [
     ```
   }];
 
-  let arguments = (ins 
-      Arg<AnyType, "value">:$value, 
-      Optional<ReussirTokenType>:$token,
-      Optional<ReussirRegionType>:$region,
-      OptionalAttr<FlatSymbolRefAttr>:$vtable,
-      UnitAttr:$skipRc
-  );
+  let arguments = (ins Arg<AnyType, "value">:$value,
+      Optional<ReussirTokenType>:$token, Optional<ReussirRegionType>:$region,
+      OptionalAttr<FlatSymbolRefAttr>:$vtable, UnitAttr:$skipRc);
   let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr);
 
   let assemblyFormat = [{
@@ -604,11 +594,11 @@ def ReussirRcCreateOp : ReussirRcOp<"create", [
   }];
 }
 
-def ReussirRcCreateCompoundOp : ReussirRcOp<"create_compound", [
-  AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<TokenAcceptorInterface>
-]> {
+def ReussirRcCreateCompoundOp
+    : ReussirRcOp<"create_compound",
+                  [AttrSizedOperandSegments,
+                   DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+                   DeclareOpInterfaceMethods<TokenAcceptorInterface>]> {
   let summary = "Create a RC pointer from a compound record payload";
   let description = [{
     `reussir.rc.create_compound` fuses `reussir.record.compound` and
@@ -616,17 +606,12 @@ def ReussirRcCreateCompoundOp : ReussirRcOp<"create_compound", [
     directly into the RC box payload.
   }];
 
-  let arguments = (ins
-      Variadic<AnyType>:$fields,
-      Optional<ReussirTokenType>:$token,
-      Optional<ReussirRegionType>:$region,
-      OptionalAttr<FlatSymbolRefAttr>:$vtable,
-      UnitAttr:$skipRc,
+  let arguments = (ins Variadic<AnyType>:$fields,
+      Optional<ReussirTokenType>:$token, Optional<ReussirRegionType>:$region,
+      OptionalAttr<FlatSymbolRefAttr>:$vtable, UnitAttr:$skipRc,
       OptionalAttr<DenseI64ArrayAttr>:$skipFields,
-      OptionalAttr<DenseI64ArrayAttr>:$holeFields
-  );
-  let results = (outs
-      Res<ReussirRcType, "Created RC pointer">:$rcPtr,
+      OptionalAttr<DenseI64ArrayAttr>:$holeFields);
+  let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr,
       Variadic<ReussirHoleType>:$holes);
 
   let assemblyFormat = [{
@@ -656,11 +641,11 @@ def ReussirRcCreateCompoundOp : ReussirRcOp<"create_compound", [
   }];
 }
 
-def ReussirRcCreateVariantOp : ReussirRcOp<"create_variant", [
-  AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<TokenAcceptorInterface>
-]> {
+def ReussirRcCreateVariantOp
+    : ReussirRcOp<"create_variant",
+                  [AttrSizedOperandSegments,
+                   DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+                   DeclareOpInterfaceMethods<TokenAcceptorInterface>]> {
   let summary = "Create a RC pointer from a variant record payload";
   let description = [{
     `reussir.rc.create_variant` fuses `reussir.record.variant` and
@@ -669,19 +654,13 @@ def ReussirRcCreateVariantOp : ReussirRcOp<"create_variant", [
     directly to represent a fully fused `variant(compound(...))` materialization.
   }];
 
-  let arguments = (ins
-      Arg<IndexAttr, "tag">:$tag,
-      Optional<AnyType>:$value,
-      Variadic<AnyType>:$fields,
-      Optional<ReussirTokenType>:$token,
+  let arguments = (ins Arg<IndexAttr, "tag">:$tag, Optional<AnyType>:$value,
+      Variadic<AnyType>:$fields, Optional<ReussirTokenType>:$token,
       Optional<ReussirRegionType>:$region,
-      OptionalAttr<FlatSymbolRefAttr>:$vtable,
-      UnitAttr:$skipRc,
+      OptionalAttr<FlatSymbolRefAttr>:$vtable, UnitAttr:$skipRc,
       OptionalAttr<DenseI64ArrayAttr>:$skipFields,
-      OptionalAttr<DenseI64ArrayAttr>:$holeFields
-  );
-  let results = (outs
-      Res<ReussirRcType, "Created RC pointer">:$rcPtr,
+      OptionalAttr<DenseI64ArrayAttr>:$holeFields);
+  let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr,
       Variadic<ReussirHoleType>:$holes);
 
   let hasVerifier = 1;
@@ -770,8 +749,9 @@ def ReussirRcCompareImmortalOp : ReussirRcOp<"compare_immortal", [Pure]> {
   }];
 
   let arguments = (ins Arg<ReussirRcType, "rc pointer to classify">:$rcPtr,
-                   Arg<IndexAttr, "tag">:$tag);
-  let results = (outs Res<I1, "whether the value is the arm's immediate">:$result);
+      Arg<IndexAttr, "tag">:$tag);
+  let results =
+      (outs Res<I1, "whether the value is the arm's immediate">:$result);
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` `tag` `(` $tag `)` attr-dict
   }];
@@ -862,7 +842,8 @@ def ReussirRcAssumeUniqueOp : ReussirRcOp<"assume_unique", []> {
     `reussir.rc.assume_unique` asserts that a RC pointer is unique and is
     intended to lower to `llvm.assume`.
   }];
-  let arguments = (ins Arg<ReussirRcType, "RC pointer to assume unique">:$rcPtr);
+  let arguments =
+      (ins Arg<ReussirRcType, "RC pointer to assume unique">:$rcPtr);
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` attr-dict
   }];
@@ -933,7 +914,7 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
 
     The input must be a reference to a variant record.
   }];
-  
+
   let arguments = (ins Arg<ReussirRefType, "variant record">:$variant);
   let results = (outs Res<Index, "tag">:$tag);
 
@@ -944,10 +925,11 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
   let hasVerifier = 1;
 }
 
-
-// This is a high-level scf operation, 
+// This is a high-level scf operation,
 // should be expanded before basic ops lowering pass
-def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+def ReussirRecordDispatchOp
+    : ReussirRecordOp<
+          "dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a record";
   let description = [{
     `reussir.record.dispatch` is a high-level structured control flow operation.
@@ -969,7 +951,7 @@ def ReussirRecordDispatchOp : ReussirRecordOp<"dispatch", [DeclareOpInterfaceMet
     region indices to the actual regions.
   }];
 
-  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant, 
+  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant,
       ArrayAttr:$tagSets);
   let results = (outs Res<Optional<AnyType>, "output value">:$value);
   let regions = (region VariadicRegion<SizedRegion<1>>:$regions);
@@ -990,9 +972,7 @@ def ReussirRecordCoerceOp : ReussirRecordOp<"coerce", []> {
   }];
 
   let results = (outs Res<ReussirRefType, "coerced pointer">:$coerced);
-  let arguments =
-      (ins 
-      IndexAttr:$tag,
+  let arguments = (ins IndexAttr:$tag,
       Arg<ReussirRefType, "variant reference">:$variant);
   let assemblyFormat = [{
     `[` $tag `]` 
@@ -1017,10 +997,8 @@ def ReussirArrayProjectOp : ReussirArrayOp<"project", []> {
     Otherwise, the result is another statically shaped memref with one fewer
     dimension.
   }];
-  let arguments = (ins
-    Arg<AnyType, "array view to project">:$view,
-    Arg<Index, "dynamic index">:$index
-  );
+  let arguments = (ins Arg<AnyType, "array view to project">:$view,
+      Arg<Index, "dynamic index">:$index);
   let results = (outs Res<AnyType, "projected lane or subview">:$projected);
   let assemblyFormat = [{
     `(` $view `:` qualified(type($view)) `)` `[` $index `:` type($index) `]`
@@ -1045,7 +1023,8 @@ def ReussirArrayViewOp : ReussirArrayOp<"view", []> {
 }
 
 def ReussirArrayWithUniqueViewOp : ReussirArrayOp<"with_unique_view", []> {
-  let summary = "Ensure a unique RC array, expose a mutable view, and run a region";
+  let summary =
+      "Ensure a unique RC array, expose a mutable view, and run a region";
   let description = [{
     `reussir.array.with_unique_view` makes sure the input RC array is unique,
     clones it when needed, then executes the body region with a mutable view of
@@ -1067,19 +1046,17 @@ def ReussirArrayWithUniqueViewOp : ReussirArrayOp<"with_unique_view", []> {
 class ReussirCellOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"cell."#mnemonic, traits>;
 
-def ReussirCellCreateOp : ReussirCellOp<"create", [
-  DeclareOpInterfaceMethods<TokenAcceptorInterface>
-]> {
+def ReussirCellCreateOp
+    : ReussirCellOp<
+          "create", [DeclareOpInterfaceMethods<TokenAcceptorInterface>]> {
   let summary = "Create a shared reference-counted cell";
   let description = [{
     `reussir.cell.create` stores `value` in a fresh shared RC cell. The
     allocation token is optional until token instantiation assigns one, and
     must match the complete RC cell box layout when present.
   }];
-  let arguments = (ins
-    Arg<AnyType, "initial value">:$value,
-    Optional<ReussirTokenType>:$token
-  );
+  let arguments = (ins Arg<AnyType, "initial value">:$value,
+      Optional<ReussirTokenType>:$token);
   let results = (outs Res<ReussirRcCellType, "created cell">:$cell);
   let assemblyFormat = [{
     `value` `(` $value `:` type($value) `)`
@@ -1112,10 +1089,8 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     the caller is responsible for supplying the ownership transferred into the
     cell.
   }];
-  let arguments = (ins
-    Arg<AnyType, "replacement value">:$value,
-    Arg<ReussirRcCellType, "cell to update">:$cell
-  );
+  let arguments = (ins Arg<AnyType, "replacement value">:$value,
+      Arg<ReussirRcCellType, "cell to update">:$cell);
   let assemblyFormat = [{
     `(` $value `:` type($value) `,` $cell `:` qualified(type($cell)) `)`
     attr-dict
@@ -1140,15 +1115,12 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
   let hasVerifier = 1;
 }
 
-def ReussirCellYieldOp : ReussirCellOp<"yield", [
-  ReturnLike, Terminator,
-  ParentOneOf<["::reussir::ReussirCellRmwOp"]>
-]> {
+def ReussirCellYieldOp
+    : ReussirCellOp<"yield", [ReturnLike, Terminator,
+                              ParentOneOf<["::reussir::ReussirCellRmwOp"]>]> {
   let summary = "Yield a replacement and optional output from cell.rmw";
-  let arguments = (ins
-    Arg<AnyType, "replacement value">:$newValue,
-    Arg<Optional<AnyType>, "optional operation output">:$output
-  );
+  let arguments = (ins Arg<AnyType, "replacement value">:$newValue,
+      Arg<Optional<AnyType>, "optional operation output">:$output);
   let assemblyFormat = [{
     `(` $newValue `:` type($newValue) `)`
     (`output` `(` $output^ `:` type($output) `)`)? attr-dict
@@ -1260,10 +1232,8 @@ def ReussirRefLoadOp : ReussirReferenceOp<"load", []> {
     `reussir.ref.load` loads a reference.
   }];
 
-  let arguments = (ins
-    Arg<ReussirRefType, "reference to load">:$ref,
-    UnitAttr:$invariant_group
-  );
+  let arguments = (ins Arg<ReussirRefType, "reference to load">:$ref,
+      UnitAttr:$invariant_group);
   let results = (outs Res<AnyType, "loaded value">:$value);
 
   let assemblyFormat = [{
@@ -1301,11 +1271,8 @@ def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
     When variant is specified, the inner element must be a variant record type and
     the index must be inbound.
   }];
-  let arguments = (
-    ins Arg<ReussirRefType, "reference to drop">:$ref,
-    UnitAttr:$inlined,
-    OptionalAttr<IndexAttr>:$variant 
-  );
+  let arguments = (ins Arg<ReussirRefType, "reference to drop">:$ref,
+      UnitAttr:$inlined, OptionalAttr<IndexAttr>:$variant);
 
   let assemblyFormat = [{
     `(` $ref `:` qualified(type($ref)) `)` 
@@ -1316,12 +1283,9 @@ def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
     attr-dict
   }];
 
-  let builders = [
-    OpBuilder<(ins "mlir::Value":$ref),
-    [{
+  let builders = [OpBuilder<(ins "mlir::Value":$ref), [{
       return build($_builder, $_state, ref, false, nullptr);
-    }]>
-  ];
+    }]>];
 
   let hasVerifier = 1;
 }
@@ -1342,11 +1306,8 @@ def ReussirRefAcquireOp : ReussirReferenceOp<"acquire", []> {
     When variant is specified, the inner element must be a variant record type and
     the index must be inbound.
   }];
-  let arguments = (
-    ins Arg<ReussirRefType, "reference to acquire">:$ref,
-    UnitAttr:$inlined,
-    OptionalAttr<IndexAttr>:$variant
-  );
+  let arguments = (ins Arg<ReussirRefType, "reference to acquire">:$ref,
+      UnitAttr:$inlined, OptionalAttr<IndexAttr>:$variant);
 
   let assemblyFormat = [{
     `(` $ref `:` qualified(type($ref)) `)`
@@ -1357,12 +1318,9 @@ def ReussirRefAcquireOp : ReussirReferenceOp<"acquire", []> {
     attr-dict
   }];
 
-  let builders = [
-    OpBuilder<(ins "mlir::Value":$ref),
-    [{
+  let builders = [OpBuilder<(ins "mlir::Value":$ref), [{
       return build($_builder, $_state, ref, false, nullptr);
-    }]>
-  ];
+    }]>];
 
   let hasVerifier = 1;
 }
@@ -1372,13 +1330,9 @@ def ReussirRefDiffOp : ReussirReferenceOp<"diff", []> {
   let description = [{
     `reussir.ref.diff` computes the difference (target - base) between two refernece pointers.
   }];
-  let arguments = (ins 
-    Arg<ReussirRefType, "base reference">:$base,
-    Arg<ReussirRefType, "target reference">:$target
-  );
-  let results = (outs
-    Res<Index, "difference">:$difference
-  );
+  let arguments = (ins Arg<ReussirRefType, "base reference">:$base,
+      Arg<ReussirRefType, "target reference">:$target);
+  let results = (outs Res<Index, "difference">:$difference);
   let assemblyFormat = [{
     $base `,` $target `:` functional-type(operands, results) attr-dict
   }];
@@ -1389,14 +1343,10 @@ def ReussirRefCmpOp : ReussirReferenceOp<"cmp", []> {
   let description = [{
     `reussir.ref.cmp` computes the difference (target - base) between two refernece pointers.
   }];
-  let arguments = (ins 
-    Arith_CmpIPredicateAttr:$predicate,
-    Arg<ReussirRefType, "left-hand side">:$lhs,
-    Arg<ReussirRefType, "right-hand side">:$rhs
-  );
-  let results = (outs
-    Res<I1, "compare result">:$flag
-  );
+  let arguments = (ins Arith_CmpIPredicateAttr:$predicate,
+      Arg<ReussirRefType, "left-hand side">:$lhs,
+      Arg<ReussirRefType, "right-hand side">:$rhs);
+  let results = (outs Res<I1, "compare result">:$flag);
   let assemblyFormat = [{
     $predicate $lhs `,` $rhs `:` functional-type(operands, results) attr-dict
   }];
@@ -1412,10 +1362,8 @@ def ReussirRefMemcpyOp : ReussirReferenceOp<"memcpy", []> {
     This is a low-level operation that does not perform any reference counting
     or ownership transfer. It simply copies the bytes from source to destination.
   }];
-  let arguments = (ins 
-    Arg<ReussirRefType, "source reference">:$src,
-    Arg<ReussirRefType, "destination reference">:$dst
-  );
+  let arguments = (ins Arg<ReussirRefType, "source reference">:$src,
+      Arg<ReussirRefType, "destination reference">:$dst);
   let assemblyFormat = [{
     $src `to` $dst `:` type($src) `to` type($dst) attr-dict
   }];
@@ -1449,10 +1397,9 @@ def ReussirRegionRunOp
 }
 
 def ReussirRegionYieldOp
-    : ReussirRegionOp<
-          "yield", [Terminator,
-                    ParentOneOf<["::reussir::ReussirRegionRunOp"]>,
-                    ]> {
+    : ReussirRegionOp<"yield", [Terminator,
+                                ParentOneOf<["::reussir::ReussirRegionRunOp"]>,
+]> {
   let summary = "Yield a value from a region";
   let description = [{
     `reussir.region.yield` yields a value from a region.
@@ -1464,10 +1411,9 @@ def ReussirRegionYieldOp
   let hasVerifier = 1;
 }
 
-def ReussirRegionVTableOp 
-    : ReussirRegionOp<"vtable", [
-        Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>
-    ]> {
+def ReussirRegionVTableOp
+    : ReussirRegionOp<"vtable", [Symbol, DeclareOpInterfaceMethods<
+                                             SymbolUserOpInterface>]> {
   let summary = "Create a vtable for a region";
   let description = [{
     `reussir.region.vtable` creates a vtable for objects managed via flex/rigid
@@ -1493,11 +1439,8 @@ def ReussirRegionVTableOp
     ```
     Similarly, all offsets are relative to the header start (not the object start).
   }];
-  let arguments = (ins
-    SymbolNameAttr:$sym_name,
-    TypeAttr:$type,
-    OptionalAttr<FlatSymbolRefAttr>:$drop
-  );
+  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type,
+      OptionalAttr<FlatSymbolRefAttr>:$drop);
   let assemblyFormat = [{
     $sym_name `{`
       `type` `(` $type `)`
@@ -1506,10 +1449,9 @@ def ReussirRegionVTableOp
   }];
 }
 
-// The following are intermediate placeholder operations for high-level constructs
-// that should be lowered before code generation.
-def ReussirRegionCreateOp
-    : ReussirRegionOp<"create", []> {
+// The following are intermediate placeholder operations for high-level
+// constructs that should be lowered before code generation.
+def ReussirRegionCreateOp : ReussirRegionOp<"create", []> {
   let summary = "Create a region";
   let description = [{
     `reussir.region.create` creates a region. This is just a alloca operation
@@ -1521,8 +1463,7 @@ def ReussirRegionCreateOp
   }];
 }
 
-def ReussirRegionCleanupOp
-    : ReussirRegionOp<"cleanup", []> {
+def ReussirRegionCleanupOp : ReussirRegionOp<"cleanup", []> {
   let summary = "Cleanup a region";
   let description = [{
     `reussir.region.cleanup` cleans up a region. This is a placeholder for
@@ -1541,13 +1482,12 @@ def ReussirRegionCleanupOp
 class ReussirScfOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"scf."#mnemonic, traits>;
 
-def ReussirScfYieldOp : ReussirScfOp<"yield", [
-  ReturnLike, Terminator,
-  ParentOneOf<[
-    "::reussir::ReussirNullableDispatchOp", 
-    "::reussir::ReussirRecordDispatchOp",
-    "::reussir::ReussirArrayWithUniqueViewOp"
-  ]>]> {
+def ReussirScfYieldOp
+    : ReussirScfOp<
+          "yield", [ReturnLike, Terminator,
+                    ParentOneOf<["::reussir::ReussirNullableDispatchOp",
+                                 "::reussir::ReussirRecordDispatchOp",
+                                 "::reussir::ReussirArrayWithUniqueViewOp"]>]> {
   let summary = "Yield a value from a scf operation";
   let description = [{
     `reussir.scf.yield` terminates a high-level structured control flow operation.
@@ -1566,11 +1506,11 @@ def ReussirScfYieldOp : ReussirScfOp<"yield", [
 class ReussirClosureOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"closure."#mnemonic, traits>;
 
-
-def ReussirClosureCreateOp : ReussirClosureOp<"create", [
-  IsolatedFromAbove, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-  DeclareOpInterfaceMethods<TokenAcceptorInterface>
-]> {
+def ReussirClosureCreateOp
+    : ReussirClosureOp<
+          "create", [IsolatedFromAbove,
+                     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+                     DeclareOpInterfaceMethods<TokenAcceptorInterface>]> {
   let summary = "Create a closure";
   let description = [{
     `reussir.closure.create` creates a closure. 
@@ -1639,10 +1579,8 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
 
     Similarly, the drop operation consists of if protected drop functions.
   }];
-  let arguments = (ins
-    Optional<ReussirTokenType>:$token,
-    OptionalAttr<FlatSymbolRefAttr>:$vtable
-  );
+  let arguments = (ins Optional<ReussirTokenType>:$token,
+      OptionalAttr<FlatSymbolRefAttr>:$vtable);
   let regions = (region MaxSizedRegion<1>:$body);
   let results = (outs Res<RcClosureType, "created closure">:$closure);
 
@@ -1661,11 +1599,10 @@ def ReussirClosureCreateOp : ReussirClosureOp<"create", [
   let hasVerifier = 1;
 }
 
-def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
-  ReturnLike, Terminator,
-  ParentOneOf<[
-    "::reussir::ReussirClosureCreateOp"
-  ]>]> {
+def ReussirClosureYieldOp
+    : ReussirClosureOp<
+          "yield", [ReturnLike, Terminator,
+                    ParentOneOf<["::reussir::ReussirClosureCreateOp"]>]> {
   let summary = "Yield from a closure";
   let description = [{
     `reussir.closure.yield` yields from a closure.
@@ -1681,20 +1618,16 @@ def ReussirClosureYieldOp : ReussirClosureOp<"yield", [
   let hasVerifier = 1;
 }
 
-def ReussirClosureVtableOp : ReussirClosureOp<"vtable", [
-  Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>
-]> {
+def ReussirClosureVtableOp
+    : ReussirClosureOp<"vtable", [Symbol, DeclareOpInterfaceMethods<
+                                              SymbolUserOpInterface>]> {
   let summary = "Create a vtable";
   let description = [{
     `reussir.closure.vtable` creates a vtable for closures. The VTable is in charge of
     record the function pointer and corresponding drop and clone functions.
   }];
-  let arguments = (ins
-    SymbolNameAttr:$sym_name,
-    FlatSymbolRefAttr:$func,
-    FlatSymbolRefAttr:$drop,
-    FlatSymbolRefAttr:$clone
-  );
+  let arguments = (ins SymbolNameAttr:$sym_name, FlatSymbolRefAttr:$func,
+      FlatSymbolRefAttr:$drop, FlatSymbolRefAttr:$clone);
 
   let assemblyFormat = [{
     $sym_name `{`
@@ -1723,10 +1656,8 @@ def ReussirClosureApplyOp : ReussirClosureOp<"apply", []> {
     ```
   }];
   let hasVerifier = 1;
-  let arguments = (ins
-    Arg<AnyType, "argument to apply">:$arg,
-    Arg<RcClosureType, "closure to apply">:$closure
-  );
+  let arguments = (ins Arg<AnyType, "argument to apply">:$arg,
+      Arg<RcClosureType, "closure to apply">:$closure);
   let results = (outs Res<RcClosureType, "applied closure">:$applied);
   let assemblyFormat = [{
     `(` $arg `:` type($arg) `)` `to` `(` $closure `:` qualified(type($closure)) `)`
@@ -1758,10 +1689,8 @@ def ReussirClosureEvalOp : ReussirClosureOp<"eval", []> {
       with (%a, %b : i32, i32) : i32
     ```
   }];
-  let arguments = (ins
-    Arg<RcClosureType, "closure to evaluate">:$closure,
-    Variadic<AnyType>:$args
-  );
+  let arguments = (ins Arg<RcClosureType, "closure to evaluate">:$closure,
+      Variadic<AnyType>:$args);
   let results = (outs Res<Optional<AnyType>, "result of the closure">:$result);
   let assemblyFormat = [{
     `(` $closure `:` qualified(type($closure)) `)`
@@ -1826,10 +1755,8 @@ def ReussirClosureWpdTestOp : ReussirClosureOp<"wpd_test", []> {
     lowers it to `llvm.type.test(%vtable, !"id")` + `llvm.assume` during
     `translateModuleToLLVMIR`.
   }];
-  let arguments = (ins
-    Arg<AnyType, "lowered pointer to the vtable">:$vtable,
-    StrAttr:$id
-  );
+  let arguments = (ins Arg<AnyType, "lowered pointer to the vtable">:$vtable,
+      StrAttr:$id);
   let assemblyFormat = [{
     `(` $vtable `:` type($vtable) `)` `id` `(` $id `)` attr-dict
   }];
@@ -1841,9 +1768,8 @@ def ReussirClosureInspectPayloadOp : ReussirClosureOp<"inspect_payload", []> {
     `reussir.closure.inspect_payload` serves as an low-level intermediate operation
     that achieves the conversion from ClosureBox reference to subfield reference.
   }];
-  let arguments = (ins 
-    IndexAttr:$payloadIndex,
-    Arg<ReussirClosureBoxRefType, "reference to closure box">:$closureBoxRef);
+  let arguments = (ins IndexAttr:$payloadIndex,
+      Arg<ReussirClosureBoxRefType, "reference to closure box">:$closureBoxRef);
   let results = (outs Res<ReussirRefType, "subfield reference">:$payloadRef);
   let assemblyFormat = [{
     `[` $payloadIndex `]` `(` $closureBoxRef `)` `:` 
@@ -1857,9 +1783,8 @@ def ReussirClosureCursorOp : ReussirClosureOp<"cursor", []> {
     `reussir.closure.cursor` operation extracts the cursor pointer from the
     closure box pointer as an i8 reference.
   }];
-  let arguments = (ins 
-    IndexAttr:$payloadIndex,
-    Arg<ReussirClosureBoxRefType, "reference to closure box">:$closureBoxRef);
+  let arguments = (ins IndexAttr:$payloadIndex,
+      Arg<ReussirClosureBoxRefType, "reference to closure box">:$closureBoxRef);
   let results = (outs Res<ReussirRefType, "i8 reference">:$cursor);
   let assemblyFormat = [{
    `(` $closureBoxRef `:` qualified(type($closureBoxRef)) `)` `:`
@@ -1874,10 +1799,9 @@ def ReussirClosureInstantiateOp : ReussirClosureOp<"instantiate", []> {
     `reussir.closure.instantiate` operation instantiate a token into a special
     RC-wrapped payload box and setting the refcnt to 1.
   }];
-  let arguments = (ins
-    Arg<ReussirTokenType, "source token">:$token
-  );
-  let results = (outs Res<ReussirRcType, "pointer to the payload box">:$closureBoxRc);
+  let arguments = (ins Arg<ReussirTokenType, "source token">:$token);
+  let results =
+      (outs Res<ReussirRcType, "pointer to the payload box">:$closureBoxRc);
   let assemblyFormat = [{
     `(` $token `:` qualified(type($token)) `)` `:` qualified(type($closureBoxRc)) attr-dict
   }];
@@ -1889,10 +1813,8 @@ def ReussirClosureTransferOp : ReussirClosureOp<"transfer", []> {
   let description = [{
     `reussir.closure.transfer` copy bytes between two closure boxes.
   }];
-  let arguments = (ins 
-    Arg<ReussirClosureBoxRefType, "source reference">:$src,
-    Arg<ReussirClosureBoxRefType, "destination reference">:$dst
-  );
+  let arguments = (ins Arg<ReussirClosureBoxRefType, "source reference">:$src,
+      Arg<ReussirClosureBoxRefType, "destination reference">:$dst);
   let assemblyFormat = [{
     $src `to` $dst `:` type($src) `to` type($dst) attr-dict
   }];
@@ -1914,11 +1836,9 @@ def ReussirPolyFFIOp : ReussirOp<"polyffi", []> {
     meaning that instantiate the FFI format of the type.
   }];
 
-  let arguments = (ins
-    OptionalAttr<StrAttr>:$moduleTexture,
-    OptionalAttr<ElementsAttr>:$compiledModule,
-    OptionalAttr<DictionaryAttr>:$substitutions
-  );
+  let arguments = (ins OptionalAttr<StrAttr>:$moduleTexture,
+      OptionalAttr<ElementsAttr>:$compiledModule,
+      OptionalAttr<DictionaryAttr>:$substitutions);
 
   let assemblyFormat = [{
     oilist (
@@ -1949,9 +1869,9 @@ def ReussirStrGlobalOp : ReussirStrOp<"global", [Symbol]> {
   }];
 }
 
-def ReussirStrLiteralOp : ReussirStrOp<"literal", [
-  DeclareOpInterfaceMethods<SymbolUserOpInterface>
-]> {
+def ReussirStrLiteralOp
+    : ReussirStrOp<
+          "literal", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Create a global string literal";
   let description = [{
     `reussir.str.literal` creates a reference to a global string literal.
@@ -1981,8 +1901,8 @@ def ReussirStrByteAtOp : ReussirStrOp<"byte_at", []> {
   let description = [{
     `reussir.str.byte_at` returns the character at a byte offset. Return 0 if the index is out of bounds.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str, 
-    Arg<Index, "Index of character to get">:$index);
+  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str,
+      Arg<Index, "Index of character to get">:$index);
   let results = (outs Res<I8, "Character at index">:$charVal);
   let assemblyFormat = [{
     `(` $str `:` type($str) `)` 
@@ -1997,8 +1917,8 @@ def ReussirStrUnsafeByteAtOp : ReussirStrOp<"unsafe_byte_at", []> {
     `reussir.str.unsafe_byte_at` returns the character at a byte offset. 
     Undefined behavior if the index is out of bounds.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str, 
-    Arg<Index, "Index of character to get">:$index);
+  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str,
+      Arg<Index, "Index of character to get">:$index);
   let results = (outs Res<I8, "Character at index">:$charVal);
   let assemblyFormat = [{
     `(` $str `:` type($str) `)` 
@@ -2008,16 +1928,16 @@ def ReussirStrUnsafeByteAtOp : ReussirStrOp<"unsafe_byte_at", []> {
 }
 
 def ReussirStrCastOp : ReussirStrOp<"cast", []> {
-   let summary = "Cast a global string literal to a local string literal";
-   let description = [{
+  let summary = "Cast a global string literal to a local string literal";
+  let description = [{
     `reussir.str.cast` casts a global string literal to a local string literal.
    }];
-   let arguments = (ins Arg<ReussirStrType, "Global string literal">:$globalStr);
-   let results = (outs Res<ReussirStrType, "Local string literal">:$localStr);
-   let assemblyFormat = [{
+  let arguments = (ins Arg<ReussirStrType, "Global string literal">:$globalStr);
+  let results = (outs Res<ReussirStrType, "Local string literal">:$localStr);
+  let assemblyFormat = [{
     `(` $globalStr `:` type($globalStr) `)` `:` type($localStr) attr-dict
    }];
-   let hasVerifier = 1;
+  let hasVerifier = 1;
 }
 
 def ReussirStrSelectOp : ReussirStrOp<"select", []> {
@@ -2025,23 +1945,25 @@ def ReussirStrSelectOp : ReussirStrOp<"select", []> {
   let description = [{
     `reussir.str.select` selects the first matched pattern of the string.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to select">:$str, 
-    Arg<ArrayAttr, "Patterns to match">:$patterns);
-  let results = (outs Res<Index, "Selected pattern">:$selected, 
-    Res<I1, "Matched found">:$found);
+  let arguments = (ins Arg<ReussirStrType, "String to select">:$str,
+      Arg<ArrayAttr, "Patterns to match">:$patterns);
+  let results = (outs Res<Index, "Selected pattern">:$selected,
+      Res<I1, "Matched found">:$found);
   let assemblyFormat = [{
     `(` $str `)` $patterns `:` functional-type(operands, results) attr-dict
   }];
 }
 
 def ReussirStrStartWithOp : ReussirStrOp<"startswith", []> {
-   let summary = "Check if the string starts with a prefix";
-   let description = [{
+  let summary = "Check if the string starts with a prefix";
+  let description = [{
     `reussir.str.startswith` checks if the string starts with a prefix.
    }];
-   let arguments = (ins Arg<ReussirStrType, "String to check">:$str, Arg<StrAttr, "Prefix to check">:$prefix);
-   let results = (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
-   let assemblyFormat = [{
+  let arguments = (ins Arg<ReussirStrType, "String to check">:$str,
+      Arg<StrAttr, "Prefix to check">:$prefix);
+  let results =
+      (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
+  let assemblyFormat = [{
     `(` $str `:` type($str) `)` 
     $prefix 
     `:` type($startsWith) attr-dict
@@ -2049,14 +1971,16 @@ def ReussirStrStartWithOp : ReussirStrOp<"startswith", []> {
 }
 
 def ReussirStrUnsafeStartWithOp : ReussirStrOp<"unsafe_startswith", []> {
-   let summary = "Check if the string starts with a prefix without bounds check";
-   let description = [{
+  let summary = "Check if the string starts with a prefix without bounds check";
+  let description = [{
     `reussir.str.unsafe_startswith` checks if the string starts with a prefix.
     Undefined behavior if the prefix is longer than the string.
    }];
-   let arguments = (ins Arg<ReussirStrType, "String to check">:$str, Arg<StrAttr, "Prefix to check">:$prefix);
-   let results = (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
-   let assemblyFormat = [{
+  let arguments = (ins Arg<ReussirStrType, "String to check">:$str,
+      Arg<StrAttr, "Prefix to check">:$prefix);
+  let results =
+      (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
+  let assemblyFormat = [{
     `(` $str `:` type($str) `)` 
     $prefix 
     `:` type($startsWith) attr-dict
@@ -2069,16 +1993,17 @@ def ReussirStrSliceOp : ReussirStrOp<"slice", []> {
     `reussir.str.slice` returns a substring starting from the given offset.
     If offset is greater than length, returns an empty string.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to slice">:$str, Arg<Index, "Byte offset">:$offset);
+  let arguments = (ins Arg<ReussirStrType, "String to slice">:$str,
+      Arg<Index, "Byte offset">:$offset);
   let results = (outs Res<ReussirStrType, "Sliced string">:$result);
   let assemblyFormat = [{
     `(` $str `:` type($str) `)` `[` $offset `]` `:` type($result) attr-dict
   }];
 }
 
-def ReussirTrampolineOp : ReussirOp<"trampoline", [
-  Symbol, DeclareOpInterfaceMethods<SymbolUserOpInterface>
-]> {
+def ReussirTrampolineOp
+    : ReussirOp<"trampoline", [Symbol, DeclareOpInterfaceMethods<
+                                           SymbolUserOpInterface>]> {
   let summary = "Trampoline for FFI calls";
   let description = [{
     `reussir.trampoline` describes an FFI boundary shim. The `direction`
@@ -2100,13 +2025,12 @@ def ReussirTrampolineOp : ReussirOp<"trampoline", [
 
     Currently only the `"C"` ABI is supported.
   }];
-  let arguments = (ins 
-    DefaultValuedAttr<TrampolineDirection,
-                      "::reussir::TrampolineDirection::Export">:$direction,
-    Arg<FlatSymbolRefAttr, "Wrapped target function">:$target,
-    Arg<StrAttr, "ABI Name">:$abi_name,
-    Arg<SymbolNameAttr, "Trampoline symbol name">:$sym_name
-  );
+  let arguments = (ins DefaultValuedAttr<
+                       TrampolineDirection,
+                       "::reussir::TrampolineDirection::Export">:$direction,
+      Arg<FlatSymbolRefAttr, "Wrapped target function">:$target,
+      Arg<StrAttr, "ABI Name">:$abi_name,
+      Arg<SymbolNameAttr, "Trampoline symbol name">:$sym_name);
   let assemblyFormat = [{
     $direction $abi_name $sym_name `=` $target attr-dict
   }];

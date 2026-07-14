@@ -53,8 +53,8 @@ private:
     // is left null, which the runtime skips.
     mlir::FlatSymbolRefAttr dropOpRef =
         dropOp ? mlir::SymbolRefAttr::get(dropOp) : mlir::FlatSymbolRefAttr{};
-    auto vtableOp = ReussirRegionVTableOp::create(builder,
-        moduleOp.getLoc(), vtableName, type, dropOpRef);
+    auto vtableOp = ReussirRegionVTableOp::create(builder, moduleOp.getLoc(),
+                                                  vtableName, type, dropOpRef);
     return vtableOp;
   }
 
@@ -89,8 +89,8 @@ struct RegionInlinePattern : public mlir::OpRewritePattern<ReussirRegionRunOp> {
   mlir::LogicalResult
   matchAndRewrite(ReussirRegionRunOp op,
                   mlir::PatternRewriter &rewriter) const override {
-    auto region = ReussirRegionCreateOp::create(rewriter, 
-        op.getLoc(), RegionType::get(op->getContext()));
+    auto region = ReussirRegionCreateOp::create(
+        rewriter, op.getLoc(), RegionType::get(op->getContext()));
     auto yieldOp =
         llvm::cast<ReussirRegionYieldOp>(op.getBody().front().getTerminator());
     rewriter.inlineBlockBefore(&op.getBody().front(), op, region->getResults());
@@ -104,8 +104,8 @@ struct RegionInlinePattern : public mlir::OpRewritePattern<ReussirRegionRunOp> {
     // Create the final value based on the yield value
     mlir::Value finalValue;
     if (rcType && rcType.getCapability() == Capability::flex) {
-      auto freezeOp = ReussirRcFreezeOp::create(rewriter, 
-          op.getLoc(), op->getResult(0).getType(), yieldValue);
+      auto freezeOp = ReussirRcFreezeOp::create(
+          rewriter, op.getLoc(), op->getResult(0).getType(), yieldValue);
       finalValue = freezeOp.getResult();
     } else {
       finalValue = yieldValue;

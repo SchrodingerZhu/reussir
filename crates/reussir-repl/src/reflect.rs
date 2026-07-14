@@ -513,9 +513,8 @@ impl<'tcx> Walker<'_, 'tcx> {
                         return Ok(());
                     }
                     let inner = inline_size_align(ty, self.shapes)?;
-                    let fused_variant =
-                        matches!(shape.layout, ShapeLayout::Variants(_))
-                            && shape.default_cap != DefaultCap::Value;
+                    let fused_variant = matches!(shape.layout, ShapeLayout::Variants(_))
+                        && shape.default_cap != DefaultCap::Value;
                     let header = match shape.default_cap {
                         DefaultCap::Value => 4, // unreachable in practice
                         // A shared variant box IS the record: the refcount
@@ -575,10 +574,8 @@ impl<'tcx> Walker<'_, 'tcx> {
                     })
                     .collect();
                 let payload_area = variants_payload_size_align(variants, self.shapes)?;
-                let (_, _, header) =
-                    variant_tag_layout(shape.default_cap, variants.len());
-                let base =
-                    unsafe { payload.add(align_to(header, payload_area.align) as usize) };
+                let (_, _, header) = variant_tag_layout(shape.default_cap, variants.len());
+                let base = unsafe { payload.add(align_to(header, payload_area.align) as usize) };
                 unsafe { self.render_fields(base, &fields, depth, out) }
             }
         }

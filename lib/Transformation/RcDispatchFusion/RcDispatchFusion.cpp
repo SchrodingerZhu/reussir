@@ -56,10 +56,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Transformation/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/Transformation/Passes.h"
 
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
@@ -167,8 +167,8 @@ std::optional<int64_t> loadedMemberIndex(mlir::Value value,
 std::optional<int64_t> acquiredMemberIndex(ReussirRefAcquireOp acquire,
                                            mlir::TypedValue<RcType> box) {
   mlir::Value ref = acquire.getRef();
-  if (auto spilled = llvm::dyn_cast_if_present<ReussirRefSpilledOp>(
-          ref.getDefiningOp()))
+  if (auto spilled =
+          llvm::dyn_cast_if_present<ReussirRefSpilledOp>(ref.getDefiningOp()))
     return loadedMemberIndex(spilled.getValue(), box);
   auto project =
       llvm::dyn_cast_if_present<ReussirRefProjectOp>(ref.getDefiningOp());
@@ -253,8 +253,7 @@ struct RcDispatchFusionPass
       RcType rcType = scrutinee.getType();
       if (rcType.getAtomicKind() != AtomicKind::normal || rcType.isRegional())
         return;
-      auto recordType =
-          llvm::dyn_cast<RecordType>(rcType.getElementType());
+      auto recordType = llvm::dyn_cast<RecordType>(rcType.getElementType());
       if (!recordType || !recordType.isVariant() || !recordType.getComplete())
         return;
       for (auto [tagSetAttr, region] :
@@ -264,9 +263,10 @@ struct RcDispatchFusionPass
           continue;
         // The arm's payload must be a plain record view: fused member
         // handling only understands value/shared members.
-        auto payload = llvm::dyn_cast<RecordType>(
-            recordType.getMembers()[tagSet[0]]);
-        if (!payload || !payload.getComplete() || !payload.hasNoRegionalFields())
+        auto payload =
+            llvm::dyn_cast<RecordType>(recordType.getMembers()[tagSet[0]]);
+        if (!payload || !payload.getComplete() ||
+            !payload.hasNoRegionalFields())
           continue;
         fuseArm(region, tagSet[0], scrutinee);
       }

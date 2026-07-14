@@ -56,10 +56,11 @@ AllocationSimplicationPass::run(llvm::Module &module,
         if (calleeName == "__reussir_reallocate" && call->arg_size() == 5 &&
             isNullPointerArgument(call->getArgOperand(0))) {
           llvm::IRBuilder<> builder(call);
-          llvm::FunctionType *allocateTy = llvm::FunctionType::get(
-              call->getType(),
-              {call->getArgOperand(3)->getType(), call->getArgOperand(4)->getType()},
-              false);
+          llvm::FunctionType *allocateTy =
+              llvm::FunctionType::get(call->getType(),
+                                      {call->getArgOperand(3)->getType(),
+                                       call->getArgOperand(4)->getType()},
+                                      false);
           llvm::FunctionCallee allocateFn =
               module.getOrInsertFunction("__reussir_allocate", allocateTy);
 

@@ -8,8 +8,9 @@
 
 #include "Reussir-c/Dialects.h"
 
-// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
-// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+// Complete mlir::DialectVersion before MLIR C API headers reach
+// BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
+// forward declared.
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Registration.h>
@@ -42,7 +43,8 @@
 #include "Reussir/Conversion/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 
-MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(Reussir, reussir, ::reussir::ReussirDialect)
+MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(Reussir, reussir,
+                                      ::reussir::ReussirDialect)
 
 namespace {
 // Populates a registry with the Reussir dialect plus the minimal set of
@@ -79,10 +81,11 @@ void populateReussirRegistry(mlir::DialectRegistry &registry) {
   mlir::linalg::registerTransformDialectExtension(registry);
   mlir::scf::registerTransformDialectExtension(registry);
 
-  // Register the ConvertToLLVMPatternInterface for exactly the dialects that can
-  // reach the ConvertToLLVM pass, plus Reussir's own lowering interface. These
-  // are the conversion-interface registration APIs (distinct from the dialects
-  // themselves); without them a loaded dialect's promised interface is fatal.
+  // Register the ConvertToLLVMPatternInterface for exactly the dialects that
+  // can reach the ConvertToLLVM pass, plus Reussir's own lowering interface.
+  // These are the conversion-interface registration APIs (distinct from the
+  // dialects themselves); without them a loaded dialect's promised interface is
+  // fatal.
   ::reussir::registerReussirBasicOpsLoweringInterface(registry);
   mlir::arith::registerConvertArithToLLVMInterface(registry);
   mlir::registerConvertFuncToLLVMInterface(registry);

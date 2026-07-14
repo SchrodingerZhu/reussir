@@ -11,12 +11,12 @@
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/DataLayout.h>
+#include <memory>
 #include <mlir/Dialect/DLTI/DLTI.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/Target/LLVMIR/Import.h>
-#include <memory>
 
 namespace reussir {
 namespace {
@@ -67,9 +67,9 @@ buildMLIRDataLayout(const mlir::LLVMTypeConverter &converter) {
   if (!dataLayoutString.empty()) {
     layoutModule->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
                           mlir::StringAttr::get(context, dataLayoutString));
-    layoutModule->setAttr(mlir::DLTIDialect::kDataLayoutAttrName,
-                          mlir::translateDataLayout(converter.getDataLayout(),
-                                                    context));
+    layoutModule->setAttr(
+        mlir::DLTIDialect::kDataLayoutAttrName,
+        mlir::translateDataLayout(converter.getDataLayout(), context));
   }
   return std::make_shared<mlir::DataLayout>(layoutModule);
 }
@@ -164,7 +164,8 @@ convertRecordType(mlir::LLVMTypeConverter &converter,
   }
 
   if (!name)
-    structType = mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
+    structType =
+        mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
   if (name && failed(structType.setBody(members, false)))
     return mlir::failure();
 

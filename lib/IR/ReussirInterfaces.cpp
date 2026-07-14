@@ -105,12 +105,11 @@ struct ReussirInlinerInterface : public mlir::DialectInlinerInterface {
   // a body carrying one only inlines outside any enclosing `region.run`.
   bool isLegalToInline(mlir::Region *dest, mlir::Region *src, bool,
                        mlir::IRMapping &) const final {
-    bool sourceRunsRegion =
-        src->walk([](ReussirRegionRunOp) {
-             return mlir::WalkResult::interrupt();
-           }).wasInterrupted();
-    return !sourceRunsRegion ||
-           !dest->getParentOfType<ReussirRegionRunOp>();
+    bool sourceRunsRegion = src->walk([](ReussirRegionRunOp) {
+                                 return mlir::WalkResult::interrupt();
+                               })
+                                .wasInterrupted();
+    return !sourceRunsRegion || !dest->getParentOfType<ReussirRegionRunOp>();
   }
 };
 } // namespace

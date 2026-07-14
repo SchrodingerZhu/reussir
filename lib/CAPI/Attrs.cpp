@@ -8,8 +8,9 @@
 
 #include "Reussir-c/Attrs.h"
 
-// Complete mlir::DialectVersion before MLIR C API headers reach BytecodeWriter.h;
-// MSVC's STL rejects destroying unique_ptr<T> when T is only forward declared.
+// Complete mlir::DialectVersion before MLIR C API headers reach
+// BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
+// forward declared.
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -56,11 +57,10 @@ MlirAttribute reussirDBGRecordMemberAttrGet(MlirContext context,
       DBGRecordMemberAttr::get(unwrap(context), str(name), unwrap(typeAttr)));
 }
 
-MlirAttribute reussirDBGRecordTypeAttrGet(MlirContext context, intptr_t nMembers,
-                                          MlirAttribute const *members,
-                                          bool isVariant,
-                                          MlirType underlyingType,
-                                          MlirAttribute dbgName) {
+MlirAttribute
+reussirDBGRecordTypeAttrGet(MlirContext context, intptr_t nMembers,
+                            MlirAttribute const *members, bool isVariant,
+                            MlirType underlyingType, MlirAttribute dbgName) {
   auto memberArray =
       mlir::ArrayAttr::get(unwrap(context), unwrapAttrs(nMembers, members));
   return wrap(DBGRecordTypeAttr::get(unwrap(context), memberArray, isVariant,

@@ -66,9 +66,9 @@ bool structurallySameType(mlir::Type lhs, mlir::Type rhs) {
       return false;
     if (lhsRecord.getMembers().size() != rhsRecord.getMembers().size())
       return false;
-    for (auto [lhsMember, rhsMember, lhsField, rhsField] :
-         llvm::zip(lhsRecord.getMembers(), rhsRecord.getMembers(),
-                   lhsRecord.getMemberIsField(), rhsRecord.getMemberIsField())) {
+    for (auto [lhsMember, rhsMember, lhsField, rhsField] : llvm::zip(
+             lhsRecord.getMembers(), rhsRecord.getMembers(),
+             lhsRecord.getMemberIsField(), rhsRecord.getMemberIsField())) {
       if (lhsField != rhsField)
         return false;
       if (!structurallySameType(lhsMember, rhsMember))
@@ -80,19 +80,21 @@ bool structurallySameType(mlir::Type lhs, mlir::Type rhs) {
   return false;
 }
 
-bool isLoadFromCompoundField(mlir::Value value, mlir::TypedValue<RcType> sourceRc,
+bool isLoadFromCompoundField(mlir::Value value,
+                             mlir::TypedValue<RcType> sourceRc,
                              int64_t fieldIndex) {
-  auto load = llvm::dyn_cast_if_present<ReussirRefLoadOp>(value.getDefiningOp());
+  auto load =
+      llvm::dyn_cast_if_present<ReussirRefLoadOp>(value.getDefiningOp());
   if (!load)
     return false;
 
-  auto project =
-      llvm::dyn_cast_if_present<ReussirRefProjectOp>(load.getRef().getDefiningOp());
+  auto project = llvm::dyn_cast_if_present<ReussirRefProjectOp>(
+      load.getRef().getDefiningOp());
   if (!project || project.getIndex().getSExtValue() != fieldIndex)
     return false;
 
-  auto borrow =
-      llvm::dyn_cast_if_present<ReussirRcBorrowOp>(project.getRef().getDefiningOp());
+  auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
+      project.getRef().getDefiningOp());
   return borrow && borrow.getRcPtr() == sourceRc;
 }
 
@@ -105,7 +107,8 @@ bool hasCompatibleFieldPrefix(RecordType sourcePayloadType,
     return false;
   if (fieldIndex < 0)
     return false;
-  if (static_cast<size_t>(fieldIndex) >= sourcePayloadType.getMembers().size() ||
+  if (static_cast<size_t>(fieldIndex) >=
+          sourcePayloadType.getMembers().size() ||
       static_cast<size_t>(fieldIndex) >= targetPayloadType.getMembers().size())
     return false;
 
@@ -120,14 +123,16 @@ bool hasCompatibleFieldPrefix(RecordType sourcePayloadType,
   return true;
 }
 
-bool isLoadFromVariantField(mlir::Value value, mlir::TypedValue<RcType> sourceRc,
+bool isLoadFromVariantField(mlir::Value value,
+                            mlir::TypedValue<RcType> sourceRc,
                             mlir::Type targetPayloadType, int64_t fieldIndex) {
-  auto load = llvm::dyn_cast_if_present<ReussirRefLoadOp>(value.getDefiningOp());
+  auto load =
+      llvm::dyn_cast_if_present<ReussirRefLoadOp>(value.getDefiningOp());
   if (!load)
     return false;
 
-  auto project =
-      llvm::dyn_cast_if_present<ReussirRefProjectOp>(load.getRef().getDefiningOp());
+  auto project = llvm::dyn_cast_if_present<ReussirRefProjectOp>(
+      load.getRef().getDefiningOp());
   if (!project || project.getIndex().getSExtValue() != fieldIndex)
     return false;
 
@@ -136,8 +141,8 @@ bool isLoadFromVariantField(mlir::Value value, mlir::TypedValue<RcType> sourceRc
   if (!coerce)
     return false;
 
-  auto sourcePayloadType =
-      llvm::dyn_cast<RecordType>(coerce.getCoerced().getType().getElementType());
+  auto sourcePayloadType = llvm::dyn_cast<RecordType>(
+      coerce.getCoerced().getType().getElementType());
   auto targetPayloadRecord = llvm::dyn_cast<RecordType>(targetPayloadType);
   if (!hasCompatibleFieldPrefix(sourcePayloadType, targetPayloadRecord,
                                 fieldIndex))
@@ -191,34 +196,34 @@ struct FuseRcCreatePattern : public mlir::OpRewritePattern<ReussirRcCreateOp> {
   mlir::LogicalResult
   matchAndRewrite(ReussirRcCreateOp create,
                   mlir::PatternRewriter &rewriter) const override {
-    auto variant =
-        llvm::dyn_cast_if_present<ReussirRecordVariantOp>(create.getValue().getDefiningOp());
+    auto variant = llvm::dyn_cast_if_present<ReussirRecordVariantOp>(
+        create.getValue().getDefiningOp());
     if (variant) {
       auto compound = llvm::dyn_cast_if_present<ReussirRecordCompoundOp>(
           variant.getValue().getDefiningOp());
-      auto fused = ReussirRcCreateVariantOp::create(rewriter, 
-          create.getLoc(), mlir::TypeRange{create.getRcPtr().getType()},
-          variant.getTagAttr(),
+      auto fused = ReussirRcCreateVariantOp::create(
+          rewriter, create.getLoc(),
+          mlir::TypeRange{create.getRcPtr().getType()}, variant.getTagAttr(),
           compound ? mlir::Value{} : variant.getValue(),
-          compound ? compound.getFields() : mlir::ValueRange{}, create.getToken(),
-          create.getRegion(), create.getVtableAttr(), create.getSkipRcAttr(),
-          mlir::DenseI64ArrayAttr{}, mlir::DenseI64ArrayAttr{});
+          compound ? compound.getFields() : mlir::ValueRange{},
+          create.getToken(), create.getRegion(), create.getVtableAttr(),
+          create.getSkipRcAttr(), mlir::DenseI64ArrayAttr{},
+          mlir::DenseI64ArrayAttr{});
       rewriter.replaceOp(create, fused.getRcPtr());
       eraseDeadRecordMaterialization(rewriter, variant.getOperation());
       return mlir::success();
     }
 
-    auto compound =
-        llvm::dyn_cast_if_present<ReussirRecordCompoundOp>(create.getValue().getDefiningOp());
+    auto compound = llvm::dyn_cast_if_present<ReussirRecordCompoundOp>(
+        create.getValue().getDefiningOp());
     if (!compound)
       return mlir::failure();
 
-    auto fused = ReussirRcCreateCompoundOp::create(rewriter, 
-        create.getLoc(), mlir::TypeRange{create.getRcPtr().getType()},
-        compound.getFields(),
-        create.getToken(), create.getRegion(), create.getVtableAttr(),
-        create.getSkipRcAttr(), mlir::DenseI64ArrayAttr{},
-        mlir::DenseI64ArrayAttr{});
+    auto fused = ReussirRcCreateCompoundOp::create(
+        rewriter, create.getLoc(), mlir::TypeRange{create.getRcPtr().getType()},
+        compound.getFields(), create.getToken(), create.getRegion(),
+        create.getVtableAttr(), create.getSkipRcAttr(),
+        mlir::DenseI64ArrayAttr{}, mlir::DenseI64ArrayAttr{});
     rewriter.replaceOp(create, fused.getRcPtr());
     eraseDeadRecordMaterialization(rewriter, compound.getOperation());
     return mlir::success();
@@ -235,12 +240,10 @@ struct RcCreateFusionPass
     if (mlir::failed(
             mlir::applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
-    getOperation().walk([](ReussirRcCreateCompoundOp op) {
-      markCompoundAvoidedCopies(op);
-    });
-    getOperation().walk([](ReussirRcCreateVariantOp op) {
-      markVariantAvoidedCopies(op);
-    });
+    getOperation().walk(
+        [](ReussirRcCreateCompoundOp op) { markCompoundAvoidedCopies(op); });
+    getOperation().walk(
+        [](ReussirRcCreateVariantOp op) { markVariantAvoidedCopies(op); });
   }
 };
 

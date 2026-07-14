@@ -363,8 +363,8 @@ std::pair<reussir::RecordType, mlir::Value>
 ReussirRcDecOp::destructuredPayloadAndRef(mlir::OpBuilder &builder) {
   RcType rcType = getRcPtr().getType();
   auto recordType = llvm::cast<RecordType>(rcType.getElementType());
-  auto refType = builder.getType<RefType>(
-      recordType, Capability::unspecified, rcType.getAtomicKind());
+  auto refType = builder.getType<RefType>(recordType, Capability::unspecified,
+                                          rcType.getAtomicKind());
   mlir::Value ref =
       ReussirRcBorrowOp::create(builder, getLoc(), refType, getRcPtr());
   if (!isVariantDestructuring())
@@ -384,22 +384,21 @@ void ReussirRcDecOp::rematerializeBoundRetains(mlir::OpBuilder &builder) {
   RcType rcType = getRcPtr().getType();
   auto [payload, payloadRef] = destructuredPayloadAndRef(builder);
   for (int64_t idx : getBoundMembersAttr().asArrayRef()) {
-    auto projectedTy =
-        getProjectedType(payload.getMembers()[idx],
-                         payload.getMemberIsField()[idx],
-                         Capability::unspecified);
+    auto projectedTy = getProjectedType(payload.getMembers()[idx],
+                                        payload.getMemberIsField()[idx],
+                                        Capability::unspecified);
     auto projectedRefTy = builder.getType<RefType>(
         projectedTy, Capability::unspecified, rcType.getAtomicKind());
-    mlir::Value slot = ReussirRefProjectOp::create(
-        builder, getLoc(), projectedRefTy, payloadRef,
-        builder.getIndexAttr(idx));
+    mlir::Value slot =
+        ReussirRefProjectOp::create(builder, getLoc(), projectedRefTy,
+                                    payloadRef, builder.getIndexAttr(idx));
     // A shared member retains through a count bump on the loaded pointer; a
     // value-record member retains its embedded children through the slot's
     // acquire (expanded member-wise later); anything trivially copyable
     // needs nothing.
     if (llvm::isa<RcType>(projectedTy)) {
-      mlir::Value member = ReussirRefLoadOp::create(builder, getLoc(),
-                                                    projectedTy, slot);
+      mlir::Value member =
+          ReussirRefLoadOp::create(builder, getLoc(), projectedTy, slot);
       ReussirRcIncOp::create(builder, getLoc(), member);
     } else if (!isTriviallyCopyable(projectedTy)) {
       ReussirRefAcquireOp::create(builder, getLoc(), slot);
@@ -431,8 +430,7 @@ mlir::LogicalResult ReussirRcDecOp::verify() {
         return emitOpError(
             "tagged destructuring decrement requires a variant box");
       int64_t tag = getDestructureTagAttr().getInt();
-      if (tag < 0 ||
-          static_cast<size_t>(tag) >= recordType.getMembers().size())
+      if (tag < 0 || static_cast<size_t>(tag) >= recordType.getMembers().size())
         return emitOpError("destructure tag out of range: ") << tag;
       payload = llvm::dyn_cast<RecordType>(recordType.getMembers()[tag]);
       if (!payload || !payload.getComplete())

@@ -101,7 +101,8 @@ struct RecordTypeStorage : public mlir::TypeStorage {
   llvm::LogicalResult mutate(mlir::TypeStorageAllocator &allocator,
                              llvm::ArrayRef<mlir::Type> members,
                              llvm::ArrayRef<bool> memberIsField,
-                             reussir::Capability defaultCapability, bool fixed) {
+                             reussir::Capability defaultCapability,
+                             bool fixed) {
 
     // Anonymous records cannot mutate.
     if (!name)
@@ -109,10 +110,9 @@ struct RecordTypeStorage : public mlir::TypeStorage {
 
     // Mutation of complete records are allowed if they change nothing.
     if (complete)
-      return llvm::success(members == this->members &&
-                           memberIsField == this->memberIsField &&
-                           defaultCapability == this->defaultCapability &&
-                           fixed == this->fixed);
+      return llvm::success(
+          members == this->members && memberIsField == this->memberIsField &&
+          defaultCapability == this->defaultCapability && fixed == this->fixed);
 
     // Mutate incomplete records.
     this->members = allocator.copyInto(members);

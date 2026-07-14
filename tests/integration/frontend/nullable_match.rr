@@ -46,11 +46,11 @@ pub fn drop_unmatched(v: i32) -> i32 {
     7
 }
 
-struct [regional] Cell { v: u64, next: [field] Cell }
+struct [regional] TestCell { v: u64, next: [field] TestCell }
 
-regional fn mk2(v: u64) -> [flex] Cell {
-    let tail : [flex] Cell = Cell { v: v + 1, next: Nullable::Null };
-    let head : [flex] Cell = Cell { v: v, next: Nullable::Null };
+regional fn mk2(v: u64) -> [flex] TestCell {
+    let tail : [flex] TestCell = TestCell { v: v + 1, next: Nullable::Null };
+    let head : [flex] TestCell = TestCell { v: v, next: Nullable::Null };
     head->next := Nullable::NonNull { tail };
     head
 }

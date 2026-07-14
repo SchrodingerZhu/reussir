@@ -20,14 +20,14 @@
  * structure live (refcount >= 1) so we can safely inspect it here.
  */
 typedef struct rc_list {
-    uint32_t         refcount; /* fused 8-byte header: i32 count + i32 tag */
-    uint32_t         tag;
-    struct rc_list  *tail;     /* members are packed by descending alignment */
-    int32_t          head;
-    int32_t          _pad;
+  uint32_t refcount; /* fused 8-byte header: i32 count + i32 tag */
+  uint32_t tag;
+  struct rc_list *tail; /* members are packed by descending alignment */
+  int32_t head;
+  int32_t _pad;
 } rc_list_t;
 
-#define LIST_NIL  0
+#define LIST_NIL 0
 #define LIST_CONS 1
 
 /*
@@ -39,52 +39,52 @@ typedef struct rc_list {
  * ordinary RC box (also the layout with --disable-special-pointer-tag).
  */
 static inline int64_t list_tag(const rc_list_t *p) {
-    uint64_t top = (uint64_t)(uintptr_t)p >> 56;
-    return top != 0 ? (int64_t)(top - 1) : p->tag;
+  uint64_t top = (uint64_t)(uintptr_t)p >> 56;
+  return top != 0 ? (int64_t)(top - 1) : p->tag;
 }
 
 extern rc_list_t *test_to_list_ffi(void);
 
 int main(void) {
-    rc_list_t *list = test_to_list_ffi();
+  rc_list_t *list = test_to_list_ffi();
 
-    /* ---- inspect: print the raw RC structure ---- */
-    printf("List structure (RC layout):\n");
-    rc_list_t *p = list;
-    int idx = 0;
-    while (list_tag(p) == LIST_CONS) {
-        printf("  [%d] @%p  rc=%ld  tag=%ld (Cons)  head=%d  tail=%p\n",
-               idx, (void *)p, (long)p->refcount, (long)list_tag(p),
-               p->head, (void *)p->tail);
-        p = p->tail;
-        idx++;
+  /* ---- inspect: print the raw RC structure ---- */
+  printf("List structure (RC layout):\n");
+  rc_list_t *p = list;
+  int idx = 0;
+  while (list_tag(p) == LIST_CONS) {
+    printf("  [%d] @%p  rc=%ld  tag=%ld (Cons)  head=%d  tail=%p\n", idx,
+           (void *)p, (long)p->refcount, (long)list_tag(p), p->head,
+           (void *)p->tail);
+    p = p->tail;
+    idx++;
+  }
+  printf("  [%d] @%p  tag=%ld (Nil)\n", idx, (void *)p, (long)list_tag(p));
+
+  /* ---- verify: expect [1, 2, 3, 4, 5, 6, 7, 8, 9] ---- */
+  int expected[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+  int n = (int)(sizeof(expected) / sizeof(expected[0]));
+
+  p = list;
+  for (int i = 0; i < n; i++) {
+    if (list_tag(p) != LIST_CONS) {
+      fprintf(stderr, "FAIL: expected Cons at index %d, got Nil\n", i);
+      abort();
     }
-    printf("  [%d] @%p  tag=%ld (Nil)\n", idx, (void *)p, (long)list_tag(p));
-
-    /* ---- verify: expect [1, 2, 3, 4, 5, 6, 7, 8, 9] ---- */
-    int expected[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
-    int n = (int)(sizeof(expected) / sizeof(expected[0]));
-
-    p = list;
-    for (int i = 0; i < n; i++) {
-        if (list_tag(p) != LIST_CONS) {
-            fprintf(stderr, "FAIL: expected Cons at index %d, got Nil\n", i);
-            abort();
-        }
-        if (p->head != expected[i]) {
-            fprintf(stderr, "FAIL: at index %d: expected %d, got %d\n",
-                    i, expected[i], p->head);
-            abort();
-        }
-        p = p->tail;
+    if (p->head != expected[i]) {
+      fprintf(stderr, "FAIL: at index %d: expected %d, got %d\n", i,
+              expected[i], p->head);
+      abort();
     }
+    p = p->tail;
+  }
 
-    if (list_tag(p) != LIST_NIL) {
-        fprintf(stderr, "FAIL: expected Nil at end, got tag %ld\n",
-                (long)list_tag(p));
-        abort();
-    }
+  if (list_tag(p) != LIST_NIL) {
+    fprintf(stderr, "FAIL: expected Nil at end, got tag %ld\n",
+            (long)list_tag(p));
+    abort();
+  }
 
-    printf("PASS: list = [1, 2, 3, 4, 5, 6, 7, 8, 9]\n");
-    return 0;
+  printf("PASS: list = [1, 2, 3, 4, 5, 6, 7, 8, 9]\n");
+  return 0;
 }

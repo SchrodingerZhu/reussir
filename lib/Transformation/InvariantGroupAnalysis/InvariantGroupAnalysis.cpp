@@ -1,4 +1,5 @@
-//===-- InvariantGroupAnalysis.cpp - Invariant group analysis ----*- C++ -*-===//
+//===-- InvariantGroupAnalysis.cpp - Invariant group analysis ----*- C++
+//-*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -39,9 +40,7 @@ enum class InvariantState : uint8_t {
 struct InvariantGroupValue {
   InvariantState state = InvariantState::Unknown;
 
-  static InvariantGroupValue getUnknown() {
-    return {InvariantState::Unknown};
-  }
+  static InvariantGroupValue getUnknown() { return {InvariantState::Unknown}; }
   static InvariantGroupValue getSafe() { return {InvariantState::Safe}; }
   static InvariantGroupValue getUnsafe() { return {InvariantState::Unsafe}; }
 
@@ -56,8 +55,7 @@ struct InvariantGroupValue {
       return rhs;
     if (rhs.state == InvariantState::Unknown)
       return lhs;
-    if (lhs.state == InvariantState::Safe &&
-        rhs.state == InvariantState::Safe)
+    if (lhs.state == InvariantState::Safe && rhs.state == InvariantState::Safe)
       return getSafe();
     return getUnsafe();
   }
@@ -110,23 +108,20 @@ public:
 };
 
 mlir::LogicalResult InvariantGroupAnalysis::visitOperation(
-    mlir::Operation *op,
-    llvm::ArrayRef<const InvariantGroupLattice *> operands,
+    mlir::Operation *op, llvm::ArrayRef<const InvariantGroupLattice *> operands,
     llvm::ArrayRef<InvariantGroupLattice *> results) {
 
   // rc.borrow → Safe
   if (llvm::isa<ReussirRcBorrowOp>(op)) {
     for (auto *result : results)
-      propagateIfChanged(result,
-                         result->join(InvariantGroupValue::getSafe()));
+      propagateIfChanged(result, result->join(InvariantGroupValue::getSafe()));
     return mlir::success();
   }
 
   // closure.inspect_payload → Safe
   if (llvm::isa<ReussirClosureInspectPayloadOp>(op)) {
     for (auto *result : results)
-      propagateIfChanged(result,
-                         result->join(InvariantGroupValue::getSafe()));
+      propagateIfChanged(result, result->join(InvariantGroupValue::getSafe()));
     return mlir::success();
   }
 
@@ -156,14 +151,13 @@ mlir::LogicalResult InvariantGroupAnalysis::visitOperation(
       if (recordType && recordType.getComplete()) {
         size_t index = projectOp.getIndex().getZExtValue();
         bool isField = recordType.getMemberIsField()[index];
-        bool isFlex =
-            inputRefType.getCapability() == Capability::flex;
+        bool isFlex = inputRefType.getCapability() == Capability::flex;
 
         if (isFlex && isField) {
           // flex + field projection → Unsafe
           for (auto *result : results)
-            propagateIfChanged(
-                result, result->join(InvariantGroupValue::getUnsafe()));
+            propagateIfChanged(result,
+                               result->join(InvariantGroupValue::getUnsafe()));
           return mlir::success();
         }
       }
@@ -219,8 +213,7 @@ struct InvariantGroupAnalysisPass
     funcOp.walk([&](ReussirRefLoadOp loadOp) {
       auto *lattice =
           solver.lookupState<InvariantGroupLattice>(loadOp.getRef());
-      if (lattice &&
-          lattice->getValue().state == InvariantState::Safe)
+      if (lattice && lattice->getValue().state == InvariantState::Safe)
         loadOp.setInvariantGroupAttr(mlir::UnitAttr::get(ctx));
     });
   }
