@@ -62,10 +62,21 @@ struct RcDecrementExpansionPattern
         mlir::isa<FFIObjectType, ClosureType>(type.getElementType()))
       return mlir::failure();
 
-    auto prevRcCount =
-        ReussirRcFetchOp::create(rewriter, op.getLoc(), op.getRcPtr());
-    auto isOne = mlir::arith::CmpIOp::create(rewriter, 
-        op.getLoc(), mlir::arith::CmpIPredicate::eq, prevRcCount.getRefCount(),
+    // An atomic box decrements with one acquire-release `rc.fetch_sub`
+    // (returning the previous count): the subtraction is already published,
+    // so unlike the plain-load scheme below there is nothing to store on the
+    // shared path, and the final decrementer's acquire half orders every
+    // other thread's uses before the destruction. Destructuring decrements
+    // never target atomic boxes (rejected by the `rc.dec` verifier).
+    const bool atomic = type.getAtomicKind() == AtomicKind::atomic;
+    mlir::Value prevRcCount =
+        atomic ? ReussirRcFetchSubOp::create(rewriter, op.getLoc(),
+                                             op.getRcPtr())
+                     .getRefCount()
+               : ReussirRcFetchOp::create(rewriter, op.getLoc(), op.getRcPtr())
+                     .getRefCount();
+    auto isOne = mlir::arith::CmpIOp::create(rewriter,
+        op.getLoc(), mlir::arith::CmpIPredicate::eq, prevRcCount,
         mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
     auto likelyUnique =
         ReussirExpectOp::create(rewriter, op.getLoc(), isOne.getResult(), true);
@@ -124,11 +135,13 @@ struct RcDecrementExpansionPattern
     }
     {
       rewriter.setInsertionPointToStart(ifOp.elseBlock());
-      auto decremented = mlir::arith::SubIOp::create(rewriter, 
-          op.getLoc(), prevRcCount.getRefCount(),
-          mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
-      ReussirRcSetOp::create(rewriter, op.getLoc(), op.getRcPtr(),
-                                      decremented.getResult());
+      if (!atomic) {
+        auto decremented = mlir::arith::SubIOp::create(rewriter,
+            op.getLoc(), prevRcCount,
+            mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1));
+        ReussirRcSetOp::create(rewriter, op.getLoc(), op.getRcPtr(),
+                                        decremented.getResult());
+      }
       if (op.isDestructuring()) {
         // The shared path keeps the box alive, so the consumer's bound
         // members need their own references — the retains the fusion

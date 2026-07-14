@@ -63,6 +63,52 @@ if config.gdb_path and os.path.exists(config.gdb_path):
     config.available_features.add('gdb')
     config.substitutions.append((r'%gdb',
                                  '%s --batch -nx' % sh_path(config.gdb_path)))
+
+# OpenMP: multithreaded e2e drivers (the atomic-rc suite) need `-fopenmp` and
+# a runtime rpath to wherever the toolchain keeps libomp. Probe by linking a
+# trivial parallel program; on failure the tests are unsupported rather than
+# broken.
+def _probe_openmp():
+    import subprocess
+    import tempfile
+    if not config.cc_path:
+        return None
+    libomp_dir = ''
+    try:
+        libomp = subprocess.run(
+            [config.cc_path, '-print-file-name=libomp.so'],
+            capture_output=True, text=True, timeout=30).stdout.strip()
+        if os.path.isabs(libomp):
+            libomp_dir = os.path.dirname(libomp)
+    except Exception:
+        pass
+    flags = '-fopenmp'
+    if libomp_dir:
+        flags += ' -Wl,-rpath,%s' % libomp_dir
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, 'omp.c')
+        exe = os.path.join(tmp, 'omp')
+        with open(src, 'w') as f:
+            f.write('#include <omp.h>\n'
+                    'int main(void) { int n = 0;\n'
+                    '#pragma omp parallel num_threads(2) reduction(+ : n)\n'
+                    '  n += 1;\n'
+                    '  return n == 2 ? 0 : 1; }\n')
+        try:
+            if subprocess.run([config.cc_path, *flags.split(), src, '-o', exe],
+                              capture_output=True, timeout=60).returncode != 0:
+                return None
+            if subprocess.run([exe], capture_output=True,
+                              timeout=60).returncode != 0:
+                return None
+        except Exception:
+            return None
+    return flags
+
+_openmp_flags = _probe_openmp()
+if _openmp_flags:
+    config.available_features.add('openmp')
+    config.substitutions.append((r'%openmp_flags', _openmp_flags))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The Rust REPL; its suite lives in repl-rs/ and only runs when the `rrepl`

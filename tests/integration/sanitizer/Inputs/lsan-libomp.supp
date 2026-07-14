@@ -1,0 +1,5 @@
+# libomp never frees its worker-thread bookkeeping at process exit; that is
+# runtime-internal noise, not a refcount leak (our boxes allocate through
+# __reussir_allocate, which these frames never contain).
+leak:___kmp_allocate
+leak:libomp.so

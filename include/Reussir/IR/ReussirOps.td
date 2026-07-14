@@ -476,6 +476,35 @@ def ReussirRcFetchOp : ReussirRcOp<"fetch", []> {
   }];
 }
 
+def ReussirRcFetchSubOp : ReussirRcOp<"fetch_sub", []> {
+  let summary = "Atomically decrement the reference count, returning the "
+                "previous value";
+  let description = [{
+    `reussir.rc.fetch_sub` atomically subtracts one from the reference count
+    of an atomic RC pointer and returns the count's *previous* value. It
+    lowers to an acquire-release `atomicrmw sub`: the release half orders
+    this thread's uses of the box before the decrement becomes visible, and
+    the acquire half lets the final decrementer (the one that observes a
+    previous count of 1) see every other thread's uses before it destroys
+    the box.
+
+    Together with the `old == 1` test this is the atomic counterpart of the
+    plain `rc.fetch` / `rc.set` pair the nonatomic decrement expansion uses —
+    the subtraction is already published, so the shared path stores nothing.
+    Like those, it is a low-level operation for the RC management transforms,
+    not for direct use.
+  }];
+
+  let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr);
+  let results = (outs Res<Index, "Previous reference count">:$refCount);
+
+  let assemblyFormat = [{
+    `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` type($refCount) attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
 def ReussirRcSetOp : ReussirRcOp<"set", []> {
   let summary = "Set the reference count of a RC pointer";
   let description = [{
@@ -483,7 +512,8 @@ def ReussirRcSetOp : ReussirRcOp<"set", []> {
 
     This serves as a low-level operation to implement `reussir.rc.dec` and
     related RC management transforms. It is not recommended to use this
-    operation directly.
+    operation directly. An atomic RC pointer's count can never be blind
+    stored — atomic boxes are decremented with `reussir.rc.fetch_sub`.
   }];
 
   let arguments = (
@@ -496,6 +526,8 @@ def ReussirRcSetOp : ReussirRcOp<"set", []> {
     `(` $rcPtr `:` qualified(type($rcPtr)) `,`
     $refCount `:` type($refCount) `)` attr-dict
   }];
+
+  let hasVerifier = 1;
 }
 
 def ReussirRcCreateOp : ReussirRcOp<"create", [

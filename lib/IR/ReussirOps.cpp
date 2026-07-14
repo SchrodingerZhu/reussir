@@ -270,6 +270,31 @@ mlir::LogicalResult ReussirRcIncOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// RcFetchSubOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcFetchSubOp::verify() {
+  RcType rcType = getRcPtr().getType();
+  if (rcType.getAtomicKind() != AtomicKind::atomic)
+    return emitOpError("fetch_sub requires an atomic RC pointer; a nonatomic "
+                       "box decrements through `rc.fetch` and `rc.set`");
+  if (rcType.getCapability() == reussir::Capability::flex ||
+      rcType.getCapability() == reussir::Capability::rigid)
+    return emitOpError("fetch_sub requires a shared RC pointer");
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RcSetOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRcSetOp::verify() {
+  // A blind count store on an atomic box would race concurrent increments;
+  // atomic boxes decrement through `rc.fetch_sub` instead.
+  if (getRcPtr().getType().getAtomicKind() == AtomicKind::atomic)
+    return emitOpError("cannot blind-store the count of an atomic RC pointer");
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
 // RcReinterpretOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcReinterpretOp::verify() {
