@@ -53,7 +53,8 @@ def ReussirClosureBetaReductionPass
     is erased. Any other root leaves the fused eval, which the SCF-ops
     lowering expands as ONE uniqueness resolution + unchecked applies +
     plain eval — the intermediate uniqueness checks of the folded chain
-    collapse into one.
+    collapse into one. The same reduction applies when the closure is carried
+    through a nest containing only LoopLike operations and `cell.rmw`.
 
     Runs after the inliner (so cross-function create→eval pairs are visible)
     and before token instantiation / closure outlining (bodies are still
