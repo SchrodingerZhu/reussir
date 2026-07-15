@@ -5,7 +5,7 @@
 !excl_cell_i64 = !reussir.cell<i64 exclusive>
 !rc_excl_cell_i64 = !reussir.rc<!excl_cell_i64>
 !atomic_cell_i64 = !reussir.cell<i64 atomic>
-!rc_atomic_cell_i64 = !reussir.rc<!atomic_cell_i64>
+!rc_atomic_cell_i64 = !reussir.rc<!atomic_cell_i64 atomic>
 
 module {
   func.func @create_type_mismatch(%value: i32) {

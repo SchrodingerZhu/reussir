@@ -348,6 +348,12 @@ def ReussirCellType
     primitive. Atomic cells use atomic get/set operations and support both
     the direct and region forms of `reussir.cell.rmw`. Atomic and exclusive
     are distinct, mutually exclusive storage kinds.
+
+    An atomic cell only exists to be shared across threads, so it is always
+    managed by an atomic shared RC pointer
+    (`!reussir.rc<!reussir.cell<T atomic> atomic>`): the box refcount and the
+    payload slot are atomic together. Plain and exclusive cells may sit in
+    either box flavor.
   }];
   let parameters = (ins "mlir::Type":$eleTy, "reussir::CellKind":$kind);
   let genVerifyDecl = 1;

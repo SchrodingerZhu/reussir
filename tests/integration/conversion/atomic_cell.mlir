@@ -2,8 +2,8 @@
 // RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
-!atomic_i64 = !reussir.rc<!reussir.cell<i64 atomic>>
-!atomic_f32 = !reussir.rc<!reussir.cell<f32 atomic>>
+!atomic_i64 = !reussir.rc<!reussir.cell<i64 atomic> atomic>
+!atomic_f32 = !reussir.rc<!reussir.cell<f32 atomic> atomic>
 
 module {
   // Atomic Cell creation is structural initialization, not an atomic access,
@@ -17,7 +17,7 @@ module {
   }
 
   // ROUNDTRIP-LABEL: func.func @atomic_get
-  // ROUNDTRIP-SAME: !reussir.rc<!reussir.cell<i64 atomic>>
+  // ROUNDTRIP-SAME: !reussir.rc<!reussir.cell<i64 atomic> atomic>
   // SCF-LABEL: func.func @atomic_get
   // SCF: reussir.cell.get
   // LLVM-LABEL: define i64 @atomic_get
@@ -28,7 +28,7 @@ module {
   }
 
   // ROUNDTRIP-LABEL: func.func @atomic_get_monotonic
-  // ROUNDTRIP: reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(monotonic) : i64
+  // ROUNDTRIP: reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(monotonic) : i64
   // LLVM-LABEL: define i64 @atomic_get_monotonic
   // LLVM: load atomic i64, ptr %{{.+}} monotonic, align 8
   func.func @atomic_get_monotonic(%cell: !atomic_i64) -> i64 {
@@ -46,7 +46,7 @@ module {
   }
 
   // ROUNDTRIP-LABEL: func.func @atomic_set_seq_cst
-  // ROUNDTRIP: reussir.cell.set(%{{.+}} : i64, %{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(seq_cst)
+  // ROUNDTRIP: reussir.cell.set(%{{.+}} : i64, %{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(seq_cst)
   // LLVM-LABEL: define void @atomic_set_seq_cst
   // LLVM: store atomic i64 %{{.+}}, ptr %{{.+}} seq_cst, align 8
   func.func @atomic_set_seq_cst(%value: i64, %cell: !atomic_i64) {
@@ -55,7 +55,7 @@ module {
   }
 
   // ROUNDTRIP-LABEL: func.func @direct_add
-  // ROUNDTRIP: reussir.cell.rmw addi(%{{.+}} : i64, %{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(acquire) -> i64
+  // ROUNDTRIP: reussir.cell.rmw addi(%{{.+}} : i64, %{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(acquire) -> i64
   // SCF-LABEL: func.func @direct_add
   // SCF: reussir.cell.rmw addi
   // LLVM-LABEL: define i64 @direct_add
@@ -69,10 +69,10 @@ module {
   // multiply into an scf.while retry loop committed with the weak
   // ref.cmpxchg bridge; the LLVM lowering never touches control flow.
   // SCF-LABEL: func.func @direct_multiply
-  // SCF: %[[MUL_INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(monotonic) : i64
+  // SCF: %[[MUL_INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(monotonic) : i64
   // SCF: scf.while (%[[MUL_EXPECTED:.+]] = %[[MUL_INIT]]) : (i64) -> i64
   // SCF: arith.muli %[[MUL_EXPECTED]], %{{.+}} : i64
-  // SCF: %[[MUL_OBSERVED:.+]], %[[MUL_OK:.+]] = reussir.ref.cmpxchg(%[[MUL_EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field>) weak ordering(acq_rel) : i64, i1
+  // SCF: %[[MUL_OBSERVED:.+]], %[[MUL_OK:.+]] = reussir.ref.cmpxchg(%[[MUL_EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field atomic>) weak ordering(acq_rel) : i64, i1
   // SCF: %[[MUL_RETRY:.+]] = arith.xori %[[MUL_OK]], %{{.+}} : i1
   // SCF: scf.condition(%[[MUL_RETRY]]) %[[MUL_OBSERVED]] : i64
   // SCF-NOT: reussir.cell.rmw
@@ -93,11 +93,11 @@ module {
   // optional output is computed on each attempt but only the successful
   // attempt's value leaves the loop.
   // ROUNDTRIP-LABEL: func.func @region_rmw
-  // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(seq_cst) -> i64 {
+  // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(seq_cst) -> i64 {
   // SCF-LABEL: func.func @region_rmw
-  // SCF: %[[INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(monotonic) : i64
+  // SCF: %[[INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic> atomic>) ordering(monotonic) : i64
   // SCF: scf.while (%[[EXPECTED:.+]] = %[[INIT]]) : (i64) -> (i64, i64)
-  // SCF: %[[OBSERVED:.+]], %[[OK:.+]] = reussir.ref.cmpxchg(%[[EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field>) weak ordering(seq_cst) : i64, i1
+  // SCF: %[[OBSERVED:.+]], %[[OK:.+]] = reussir.ref.cmpxchg(%[[EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field atomic>) weak ordering(seq_cst) : i64, i1
   // SCF: %[[RETRY:.+]] = arith.xori %[[OK]], %{{.+}} : i1
   // SCF: scf.condition(%[[RETRY]]) %[[OBSERVED]], %{{.+}} : i64, i64
   // SCF-NOT: reussir.cell.rmw
@@ -142,10 +142,10 @@ module {
   // lowering compares integer bit patterns, avoiding an invalid
   // floating-point llvm.cmpxchg.
   // LLVM-LABEL: define float @region_float
-  // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<f32 atomic>>) ordering(release) -> f32 {
+  // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<f32 atomic> atomic>) ordering(release) -> f32 {
   // SCF-LABEL: func.func @region_float
   // SCF: scf.while
-  // SCF: reussir.ref.cmpxchg(%{{.+}} : f32, %{{.+}} : f32, %{{.+}} : !reussir.ref<f32 field>) weak ordering(release) : f32, i1
+  // SCF: reussir.ref.cmpxchg(%{{.+}} : f32, %{{.+}} : f32, %{{.+}} : !reussir.ref<f32 field atomic>) weak ordering(release) : f32, i1
   // LLVM: load atomic float, ptr %{{.+}} monotonic, align 4
   // LLVM: fadd float
   // LLVM: bitcast float %{{.+}} to i32
