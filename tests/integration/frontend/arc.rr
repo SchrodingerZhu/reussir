@@ -4,6 +4,8 @@
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
 // RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
+// RUN: %rrc %s --emit mlir-llvm --no-source-locations -Onone -o - | %FileCheck %s --check-prefix=LLVM
 
 struct [shared] Data {
     value: i64
@@ -34,20 +36,6 @@ pub fn call_passthrough(a: Arc<Data>) -> Arc<Data> {
     passthrough(a)
 }
 
-// An array and a closure are single shared rc boxes like a [shared] record,
-// so they take the atomic coloring the same way.
-// HIR: pub fn #arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
-// MIR-DAG: pub fn @_RC3arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
-pub fn arr(a: Arc<[f64; 8]>) -> Arc<[f64; 8]> {
-    a
-}
-
-// HIR: pub fn #clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
-// MIR-DAG: pub fn @_RC3clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
-pub fn clo(f: Arc<(i64) -> i64>) -> Arc<(i64) -> i64> {
-    f
-}
-
 enum List<T> {
     Nil,
     Cons(T, List<T>)
@@ -69,6 +57,25 @@ pub fn make(v: i64) -> Arc<Data> {
 // MIR-DAG: pub fn @_RC9make_list() -> Arc<List::<i64>>
 pub fn make_list() -> Arc<List<i64>> {
     Arc<List<i64>>::Cons{1, List::Nil}
+}
+
+// The lowering: an arc'd value is `!reussir.rc<…, atomic>`, constructed
+// atomically counted from birth and borrowed at a matching atomic reference;
+// the projected member references stay plain (atomicity governs the
+// refcount, not the payload accesses).
+// MLIR-DAG: reussir.rc.create value({{.+}} : !reussir.record<compound "_RC4Data" {i64}>) : !reussir.rc<!reussir.record<compound "_RC4Data" {i64}> atomic>
+// MLIR-DAG: : !reussir.ref<!reussir.record<compound "_RC4Data" {i64}> shared atomic>
+// The lowered refcount discipline is a monotonic atomic retain and an
+// acq_rel atomic release.
+// LLVM-DAG: llvm.atomicrmw add {{.+}} monotonic
+// LLVM-DAG: llvm.atomicrmw sub {{.+}} acq_rel
+
+fn read_pair(a: Arc<Data>, b: Arc<Data>) -> i64 {
+    a.value + b.value
+}
+
+pub fn share(a: Arc<Data>) -> i64 {
+    read_pair(a, a)
 }
 
 // Reads see through the arc coloring: projection and matching are the inner

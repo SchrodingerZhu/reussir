@@ -1,0 +1,67 @@
+// End-to-end Arc semantics: the arc'd constructor allocates an atomically
+// counted box, sharing retains it atomically, reads (projection and
+// matching) are the inner record's own, and the arc colors only the outer
+// box — enum payload links stay plain shared values.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/arc_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/arc_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+struct [shared] Data {
+    value: i64
+}
+
+enum List<T> {
+    Nil,
+    Cons(T, List<T>)
+}
+
+fn read_twice(a: Arc<Data>, b: Arc<Data>) -> i64 {
+    a.value + b.value
+}
+
+// Sharing the arc'd box forces an atomic retain before the extra use.
+pub fn test_share() -> i64 {
+    let a = Arc<Data> { value: 21 };
+    read_twice(a, a)
+}
+extern "C" trampoline "test_share_ffi" = test_share;
+
+// The arc colors only the outer box: the tail links are plain shared lists.
+fn sum(l: List<i64>) -> i64 {
+    match l {
+        List::Cons(x, xs) => x + sum(xs),
+        List::Nil => 0
+    }
+}
+
+pub fn test_enum() -> i64 {
+    let l = Arc<List<i64>>::Cons{7, List::Cons{35, List::Nil}};
+    match l {
+        List::Cons(x, xs) => x + sum(xs),
+        List::Nil => 0
+    }
+}
+extern "C" trampoline "test_enum_ffi" = test_enum;
+
+// An arc is pointer-like, so it sits behind a nullable unchanged.
+pub fn test_nullable() -> i64 {
+    let n = Nullable::NonNull{Arc<Data> { value: 11 }};
+    match n {
+        Nullable::NonNull(a) => a.value,
+        Nullable::Null => 0
+    }
+}
+extern "C" trampoline "test_nullable_ffi" = test_nullable;
+
+fn id<T>(x: T) -> T { x }
+
+// A generic instantiated at an arc'd type keeps the atomic discipline.
+pub fn test_generic() -> i64 {
+    let a = id(Arc<Data> { value: 9 });
+    a.value
+}
+extern "C" trampoline "test_generic_ffi" = test_generic;

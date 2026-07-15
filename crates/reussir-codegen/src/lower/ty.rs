@@ -81,10 +81,14 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         }
     }
 
-    /// The record instance for a nominal record type, if known.
+    /// The record instance for a nominal record type, if known. The arc
+    /// coloring is transparent to layout queries: `Arc<X>`'s payload,
+    /// variants, and fields are `X`'s own — only the box's refcount
+    /// discipline differs (see [`mlir_ty`](Self::mlir_ty)).
     pub(super) fn record_of(&self, ty: Ty<'tcx>) -> Option<&'p mir::RecordInstance<'tcx>> {
         match *ty.kind() {
             TyKind::Record { def, args, .. } => self.records.get(&(def, args)).copied(),
+            TyKind::Arc(inner) => self.record_of(inner),
             _ => None,
         }
     }
@@ -150,6 +154,29 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // A cell is one shared rc box around its payload container. Unlike
             // arrays, its element may itself be a managed type.
             TyKind::Cell { .. } => Ok(self.rc_type(self.cell_inner_of(ty)?)),
+            // The arc coloring: the same shared payload behind a box whose
+            // refcount is adjusted with atomic operations. Of the shared rc
+            // boxes an `Arc` may color (a `[shared]` record, an array, or a
+            // closure), only the record lowering has landed; an array or
+            // closure inner is a valid arc type reported as unimplemented.
+            // Any other inner is kept out by elaboration and mono's
+            // instantiation check — rejecting it here is the backstop for
+            // directly lowered textual MIR.
+            TyKind::Arc(inner) => {
+                if self.is_shared_record(inner) {
+                    Ok(rc(
+                        self.record_inner_of(inner)?,
+                        ReussirCapability::Shared,
+                        ReussirAtomicKind::Atomic,
+                    ))
+                } else if matches!(inner.kind(), TyKind::Array { .. } | TyKind::Closure { .. }) {
+                    err("arc'd arrays and closures do not lower yet: only a `[shared]` \
+                         record inner is implemented")
+                } else {
+                    err("`Arc` requires a shared rc box inner (a `[shared]` record, an \
+                         array, or a closure)")
+                }
+            }
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -167,6 +194,9 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             TyKind::Closure { params, ret } => self.closure_inner(params, ret),
             TyKind::Array { .. } => self.array_inner_of(ty),
             TyKind::Cell { .. } => self.cell_inner_of(ty),
+            // Member capabilities have no atomic axis, so an arc member is
+            // rejected at elaboration; reaching here means a check was missed.
+            TyKind::Arc(_) => err("an `Arc` record member is not supported yet"),
             _ => self.mlir_ty(ty),
         }
     }
@@ -434,6 +464,24 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         r#ref(inner, cap, ReussirAtomicKind::Normal)
     }
 
+    /// The `!reussir.ref` type for borrowing the payload of a managed box of
+    /// MIR type `ty`: an arc'd box hands out an *atomic* reference — the
+    /// dialect requires a borrow's atomic kind to match the box's — and
+    /// everything else borrows normal.
+    pub(super) fn borrow_ref_type(
+        &self,
+        ty: Ty<'tcx>,
+        inner: Type<'c>,
+        cap: ReussirCapability,
+    ) -> Type<'c> {
+        let atomic = if matches!(ty.kind(), TyKind::Arc(_)) {
+            ReussirAtomicKind::Atomic
+        } else {
+            ReussirAtomicKind::Normal
+        };
+        r#ref(inner, cap, atomic)
+    }
+
     /// `!reussir.ref<inner>` with unspecified capability — the form a spilled
     /// stack reference takes, used to acquire/drop an inline value in place.
     pub(super) fn unspecified_ref_type(&self, inner: Type<'c>) -> Type<'c> {
@@ -518,7 +566,7 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Array { .. } => err("array type reached scalar lowering without its rc wrapper"),
         TyKind::Cell { .. } => err("cell type reached scalar lowering without its rc wrapper"),
-        TyKind::Arc(_) => err("`Arc` lowering is not implemented yet"),
+        TyKind::Arc(_) => err("arc type reached scalar lowering without its rc wrapper"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
         // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.
         TyKind::Closure { .. } => err("closure type reached scalar lowering without an rc wrapper"),

@@ -1199,6 +1199,78 @@ transform [{
     }
 
     #[test]
+    fn lowers_arc_to_an_atomic_rc_box() {
+        // An arc'd value is the same shared record behind an atomically
+        // counted box: the constructor creates `!reussir.rc<…, atomic>` and a
+        // read borrows it at a matching `shared atomic` reference.
+        let src = r#"
+            struct Data { value: i64 }
+            pub fn make(v: i64) -> Arc<Data> { Arc<Data> { value: v } }
+            pub fn read(a: Arc<Data>) -> i64 { a.value }
+        "#;
+        let mlir = lower_source(src);
+        assert!(mlir.contains("reussir.rc.create"), "{mlir}");
+        assert!(mlir.contains("atomic>"), "{mlir}");
+        assert!(mlir.contains("shared atomic>"), "{mlir}");
+    }
+
+    #[test]
+    fn rejects_arc_instantiated_at_a_non_shared_record() {
+        // A non-box `Arc` inner is diagnosed at elaboration (concrete) and by
+        // mono's instantiation check (generic); the lowering rejection is the
+        // backstop for MIR that reaches codegen without those passes (e.g.
+        // directly lowered textual MIR). Strip the reports and drive lowering
+        // directly to exercise it.
+        let src = r#"
+            struct [value] Pair { a: i64 }
+            fn id<T>(x: T) -> T { x }
+            pub fn bad(x: Arc<Pair>) -> Arc<Pair> { id(x) }
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            let (full, _) = monomorphize(&elab.mono_input());
+            let err = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                .expect_err("an arc over a non-shared record must not lower");
+            assert!(
+                err.to_string()
+                    .contains("`Arc` requires a shared rc box inner"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn arc_of_array_reports_unimplemented_lowering() {
+        // An array (or closure) is a valid `Arc` inner at the type level, but
+        // only the `[shared]` record lowering has landed — keep the gap an
+        // explicit error rather than a malformed box.
+        let src = r#"
+            pub fn f(x: Arc<[f64; 8]>) -> Arc<[f64; 8]> { x }
+        "#;
+        let context = crate::testing::context();
+        in_arena(|tcx| {
+            let parse = reussir_syntax::parse(src);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "{reports:#?}");
+            let err = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
+                .expect_err("an arc'd array must not lower yet");
+            assert!(
+                err.to_string()
+                    .contains("arc'd arrays and closures do not lower yet"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
     fn rejects_nullable_over_a_non_pointer_element() {
         // The frontend's pointer-like check for a `Nullable` inner is
         // conservative and passes a `[value]` record; that record lowers to an

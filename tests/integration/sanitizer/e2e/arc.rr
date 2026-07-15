@@ -1,0 +1,15 @@
+// REQUIRES: asan
+// ASan+LSan gate over frontend/arc_e2e.rr: atomic retain/release balance on
+// the arc'd boxes (sharing, enum payload links, nullable wrapping, generic
+// instantiation) — a missed atomic decrement leaks, a doubled one
+// double-frees.
+
+// RUN: %rrc %S/../../frontend/arc_e2e.rr -o %t.none.ll -t llvm-ir --relocation-mode pic -Onone --sanitizer address --nullary-variant-encoding arch-independent
+// RUN: %cc %asan_flags -c -x ir %t.none.ll -o %t.none.o
+// RUN: %cc %asan_flags %t.none.o %S/../../frontend/arc_e2e.c %reussir_rt_asan -o %t.none.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.none.exe
+
+// RUN: %rrc %S/../../frontend/arc_e2e.rr -o %t.aggr.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call --sanitizer address --nullary-variant-encoding arch-independent
+// RUN: %cc %asan_flags -c -x ir %t.aggr.ll -o %t.aggr.o
+// RUN: %cc %asan_flags %t.aggr.o %S/../../frontend/arc_e2e.c %reussir_rt_asan -o %t.aggr.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.aggr.exe

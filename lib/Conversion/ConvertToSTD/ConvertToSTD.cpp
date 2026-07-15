@@ -465,8 +465,9 @@ private:
           getProjectedType(recordType.getMembers()[*singletonTag],
                            recordType.getMemberIsField()[*singletonTag],
                            variantRef.getCapability());
-      RefType coercedType = RefType::get(
-          rewriter.getContext(), targetVariantType, variantRef.getCapability());
+      RefType coercedType =
+          RefType::get(rewriter.getContext(), targetVariantType,
+                       variantRef.getCapability(), variantRef.getAtomicKind());
       auto coerced = reussir::ReussirRecordCoerceOp::create(
           rewriter, op.getLoc(), coercedType,
           rewriter.getIndexAttr(*singletonTag), op.getVariant());

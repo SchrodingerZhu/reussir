@@ -834,7 +834,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         inner_ty: Type<'c>,
     ) -> Result<Value<'c, 'b>> {
         let loc = self.loc();
-        if self.tys.is_shared_record(e.ty) {
+        if matches!(e.ty.kind(), TyKind::Arc(_)) {
+            // An arc'd constructor allocates its box atomically counted from
+            // birth (`!reussir.rc<…, shared atomic>`); everything else about
+            // the payload is the plain shared record's.
+            let rc_ty = self.tys.mlir_ty(e.ty)?;
+            Ok(self.append(
+                block,
+                builders::rc_create(self.context, payload, rc_ty, loc),
+            ))
+        } else if self.tys.is_shared_record(e.ty) {
             let rc_ty = self.tys.rc_type(inner_ty);
             Ok(self.append(
                 block,
@@ -1355,7 +1364,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let mut tags = Vec::with_capacity(subtrees.len());
         for (i, subtree) in subtrees.iter().enumerate() {
             let payload_ty = self.tys.variant_payload_of(enum_ty, i)?;
-            let arg_ref_ty = self.tys.ref_type_with_cap(payload_ty, cap);
+            let arg_ref_ty = self.tys.borrow_ref_type(enum_ty, payload_ty, cap);
             let arm_block = Block::new(&[(arg_ref_ty, loc)]);
             let arg: Value<'c, '_> = arm_block
                 .argument(0)
@@ -1843,7 +1852,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Cursor::Value { val, ty } => {
                 let inner = self.tys.record_inner_of(ty)?;
                 if let Some(cap) = self.record_ref_cap(ty)? {
-                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
+                    let ref_ty = self.tys.borrow_ref_type(ty, inner, cap);
                     let reference = self.append(
                         block,
                         dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
@@ -2017,7 +2026,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     // borrow it at its capability to obtain a reference, then
                     // project through that reference.
                     let inner = self.tys.record_inner_of(ty)?;
-                    let ref_ty = self.tys.ref_type_with_cap(inner, cap);
+                    let ref_ty = self.tys.borrow_ref_type(ty, inner, cap);
                     let borrowed = self.append(
                         block,
                         dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
