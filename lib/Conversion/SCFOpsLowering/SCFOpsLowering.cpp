@@ -14,7 +14,11 @@
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
+#include "Sync/Conversion/ConvertSyncToSTD.h"
+#include "Sync/IR/SyncOps.h"
+#include "Sync/IR/SyncTypes.h"
 #include <llvm/ADT/ArrayRef.h>
+#include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/TypeSwitch.h>
@@ -30,6 +34,7 @@
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Ptr/IR/PtrDialect.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/UB/IR/UBOps.h>
@@ -1471,6 +1476,47 @@ public:
     return mlir::success();
   }
 };
+
+// `reussir.cell.read_with` on an rwlock cell becomes a
+// `sync.rwlock.read_critical_section` over a zero-ranked memref view of the
+// cell storage (which is physically an `!sync.rwlock<T>`). The body — already
+// written against a `memref<T>` payload view — is moved verbatim into the sync
+// region, and its `reussir.scf.yield` terminator is retargeted to `sync.yield`.
+// The freshly created sync region op is lowered to `scf`/`func` by the
+// convert-sync-to-std pass run at the end of this pass (its remaining
+// fast-path/bridge operations survive to the basic-ops lowering).
+class ReussirCellReadWithOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellReadWithOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellReadWithOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    CellAccess access = borrowCell(op.getCell(), loc, rewriter);
+    mlir::Type elementType = access.cellType.getElementType();
+    auto rwlockType =
+        mlir::sync::RwLockType::get(rewriter.getContext(), elementType);
+    auto memrefType = mlir::MemRefType::get({}, rwlockType);
+    mlir::Value rwlockMemref =
+        ReussirRefAsMemRefOp::create(rewriter, loc, memrefType, access.cellRef);
+    auto criticalSection = mlir::sync::SyncRwLockReadCriticalSectionOp::create(
+        rewriter, loc, op.getResultTypes(), rwlockMemref);
+    rewriter.inlineRegionBefore(op.getBody(), criticalSection.getBody(),
+                                criticalSection.getBody().end());
+    mlir::Block &body = criticalSection.getBody().front();
+    auto yield = llvm::cast<ReussirScfYieldOp>(body.getTerminator());
+    rewriter.setInsertionPoint(yield);
+    mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                    yield.getValue()
+                                        ? mlir::ValueRange{yield.getValue()}
+                                        : mlir::ValueRange{});
+    rewriter.eraseOp(yield);
+    rewriter.replaceOp(op, criticalSection.getResults());
+    return mlir::success();
+  }
+};
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1492,7 +1538,8 @@ struct SCFOpsLoweringPass
                            mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
                            mlir::math::MathDialect, mlir::memref::MemRefDialect,
                            mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
-                           mlir::ub::UBDialect, reussir::ReussirDialect>();
+                           mlir::ub::UBDialect, reussir::ReussirDialect,
+                           mlir::sync::SyncDialect>();
     target.addDynamicallyLegalOp<ReussirArrayViewOp>([](ReussirArrayViewOp op) {
       return llvm::isa<mlir::MemRefType>(op.getView().getType());
     });
@@ -1527,11 +1574,34 @@ struct SCFOpsLoweringPass
         ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
         ReussirClosureUniqifyOp, ReussirArrayWithUniqueViewOp,
         ReussirTokenEnsureOp, ReussirStrByteAtOp, ReussirStrSelectOp,
-        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp>();
+        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp,
+        ReussirCellReadWithOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
       signalPassFailure();
+
+    // Second phase: lower the `sync` control-flow region operations emitted by
+    // the read_with lowering (and any other sync high-level ops) into
+    // `scf`/`func`, keeping the straight-line fast-path and bridge operations
+    // for the basic-ops LLVM lowering. This is the sync -> STD half of the
+    // "lower to STD during SCF lowering" split. It is gated on the presence of
+    // sync operations so the greedy driver's folding never perturbs modules
+    // that contain no lock-guarded cells.
+    bool hasSyncOps = false;
+    getOperation()->walk([&](mlir::Operation *nested) {
+      if (llvm::isa_and_present<mlir::sync::SyncDialect>(nested->getDialect())) {
+        hasSyncOps = true;
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (hasSyncOps) {
+      mlir::RewritePatternSet syncPatterns(&getContext());
+      mlir::sync::populateConvertSyncToSTDPatterns(syncPatterns);
+      if (failed(applyPatternsGreedily(getOperation(), std::move(syncPatterns))))
+        signalPassFailure();
+    }
   }
 };
 } // namespace
@@ -1550,7 +1620,8 @@ void populateSCFOpsLoweringConversionPatterns(
       ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
       ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
       ReussirCellRmwOpRewritePattern, ReussirAtomicCellRmwOpRewritePattern,
-      ReussirCellInUseOpRewritePattern>(patterns.getContext());
+      ReussirCellInUseOpRewritePattern, ReussirCellReadWithOpRewritePattern>(
+      patterns.getContext());
 }
 
 } // namespace reussir

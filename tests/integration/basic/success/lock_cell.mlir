@@ -17,4 +17,17 @@ module {
                              %w: !rwlock_cell) {
     return
   }
+
+  // CHECK-LABEL: func.func @rwlock_read_with
+  // CHECK: reussir.cell.read_with(%{{.*}} : !reussir.rc<!reussir.cell<i64 rwlock> atomic>) -> i64
+  // CHECK-NEXT: ^bb0(%{{.*}}: memref<i64>):
+  // CHECK: reussir.scf.yield %{{.*}} : i64
+  func.func @rwlock_read_with(%w: !rwlock_cell) -> i64 {
+    %v = reussir.cell.read_with(%w : !rwlock_cell) -> i64 {
+      ^bb0(%view: memref<i64>):
+        %loaded = memref.load %view[] : memref<i64>
+        reussir.scf.yield %loaded : i64
+    }
+    return %v : i64
+  }
 }

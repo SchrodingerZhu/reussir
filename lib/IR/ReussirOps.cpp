@@ -1540,6 +1540,48 @@ mlir::LogicalResult ReussirCellInUseOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult ReussirCellReadWithOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  if (!(*cellType).getRwlock())
+    return emitOpError(
+               "read_with requires a reader-writer-lock cell, got a cell of "
+               "kind '")
+           << stringifyCellKind((*cellType).getKind()) << "'";
+
+  mlir::Type elementType = (*cellType).getElementType();
+  // The body observes the payload through a zero-ranked memref view (like
+  // `sync.rwlock.read_critical_section`), so the element must be a valid
+  // memref element type.
+  if (!mlir::MemRefType::isValidElementType(elementType))
+    return emitOpError("rwlock cell element must be a valid memref element "
+                       "type to be read through read_with, got ")
+           << elementType;
+  auto expectedView = mlir::MemRefType::get({}, elementType);
+
+  if (!llvm::hasSingleElement(getBody()))
+    return emitOpError("body must contain exactly one block");
+  mlir::Block &block = getBody().front();
+  if (block.getNumArguments() != 1)
+    return emitOpError("body must accept exactly one payload view argument");
+  if (block.getArgument(0).getType() != expectedView)
+    return emitOpError("body argument must be a zero-ranked memref view of the "
+                       "cell element, expected ")
+           << expectedView << ", got " << block.getArgument(0).getType();
+  if (block.empty() || !llvm::isa<ReussirScfYieldOp>(block.getTerminator()))
+    return emitOpError("body must terminate with reussir.scf.yield");
+
+  auto yield = llvm::cast<ReussirScfYieldOp>(block.getTerminator());
+  if (static_cast<bool>(getOutput()) != static_cast<bool>(yield.getValue()))
+    return emitOpError("body must yield exactly one output when the operation "
+                       "has a result");
+  if (getOutput() && getOutput().getType() != yield.getValue().getType())
+    return emitOpError("body output type must match operation result type, got ")
+           << yield.getValue().getType() << " and " << getOutput().getType();
+  return mlir::success();
+}
+
 mlir::LogicalResult ReussirRefAsMemRefOp::verify() {
   auto memrefType = llvm::cast<mlir::MemRefType>(getMemref().getType());
   if (memrefType.getRank() != 0)
@@ -2262,7 +2304,12 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
                                            : mlir::Type{};
     allowImplicitArrayResult =
         expectedType && expectedType == arrayParent.getArray().getType();
-  } else
+  } else if (auto readWithParent =
+                 getOperation()->getParentOfType<ReussirCellReadWithOp>())
+    expectedType = readWithParent.getOutput()
+                       ? readWithParent.getOutput().getType()
+                       : mlir::Type{};
+  else
     llvm_unreachable("unexpected parent operation");
 
   if (expectedType && !yieldedType && !allowImplicitArrayResult)

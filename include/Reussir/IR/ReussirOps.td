@@ -1178,6 +1178,41 @@ def ReussirCellInUseOp : ReussirCellOp<"in_use", []> {
   let hasVerifier = 1;
 }
 
+def ReussirCellReadWithOp
+    : ReussirCellOp<"read_with", [RecursiveMemoryEffects]> {
+  let summary = "Read an rwlock cell payload while holding the read lock";
+  let description = [{
+    `reussir.cell.read_with` is the read-only, shared-lock counterpart of the
+    region form of `reussir.cell.rmw`. It applies only to a reader-writer-lock
+    cell (`!reussir.cell<T rwlock>`): it acquires the rwlock for shared read
+    access, runs its single-block body with a zero-ranked `memref<T>` view of
+    the inline payload, and releases the read lock on exit — the body executes
+    as a continuous region under the held read lock.
+
+    Because the lock is shared, the body only observes the payload; it neither
+    moves the element out nor replaces it. The body terminates with
+    `reussir.scf.yield`, optionally producing one operation result computed from
+    the payload while the lock is held.
+
+    ```mlir
+    %sum = reussir.cell.read_with(
+        %cell : !reussir.rc<!reussir.cell<i64 rwlock> atomic>) -> i64 {
+      ^bb0(%view: memref<i64>):
+        %v = memref.load %view[] : memref<i64>
+        reussir.scf.yield %v : i64
+    }
+    ```
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "rwlock cell to read">:$cell);
+  let results = (outs Res<Optional<AnyType>, "body output">:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)` (`->` type($output)^)?
+    $body attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def ReussirCellYieldOp
     : ReussirCellOp<"yield", [ReturnLike, Terminator,
                               ParentOneOf<["::reussir::ReussirCellRmwOp"]>]> {
@@ -1611,7 +1646,8 @@ def ReussirScfYieldOp
           "yield", [ReturnLike, Terminator,
                     ParentOneOf<["::reussir::ReussirNullableDispatchOp",
                                  "::reussir::ReussirRecordDispatchOp",
-                                 "::reussir::ReussirArrayWithUniqueViewOp"]>]> {
+                                 "::reussir::ReussirArrayWithUniqueViewOp",
+                                 "::reussir::ReussirCellReadWithOp"]>]> {
   let summary = "Yield a value from a scf operation";
   let description = [{
     `reussir.scf.yield` terminates a high-level structured control flow operation.

@@ -14,4 +14,6 @@ add_mlir_conversion_library(MLIRReussirSCFOpsLowering
   MLIRSCFDialect
   MLIRFuncDialect
   MLIRTransforms
+  MLIRSync
+  MLIRSyncConvertSyncToSTD
 )

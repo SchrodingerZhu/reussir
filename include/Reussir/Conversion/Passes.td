@@ -104,7 +104,9 @@ def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
                            "::reussir::ReussirDialect",
                            "::mlir::math::MathDialect",
                            "::mlir::memref::MemRefDialect",
+                           "::mlir::ptr::PtrDialect",
                            "::mlir::scf::SCFDialect",
+                           "::mlir::sync::SyncDialect",
                            "::mlir::tensor::TensorDialect",
                            "::mlir::ub::UBDialect"];
 }
