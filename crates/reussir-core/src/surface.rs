@@ -249,6 +249,18 @@ fn path_of(node: &ResolvedNode) -> Path {
     Path { basename, segments }
 }
 
+/// Merge every direct `Path` child of a call node into one path: committed
+/// mid-path type arguments (`Arc<List<i32>>::Cons{…}`) split the spelling
+/// into two path nodes around the argument list.
+fn call_path_of(node: &ResolvedNode) -> Path {
+    let mut segments: SmallVec<[TokenKey; 2]> = SmallVec::new();
+    for p in nodes(node).filter(|n| n.kind() == PathKind) {
+        segments.extend(tokens(p).filter(|t| t.kind().is_ident_like()).map(key));
+    }
+    let basename = segments.pop().expect("non-empty path");
+    Path { basename, segments }
+}
+
 /// `(name, bounds)` declarations from a `GenericParamList` child.
 fn generics_of(node: &ResolvedNode) -> SmallVec<[(TokenKey, Vec<Path>); 2]> {
     let Some(list) = child_node(node, GenericParamList) else {
@@ -784,18 +796,18 @@ impl Expr {
             }
             VarExpr => ExprKind::Var(path_of(child_node(node, PathKind).expect("variable path"))),
             FuncCallExpr => {
-                let path = child_node(node, PathKind).expect("function path");
+                child_node(node, PathKind).expect("function path");
                 let args = child_node(node, ArgList)
                     .map(|l| expr_children(l).map(Expr::new).collect())
                     .unwrap_or_default();
                 ExprKind::FuncCallExpr(Box::new(FuncCall {
-                    name: path_of(path),
+                    name: call_path_of(node),
                     ty_args: type_args_of(node),
                     args,
                 }))
             }
             CtorCallExpr => {
-                let path = child_node(node, PathKind).expect("constructor path");
+                child_node(node, PathKind).expect("constructor path");
                 let args = child_node(node, CtorArgList)
                     .map(|l| {
                         nodes(l)
@@ -815,7 +827,7 @@ impl Expr {
                     })
                     .unwrap_or_default();
                 ExprKind::CtorCallExpr(Box::new(CtorCall {
-                    name: path_of(path),
+                    name: call_path_of(node),
                     ty_args: type_args_of(node),
                     args,
                 }))

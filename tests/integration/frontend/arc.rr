@@ -23,7 +23,7 @@ pub fn maybe(n: Nullable<Arc<Data>>) -> Nullable<Arc<Data>> {
 
 // A generic inner is deferred to the instantiation check; the instance
 // grounds `Arc<$0>` at `Arc<Data>`.
-// HIR: fn #passthrough<$0>(v0 (a): Arc<$0>) -> Arc<$0>
+// HIR: fn #passthrough<[[G:\$[0-9]+]]>(v0 (a): Arc<[[G]]>) -> Arc<[[G]]>
 // MIR-DAG: fn @_RIC11passthroughC4DataE(v0 (a): Arc<Data>) -> Arc<Data>
 fn passthrough<T>(a: Arc<T>) -> Arc<T> {
     a
@@ -46,4 +46,27 @@ pub fn arr(a: Arc<[f64; 8]>) -> Arc<[f64; 8]> {
 // MIR-DAG: pub fn @_RC3clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
 pub fn clo(f: Arc<(i64) -> i64>) -> Arc<(i64) -> i64> {
     f
+}
+
+enum List<T> {
+    Nil,
+    Cons(T, List<T>)
+}
+
+// The arc constructors are the inner record's own, at the arc'd type: the
+// coloring lives entirely in the node type, so both textual IRs carry it
+// without a dedicated expression form.
+// HIR: pub fn #make(v0 (v): i64) -> Arc<#Data>
+// HIR-NEXT: #Data{v0 : i64} : Arc<#Data>
+// MIR-DAG: pub fn @_RC4make(v0 (v): i64) -> Arc<Data>
+// MIR-DAG: @_RC4Data{v0 : i64} : Arc<Data>
+pub fn make(v: i64) -> Arc<Data> {
+    Arc<Data> { value: v }
+}
+
+// HIR: pub fn #make_list() -> Arc<#List::<i64>>
+// HIR-NEXT: #List::<i64>#1(1 : i64, #List::<i64>#0() : #List::<i64>) : Arc<#List::<i64>>
+// MIR-DAG: pub fn @_RC9make_list() -> Arc<List::<i64>>
+pub fn make_list() -> Arc<List<i64>> {
+    Arc<List<i64>>::Cons{1, List::Nil}
 }

@@ -503,6 +503,13 @@ impl Parser<'_> {
         if self.at(LAngle) {
             has_ty_args = self.try_type_arg_list();
         }
+        // Committed type arguments may sit mid-path (`Arc<List<i32>>::Cons`):
+        // the trailing segments continue the constructor path as a second
+        // path node, merged back together during lowering.
+        if has_ty_args && self.at(PathSep) {
+            self.bump();
+            self.path();
+        }
         if self.at(LBrace) && allow_struct {
             self.ctor_arg_list();
             m.complete(self, CtorCallExpr)

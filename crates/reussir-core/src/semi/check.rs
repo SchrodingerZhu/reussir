@@ -1488,6 +1488,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if qualifier.map(|k| self.sym(k)) == Some("Nullable") {
             return self.infer_nullable(self.sym(path.basename), args, span);
         }
+        // The built-in arc-coloring constructors (a root builtin, never
+        // module-qualified): `Arc<Inner>{…}` builds the `[shared]` struct
+        // `Inner` behind an atomically counted box, `Arc<Enum<…>>::Variant{…}`
+        // the enum flavor. `Arc<X>` is a specially colored version of `X`, so
+        // the constructor is the inner record's own, at the arc'd type.
+        if path.segments.is_empty() && self.sym(path.basename) == "Arc" {
+            return self.infer_arc_ctor(ty_args, None, args, span);
+        }
+        if path.segments.len() == 1 && self.sym(path.segments[0]) == "Arc" {
+            return self.infer_arc_ctor(ty_args, Some(path.basename), args, span);
+        }
         if let Some(enum_key) = qualifier {
             // The qualifier resolving to an enum wins (`Enum::Variant`); a
             // qualifier that is a module path instead falls through to a
@@ -1509,6 +1520,64 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         // A bare struct constructor.
         self.infer_struct(path.basename, ty_args, args, span)
+    }
+
+    /// (ARC) `Γ ⊢ Arc<Inner>{args} ⇒ (CompoundCall{…} : Arc<R>)` and
+    /// `Γ ⊢ Arc<Enum<…>>::Variant{args} ⇒ (VariantCall{…} : Arc<R>)`: the inner
+    /// type names the `[shared]` record being built; the payload is checked
+    /// exactly like the plain constructor and only the node's type is wrapped.
+    /// The box is atomically counted from birth — an arc is never re-colored
+    /// from an existing plain shared value.
+    fn infer_arc_ctor(
+        &mut self,
+        ty_args: &[Option<surface::Type>],
+        variant: Option<TokenKey>,
+        args: &[(Option<TokenKey>, surface::Expr)],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let [Some(inner)] = ty_args else {
+            self.error(
+                span,
+                "`Arc` construction takes exactly one explicit type argument \
+                 (the `[shared]` record being built)",
+            );
+            return self.poison(span);
+        };
+        let surface::TypeKind::TypeExpr(ipath, iargs) = inner.kind() else {
+            self.error(
+                span,
+                "`Arc` constructs a `[shared]` record; this inner type is not one",
+            );
+            return self.poison(span);
+        };
+        let Some(def) = self.resolve_record_ref(&ipath) else {
+            let shown = self.path_display(&ipath);
+            self.error(span, format!("unknown record `{shown}`"));
+            return self.poison(span);
+        };
+        if !matches!(
+            self.records[&def].default_cap,
+            super::ctxt::DefaultCap::Shared
+        ) {
+            let shown = self.path_display(&ipath);
+            self.error(
+                span,
+                format!("`Arc` constructs a `[shared]` record; `{shown}` is not one"),
+            );
+            return self.poison(span);
+        }
+        self.record_use(ipath.basename);
+        let iargs: Vec<Option<surface::Type>> = iargs.iter().cloned().map(Some).collect();
+        let mut e = match variant {
+            None => self.infer_struct_def(def, ipath.basename, &iargs, args, span),
+            Some(v) => self.infer_variant(def, ipath.basename, v, &iargs, args, span),
+        };
+        // Wrap only a successfully built constructor; an error path stays the
+        // poison it already is.
+        if matches!(e.ty.kind(), TyKind::Record { .. }) {
+            e.ty = self.tcx.mk_arc(e.ty);
+        }
+        e
     }
 
     /// (NULL) the built-in nullable constructors: `Nullable::NonNull(e)` with `e ⇒ T`

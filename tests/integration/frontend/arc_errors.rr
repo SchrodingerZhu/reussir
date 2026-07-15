@@ -38,3 +38,15 @@ struct [regional] BadLink { value: [field] Arc<Shared> }
 // An arc is already atomically counted; wrapping it again double-boxes.
 // CHECK-DAG: `Arc` inner type `Arc<Shared>` is not a `[shared]` record, array, or closure (already an `Arc`)
 fn nested_inner(a: Arc<Arc<Shared>>) -> i64 { 0 }
+
+// The arc constructors demand an explicit `[shared]` record inner.
+// CHECK-DAG: `Arc` construction takes exactly one explicit type argument
+fn ctor_no_inner() -> i64 { Arc { value: 1 }; 0 }
+
+// CHECK-DAG: `Arc` constructs a `[shared]` record; `Flat` is not one
+fn ctor_value_inner() -> i64 { Arc<Flat> { value: 1 }; 0 }
+
+// The arc coloring is part of the type: an arc'd constructor does not check
+// against the bare record.
+// CHECK-DAG: type mismatch
+fn ctor_is_colored() -> Shared { Arc<Shared> { value: 1 } }
