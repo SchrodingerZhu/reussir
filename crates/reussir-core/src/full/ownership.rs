@@ -605,8 +605,13 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             ExprKind::Seq(es) => self.place_seq(es, live_after),
             ExprKind::Call { args, .. }
             | ExprKind::Ctor { args, .. }
-            | ExprKind::Variant { args, .. }
-            | ExprKind::Intrinsic { args, .. } => self.place_args(args, live_after),
+            | ExprKind::Variant { args, .. } => self.place_args(args, live_after),
+            ExprKind::Intrinsic { op, args } => match op {
+                crate::intrinsic::IntrinsicOp::Cell { func } => {
+                    self.place_cell_intrinsic(e, func, args, live_after)
+                }
+                crate::intrinsic::IntrinsicOp::Math { .. } => self.place_args(args, live_after),
+            },
             ExprKind::NullableCall(opt) => {
                 if let Some(x) = opt {
                     self.place(x, live_after);
@@ -632,6 +637,60 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 self.place_closure_call(target, args, live_after)
             }
             ExprKind::ArrayOp { op, args } => self.place_array_op(e, op, args, live_after),
+        }
+    }
+
+    /// Place a cell intrinsic's operands. `alloc` consumes its sole value like
+    /// an ordinary call. The other operations borrow their first (cell)
+    /// operand for the duration of the operation and consume any remaining
+    /// value/closure operands.
+    fn place_cell_intrinsic(
+        &mut self,
+        e: &Expr<'tcx>,
+        func: crate::intrinsic::CellFn,
+        args: &'tcx [Expr<'tcx>],
+        live_after: &VarSet,
+    ) {
+        if func == crate::intrinsic::CellFn::Alloc {
+            self.place_args(args, live_after);
+            return;
+        }
+
+        let base = &args[0];
+        let mut borrowed = VarSet::default();
+        let base_is_var = if let ExprKind::Var(x) = base.kind {
+            borrowed.insert(x);
+            true
+        } else {
+            false
+        };
+
+        // Keep a named cell owner live across every other operand; those
+        // operands otherwise follow the ordinary left-to-right consuming rule.
+        let mut live = live_after.clone();
+        live.union_with(&borrowed);
+        for i in 0..args.len() {
+            if i == 0 && base_is_var {
+                continue;
+            }
+            let mut la = live.clone();
+            for later in &args[i + 1..] {
+                la.union_with(&self.free(later));
+            }
+            self.place(&args[i], &la);
+            if i == 0 {
+                // The operation only borrows an anonymous cell result, so its
+                // sole owner must be released after the operation completes.
+                self.add_after(e.id, RcOp::DropValue(base.id));
+            }
+        }
+
+        if base_is_var {
+            for v in borrowed.iter() {
+                if !live_after.contains(v) {
+                    self.add_after(e.id, RcOp::Drop(v));
+                }
+            }
         }
     }
 
