@@ -790,6 +790,15 @@ mod tests {
             pub fn make_list() -> Arc<List<i64>> {
                 Arc<List<i64>>::Cons{1, List::Nil}
             }
+            pub fn read(a: Arc<Data>) -> i64 {
+                a.value
+            }
+            pub fn head(l: Arc<List<i64>>) -> i64 {
+                match l {
+                    List::Cons(x, _) => x,
+                    List::Nil => 0
+                }
+            }
             "#,
         );
     }

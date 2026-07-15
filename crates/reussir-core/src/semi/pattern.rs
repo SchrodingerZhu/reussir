@@ -315,7 +315,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
         ty: Ty<'tcx>,
     ) -> Pat<'tcx> {
-        let ty = self.infer.shallow_resolve(ty);
+        // An `Arc<Enum<…>>` scrutinee dispatches on the inner enum's
+        // constructors; the pattern spelling is the plain one.
+        let ty = self.peel_arc(ty);
         // The built-in nullable constructors, by the same qualifier convention
         // as [`Elaborator::infer_ctor`] on the expression side.
         if ctor.path.segments.last().map(|k| self.sym(*k)) == Some("Nullable") {
@@ -803,6 +805,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// The field types of variant `v` of the enum at `ty`, instantiated with the
     /// enum's type arguments.
     fn variant_field_tys(&mut self, ty: Ty<'tcx>, v: usize) -> Vec<Ty<'tcx>> {
+        let ty = self.peel_arc(ty);
         let TyKind::Record { def, args, .. } = ty.kind() else {
             return Vec::new();
         };
@@ -830,7 +833,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     fn variant_count(&mut self, ty: Ty<'tcx>) -> usize {
-        let ty = self.infer.shallow_resolve(ty);
+        let ty = self.peel_arc(ty);
         if let TyKind::Record { def, .. } = ty.kind()
             && let Some(record) = self.records.get(def)
             && let Some(RecordFields::Variants(vs)) = &record.fields

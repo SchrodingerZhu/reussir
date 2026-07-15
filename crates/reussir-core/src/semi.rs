@@ -1130,6 +1130,28 @@ mod tests {
     }
 
     #[test]
+    fn arc_reads_are_transparent() {
+        // Projection and matching see through the arc coloring; the bound
+        // fields carry their declared (plain) types.
+        let src = "struct Pair { a: i32, b: i32 }\n\
+                   enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   fn f(p: Arc<Pair>) -> i32 { p.a + p.b }\n\
+                   fn g(l: Arc<List<i32>>) -> i32 {\n\
+                       match l { List::Cons(x, xs) => x + len(xs), List::Nil => 0 }\n\
+                   }\n\
+                   fn len<T>(l: List<T>) -> i32 {\n\
+                       match l { List::Cons(_, xs) => 1 + len(xs), List::Nil => 0 }\n\
+                   }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    // There is no write-through-arc test because the interaction cannot be
+    // formed: `Arc` cannot be applied to regional objects (a `[regional]`
+    // inner is rejected), and `[field]` mutable links exist only on regional
+    // objects — so `Arc` and `[field]` never meet. Interior mutability behind
+    // an arc composes via `Cell` instead.
+
+    #[test]
     fn accepts_arc_of_shared_record_and_generic() {
         // A `[shared]` record inner is the intended case; a generic inner is
         // deferred to the instantiation check.

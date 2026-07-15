@@ -850,6 +850,15 @@ mod tests {
             pub fn make_nil() -> Arc<List<i64>> {
                 Arc<List<i64>>::Nil
             }
+            pub fn read(a: Arc<Data>) -> i64 {
+                a.value
+            }
+            pub fn head(l: Arc<List<i64>>) -> i64 {
+                match l {
+                    List::Cons(x, _) => x,
+                    List::Nil => 0
+                }
+            }
             "#,
         );
     }
