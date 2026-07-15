@@ -27,9 +27,9 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, array, closure,
-    nullable, rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref, region,
-    str as str_type,
+    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, array, cell,
+    closure, nullable, rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref,
+    region, str as str_type,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -108,15 +108,14 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
 
     /// Whether a value of type `ty` is represented as a managed `!reussir.rc<…>`
     /// pointer whose refcount is adjusted directly with `rc.inc`/`rc.dec`: a
-    /// `[shared]` record, a regional record (reference-counted once frozen to
-    /// `rigid` — the only regional coloring that is a resource), or a closure.
+    /// `[shared]` record, a regional record, closure, array, or cell.
     /// This is the complement, among reference-counted values, of an inline
     /// `[value]` record — which is acquired/dropped through a reference instead.
     pub(super) fn is_managed_rc(&self, ty: Ty<'tcx>) -> bool {
         self.is_shared_record(ty)
             || self.is_regional_record(ty)
             || is_closure(ty)
-            || matches!(ty.kind(), TyKind::Array { .. })
+            || matches!(ty.kind(), TyKind::Array { .. } | TyKind::Cell { .. })
     }
 
     /// Lower a ground type to MLIR: records resolve through the layout table, a
@@ -133,9 +132,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // so reject a concrete non-pointer element here rather than build a
             // malformed `nullable<record<…>>` that later passes fall over.
             TyKind::Nullable(inner) => {
-                if !(self.is_shared_record(inner) || self.is_regional_record(inner)) {
+                if !(self.is_shared_record(inner)
+                    || self.is_regional_record(inner)
+                    || matches!(inner.kind(), TyKind::Cell { .. }))
+                {
                     return err("`Nullable` element does not lower to a pointer: only a \
-                         managed `[shared]`/`[regional]` record can sit behind a nullable");
+                         managed `[shared]`/`[regional]` record or Cell can sit behind a nullable");
                 }
                 Ok(nullable(self.mlir_ty(inner)?))
             }
@@ -145,6 +147,9 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // A statically shaped array is one shared `rc` box holding the whole
             // payload (`!reussir.rc<!reussir.array<dims x elem>>`); see #344.
             TyKind::Array { .. } => Ok(self.rc_type(self.array_inner_of(ty)?)),
+            // A cell is one shared rc box around its payload container. Unlike
+            // arrays, its element may itself be a managed type.
+            TyKind::Cell { .. } => Ok(self.rc_type(self.cell_inner_of(ty)?)),
             _ => scalar_ty(self.context, ty),
         }
     }
@@ -154,15 +159,14 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// whose element capability is `shared`/`regional` to a pointer on its own (a
     /// `!reussir.rc<…>` member is rejected — "use capability instead"). This holds
     /// for a `shared`/`regional` record member (its inner record type), for a
-    /// closure member (its bare `closure` type — a closure is a shared `rc` value
-    /// just like a shared record), and for an array member (its bare `array`
-    /// payload type — an array is one shared `rc` box too). A scalar or `[value]`
-    /// record member is the same as [`mlir_ty`](Self::mlir_ty).
+    /// closure, array, or cell member (its bare payload type). A scalar or
+    /// `[value]` record member is the same as [`mlir_ty`](Self::mlir_ty).
     fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Record { .. } => self.record_inner_of(ty),
             TyKind::Closure { params, ret } => self.closure_inner(params, ret),
             TyKind::Array { .. } => self.array_inner_of(ty),
+            TyKind::Cell { .. } => self.cell_inner_of(ty),
             _ => self.mlir_ty(ty),
         }
     }
@@ -388,6 +392,16 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         Ok(array(&shape, elem))
     }
 
+    /// The `!reussir.cell<T>` payload type inside a cell's shared rc box. The
+    /// element uses full type lowering because cells may recursively own
+    /// managed values.
+    pub(super) fn cell_inner_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
+        let TyKind::Cell { elem, exclusive } = *ty.kind() else {
+            return err("cell payload requested for a non-cell type");
+        };
+        Ok(cell(self.mlir_ty(elem)?, exclusive))
+    }
+
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,
     /// reference-counted value with the default (non-atomic) box layout.
     pub(super) fn rc_type(&self, inner: Type<'c>) -> Type<'c> {
@@ -503,6 +517,7 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Str => Ok(str_type(context, ReussirLifeScope::Global)),
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Array { .. } => err("array type reached scalar lowering without its rc wrapper"),
+        TyKind::Cell { .. } => err("cell type reached scalar lowering without its rc wrapper"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
         // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.
         TyKind::Closure { .. } => err("closure type reached scalar lowering without an rc wrapper"),

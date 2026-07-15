@@ -86,6 +86,10 @@ pub enum Token<'a> {
     Unreachable,
     #[token("Nullable")]
     Nullable,
+    #[token("Cell")]
+    Cell,
+    #[token("RefCell")]
+    RefCell,
     #[token("NonNull")]
     NonNull,
     #[token("Null")]

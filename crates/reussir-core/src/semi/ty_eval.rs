@@ -94,6 +94,27 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk_generic(generic);
         }
 
+        // Built-in type constructors are roots and never module-qualified.
+        // `Cell<T>` is the plain get/set cell; `RefCell<T>` is the exclusive
+        // flavor that additionally supports guarded read-modify-write.
+        if path.segments.is_empty() && matches!(self.sym(key), "Cell" | "RefCell") {
+            let exclusive = self.sym(key) == "RefCell";
+            let name = if exclusive { "RefCell" } else { "Cell" };
+            return match args {
+                [inner] => {
+                    let inner = self.eval_type(inner);
+                    self.tcx.mk_cell(inner, exclusive)
+                }
+                _ => {
+                    self.error(
+                        Some(span),
+                        format!("`{name}` takes exactly one type argument"),
+                    );
+                    self.tcx.mk(TyKind::Bottom)
+                }
+            };
+        }
+
         // The built-in nullable type (a root builtin: never module-qualified).
         if path.segments.is_empty() && self.sym(key) == "Nullable" {
             return match args {
@@ -125,7 +146,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
 
         // A user record, resolved to its def — bare in the current module, or
-        // module-qualified (`utils::math::Cell`, `root::…`, `super::…`).
+        // module-qualified (`utils::math::Widget`, `root::…`, `super::…`).
         return self.eval_record_type_expr(path, args, span, key);
     }
 
@@ -282,9 +303,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// Is `t` *concretely* a non-pointer-like type — i.e. one that cannot be the
 /// inner of a `Nullable` (which needs a pointer-like inner to encode the null
 /// case)? Conservative: only the by-value scalars and a nested `Nullable` are
-/// rejected; `Record`/`Closure` are valid inners, and `Generic`/`Hole`/`Bottom`
-/// are deferred (resolved/checked later) so this never reports a false positive
-/// on a not-yet-ground type.
+/// rejected; `Record`/`Closure`/`Array`/`Cell` are valid inners, and
+/// `Generic`/`Hole`/`Bottom` are deferred (resolved/checked later) so this never
+/// reports a false positive on a not-yet-ground type.
 /// Whether `t` qualifies as a Phase-A array element: a plain scalar, or a
 /// generic/hole deferred to the monomorphization-time groundness check.
 pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {

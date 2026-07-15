@@ -317,6 +317,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let inner = self.ty(inner);
                 self.tcx.mk_nullable(inner)
             }
+            raw::Ty::Cell { inner, exclusive } => {
+                let inner = self.ty(inner);
+                self.tcx.mk_cell(inner, *exclusive)
+            }
             raw::Ty::Record { cap, path, args } => {
                 let def = self.record_def(path);
                 let args: Vec<Ty<'tcx>> = args.iter().map(|a| self.ty(a)).collect();
@@ -792,6 +796,27 @@ mod tests {
             pub fn n(f: (f64, f64) -> f64, a: [f64; 8]) -> f64 { core::intrinsic::array::fold(a, 0.0, f) }
             pub fn b(a: [f64; 8], i: i64, v: f64) -> [f64; 8] {
                 core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn roundtrips_cells() {
+        roundtrip(
+            r#"
+            struct [value] Boxed<T> { value: Cell<T> }
+            pub fn use_cell(c: Cell<i64>) -> Cell<i64> {
+                c
+            }
+            pub fn nested(c: Cell<Cell<i64>>) -> Cell<Cell<i64>> {
+                c
+            }
+            pub fn use_refcell(c: RefCell<i64>) -> RefCell<i64> {
+                c
+            }
+            pub fn mixed(c: Cell<RefCell<i64>>) -> Cell<RefCell<i64>> {
+                c
             }
             "#,
         );
