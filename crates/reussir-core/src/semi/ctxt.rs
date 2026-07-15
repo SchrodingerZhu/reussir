@@ -449,6 +449,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.push_ty_display(out, inner);
                 out.push('>');
             }
+            TyKind::Cell { elem, exclusive } => {
+                out.push_str(if exclusive { "RefCell<" } else { "Cell<" });
+                self.push_ty_display(out, elem);
+                out.push('>');
+            }
             TyKind::Array { elem, dims } => {
                 out.push('[');
                 self.push_ty_display(out, elem);
@@ -956,6 +961,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         let name = rec.name;
+        if matches!(self.sym(name), "Cell" | "RefCell") {
+            self.error(
+                span,
+                format!(
+                    "record name `{}` is reserved for the builtin type",
+                    self.sym(name)
+                ),
+            );
+            return None;
+        }
         let Some(def) = self.defs.declare_record(name) else {
             self.error(
                 span,
@@ -1214,10 +1229,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 flex: Flexivity::Irrelevant,
                 ..
             } => self.error(span, "a `[field]` link element must be a regional record"),
-            // An array is pointer-like (one shared rc box), so the `Nullable`
-            // check below would let it through — but a `[field]` link stores a
-            // regional record, never a shared box.
-            TyKind::Array { .. } => {
+            // Arrays and cells are pointer-like (one shared rc box), so the
+            // `Nullable` check lets them through — but a `[field]` link stores
+            // a regional record, never a shared box.
+            TyKind::Array { .. } | TyKind::Cell { .. } => {
                 self.error(span, "a `[field]` link element must be a regional record")
             }
             // Regional records are fine; non-record elements are already rejected

@@ -145,6 +145,13 @@ impl<'a> Mangler<'a> {
                 // to its inner type.
                 self.path_with_args_segs(out, &["Nullable"], &[inner]);
             }
+            TyKind::Cell { elem, exclusive } => {
+                // `Cell<T>`/`RefCell<T>` are root built-in type constructors,
+                // represented as synthetic one-segment records in the ABI
+                // spelling.
+                let name = if exclusive { "RefCell" } else { "Cell" };
+                self.path_with_args_segs(out, &[name], &[elem]);
+            }
             TyKind::Array { elem, dims } => {
                 // An array mangles as a synthetic record whose identifier
                 // carries the extents (`Array512x512`), applied to the element.
@@ -332,6 +339,11 @@ mod tests {
             // `Nullable<i32>` → `IC8NullablelE`.
             let nul = tcx.mk_nullable(tcx.mk_int(IntTy::Signed(32)));
             assert_eq!(m.mangle_ty(nul), "_RIC8NullablelE");
+            // `Cell<i32>` → `IC4CelllE`; `RefCell<i32>` → `IC7RefCelllE`.
+            let cell = tcx.mk_cell(tcx.mk_int(IntTy::Signed(32)), false);
+            assert_eq!(m.mangle_ty(cell), "_RIC4CelllE");
+            let refcell = tcx.mk_cell(tcx.mk_int(IntTy::Signed(32)), true);
+            assert_eq!(m.mangle_ty(refcell), "_RIC7RefCelllE");
         });
     }
 

@@ -166,7 +166,7 @@ fn member_is_pointer<'tcx>(ty: Ty<'tcx>, is_field: bool, shapes: &ShapeTable<'tc
         return true;
     }
     match *ty.kind() {
-        TyKind::Closure { .. } | TyKind::Nullable(_) => true,
+        TyKind::Closure { .. } | TyKind::Nullable(_) | TyKind::Cell { .. } => true,
         TyKind::Record { def, args, .. } => shapes
             .get(&(def, args))
             .is_none_or(|s| s.default_cap != DefaultCap::Value),
@@ -223,7 +223,7 @@ pub fn inline_size_align<'tcx>(
         TyKind::Fp(FpTy::Ieee(64)) => scalar(8),
         TyKind::Fp(FpTy::Float8) => scalar(1),
         TyKind::Unit => Ok(SizeAlign { size: 0, align: 1 }),
-        TyKind::Nullable(_) | TyKind::Closure { .. } => scalar(WORD),
+        TyKind::Nullable(_) | TyKind::Closure { .. } | TyKind::Cell { .. } => scalar(WORD),
         TyKind::Record { def, args, .. } => {
             let shape = shapes
                 .get(&(def, args))
@@ -470,6 +470,9 @@ impl<'tcx> Walker<'_, 'tcx> {
                 }
                 TyKind::Unit => out.push_str("()"),
                 TyKind::Closure { .. } => out.push_str("<closure>"),
+                TyKind::Cell { exclusive, .. } => {
+                    out.push_str(if exclusive { "<refcell>" } else { "<cell>" })
+                }
                 TyKind::Nullable(inner) => {
                     let ptr = addr.cast::<*const u8>().read_unaligned();
                     if ptr.is_null() {

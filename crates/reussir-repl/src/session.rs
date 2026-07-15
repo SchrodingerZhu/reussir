@@ -630,6 +630,10 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 format!("Nullable<{}>", Self::render_ty_with(elab, inner))
             }
+            TyKind::Cell { elem, exclusive } => {
+                let name = if exclusive { "RefCell" } else { "Cell" };
+                format!("{name}<{}>", Self::render_ty_with(elab, elem))
+            }
             TyKind::Array { elem, dims } => {
                 let dims: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 format!(

@@ -1103,9 +1103,9 @@ transform [{
         // (`rc.create … region`); a `region-run` scope (`reussir.region.run`)
         // establishes that region and threads it into the regional call.
         let src = r#"
-            struct [regional] Cell { v: i64 }
-            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
-            pub fn run(n: i64) -> Cell { regional { make(n) } }
+            struct [regional] TestCell { v: i64 }
+            regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
+            pub fn run(n: i64) -> TestCell { regional { make(n) } }
         "#;
         let mlir = lower_source(src);
         // The regional function carries the implicit region parameter and builds
@@ -1129,9 +1129,9 @@ transform [{
         // `region.run` into an allocation scope, attach the box vtable, and
         // freeze the flex result on the way out.
         let src = r#"
-            struct [regional] Cell { v: i64 }
-            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
-            pub fn run(n: i64) -> Cell { regional { make(n) } }
+            struct [regional] TestCell { v: i64 }
+            regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
+            pub fn run(n: i64) -> TestCell { regional { make(n) } }
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
@@ -1161,8 +1161,8 @@ transform [{
         // (`reussir.ref.project`), and loads the scalar field (`reussir.ref.load`)
         // — the result leaves the region as a plain `i64`, so nothing escapes.
         let src = r#"
-            struct [regional] Cell { v: i64 }
-            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            struct [regional] TestCell { v: i64 }
+            regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> i64 { regional { make(n).v } }
         "#;
         let mlir = lower_source(src);
@@ -1181,8 +1181,8 @@ transform [{
         // `field`-capability reference, builds the `Nullable::NonNull{..}` value
         // (`reussir.nullable.create`), and stores it (`reussir.ref.store`).
         let src = r#"
-            struct [regional] Cell { v: i64, next: [field] Cell }
-            regional fn set(c: [flex] Cell, x: [flex] Cell) -> i64 {
+            struct [regional] TestCell { v: i64, next: [field] TestCell }
+            regional fn set(c: [flex] TestCell, x: [flex] TestCell) -> i64 {
                 c->next := Nullable::NonNull{x};
                 c.v
             }
@@ -1229,15 +1229,15 @@ transform [{
     #[test]
     fn lowers_regional_field_construction_and_self_link() {
         // The canonical loop-back shape, now that a `[field]` slot's null is
-        // colored `flex`: construct a `flex` `Cell` whose `[field]` `next` is
+        // colored `flex`: construct a `flex` `TestCell` whose `[field]` `next` is
         // `Nullable::Null` (a null nullable), then link it to itself
         // (`c->next := Nullable::NonNull{c}`) and read a scalar back. Exercises
         // `[field]` construction (null + record-with-nullable-member layout) and
         // assignment together, all the way through the lowering pipeline.
         let src = r#"
-            struct [regional] Cell { v: i64, next: [field] Cell }
+            struct [regional] TestCell { v: i64, next: [field] TestCell }
             regional fn loop_back(seed: i64) -> i64 {
-                let c = Cell { v: seed, next: Nullable::Null };
+                let c = TestCell { v: seed, next: Nullable::Null };
                 c->next := Nullable::NonNull{c};
                 c.v
             }
@@ -1329,8 +1329,8 @@ transform [{
         // transfers ownership (no `dup`): `c` is simply dropped once after the
         // last one.
         let src = r#"
-            struct [regional] Cell { v: i64 }
-            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+            struct [regional] TestCell { v: i64 }
+            regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> i64 {
                 let c = regional { make(n) };
                 c.v + c.v
@@ -1373,9 +1373,9 @@ transform [{
         // pointer (the managed-rc path), then each callee consumes its own
         // reference. Passing `c` to `take` twice forces exactly this.
         let src = r#"
-            struct [regional] Cell { v: i64 }
-            regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
-            fn take(c: Cell) -> i64 { c.v }
+            struct [regional] TestCell { v: i64 }
+            regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
+            fn take(c: TestCell) -> i64 { c.v }
             pub fn run(n: i64) -> i64 {
                 let c = regional { make(n) };
                 take(c) + take(c)

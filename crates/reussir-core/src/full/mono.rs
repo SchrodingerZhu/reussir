@@ -355,6 +355,7 @@ const RECURSION_LIMIT: usize = 128;
 fn ty_depth(ty: Ty<'_>) -> usize {
     match *ty.kind() {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
+        TyKind::Cell { elem: inner, .. } => 1 + ty_depth(inner),
         TyKind::Array { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
@@ -488,6 +489,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.note_records(ret);
             }
             TyKind::Nullable(inner) => self.note_records(inner),
+            TyKind::Cell { elem: inner, .. } => self.note_records(inner),
             TyKind::Array { elem, .. } => self.note_records(elem),
             _ => {}
         }
@@ -522,6 +524,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.discover_records(ret, worklist);
             }
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
+            TyKind::Cell { elem: inner, .. } => self.discover_records(inner, worklist),
             TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
             _ => {}
         }
@@ -1125,12 +1128,12 @@ mod tests {
                 }
             }
 
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
 
-            regional fn fresh<T>(x: T) -> [flex] Cell<T> { Cell { v: x, next: Nullable::Null } }
+            regional fn fresh<T>(x: T) -> [flex] TestCell<T> { TestCell { v: x, next: Nullable::Null } }
 
             regional fn loop_back(seed: i32) -> i32 {
-                let c = Cell { v: seed, next: Nullable::Null };
+                let c = TestCell { v: seed, next: Nullable::Null };
                 c->next := Nullable::NonNull{c};
                 c.v
             }
@@ -1227,6 +1230,7 @@ mod tests {
                 params.iter().all(|&p| is_ground(p)) && is_ground(ret)
             }
             TyKind::Nullable(inner) => is_ground(inner),
+            TyKind::Cell { elem: inner, .. } => is_ground(inner),
             TyKind::Array { elem, .. } => is_ground(elem),
             _ => true,
         }
@@ -1460,9 +1464,9 @@ mod tests {
         // `foo<T>(bar: [flex] T)` requires T to be regional; instantiating it at a
         // regional record is accepted (no diagnostic).
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
-            regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }
+            regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }
         "#;
         with_full(src, |full| {
             let syms = symbols(full);
@@ -1475,7 +1479,7 @@ mod tests {
         // The same `[flex] T` parameter instantiated at a value record is rejected
         // at the call boundary — only regional records may be flex.
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             struct Pair { a: i32 }
             regional fn foo<T>(bar: [flex] T) -> i32 { 0 }
             regional fn use_bad(p: Pair) -> i32 { foo(p) }
@@ -1504,9 +1508,9 @@ mod tests {
     fn field_link_generic_accepts_regional() {
         // `Wrapper<T>` with `[field] T` instantiated at a regional record is fine.
         let src = r#"
-            struct [regional] Cell<T> { v: T, next: [field] Cell<T> }
+            struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }
             struct [regional] Wrapper<T> { inner: [field] T }
-            regional fn use_ok(w: [flex] Wrapper<Cell<i32>>) -> i32 { 0 }
+            regional fn use_ok(w: [flex] Wrapper<TestCell<i32>>) -> i32 { 0 }
         "#;
         with_full(src, |full| {
             let syms = symbols(full);

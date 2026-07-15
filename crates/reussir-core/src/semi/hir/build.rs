@@ -317,6 +317,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let inner = self.ty(inner);
                 self.tcx.mk_nullable(inner)
             }
+            raw::Ty::Cell { inner, exclusive } => {
+                let inner = self.ty(inner);
+                self.tcx.mk_cell(inner, *exclusive)
+            }
             raw::Ty::Record { cap, path, args } => {
                 let def = self.record_def(path);
                 let args: Vec<Ty<'tcx>> = args.iter().map(|a| self.ty(a)).collect();
@@ -798,6 +802,27 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_cells() {
+        roundtrip(
+            r#"
+            struct [value] Boxed<T> { value: Cell<T> }
+            pub fn use_cell(c: Cell<i64>) -> Cell<i64> {
+                c
+            }
+            pub fn nested(c: Cell<Cell<i64>>) -> Cell<Cell<i64>> {
+                c
+            }
+            pub fn use_refcell(c: RefCell<i64>) -> RefCell<i64> {
+                c
+            }
+            pub fn mixed(c: Cell<RefCell<i64>>) -> Cell<RefCell<i64>> {
+                c
+            }
+            "#,
+        );
+    }
+
+    #[test]
     fn roundtrips_math_intrinsics() {
         roundtrip(
             "fn f(x: f64) -> bool { \
@@ -898,9 +923,9 @@ mod tests {
         // A generic `[flex]`-bound function (so `regional_generics` is non-empty)
         // and a turbofished regional call.
         roundtrip(
-            "struct [regional] Cell<T> { v: T, next: [field] Cell<T> } \
+            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
-             regional fn use_ok(c: [flex] Cell<i32>) -> i32 { foo(c) }",
+             regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );
     }
 }

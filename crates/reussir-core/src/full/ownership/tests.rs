@@ -305,6 +305,26 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
         self.tcx.mk_closure(params, ret)
     }
 
+    fn cell_ty(&self, elem: Ty<'tcx>, exclusive: bool) -> Ty<'tcx> {
+        self.tcx.mk_cell(elem, exclusive)
+    }
+
+    fn cell_op(
+        &mut self,
+        func: crate::intrinsic::CellFn,
+        args: Vec<Expr<'tcx>>,
+        ty: Ty<'tcx>,
+    ) -> Expr<'tcx> {
+        let args = self.tcx.alloc_slice(&args);
+        self.mk(
+            ExprKind::Intrinsic {
+                op: crate::intrinsic::IntrinsicOp::Cell { func },
+                args,
+            },
+            ty,
+        )
+    }
+
     /// `target(args)` — an indirect call through a closure value.
     fn closure_call(
         &mut self,
@@ -730,12 +750,26 @@ fn interp<'tcx>(
         }
         ExprKind::Call { args, .. }
         | ExprKind::Ctor { args, .. }
-        | ExprKind::Variant { args, .. }
-        | ExprKind::Intrinsic { args, .. } => {
+        | ExprKind::Variant { args, .. } => {
             for a in args {
                 interp(a, ot, rr, rc);
             }
         }
+        ExprKind::Intrinsic { op, args } => match op {
+            crate::intrinsic::IntrinsicOp::Cell { func }
+                if func != crate::intrinsic::CellFn::Alloc =>
+            {
+                interp_borrow(&args[0], ot, rr, rc);
+                for a in &args[1..] {
+                    interp(a, ot, rr, rc);
+                }
+            }
+            _ => {
+                for a in args {
+                    interp(a, ot, rr, rc);
+                }
+            }
+        },
         ExprKind::NullableCall(opt) => {
             if let Some(x) = opt {
                 interp(x, ot, rr, rc);
@@ -1017,6 +1051,11 @@ fn is_rr_classification() {
             "frozen rigid value is a managed object ⇒ rc"
         );
         assert!(rr.is_rr(tcx.mk_nullable(rc)), "nullable rc is RR");
+        assert!(rr.is_rr(tcx.mk_cell(i64t, false)), "a cell is always RR");
+        assert!(
+            rr.is_rr(tcx.mk_cell(i64t, true)),
+            "an exclusive cell is always RR"
+        );
         assert!(
             !rr.is_rr(tcx.mk_nullable(i64t)),
             "nullable scalar is not RR"
@@ -1861,6 +1900,112 @@ fn flex_record_assembly_still_incs_its_rigid_field() {
         assert!(
             ot.before(a_r_id).is_empty(),
             "the later use of r is its last ⇒ moved"
+        );
+    });
+}
+
+// ----- cells -----
+
+#[test]
+fn cell_set_borrows_cell_and_consumes_replacement() {
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let elem = b.shared();
+        let cell_ty = b.cell_ty(elem, false);
+        let c = b.fresh_var();
+        let value = b.fresh_var();
+
+        let base = b.var(c, cell_ty);
+        let replacement = b.var(value, elem);
+        let replacement_id = replacement.id;
+        let unit = tcx.mk_unit();
+        let body = b.cell_op(crate::intrinsic::CellFn::Set, vec![base, replacement], unit);
+        let body_id = body.id;
+        let params = vec![b.param(c, cell_ty), b.param(value, elem)];
+        let func = b.function("set", params, unit, body);
+        let ot = run(tcx, &func, &b);
+
+        assert!(
+            ot.before(replacement_id).is_empty(),
+            "the replacement's last owner is moved into the cell"
+        );
+        assert_eq!(ot.after(body_id), &[RcOp::Drop(c)]);
+    });
+}
+
+#[test]
+fn cell_rmw_borrows_cell_and_consumes_updater() {
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let elem = b.i64();
+        let cell_ty = b.cell_ty(elem, true);
+        let update_ty = b.closure_ty(&[elem], elem);
+        let c = b.fresh_var();
+        let update = b.fresh_var();
+
+        let base = b.var(c, cell_ty);
+        let updater = b.var(update, update_ty);
+        let updater_id = updater.id;
+        let unit = tcx.mk_unit();
+        let body = b.cell_op(crate::intrinsic::CellFn::Rmw, vec![base, updater], unit);
+        let body_id = body.id;
+        let params = vec![b.param(c, cell_ty), b.param(update, update_ty)];
+        let func = b.function("rmw", params, unit, body);
+        let ot = run(tcx, &func, &b);
+
+        assert!(
+            ot.before(updater_id).is_empty(),
+            "the updater's last owner is consumed by rmw"
+        );
+        assert_eq!(ot.after(body_id), &[RcOp::Drop(c)]);
+    });
+}
+
+#[test]
+fn cell_get_releases_a_temporary_cell_after_the_borrow() {
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let elem = b.shared();
+        let cell_ty = b.cell_ty(elem, false);
+        let x = b.fresh_var();
+
+        let value = b.var(x, elem);
+        let alloc = b.cell_op(crate::intrinsic::CellFn::Alloc, vec![value], cell_ty);
+        let alloc_id = alloc.id;
+        let body = b.cell_op(crate::intrinsic::CellFn::Get, vec![alloc], elem);
+        let body_id = body.id;
+        let param = b.param(x, elem);
+        let func = b.function("get_temp", vec![param], elem, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.after(body_id),
+            &[RcOp::DropValue(alloc_id)],
+            "the temporary cell owner outlives get and is then released"
+        );
+    });
+}
+
+#[test]
+fn refcell_in_use_borrows_the_cell() {
+    with_tcx(|tcx| {
+        let mut b = MirBuilder::new(tcx);
+        let elem = b.shared();
+        let cell_ty = b.cell_ty(elem, true);
+        let c = b.fresh_var();
+
+        let base = b.var(c, cell_ty);
+        let boolean = tcx.mk_bool();
+        let body = b.cell_op(crate::intrinsic::CellFn::InUse, vec![base], boolean);
+        let body_id = body.id;
+        let params = vec![b.param(c, cell_ty)];
+        let func = b.function("in_use", params, boolean, body);
+        let ot = run(tcx, &func, &b);
+
+        assert_eq!(
+            ot.after(body_id),
+            &[RcOp::Drop(c)],
+            "the flag read borrows the cell; its last owner drops after"
         );
     });
 }

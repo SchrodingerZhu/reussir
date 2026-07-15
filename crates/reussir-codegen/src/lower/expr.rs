@@ -35,7 +35,7 @@ use reussir_backend::melior::ir::{
 
 use reussir_core::full::mir::{self, DecisionTree, Expr, ExprKind, SwitchCases};
 use reussir_core::full::ownership::{OwnershipTable, RcOp, RecordTable, analyze_function};
-use reussir_core::intrinsic::{ArrayFn, IntrinsicOp};
+use reussir_core::intrinsic::{ArrayFn, CellFn, IntrinsicOp};
 use reussir_core::literal::{self, Integer};
 use reussir_core::semi::hir::{ArithOp, CmpOp, ExprId, VarId};
 use reussir_core::semi::ty::{Flexivity, IntTy, Ty, TyCtxt, TyKind};
@@ -626,36 +626,35 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             // builder over the (scalar) operands. Each family owns its own
             // dialect ops and attributes; the backend pipeline's dialect
             // conversions take the emitted op from there.
-            Intrinsic { op, args } => {
-                let mut operands = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    let v = self.expr(block, env, a)?.ok_or_else(|| {
-                        LoweringError("intrinsic operand produced no value".into())
-                    })?;
-                    operands.push(v);
-                }
-                let result = self.tys.mlir_ty(e.ty)?;
-                let built = match op {
-                    IntrinsicOp::Math { func, flag } => {
-                        let fastmath =
-                            reussir_core::intrinsic::FastMath(*flag)
-                                .mlir_attr()
-                                .map(|text| {
-                                    Attribute::parse(self.context, &text)
-                                        .expect("valid fastmath attribute")
-                                });
-                        super::math::math_operation(
-                            self.context,
-                            *func,
-                            &operands,
-                            result,
-                            fastmath,
-                            loc,
-                        )
+            Intrinsic { op, args } => match op {
+                IntrinsicOp::Math { func, flag } => {
+                    let mut operands = Vec::with_capacity(args.len());
+                    for a in args.iter() {
+                        let v = self.expr(block, env, a)?.ok_or_else(|| {
+                            LoweringError("intrinsic operand produced no value".into())
+                        })?;
+                        operands.push(v);
                     }
-                };
-                Ok(Some(self.append(block, built)))
-            }
+                    let result = self.tys.mlir_ty(e.ty)?;
+                    let fastmath =
+                        reussir_core::intrinsic::FastMath(*flag)
+                            .mlir_attr()
+                            .map(|text| {
+                                Attribute::parse(self.context, &text)
+                                    .expect("valid fastmath attribute")
+                            });
+                    let built = super::math::math_operation(
+                        self.context,
+                        *func,
+                        &operands,
+                        result,
+                        fastmath,
+                        loc,
+                    );
+                    Ok(Some(self.append(block, built)))
+                }
+                IntrinsicOp::Cell { func } => self.lower_cell_intrinsic(block, env, e, *func, args),
+            },
             Cmp(l, op, r) => self.cmp(block, env, l, *op, r).map(Some),
             Cast(x, t) => self.cast(block, env, x, *t),
             If(c, t, f) => self.lower_if(block, env, c, t, f, e.ty),
@@ -2175,6 +2174,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 proj_cap: ref_cap,
                 is_link: true,
             })
+        } else if matches!(field_ty.kind(), TyKind::Cell { .. }) {
+            // A cell member is stored as a bare payload type in the record
+            // declaration, but dialect projection materializes a shared rc link.
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.mlir_ty(field_ty)?,
+                proj_cap: ref_cap,
+                is_link: true,
+            })
         } else {
             Ok(ProjectedMember {
                 field_ty,
@@ -2690,6 +2698,114 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let region = Region::new();
         region.append_block(block);
         Ok(region)
+    }
+
+    // ----- built-in cell operations -----
+
+    fn lower_cell_intrinsic<'b>(
+        &self,
+        block: &'b Block<'c>,
+        env: &mut Env<'c, 'b, 'tcx>,
+        e: &Expr<'tcx>,
+        func: CellFn,
+        args: &'tcx [Expr<'tcx>],
+    ) -> Result<Option<Value<'c, 'b>>> {
+        let loc = self.loc();
+        match func {
+            CellFn::Alloc => {
+                let value = self
+                    .expr(block, env, &args[0])?
+                    .ok_or_else(|| LoweringError("cell element produced no value".into()))?;
+                let result_ty = self.tys.mlir_ty(e.ty)?;
+                Ok(Some(self.append(
+                    block,
+                    builders::cell_create(value, result_ty, loc),
+                )))
+            }
+            CellFn::Get => {
+                let base = &args[0];
+                let cell = self
+                    .expr(block, env, base)?
+                    .ok_or_else(|| LoweringError("cell operand produced no value".into()))?;
+                self.remember_temp(env, base, cell);
+                let result_ty = self.tys.mlir_ty(e.ty)?;
+                Ok(Some(
+                    self.append(block, builders::cell_get(cell, result_ty, loc)),
+                ))
+            }
+            CellFn::Set => {
+                let base = &args[0];
+                let cell = self
+                    .expr(block, env, base)?
+                    .ok_or_else(|| LoweringError("cell operand produced no value".into()))?;
+                self.remember_temp(env, base, cell);
+                let value = self
+                    .expr(block, env, &args[1])?
+                    .ok_or_else(|| LoweringError("cell element produced no value".into()))?;
+                block.append_operation(builders::cell_set(value, cell, loc));
+                Ok(None)
+            }
+            CellFn::InUse => {
+                let base = &args[0];
+                if !matches!(
+                    *base.ty.kind(),
+                    TyKind::Cell {
+                        exclusive: true,
+                        ..
+                    }
+                ) {
+                    return err("cell in_use operand is not an exclusive cell");
+                }
+                let cell = self
+                    .expr(block, env, base)?
+                    .ok_or_else(|| LoweringError("cell operand produced no value".into()))?;
+                self.remember_temp(env, base, cell);
+                let result_ty = self.tys.mlir_ty(e.ty)?;
+                Ok(Some(self.append(
+                    block,
+                    builders::cell_in_use(cell, result_ty, loc),
+                )))
+            }
+            CellFn::Rmw => {
+                let base = &args[0];
+                let cell = self
+                    .expr(block, env, base)?
+                    .ok_or_else(|| LoweringError("cell operand produced no value".into()))?;
+                self.remember_temp(env, base, cell);
+                let kernel = &args[1];
+                let closure = self
+                    .expr(block, env, kernel)?
+                    .ok_or_else(|| LoweringError("cell update closure produced no value".into()))?;
+                let TyKind::Cell {
+                    elem,
+                    exclusive: true,
+                } = *base.ty.kind()
+                else {
+                    return err("cell RMW operand is not an exclusive cell");
+                };
+                let elem_ty = self.tys.mlir_ty(elem)?;
+                let body = Block::new(&[(elem_ty, loc)]);
+                let current = body
+                    .argument(0)
+                    .expect("cell RMW body takes the current element")
+                    .into();
+                // Preserve the updater's outer owner while eval consumes one
+                // reference. Structural beta reduction removes this pair for a
+                // literal closure nested in cell.rmw.
+                body.append_operation(dialect::rc_inc(self.context, closure, loc).into());
+                let replacement = self
+                    .call_kernel(&body, closure, kernel.ty, &[current])?
+                    .ok_or_else(|| LoweringError("cell update closure returned unit".into()))?;
+                body.append_operation(builders::cell_yield(replacement, None, loc));
+                let region = Region::new();
+                region.append_block(body);
+                block.append_operation(builders::cell_rmw(cell, None, region, loc));
+                // The intrinsic consumes the updater closure; the in-region inc
+                // paid only for the eval above.
+                block.append_operation(dialect::rc_dec(self.context, closure, loc).into());
+                Ok(None)
+            }
+        }
     }
 
     // ----- built-in array operations (issue #344) -----

@@ -385,8 +385,8 @@ fn runs_regional_record_construction_and_projection() {
     // as a plain `i64`. Drives the region lifecycle — allocate into the arena,
     // read the field, tear the region down — through the runtime.
     let src = r#"
-        struct [regional] Cell { v: i64 }
-        regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
+        struct [regional] TestCell { v: i64 }
+        regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
         pub fn run(n: i64) -> i64 { regional { make(n).v } }
         extern "C" trampoline "run_ffi" = run;
     "#;
@@ -408,9 +408,9 @@ fn runs_a_reused_frozen_regional_record() {
     // double-free (crash) or leak; the arithmetic result pins it down. This is
     // the runtime check for the managed-rc inc/dec path on a frozen record.
     let src = r#"
-        struct [regional] Cell { v: i64 }
-        regional fn make(x: i64) -> [flex] Cell { Cell { v: x } }
-        fn take(c: Cell) -> i64 { c.v }
+        struct [regional] TestCell { v: i64 }
+        regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
+        fn take(c: TestCell) -> i64 { c.v }
         pub fn run(n: i64) -> i64 {
             let c = regional { make(n) };
             take(c) + take(c)
