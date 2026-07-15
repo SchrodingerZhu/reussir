@@ -1,0 +1,98 @@
+// The builtin Cell/RefCell types and their intrinsic-only operations must
+// survive both textual frontend IRs with the same types and resolved
+// intrinsic names. All operations live in the single `core::intrinsic::cell`
+// namespace and dispatch on the operand's cell flavor: get/set work on both,
+// while the guarded rmw and the in_use flag read require a RefCell.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
+// RUN: %rrc %s --emit mlir-llvm --no-source-locations -Oaggressive -o - | %FileCheck %s --check-prefix=FUSED
+
+struct [shared] Boxed {
+    value: i64
+}
+
+struct [value] Holder {
+    cell: Cell<Boxed>
+}
+
+// HIR: pub fn #plain(v0 (c): Cell<i64>, v1 (replacement): i64) -> i64
+// HIR: intrinsic#cell#get#0(v0 : Cell<i64>
+// HIR: intrinsic#cell#set#0(v0 : Cell<i64>{{.*}}v1 : i64
+// MIR: pub fn @_RC5plain(v0 (c): Cell<i64>, v1 (replacement): i64) -> i64
+// MIR: intrinsic#cell#get#0(v0 : Cell<i64>
+// MIR: intrinsic#cell#set#0(v0 : Cell<i64>{{.*}}v1 : i64
+// MLIR-LABEL: func.func @_RC5plain
+// MLIR: %[[OLD:.+]] = reussir.cell.get(%arg0 : !reussir.rc<!reussir.cell<i64>>) : i64
+// MLIR: reussir.cell.set(%arg1 : i64, %arg0 : !reussir.rc<!reussir.cell<i64>>)
+// MLIR: reussir.cell.get
+pub fn plain(c: Cell<i64>, replacement: i64) -> i64 {
+    let old = core::intrinsic::cell::get(c);
+    core::intrinsic::cell::set(c, replacement);
+    old + core::intrinsic::cell::get(c)
+}
+
+// A Cell member is stored as the bare cell payload. Projection materializes
+// the shared rc<Cell<...>> link, just like closure/array members.
+// MLIR-LABEL: func.func @_RC6bump_h
+// MLIR-SAME: !reussir.record<compound "_RC6Holder" [value] {!reussir.cell<!reussir.rc<!reussir.record<compound "_RC5Boxed" {i64}>>>}>
+// MLIR: reussir.record.extract
+// MLIR-SAME: !reussir.rc<!reussir.cell<!reussir.rc<!reussir.record<compound "_RC5Boxed" {i64}>>>>
+// MLIR: reussir.cell.set
+// MLIR: reussir.cell.get
+pub fn bump_h(h: Holder, replacement: Boxed) -> i64 {
+    core::intrinsic::cell::set(h.cell, replacement);
+    core::intrinsic::cell::get(h.cell).value
+}
+
+// alloc has no cell operand to dispatch on: it defaults to a plain Cell, and
+// an explicit type argument selects the exclusive flavor. The two flavors
+// nest freely.
+// HIR: pub fn #nested() -> Cell<RefCell<i64>>
+// HIR: intrinsic#cell#alloc#0(intrinsic#cell#alloc#0(1 : i64) : RefCell<i64>
+// MIR: pub fn @_RC6nested() -> Cell<RefCell<i64>>
+// MIR: intrinsic#cell#alloc#0(intrinsic#cell#alloc#0(1 : i64) : RefCell<i64>
+// MLIR-LABEL: func.func @_RC6nested
+// MLIR: %[[INNER:.+]] = reussir.cell.create value(%{{.+}} : i64) : !reussir.rc<!reussir.cell<i64 exclusive>>
+// MLIR: reussir.cell.create value(%[[INNER]] : !reussir.rc<!reussir.cell<i64 exclusive>>) : !reussir.rc<!reussir.cell<!reussir.rc<!reussir.cell<i64 exclusive>>>>
+pub fn nested() -> Cell<RefCell<i64>> {
+    core::intrinsic::cell::alloc(core::intrinsic::cell::alloc<RefCell<i64>>(1))
+}
+
+// The exclusive operations: rmw moves the element through the updater, and
+// in_use reads the guard flag. Same namespace, dispatched on the RefCell
+// operand.
+// HIR: pub fn #guarded(v0 (c): RefCell<i64>, v1 (replacement): i64) -> i64
+// HIR: intrinsic#cell#get#0(v0 : RefCell<i64>
+// HIR: intrinsic#cell#set#0(v0 : RefCell<i64>{{.*}}v1 : i64
+// HIR: intrinsic#cell#rmw#0(v0 : RefCell<i64>{{.*}}closure[]
+// HIR: intrinsic#cell#in_use#0(v0 : RefCell<i64>
+// MIR: pub fn @_RC7guarded(v0 (c): RefCell<i64>, v1 (replacement): i64) -> i64
+// MIR: intrinsic#cell#rmw#0(v0 : RefCell<i64>{{.*}}closure[]
+// MIR: intrinsic#cell#in_use#0(v0 : RefCell<i64>
+// MLIR-LABEL: func.func @_RC7guarded
+// MLIR: %[[OLD:.+]] = reussir.cell.get(%arg0 : !reussir.rc<!reussir.cell<i64 exclusive>>) : i64
+// MLIR: reussir.cell.set(%arg1 : i64, %arg0 : !reussir.rc<!reussir.cell<i64 exclusive>>)
+// MLIR: reussir.closure.create
+// MLIR: reussir.cell.rmw(%arg0 : !reussir.rc<!reussir.cell<i64 exclusive>>) {
+// MLIR: ^bb0(%[[CURRENT:.+]]: i64):
+// MLIR: reussir.rc.inc
+// MLIR: reussir.closure.eval
+// MLIR: reussir.cell.yield(%{{.+}} : i64)
+// MLIR: reussir.rc.dec
+// MLIR: %[[FLAG:.+]] = reussir.cell.in_use(%arg0 : !reussir.rc<!reussir.cell<i64 exclusive>>) : i1
+// MLIR: reussir.cell.get
+pub fn guarded(c: RefCell<i64>, replacement: i64) -> i64 {
+    let old = core::intrinsic::cell::get(c);
+    core::intrinsic::cell::set(c, replacement);
+    core::intrinsic::cell::rmw(c, |x| x + 1);
+    let busy = core::intrinsic::cell::in_use(c);
+    if busy { 0 } else { old + core::intrinsic::cell::get(c) }
+}
+
+// Structural beta reduction is intentionally enabled through cell.rmw: a
+// literal updater fuses completely at aggressive optimization.
+// FUSED-LABEL: llvm.func @_RC7guarded
+// FUSED-NOT: closure
+// FUSED: llvm.add

@@ -974,6 +974,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match *family {
             "math" => Some(self.infer_math_intrinsic(fc, span)),
             "array" => Some(self.infer_array_intrinsic(fc, span)),
+            "cell" => Some(self.infer_cell_intrinsic(fc, span)),
             other => {
                 self.error(
                     span,
@@ -1066,6 +1067,187 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         let op = IntrinsicOp::Math { func, flag };
         self.mk_expr(ExprKind::Intrinsic { op, args }, result, span)
+    }
+
+    /// (CELL) The shared-cell intrinsics, spelled `core::intrinsic::cell::*`
+    /// and dispatched on the operand's cell flavor. `alloc`/`get`/`set` work
+    /// on both a plain `Cell<T>` and an exclusive `RefCell<T>`; `rmw` and
+    /// `in_use` require a `RefCell` operand. A cell operand is borrowed;
+    /// values transferred into `alloc`/`set`, and the update closure passed
+    /// to `rmw`, are consumed according to the ordinary owned calling
+    /// convention. `rmw` checks `update : T -> T`, moving the stored value
+    /// through the callback without the clone performed by `get`; `in_use`
+    /// reads the exclusive cell's guard flag as a `bool`.
+    ///
+    /// `alloc` has no cell operand to dispatch on: it defaults to a plain
+    /// `Cell`, and an explicit type argument naming the cell type selects
+    /// the flavor (`alloc<RefCell<i64>>(1)`).
+    fn infer_cell_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::{CellFn, IntrinsicOp};
+
+        let name = self.sym(fc.name.basename).to_string();
+        let Some(func) = CellFn::parse(&name) else {
+            self.error(
+                span,
+                format!("unknown cell intrinsic `core::intrinsic::cell::{name}`"),
+            );
+            return self.poison(span);
+        };
+        if func != CellFn::Alloc && !fc.ty_args.is_empty() {
+            self.error(
+                span,
+                format!("`core::intrinsic::cell::{name}` takes no type arguments"),
+            );
+            return self.poison(span);
+        }
+
+        let op = IntrinsicOp::Cell { func };
+        match func {
+            CellFn::Alloc => {
+                let [value] = fc.args.as_slice() else {
+                    self.error(span, "`core::intrinsic::cell::alloc` expects one argument");
+                    return self.poison(span);
+                };
+                let result = match fc.ty_args.as_slice() {
+                    [] | [None] => None,
+                    [Some(t)] => {
+                        let ty = self.eval_type(t);
+                        let resolved = self.infer.shallow_resolve(ty);
+                        let TyKind::Cell { .. } = *resolved.kind() else {
+                            let shown = self.infer.resolve(resolved);
+                            self.error(
+                                span,
+                                format!(
+                                    "the type argument of `core::intrinsic::cell::alloc` must \
+                                     be `Cell<T>` or `RefCell<T>`, found `{}`",
+                                    self.ty_display(shown)
+                                ),
+                            );
+                            return self.poison(span);
+                        };
+                        Some(resolved)
+                    }
+                    _ => {
+                        self.error(
+                            span,
+                            "`core::intrinsic::cell::alloc` takes at most one type argument \
+                             (the cell type)",
+                        );
+                        return self.poison(span);
+                    }
+                };
+                let value = match result {
+                    Some(cell_ty) => {
+                        let TyKind::Cell { elem, .. } = *cell_ty.kind() else {
+                            unreachable!("checked above");
+                        };
+                        self.check_expr(value, elem)
+                    }
+                    None => self.infer_expr(value),
+                };
+                let result = result.unwrap_or_else(|| self.tcx.mk_cell(value.ty, false));
+                self.mk_expr(
+                    ExprKind::Intrinsic {
+                        op,
+                        args: vec![value],
+                    },
+                    result,
+                    span,
+                )
+            }
+            CellFn::Get | CellFn::InUse => {
+                let [cell] = fc.args.as_slice() else {
+                    self.error(
+                        span,
+                        format!("`core::intrinsic::cell::{name}` expects one argument"),
+                    );
+                    return self.poison(span);
+                };
+                let cell = self.infer_expr(cell);
+                let Some(elem) = self.cell_element(cell.ty, func, &name, span) else {
+                    return self.poison(span);
+                };
+                let result = if func == CellFn::InUse {
+                    self.tcx.mk_bool()
+                } else {
+                    elem
+                };
+                self.mk_expr(
+                    ExprKind::Intrinsic {
+                        op,
+                        args: vec![cell],
+                    },
+                    result,
+                    span,
+                )
+            }
+            CellFn::Set | CellFn::Rmw => {
+                let [cell, value] = fc.args.as_slice() else {
+                    self.error(
+                        span,
+                        format!("`core::intrinsic::cell::{name}` expects two arguments"),
+                    );
+                    return self.poison(span);
+                };
+                let cell = self.infer_expr(cell);
+                let Some(elem) = self.cell_element(cell.ty, func, &name, span) else {
+                    return self.poison(span);
+                };
+                let expected = if func == CellFn::Rmw {
+                    self.tcx.mk_closure(&[elem], elem)
+                } else {
+                    elem
+                };
+                let value = self.check_expr(value, expected);
+                let result = self.tcx.mk_unit();
+                self.mk_expr(
+                    ExprKind::Intrinsic {
+                        op,
+                        args: vec![cell, value],
+                    },
+                    result,
+                    span,
+                )
+            }
+        }
+    }
+
+    /// Return the element of a cell operand, diagnosing a non-cell value and
+    /// an exclusive-only operation applied to a plain `Cell`.
+    fn cell_element(
+        &mut self,
+        ty: Ty<'tcx>,
+        func: crate::intrinsic::CellFn,
+        method: &str,
+        span: Option<Span>,
+    ) -> Option<Ty<'tcx>> {
+        let resolved = self.infer.shallow_resolve(ty);
+        if let TyKind::Cell { elem, exclusive } = *resolved.kind() {
+            if func.requires_exclusive() && !exclusive {
+                let shown = self.infer.resolve(resolved);
+                self.error(
+                    span,
+                    format!(
+                        "`core::intrinsic::cell::{method}` requires an exclusive cell, found \
+                         `{}`; use a `RefCell`",
+                        self.ty_display(shown)
+                    ),
+                );
+                return None;
+            }
+            Some(elem)
+        } else {
+            let shown = self.infer.resolve(resolved);
+            self.error(
+                span,
+                format!(
+                    "`core::intrinsic::cell::{method}` expects a cell as its first argument, \
+                     found `{}`",
+                    self.ty_display(shown)
+                ),
+            );
+            None
+        }
     }
 
     /// (ARR) The `core::intrinsic::array` family (issue #344) — special
