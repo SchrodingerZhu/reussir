@@ -63,18 +63,18 @@ TEST_F(ReussirTest, ParseAtomicCellOrderingTest) {
       R"mlir(
         module {
           func.func @test(
-              %cell: !reussir.rc<!reussir.cell<i64 atomic>>,
+              %cell: !reussir.rc<!reussir.cell<i64 atomic> atomic>,
               %value: i64) -> i64 {
             %loaded = reussir.cell.get(
-                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+                %cell : !reussir.rc<!reussir.cell<i64 atomic> atomic>
               ) ordering(monotonic) : i64
             reussir.cell.set(
                 %value : i64,
-                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+                %cell : !reussir.rc<!reussir.cell<i64 atomic> atomic>
               ) ordering(seq_cst)
             %old = reussir.cell.rmw addi(
                 %loaded : i64,
-                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+                %cell : !reussir.rc<!reussir.cell<i64 atomic> atomic>
               ) ordering(acquire) -> i64
             return %old : i64
           }
@@ -116,5 +116,19 @@ TEST_F(ReussirTest, CellMemberProjectsToSharedRc) {
   EXPECT_EQ(memberStorageType(context.get(), cellType, /*isField=*/false,
                               /*memBoxInternal=*/true),
             cellType);
+}
+
+TEST_F(ReussirTest, AtomicCellMemberProjectsToAtomicSharedRc) {
+  auto i64Type = mlir::IntegerType::get(context.get(), 64);
+  auto cellType = CellType::get(context.get(), i64Type, CellKind::atomic);
+
+  // An atomic cell member is one shared rc box like any other cell, but its
+  // box refcount must be atomic (see `RcType::verify`).
+  auto projected = llvm::dyn_cast<RcType>(
+      getProjectedType(cellType, /*fieldCap=*/false, Capability::value));
+  ASSERT_TRUE(projected);
+  EXPECT_EQ(projected.getElementType(), cellType);
+  EXPECT_EQ(projected.getCapability(), Capability::shared);
+  EXPECT_EQ(projected.getAtomicKind(), AtomicKind::atomic);
 }
 } // namespace reussir

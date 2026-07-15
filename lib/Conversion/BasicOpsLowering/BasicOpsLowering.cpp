@@ -740,9 +740,11 @@ struct ReussirRefStoreConversionPattern
 //===----------------------------------------------------------------------===//
 // Atomic cell lowering
 //===----------------------------------------------------------------------===//
-// Cell atomicity describes the payload slot itself. It is intentionally
-// independent of RcType::getAtomicKind(), which controls only the RC box's
-// refcount operations.
+// Cell atomicity describes the payload slot itself, while
+// RcType::getAtomicKind() controls the RC box's refcount operations. An
+// atomic cell requires an atomic shared RC box (enforced by RcType::verify),
+// so the two are atomic together; the patterns below nevertheless key only
+// on the cell kind.
 static mlir::Value
 atomicCellSlotPtr(RcType rcType, mlir::Value convertedCell, mlir::Location loc,
                   const mlir::TypeConverter *typeConverter,

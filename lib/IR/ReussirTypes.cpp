@@ -901,6 +901,19 @@ RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
 
+  // An atomic cell only exists to be shared across threads, so the box
+  // managing it must itself be shared with an atomic refcount.
+  if (auto cellTy = llvm::dyn_cast<CellType>(eleTy);
+      cellTy && cellTy.getAtomic() &&
+      (capability != reussir::Capability::shared ||
+       atomicKind != reussir::AtomicKind::atomic)) {
+    emitError() << "an atomic cell must be managed by an atomic shared RC "
+                   "pointer, got capability "
+                << stringifyCapability(capability) << " and atomic kind "
+                << stringifyAtomicKind(atomicKind);
+    return mlir::failure();
+  }
+
   return mlir::success();
 }
 //===----------------------------------------------------------------------===//
@@ -1401,8 +1414,15 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap) {
     NullableType nullableTy = NullableType::get(type.getContext(), rcTy);
     return nullableTy;
   }
-  if (targetCap == Capability::shared)
-    return RcType::get(type.getContext(), type, Capability::shared);
+  if (targetCap == Capability::shared) {
+    // An atomic cell member is managed by an atomic shared RC box (see
+    // `RcType::verify`); every other shared member keeps the default
+    // nonatomic refcount.
+    auto cellTy = llvm::dyn_cast<CellType>(type);
+    AtomicKind atomicKind =
+        cellTy && cellTy.getAtomic() ? AtomicKind::atomic : AtomicKind::normal;
+    return RcType::get(type.getContext(), type, Capability::shared, atomicKind);
+  }
   if (targetCap == Capability::regional)
     return RcType::get(type.getContext(), type, Capability::rigid);
   return type;

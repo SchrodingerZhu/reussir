@@ -1149,7 +1149,7 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
 
     ```mlir
     %old = reussir.cell.rmw addi(%delta : i64,
-        %cell : !reussir.rc<!reussir.cell<i64 atomic>>) -> i64
+        %cell : !reussir.rc<!reussir.cell<i64 atomic> atomic>) -> i64
     ```
   }];
   let arguments = (ins OptionalAttr<AtomicRMWKindAttr>:$kind,

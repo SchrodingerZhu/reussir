@@ -67,13 +67,15 @@ pub fn cell(element: Type, exclusive: bool) -> Type {
 }
 
 /// Creates a cell payload using one storage strategy. `Atomic` is an inline
-/// atomic arithmetic scalar inside the shared RC box; it is independent of
-/// the RC pointer's own refcount atomicity.
+/// atomic arithmetic scalar inside the shared RC box; an atomic cell must be
+/// managed by an RC pointer that is itself shared with an atomic refcount
+/// (`rc(_, Shared, Atomic)`).
 pub fn cell_with_kind(element: Type, kind: ReussirCellKind) -> Type {
     unsafe { Type::from_raw(sys::reussirCellTypeGetWithKind(element.to_raw(), kind)) }
 }
 
 /// Creates an RC-contained atomic scalar payload, `!reussir.cell<T atomic>`.
+/// The managing RC pointer must be shared and atomic.
 pub fn atomic_cell(element: Type) -> Type {
     cell_with_kind(element, ReussirCellKind::Atomic)
 }
