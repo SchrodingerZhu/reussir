@@ -1007,26 +1007,32 @@ void CellType::print(mlir::AsmPrinter &printer) const {
   printer << ">";
 }
 
-mlir::LogicalResult
-CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-                 mlir::Type eleTy, CellKind kind) {
-  if (kind != CellKind::atomic)
-    return mlir::success();
-
+mlir::LogicalResult verifyAtomicElementType(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, mlir::Type eleTy,
+    llvm::StringRef what) {
   auto intTy = llvm::dyn_cast<mlir::IntegerType>(eleTy);
   auto floatTy = llvm::dyn_cast<mlir::FloatType>(eleTy);
   if (!floatTy && (!intTy || !intTy.isSignless()))
-    return emitError() << "atomic cell element must be a signless integer or "
+    return emitError() << what
+                       << " must be a signless integer or "
                           "floating-point primitive, got "
                        << eleTy;
 
   unsigned width = eleTy.getIntOrFloatBitWidth();
   if (width < 8 || !llvm::isPowerOf2_32(width))
-    return emitError()
-           << "atomic cell element must have a byte-addressable power-of-two "
-              "bit width, got "
-           << eleTy;
+    return emitError() << what
+                       << " must have a byte-addressable power-of-two "
+                          "bit width, got "
+                       << eleTy;
   return mlir::success();
+}
+
+mlir::LogicalResult
+CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                 mlir::Type eleTy, CellKind kind) {
+  if (kind != CellKind::atomic)
+    return mlir::success();
+  return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
 }
 
 //===----------------------------------------------------------------------===//

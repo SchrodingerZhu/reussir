@@ -42,7 +42,6 @@
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypes.h>
-#include <mlir/IR/IRMapping.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
@@ -762,11 +761,10 @@ atomicCellSlotPtr(RcType rcType, mlir::Value convertedCell, mlir::Location loc,
 }
 
 static unsigned
-atomicCellAlignment(CellType cellType, mlir::Operation *anchor,
-                    const mlir::LLVMTypeConverter &typeConverter) {
+atomicElementAlignment(mlir::Type elementType, mlir::Operation *anchor,
+                       const mlir::LLVMTypeConverter &typeConverter) {
   auto dataLayout = getDataLayout(typeConverter, anchor);
-  return static_cast<unsigned>(
-      dataLayout.getTypeABIAlignment(cellType.getElementType()));
+  return static_cast<unsigned>(dataLayout.getTypeABIAlignment(elementType));
 }
 
 struct ReussirAtomicCellGetConversionPattern
@@ -788,7 +786,7 @@ struct ReussirAtomicCellGetConversionPattern
     mlir::Type elementType = converter->convertType(cellType.getElementType());
     mlir::Value loaded = mlir::LLVM::LoadOp::create(
         rewriter, op.getLoc(), elementType, slot,
-        atomicCellAlignment(cellType, op, *converter),
+        atomicElementAlignment(cellType.getElementType(), op, *converter),
         /*isVolatile=*/false, /*isNonTemporal=*/false,
         /*isInvariant=*/false, /*isInvariantGroup=*/false,
         op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::acquire));
@@ -815,7 +813,7 @@ struct ReussirAtomicCellSetConversionPattern
                                          converter, rewriter);
     mlir::LLVM::StoreOp::create(
         rewriter, op.getLoc(), adaptor.getValue(), slot,
-        atomicCellAlignment(cellType, op, *converter),
+        atomicElementAlignment(cellType.getElementType(), op, *converter),
         /*isVolatile=*/false, /*isNonTemporal=*/false,
         /*isInvariantGroup=*/false,
         op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::release));
@@ -859,8 +857,8 @@ convertAtomicRMWKind(mlir::arith::AtomicRMWKind kind) {
     return LLVMKind::_xor;
   case ArithKind::mulf:
   case ArithKind::muli:
-    // LLVM has no atomicrmw multiply; use the same cmpxchg loop as the
-    // region form below.
+    // LLVM has no atomicrmw multiply; the SCF lowering expands those kinds
+    // (and the region form) into an scf.while + ref.cmpxchg retry loop.
     return std::nullopt;
   }
   llvm_unreachable("unknown AtomicRMWKind");
@@ -877,136 +875,69 @@ struct ReussirAtomicCellRmwConversionPattern
     CellType cellType = llvm::cast<CellType>(rcType.getElementType());
     if (!cellType.getAtomic())
       return rewriter.notifyMatchFailure(op, "cell is not atomic");
+    // Only the straight-line native kinds reach the LLVM conversion; every
+    // loop-shaped read-modify-write was expanded during SCF lowering.
+    auto kind = op.getKind();
+    std::optional<mlir::LLVM::AtomicBinOp> llvmKind =
+        kind ? convertAtomicRMWKind(*kind) : std::nullopt;
+    if (!llvmKind)
+      return rewriter.notifyMatchFailure(
+          op, "loop-shaped atomic RMW must be expanded during SCF lowering");
 
     auto *converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+    mlir::Value slot = atomicCellSlotPtr(rcType, adaptor.getCell(), op.getLoc(),
+                                         converter, rewriter);
+    mlir::Value old = mlir::LLVM::AtomicRMWOp::create(
+        rewriter, op.getLoc(), *llvmKind, slot, adaptor.getValue(),
+        op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::acq_rel),
+        llvm::StringRef(),
+        atomicElementAlignment(cellType.getElementType(), op, *converter));
+    rewriter.replaceOp(op, old);
+    return mlir::success();
+  }
+};
+
+struct ReussirRefCmpXchgConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefCmpXchgOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefCmpXchgOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto *converter =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     mlir::Location loc = op.getLoc();
-    mlir::Type convertedOutputType;
-    if (op.getOutput()) {
-      convertedOutputType = converter->convertType(op.getOutput().getType());
-      if (!convertedOutputType)
-        return op.emitOpError("body output type cannot be lowered to LLVM");
-    }
-    mlir::Value slot =
-        atomicCellSlotPtr(rcType, adaptor.getCell(), loc, converter, rewriter);
-    unsigned alignment = atomicCellAlignment(cellType, op, *converter);
-    mlir::Type elementType = converter->convertType(cellType.getElementType());
-    mlir::LLVM::AtomicOrdering ordering =
-        op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::acq_rel);
-
-    // Every kind LLVM represents directly remains a single atomicrmw.
-    if (auto kind = op.getKind()) {
-      if (auto llvmKind = convertAtomicRMWKind(*kind)) {
-        mlir::Value old = mlir::LLVM::AtomicRMWOp::create(
-            rewriter, loc, *llvmKind, slot, adaptor.getValue(), ordering,
-            llvm::StringRef(), alignment);
-        rewriter.replaceOp(op, old);
-        return mlir::success();
-      }
-    }
-
-    // Copy the essential shape of MemRef's generic_atomic_rmw lowering: an
-    // initial load feeds a retry block; each attempt computes a replacement,
-    // cmpxchg commits it, and failure loops with the value observed by the
-    // failed comparison. Floating values compare their integer bit patterns
-    // because LLVM cmpxchg accepts integers (and pointers), not floats.
-    mlir::Type compareType = elementType;
+    mlir::Type origElementType = op.getObserved().getType();
+    mlir::Type elementType = converter->convertType(origElementType);
+    unsigned alignment =
+        atomicElementAlignment(origElementType, op, *converter);
+    // LLVM cmpxchg accepts integers (and pointers), not floats: floating
+    // elements compare their integer bit patterns.
     bool floatElement = llvm::isa<mlir::FloatType>(elementType);
-    if (floatElement)
-      compareType = mlir::IntegerType::get(rewriter.getContext(),
-                                           elementType.getIntOrFloatBitWidth());
-
-    mlir::Block *initBlock = op->getBlock();
-    mlir::Block *endBlock =
-        rewriter.splitBlock(initBlock, std::next(op->getIterator()));
-    mlir::Block *loopBlock = rewriter.splitBlock(initBlock, op->getIterator());
-    mlir::BlockArgument expected = loopBlock->addArgument(compareType, loc);
-
-    mlir::BlockArgument resultArgument;
-    if (op.getOutput())
-      resultArgument = endBlock->addArgument(convertedOutputType, loc);
-
-    rewriter.setInsertionPointToEnd(initBlock);
-    mlir::Value initial = mlir::LLVM::LoadOp::create(
-        rewriter, loc, elementType, slot, alignment,
-        /*isVolatile=*/false, /*isNonTemporal=*/false,
-        /*isInvariant=*/false, /*isInvariantGroup=*/false,
-        mlir::LLVM::AtomicOrdering::monotonic);
-    if (floatElement)
-      initial =
-          mlir::LLVM::BitcastOp::create(rewriter, loc, compareType, initial);
-    mlir::LLVM::BrOp::create(rewriter, loc, mlir::ValueRange{initial},
-                             loopBlock);
-
-    rewriter.setInsertionPoint(op);
-    mlir::Value current = expected;
-    if (floatElement)
-      current =
-          mlir::LLVM::BitcastOp::create(rewriter, loc, elementType, expected);
-
-    mlir::Value replacement;
-    mlir::Value successfulOutput;
-    if (auto kind = op.getKind()) {
-      // Only multiply reaches this path; the other direct kinds returned via
-      // llvm.atomicrmw above.
-      if (*kind == mlir::arith::AtomicRMWKind::mulf)
-        replacement = mlir::LLVM::FMulOp::create(rewriter, loc, current,
-                                                 adaptor.getValue());
-      else
-        replacement = mlir::LLVM::MulOp::create(rewriter, loc, current,
-                                                adaptor.getValue());
-      successfulOutput = current;
-    } else {
-      mlir::Block &body = op.getBody().front();
-      auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
-      mlir::IRMapping mapping;
-      mapping.map(body.getArgument(0), current);
-      auto remap = [&](mlir::Value value) {
-        if (mlir::Value mapped = mapping.lookupOrNull(value))
-          return mapped;
-        mlir::Value mapped = rewriter.getRemappedValue(value);
-        mapping.map(value, mapped);
-        return mapped;
-      };
-      for (mlir::Operation &nested : body.without_terminator()) {
-        for (mlir::Value operand : nested.getOperands())
-          (void)remap(operand);
-        rewriter.clone(nested, mapping);
-      }
-      replacement = remap(yield.getNewValue());
-      if (yield.getOutput())
-        successfulOutput = remap(yield.getOutput());
+    mlir::Value expected = adaptor.getExpected();
+    mlir::Value desired = adaptor.getDesired();
+    if (floatElement) {
+      mlir::Type compareType = mlir::IntegerType::get(
+          rewriter.getContext(), elementType.getIntOrFloatBitWidth());
+      expected =
+          mlir::LLVM::BitcastOp::create(rewriter, loc, compareType, expected);
+      desired =
+          mlir::LLVM::BitcastOp::create(rewriter, loc, compareType, desired);
     }
-
-    mlir::Value replacementBits = replacement;
-    if (floatElement)
-      replacementBits = mlir::LLVM::BitcastOp::create(rewriter, loc,
-                                                      compareType, replacement);
     auto cmpxchg = mlir::LLVM::AtomicCmpXchgOp::create(
-        rewriter, loc, slot, expected, replacementBits, ordering,
-        mlir::LLVM::AtomicOrdering::monotonic, llvm::StringRef(), alignment);
+        rewriter, loc, adaptor.getRef(), expected, desired,
+        op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::acq_rel),
+        mlir::LLVM::AtomicOrdering::monotonic, llvm::StringRef(), alignment,
+        op.getWeak());
     mlir::Value observed = mlir::LLVM::ExtractValueOp::create(
         rewriter, loc, cmpxchg, llvm::ArrayRef<int64_t>{0});
-    mlir::Value succeeded = mlir::LLVM::ExtractValueOp::create(
+    if (floatElement)
+      observed =
+          mlir::LLVM::BitcastOp::create(rewriter, loc, elementType, observed);
+    mlir::Value success = mlir::LLVM::ExtractValueOp::create(
         rewriter, loc, cmpxchg, llvm::ArrayRef<int64_t>{1});
-
-    llvm::SmallVector<mlir::Value> successOperands;
-    if (op.getOutput()) {
-      if (successfulOutput.getType() != convertedOutputType)
-        successfulOutput =
-            mlir::UnrealizedConversionCastOp::create(
-                rewriter, loc, convertedOutputType, successfulOutput)
-                .getResult(0);
-      successOperands.push_back(successfulOutput);
-    }
-    mlir::LLVM::CondBrOp::create(rewriter, loc, succeeded, endBlock,
-                                 successOperands, loopBlock,
-                                 mlir::ValueRange{observed});
-
-    if (op.getOutput())
-      rewriter.replaceOp(op, resultArgument);
-    else
-      rewriter.eraseOp(op);
+    rewriter.replaceOp(op, {observed, success});
     return mlir::success();
   }
 };
@@ -3839,9 +3770,10 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirRefFromMemrefConversionPattern, ReussirRefStoreConversionPattern,
       ReussirAtomicCellGetConversionPattern,
       ReussirAtomicCellSetConversionPattern,
-      ReussirAtomicCellRmwConversionPattern, ReussirRefSpilledConversionPattern,
-      ReussirRefDiffConversionPattern, ReussirRefCmpConversionPattern,
-      ReussirRefMemcpyConversionPattern, ReussirNullableCheckConversionPattern,
+      ReussirAtomicCellRmwConversionPattern, ReussirRefCmpXchgConversionPattern,
+      ReussirRefSpilledConversionPattern, ReussirRefDiffConversionPattern,
+      ReussirRefCmpConversionPattern, ReussirRefMemcpyConversionPattern,
+      ReussirNullableCheckConversionPattern,
       ReussirNullableCreateConversionPattern,
       ReussirNullableCoerceConversionPattern, ReussirRcIncConversionPattern,
       ReussirRcTaggedConversionPattern,

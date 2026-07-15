@@ -36,6 +36,12 @@ deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
                                bool memBoxInternal = false);
 bool isNonNullPointerType(mlir::Type type);
 bool isTriviallyCopyable(mlir::Type type);
+// Checks that `eleTy` is eligible for atomic accesses: a byte-addressable,
+// power-of-two-width signless integer or floating-point primitive. `what`
+// names the checked entity in diagnostics (e.g. "atomic cell element").
+mlir::LogicalResult verifyAtomicElementType(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, mlir::Type eleTy,
+    llvm::StringRef what);
 mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap);
 mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
                              bool isField, bool memBoxInternal = false);

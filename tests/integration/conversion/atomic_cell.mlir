@@ -1,6 +1,6 @@
 // RUN: %reussir-opt %s | %FileCheck %s --check-prefix=ROUNDTRIP
 // RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-lowering-scf-ops,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !atomic_i64 = !reussir.rc<!reussir.cell<i64 atomic>>
 !atomic_f32 = !reussir.rc<!reussir.cell<f32 atomic>>
@@ -65,32 +65,48 @@ module {
     return %old : i64
   }
 
+  // LLVM has no atomicrmw multiply, so the SCF lowering expands the direct
+  // multiply into an scf.while retry loop committed with the weak
+  // ref.cmpxchg bridge; the LLVM lowering never touches control flow.
+  // SCF-LABEL: func.func @direct_multiply
+  // SCF: %[[MUL_INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(monotonic) : i64
+  // SCF: scf.while (%[[MUL_EXPECTED:.+]] = %[[MUL_INIT]]) : (i64) -> i64
+  // SCF: arith.muli %[[MUL_EXPECTED]], %{{.+}} : i64
+  // SCF: %[[MUL_OBSERVED:.+]], %[[MUL_OK:.+]] = reussir.ref.cmpxchg(%[[MUL_EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field>) weak ordering(acq_rel) : i64, i1
+  // SCF: %[[MUL_RETRY:.+]] = arith.xori %[[MUL_OK]], %{{.+}} : i1
+  // SCF: scf.condition(%[[MUL_RETRY]]) %[[MUL_OBSERVED]] : i64
+  // SCF-NOT: reussir.cell.rmw
   // LLVM-LABEL: define i64 @direct_multiply
   // LLVM: load atomic i64, ptr %{{.+}} monotonic, align 8
   // LLVM: br label %[[LOOP:.+]]
   // LLVM: [[LOOP]]:
   // LLVM: mul i64
-  // LLVM: cmpxchg ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} acq_rel monotonic, align 8
-  // LLVM: br i1 %{{.+}}, label %[[DONE:.+]], label %[[LOOP]]
+  // LLVM: cmpxchg weak ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} acq_rel monotonic, align 8
+  // LLVM: br i1 %{{.+}}, label %[[LOOP]], label %[[DONE:.+]]
   // LLVM: [[DONE]]:
   func.func @direct_multiply(%factor: i64, %cell: !atomic_i64) -> i64 {
     %old = reussir.cell.rmw muli(%factor : i64, %cell : !atomic_i64) -> i64
     return %old : i64
   }
 
-  // The optional output is computed on each attempt but only the successful
-  // attempt reaches the continuation.
+  // The region body is inlined into the scf.while before-region: the
+  // optional output is computed on each attempt but only the successful
+  // attempt's value leaves the loop.
   // ROUNDTRIP-LABEL: func.func @region_rmw
   // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(seq_cst) -> i64 {
   // SCF-LABEL: func.func @region_rmw
-  // SCF: reussir.cell.rmw
-  // SCF: reussir.cell.yield
+  // SCF: %[[INIT:.+]] = reussir.cell.get(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(monotonic) : i64
+  // SCF: scf.while (%[[EXPECTED:.+]] = %[[INIT]]) : (i64) -> (i64, i64)
+  // SCF: %[[OBSERVED:.+]], %[[OK:.+]] = reussir.ref.cmpxchg(%[[EXPECTED]] : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field>) weak ordering(seq_cst) : i64, i1
+  // SCF: %[[RETRY:.+]] = arith.xori %[[OK]], %{{.+}} : i1
+  // SCF: scf.condition(%[[RETRY]]) %[[OBSERVED]], %{{.+}} : i64, i64
+  // SCF-NOT: reussir.cell.rmw
   // LLVM-LABEL: define i64 @region_rmw
   // LLVM: load atomic i64, ptr %{{.+}} monotonic, align 8
   // LLVM: add i64
   // LLVM: mul i64
-  // LLVM: cmpxchg ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} seq_cst monotonic, align 8
-  // LLVM: br i1 %{{.+}}, label %[[REGION_DONE:.+]], label %{{.+}}
+  // LLVM: cmpxchg weak ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} seq_cst monotonic, align 8
+  // LLVM: br i1 %{{.+}}, label %{{.+}}, label %[[REGION_DONE:.+]]
   // LLVM: [[REGION_DONE]]:
   // LLVM: ret i64
   func.func @region_rmw(%cell: !atomic_i64) -> i64 {
@@ -105,13 +121,13 @@ module {
     return %result : i64
   }
 
-  // A body may omit the auxiliary output. Captured SSA values are cloned
-  // into the retry computation while still remaining outside the atomic op's
-  // explicit operand list.
+  // A body may omit the auxiliary output. Captured SSA values stay visible
+  // inside the scf.while region without entering the atomic op's explicit
+  // operand list.
   // LLVM-LABEL: define void @region_no_output
   // LLVM: load atomic i64, ptr %{{.+}} monotonic, align 8
   // LLVM: add i64 %{{.+}}, %{{.+}}
-  // LLVM: cmpxchg ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} acq_rel monotonic, align 8
+  // LLVM: cmpxchg weak ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} acq_rel monotonic, align 8
   // LLVM: ret void
   func.func @region_no_output(%delta: i64, %cell: !atomic_i64) {
     reussir.cell.rmw(%cell : !atomic_i64) {
@@ -122,16 +138,20 @@ module {
     return
   }
 
-  // Float cmpxchg compares integer bit patterns, avoiding an invalid
+  // The SCF-level loop carries the float element; only the ref.cmpxchg
+  // lowering compares integer bit patterns, avoiding an invalid
   // floating-point llvm.cmpxchg.
   // LLVM-LABEL: define float @region_float
   // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<f32 atomic>>) ordering(release) -> f32 {
+  // SCF-LABEL: func.func @region_float
+  // SCF: scf.while
+  // SCF: reussir.ref.cmpxchg(%{{.+}} : f32, %{{.+}} : f32, %{{.+}} : !reussir.ref<f32 field>) weak ordering(release) : f32, i1
   // LLVM: load atomic float, ptr %{{.+}} monotonic, align 4
-  // LLVM: bitcast float %{{.+}} to i32
-  // LLVM: bitcast i32 %{{.+}} to float
   // LLVM: fadd float
   // LLVM: bitcast float %{{.+}} to i32
-  // LLVM: cmpxchg ptr %{{.+}}, i32 %{{.+}}, i32 %{{.+}} release monotonic, align 4
+  // LLVM: bitcast float %{{.+}} to i32
+  // LLVM: cmpxchg weak ptr %{{.+}}, i32 %{{.+}}, i32 %{{.+}} release monotonic, align 4
+  // LLVM: bitcast i32 %{{.+}} to float
   func.func @region_float(%cell: !atomic_f32) -> f32 {
     %old = reussir.cell.rmw(%cell : !atomic_f32) ordering(release) -> f32 {
       ^bb0(%current: f32):
@@ -140,5 +160,18 @@ module {
         reussir.cell.yield(%next : f32) output(%current : f32)
     }
     return %old : f32
+  }
+
+  // The bridge op itself round-trips (in both strong and weak spellings) and
+  // stays a straight-line cmpxchg.
+  // ROUNDTRIP-LABEL: func.func @raw_cmpxchg
+  // ROUNDTRIP: reussir.ref.cmpxchg(%{{.+}} : i64, %{{.+}} : i64, %{{.+}} : !reussir.ref<i64 field>) ordering(monotonic) : i64, i1
+  // LLVM-LABEL: define i1 @raw_cmpxchg
+  // LLVM: cmpxchg ptr %{{.+}}, i64 %{{.+}}, i64 %{{.+}} monotonic monotonic, align 8
+  func.func @raw_cmpxchg(%expected: i64, %desired: i64,
+                         %slot: !reussir.ref<i64 field>) -> i1 {
+    %observed, %ok = reussir.ref.cmpxchg(%expected : i64, %desired : i64,
+        %slot : !reussir.ref<i64 field>) ordering(monotonic) : i64, i1
+    return %ok : i1
   }
 }

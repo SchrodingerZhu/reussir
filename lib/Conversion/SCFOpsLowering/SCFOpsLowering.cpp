@@ -1343,6 +1343,118 @@ public:
   }
 };
 
+// LLVM's atomicrmw has no multiply flavor; direct multiply takes the same
+// retry loop as the region form. Every other direct kind is a straight-line
+// llvm.atomicrmw and stays high-level until the LLVM lowering.
+static bool hasNativeAtomicRMWLowering(mlir::arith::AtomicRMWKind kind) {
+  return kind != mlir::arith::AtomicRMWKind::muli &&
+         kind != mlir::arith::AtomicRMWKind::mulf;
+}
+
+// An atomic read-modify-write that LLVM cannot express as a single atomicrmw
+// (the region form and the multiply kinds) is loop-shaped, so its control
+// flow is crafted here as structured IR: an initial monotonic observation
+// feeds an `scf.while` whose before-region computes the replacement and
+// commits it with the straight-line `reussir.ref.cmpxchg` bridge; a failed
+// exchange retries with the element the comparison observed. Only the
+// successful attempt's values leave the loop.
+class ReussirAtomicCellRmwOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellRmwOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellRmwOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (!isAtomicCell(op.getCell()))
+      return mlir::failure();
+    if (auto kind = op.getKind(); kind && hasNativeAtomicRMWLowering(*kind))
+      return mlir::failure();
+
+    mlir::Location loc = op.getLoc();
+    CellAccess access = borrowCell(op.getCell(), loc, rewriter);
+    mlir::Value slotRef = projectCellSlot(access, loc, rewriter);
+    mlir::Type elementType = access.cellType.getElementType();
+    auto orderingAttr = mlir::LLVM::AtomicOrderingAttr::get(
+        rewriter.getContext(),
+        op.getOrdering().value_or(mlir::LLVM::AtomicOrdering::acq_rel));
+    auto monotonicAttr = mlir::LLVM::AtomicOrderingAttr::get(
+        rewriter.getContext(), mlir::LLVM::AtomicOrdering::monotonic);
+    mlir::Value initial = ReussirCellGetOp::create(rewriter, loc, elementType,
+                                                   monotonicAttr, op.getCell());
+
+    // The loop always carries the observed element; a region body may thread
+    // one extra output out of the successful attempt.
+    bool direct = static_cast<bool>(op.getKindAttr());
+    llvm::SmallVector<mlir::Type> loopResultTypes{elementType};
+    if (!direct && op.getOutput())
+      loopResultTypes.push_back(op.getOutput().getType());
+
+    auto whileOp = mlir::scf::WhileOp::create(rewriter, loc, loopResultTypes,
+                                              mlir::ValueRange{initial});
+    {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      mlir::Block *before =
+          rewriter.createBlock(&whileOp.getBefore(), whileOp.getBefore().end(),
+                               {elementType}, {loc});
+      mlir::Value expected = before->getArgument(0);
+      mlir::Value desired;
+      mlir::Value bodyOutput;
+      mlir::Location commitLoc = loc;
+      ReussirCellYieldOp yield;
+      if (direct) {
+        if (*op.getKind() == mlir::arith::AtomicRMWKind::mulf)
+          desired = mlir::arith::MulFOp::create(rewriter, loc, expected,
+                                                op.getValue());
+        else
+          desired = mlir::arith::MulIOp::create(rewriter, loc, expected,
+                                                op.getValue());
+      } else {
+        mlir::Block &body = op.getBody().front();
+        yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+        rewriter.inlineBlockBefore(&body, before, before->end(),
+                                   mlir::ValueRange{expected});
+        rewriter.setInsertionPoint(yield);
+        commitLoc = yield.getLoc();
+        desired = yield.getNewValue();
+        bodyOutput = yield.getOutput();
+      }
+      // Weak exchange: the surrounding loop retries on failure anyway, and
+      // weakness lets LLVM pick LL/SC sequences where beneficial.
+      auto cmpxchg = ReussirRefCmpXchgOp::create(
+          rewriter, commitLoc, elementType, rewriter.getI1Type(), orderingAttr,
+          rewriter.getUnitAttr(), expected, desired, slotRef);
+      mlir::Value trueValue = mlir::arith::ConstantOp::create(
+          rewriter, commitLoc,
+          rewriter.getIntegerAttr(rewriter.getI1Type(), true));
+      mlir::Value retry = mlir::arith::XOrIOp::create(
+          rewriter, commitLoc, cmpxchg.getSuccess(), trueValue);
+      llvm::SmallVector<mlir::Value> forwarded{cmpxchg.getObserved()};
+      if (bodyOutput)
+        forwarded.push_back(bodyOutput);
+      mlir::scf::ConditionOp::create(rewriter, commitLoc, retry, forwarded);
+      if (yield)
+        rewriter.eraseOp(yield);
+
+      mlir::Block *after = rewriter.createBlock(
+          &whileOp.getAfter(), whileOp.getAfter().end(), loopResultTypes,
+          llvm::SmallVector<mlir::Location>(loopResultTypes.size(), loc));
+      mlir::scf::YieldOp::create(rewriter, loc,
+                                 mlir::ValueRange{after->getArgument(0)});
+    }
+
+    if (op->getNumResults() == 0)
+      rewriter.eraseOp(op);
+    else if (direct)
+      // The direct form returns the old element: the successful comparison
+      // observed exactly the value it replaced.
+      rewriter.replaceOp(op, whileOp.getResult(0));
+    else
+      rewriter.replaceOp(op, whileOp.getResult(1));
+    return mlir::success();
+  }
+};
+
 class ReussirCellInUseOpRewritePattern
     : public mlir::OpConversionPattern<ReussirCellInUseOp> {
 public:
@@ -1395,16 +1507,21 @@ struct SCFOpsLoweringPass
     // basic-ops lowering only dispatches the plain, fully-applied form.
     target.addDynamicallyLegalOp<ReussirClosureEvalOp>(
         [](ReussirClosureEvalOp op) { return op.getArgs().empty(); });
-    // Atomic cell accesses retain their high-level operation until the LLVM
-    // conversion can preserve their ordering. Cell creation and all
-    // non-atomic Cell operations are structurally lowered here, before
-    // inc/dec cancellation.
+    // Straight-line atomic cell accesses retain their high-level operation
+    // until the LLVM conversion can preserve their ordering. Cell creation,
+    // all non-atomic Cell operations, and loop-shaped atomic RMWs (region
+    // bodies and multiply, which lower to retry loops) are structurally
+    // lowered here, before inc/dec cancellation.
     target.addDynamicallyLegalOp<ReussirCellGetOp>(
         [](ReussirCellGetOp op) { return isAtomicCell(op.getCell()); });
     target.addDynamicallyLegalOp<ReussirCellSetOp>(
         [](ReussirCellSetOp op) { return isAtomicCell(op.getCell()); });
-    target.addDynamicallyLegalOp<ReussirCellRmwOp>(
-        [](ReussirCellRmwOp op) { return isAtomicCell(op.getCell()); });
+    target.addDynamicallyLegalOp<ReussirCellRmwOp>([](ReussirCellRmwOp op) {
+      if (!isAtomicCell(op.getCell()))
+        return false;
+      auto kind = op.getKind();
+      return kind && hasNativeAtomicRMWLowering(*kind);
+    });
 
     target.addIllegalOp<
         ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
@@ -1432,8 +1549,8 @@ void populateSCFOpsLoweringConversionPatterns(
       ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
       ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
       ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
-      ReussirCellRmwOpRewritePattern, ReussirCellInUseOpRewritePattern>(
-      patterns.getContext());
+      ReussirCellRmwOpRewritePattern, ReussirAtomicCellRmwOpRewritePattern,
+      ReussirCellInUseOpRewritePattern>(patterns.getContext());
 }
 
 } // namespace reussir

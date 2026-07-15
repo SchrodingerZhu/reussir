@@ -89,8 +89,13 @@ def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
     MLIR SCF guards.
     Cell get acquires the exact loaded value, set drops the old slot before
     storing the caller-owned replacement, and rmw moves the old and replacement
-    values through its region without implicit ownership traffic. Atomic Cell
-    accesses remain intact for atomic lowering later in the pipeline.
+    values through its region without implicit ownership traffic.
+    Loop-shaped atomic read-modify-writes (region bodies and the multiply
+    kinds LLVM cannot express as a single atomicrmw) become `scf.while` retry
+    loops committed with the straight-line `reussir.ref.cmpxchg` bridge, so
+    all Cell control flow is crafted as structured IR here. Straight-line
+    atomic accesses (get, set, native atomicrmw kinds, and the bridge itself)
+    remain intact for the LLVM lowering, which performs no CFG changes.
   }];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::bufferization::BufferizationDialect",

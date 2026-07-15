@@ -1229,19 +1229,12 @@ TokenType ReussirCellCreateOp::getTokenType() {
 enum class CellAtomicAccess { Load, Store, Rmw };
 
 static mlir::LogicalResult
-verifyCellAtomicOrdering(mlir::Operation *op, CellType cellType,
-                         std::optional<mlir::LLVM::AtomicOrdering> ordering,
-                         CellAtomicAccess access) {
-  if (!ordering)
-    return mlir::success();
-  if (!cellType.getAtomic())
-    return op->emitOpError(
-               "atomic ordering is only valid for an atomic cell, got ")
-           << cellType;
-
+verifyAtomicAccessOrdering(mlir::Operation *op,
+                           mlir::LLVM::AtomicOrdering ordering,
+                           CellAtomicAccess access) {
   using Ordering = mlir::LLVM::AtomicOrdering;
   bool valid = false;
-  switch (*ordering) {
+  switch (ordering) {
   case Ordering::not_atomic:
     break;
   case Ordering::unordered:
@@ -1277,8 +1270,21 @@ verifyCellAtomicOrdering(mlir::Operation *op, CellType cellType,
     break;
   }
   return op->emitOpError("atomic ordering '")
-         << mlir::LLVM::stringifyAtomicOrdering(*ordering)
+         << mlir::LLVM::stringifyAtomicOrdering(ordering)
          << "' is invalid for an atomic " << accessName;
+}
+
+static mlir::LogicalResult
+verifyCellAtomicOrdering(mlir::Operation *op, CellType cellType,
+                         std::optional<mlir::LLVM::AtomicOrdering> ordering,
+                         CellAtomicAccess access) {
+  if (!ordering)
+    return mlir::success();
+  if (!cellType.getAtomic())
+    return op->emitOpError(
+               "atomic ordering is only valid for an atomic cell, got ")
+           << cellType;
+  return verifyAtomicAccessOrdering(op, *ordering, access);
 }
 
 mlir::LogicalResult ReussirCellGetOp::verify() {
@@ -1677,6 +1683,30 @@ mlir::LogicalResult ReussirRefStoreOp::verify() {
            << "value type: " << valueType
            << ", reference element type: " << refType.getElementType();
 
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RefCmpXchgOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRefCmpXchgOp::verify() {
+  RefType refType = getRef().getType();
+  if (refType.getCapability() != reussir::Capability::field)
+    return emitOpError("target reference must have field capability, got: ")
+           << stringifyCapability(refType.getCapability());
+  mlir::Type elementType = refType.getElementType();
+  if (mlir::failed(verifyAtomicElementType([&]() { return emitOpError(); },
+                                           elementType, "cmpxchg element")))
+    return mlir::failure();
+  if (getExpected().getType() != elementType ||
+      getDesired().getType() != elementType ||
+      getObserved().getType() != elementType)
+    return emitOpError("expected, desired, and observed types must match the "
+                       "reference element type ")
+           << elementType;
+  if (getOrdering())
+    return verifyAtomicAccessOrdering(getOperation(), *getOrdering(),
+                                      CellAtomicAccess::Rmw);
   return mlir::success();
 }
 
