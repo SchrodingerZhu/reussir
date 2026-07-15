@@ -301,6 +301,94 @@ pub fn nullable_dispatch<'c>(
     builder.build().expect("valid reussir.nullable.dispatch")
 }
 
+/// `reussir.cell.create value(%value : T) : !reussir.rc<!reussir.cell<T>>`
+/// — move a value into a fresh shared cell. The token-instantiation pass fills
+/// the optional allocation token.
+pub fn cell_create<'c>(
+    value: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.cell.create", location)
+        .add_operands(&[value])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.cell.create")
+}
+
+/// `reussir.cell.get(%cell : rc<cell<T>>) : T` — clone the stored value.
+pub fn cell_get<'c>(
+    cell: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.cell.get", location)
+        .add_operands(&[cell])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.cell.get")
+}
+
+/// `reussir.cell.set(%value : T, %cell : rc<cell<T>>)` — replace the stored
+/// value, consuming `value` and dropping the old element.
+pub fn cell_set<'c>(
+    value: Value<'c, '_>,
+    cell: Value<'c, '_>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.cell.set", location)
+        .add_operands(&[value, cell])
+        .build()
+        .expect("valid reussir.cell.set")
+}
+
+/// `reussir.cell.rmw(%cell) { ... }` — move the current element through a
+/// single-block body and store its yielded replacement.
+pub fn cell_rmw<'c>(
+    cell: Value<'c, '_>,
+    result_type: Option<Type<'c>>,
+    body: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.cell.rmw", location)
+        .add_operands(&[cell])
+        .add_regions([body]);
+    if let Some(result_type) = result_type {
+        builder = builder.add_results(&[result_type]);
+    }
+    builder.build().expect("valid reussir.cell.rmw")
+}
+
+/// `reussir.cell.yield(%replacement : T)` — terminate a cell RMW body.
+pub fn cell_yield<'c>(
+    replacement: Value<'c, '_>,
+    output: Option<Value<'c, '_>>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut operands = vec![replacement];
+    if let Some(output) = output {
+        operands.push(output);
+    }
+    OperationBuilder::new("reussir.cell.yield", location)
+        .add_operands(&operands)
+        .build()
+        .expect("valid reussir.cell.yield")
+}
+
+/// `reussir.cell.in_use(%cell : rc<cell<T exclusive>>) : i1` — observe the
+/// exclusive cell's in-use flag (true while an rmw body holds the element).
+pub fn cell_in_use<'c>(
+    cell: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.cell.in_use", location)
+        .add_operands(&[cell])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.cell.in_use")
+}
+
 /// `reussir.region.run (-> <result_type>)? { <body> }` — execute a region scope.
 ///
 /// The body region's single block takes a `!reussir.region` argument (the arena

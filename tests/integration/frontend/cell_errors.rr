@@ -1,0 +1,52 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// Cell and RefCell are root builtin type constructors.
+// CHECK-DAG: `Cell` takes exactly one type argument
+fn missing_type(c: Cell) -> i64 { 0 }
+
+// CHECK-DAG: `RefCell` takes exactly one type argument
+fn missing_ref_type(c: RefCell) -> i64 { 0 }
+
+// CHECK-DAG: record name `Cell` is reserved for the builtin type
+struct Cell { value: i64 }
+
+// CHECK-DAG: record name `RefCell` is reserved for the builtin type
+struct RefCell { value: i64 }
+
+// A mutable `[field]` link must still point at a regional record, not a Cell.
+// CHECK-DAG: a `[field]` link element must be a regional record
+struct [regional] BadLink { value: [field] Cell<i64> }
+
+// CHECK: unknown cell intrinsic `core::intrinsic::cell::swap`
+fn unknown(c: Cell<i64>) -> i64 { core::intrinsic::cell::swap(c) }
+
+// Read-modify-write and the guard flag dispatch on the operand and demand
+// the exclusive flavor.
+// CHECK: `core::intrinsic::cell::rmw` requires an exclusive cell, found `Cell<i64>`; use a `RefCell`
+fn plain_rmw(c: Cell<i64>) -> unit {
+    core::intrinsic::cell::rmw(c, |x| x)
+}
+
+// CHECK: `core::intrinsic::cell::in_use` requires an exclusive cell, found `Cell<i64>`; use a `RefCell`
+fn plain_in_use(c: Cell<i64>) -> bool { core::intrinsic::cell::in_use(c) }
+
+// CHECK: `core::intrinsic::cell::get` expects a cell as its first argument, found `i64`
+fn not_cell(x: i64) -> i64 { core::intrinsic::cell::get(x) }
+
+// CHECK: type mismatch: expected `i64`, found `bool`
+fn wrong_set(c: Cell<i64>) -> unit { core::intrinsic::cell::set(c, true) }
+
+// CHECK: type mismatch: expected `i64 -> i64`, found `bool -> bool`
+fn wrong_rmw(c: RefCell<i64>) -> unit {
+    core::intrinsic::cell::rmw(c, |x: bool| x)
+}
+
+// alloc's optional type argument must name the cell type, not the element.
+// CHECK: the type argument of `core::intrinsic::cell::alloc` must be `Cell<T>` or `RefCell<T>`, found `i64`
+fn elem_type_arg() -> Cell<i64> { core::intrinsic::cell::alloc<i64>(1) }
+
+// CHECK: `bool` does not implement `Integral`
+fn wrong_alloc() -> RefCell<bool> { core::intrinsic::cell::alloc<RefCell<bool>>(1) }
+
+// CHECK: `core::intrinsic::cell::get` takes no type arguments
+fn typed_get(c: Cell<i64>) -> i64 { core::intrinsic::cell::get<i64>(c) }
