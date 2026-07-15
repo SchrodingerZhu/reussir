@@ -1,15 +1,25 @@
 // RUN: %reussir-opt %s | %FileCheck %s --check-prefix=ROUNDTRIP
-// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,reussir-acquire-drop-expansion,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-lowering-scf-ops,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !atomic_i64 = !reussir.rc<!reussir.cell<i64 atomic>>
 !atomic_f32 = !reussir.rc<!reussir.cell<f32 atomic>>
 
 module {
+  // Atomic Cell creation is structural initialization, not an atomic access,
+  // so SCF lowering still materializes the RC box and payload slot.
+  // SCF-LABEL: func.func @atomic_create
+  // SCF: reussir.rc.create
+  // SCF-NOT: reussir.cell.create
+  func.func @atomic_create(%value: i64) -> !atomic_i64 {
+    %cell = reussir.cell.create value(%value : i64) : !atomic_i64
+    return %cell : !atomic_i64
+  }
+
   // ROUNDTRIP-LABEL: func.func @atomic_get
   // ROUNDTRIP-SAME: !reussir.rc<!reussir.cell<i64 atomic>>
-  // EXPAND-LABEL: func.func @atomic_get
-  // EXPAND: reussir.cell.get
+  // SCF-LABEL: func.func @atomic_get
+  // SCF: reussir.cell.get
   // LLVM-LABEL: define i64 @atomic_get
   // LLVM: load atomic i64, ptr %{{.+}} acquire, align 8
   func.func @atomic_get(%cell: !atomic_i64) -> i64 {
@@ -26,8 +36,8 @@ module {
     return %value : i64
   }
 
-  // EXPAND-LABEL: func.func @atomic_set
-  // EXPAND: reussir.cell.set
+  // SCF-LABEL: func.func @atomic_set
+  // SCF: reussir.cell.set
   // LLVM-LABEL: define void @atomic_set
   // LLVM: store atomic i64 %{{.+}}, ptr %{{.+}} release, align 8
   func.func @atomic_set(%value: i64, %cell: !atomic_i64) {
@@ -46,8 +56,8 @@ module {
 
   // ROUNDTRIP-LABEL: func.func @direct_add
   // ROUNDTRIP: reussir.cell.rmw addi(%{{.+}} : i64, %{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(acquire) -> i64
-  // EXPAND-LABEL: func.func @direct_add
-  // EXPAND: reussir.cell.rmw addi
+  // SCF-LABEL: func.func @direct_add
+  // SCF: reussir.cell.rmw addi
   // LLVM-LABEL: define i64 @direct_add
   // LLVM: atomicrmw add ptr %{{.+}}, i64 %{{.+}} acquire, align 8
   func.func @direct_add(%delta: i64, %cell: !atomic_i64) -> i64 {
@@ -72,9 +82,9 @@ module {
   // attempt reaches the continuation.
   // ROUNDTRIP-LABEL: func.func @region_rmw
   // ROUNDTRIP: reussir.cell.rmw(%{{.+}} : !reussir.rc<!reussir.cell<i64 atomic>>) ordering(seq_cst) -> i64 {
-  // EXPAND-LABEL: func.func @region_rmw
-  // EXPAND: reussir.cell.rmw
-  // EXPAND: reussir.cell.yield
+  // SCF-LABEL: func.func @region_rmw
+  // SCF: reussir.cell.rmw
+  // SCF: reussir.cell.yield
   // LLVM-LABEL: define i64 @region_rmw
   // LLVM: load atomic i64, ptr %{{.+}} monotonic, align 8
   // LLVM: add i64

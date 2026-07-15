@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This header file provides lowering patterns for Reussir SCF operations.
+// This header file provides lowering patterns for Reussir structured control
+// flow and Cell operations.
 //
 //===----------------------------------------------------------------------===//
 #pragma once

@@ -1,6 +1,8 @@
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation))' | %FileCheck %s --check-prefix=TOKEN
-// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
-// RUN: %reussir-opt %s --reussir-acquire-drop-expansion --reussir-invariant-group-analysis | %FileCheck %s --check-prefix=INVARIANT
+// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQUIRE
+// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
+// RUN: %reussir-opt %s --reussir-lowering-scf-ops --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
+// RUN: %reussir-opt %s --reussir-lowering-scf-ops --reussir-invariant-group-analysis | %FileCheck %s --check-prefix=INVARIANT
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion)' | %FileCheck %s --check-prefix=DROP
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-lowering-scf-ops,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
@@ -20,6 +22,8 @@ module {
   // TOKEN: %[[TOKEN:.+]] = reussir.token.alloc : <align : 8, size : 16>
   // TOKEN: reussir.cell.create value(%{{.+}} : !reussir.rc<i64>) token(%[[TOKEN]] : !reussir.token<align : 8, size : 16>)
   func.func @create_cell(%value: !inner) -> !rc_cell {
+    // SCF: reussir.rc.create
+    // SCF-NOT: reussir.cell.create
     %cell = reussir.cell.create value(%value : !inner) : !rc_cell
     return %cell : !rc_cell
   }
@@ -64,6 +68,11 @@ module {
   // INVARIANT: reussir.ref.load
   // INVARIANT-NOT: invariant_group
   // INVARIANT: reussir.rc.inc
+  // ACQUIRE-LABEL: func.func @get_cell
+  // ACQUIRE: reussir.cell.get
+  // SCF-LABEL: func.func @get_cell
+  // SCF: reussir.ref.load
+  // SCF-NOT: reussir.cell.get
   func.func @get_cell(%cell: !rc_cell) -> !inner {
     %value = reussir.cell.get(%cell : !rc_cell) : !inner
     return %value : !inner
@@ -93,6 +102,10 @@ module {
   // EXPAND: reussir.ref.store
   // EXPAND-NOT: reussir.rc.inc
   // EXPAND: return
+  // SCF-LABEL: func.func @set_cell
+  // SCF: reussir.ref.drop
+  // SCF: reussir.ref.store
+  // SCF-NOT: reussir.cell.set
   func.func @set_cell(%value: !inner, %cell: !rc_cell) {
     reussir.cell.set(%value : !inner, %cell : !rc_cell)
     return
@@ -156,6 +169,9 @@ module {
   // EXPAND-NOT: reussir.rc.inc
   // EXPAND-NOT: reussir.rc.dec
   // EXPAND: return %[[RESULT]]
+  // SCF-LABEL: func.func @rmw_cell
+  // SCF: scf.if
+  // SCF-NOT: reussir.cell.rmw
   func.func @rmw_cell(%value: !inner, %cell: !rc_excl_cell) -> !inner {
     %old = reussir.cell.rmw(%cell : !rc_excl_cell) -> !inner {
       ^bb0(%current: !inner):

@@ -81,10 +81,16 @@ def ReussirDebugInfoConversionPass
 // SCFOpsLowering
 //===----------------------------------------------------------------------===//
 def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
-  let summary = "lower Reussir SCF operations to MLIR SCF operations";
+  let summary = "lower Reussir structured control flow and Cell operations";
   let description = [{
     `reussir-lowering-scf-ops` lowers Reussir SCF operations to MLIR SCF
-    operations.
+    operations. It also lowers Cell creation and non-atomic Cell
+    get/set/rmw/in-use operations to RC borrows, mutable slot accesses, and
+    MLIR SCF guards.
+    Cell get acquires the exact loaded value, set drops the old slot before
+    storing the caller-owned replacement, and rmw moves the old and replacement
+    values through its region without implicit ownership traffic. Atomic Cell
+    accesses remain intact for atomic lowering later in the pipeline.
   }];
   let dependentDialects = ["::mlir::arith::ArithDialect",
                            "::mlir::bufferization::BufferizationDialect",
@@ -119,9 +125,8 @@ def ReussirRegionPatternsPass : ReussirLoweringPass<"region-patterns"> {
 def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
   let summary = "expand Reussir acquire and drop operations";
   let description = [{
-    `reussir-acquire-drop-expansion` expands Reussir acquire and drop operations,
-    together with the ownership-aware Cell operations that produce them. This is
-    a greedy pattern conversion pass.
+    `reussir-acquire-drop-expansion` greedily expands Reussir acquire and drop
+    operations.
 
     For drop operations:
     1. it eliminates no-op drop operations.
@@ -131,11 +136,6 @@ def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
     1. it eliminates no-op acquire operations (trivially copyable types).
     2. for normal acquire, it emits ownership acquisition (e.g., rc.inc for Rc
        fields, recursive acquisition for compound/variant records).
-
-    Cell create/get/set/rmw operations are lowered to RC borrow and mutable slot
-    accesses. Get acquires the exact loaded value, set drops the old slot before
-    storing the caller-owned replacement, and rmw moves the old and replacement
-    values through its region without implicit ownership traffic.
 
     Notice that this pass terminates normally for recursive types, as such types
     are backed by RC pointers. The decrement operation will not be inlined at
@@ -160,8 +160,7 @@ def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
               "whether to expand rc decrement operations (using the "
               "`rc-decrement-expansion` pass)">,
   ];
-  let dependentDialects = ["::reussir::ReussirDialect",
-                           "::mlir::ub::UBDialect"];
+  let dependentDialects = ["::reussir::ReussirDialect"];
 }
 
 //===----------------------------------------------------------------------===//

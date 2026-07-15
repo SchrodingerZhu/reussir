@@ -1096,6 +1096,269 @@ struct ReussirStrStartWithOpRewritePattern
     return mlir::success();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// Cell operation lowering patterns
+//===----------------------------------------------------------------------===//
+
+struct CellAccess {
+  CellType cellType;
+  mlir::Value cellRef;
+  reussir::AtomicKind atomicKind;
+};
+
+static CellType getCellType(mlir::Value cell) {
+  return llvm::cast<CellType>(
+      llvm::cast<RcType>(cell.getType()).getElementType());
+}
+
+static bool isAtomicCell(mlir::Value cell) {
+  return getCellType(cell).getAtomic();
+}
+
+static CellAccess borrowCell(mlir::Value cell, mlir::Location loc,
+                             mlir::PatternRewriter &rewriter) {
+  RcType rcType = llvm::cast<RcType>(cell.getType());
+  CellType cellType = llvm::cast<CellType>(rcType.getElementType());
+  RefType cellRefType =
+      RefType::get(rewriter.getContext(), cellType, Capability::unspecified,
+                   rcType.getAtomicKind());
+  mlir::Value cellRef =
+      ReussirRcBorrowOp::create(rewriter, loc, cellRefType, cell);
+  return {cellType, cellRef, rcType.getAtomicKind()};
+}
+
+static mlir::Value projectCellSlot(const CellAccess &access, mlir::Location loc,
+                                   mlir::PatternRewriter &rewriter) {
+  RefType slotRefType =
+      RefType::get(rewriter.getContext(), access.cellType.getElementType(),
+                   Capability::field, access.atomicKind);
+  return ReussirRefProjectOp::create(rewriter, loc, slotRefType, access.cellRef,
+                                     rewriter.getIndexAttr(0));
+}
+
+// The trailing i1 in-use flag of an exclusive cell, addressed as slot [1].
+static mlir::Value projectCellFlag(const CellAccess &access, mlir::Location loc,
+                                   mlir::PatternRewriter &rewriter) {
+  assert(access.cellType.getExclusive() &&
+         "only exclusive cells carry an in-use flag");
+  RefType flagRefType =
+      RefType::get(rewriter.getContext(), rewriter.getI1Type(),
+                   Capability::field, access.atomicKind);
+  return ReussirRefProjectOp::create(rewriter, loc, flagRefType, access.cellRef,
+                                     rewriter.getIndexAttr(1));
+}
+
+static void storeCellFlag(const CellAccess &access, bool inUse,
+                          mlir::Location loc, mlir::PatternRewriter &rewriter) {
+  mlir::Value flagRef = projectCellFlag(access, loc, rewriter);
+  mlir::Value flag = mlir::arith::ConstantOp::create(
+      rewriter, loc, rewriter.getIntegerAttr(rewriter.getI1Type(), inUse));
+  ReussirRefStoreOp::create(rewriter, loc, flagRef, flag);
+}
+
+// An exclusive-cell payload access lowers to a two-armed `scf.if` over the
+// in-use flag: while an rmw body runs, the element is moved out of the slot,
+// so a reentrant get/set/rmw through an alias of the same cell would clone
+// or release stale storage. The in-use arm panics and yields poison results;
+// the caller emits the actual access into the (returned) else arm, so even
+// at the IR level the panicked path never touches the moved-out slot. Plain
+// cells carry no flag and stay unguarded.
+static mlir::scf::IfOp createGuardedAccess(const CellAccess &access,
+                                           mlir::Location loc,
+                                           mlir::PatternRewriter &rewriter,
+                                           llvm::StringRef message,
+                                           mlir::TypeRange resultTypes) {
+  assert(access.cellType.getExclusive() &&
+         "only exclusive cell accesses are guarded");
+  mlir::Value flagRef = projectCellFlag(access, loc, rewriter);
+  mlir::Value flag =
+      ReussirRefLoadOp::create(rewriter, loc, rewriter.getI1Type(), flagRef);
+  auto unlikelyInUse = ReussirExpectOp::create(rewriter, loc, flag, false);
+  auto ifOp = mlir::scf::IfOp::create(rewriter, loc, resultTypes,
+                                      unlikelyInUse.getLikely(),
+                                      /*addThenBlock=*/true,
+                                      /*addElseBlock=*/true);
+  mlir::OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(ifOp.thenBlock());
+  ReussirPanicOp::create(rewriter, loc, rewriter.getStringAttr(message));
+  llvm::SmallVector<mlir::Value> poisons;
+  for (mlir::Type type : resultTypes)
+    poisons.push_back(mlir::ub::PoisonOp::create(rewriter, loc, type));
+  mlir::scf::YieldOp::create(rewriter, loc, poisons);
+  return ifOp;
+}
+
+class ReussirCellCreateOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellCreateOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellCreateOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    CellType cellType = getCellType(op.getCell());
+    mlir::Value poison =
+        mlir::ub::PoisonOp::create(rewriter, op.getLoc(), cellType);
+    auto created = ReussirRcCreateOp::create(
+        rewriter, op.getLoc(), op.getCell().getType(), poison, op.getToken(),
+        mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+    CellAccess access = borrowCell(created.getRcPtr(), op.getLoc(), rewriter);
+    mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
+    ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
+    // A fresh exclusive cell starts out not in use.
+    if (cellType.getExclusive())
+      storeCellFlag(access, /*inUse=*/false, op.getLoc(), rewriter);
+    rewriter.replaceOp(op, created.getRcPtr());
+    return mlir::success();
+  }
+};
+
+class ReussirCellGetOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellGetOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellGetOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (isAtomicCell(op.getCell()))
+      return mlir::failure();
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    auto emitLoadAndAcquire = [&]() -> mlir::Value {
+      mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
+      mlir::Value value = ReussirRefLoadOp::create(
+          rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+      mlir::Type valueType = value.getType();
+      // Cloning is triviality-driven: every non-trivial element must acquire
+      // the managed ownership reachable from it — a bare RC pointer retains
+      // directly, anything else (records, nullables, ...) routes through
+      // `ref.acquire`.
+      if (!isTriviallyCopyable(valueType)) {
+        if (llvm::isa<RcType>(valueType)) {
+          ReussirRcIncOp::create(rewriter, op.getLoc(), value);
+        } else {
+          // Acquire the exact SSA value loaded above, rather than loading
+          // the mutable slot a second time. The spill only provides
+          // addressability for recursive aggregate acquisition and is
+          // eliminated after lowering.
+          RefType spilledType = RefType::get(rewriter.getContext(), valueType);
+          mlir::Value spilled = ReussirRefSpilledOp::create(
+              rewriter, op.getLoc(), spilledType, value);
+          ReussirRefAcquireOp::create(rewriter, op.getLoc(), spilled);
+        }
+      }
+      return value;
+    };
+    if (!access.cellType.getExclusive()) {
+      rewriter.replaceOp(op, emitLoadAndAcquire());
+      return mlir::success();
+    }
+    auto guarded =
+        createGuardedAccess(access, op.getLoc(), rewriter,
+                            "cell.get on an exclusive cell that is in use",
+                            {access.cellType.getElementType()});
+    rewriter.setInsertionPointToStart(guarded.elseBlock());
+    mlir::Value value = emitLoadAndAcquire();
+    mlir::scf::YieldOp::create(rewriter, op.getLoc(), value);
+    rewriter.replaceOp(op, guarded.getResults());
+    return mlir::success();
+  }
+};
+
+class ReussirCellSetOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellSetOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellSetOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (isAtomicCell(op.getCell()))
+      return mlir::failure();
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    auto emitDropAndStore = [&]() {
+      mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
+      ReussirRefDropOp::create(rewriter, op.getLoc(), slotRef);
+      ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
+    };
+    if (access.cellType.getExclusive()) {
+      auto guarded = createGuardedAccess(
+          access, op.getLoc(), rewriter,
+          "cell.set on an exclusive cell that is in use", {});
+      rewriter.setInsertionPointToStart(guarded.elseBlock());
+      emitDropAndStore();
+      mlir::scf::YieldOp::create(rewriter, op.getLoc());
+    } else {
+      emitDropAndStore();
+    }
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+class ReussirCellRmwOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellRmwOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellRmwOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    if (isAtomicCell(op.getCell()))
+      return mlir::failure();
+    // The verifier guarantees an exclusive cell here. The whole
+    // read-modify-write becomes the guarded arm: raise the in-use flag for
+    // the body so any reentrant access to the cell panics while its element
+    // is moved out, and clear it with the replacement store.
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    auto guarded = createGuardedAccess(
+        access, op.getLoc(), rewriter,
+        "cell.rmw on an exclusive cell that is in use", op->getResultTypes());
+    rewriter.setInsertionPointToStart(guarded.elseBlock());
+    storeCellFlag(access, /*inUse=*/true, op.getLoc(), rewriter);
+    mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
+    mlir::Value oldValue = ReussirRefLoadOp::create(
+        rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+
+    mlir::Block &body = op.getBody().front();
+    auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+    rewriter.inlineBlockBefore(&body, guarded.elseBlock(),
+                               guarded.elseBlock()->end(),
+                               mlir::ValueRange{oldValue});
+    rewriter.setInsertionPoint(yield);
+    ReussirRefStoreOp::create(rewriter, yield.getLoc(), slotRef,
+                              yield.getNewValue());
+    storeCellFlag(access, /*inUse=*/false, yield.getLoc(), rewriter);
+    mlir::scf::YieldOp::create(rewriter, yield.getLoc(),
+                               yield.getOutput()
+                                   ? mlir::ValueRange{yield.getOutput()}
+                                   : mlir::ValueRange{});
+    rewriter.eraseOp(yield);
+    if (op->getNumResults() != 0)
+      rewriter.replaceOp(op, guarded.getResults());
+    else
+      rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+class ReussirCellInUseOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellInUseOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellInUseOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    mlir::Value flagRef = projectCellFlag(access, op.getLoc(), rewriter);
+    rewriter.replaceOp(op,
+                       ReussirRefLoadOp::create(rewriter, op.getLoc(),
+                                                rewriter.getI1Type(), flagRef));
+    return mlir::success();
+  }
+};
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1132,12 +1395,22 @@ struct SCFOpsLoweringPass
     // basic-ops lowering only dispatches the plain, fully-applied form.
     target.addDynamicallyLegalOp<ReussirClosureEvalOp>(
         [](ReussirClosureEvalOp op) { return op.getArgs().empty(); });
+    // Atomic cell accesses retain their high-level operation until the LLVM
+    // conversion can preserve their ordering. Cell creation and all
+    // non-atomic Cell operations are structurally lowered here, before
+    // inc/dec cancellation.
+    target.addDynamicallyLegalOp<ReussirCellGetOp>(
+        [](ReussirCellGetOp op) { return isAtomicCell(op.getCell()); });
+    target.addDynamicallyLegalOp<ReussirCellSetOp>(
+        [](ReussirCellSetOp op) { return isAtomicCell(op.getCell()); });
+    target.addDynamicallyLegalOp<ReussirCellRmwOp>(
+        [](ReussirCellRmwOp op) { return isAtomicCell(op.getCell()); });
 
-    target.addIllegalOp<ReussirNullableDispatchOp, ReussirRecordDispatchOp,
-                        ReussirScfYieldOp, ReussirClosureUniqifyOp,
-                        ReussirArrayWithUniqueViewOp, ReussirTokenEnsureOp,
-                        ReussirStrByteAtOp, ReussirStrSelectOp,
-                        ReussirStrStartWithOp>();
+    target.addIllegalOp<
+        ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
+        ReussirClosureUniqifyOp, ReussirArrayWithUniqueViewOp,
+        ReussirTokenEnsureOp, ReussirStrByteAtOp, ReussirStrSelectOp,
+        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))
@@ -1157,7 +1430,10 @@ void populateSCFOpsLoweringConversionPatterns(
       ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
       ReussirNullableTokenFreeOpRewritePattern,
       ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
-      ReussirStrStartWithOpRewritePattern>(patterns.getContext());
+      ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
+      ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
+      ReussirCellRmwOpRewritePattern, ReussirCellInUseOpRewritePattern>(
+      patterns.getContext());
 }
 
 } // namespace reussir

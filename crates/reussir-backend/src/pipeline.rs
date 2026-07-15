@@ -365,6 +365,8 @@ pub fn run_lowering_pipeline(
         module: sys::reussirCreateRcDecrementExpansionPass();
         func:   sys::reussirCreateInferVariantTagPass();
         module: sys::reussirCreateAcquireDropExpansionPass(false, false);
+        // Materialize Cell accesses and their ownership effects before the
+        // second inc/dec cancellation phase.
         module: sys::reussirCreateSCFOpsLoweringPass();
         func:   sys::reussirCreateIncDecCancellationPass();
 
