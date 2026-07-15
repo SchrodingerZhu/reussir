@@ -39,6 +39,10 @@ AtomicKind toAtomicKind(ReussirAtomicKind atomicKind) {
   return static_cast<AtomicKind>(atomicKind);
 }
 
+CellKind toCellKind(ReussirCellKind kind) {
+  return static_cast<CellKind>(kind);
+}
+
 RecordKind toRecordKind(ReussirRecordKind kind) {
   return static_cast<RecordKind>(kind);
 }
@@ -71,6 +75,12 @@ MlirType reussirNullableTypeGet(MlirType pointerType) {
 MlirType reussirCellTypeGet(MlirType elementType, bool exclusive) {
   mlir::Type ele = unwrap(elementType);
   return wrap(CellType::get(ele.getContext(), ele, exclusive));
+}
+
+MlirType reussirCellTypeGetWithKind(MlirType elementType,
+                                    ReussirCellKind kind) {
+  mlir::Type ele = unwrap(elementType);
+  return wrap(CellType::get(ele.getContext(), ele, toCellKind(kind)));
 }
 
 MlirType reussirRefTypeGet(MlirType elementType, ReussirCapability capability,

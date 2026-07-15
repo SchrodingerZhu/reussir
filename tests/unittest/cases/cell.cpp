@@ -1,8 +1,9 @@
-#include "Reussir/IR/ReussirTypes.h"
+#include "Reussir/IR/ReussirOps.h"
 
 #include <gtest/gtest.h>
 #include <mlir/Dialect/LLVMIR/LLVMTypes.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
+#include <optional>
 
 import reussir.test;
 
@@ -35,6 +36,67 @@ TEST_F(ReussirTest, ParseExclusiveCellTypeTest) {
                   2 * layout.getTypeSize(type.getElementType()));
         EXPECT_EQ(layout.getTypeABIAlignment(type),
                   layout.getTypeABIAlignment(type.getElementType()));
+      });
+}
+
+TEST_F(ReussirTest, ParseAtomicCellTypeTest) {
+  withType<CellType>(SIMPLE_LAYOUT, R"(!reussir.cell<i64 atomic>)",
+                     [](mlir::ModuleOp module, CellType type) {
+                       EXPECT_TRUE(type.getAtomic());
+                       EXPECT_FALSE(type.getExclusive());
+                       EXPECT_EQ(type.getKind(), CellKind::atomic);
+
+                       // The atomic scalar stays inline in the RC payload and
+                       // has the same size and alignment as its element. Unlike
+                       // an exclusive cell, it has no trailing in-use flag.
+                       mlir::DataLayout layout(module);
+                       EXPECT_EQ(layout.getTypeSize(type),
+                                 layout.getTypeSize(type.getElementType()));
+                       EXPECT_EQ(
+                           layout.getTypeABIAlignment(type),
+                           layout.getTypeABIAlignment(type.getElementType()));
+                     });
+}
+
+TEST_F(ReussirTest, ParseAtomicCellOrderingTest) {
+  withModule(
+      R"mlir(
+        module {
+          func.func @test(
+              %cell: !reussir.rc<!reussir.cell<i64 atomic>>,
+              %value: i64) -> i64 {
+            %loaded = reussir.cell.get(
+                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+              ) ordering(monotonic) : i64
+            reussir.cell.set(
+                %value : i64,
+                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+              ) ordering(seq_cst)
+            %old = reussir.cell.rmw addi(
+                %loaded : i64,
+                %cell : !reussir.rc<!reussir.cell<i64 atomic>>
+              ) ordering(acquire) -> i64
+            return %old : i64
+          }
+        }
+      )mlir",
+      [](mlir::ModuleOp module) {
+        std::optional<mlir::LLVM::AtomicOrdering> getOrdering;
+        std::optional<mlir::LLVM::AtomicOrdering> setOrdering;
+        std::optional<mlir::LLVM::AtomicOrdering> rmwOrdering;
+        module.walk(
+            [&](ReussirCellGetOp op) { getOrdering = op.getOrdering(); });
+        module.walk(
+            [&](ReussirCellSetOp op) { setOrdering = op.getOrdering(); });
+        module.walk(
+            [&](ReussirCellRmwOp op) { rmwOrdering = op.getOrdering(); });
+
+        ASSERT_TRUE(getOrdering);
+        EXPECT_EQ(*getOrdering, mlir::LLVM::AtomicOrdering::monotonic);
+        ASSERT_TRUE(setOrdering);
+        EXPECT_EQ(*setOrdering, mlir::LLVM::AtomicOrdering::seq_cst);
+        ASSERT_TRUE(rmwOrdering);
+        EXPECT_EQ(*rmwOrdering, mlir::LLVM::AtomicOrdering::acquire);
       });
 }
 

@@ -14,7 +14,9 @@ use melior::ir::r#type::TypeLike;
 
 use reussir_backend_sys as sys;
 
-pub use sys::{ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind};
+pub use sys::{
+    ReussirAtomicKind, ReussirCapability, ReussirCellKind, ReussirLifeScope, ReussirRecordKind,
+};
 
 fn null_type() -> sys::mlir_sys::MlirType {
     sys::mlir_sys::MlirType { ptr: null() }
@@ -62,6 +64,18 @@ pub fn nullable(pointer: Type) -> Type {
 /// flag guarding every access.
 pub fn cell(element: Type, exclusive: bool) -> Type {
     unsafe { Type::from_raw(sys::reussirCellTypeGet(element.to_raw(), exclusive)) }
+}
+
+/// Creates a cell payload using one storage strategy. `Atomic` is an inline
+/// atomic arithmetic scalar inside the shared RC box; it is independent of
+/// the RC pointer's own refcount atomicity.
+pub fn cell_with_kind(element: Type, kind: ReussirCellKind) -> Type {
+    unsafe { Type::from_raw(sys::reussirCellTypeGetWithKind(element.to_raw(), kind)) }
+}
+
+/// Creates an RC-contained atomic scalar payload, `!reussir.cell<T atomic>`.
+pub fn atomic_cell(element: Type) -> Type {
+    cell_with_kind(element, ReussirCellKind::Atomic)
 }
 
 /// Creates a `!reussir.ref<element, capability, atomicKind>` type.

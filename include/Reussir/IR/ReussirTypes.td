@@ -341,17 +341,37 @@ def ReussirCellType
     into an rmw body, and every access is guarded against that state. The
     flag is addressed as slot `[1]` of the cell reference and can be
     observed with `reussir.cell.in_use`.
+
+    An atomic cell (`!reussir.cell<T atomic>`) is an RC-contained atomic
+    scalar, analogous to an inline `std::atomic<T>` inside the RC box. Its
+    element must be a byte-addressable signless integer or floating-point
+    primitive. Atomic cells use atomic get/set operations and support both
+    the direct and region forms of `reussir.cell.rmw`. Atomic and exclusive
+    are distinct, mutually exclusive storage kinds.
   }];
-  let parameters = (ins "mlir::Type":$eleTy, "bool":$exclusive);
+  let parameters = (ins "mlir::Type":$eleTy, "reussir::CellKind":$kind);
+  let genVerifyDecl = 1;
   let hasCustomAssemblyFormat = 1;
   let skipDefaultBuilders = 1;
-  let builders = [TypeBuilder<(ins "mlir::Type":$eleTy,
-                                  CArg<"bool", "false">:$exclusive),
-                              [{
-      return $_get($_ctxt, eleTy, exclusive);
-    }]>];
+  let builders = [
+    TypeBuilder<(ins "mlir::Type":$eleTy,
+                     CArg<"reussir::CellKind",
+                          "reussir::CellKind::plain">:$kind), [{
+      return $_get($_ctxt, eleTy, kind);
+    }]>,
+    // Compatibility builder for the source-language/backend API, which still
+    // models only plain versus exclusive cells. Atomic cells are currently an
+    // MLIR-level facility and use the CellKind builder directly.
+    TypeBuilder<(ins "mlir::Type":$eleTy, "bool":$exclusive), [{
+      return $_get($_ctxt, eleTy,
+                   exclusive ? reussir::CellKind::exclusive
+                             : reussir::CellKind::plain);
+    }]>
+  ];
   let extraClassDeclaration = [{
     mlir::Type getElementType() const { return getEleTy(); }
+    bool getExclusive() const { return getKind() == CellKind::exclusive; }
+    bool getAtomic() const { return getKind() == CellKind::atomic; }
   }];
 }
 //===----------------------------------------------------------------------===//

@@ -48,6 +48,13 @@ typedef enum ReussirAtomicKind {
   ReussirAtomicKindAtomic = 1,
 } ReussirAtomicKind;
 
+// Cell payload storage strategy. Mirrors `reussir::CellKind`.
+typedef enum ReussirCellKind {
+  ReussirCellKindPlain = 0,
+  ReussirCellKindExclusive = 1,
+  ReussirCellKindAtomic = 2,
+} ReussirCellKind;
+
 // Record flavour. Mirrors `reussir::RecordKind`.
 typedef enum ReussirRecordKind {
   ReussirRecordKindCompound = 0,
@@ -81,10 +88,13 @@ MlirType reussirRcTypeGet(MlirType elementType, ReussirCapability capability,
 // `!reussir.nullable<ptrTy>`. The context is taken from `pointerType`.
 MlirType reussirNullableTypeGet(MlirType pointerType);
 
-// `!reussir.cell<elementType [exclusive]>`. The context is taken from
-// `elementType`. An exclusive cell supports `reussir.cell.rmw` and carries a
-// trailing in-use flag.
+// Compatibility constructor for `!reussir.cell<elementType [exclusive]>`.
+// The context is taken from `elementType`.
 MlirType reussirCellTypeGet(MlirType elementType, bool exclusive);
+
+// `!reussir.cell<elementType [exclusive|atomic]>`. The kind is a single
+// storage strategy; exclusive and atomic therefore cannot be combined.
+MlirType reussirCellTypeGetWithKind(MlirType elementType, ReussirCellKind kind);
 
 // `!reussir.ref<eleTy [, capability [, atomicKind]]>`. The context is taken
 // from `elementType`.

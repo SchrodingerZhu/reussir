@@ -36,6 +36,7 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
 
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
@@ -1225,9 +1226,73 @@ TokenType ReussirCellCreateOp::getTokenType() {
                         size.getFixedValue());
 }
 
+enum class CellAtomicAccess { Load, Store, Rmw };
+
+static mlir::LogicalResult
+verifyAtomicAccessOrdering(mlir::Operation *op,
+                           mlir::LLVM::AtomicOrdering ordering,
+                           CellAtomicAccess access) {
+  using Ordering = mlir::LLVM::AtomicOrdering;
+  bool valid = false;
+  switch (ordering) {
+  case Ordering::not_atomic:
+    break;
+  case Ordering::unordered:
+    valid = access != CellAtomicAccess::Rmw;
+    break;
+  case Ordering::monotonic:
+  case Ordering::seq_cst:
+    valid = true;
+    break;
+  case Ordering::acquire:
+    valid = access != CellAtomicAccess::Store;
+    break;
+  case Ordering::release:
+    valid = access != CellAtomicAccess::Load;
+    break;
+  case Ordering::acq_rel:
+    valid = access == CellAtomicAccess::Rmw;
+    break;
+  }
+  if (valid)
+    return mlir::success();
+
+  llvm::StringRef accessName;
+  switch (access) {
+  case CellAtomicAccess::Load:
+    accessName = "load";
+    break;
+  case CellAtomicAccess::Store:
+    accessName = "store";
+    break;
+  case CellAtomicAccess::Rmw:
+    accessName = "read-modify-write";
+    break;
+  }
+  return op->emitOpError("atomic ordering '")
+         << mlir::LLVM::stringifyAtomicOrdering(ordering)
+         << "' is invalid for an atomic " << accessName;
+}
+
+static mlir::LogicalResult
+verifyCellAtomicOrdering(mlir::Operation *op, CellType cellType,
+                         std::optional<mlir::LLVM::AtomicOrdering> ordering,
+                         CellAtomicAccess access) {
+  if (!ordering)
+    return mlir::success();
+  if (!cellType.getAtomic())
+    return op->emitOpError(
+               "atomic ordering is only valid for an atomic cell, got ")
+           << cellType;
+  return verifyAtomicAccessOrdering(op, *ordering, access);
+}
+
 mlir::LogicalResult ReussirCellGetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
+    return mlir::failure();
+  if (mlir::failed(verifyCellAtomicOrdering(
+          getOperation(), *cellType, getOrdering(), CellAtomicAccess::Load)))
     return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError("result type must match cell element type, expected ")
@@ -1239,6 +1304,9 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (mlir::failed(verifyCellAtomicOrdering(
+          getOperation(), *cellType, getOrdering(), CellAtomicAccess::Store)))
+    return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError(
                "replacement value type must match cell element type, expected ")
@@ -1246,13 +1314,159 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   return mlir::success();
 }
 
+//===----------------------------------------------------------------------===//
+// CellRmwOp custom assembly format
+//===----------------------------------------------------------------------===//
+mlir::ParseResult ReussirCellRmwOp::parse(mlir::OpAsmParser &parser,
+                                          mlir::OperationState &result) {
+  llvm::StringRef kindKeyword;
+  mlir::arith::AtomicRMWKindAttr kindAttr;
+  if (mlir::succeeded(parser.parseOptionalKeyword(
+          &kindKeyword, {"addf", "addi", "andi", "assign", "maximumf",
+                         "maxnumf", "maxs", "maxu", "minimumf", "minnumf",
+                         "mins", "minu", "mulf", "muli", "ori", "xori"}))) {
+    auto kind = mlir::arith::symbolizeAtomicRMWKind(kindKeyword);
+    if (!kind)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "invalid atomic RMW kind: ")
+             << kindKeyword;
+    kindAttr = mlir::arith::AtomicRMWKindAttr::get(parser.getContext(), *kind);
+    result.getOrAddProperties<ReussirCellRmwOp::Properties>().kind = kindAttr;
+  }
+
+  mlir::OpAsmParser::UnresolvedOperand valueOperand;
+  mlir::Type valueType;
+  mlir::OpAsmParser::UnresolvedOperand cellOperand;
+  RcType cellType;
+  mlir::Type outputType;
+  auto body = std::make_unique<mlir::Region>();
+
+  if (parser.parseLParen())
+    return mlir::failure();
+  if (kindAttr) {
+    if (parser.parseOperand(valueOperand) || parser.parseColon() ||
+        parser.parseType(valueType) || parser.parseComma())
+      return mlir::failure();
+  }
+  if (parser.parseOperand(cellOperand) || parser.parseColon() ||
+      parser.parseCustomTypeWithFallback(cellType) || parser.parseRParen())
+    return mlir::failure();
+
+  if (mlir::succeeded(parser.parseOptionalKeyword("ordering"))) {
+    llvm::StringRef orderingKeyword;
+    if (parser.parseLParen() || parser.parseKeyword(&orderingKeyword) ||
+        parser.parseRParen())
+      return mlir::failure();
+    auto ordering = mlir::LLVM::symbolizeAtomicOrdering(orderingKeyword);
+    if (!ordering)
+      return parser.emitError(parser.getCurrentLocation(),
+                              "invalid atomic ordering: ")
+             << orderingKeyword;
+    result.getOrAddProperties<ReussirCellRmwOp::Properties>().ordering =
+        mlir::LLVM::AtomicOrderingAttr::get(parser.getContext(), *ordering);
+  }
+
+  if (mlir::succeeded(parser.parseOptionalArrow()) &&
+      parser.parseType(outputType))
+    return mlir::failure();
+
+  if (!kindAttr && parser.parseRegion(*body))
+    return mlir::failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return mlir::failure();
+
+  result.addRegion(std::move(body));
+  if (outputType)
+    result.addTypes(outputType);
+  if (kindAttr &&
+      parser.resolveOperand(valueOperand, valueType, result.operands))
+    return mlir::failure();
+  if (parser.resolveOperand(cellOperand, cellType, result.operands))
+    return mlir::failure();
+  return mlir::success();
+}
+
+void ReussirCellRmwOp::print(mlir::OpAsmPrinter &p) {
+  if (auto kind = getKind())
+    p << " " << mlir::arith::stringifyAtomicRMWKind(*kind);
+  p << "(";
+  if (getValue()) {
+    p.printOperand(getValue());
+    p << " : ";
+    p.printType(getValue().getType());
+    p << ", ";
+  }
+  p.printOperand(getCell());
+  p << " : ";
+  p.printType(getCell().getType());
+  p << ")";
+  if (auto ordering = getOrdering())
+    p << " ordering(" << mlir::LLVM::stringifyAtomicOrdering(*ordering) << ")";
+  if (getOutput()) {
+    p << " -> ";
+    p.printType(getOutput().getType());
+  }
+  if (!getKindAttr()) {
+    p << " ";
+    p.printRegion(getBody());
+  }
+  p.printOptionalAttrDict(getOperation()->getAttrs(), {"kind", "ordering"});
+}
+
 mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if (!(*cellType).getExclusive())
+  if (mlir::failed(verifyCellAtomicOrdering(
+          getOperation(), *cellType, getOrdering(), CellAtomicAccess::Rmw)))
+    return mlir::failure();
+
+  bool direct = static_cast<bool>(getKindAttr());
+  if (direct != static_cast<bool>(getValue()))
     return emitOpError(
-        "read-modify-write requires an exclusive cell, got a plain cell");
+        "direct form requires both an atomic RMW kind and a value operand");
+  if (direct && !getBody().empty())
+    return emitOpError("direct form must not have a body");
+  if (!direct && getBody().empty())
+    return emitOpError("region form requires a body");
+
+  if (!(*cellType).getExclusive() && !(*cellType).getAtomic())
+    return emitOpError(
+        "read-modify-write requires an exclusive or atomic cell, got a plain "
+        "cell");
+  if ((*cellType).getExclusive() && direct)
+    return emitOpError(
+        "direct atomic RMW form requires an atomic cell, got an exclusive "
+        "cell");
+
+  mlir::Type elementType = (*cellType).getElementType();
+  if (direct) {
+    if (!getOutput())
+      return emitOpError("direct atomic RMW form must return the old value");
+    if (getValue().getType() != elementType)
+      return emitOpError("direct RMW value type must match cell element type, "
+                         "expected ")
+             << elementType << ", got " << getValue().getType();
+    if (getOutput().getType() != elementType)
+      return emitOpError("direct RMW result type must match cell element type, "
+                         "expected ")
+             << elementType << ", got " << getOutput().getType();
+
+    using Kind = mlir::arith::AtomicRMWKind;
+    bool floatKind =
+        llvm::is_contained({Kind::addf, Kind::maximumf, Kind::maxnumf,
+                            Kind::minimumf, Kind::minnumf, Kind::mulf},
+                           *getKind());
+    bool integerKind = *getKind() != Kind::assign && !floatKind;
+    if (floatKind && !llvm::isa<mlir::FloatType>(elementType))
+      return emitOpError("floating-point atomic RMW kind requires a "
+                         "floating-point cell element");
+    if (integerKind && !llvm::isa<mlir::IntegerType>(elementType))
+      return emitOpError(
+          "integer atomic RMW kind requires an integer cell element");
+    return mlir::success();
+  }
+
   if (!llvm::hasSingleElement(getBody()))
     return emitOpError("body must contain exactly one block");
   mlir::Block &block = getBody().front();
@@ -1279,6 +1493,15 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
     return emitOpError(
                "body output type must match operation result type, got ")
            << yield.getOutput().getType() << " and " << getOutput().getType();
+
+  if ((*cellType).getAtomic()) {
+    for (mlir::Operation &nested : block.without_terminator())
+      if (!mlir::isMemoryEffectFree(&nested))
+        return emitOpError(
+                   "atomic RMW body must be memory-effect-free because it may "
+                   "be retried; operation has effects: ")
+               << nested.getName();
+  }
   return mlir::success();
 }
 
@@ -1287,8 +1510,8 @@ mlir::LogicalResult ReussirCellInUseOp::verify() {
   if (mlir::failed(cellType))
     return mlir::failure();
   if (!(*cellType).getExclusive())
-    return emitOpError(
-        "in-use flag only exists on an exclusive cell, got a plain cell");
+    return emitOpError("in-use flag only exists on an exclusive cell, got ")
+           << ((*cellType).getAtomic() ? "an atomic cell" : "a plain cell");
   return mlir::success();
 }
 
@@ -1460,6 +1683,30 @@ mlir::LogicalResult ReussirRefStoreOp::verify() {
            << "value type: " << valueType
            << ", reference element type: " << refType.getElementType();
 
+  return mlir::success();
+}
+
+//===----------------------------------------------------------------------===//
+// RefCmpXchgOp verification
+//===----------------------------------------------------------------------===//
+mlir::LogicalResult ReussirRefCmpXchgOp::verify() {
+  RefType refType = getRef().getType();
+  if (refType.getCapability() != reussir::Capability::field)
+    return emitOpError("target reference must have field capability, got: ")
+           << stringifyCapability(refType.getCapability());
+  mlir::Type elementType = refType.getElementType();
+  if (mlir::failed(verifyAtomicElementType([&]() { return emitOpError(); },
+                                           elementType, "cmpxchg element")))
+    return mlir::failure();
+  if (getExpected().getType() != elementType ||
+      getDesired().getType() != elementType ||
+      getObserved().getType() != elementType)
+    return emitOpError("expected, desired, and observed types must match the "
+                       "reference element type ")
+           << elementType;
+  if (getOrdering())
+    return verifyAtomicAccessOrdering(getOperation(), *getOrdering(),
+                                      CellAtomicAccess::Rmw);
   return mlir::success();
 }
 

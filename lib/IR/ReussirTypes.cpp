@@ -981,30 +981,67 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 // Reussir Cell Type Parse/Print
 //===----------------------------------------------------------------------===//
 mlir::Type CellType::parse(mlir::AsmParser &parser) {
+  llvm::SMLoc loc = parser.getCurrentLocation();
   if (parser.parseLess())
     return {};
   mlir::Type eleTy;
   if (parser.parseType(eleTy))
     return {};
-  bool exclusive = mlir::succeeded(parser.parseOptionalKeyword("exclusive"));
+  CellKind kind = CellKind::plain;
+  if (mlir::succeeded(parser.parseOptionalKeyword("exclusive")))
+    kind = CellKind::exclusive;
+  else if (mlir::succeeded(parser.parseOptionalKeyword("atomic")))
+    kind = CellKind::atomic;
   if (parser.parseGreater())
     return {};
-  return CellType::get(parser.getContext(), eleTy, exclusive);
+  return CellType::getChecked(parser.getEncodedSourceLoc(loc),
+                              parser.getContext(), eleTy, kind);
 }
 
 void CellType::print(mlir::AsmPrinter &printer) const {
   printer << "<" << getElementType();
   if (getExclusive())
     printer << " exclusive";
+  else if (getAtomic())
+    printer << " atomic";
   printer << ">";
+}
+
+mlir::LogicalResult verifyAtomicElementType(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, mlir::Type eleTy,
+    llvm::StringRef what) {
+  auto intTy = llvm::dyn_cast<mlir::IntegerType>(eleTy);
+  auto floatTy = llvm::dyn_cast<mlir::FloatType>(eleTy);
+  if (!floatTy && (!intTy || !intTy.isSignless()))
+    return emitError() << what
+                       << " must be a signless integer or "
+                          "floating-point primitive, got "
+                       << eleTy;
+
+  unsigned width = eleTy.getIntOrFloatBitWidth();
+  if (width < 8 || !llvm::isPowerOf2_32(width))
+    return emitError() << what
+                       << " must have a byte-addressable power-of-two "
+                          "bit width, got "
+                       << eleTy;
+  return mlir::success();
+}
+
+mlir::LogicalResult
+CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                 mlir::Type eleTy, CellKind kind) {
+  if (kind != CellKind::atomic)
+    return mlir::success();
+  return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
 }
 
 //===----------------------------------------------------------------------===//
 // Reussir Cell Type DataLayoutInterface
 //===----------------------------------------------------------------------===//
-// A plain cell is layout-identical to its element. An exclusive cell carries
-// a trailing i1 in-use flag: one byte after the element, padded to the
-// element's alignment — the same layout LLVM derives for `{element, i1}`.
+// Plain and atomic cells are layout-identical to their element. An exclusive
+// cell carries a trailing i1 in-use flag: one byte after the element, padded
+// to the element's alignment — the same layout LLVM derives for
+// `{element, i1}`.
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
