@@ -33,6 +33,20 @@ def AtomicKind
 }
 
 //===----------------------------------------------------------------------===//
+// Cell storage kind
+//===----------------------------------------------------------------------===//
+// A single enum deliberately models these as alternatives. In particular,
+// `exclusive` and `atomic` are storage strategies, not independent flags.
+def CK_Plain : I32EnumAttrCase<"plain", 0>;
+def CK_Exclusive : I32EnumAttrCase<"exclusive", 1>;
+def CK_Atomic : I32EnumAttrCase<"atomic", 2>;
+def CellKind
+    : I32EnumAttr<"CellKind", "cell storage kind",
+                  [CK_Plain, CK_Exclusive, CK_Atomic]> {
+  let cppNamespace = "::reussir";
+}
+
+//===----------------------------------------------------------------------===//
 // Capability Attributes
 //===----------------------------------------------------------------------===//
 def CAP_Default : I32EnumAttrCase<"unspecified", 0>;

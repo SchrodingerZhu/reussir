@@ -43,6 +43,15 @@ pub enum ReussirAtomicKind {
     Atomic = 1,
 }
 
+/// Cell payload storage strategy. Mirrors `reussir::CellKind`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReussirCellKind {
+    Plain = 0,
+    Exclusive = 1,
+    Atomic = 2,
+}
+
 /// Record flavour. Mirrors `reussir::RecordKind`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,6 +251,7 @@ unsafe extern "C" {
     ) -> MlirType;
     pub fn reussirNullableTypeGet(pointer_type: MlirType) -> MlirType;
     pub fn reussirCellTypeGet(element_type: MlirType, exclusive: bool) -> MlirType;
+    pub fn reussirCellTypeGetWithKind(element_type: MlirType, kind: ReussirCellKind) -> MlirType;
     pub fn reussirRefTypeGet(
         element_type: MlirType,
         capability: ReussirCapability,

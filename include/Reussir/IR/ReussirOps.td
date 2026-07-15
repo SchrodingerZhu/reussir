@@ -17,6 +17,7 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/OpBase.td"
 include "mlir/IR/RegionKindInterface.td"
 include "mlir/Dialect/Arith/IR/ArithBase.td"
+include "mlir/Dialect/LLVMIR/LLVMEnums.td"
 include "Reussir/IR/ReussirDialect.td"
 include "Reussir/IR/ReussirAttrs.td"
 include "Reussir/IR/ReussirTypes.td"
@@ -1077,11 +1078,18 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     when the element is currently moved out into a `reussir.cell.rmw` body,
     the access panics and the result is a poison value on that (unreachable)
     path; otherwise the element is loaded and acquired.
+
+    On an atomic cell, this is an atomic load. The optional ordering defaults
+    to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
+    elements are arithmetic primitives, so clone ownership is trivial. An
+    ordering cannot be attached to a plain or exclusive cell access.
   }];
-  let arguments = (ins Arg<ReussirRcCellType, "cell to read">:$cell);
+  let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
+      Arg<ReussirRcCellType, "cell to read">:$cell);
   let results = (outs Res<AnyType, "cloned value">:$value);
   let assemblyFormat = [{
-    `(` $cell `:` qualified(type($cell)) `)` `:` type($value) attr-dict
+    `(` $cell `:` qualified(type($cell)) `)`
+    (`ordering` `(` $ordering^ `)`)? `:` type($value) attr-dict
   }];
   let hasVerifier = 1;
 }
@@ -1098,12 +1106,19 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     and panics when the element is currently moved out into a
     `reussir.cell.rmw` body; the replacement is only performed on the
     not-in-use path.
+
+    On an atomic cell, this is an atomic store. The optional ordering defaults
+    to `release`; store orderings unsupported by LLVM are rejected. No old
+    managed value needs to be dropped because atomic cell elements are
+    arithmetic primitives. An ordering cannot be attached to a plain or
+    exclusive cell access.
   }];
-  let arguments = (ins Arg<AnyType, "replacement value">:$value,
+  let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
+      Arg<AnyType, "replacement value">:$value,
       Arg<ReussirRcCellType, "cell to update">:$cell);
   let assemblyFormat = [{
     `(` $value `:` type($value) `,` $cell `:` qualified(type($cell)) `)`
-    attr-dict
+    (`ordering` `(` $ordering^ `)`)? attr-dict
   }];
   let hasVerifier = 1;
 }
@@ -1111,25 +1126,39 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
 def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
   let summary = "Read, transform, and replace a cell value";
   let description = [{
-    `reussir.cell.rmw` moves the current element into its single-block body.
-    The body yields the replacement element and may additionally yield one
+    `reussir.cell.rmw` has two forms.
+
+    The region form moves the current element into its single-block body. The
+    body yields the replacement element and may additionally yield one
     operation result. This transfer performs no implicit acquire or drop.
 
-    The operation requires an exclusive cell: the whole read-modify-write is
-    the not-in-use arm of a branch on the cell's trailing in-use flag. The
-    flag is raised while the body runs, so any reentrant access through an
-    alias of the same cell (another `rmw`, or a `get`/`set`) panics — with a
-    poison result on the panicked path — instead of observing or
-    double-releasing the moved-out element. The flag is cleared once the
-    replacement element is stored back.
+    On an exclusive cell, the region form is the not-in-use arm of a branch on
+    the cell's trailing in-use flag. The flag is raised while the body runs,
+    so any reentrant access through an alias of the same cell panics instead
+    of observing the moved-out element. The flag is cleared after storing the
+    replacement.
+
+    On an atomic cell, the region is a retryable, memory-effect-free
+    computation and is committed with compare-exchange. It may run more than
+    once under contention; the optional output comes from the successful
+    attempt. The direct form instead supplies an `AtomicRMWKindAttr` and an
+    operand, returns the old element, and lowers to an LLVM atomic RMW. Both
+    atomic forms accept an optional ordering that defaults to `acq_rel`.
+    Atomic RMW orderings unsupported by LLVM are rejected, as is any ordering
+    on an exclusive cell.
+
+    ```mlir
+    %old = reussir.cell.rmw addi(%delta : i64,
+        %cell : !reussir.rc<!reussir.cell<i64 atomic>>) -> i64
+    ```
   }];
-  let arguments = (ins Arg<ReussirRcCellType, "cell to update">:$cell);
+  let arguments = (ins OptionalAttr<AtomicRMWKindAttr>:$kind,
+      OptionalAttr<AtomicOrdering>:$ordering,
+      Optional<AnyType>:$value,
+      Arg<ReussirRcCellType, "cell to update">:$cell);
   let results = (outs Res<Optional<AnyType>, "body output">:$output);
-  let regions = (region SizedRegion<1>:$body);
-  let assemblyFormat = [{
-    `(` $cell `:` qualified(type($cell)) `)`
-    (`->` type($output)^)? $body attr-dict
-  }];
+  let regions = (region MaxSizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
 }
 

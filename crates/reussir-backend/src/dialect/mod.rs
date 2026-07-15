@@ -71,6 +71,7 @@ mod tests {
             (ty::raw_ptr(i32_ty), "!reussir.raw_ptr<"),
             (ty::cell(i32_ty, false), "!reussir.cell<"),
             (ty::cell(i32_ty, true), "!reussir.cell<i32 exclusive>"),
+            (ty::atomic_cell(i32_ty), "!reussir.cell<i32 atomic>"),
             (ty::array(&[2, 3], i32_ty), "!reussir.array<"),
             (
                 ty::str(&context, ty::ReussirLifeScope::Global),

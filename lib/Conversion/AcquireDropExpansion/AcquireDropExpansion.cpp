@@ -517,6 +517,14 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ReussirCellGetOp op,
                   mlir::PatternRewriter &rewriter) const override {
+    // Atomic cells remain intact until LLVM conversion, where the RC payload
+    // slot can be loaded with acquire ordering. Expanding this to ref.load
+    // would lose the fact that the cell storage itself is atomic (which is
+    // independent of the RC box's refcount atomicity).
+    CellType cellType =
+        llvm::cast<CellType>(op.getCell().getType().getElementType());
+    if (cellType.getAtomic())
+      return mlir::failure();
     CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
     auto emitLoadAndAcquire = [&]() -> mlir::Value {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
@@ -567,6 +575,10 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ReussirCellSetOp op,
                   mlir::PatternRewriter &rewriter) const override {
+    CellType cellType =
+        llvm::cast<CellType>(op.getCell().getType().getElementType());
+    if (cellType.getAtomic())
+      return mlir::failure();
     CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
     auto emitDropAndStore = [&]() {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
@@ -596,6 +608,13 @@ public:
   mlir::LogicalResult
   matchAndRewrite(ReussirCellRmwOp op,
                   mlir::PatternRewriter &rewriter) const override {
+    CellType cellType =
+        llvm::cast<CellType>(op.getCell().getType().getElementType());
+    // Atomic RMW keeps its retryable region until LLVM conversion, which
+    // copies the body into a cmpxchg loop. The exclusive form continues to
+    // use the in-use flag expansion below.
+    if (cellType.getAtomic())
+      return mlir::failure();
     // The verifier guarantees an exclusive cell here. The whole
     // read-modify-write becomes the guarded arm: raise the in-use flag for
     // the body so any reentrant access to the cell panics while its element
