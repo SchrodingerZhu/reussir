@@ -53,6 +53,9 @@ typedef enum ReussirCellKind {
   ReussirCellKindPlain = 0,
   ReussirCellKindExclusive = 1,
   ReussirCellKindAtomic = 2,
+  ReussirCellKindMutex = 3,
+  ReussirCellKindFlatlock = 4,
+  ReussirCellKindRwlock = 5,
 } ReussirCellKind;
 
 // Record flavour. Mirrors `reussir::RecordKind`.

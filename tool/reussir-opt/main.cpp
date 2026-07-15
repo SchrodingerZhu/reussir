@@ -19,14 +19,26 @@
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/Transformation/Passes.h"
 
+#include "Sync/Conversion/ConvertSyncToLLVM.h"
+#include "Sync/Conversion/Passes.h"
+#include "Sync/IR/SyncDialect.h"
+
 int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   registry.insert<reussir::ReussirDialect>();
+  registry.insert<mlir::sync::SyncDialect>();
   reussir::registerReussirBasicOpsLoweringInterface(registry);
+  mlir::sync::registerConvertSyncToLLVMInterface(registry);
   mlir::registerConvertToLLVMDependentDialectLoading(registry);
   mlir::registerAllExtensions(registry);
   mlir::registerAllPasses();
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return mlir::sync::createConvertSyncToSTDPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return mlir::sync::createConvertSyncToLLVMPass();
+  });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return reussir::createReussirBasicOpsLoweringPass();
   });

@@ -131,4 +131,69 @@ TEST_F(ReussirTest, AtomicCellMemberProjectsToAtomicSharedRc) {
   EXPECT_EQ(projected.getCapability(), Capability::shared);
   EXPECT_EQ(projected.getAtomicKind(), AtomicKind::atomic);
 }
+
+TEST_F(ReussirTest, ParseMutexCellTypeTest) {
+  withType<CellType>(SIMPLE_LAYOUT, R"(!reussir.cell<i64 mutex>)",
+                     [](mlir::ModuleOp, CellType type) {
+                       EXPECT_EQ(type.getKind(), CellKind::mutex);
+                       EXPECT_TRUE(type.getMutex());
+                       EXPECT_TRUE(type.getLockGuarded());
+                       EXPECT_TRUE(type.requiresAtomicSharedBox());
+                       EXPECT_FALSE(type.getExclusive());
+                       EXPECT_FALSE(type.getAtomic());
+                     });
+}
+
+TEST_F(ReussirTest, ParseFlatlockCellTypeTest) {
+  withType<CellType>(SIMPLE_LAYOUT, R"(!reussir.cell<i64 flatlock>)",
+                     [](mlir::ModuleOp, CellType type) {
+                       EXPECT_EQ(type.getKind(), CellKind::flatlock);
+                       EXPECT_TRUE(type.getFlatlock());
+                       EXPECT_TRUE(type.getLockGuarded());
+                       EXPECT_TRUE(type.requiresAtomicSharedBox());
+                     });
+}
+
+TEST_F(ReussirTest, ParseRwlockCellTypeTest) {
+  withType<CellType>(SIMPLE_LAYOUT, R"(!reussir.cell<i64 rwlock>)",
+                     [](mlir::ModuleOp, CellType type) {
+                       EXPECT_EQ(type.getKind(), CellKind::rwlock);
+                       EXPECT_TRUE(type.getRwlock());
+                       EXPECT_TRUE(type.getLockGuarded());
+                       EXPECT_TRUE(type.requiresAtomicSharedBox());
+                     });
+}
+
+TEST_F(ReussirTest, LockCellsWrapArbitraryPayloads) {
+  // Unlike an atomic scalar, a lock-guarded cell protects an arbitrary payload,
+  // including managed RC types, so the atomic element-type restriction does not
+  // apply. Constructing one through `getChecked` must succeed.
+  mlir::Type rcType = RcType::get(context.get(),
+                                  mlir::IntegerType::get(context.get(), 64),
+                                  Capability::shared, AtomicKind::normal);
+  auto loc = mlir::UnknownLoc::get(context.get());
+  for (CellKind kind :
+       {CellKind::mutex, CellKind::flatlock, CellKind::rwlock}) {
+    auto cellType = CellType::getChecked(loc, context.get(), rcType, kind);
+    ASSERT_TRUE(cellType);
+    EXPECT_EQ(cellType.getKind(), kind);
+    EXPECT_EQ(cellType.getElementType(), rcType);
+  }
+}
+
+TEST_F(ReussirTest, LockCellMembersProjectToAtomicSharedRc) {
+  auto i64Type = mlir::IntegerType::get(context.get(), 64);
+  // Like atomic cells, lock-guarded cells are shared across threads, so their
+  // box must be shared with an atomic refcount (see `RcType::verify`).
+  for (CellKind kind :
+       {CellKind::mutex, CellKind::flatlock, CellKind::rwlock}) {
+    auto cellType = CellType::get(context.get(), i64Type, kind);
+    auto projected = llvm::dyn_cast<RcType>(
+        getProjectedType(cellType, /*fieldCap=*/false, Capability::value));
+    ASSERT_TRUE(projected);
+    EXPECT_EQ(projected.getElementType(), cellType);
+    EXPECT_EQ(projected.getCapability(), Capability::shared);
+    EXPECT_EQ(projected.getAtomicKind(), AtomicKind::atomic);
+  }
+}
 } // namespace reussir

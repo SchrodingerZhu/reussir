@@ -50,6 +50,9 @@ pub enum ReussirCellKind {
     Plain = 0,
     Exclusive = 1,
     Atomic = 2,
+    Mutex = 3,
+    Flatlock = 4,
+    Rwlock = 5,
 }
 
 /// Record flavour. Mirrors `reussir::RecordKind`.

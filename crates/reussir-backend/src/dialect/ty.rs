@@ -80,6 +80,27 @@ pub fn atomic_cell(element: Type) -> Type {
     cell_with_kind(element, ReussirCellKind::Atomic)
 }
 
+/// Creates a mutex-guarded cell payload, `!reussir.cell<T mutex>`. Like an
+/// atomic cell, it must be managed by an RC pointer that is shared and atomic
+/// (`rc(_, Shared, Atomic)`).
+pub fn mutex_cell(element: Type) -> Type {
+    cell_with_kind(element, ReussirCellKind::Mutex)
+}
+
+/// Creates a flat-combining-lock-guarded cell payload,
+/// `!reussir.cell<T flatlock>`. Like an atomic cell, it must be managed by an
+/// RC pointer that is shared and atomic (`rc(_, Shared, Atomic)`).
+pub fn flatlock_cell(element: Type) -> Type {
+    cell_with_kind(element, ReussirCellKind::Flatlock)
+}
+
+/// Creates a reader-writer-lock-guarded cell payload,
+/// `!reussir.cell<T rwlock>`. Like an atomic cell, it must be managed by an RC
+/// pointer that is shared and atomic (`rc(_, Shared, Atomic)`).
+pub fn rwlock_cell(element: Type) -> Type {
+    cell_with_kind(element, ReussirCellKind::Rwlock)
+}
+
 /// Creates a `!reussir.ref<element, capability, atomicKind>` type.
 pub fn r#ref(element: Type, capability: ReussirCapability, atomic_kind: ReussirAtomicKind) -> Type {
     unsafe {
