@@ -634,6 +634,9 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                 let name = if exclusive { "RefCell" } else { "Cell" };
                 format!("{name}<{}>", Self::render_ty_with(elab, elem))
             }
+            TyKind::Arc(inner) => {
+                format!("Arc<{}>", Self::render_ty_with(elab, inner))
+            }
             TyKind::Array { elem, dims } => {
                 let dims: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 format!(

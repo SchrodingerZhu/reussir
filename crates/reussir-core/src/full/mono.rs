@@ -356,6 +356,7 @@ fn ty_depth(ty: Ty<'_>) -> usize {
     match *ty.kind() {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
         TyKind::Cell { elem: inner, .. } => 1 + ty_depth(inner),
+        TyKind::Arc(inner) => 1 + ty_depth(inner),
         TyKind::Array { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
@@ -490,6 +491,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             TyKind::Nullable(inner) => self.note_records(inner),
             TyKind::Cell { elem: inner, .. } => self.note_records(inner),
+            TyKind::Arc(inner) => self.note_records(inner),
             TyKind::Array { elem, .. } => self.note_records(elem),
             _ => {}
         }
@@ -525,6 +527,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
             TyKind::Cell { elem: inner, .. } => self.discover_records(inner, worklist),
+            TyKind::Arc(inner) => self.discover_records(inner, worklist),
             TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
             _ => {}
         }
@@ -1231,6 +1234,7 @@ mod tests {
             }
             TyKind::Nullable(inner) => is_ground(inner),
             TyKind::Cell { elem: inner, .. } => is_ground(inner),
+            TyKind::Arc(inner) => is_ground(inner),
             TyKind::Array { elem, .. } => is_ground(elem),
             _ => true,
         }

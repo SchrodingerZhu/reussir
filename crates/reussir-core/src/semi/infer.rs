@@ -175,7 +175,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// map an unknown hole to its class representative). `resolve` realizes the
     /// judgment σ ⊢ τ ⇓ τ′ ("τ zonks to τ′"), a read-only pass that leaves σ
     /// unchanged. K ranges over the structural constructors with children —
-    /// Record, Closure, Array, Cell, Nullable — and the rebuilt node is re-interned:
+    /// Record, Closure, Array, Cell, Nullable, Arc — and the rebuilt node is re-interned:
     ///
     /// ```text
     ///   ⟦τ⟧ = K(τ₁ … τₙ)      σ ⊢ τᵢ ⇓ τ′ᵢ   (1 ≤ i ≤ n)
@@ -208,6 +208,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 let inner = self.resolve(*inner);
                 self.tcx.mk_nullable(inner)
+            }
+            TyKind::Arc(inner) => {
+                let inner = self.resolve(*inner);
+                self.tcx.mk_arc(inner)
             }
             TyKind::Array { elem, dims } => {
                 let elem = self.resolve(*elem);
@@ -303,6 +307,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify(*r1, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify(*x, *y),
+            (TyKind::Arc(x), TyKind::Arc(y)) => self.unify(*x, *y),
             (
                 TyKind::Cell {
                     elem: x,
@@ -366,6 +371,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.occurs(h, *ret)
             }
             TyKind::Nullable(inner) => self.occurs(h, *inner),
+            TyKind::Arc(inner) => self.occurs(h, *inner),
             TyKind::Cell { elem: inner, .. } => self.occurs(h, *inner),
             TyKind::Array { elem, .. } => self.occurs(h, *elem),
             _ => false,
@@ -518,6 +524,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 self.unify_instantiated(*r1, inst, *r2)
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify_instantiated(*x, inst, *y),
+            (TyKind::Arc(x), TyKind::Arc(y)) => self.unify_instantiated(*x, inst, *y),
             (
                 TyKind::Cell {
                     elem: x,
@@ -585,6 +592,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 let inner = self.materialize(*inner, inst);
                 self.tcx.mk_nullable(inner)
+            }
+            TyKind::Arc(inner) => {
+                let inner = self.materialize(*inner, inst);
+                self.tcx.mk_arc(inner)
             }
             TyKind::Array { elem, dims } => {
                 let elem = self.materialize(*elem, inst);

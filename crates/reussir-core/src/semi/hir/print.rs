@@ -319,6 +319,7 @@ impl<'a> Printer<'a> {
             TyKind::Cell { elem, exclusive } => {
                 text(if exclusive { "RefCell<" } else { "Cell<" }) + self.ty(elem) + text(">")
             }
+            TyKind::Arc(inner) => text("Arc<") + self.ty(inner) + text(">"),
             TyKind::Array { elem, dims } => {
                 let mut d = text("[") + self.ty(elem) + text(";");
                 for (i, extent) in dims.iter().enumerate() {

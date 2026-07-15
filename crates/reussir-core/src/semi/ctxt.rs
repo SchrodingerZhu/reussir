@@ -454,6 +454,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.push_ty_display(out, elem);
                 out.push('>');
             }
+            TyKind::Arc(inner) => {
+                out.push_str("Arc<");
+                self.push_ty_display(out, inner);
+                out.push('>');
+            }
             TyKind::Array { elem, dims } => {
                 out.push('[');
                 self.push_ty_display(out, elem);
@@ -961,7 +966,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         let name = rec.name;
-        if matches!(self.sym(name), "Cell" | "RefCell") {
+        if matches!(self.sym(name), "Cell" | "RefCell" | "Arc") {
             self.error(
                 span,
                 format!(
@@ -1083,6 +1088,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
+                        self.reject_arc_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1095,6 +1101,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
+                        self.reject_arc_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1108,7 +1115,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (name, tys) = &v.value;
                         Variant {
                             name: *name,
-                            fields: tys.iter().map(|t| self.eval_type(t)).collect(),
+                            fields: tys
+                                .iter()
+                                .map(|t| {
+                                    let fty = self.eval_type(t);
+                                    self.reject_arc_member(fty, span);
+                                    fty
+                                })
+                                .collect(),
                         }
                     })
                     .collect(),
@@ -1207,6 +1221,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Enforce that a `[field]` link's element is regional. The element (peeled
     /// from the `Nullable` link) must be a regional record: a concrete
+    /// Reject a record member whose slot is directly `Arc<…>`: the MLIR record
+    /// encoding names an rc-managed member by its capability and has no
+    /// per-member atomic axis yet, so an arc cannot sit inline in a record.
+    fn reject_arc_member(&mut self, fty: Ty<'tcx>, span: Option<Span>) {
+        if matches!(fty.kind(), TyKind::Arc(_)) {
+            self.error(span, "an `Arc` record member is not supported yet");
+        }
+    }
+
     /// value/shared element is rejected here; a generic element records a
     /// requirement checked at the monomorphization call boundary.
     fn note_link_element(
@@ -1229,10 +1252,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 flex: Flexivity::Irrelevant,
                 ..
             } => self.error(span, "a `[field]` link element must be a regional record"),
-            // Arrays and cells are pointer-like (one shared rc box), so the
-            // `Nullable` check lets them through — but a `[field]` link stores
-            // a regional record, never a shared box.
-            TyKind::Array { .. } | TyKind::Cell { .. } => {
+            // Arrays, cells, and arcs are pointer-like (one shared rc box), so
+            // the `Nullable` check lets them through — but a `[field]` link
+            // stores a regional record, never a shared box.
+            TyKind::Array { .. } | TyKind::Cell { .. } | TyKind::Arc(_) => {
                 self.error(span, "a `[field]` link element must be a regional record")
             }
             // Regional records are fine; non-record elements are already rejected

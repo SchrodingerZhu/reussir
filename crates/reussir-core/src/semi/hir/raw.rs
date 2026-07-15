@@ -179,6 +179,7 @@ pub enum Ty {
         inner: Box<Ty>,
         exclusive: bool,
     },
+    Arc(Box<Ty>),
     Record {
         cap: Cap,
         path: String,

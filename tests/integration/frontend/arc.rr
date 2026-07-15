@@ -1,0 +1,35 @@
+// The builtin Arc type constructor colors a [shared] record as atomically
+// reference-counted. At the type level it must survive both textual frontend
+// IRs unchanged (construction and lowering land in follow-up changes).
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+
+struct [shared] Data {
+    value: i64
+}
+
+// HIR: pub fn #use_arc(v0 (a): Arc<#Data>) -> Arc<#Data>
+// MIR-DAG: pub fn @_RC7use_arc(v0 (a): Arc<Data>) -> Arc<Data>
+pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
+    a
+}
+
+// HIR: pub fn #maybe(v0 (n): Nullable<Arc<#Data>>) -> Nullable<Arc<#Data>>
+// MIR-DAG: pub fn @_RC5maybe(v0 (n): Nullable<Arc<Data>>) -> Nullable<Arc<Data>>
+pub fn maybe(n: Nullable<Arc<Data>>) -> Nullable<Arc<Data>> {
+    n
+}
+
+// A generic inner is deferred to the instantiation check; the instance
+// grounds `Arc<$0>` at `Arc<Data>`.
+// HIR: fn #passthrough<$0>(v0 (a): Arc<$0>) -> Arc<$0>
+// MIR-DAG: fn @_RIC11passthroughC4DataE(v0 (a): Arc<Data>) -> Arc<Data>
+fn passthrough<T>(a: Arc<T>) -> Arc<T> {
+    a
+}
+
+// HIR: pub fn #call_passthrough(v0 (a): Arc<#Data>) -> Arc<#Data>
+pub fn call_passthrough(a: Arc<Data>) -> Arc<Data> {
+    passthrough(a)
+}

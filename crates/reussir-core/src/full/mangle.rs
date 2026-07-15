@@ -152,6 +152,11 @@ impl<'a> Mangler<'a> {
                 let name = if exclusive { "RefCell" } else { "Cell" };
                 self.path_with_args_segs(out, &[name], &[elem]);
             }
+            TyKind::Arc(inner) => {
+                // `Arc<X>` is a root built-in type constructor too: a synthetic
+                // one-segment record applied to the colored record.
+                self.path_with_args_segs(out, &["Arc"], &[inner]);
+            }
             TyKind::Array { elem, dims } => {
                 // An array mangles as a synthetic record whose identifier
                 // carries the extents (`Array512x512`), applied to the element.
@@ -344,6 +349,10 @@ mod tests {
             assert_eq!(m.mangle_ty(cell), "_RIC4CelllE");
             let refcell = tcx.mk_cell(tcx.mk_int(IntTy::Signed(32)), true);
             assert_eq!(m.mangle_ty(refcell), "_RIC7RefCelllE");
+            // `Arc<i32>` → `IC3ArclE` (a synthetic root record, like the
+            // others; a real inner is always a `[shared]` record).
+            let arc = tcx.mk_arc(tcx.mk_int(IntTy::Signed(32)));
+            assert_eq!(m.mangle_ty(arc), "_RIC3ArclE");
         });
     }
 

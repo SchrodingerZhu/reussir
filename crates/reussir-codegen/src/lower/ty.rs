@@ -518,6 +518,7 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Array { .. } => err("array type reached scalar lowering without its rc wrapper"),
         TyKind::Cell { .. } => err("cell type reached scalar lowering without its rc wrapper"),
+        TyKind::Arc(_) => err("`Arc` lowering is not implemented yet"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),
         // Intercepted by [`TypeCtx::mlir_ty`]; reaching here is a bug.
         TyKind::Closure { .. } => err("closure type reached scalar lowering without an rc wrapper"),

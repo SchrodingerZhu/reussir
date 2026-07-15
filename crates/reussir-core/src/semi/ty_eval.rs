@@ -145,9 +145,54 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
+        // The built-in atomic-rc coloring (a root builtin: never
+        // module-qualified). `Arc<X>` is the `[shared]` record `X` behind a
+        // box whose refcount is adjusted atomically, so the value may cross
+        // threads; everything but the rc discipline is `X`'s own.
+        if path.segments.is_empty() && self.sym(key) == "Arc" {
+            return match args {
+                [inner] => {
+                    let inner = self.eval_type(inner);
+                    // Only a `[shared]` record can be arc-colored: the box
+                    // layout is the record's own, with atomic counting. A
+                    // generic/hole/bottom inner is deferred — resolved inners
+                    // are re-checked at monomorphization.
+                    if let Some(kind) = self.non_shared_record_kind(inner) {
+                        self.error(
+                            Some(span),
+                            format!(
+                                "`Arc` inner type `{}` is not a `[shared]` record ({kind})",
+                                self.ty_display(inner)
+                            ),
+                        );
+                    }
+                    self.tcx.mk_arc(inner)
+                }
+                _ => {
+                    self.error(Some(span), "`Arc` takes exactly one type argument");
+                    self.tcx.mk(TyKind::Bottom)
+                }
+            };
+        }
+
         // A user record, resolved to its def — bare in the current module, or
         // module-qualified (`utils::math::Widget`, `root::…`, `super::…`).
         return self.eval_record_type_expr(path, args, span, key);
+    }
+
+    /// Why `t` cannot be the inner of an `Arc`, or `None` when it can (a
+    /// `[shared]` record) or the answer must wait (generic/hole/bottom, settled
+    /// by the monomorphization-time instantiation check).
+    pub(crate) fn non_shared_record_kind(&self, t: Ty<'tcx>) -> Option<&'static str> {
+        match t.kind() {
+            TyKind::Record { def, .. } => match self.records[def].default_cap {
+                DefaultCap::Shared => None,
+                DefaultCap::Value => Some("a `[value]` record"),
+                DefaultCap::Regional => Some("a `[regional]` record"),
+            },
+            TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => None,
+            _ => Some("not a record"),
+        }
     }
 
     /// Evaluate a statically shaped array type (`[f64; 512]`,

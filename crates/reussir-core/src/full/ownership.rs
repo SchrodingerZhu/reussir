@@ -335,6 +335,9 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
                 }
             }
             TyKind::Closure { .. } => true,
+            // An arc is its inner shared record behind an atomically counted
+            // box — always managed.
+            TyKind::Arc(_) => true,
             TyKind::Nullable(inner) => self.is_rr(inner),
             TyKind::Int(_)
             | TyKind::Fp(_)
