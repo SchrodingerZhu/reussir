@@ -18,4 +18,7 @@ add_mlir_conversion_library(MLIRReussirBasicOpsLowering
   MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRTransforms
+  MLIRSync
+  MLIRSyncConvertSyncToLLVM
+  MLIRSyncTypeConverter
 )

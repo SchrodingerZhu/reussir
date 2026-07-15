@@ -116,6 +116,21 @@ static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
   return cellType;
 }
 
+// Whole-element cell access (create/get/set/rmw/in_use) is unsound on a
+// lock-guarded cell: its payload lives inside a `sync` primitive rather than at
+// the leading slot, and reaching it requires holding the lock. Such cells are
+// accessed only through a critical-section region (for rwlock reads,
+// `reussir.cell.read_with`).
+static mlir::LogicalResult rejectLockGuardedCell(mlir::Operation *op,
+                                                 CellType cellType) {
+  if (cellType.getLockGuarded())
+    return op->emitOpError("whole-element access is not supported on a cell of "
+                           "kind '")
+           << stringifyCellKind(cellType.getKind())
+           << "'; access it through a critical-section region";
+  return mlir::success();
+}
+
 mlir::LogicalResult verifyRcCreateLikeOp(mlir::Operation *op, RcType rcType,
                                          mlir::Type valueType,
                                          mlir::Value token,
@@ -1202,6 +1217,8 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), rcType);
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+    return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError("initial value type must match cell element type, got ")
            << getValue().getType() << " and " << (*cellType).getElementType();
@@ -1291,6 +1308,8 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+    return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Load)))
     return mlir::failure();
@@ -1303,6 +1322,8 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
 mlir::LogicalResult ReussirCellSetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
+    return mlir::failure();
+  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Store)))
@@ -1417,6 +1438,8 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+    return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Rmw)))
     return mlir::failure();
@@ -1509,9 +1532,18 @@ mlir::LogicalResult ReussirCellInUseOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
+  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+    return mlir::failure();
   if (!(*cellType).getExclusive())
     return emitOpError("in-use flag only exists on an exclusive cell, got ")
            << ((*cellType).getAtomic() ? "an atomic cell" : "a plain cell");
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirRefAsMemRefOp::verify() {
+  auto memrefType = llvm::cast<mlir::MemRefType>(getMemref().getType());
+  if (memrefType.getRank() != 0)
+    return emitOpError("memref view must be zero-ranked, got ") << memrefType;
   return mlir::success();
 }
 

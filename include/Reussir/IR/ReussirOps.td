@@ -1237,6 +1237,26 @@ def ReussirRefProjectOp : ReussirReferenceOp<"project", []> {
   let hasVerifier = 1;
 }
 
+def ReussirRefAsMemRefOp : ReussirReferenceOp<"as_memref", [Pure]> {
+  let summary = "Reinterpret a reference as a zero-ranked memref";
+  let description = [{
+    `reussir.ref.as_memref` reinterprets the storage behind a reference as a
+    zero-ranked `memref`, bridging Reussir's reference model to memref-based
+    dialects. The referenced storage is used as-is; the memref element type is
+    a reinterpretation of the referent (for instance an rwlock cell reference
+    viewed as a `memref<!sync.rwlock<T>>`), so it is a low-level bridge rather
+    than a checked projection. It lowers to a memref descriptor built from the
+    reference pointer.
+  }];
+  let arguments = (ins Arg<ReussirRefType, "reference to reinterpret">:$ref);
+  let results = (outs Res<MemRefRankOf<[AnyType], [0]>, "memref view">:$memref);
+  let assemblyFormat = [{
+    `(` $ref `:` qualified(type($ref)) `)` `:` qualified(type($memref))
+    attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def ReussirRefSpilledOp : ReussirReferenceOp<"spilled", []> {
   let summary = "Spill a value to stack allocation";
   let description = [{

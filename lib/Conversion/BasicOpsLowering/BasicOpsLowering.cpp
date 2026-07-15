@@ -60,6 +60,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Sync/Conversion/ConvertSyncToLLVM.h"
 #include "Reussir/Support/AllocatorBinModel.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
 #include "mlir/IR/Location.h"
@@ -1453,6 +1454,28 @@ struct ReussirArrayViewConversionPattern
                                   adaptor.getRef(), zeroIndices);
     auto descriptor = mlir::MemRefDescriptor::fromStaticShape(
         rewriter, loc, *converter, viewType, elementPtr, elementPtr);
+    rewriter.replaceOp(op, mlir::Value(descriptor));
+    return mlir::success();
+  }
+};
+
+// `reussir.ref.as_memref` reinterprets a reference as a zero-ranked memref: the
+// reference already lowers to the storage pointer, so the memref descriptor is
+// built directly from it (both aligned and allocated pointer are the referent).
+struct ReussirRefAsMemRefConversionPattern
+    : public mlir::OpConversionPattern<ReussirRefAsMemRefOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirRefAsMemRefOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    auto converter =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+    auto memrefType = llvm::cast<mlir::MemRefType>(op.getMemref().getType());
+    mlir::Value ptr = adaptor.getRef();
+    auto descriptor = mlir::MemRefDescriptor::fromStaticShape(
+        rewriter, loc, *converter, memrefType, ptr, ptr);
     rewriter.replaceOp(op, mlir::Value(descriptor));
     return mlir::success();
   }
@@ -3645,6 +3668,7 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirArrayViewOp, ReussirRecordTagOp, ReussirRecordExtractOp,
         ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
         ReussirRegionCleanupOp, ReussirRegionCreateOp, ReussirRcReinterpretOp,
+        ReussirRefAsMemRefOp,
         ReussirCellCreateOp, ReussirCellGetOp, ReussirCellSetOp,
         ReussirCellRmwOp, ReussirCellYieldOp, ReussirClosureApplyOp,
         ReussirClosureCloneOp, ReussirClosureEvalOp,
@@ -3754,6 +3778,10 @@ void registerReussirBasicOpsLoweringInterface(mlir::DialectRegistry &registry) {
   mlir::registerConvertMathToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
+  // Lock-guarded cells lower their remaining `sync` fast-path/bridge
+  // operations to LLVM through this interface during the basic-ops lowering's
+  // `convert-to-llvm` step.
+  mlir::sync::registerConvertSyncToLLVMInterface(registry);
   registry.addExtension(
       +[](mlir::MLIRContext *context, ReussirDialect *dialect) {
         dialect->addInterfaces<ReussirConvertToLLVMPatternInterface>();
@@ -3770,6 +3798,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirTokenReallocConversionPattern, ReussirRefLoadConversionPattern,
       ReussirRefToMemrefConversionPattern,
       ReussirRefFromMemrefConversionPattern, ReussirRefStoreConversionPattern,
+      ReussirRefAsMemRefConversionPattern,
       ReussirAtomicCellGetConversionPattern,
       ReussirAtomicCellSetConversionPattern,
       ReussirAtomicCellRmwConversionPattern, ReussirRefCmpXchgConversionPattern,
