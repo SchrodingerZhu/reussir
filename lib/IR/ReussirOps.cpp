@@ -1218,10 +1218,11 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), rcType);
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex creation has a dedicated lowering through `sync.mutex.init`.
-  // Other lock kinds remain unavailable until their create operations are
-  // implemented.
+  // Mutex and flatlock creation have dedicated lowerings through
+  // `sync.mutex.init` / `sync.combining_lock.init`. Other lock kinds remain
+  // unavailable until their create operations are implemented.
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
@@ -1314,6 +1315,7 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   if (mlir::failed(cellType))
     return mlir::failure();
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
@@ -1330,6 +1332,7 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   if (mlir::failed(cellType))
     return mlir::failure();
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
@@ -1445,10 +1448,11 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex read-modify-write has a dedicated lowering: the region runs as a
-  // critical section, borrowing the element RefCell-style with the held lock
-  // standing in for the exclusive cell's in-use flag.
+  // Mutex and flatlock read-modify-write have dedicated lowerings: the region
+  // runs as a critical section, borrowing the element RefCell-style with the
+  // held lock standing in for the exclusive cell's in-use flag.
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
@@ -1465,13 +1469,14 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
     return emitOpError("region form requires a body");
 
   if (!(*cellType).getExclusive() && !(*cellType).getAtomic() &&
-      !(*cellType).getMutex())
-    return emitOpError("read-modify-write requires an exclusive, atomic, or "
-                       "mutex cell, got a plain cell");
+      !(*cellType).getMutex() && !(*cellType).getFlatlock())
+    return emitOpError("read-modify-write requires an exclusive, atomic, "
+                       "mutex, or flatlock cell, got a plain cell");
   if (!(*cellType).getAtomic() && direct)
     return emitOpError("direct atomic RMW form requires an atomic cell, got ")
            << ((*cellType).getExclusive() ? "an exclusive cell"
-                                          : "a mutex cell");
+               : (*cellType).getMutex()  ? "a mutex cell"
+                                          : "a flatlock cell");
 
   mlir::Type elementType = (*cellType).getElementType();
   if (direct) {
@@ -1684,13 +1689,13 @@ mlir::LogicalResult ReussirRefSpilledOp::verify() {
 mlir::LogicalResult ReussirRefToMemrefOp::verify() {
   RefType refType = getRef().getType();
   mlir::Type viewElementType = refType.getElementType();
-  // A mutex cell's semantic type is represented physically by the sync
-  // dialect's typed mutex. `ref.to_memref` exposes that storage to
-  // `sync.mutex.init` without introducing a separate reinterpret operation.
-  if (auto cellType = llvm::dyn_cast<CellType>(viewElementType);
-      cellType && cellType.getMutex())
-    viewElementType =
-        mlir::sync::MutexType::get(getContext(), cellType.getElementType());
+  // A lock-guarded cell's semantic type is represented physically by its
+  // `sync` primitive (`!sync.mutex<T>`, `!sync.combining_lock<T>`).
+  // `ref.to_memref` exposes that storage to the sync operations without
+  // introducing a separate reinterpret operation.
+  if (auto cellType = llvm::dyn_cast<CellType>(viewElementType))
+    if (mlir::Type storage = lockGuardedStorageType(cellType))
+      viewElementType = storage;
   return verifyZeroRankMemRefType(getOperation(), getView().getType(),
                                   viewElementType, "view result");
 }

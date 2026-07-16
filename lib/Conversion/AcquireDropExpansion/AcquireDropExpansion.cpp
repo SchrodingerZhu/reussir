@@ -55,23 +55,31 @@ private:
     RefType slotType =
         RefType::get(rewriter.getContext(), cellType.getElementType(),
                      Capability::field, refType.getAtomicKind());
-    // A mutex cell's payload lives behind the lock header, so its drop glue
-    // reaches it the same way every other access does: a critical section
-    // whose body releases the managed payload (for an RC element, a load and
-    // rc.dec). The box count is already zero here, so the section is
+    // A lock-guarded cell's payload lives behind the lock header, so its drop
+    // glue reaches it the same way every other access does: a critical
+    // section whose body releases the managed payload (for an RC element, a
+    // load and rc.dec). The box count is already zero here, so the section is
     // uncontended by construction; taking it keeps payload addressing uniform
     // and pairs the drop with the lock words' release/acquire chain.
-    if (cellType.getMutex()) {
-      auto mutexType = mlir::sync::MutexType::get(rewriter.getContext(),
-                                                  cellType.getElementType());
-      mlir::Value mutexView = ReussirRefToMemrefOp::create(
-          rewriter, op.getLoc(), mlir::MemRefType::get({}, mutexType),
+    if (mlir::Type storage = lockGuardedStorageType(cellType)) {
+      mlir::Value storageView = ReussirRefToMemrefOp::create(
+          rewriter, op.getLoc(), mlir::MemRefType::get({}, storage),
           op.getRef());
-      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
-          rewriter, op.getLoc(), mlir::TypeRange{}, mutexView);
+      mlir::Region *criticalBody;
+      if (cellType.getMutex()) {
+        auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+            rewriter, op.getLoc(), mlir::TypeRange{}, storageView);
+        criticalBody = &critical.getBody();
+      } else {
+        auto critical =
+            mlir::sync::SyncCombiningLockCriticalSectionOp::create(
+                rewriter, op.getLoc(), storageView,
+                /*combine_limit=*/mlir::IntegerAttr{});
+        criticalBody = &critical.getBody();
+      }
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       mlir::Block *body = rewriter.createBlock(
-          &critical.getBody(), critical.getBody().begin(),
+          criticalBody, criticalBody->begin(),
           {mlir::MemRefType::get({}, cellType.getElementType())},
           {op.getLoc()});
       rewriter.setInsertionPointToStart(body);

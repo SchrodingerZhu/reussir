@@ -45,10 +45,6 @@ config.substitutions.append((r'%opt', sh_path(config.opt_path)))
 config.substitutions.append((r'%library_path', sh_path(config.library_path)))
 config.substitutions.append((r'%llc', sh_path(config.llc_path)))
 config.substitutions.append((r'%extra_sys_libs', sh_path(config.extra_sys_libs)))
-# The mlir-sync runtime staticlib: the futex slow paths that fully lowered
-# lock-guarded cell modules call under contention (mlir_sync_*_slow_path).
-config.substitutions.append(
-    (r'%sync_runtime_lib', sh_path(config.sync_runtime_lib)))
 config.substitutions.append((r'%lli', sh_path(config.lli_path)))
 # The debug-info rescan suite (debuginfo/): %lldb is a batch, init-free lldb
 # with the Reussir data formatters (tool/lldb/reussir_formatters.py)

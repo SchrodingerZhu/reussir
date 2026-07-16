@@ -176,19 +176,9 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # `rrepl` carries an order-only dependency on reussir-rt (see
 # crates/reussir-repl/CMakeLists.txt), so it is safe to depend on here: it
 # builds after the runtime, not concurrently, and enables the repl-rs suite.
-# The mlir-sync runtime cargo build has no inputs in common with the rest of
-# the build, but scheduling it early perturbs the fragile window between the
-# reussir-rt cargo builds and the toolchain-copy install steps (a pre-existing
-# race that surfaces as "Permission denied" copies on Windows). Sequence it
-# after the installs so adding it leaves the early build schedule unchanged.
-if(TARGET mlir-sync-runtime AND TARGET reussir-rt-install)
-  add_dependencies(mlir-sync-runtime reussir-rt-install)
-endif()
-
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
-  DEPENDS reussir-opt reussir-rt reussir-translate reussir-syntax rrc rrepl
-          mlir-sync-runtime)
+  DEPENDS reussir-opt reussir-rt reussir-translate reussir-syntax rrc rrepl)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer

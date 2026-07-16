@@ -1,22 +1,11 @@
 // REQUIRES: openmp
-// On Windows `-lreussir_rt` resolves to the Rust *staticlib* (every e2e links
-// the runtime statically there), so this test would statically combine two
-// Rust runtimes: reussir_rt's bundled std and the no_std mlir_sync archive
-// both define `rust_eh_personality`/`rust_begin_unwind`, and the mlir_sync
-// definitions share one codegen unit with the slow paths, so lld-link fails
-// with LNK2005 regardless of link order. ELF/Mach-O stay covered because they
-// link reussir_rt as a shared library. Lifting this needs mlir-sync to
-// feature-gate its standalone panic handler.
-// UNSUPPORTED: windows
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' -o %t.mlir
 // RUN: %reussir-translate --mlir-to-llvmir %t.mlir | %opt -S -O2 -o %t.ll
 // RUN: %llc %t.ll -relocation-model=pic -filetype=obj -o %t.o
-// %sync_runtime_lib must precede -lreussir_rt: the staticlib bundles its own
-// Rust core, and only archive-first ordering lets the linker resolve its
-// internal core symbols from the archive itself. With the Rust dylib first,
-// ld64 binds them to libreussir_rt.dylib's toolchain-internal exports and the
-// executable dies in dyld (macOS: "Symbol not found: ...core9panicking...").
-// RUN: %cc %openmp_flags %t.o %S/mutex_cell_omp_e2e_main.c %sync_runtime_lib -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// The futex slow paths (`mlir_sync_*_slow_path`) ride inside reussir_rt,
+// which depends on mlir-sync's `mlir_sync` crate — one Rust runtime per
+// image, no separate sync archive to link.
+// RUN: %cc %openmp_flags %t.o %S/mutex_cell_omp_e2e_main.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
 // A mutex cell under real contention: an OpenMP driver

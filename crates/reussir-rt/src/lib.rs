@@ -20,3 +20,8 @@ pub mod rc;
 pub mod region;
 pub mod symbols;
 use panic::panic;
+
+// The `sync` dialect's futex slow paths: lowered lock-guarded cell code calls
+// mlir_sync's `#[no_mangle]` entry points (`mlir_sync_*_slow_path`), so the
+// runtime links the crate and thereby exports them from every artifact.
+pub use mlir_sync;

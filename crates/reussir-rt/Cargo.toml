@@ -17,6 +17,12 @@ libc = "0.2"
 # `extended` only adds extern declarations (mi_usable_size for the no-copy
 # language realloc); the linked C library is the same either way.
 libmimalloc-sys = { version = "0.1.44", optional = true, features = ["extended"] }
+# The `sync` dialect's futex slow paths (`mlir_sync_*_slow_path`): fully
+# lowered lock-guarded cell code calls them, so the runtime carries them for
+# every consumer. Keep the rev in lockstep with cmake/MlirSync.cmake's
+# GIT_TAG. The crate's `panic-handler` feature stays off — std supplies the
+# panic machinery here.
+mlir_sync = { git = "https://github.com/reussir-lang/mlir-sync.git", rev = "a0337795eb7ce85d2c988440a50a48e11f27a929" }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true
