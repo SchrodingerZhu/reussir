@@ -1146,15 +1146,24 @@ static mlir::Value projectCellSlot(const CellAccess &access, mlir::Location loc,
                                      access.cellRef, rewriter.getIndexAttr(0));
 }
 
+// A zero-ranked memref view of a lock-guarded cell's `sync` storage
+// (`!sync.mutex<T>` / `!sync.combining_lock<T>`), the operand type of the
+// sync init and critical-section operations.
+static mlir::Value getLockStorageView(const CellAccess &access,
+                                      mlir::Location loc,
+                                      mlir::PatternRewriter &rewriter) {
+  mlir::Type storage = lockGuardedStorageType(access.cellType);
+  assert(storage && "cell kind has no lowered sync storage");
+  auto storageViewType = mlir::MemRefType::get({}, storage);
+  return ReussirRefToMemrefOp::create(rewriter, loc, storageViewType,
+                                      access.cellRef);
+}
+
 static mlir::Value getMutexView(const CellAccess &access, mlir::Location loc,
                                 mlir::PatternRewriter &rewriter) {
   assert(access.cellType.getKind() == CellKind::mutex &&
          "only mutex cells have a mutex view");
-  auto mutexType = mlir::sync::MutexType::get(rewriter.getContext(),
-                                              access.cellType.getElementType());
-  auto mutexViewType = mlir::MemRefType::get({}, mutexType);
-  return ReussirRefToMemrefOp::create(rewriter, loc, mutexViewType,
-                                      access.cellRef);
+  return getLockStorageView(access, loc, rewriter);
 }
 
 static mlir::Block *
@@ -1270,6 +1279,13 @@ public:
       mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
       mlir::sync::SyncMutexInitOp::create(rewriter, op.getLoc(), mutexView,
                                           op.getValue());
+      rewriter.replaceOp(op, created.getRcPtr());
+      return mlir::success();
+    }
+    if (cellType.getKind() == CellKind::flatlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      mlir::sync::SyncCombiningLockInitOp::create(rewriter, op.getLoc(),
+                                                  lockView, op.getValue());
       rewriter.replaceOp(op, created.getRcPtr());
       return mlir::success();
     }

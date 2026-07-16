@@ -2,8 +2,8 @@
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
 // leading slot, so an operation needs a dedicated lock-aware lowering. Mutex
-// create/get/set/rmw are supported; the other lock operations remain
-// unavailable.
+// create/get/set/rmw and flatlock create are supported; the other lock
+// operations remain unavailable.
 !flatlock_cell = !reussir.rc<!reussir.cell<i64 flatlock> atomic>
 
 func.func @get_flatlock(%cell: !flatlock_cell) -> i64 {
@@ -24,12 +24,12 @@ func.func @set_rwlock(%cell: !rwlock_cell, %value: i64) {
 
 // -----
 
-!flatlock_cell = !reussir.rc<!reussir.cell<i64 flatlock> atomic>
+!rwlock_cell2 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
 
-func.func @create_flatlock(%value: i64) -> !flatlock_cell {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'flatlock'; access it through a critical-section region}}
-  %cell = reussir.cell.create value(%value : i64) : !flatlock_cell
-  return %cell : !flatlock_cell
+func.func @create_rwlock(%value: i64) -> !rwlock_cell2 {
+  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
+  %cell = reussir.cell.create value(%value : i64) : !rwlock_cell2
+  return %cell : !rwlock_cell2
 }
 
 // -----

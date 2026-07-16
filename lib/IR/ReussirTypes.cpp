@@ -1084,18 +1084,30 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
 //
-// Mutex cells delegate to `!sync.mutex<T>`'s data-layout interface because
-// token instantiation sizes the RC allocation before the cell is converted to
-// the sync type. The other lock kinds remain unconstructable and retain the
-// element-only fallback until their create operations are implemented.
+// Lock-guarded cells with a lowered access path delegate to their `sync`
+// storage type's data-layout interface because token instantiation sizes the
+// RC allocation before the cell is converted to the sync type. Lock kinds
+// without lowered operations (rwlock, for now) remain unconstructable and
+// retain the element-only fallback.
+
+mlir::Type lockGuardedStorageType(CellType type) {
+  switch (type.getKind()) {
+  case CellKind::mutex:
+    return mlir::sync::MutexType::get(type.getContext(),
+                                      type.getElementType());
+  case CellKind::flatlock:
+    return mlir::sync::CombiningLockType::get(type.getContext(),
+                                              type.getElementType());
+  default:
+    return {};
+  }
+}
 
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
-  if (getKind() == CellKind::mutex) {
-    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
-    return dataLayout.getTypeSizeInBits(mutexType);
-  }
+  if (mlir::Type storage = lockGuardedStorageType(*this))
+    return dataLayout.getTypeSizeInBits(storage);
   llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
   if (!getExclusive())
     return dataLayout.getTypeSizeInBits(getElementType());
@@ -1106,10 +1118,8 @@ CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                    mlir::DataLayoutEntryListRef params) const {
-  if (getKind() == CellKind::mutex) {
-    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
-    return dataLayout.getTypeABIAlignment(mutexType);
-  }
+  if (mlir::Type storage = lockGuardedStorageType(*this))
+    return dataLayout.getTypeABIAlignment(storage);
   return dataLayout.getTypeABIAlignment(getElementType());
 }
 

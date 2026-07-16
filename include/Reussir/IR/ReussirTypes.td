@@ -356,8 +356,10 @@ def ReussirCellType
     payload is mediated by a lock-holding critical-section region, which views
     the payload through a zero-ranked memref — so `T` must be a valid memref
     element type (an RC pointer qualifies; records and nullables do not).
-    Mutex whole-element get/set operations lower to such regions; the other
-    lock kinds remain unavailable until their operations are implemented.
+    Mutex whole-element get/set operations lower to such regions, and mutex
+    and flatlock cells are constructable through `cell.create` (backed by the
+    corresponding `sync` init); the remaining lock operations become available
+    as their lowerings are implemented.
 
     An atomic, mutex, flatlock, or rwlock cell only exists to be shared across
     threads, so it is always managed by an atomic shared RC pointer
