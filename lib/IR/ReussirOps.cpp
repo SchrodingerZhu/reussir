@@ -117,11 +117,10 @@ static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
   return cellType;
 }
 
-// Lock-free whole-element cell access is unsound on a lock-guarded cell: its
-// payload lives inside a `sync` primitive rather than at the leading slot, and
-// reaching it requires holding the lock. Such cells are accessed only through
-// a critical-section region. Creation is handled separately because it
-// initializes the synchronization primitive before publishing the cell.
+// A cell operation without a dedicated lock-aware lowering is unsound on a
+// lock-guarded cell: its payload lives inside a `sync` primitive rather than at
+// the leading slot, and reaching it requires holding the lock. Mutex create,
+// get, and set are handled separately through `sync` operations.
 static mlir::LogicalResult rejectLockGuardedCell(mlir::Operation *op,
                                                  CellType cellType) {
   if (cellType.getLockGuarded())
@@ -1221,7 +1220,7 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   // Mutex creation has a dedicated lowering through `sync.mutex.init`.
   // Other lock kinds remain unavailable until their create operations are
   // implemented.
-  if (!(*cellType).getMutex() &&
+  if ((*cellType).getKind() != CellKind::mutex &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
@@ -1313,7 +1312,8 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+  if ((*cellType).getKind() != CellKind::mutex &&
+      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Load)))
@@ -1328,7 +1328,8 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+  if ((*cellType).getKind() != CellKind::mutex &&
+      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Store)))

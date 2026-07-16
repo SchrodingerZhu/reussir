@@ -1,14 +1,13 @@
 // RUN: %reussir-opt %s -verify-diagnostics -split-input-file
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
-// leading slot, so lock-free whole-element access is unsound: it must be
-// reached through a critical-section region instead. Mutex creation is
-// supported separately; the other lock constructors remain unavailable.
-!mutex_cell = !reussir.rc<!reussir.cell<i64 mutex> atomic>
+// leading slot, so an operation needs a dedicated lock-aware lowering. Mutex
+// create/get/set are supported; the other lock operations remain unavailable.
+!flatlock_cell = !reussir.rc<!reussir.cell<i64 flatlock> atomic>
 
-func.func @get_mutex(%cell: !mutex_cell) -> i64 {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'mutex'; access it through a critical-section region}}
-  %v = reussir.cell.get(%cell : !mutex_cell) : i64
+func.func @get_flatlock(%cell: !flatlock_cell) -> i64 {
+  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'flatlock'; access it through a critical-section region}}
+  %v = reussir.cell.get(%cell : !flatlock_cell) : i64
   return %v : i64
 }
 

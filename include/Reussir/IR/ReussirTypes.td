@@ -353,8 +353,9 @@ def ReussirCellType
     `!reussir.cell<T flatlock>`, `!reussir.cell<T rwlock>`) wraps an arbitrary
     payload `T` in a synchronization primitive from the `sync` dialect: a
     mutex, a flat-combining lock, and a reader-writer lock respectively. Access
-    to the payload is mediated by a lock-holding critical-section region rather
-    than by whole-element get/set.
+    to the payload is mediated by a lock-holding critical-section region.
+    Mutex whole-element get/set operations lower to such regions; the other
+    lock kinds remain unavailable until their operations are implemented.
 
     An atomic, mutex, flatlock, or rwlock cell only exists to be shared across
     threads, so it is always managed by an atomic shared RC pointer

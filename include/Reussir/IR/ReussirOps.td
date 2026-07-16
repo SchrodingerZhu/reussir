@@ -1079,10 +1079,13 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     the access panics and the result is a poison value on that (unreachable)
     path; otherwise the element is loaded and acquired.
 
+    On a mutex cell, the load and ownership acquisition execute while holding
+    the mutex through a `sync.mutex.critical_section` region.
+
     On an atomic cell, this is an atomic load. The optional ordering defaults
     to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
     elements are arithmetic primitives, so clone ownership is trivial. An
-    ordering cannot be attached to a plain or exclusive cell access.
+    ordering cannot be attached to a plain, exclusive, or mutex cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<ReussirRcCellType, "cell to read">:$cell);
@@ -1107,11 +1110,15 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     `reussir.cell.rmw` body; the replacement is only performed on the
     not-in-use path.
 
+    On a mutex cell, dropping the protected old value and storing the incoming
+    replacement execute while holding the mutex through a
+    `sync.mutex.critical_section` region.
+
     On an atomic cell, this is an atomic store. The optional ordering defaults
     to `release`; store orderings unsupported by LLVM are rejected. No old
     managed value needs to be dropped because atomic cell elements are
     arithmetic primitives. An ordering cannot be attached to a plain or
-    exclusive cell access.
+    exclusive or mutex cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<AnyType, "replacement value">:$value,
