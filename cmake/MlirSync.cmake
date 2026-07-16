@@ -15,7 +15,7 @@ set(SYNC_ENABLE_TESTS OFF CACHE BOOL "Build sync dialect integration tests" FORC
 FetchContent_Declare(
   mlirsync
   GIT_REPOSITORY https://github.com/reussir-lang/mlir-sync.git
-  GIT_TAG 010db3444a38cc1cb1f11c3d6a862bfaa91b68ae
+  GIT_TAG 47ef8aae13eeed41400822ffd53213b78a6abcea
 )
 
 FetchContent_MakeAvailable(mlirsync)
