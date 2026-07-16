@@ -9,6 +9,8 @@ add_mlir_tool(reussir-opt
     MLIRReussir
     MLIRReussirConversion
     MLIRReussirTransformation
+    MLIRSync
+    MLIRSyncConversion
     ${dialect_libs}
     ${conversion_libs}
     ${extension_libs}
@@ -19,8 +21,10 @@ target_link_libraries(reussir-opt
     MLIRReussir
     MLIRReussirConversion
     MLIRReussirTransformation
-    ${dialect_libs} 
-    ${conversion_libs} 
+    MLIRSync
+    MLIRSyncConversion
+    ${dialect_libs}
+    ${conversion_libs}
     ${extension_libs}
     MLIROptLib
 )

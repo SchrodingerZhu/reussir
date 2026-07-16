@@ -901,14 +901,16 @@ RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
 
-  // An atomic cell only exists to be shared across threads, so the box
-  // managing it must itself be shared with an atomic refcount.
+  // An atomic scalar or lock-guarded cell only exists to be shared across
+  // threads, so the box managing it must itself be shared with an atomic
+  // refcount.
   if (auto cellTy = llvm::dyn_cast<CellType>(eleTy);
-      cellTy && cellTy.getAtomic() &&
+      cellTy && cellTy.requiresAtomicSharedBox() &&
       (capability != reussir::Capability::shared ||
        atomicKind != reussir::AtomicKind::atomic)) {
-    emitError() << "an atomic cell must be managed by an atomic shared RC "
-                   "pointer, got capability "
+    emitError() << "a cell of kind '" << stringifyCellKind(cellTy.getKind())
+                << "' must be managed by an atomic shared RC pointer, got "
+                   "capability "
                 << stringifyCapability(capability) << " and atomic kind "
                 << stringifyAtomicKind(atomicKind);
     return mlir::failure();
@@ -1005,6 +1007,12 @@ mlir::Type CellType::parse(mlir::AsmParser &parser) {
     kind = CellKind::exclusive;
   else if (mlir::succeeded(parser.parseOptionalKeyword("atomic")))
     kind = CellKind::atomic;
+  else if (mlir::succeeded(parser.parseOptionalKeyword("mutex")))
+    kind = CellKind::mutex;
+  else if (mlir::succeeded(parser.parseOptionalKeyword("flatlock")))
+    kind = CellKind::flatlock;
+  else if (mlir::succeeded(parser.parseOptionalKeyword("rwlock")))
+    kind = CellKind::rwlock;
   if (parser.parseGreater())
     return {};
   return CellType::getChecked(parser.getEncodedSourceLoc(loc),
@@ -1017,6 +1025,12 @@ void CellType::print(mlir::AsmPrinter &printer) const {
     printer << " exclusive";
   else if (getAtomic())
     printer << " atomic";
+  else if (getMutex())
+    printer << " mutex";
+  else if (getFlatlock())
+    printer << " flatlock";
+  else if (getRwlock())
+    printer << " rwlock";
   printer << ">";
 }
 
@@ -1055,6 +1069,13 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // cell carries a trailing i1 in-use flag: one byte after the element, padded
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
+//
+// Lock-guarded cells (mutex/flatlock/rwlock) have no reussir-level physical
+// layout: their storage is a `sync` synchronization primitive wrapping the
+// payload, materialized when the cell type is converted to the corresponding
+// `!sync.*` type during lowering. They are therefore never allocated directly
+// through this interface, and the fall-through below only reflects the inline
+// payload, not the (larger) lock storage.
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
@@ -1415,12 +1436,13 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap) {
     return nullableTy;
   }
   if (targetCap == Capability::shared) {
-    // An atomic cell member is managed by an atomic shared RC box (see
-    // `RcType::verify`); every other shared member keeps the default
-    // nonatomic refcount.
+    // An atomic scalar or lock-guarded cell member is managed by an atomic
+    // shared RC box (see `RcType::verify`); every other shared member keeps
+    // the default nonatomic refcount.
     auto cellTy = llvm::dyn_cast<CellType>(type);
-    AtomicKind atomicKind =
-        cellTy && cellTy.getAtomic() ? AtomicKind::atomic : AtomicKind::normal;
+    AtomicKind atomicKind = cellTy && cellTy.requiresAtomicSharedBox()
+                                ? AtomicKind::atomic
+                                : AtomicKind::normal;
     return RcType::get(type.getContext(), type, Capability::shared, atomicKind);
   }
   if (targetCap == Capability::regional)

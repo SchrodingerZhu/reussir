@@ -37,12 +37,22 @@ def AtomicKind
 //===----------------------------------------------------------------------===//
 // A single enum deliberately models these as alternatives. In particular,
 // `exclusive` and `atomic` are storage strategies, not independent flags.
+//
+// `mutex`, `flatlock`, and `rwlock` wrap the payload in a synchronization
+// primitive from the `sync` dialect (mlir-sync): a mutex, a flat-combining
+// lock, and a reader-writer lock respectively. Like `atomic`, they only exist
+// to be shared across threads, so they carry the same requirement of living in
+// an atomic shared RC box.
 def CK_Plain : I32EnumAttrCase<"plain", 0>;
 def CK_Exclusive : I32EnumAttrCase<"exclusive", 1>;
 def CK_Atomic : I32EnumAttrCase<"atomic", 2>;
+def CK_Mutex : I32EnumAttrCase<"mutex", 3>;
+def CK_Flatlock : I32EnumAttrCase<"flatlock", 4>;
+def CK_Rwlock : I32EnumAttrCase<"rwlock", 5>;
 def CellKind
     : I32EnumAttr<"CellKind", "cell storage kind",
-                  [CK_Plain, CK_Exclusive, CK_Atomic]> {
+                  [CK_Plain, CK_Exclusive, CK_Atomic, CK_Mutex, CK_Flatlock,
+                   CK_Rwlock]> {
   let cppNamespace = "::reussir";
 }
 

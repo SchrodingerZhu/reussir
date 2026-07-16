@@ -349,8 +349,15 @@ def ReussirCellType
     the direct and region forms of `reussir.cell.rmw`. Atomic and exclusive
     are distinct, mutually exclusive storage kinds.
 
-    An atomic cell only exists to be shared across threads, so it is always
-    managed by an atomic shared RC pointer
+    A `mutex`, `flatlock`, or `rwlock` cell (`!reussir.cell<T mutex>`,
+    `!reussir.cell<T flatlock>`, `!reussir.cell<T rwlock>`) wraps an arbitrary
+    payload `T` in a synchronization primitive from the `sync` dialect: a
+    mutex, a flat-combining lock, and a reader-writer lock respectively. Access
+    to the payload is mediated by a lock-holding critical-section region rather
+    than by whole-element get/set.
+
+    An atomic, mutex, flatlock, or rwlock cell only exists to be shared across
+    threads, so it is always managed by an atomic shared RC pointer
     (`!reussir.rc<!reussir.cell<T atomic> atomic>`): the box refcount and the
     payload slot are atomic together. Plain and exclusive cells may sit in
     either box flavor.
@@ -378,6 +385,21 @@ def ReussirCellType
     mlir::Type getElementType() const { return getEleTy(); }
     bool getExclusive() const { return getKind() == CellKind::exclusive; }
     bool getAtomic() const { return getKind() == CellKind::atomic; }
+    bool getMutex() const { return getKind() == CellKind::mutex; }
+    bool getFlatlock() const { return getKind() == CellKind::flatlock; }
+    bool getRwlock() const { return getKind() == CellKind::rwlock; }
+    /// Whether this is a lock-guarded cell (mutex/flatlock/rwlock), whose
+    /// payload is protected by a `sync` dialect synchronization primitive.
+    bool getLockGuarded() const {
+      return getKind() == CellKind::mutex || getKind() == CellKind::flatlock ||
+             getKind() == CellKind::rwlock;
+    }
+    /// Whether this cell must be managed by an atomic shared RC box because it
+    /// is meant to be shared across threads: atomic scalars and lock-guarded
+    /// cells share that requirement.
+    bool requiresAtomicSharedBox() const {
+      return getAtomic() || getLockGuarded();
+    }
   }];
 }
 //===----------------------------------------------------------------------===//

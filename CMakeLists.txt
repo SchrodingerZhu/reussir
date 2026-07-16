@@ -58,6 +58,10 @@ message(STATUS "Tablegen output directory: ${MLIR_TABLEGEN_OUTPUT_DIR}")
 # Include Immer
 include(cmake/Immer.cmake)
 
+# Include the mlir-sync `sync` dialect (synchronization primitives). Reussir's
+# lock-guarded cells lower onto this dialect.
+include(cmake/MlirSync.cmake)
+
 # Detect object format
 include(cmake/ObjectFormat.cmake)
 
@@ -76,6 +80,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MLIR_TABLEGEN_OUTPUT_DIR}
     ${immer_SOURCE_DIR}
+    ${MLIR_SYNC_INCLUDE_DIRS}
 )
 
 include_directories(SYSTEM
