@@ -350,10 +350,12 @@ def ReussirCellType
     are distinct, mutually exclusive storage kinds.
 
     A `mutex`, `flatlock`, or `rwlock` cell (`!reussir.cell<T mutex>`,
-    `!reussir.cell<T flatlock>`, `!reussir.cell<T rwlock>`) wraps an arbitrary
-    payload `T` in a synchronization primitive from the `sync` dialect: a
-    mutex, a flat-combining lock, and a reader-writer lock respectively. Access
-    to the payload is mediated by a lock-holding critical-section region.
+    `!reussir.cell<T flatlock>`, `!reussir.cell<T rwlock>`) wraps a payload `T`
+    in a synchronization primitive from the `sync` dialect: a mutex, a
+    flat-combining lock, and a reader-writer lock respectively. Access to the
+    payload is mediated by a lock-holding critical-section region, which views
+    the payload through a zero-ranked memref — so `T` must be a valid memref
+    element type (an RC pointer qualifies; records and nullables do not).
     Mutex whole-element get/set operations lower to such regions; the other
     lock kinds remain unavailable until their operations are implemented.
 

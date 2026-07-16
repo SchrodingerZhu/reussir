@@ -1058,9 +1058,22 @@ mlir::LogicalResult verifyAtomicElementType(
 mlir::LogicalResult
 CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                  mlir::Type eleTy, CellKind kind) {
-  if (kind != CellKind::atomic)
-    return mlir::success();
-  return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
+  if (kind == CellKind::atomic)
+    return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
+  // A lock-guarded cell's payload is physically wrapped in a `sync` primitive
+  // and every access views it through a zero-ranked memref (the critical
+  // section's payload view), so the element must be a valid memref element
+  // type. Types outside that set (records, nullables, ...) would pass here
+  // only to make the lowering construct an invalid `memref<T>`.
+  if (kind == CellKind::mutex || kind == CellKind::flatlock ||
+      kind == CellKind::rwlock) {
+    if (!mlir::BaseMemRefType::isValidElementType(eleTy))
+      return emitError() << "a cell of kind '" << stringifyCellKind(kind)
+                         << "' requires an element that is a valid memref "
+                            "element type, got "
+                         << eleTy;
+  }
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
