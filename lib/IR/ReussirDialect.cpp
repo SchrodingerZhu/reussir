@@ -10,6 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+// The dependent-dialect loading generated into the dialect constructor
+// (`dependentDialects` in ReussirDialect.td) needs the sync dialect's
+// declaration.
+#include "Sync/IR/SyncDialect.h"
+
 #include "Reussir/IR/ReussirDialect.h"
 
 #include "Reussir/IR/ReussirDialect.cpp.inc"

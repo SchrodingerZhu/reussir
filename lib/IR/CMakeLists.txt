@@ -13,4 +13,7 @@ add_mlir_dialect_library(MLIRReussir
     # The dialect's LLVMTranslationDialectInterface (ReussirInterfaces.cpp)
     # emits LLVM IR for the ops/attributes the LLVM dialect cannot express.
     MLIRTargetLLVMIRExport
+    # Loaded as a dependent dialect (lock-guarded cell layouts are sync-type
+    # layouts); listed explicitly rather than via the dialect-libs glob.
+    MLIRSync
 )
