@@ -1508,6 +1508,50 @@ public:
         rewriter.eraseOp(op);
       return mlir::success();
     }
+    // A flatlock read-modify-write is the same RefCell-style borrow inside a
+    // combining-lock critical section. Its region has no results — under
+    // contention the body runs on the combining thread — so the optional
+    // output leaves through a captured stack slot, like a flatlock get.
+    if (access.cellType.getKind() == CellKind::flatlock) {
+      mlir::Value out;
+      if (op->getNumResults() != 0)
+        out = mlir::memref::AllocaOp::create(
+            rewriter, op.getLoc(),
+            mlir::MemRefType::get({}, op.getOutput().getType()));
+      auto critical =
+          createCombiningCriticalSection(access, op.getLoc(), rewriter);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *criticalBody = addCombiningCriticalSectionBody(
+            critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(criticalBody);
+        mlir::Value slotRef =
+            getLockPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+        mlir::Value oldValue = ReussirRefLoadOp::create(
+            rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+        mlir::Block &body = op.getBody().front();
+        auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+        rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                   mlir::ValueRange{oldValue});
+        rewriter.setInsertionPoint(yield);
+        ReussirRefStoreOp::create(rewriter, yield.getLoc(), slotRef,
+                                  yield.getNewValue());
+        if (yield.getOutput())
+          mlir::memref::StoreOp::create(rewriter, yield.getLoc(),
+                                        yield.getOutput(), out,
+                                        mlir::ValueRange{});
+        mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc());
+        rewriter.eraseOp(yield);
+      }
+      if (op->getNumResults() != 0)
+        rewriter.replaceOp(op, mlir::memref::LoadOp::create(
+                                   rewriter, op.getLoc(), out,
+                                   mlir::ValueRange{})
+                                   .getResult());
+      else
+        rewriter.eraseOp(op);
+      return mlir::success();
+    }
     // The verifier guarantees an exclusive cell here. The whole
     // read-modify-write becomes the guarded arm: raise the in-use flag for
     // the body so any reentrant access to the cell panics while its element

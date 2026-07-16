@@ -58,6 +58,17 @@ func.func @direct_rmw_mutex(%delta: i64, %cell: !mutex_cell) -> i64 {
 
 // -----
 
+// Likewise on a flatlock cell: only the region form has a lowering.
+!flatlock_cell2 = !reussir.rc<!reussir.cell<i64 flatlock> atomic>
+
+func.func @direct_rmw_flatlock(%delta: i64, %cell: !flatlock_cell2) -> i64 {
+  // expected-error @+1 {{direct atomic RMW form requires an atomic cell, got a flatlock cell}}
+  %old = reussir.cell.rmw addi(%delta : i64, %cell : !flatlock_cell2) -> i64
+  return %old : i64
+}
+
+// -----
+
 // An ordering annotation is meaningless under a lock: it stays atomic-only.
 !mutex_cell = !reussir.rc<!reussir.cell<i64 mutex> atomic>
 

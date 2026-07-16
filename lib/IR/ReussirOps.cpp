@@ -1448,10 +1448,11 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex read-modify-write has a dedicated lowering: the region runs as a
-  // critical section, borrowing the element RefCell-style with the held lock
-  // standing in for the exclusive cell's in-use flag.
+  // Mutex and flatlock read-modify-write have dedicated lowerings: the region
+  // runs as a critical section, borrowing the element RefCell-style with the
+  // held lock standing in for the exclusive cell's in-use flag.
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
@@ -1468,13 +1469,14 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
     return emitOpError("region form requires a body");
 
   if (!(*cellType).getExclusive() && !(*cellType).getAtomic() &&
-      !(*cellType).getMutex())
-    return emitOpError("read-modify-write requires an exclusive, atomic, or "
-                       "mutex cell, got a plain cell");
+      !(*cellType).getMutex() && !(*cellType).getFlatlock())
+    return emitOpError("read-modify-write requires an exclusive, atomic, "
+                       "mutex, or flatlock cell, got a plain cell");
   if (!(*cellType).getAtomic() && direct)
     return emitOpError("direct atomic RMW form requires an atomic cell, got ")
            << ((*cellType).getExclusive() ? "an exclusive cell"
-                                          : "a mutex cell");
+               : (*cellType).getMutex()  ? "a mutex cell"
+                                          : "a flatlock cell");
 
   mlir::Type elementType = (*cellType).getElementType();
   if (direct) {
