@@ -1315,6 +1315,7 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   if (mlir::failed(cellType))
     return mlir::failure();
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(
@@ -1331,6 +1332,7 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   if (mlir::failed(cellType))
     return mlir::failure();
   if ((*cellType).getKind() != CellKind::mutex &&
+      (*cellType).getKind() != CellKind::flatlock &&
       mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (mlir::failed(verifyCellAtomicOrdering(

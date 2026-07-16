@@ -1080,12 +1080,15 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     path; otherwise the element is loaded and acquired.
 
     On a mutex cell, the load and ownership acquisition execute while holding
-    the mutex through a `sync.mutex.critical_section` region.
+    the mutex through a `sync.mutex.critical_section` region. On a flatlock
+    cell they run inside a `sync.combining_lock.critical_section`, whose body
+    may be served by a combining thread: the cloned value returns to the
+    caller through a captured stack slot rather than a region result.
 
     On an atomic cell, this is an atomic load. The optional ordering defaults
     to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
     elements are arithmetic primitives, so clone ownership is trivial. An
-    ordering cannot be attached to a plain, exclusive, or mutex cell access.
+    ordering cannot be attached to a plain, exclusive, mutex, or flatlock cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<ReussirRcCellType, "cell to read">:$cell);
@@ -1112,13 +1115,15 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
 
     On a mutex cell, dropping the protected old value and storing the incoming
     replacement execute while holding the mutex through a
-    `sync.mutex.critical_section` region.
+    `sync.mutex.critical_section` region. On a flatlock cell they run inside a
+    `sync.combining_lock.critical_section`, possibly served by a combining
+    thread.
 
     On an atomic cell, this is an atomic store. The optional ordering defaults
     to `release`; store orderings unsupported by LLVM are rejected. No old
     managed value needs to be dropped because atomic cell elements are
     arithmetic primitives. An ordering cannot be attached to a plain or
-    exclusive or mutex cell access.
+    exclusive or mutex or flatlock cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<AnyType, "replacement value">:$value,
