@@ -40,6 +40,7 @@
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Sync/IR/SyncTypes.h"
 
 // The `DataLayoutTypeInterface` no longer carries `getPreferredAlignment`, so
 // the generated declarations omit it; this elides our out-of-line definitions
@@ -1070,29 +1071,17 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
 //
-// A mutex cell has the same physical layout as `!sync.mutex<T>`:
-// `{i32 rawMutex, T payload}`. This interface must describe that layout because
+// Mutex cells delegate to `!sync.mutex<T>`'s data-layout interface because
 // token instantiation sizes the RC allocation before the cell is converted to
 // the sync type. The other lock kinds remain unconstructable and retain the
 // element-only fallback until their create operations are implemented.
-static std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>
-getMutexCellLayout(CellType cellType, const mlir::DataLayout &dataLayout) {
-  auto rawMutexType = mlir::IntegerType::get(cellType.getContext(), 32);
-  auto layout = deriveCompoundSizeAndAlignment(
-      cellType.getContext(), {rawMutexType, cellType.getElementType()},
-      {false, false}, dataLayout, /*memBoxInternal=*/true);
-  if (!layout)
-    llvm_unreachable("mutex cell must have a fixed layout");
-  return *layout;
-}
 
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
-  if (getMutex()) {
-    auto [size, _alignment, _representative] =
-        getMutexCellLayout(*this, dataLayout);
-    return size * 8;
+  if (getKind() == CellKind::mutex) {
+    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
+    return dataLayout.getTypeSizeInBits(mutexType);
   }
   llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
   if (!getExclusive())
@@ -1104,10 +1093,9 @@ CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                    mlir::DataLayoutEntryListRef params) const {
-  if (getMutex()) {
-    auto [_size, alignment, _representative] =
-        getMutexCellLayout(*this, dataLayout);
-    return alignment.value();
+  if (getKind() == CellKind::mutex) {
+    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
+    return dataLayout.getTypeABIAlignment(mutexType);
   }
   return dataLayout.getTypeABIAlignment(getElementType());
 }

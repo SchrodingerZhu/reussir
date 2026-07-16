@@ -204,7 +204,8 @@ def ReussirTokenInstantiationPass
     immediately before it, and the token is assigned to the operation.
   }];
 
-  let dependentDialects = ["::reussir::ReussirDialect"];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::sync::SyncDialect"];
 }
 
 //===----------------------------------------------------------------------===//
