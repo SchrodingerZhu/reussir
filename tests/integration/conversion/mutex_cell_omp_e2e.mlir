@@ -2,7 +2,12 @@
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' -o %t.mlir
 // RUN: %reussir-translate --mlir-to-llvmir %t.mlir | %opt -S -O2 -o %t.ll
 // RUN: %llc %t.ll -relocation-model=pic -filetype=obj -o %t.o
-// RUN: %cc %openmp_flags %t.o %S/mutex_cell_omp_e2e_main.c -o %t.exe -L%library_path -lreussir_rt %sync_runtime_lib %rpath_flag %extra_sys_libs
+// %sync_runtime_lib must precede -lreussir_rt: the staticlib bundles its own
+// Rust core, and only archive-first ordering lets the linker resolve its
+// internal core symbols from the archive itself. With the Rust dylib first,
+// ld64 binds them to libreussir_rt.dylib's toolchain-internal exports and the
+// executable dies in dyld (macOS: "Symbol not found: ...core9panicking...").
+// RUN: %cc %openmp_flags %t.o %S/mutex_cell_omp_e2e_main.c %sync_runtime_lib -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
 // A mutex cell under real contention: an OpenMP driver
