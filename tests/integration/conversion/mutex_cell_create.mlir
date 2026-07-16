@@ -2,7 +2,7 @@
 // RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=STD
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
-!inner = !reussir.rc<i64>
+!inner = !reussir.rc<i64 atomic>
 !mutex_i64 = !reussir.rc<!reussir.cell<i64 mutex> atomic>
 !mutex_f64 = !reussir.rc<!reussir.cell<f64 mutex> atomic>
 !mutex_rc = !reussir.rc<!reussir.cell<!inner mutex> atomic>
@@ -46,10 +46,10 @@ module {
   // it: ownership transfers from the argument to the newly created cell.
   // TOKEN-LABEL: func.func @create_rc
   // TOKEN: %[[TOKEN:.+]] = reussir.token.alloc : <align : 8, size : 24>
-  // TOKEN: reussir.cell.create value(%{{.+}} : !reussir.rc<i64>) token(%[[TOKEN]] : !reussir.token<align : 8, size : 24>)
+  // TOKEN: reussir.cell.create value(%{{.+}} : !reussir.rc<i64 atomic>) token(%[[TOKEN]] : !reussir.token<align : 8, size : 24>)
   // STD-LABEL: func.func @create_rc
-  // STD: reussir.ref.to_memref({{.*}}) : memref<!sync.mutex<!reussir.rc<i64>>>
-  // STD: memref.store %{{.+}}, %{{.+}}[] : memref<!reussir.rc<i64>>
+  // STD: reussir.ref.to_memref({{.*}}) : memref<!sync.mutex<!reussir.rc<i64 atomic>>>
+  // STD: memref.store %{{.+}}, %{{.+}}[] : memref<!reussir.rc<i64 atomic>>
   // STD-NOT: reussir.rc.inc
   // LLVM-LABEL: define ptr @create_rc
   // LLVM: store i32 0, ptr %{{.+}}
