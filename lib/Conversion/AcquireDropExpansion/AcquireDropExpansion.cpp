@@ -35,6 +35,7 @@
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Sync/IR/SyncOps.h"
 
 namespace reussir {
 
@@ -54,6 +55,33 @@ private:
     RefType slotType =
         RefType::get(rewriter.getContext(), cellType.getElementType(),
                      Capability::field, refType.getAtomicKind());
+    // A mutex cell's payload lives behind the lock header, so its drop glue
+    // reaches it the same way every other access does: a critical section
+    // whose body releases the managed payload (for an RC element, a load and
+    // rc.dec). The box count is already zero here, so the section is
+    // uncontended by construction; taking it keeps payload addressing uniform
+    // and pairs the drop with the lock words' release/acquire chain.
+    if (cellType.getMutex()) {
+      auto mutexType = mlir::sync::MutexType::get(rewriter.getContext(),
+                                                  cellType.getElementType());
+      mlir::Value mutexView = ReussirRefToMemrefOp::create(
+          rewriter, op.getLoc(), mlir::MemRefType::get({}, mutexType),
+          op.getRef());
+      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+          rewriter, op.getLoc(), mlir::TypeRange{}, mutexView);
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      mlir::Block *body = rewriter.createBlock(
+          &critical.getBody(), critical.getBody().begin(),
+          {mlir::MemRefType::get({}, cellType.getElementType())},
+          {op.getLoc()});
+      rewriter.setInsertionPointToStart(body);
+      mlir::Value slot = ReussirRefFromMemrefOp::create(
+          rewriter, op.getLoc(), slotType, body->getArgument(0));
+      ReussirRefDropOp::create(rewriter, op.getLoc(), slot);
+      mlir::sync::SyncYieldOp::create(rewriter, op.getLoc());
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     mlir::Value slot = ReussirRefProjectOp::create(
         rewriter, op.getLoc(), slotType, op.getRef(), rewriter.getIndexAttr(0));
     ReussirRefDropOp::create(rewriter, op.getLoc(), slot);

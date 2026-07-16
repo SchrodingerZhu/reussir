@@ -1580,6 +1580,14 @@ mlir::LogicalResult ReussirRefProjectOp::verify() {
 
   mlir::Type elementType = refType.getElementType();
   if (auto cellType = llvm::dyn_cast<CellType>(elementType)) {
+    // A lock-guarded cell's payload lives behind the lock header inside the
+    // `sync` primitive; a leading-slot projection would address the header.
+    // Every access — drop glue included — goes through a critical-section
+    // region instead.
+    if (cellType.getLockGuarded())
+      return emitOpError("cannot project into a cell of kind '")
+             << stringifyCellKind(cellType.getKind())
+             << "'; its payload is reached through a critical-section region";
     size_t index = getIndex().getZExtValue();
     mlir::Type expectedSlotType;
     if (index == 0) {

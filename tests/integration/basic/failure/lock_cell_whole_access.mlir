@@ -66,3 +66,16 @@ func.func @ordered_get_mutex(%cell: !mutex_cell) -> i64 {
   %v = reussir.cell.get(%cell : !mutex_cell) ordering(acquire) : i64
   return %v : i64
 }
+
+// -----
+
+// A leading-slot projection on a lock-guarded cell would address the lock
+// header, not the payload; the payload is only reachable through a
+// critical-section region (the drop glue included).
+!mutex_ref = !reussir.ref<!reussir.cell<i64 mutex> atomic>
+
+func.func @project_mutex(%ref: !mutex_ref) -> !reussir.ref<i64 field atomic> {
+  // expected-error @+1 {{cannot project into a cell of kind 'mutex'; its payload is reached through a critical-section region}}
+  %slot = reussir.ref.project(%ref : !mutex_ref) [0] : !reussir.ref<i64 field atomic>
+  return %slot : !reussir.ref<i64 field atomic>
+}

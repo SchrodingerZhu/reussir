@@ -11,4 +11,5 @@ add_mlir_conversion_library(MLIRReussirAcquireDropExpansion
   MLIRReussir
   MLIRFuncDialect
   MLIRTransforms
+  MLIRSync
 )
