@@ -1,4 +1,13 @@
 // REQUIRES: openmp
+// On Windows `-lreussir_rt` resolves to the Rust *staticlib* (every e2e links
+// the runtime statically there), so this test would statically combine two
+// Rust runtimes: reussir_rt's bundled std and the no_std mlir_sync archive
+// both define `rust_eh_personality`/`rust_begin_unwind`, and the mlir_sync
+// definitions share one codegen unit with the slow paths, so lld-link fails
+// with LNK2005 regardless of link order. ELF/Mach-O stay covered because they
+// link reussir_rt as a shared library. Lifting this needs mlir-sync to
+// feature-gate its standalone panic handler.
+// UNSUPPORTED: windows
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' -o %t.mlir
 // RUN: %reussir-translate --mlir-to-llvmir %t.mlir | %opt -S -O2 -o %t.ll
 // RUN: %llc %t.ll -relocation-model=pic -filetype=obj -o %t.o
