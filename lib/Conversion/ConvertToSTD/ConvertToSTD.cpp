@@ -47,6 +47,7 @@
 
 #include "Sync/Conversion/ConvertSyncToSTD.h"
 #include "Sync/IR/SyncDialect.h"
+#include "Sync/IR/SyncOps.h"
 
 namespace reussir {
 
@@ -1209,6 +1210,17 @@ public:
         rewriter, op.getLoc(), op.getCell().getType(), poison, op.getToken(),
         mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
     CellAccess access = borrowCell(created.getRcPtr(), op.getLoc(), rewriter);
+    if (cellType.getMutex()) {
+      auto mutexType = mlir::sync::MutexType::get(rewriter.getContext(),
+                                                  cellType.getElementType());
+      auto mutexViewType = mlir::MemRefType::get({}, mutexType);
+      mlir::Value mutexView = ReussirRefToMemrefOp::create(
+          rewriter, op.getLoc(), mutexViewType, access.cellRef);
+      mlir::sync::SyncMutexInitOp::create(rewriter, op.getLoc(), mutexView,
+                                          op.getValue());
+      rewriter.replaceOp(op, created.getRcPtr());
+      return mlir::success();
+    }
     mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
     ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
     // A fresh exclusive cell starts out not in use.

@@ -1070,15 +1070,30 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
 //
-// Lock-guarded cells (mutex/flatlock/rwlock) have no reussir-level physical
-// layout: their storage is a `sync` synchronization primitive wrapping the
-// payload, materialized when the cell type is converted to the corresponding
-// `!sync.*` type during lowering. They are therefore never allocated directly
-// through this interface, and the fall-through below only reflects the inline
-// payload, not the (larger) lock storage.
+// A mutex cell has the same physical layout as `!sync.mutex<T>`:
+// `{i32 rawMutex, T payload}`. This interface must describe that layout because
+// token instantiation sizes the RC allocation before the cell is converted to
+// the sync type. The other lock kinds remain unconstructable and retain the
+// element-only fallback until their create operations are implemented.
+static std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>
+getMutexCellLayout(CellType cellType, const mlir::DataLayout &dataLayout) {
+  auto rawMutexType = mlir::IntegerType::get(cellType.getContext(), 32);
+  auto layout = deriveCompoundSizeAndAlignment(
+      cellType.getContext(), {rawMutexType, cellType.getElementType()},
+      {false, false}, dataLayout, /*memBoxInternal=*/true);
+  if (!layout)
+    llvm_unreachable("mutex cell must have a fixed layout");
+  return *layout;
+}
+
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
+  if (getMutex()) {
+    auto [size, _alignment, _representative] =
+        getMutexCellLayout(*this, dataLayout);
+    return size * 8;
+  }
   llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
   if (!getExclusive())
     return dataLayout.getTypeSizeInBits(getElementType());
@@ -1089,6 +1104,11 @@ CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                    mlir::DataLayoutEntryListRef params) const {
+  if (getMutex()) {
+    auto [_size, alignment, _representative] =
+        getMutexCellLayout(*this, dataLayout);
+    return alignment.value();
+  }
   return dataLayout.getTypeABIAlignment(getElementType());
 }
 

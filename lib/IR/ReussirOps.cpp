@@ -43,6 +43,7 @@
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
+#include "Sync/IR/SyncTypes.h"
 #include "mlir/IR/PatternMatch.h"
 
 #include <llvm/ADT/DenseSet.h>
@@ -116,11 +117,11 @@ static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
   return cellType;
 }
 
-// Whole-element cell access (create/get/set/rmw/in_use) is unsound on a
-// lock-guarded cell: its payload lives inside a `sync` primitive rather than at
-// the leading slot, and reaching it requires holding the lock. Such cells are
-// accessed only through a critical-section region (for rwlock reads,
-// `reussir.cell.read_with`).
+// Lock-free whole-element cell access is unsound on a lock-guarded cell: its
+// payload lives inside a `sync` primitive rather than at the leading slot, and
+// reaching it requires holding the lock. Such cells are accessed only through
+// a critical-section region. Creation is handled separately because it
+// initializes the synchronization primitive before publishing the cell.
 static mlir::LogicalResult rejectLockGuardedCell(mlir::Operation *op,
                                                  CellType cellType) {
   if (cellType.getLockGuarded())
@@ -1217,7 +1218,11 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), rcType);
   if (mlir::failed(cellType))
     return mlir::failure();
-  if (mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
+  // Mutex creation has a dedicated lowering through `sync.mutex.init`.
+  // Other lock kinds remain unavailable until their create operations are
+  // implemented.
+  if (!(*cellType).getMutex() &&
+      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
     return mlir::failure();
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError("initial value type must match cell element type, got ")
@@ -1664,8 +1669,16 @@ mlir::LogicalResult ReussirRefSpilledOp::verify() {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRefToMemrefOp::verify() {
   RefType refType = getRef().getType();
+  mlir::Type viewElementType = refType.getElementType();
+  // A mutex cell's semantic type is represented physically by the sync
+  // dialect's typed mutex. `ref.to_memref` exposes that storage to
+  // `sync.mutex.init` without introducing a separate reinterpret operation.
+  if (auto cellType = llvm::dyn_cast<CellType>(viewElementType);
+      cellType && cellType.getMutex())
+    viewElementType =
+        mlir::sync::MutexType::get(getContext(), cellType.getElementType());
   return verifyZeroRankMemRefType(getOperation(), getView().getType(),
-                                  refType.getElementType(), "view result");
+                                  viewElementType, "view result");
 }
 
 //===----------------------------------------------------------------------===//

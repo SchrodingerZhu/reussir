@@ -1261,7 +1261,9 @@ def ReussirRefToMemrefOp : ReussirReferenceOp<"to_memref", []> {
   let description = [{
     `reussir.ref.to_memref` turns a reference into a zero-rank memref view over
     the same payload. This is intended as a bridge to dialects that operate on
-    memrefs, such as synchronization primitives that expect `memref<T>`.
+    memrefs, such as synchronization primitives that expect `memref<T>`. For a
+    mutex cell reference, the view exposes its physical
+    `memref<!sync.mutex<T>>` storage.
   }];
 
   let arguments = (ins Arg<ReussirRefType, "reference to bridge">:$ref);

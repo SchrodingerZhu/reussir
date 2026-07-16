@@ -2,7 +2,8 @@
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
 // leading slot, so lock-free whole-element access is unsound: it must be
-// reached through a critical-section region instead.
+// reached through a critical-section region instead. Mutex creation is
+// supported separately; the other lock constructors remain unavailable.
 !mutex_cell = !reussir.rc<!reussir.cell<i64 mutex> atomic>
 
 func.func @get_mutex(%cell: !mutex_cell) -> i64 {
