@@ -4,7 +4,7 @@
 // RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
 // RUN: %reussir-opt %s --reussir-convert-to-std --reussir-invariant-group-analysis | %FileCheck %s --check-prefix=INVARIANT
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion)' | %FileCheck %s --check-prefix=DROP
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !inner = !reussir.rc<i64>
 !nullable_inner = !reussir.nullable<!inner>
@@ -82,13 +82,17 @@ module {
   // acquired on get: the clone dispatches on nullness and retains the wrapped
   // box on the nonnull path.
   // EXPAND-LABEL: func.func @get_nullable_cell
-  // EXPAND: %[[VALUE:.+]] = reussir.ref.load
-  // EXPAND: %[[SPILL:.+]] = reussir.ref.spilled(%[[VALUE]]
-  // EXPAND: %[[RELOAD:.+]] = reussir.ref.load(%[[SPILL]]
-  // EXPAND: reussir.nullable.dispatch(%[[RELOAD]]
+  // EXPAND: %[[SLOT:.+]] = reussir.ref.project
+  // EXPAND: %[[ACQUIRED:.+]] = reussir.ref.load(%[[SLOT]]
+  // EXPAND: reussir.nullable.dispatch(%[[ACQUIRED]]
   // EXPAND: ^{{.+}}(%[[NONNULL:.+]]: !reussir.rc<i64>):
   // EXPAND: reussir.rc.inc(%[[NONNULL]]
+  // EXPAND: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
   // EXPAND: return %[[VALUE]]
+  // SCF-LABEL: func.func @get_nullable_cell
+  // SCF: %[[SLOT:.+]] = reussir.ref.project
+  // SCF: reussir.ref.acquire(%[[SLOT]]
+  // SCF-NEXT: %{{.+}} = reussir.ref.load(%[[SLOT]]
   func.func @get_nullable_cell(%cell: !rc_nullable_cell) -> !nullable_inner {
     %value = reussir.cell.get(%cell : !rc_nullable_cell) : !nullable_inner
     return %value : !nullable_inner

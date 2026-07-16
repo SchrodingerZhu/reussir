@@ -1175,34 +1175,26 @@ static mlir::Value getMutexPayloadRef(mlir::Block *body,
       rewriter, loc, getCellSlotRefType(access), body->getArgument(0));
 }
 
-static mlir::Value loadAndAcquireCellSlot(mlir::Value slotRef,
-                                          mlir::Type valueType,
-                                          mlir::Location loc,
-                                          mlir::PatternRewriter &rewriter) {
-  mlir::Value value =
-      ReussirRefLoadOp::create(rewriter, loc, valueType, slotRef);
-  // Cloning is triviality-driven: every non-trivial element must acquire the
-  // managed ownership reachable from it — a bare RC pointer retains directly,
-  // anything else (records, nullables, ...) routes through `ref.acquire`.
-  if (!isTriviallyCopyable(valueType)) {
-    if (llvm::isa<RcType>(valueType)) {
-      ReussirRcIncOp::create(rewriter, loc, value);
-    } else {
-      // Acquire the exact SSA value loaded above, rather than loading the
-      // mutable slot a second time. The spill only provides addressability for
-      // recursive aggregate acquisition and is eliminated after lowering.
-      RefType spilledType = RefType::get(rewriter.getContext(), valueType);
-      mlir::Value spilled =
-          ReussirRefSpilledOp::create(rewriter, loc, spilledType, value);
-      ReussirRefAcquireOp::create(rewriter, loc, spilled);
-    }
+static mlir::Value acquireThenLoadCellSlot(mlir::Value slotRef,
+                                           mlir::Location loc,
+                                           mlir::PatternRewriter &rewriter) {
+  auto slotRefType = llvm::cast<RefType>(slotRef.getType());
+  // Retain a bare RC through the loaded SSA value. Its count update may alias
+  // the slot, so LLVM cannot reliably eliminate a second load across it.
+  if (llvm::isa<RcType>(slotRefType.getElementType())) {
+    mlir::Value value = ReussirRefLoadOp::create(
+        rewriter, loc, slotRefType.getElementType(), slotRef);
+    ReussirRcIncOp::create(rewriter, loc, value);
+    return value;
   }
-  return value;
+  ReussirRefAcquireOp::create(rewriter, loc, slotRef);
+  return ReussirRefLoadOp::create(rewriter, loc, slotRefType.getElementType(),
+                                  slotRef);
 }
 
-static void dropAndStoreCellSlot(mlir::Value slotRef, mlir::Value replacement,
-                                 mlir::Location loc,
-                                 mlir::PatternRewriter &rewriter) {
+static void dropThenStoreCellSlot(mlir::Value slotRef, mlir::Value replacement,
+                                  mlir::Location loc,
+                                  mlir::PatternRewriter &rewriter) {
   ReussirRefDropOp::create(rewriter, loc, slotRef);
   ReussirRefStoreOp::create(rewriter, loc, slotRef, replacement);
 }
@@ -1313,8 +1305,8 @@ public:
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
             getMutexPayloadRef(body, access, op.getLoc(), rewriter);
-        mlir::Value value = loadAndAcquireCellSlot(
-            slotRef, access.cellType.getElementType(), op.getLoc(), rewriter);
+        mlir::Value value =
+            acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
         mlir::sync::SyncYieldOp::create(rewriter, op.getLoc(), value);
       }
       rewriter.replaceOp(op, critical.getResults());
@@ -1322,8 +1314,7 @@ public:
     }
     auto emitLoadAndAcquire = [&]() -> mlir::Value {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
-      return loadAndAcquireCellSlot(slotRef, access.cellType.getElementType(),
-                                    op.getLoc(), rewriter);
+      return acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
     };
     if (!access.cellType.getExclusive()) {
       rewriter.replaceOp(op, emitLoadAndAcquire());
@@ -1363,7 +1354,7 @@ public:
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
             getMutexPayloadRef(body, access, op.getLoc(), rewriter);
-        dropAndStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
+        dropThenStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
         mlir::sync::SyncYieldOp::create(rewriter, op.getLoc());
       }
       rewriter.eraseOp(op);
@@ -1371,7 +1362,7 @@ public:
     }
     auto emitDropAndStore = [&]() {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
-      dropAndStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
+      dropThenStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
     };
     if (access.cellType.getExclusive()) {
       auto guarded = createGuardedAccess(

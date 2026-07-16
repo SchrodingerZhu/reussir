@@ -1,6 +1,6 @@
 // RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=STD
 // RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=MANAGE
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !inner = !reussir.rc<i64 atomic>
 !mutex_i64 = !reussir.rc<!reussir.cell<i64 mutex> atomic>
@@ -15,7 +15,8 @@ module {
   // STD-NOT: reussir.panic
   // STD: %[[PAYLOAD:.+]] = sync.mutex.get_payload %[[VIEW]]
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<i64>) : !reussir.ref<i64 field atomic>
-  // STD: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
+  // STD: reussir.ref.acquire(%[[SLOT]]
+  // STD-NEXT: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
   // STD: sync.raw_mutex.unlock_fast %[[RAW]]
   // STD-NOT: reussir.expect
   // STD-NOT: reussir.panic
@@ -102,6 +103,7 @@ module {
   // LLVM: %[[SLOT:.+]] = getelementptr { i32, ptr }, ptr %{{.+}}, i32 0, i32 1
   // LLVM: %[[OLD:.+]] = load ptr, ptr %[[SLOT]]
   // LLVM: atomicrmw sub ptr %[[OLD]], i32 1
+  // LLVM: call void @__reussir_deallocate(ptr %[[OLD]], i64 8, i64 16)
   // LLVM: store ptr %[[NEW]], ptr %[[SLOT]]
   // LLVM: atomicrmw xchg
   // LLVM: ret void
