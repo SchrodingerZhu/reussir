@@ -164,10 +164,11 @@ TEST_F(ReussirTest, ParseRwlockCellTypeTest) {
                      });
 }
 
-TEST_F(ReussirTest, LockCellsWrapArbitraryPayloads) {
-  // Unlike an atomic scalar, a lock-guarded cell protects an arbitrary payload,
-  // including managed RC types, so the atomic element-type restriction does not
-  // apply. Constructing one through `getChecked` must succeed.
+TEST_F(ReussirTest, LockCellsWrapMemRefElementPayloads) {
+  // Unlike an atomic scalar, a lock-guarded cell is not restricted to
+  // arithmetic primitives: any valid memref element type qualifies, managed RC
+  // pointers included, because the critical section views the payload through
+  // a zero-ranked memref. Constructing one through `getChecked` must succeed.
   mlir::Type rcType = RcType::get(context.get(),
                                   mlir::IntegerType::get(context.get(), 64),
                                   Capability::shared, AtomicKind::normal);
@@ -178,6 +179,18 @@ TEST_F(ReussirTest, LockCellsWrapArbitraryPayloads) {
     ASSERT_TRUE(cellType);
     EXPECT_EQ(cellType.getKind(), kind);
     EXPECT_EQ(cellType.getElementType(), rcType);
+  }
+
+  // A payload outside the memref element set (here a nullable) is rejected:
+  // the lowering could only turn it into an invalid `memref<T>` payload view.
+  mlir::Type nullableType = NullableType::get(
+      context.get(), RcType::get(context.get(),
+                                 mlir::IntegerType::get(context.get(), 64),
+                                 Capability::shared, AtomicKind::normal));
+  for (CellKind kind :
+       {CellKind::mutex, CellKind::flatlock, CellKind::rwlock}) {
+    auto cellType = CellType::getChecked(loc, context.get(), nullableType, kind);
+    EXPECT_FALSE(cellType);
   }
 }
 

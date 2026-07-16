@@ -15,7 +15,7 @@ set(SYNC_ENABLE_TESTS OFF CACHE BOOL "Build sync dialect integration tests" FORC
 FetchContent_Declare(
   mlirsync
   GIT_REPOSITORY https://github.com/reussir-lang/mlir-sync.git
-  GIT_TAG 010db3444a38cc1cb1f11c3d6a862bfaa91b68ae
+  GIT_TAG 47ef8aae13eeed41400822ffd53213b78a6abcea
 )
 
 FetchContent_MakeAvailable(mlirsync)
@@ -28,3 +28,22 @@ set(MLIR_SYNC_INCLUDE_DIRS
     ${mlirsync_SOURCE_DIR}/include
     ${mlirsync_BINARY_DIR}/include
     CACHE INTERNAL "mlir-sync include directories")
+
+# The `sync` lowering's contended paths call the futex slow-path runtime
+# (`mlir_sync_*_slow_path`), provided by mlir-sync's `mlir_sync` Rust crate as
+# a static library. Build it with cargo so end-to-end tests can link and run
+# real lock behavior; regular compilation never needs it (the symbols are only
+# referenced by fully lowered modules at link time).
+set(MLIR_SYNC_CARGO_TARGET_DIR ${CMAKE_BINARY_DIR}/mlir-sync-cargo)
+set(MLIR_SYNC_RUNTIME_LIB
+    ${MLIR_SYNC_CARGO_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}mlir_sync${CMAKE_STATIC_LIBRARY_SUFFIX}
+    CACHE INTERNAL "mlir-sync runtime static library")
+add_custom_target(mlir-sync-runtime
+  COMMAND ${CMAKE_COMMAND} -E env
+      CARGO_TARGET_DIR=${MLIR_SYNC_CARGO_TARGET_DIR}
+      RUSTFLAGS=-Awarnings
+      cargo build -p mlir_sync --release --quiet
+  WORKING_DIRECTORY ${mlirsync_SOURCE_DIR}
+  BYPRODUCTS ${MLIR_SYNC_RUNTIME_LIB}
+  COMMENT "Building mlir-sync runtime with cargo (release profile)"
+)

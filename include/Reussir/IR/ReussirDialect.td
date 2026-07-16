@@ -38,6 +38,12 @@ def ReussirDialect : Dialect {
       "mlir::LLVM::LLVMDialect",
       // UB Dialect
       "mlir::ub::UBDialect",
+      // Lock-guarded cells: their data layout is the layout of the
+      // corresponding `!sync.*` primitive, so any DataLayout query on such a
+      // cell constructs a sync type — including paths that run before any
+      // pass can declare a pass-level dependency, e.g. the parser-time
+      // `cell.create` verifier sizing a token-attached mutex cell box.
+      "mlir::sync::SyncDialect",
   ];
   let extraClassDeclaration = [{
   private:

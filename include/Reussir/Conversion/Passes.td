@@ -172,7 +172,8 @@ def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
               "whether to expand rc decrement operations (using the "
               "`rc-decrement-expansion` pass)">,
   ];
-  let dependentDialects = ["::reussir::ReussirDialect"];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::sync::SyncDialect"];
 }
 
 //===----------------------------------------------------------------------===//
@@ -204,7 +205,8 @@ def ReussirTokenInstantiationPass
     immediately before it, and the token is assigned to the operation.
   }];
 
-  let dependentDialects = ["::reussir::ReussirDialect"];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::sync::SyncDialect"];
 }
 
 //===----------------------------------------------------------------------===//

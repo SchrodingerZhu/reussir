@@ -40,6 +40,7 @@
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirEnumAttrs.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Sync/IR/SyncTypes.h"
 
 // The `DataLayoutTypeInterface` no longer carries `getPreferredAlignment`, so
 // the generated declarations omit it; this elides our out-of-line definitions
@@ -1057,9 +1058,22 @@ mlir::LogicalResult verifyAtomicElementType(
 mlir::LogicalResult
 CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                  mlir::Type eleTy, CellKind kind) {
-  if (kind != CellKind::atomic)
-    return mlir::success();
-  return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
+  if (kind == CellKind::atomic)
+    return verifyAtomicElementType(emitError, eleTy, "atomic cell element");
+  // A lock-guarded cell's payload is physically wrapped in a `sync` primitive
+  // and every access views it through a zero-ranked memref (the critical
+  // section's payload view), so the element must be a valid memref element
+  // type. Types outside that set (records, nullables, ...) would pass here
+  // only to make the lowering construct an invalid `memref<T>`.
+  if (kind == CellKind::mutex || kind == CellKind::flatlock ||
+      kind == CellKind::rwlock) {
+    if (!mlir::BaseMemRefType::isValidElementType(eleTy))
+      return emitError() << "a cell of kind '" << stringifyCellKind(kind)
+                         << "' requires an element that is a valid memref "
+                            "element type, got "
+                         << eleTy;
+  }
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1070,15 +1084,18 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
 //
-// Lock-guarded cells (mutex/flatlock/rwlock) have no reussir-level physical
-// layout: their storage is a `sync` synchronization primitive wrapping the
-// payload, materialized when the cell type is converted to the corresponding
-// `!sync.*` type during lowering. They are therefore never allocated directly
-// through this interface, and the fall-through below only reflects the inline
-// payload, not the (larger) lock storage.
+// Mutex cells delegate to `!sync.mutex<T>`'s data-layout interface because
+// token instantiation sizes the RC allocation before the cell is converted to
+// the sync type. The other lock kinds remain unconstructable and retain the
+// element-only fallback until their create operations are implemented.
+
 llvm::TypeSize
 CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                             mlir::DataLayoutEntryListRef params) const {
+  if (getKind() == CellKind::mutex) {
+    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
+    return dataLayout.getTypeSizeInBits(mutexType);
+  }
   llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
   if (!getExclusive())
     return dataLayout.getTypeSizeInBits(getElementType());
@@ -1089,6 +1106,10 @@ CellType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t CellType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                    mlir::DataLayoutEntryListRef params) const {
+  if (getKind() == CellKind::mutex) {
+    auto mutexType = mlir::sync::MutexType::get(getContext(), getElementType());
+    return dataLayout.getTypeABIAlignment(mutexType);
+  }
   return dataLayout.getTypeABIAlignment(getElementType());
 }
 

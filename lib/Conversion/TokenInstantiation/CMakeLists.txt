@@ -9,6 +9,6 @@ add_mlir_conversion_library(MLIRReussirTokenInstantiation
 
   LINK_LIBS PUBLIC
   MLIRReussir
+  MLIRSync
   MLIRTransforms
 )
-

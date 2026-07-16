@@ -47,6 +47,7 @@
 
 #include "Sync/Conversion/ConvertSyncToSTD.h"
 #include "Sync/IR/SyncDialect.h"
+#include "Sync/IR/SyncOps.h"
 
 namespace reussir {
 
@@ -1133,13 +1134,69 @@ static CellAccess borrowCell(mlir::Value cell, mlir::Location loc,
   return {cellType, cellRef, rcType.getAtomicKind()};
 }
 
+static RefType getCellSlotRefType(const CellAccess &access) {
+  return RefType::get(access.cellType.getContext(),
+                      access.cellType.getElementType(), Capability::field,
+                      access.atomicKind);
+}
+
 static mlir::Value projectCellSlot(const CellAccess &access, mlir::Location loc,
                                    mlir::PatternRewriter &rewriter) {
-  RefType slotRefType =
-      RefType::get(rewriter.getContext(), access.cellType.getElementType(),
-                   Capability::field, access.atomicKind);
-  return ReussirRefProjectOp::create(rewriter, loc, slotRefType, access.cellRef,
-                                     rewriter.getIndexAttr(0));
+  return ReussirRefProjectOp::create(rewriter, loc, getCellSlotRefType(access),
+                                     access.cellRef, rewriter.getIndexAttr(0));
+}
+
+static mlir::Value getMutexView(const CellAccess &access, mlir::Location loc,
+                                mlir::PatternRewriter &rewriter) {
+  assert(access.cellType.getKind() == CellKind::mutex &&
+         "only mutex cells have a mutex view");
+  auto mutexType = mlir::sync::MutexType::get(rewriter.getContext(),
+                                              access.cellType.getElementType());
+  auto mutexViewType = mlir::MemRefType::get({}, mutexType);
+  return ReussirRefToMemrefOp::create(rewriter, loc, mutexViewType,
+                                      access.cellRef);
+}
+
+static mlir::Block *
+addMutexCriticalSectionBody(mlir::sync::SyncMutexCriticalSectionOp critical,
+                            const CellAccess &access, mlir::Location loc,
+                            mlir::PatternRewriter &rewriter) {
+  auto payloadViewType =
+      mlir::MemRefType::get({}, access.cellType.getElementType());
+  return rewriter.createBlock(&critical.getBody(), critical.getBody().begin(),
+                              {payloadViewType}, {loc});
+}
+
+static mlir::Value getMutexPayloadRef(mlir::Block *body,
+                                      const CellAccess &access,
+                                      mlir::Location loc,
+                                      mlir::PatternRewriter &rewriter) {
+  return ReussirRefFromMemrefOp::create(
+      rewriter, loc, getCellSlotRefType(access), body->getArgument(0));
+}
+
+static mlir::Value acquireThenLoadCellSlot(mlir::Value slotRef,
+                                           mlir::Location loc,
+                                           mlir::PatternRewriter &rewriter) {
+  auto slotRefType = llvm::cast<RefType>(slotRef.getType());
+  // Retain a bare RC through the loaded SSA value. Its count update may alias
+  // the slot, so LLVM cannot reliably eliminate a second load across it.
+  if (llvm::isa<RcType>(slotRefType.getElementType())) {
+    mlir::Value value = ReussirRefLoadOp::create(
+        rewriter, loc, slotRefType.getElementType(), slotRef);
+    ReussirRcIncOp::create(rewriter, loc, value);
+    return value;
+  }
+  ReussirRefAcquireOp::create(rewriter, loc, slotRef);
+  return ReussirRefLoadOp::create(rewriter, loc, slotRefType.getElementType(),
+                                  slotRef);
+}
+
+static void dropThenStoreCellSlot(mlir::Value slotRef, mlir::Value replacement,
+                                  mlir::Location loc,
+                                  mlir::PatternRewriter &rewriter) {
+  ReussirRefDropOp::create(rewriter, loc, slotRef);
+  ReussirRefStoreOp::create(rewriter, loc, slotRef, replacement);
 }
 
 // The trailing i1 in-use flag of an exclusive cell, addressed as slot [1].
@@ -1209,6 +1266,13 @@ public:
         rewriter, op.getLoc(), op.getCell().getType(), poison, op.getToken(),
         mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
     CellAccess access = borrowCell(created.getRcPtr(), op.getLoc(), rewriter);
+    if (cellType.getKind() == CellKind::mutex) {
+      mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
+      mlir::sync::SyncMutexInitOp::create(rewriter, op.getLoc(), mutexView,
+                                          op.getValue());
+      rewriter.replaceOp(op, created.getRcPtr());
+      return mlir::success();
+    }
     mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
     ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
     // A fresh exclusive cell starts out not in use.
@@ -1230,30 +1294,27 @@ public:
     if (isAtomicCell(op.getCell()))
       return mlir::failure();
     CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    if (access.cellType.getKind() == CellKind::mutex) {
+      mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), mutexView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *body = addMutexCriticalSectionBody(critical, access,
+                                                        op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(body);
+        mlir::Value slotRef =
+            getMutexPayloadRef(body, access, op.getLoc(), rewriter);
+        mlir::Value value =
+            acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
+        mlir::sync::SyncYieldOp::create(rewriter, op.getLoc(), value);
+      }
+      rewriter.replaceOp(op, critical.getResults());
+      return mlir::success();
+    }
     auto emitLoadAndAcquire = [&]() -> mlir::Value {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
-      mlir::Value value = ReussirRefLoadOp::create(
-          rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
-      mlir::Type valueType = value.getType();
-      // Cloning is triviality-driven: every non-trivial element must acquire
-      // the managed ownership reachable from it — a bare RC pointer retains
-      // directly, anything else (records, nullables, ...) routes through
-      // `ref.acquire`.
-      if (!isTriviallyCopyable(valueType)) {
-        if (llvm::isa<RcType>(valueType)) {
-          ReussirRcIncOp::create(rewriter, op.getLoc(), value);
-        } else {
-          // Acquire the exact SSA value loaded above, rather than loading
-          // the mutable slot a second time. The spill only provides
-          // addressability for recursive aggregate acquisition and is
-          // eliminated after lowering.
-          RefType spilledType = RefType::get(rewriter.getContext(), valueType);
-          mlir::Value spilled = ReussirRefSpilledOp::create(
-              rewriter, op.getLoc(), spilledType, value);
-          ReussirRefAcquireOp::create(rewriter, op.getLoc(), spilled);
-        }
-      }
-      return value;
+      return acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
     };
     if (!access.cellType.getExclusive()) {
       rewriter.replaceOp(op, emitLoadAndAcquire());
@@ -1282,10 +1343,26 @@ public:
     if (isAtomicCell(op.getCell()))
       return mlir::failure();
     CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    if (access.cellType.getKind() == CellKind::mutex) {
+      mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), mutexView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *body = addMutexCriticalSectionBody(critical, access,
+                                                        op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(body);
+        mlir::Value slotRef =
+            getMutexPayloadRef(body, access, op.getLoc(), rewriter);
+        dropThenStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
+        mlir::sync::SyncYieldOp::create(rewriter, op.getLoc());
+      }
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
     auto emitDropAndStore = [&]() {
       mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
-      ReussirRefDropOp::create(rewriter, op.getLoc(), slotRef);
-      ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
+      dropThenStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
     };
     if (access.cellType.getExclusive()) {
       auto guarded = createGuardedAccess(
@@ -1312,11 +1389,47 @@ public:
                   mlir::ConversionPatternRewriter &rewriter) const override {
     if (isAtomicCell(op.getCell()))
       return mlir::failure();
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    // On a mutex cell the held lock is the exclusive borrow: move the element
+    // into the body and store the yielded replacement back, all inside the
+    // critical section, with no in-use flag bookkeeping. The transfer keeps
+    // the region form's move semantics — no implicit acquire or drop.
+    if (access.cellType.getKind() == CellKind::mutex) {
+      mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), mutexView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *criticalBody = addMutexCriticalSectionBody(
+            critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(criticalBody);
+        mlir::Value slotRef =
+            getMutexPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+        mlir::Value oldValue = ReussirRefLoadOp::create(
+            rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+        mlir::Block &body = op.getBody().front();
+        auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+        rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                   mlir::ValueRange{oldValue});
+        rewriter.setInsertionPoint(yield);
+        ReussirRefStoreOp::create(rewriter, yield.getLoc(), slotRef,
+                                  yield.getNewValue());
+        mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                        yield.getOutput()
+                                            ? mlir::ValueRange{yield.getOutput()}
+                                            : mlir::ValueRange{});
+        rewriter.eraseOp(yield);
+      }
+      if (op->getNumResults() != 0)
+        rewriter.replaceOp(op, critical.getResults());
+      else
+        rewriter.eraseOp(op);
+      return mlir::success();
+    }
     // The verifier guarantees an exclusive cell here. The whole
     // read-modify-write becomes the guarded arm: raise the in-use flag for
     // the body so any reentrant access to the cell panics while its element
     // is moved out, and clear it with the replacement store.
-    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
     auto guarded = createGuardedAccess(
         access, op.getLoc(), rewriter,
         "cell.rmw on an exclusive cell that is in use", op->getResultTypes());

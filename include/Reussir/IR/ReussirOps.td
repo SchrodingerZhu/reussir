@@ -1079,10 +1079,13 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     the access panics and the result is a poison value on that (unreachable)
     path; otherwise the element is loaded and acquired.
 
+    On a mutex cell, the load and ownership acquisition execute while holding
+    the mutex through a `sync.mutex.critical_section` region.
+
     On an atomic cell, this is an atomic load. The optional ordering defaults
     to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
     elements are arithmetic primitives, so clone ownership is trivial. An
-    ordering cannot be attached to a plain or exclusive cell access.
+    ordering cannot be attached to a plain, exclusive, or mutex cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<ReussirRcCellType, "cell to read">:$cell);
@@ -1107,11 +1110,15 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     `reussir.cell.rmw` body; the replacement is only performed on the
     not-in-use path.
 
+    On a mutex cell, dropping the protected old value and storing the incoming
+    replacement execute while holding the mutex through a
+    `sync.mutex.critical_section` region.
+
     On an atomic cell, this is an atomic store. The optional ordering defaults
     to `release`; store orderings unsupported by LLVM are rejected. No old
     managed value needs to be dropped because atomic cell elements are
     arithmetic primitives. An ordering cannot be attached to a plain or
-    exclusive cell access.
+    exclusive or mutex cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<AnyType, "replacement value">:$value,
@@ -1138,6 +1145,13 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     of observing the moved-out element. The flag is cleared after storing the
     replacement.
 
+    On a mutex cell, the region form runs exactly once inside a
+    `sync.mutex.critical_section`: the element is moved into the body and the
+    yielded replacement is stored back before the lock is released. The held
+    lock provides the same exclusive borrow the in-use flag gives an exclusive
+    cell, so no flag bookkeeping is involved; a reentrant access through an
+    alias of the same cell blocks on the mutex instead of panicking.
+
     On an atomic cell, the region is a retryable, memory-effect-free
     computation and is committed with compare-exchange. It may run more than
     once under contention; the optional output comes from the successful
@@ -1145,7 +1159,7 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     operand, returns the old element, and lowers to an LLVM atomic RMW. Both
     atomic forms accept an optional ordering that defaults to `acq_rel`.
     Atomic RMW orderings unsupported by LLVM are rejected, as is any ordering
-    on an exclusive cell.
+    on an exclusive or mutex cell; the direct form is atomic-only.
 
     ```mlir
     %old = reussir.cell.rmw addi(%delta : i64,
@@ -1261,7 +1275,9 @@ def ReussirRefToMemrefOp : ReussirReferenceOp<"to_memref", []> {
   let description = [{
     `reussir.ref.to_memref` turns a reference into a zero-rank memref view over
     the same payload. This is intended as a bridge to dialects that operate on
-    memrefs, such as synchronization primitives that expect `memref<T>`.
+    memrefs, such as synchronization primitives that expect `memref<T>`. For a
+    mutex cell reference, the view exposes its physical
+    `memref<!sync.mutex<T>>` storage.
   }];
 
   let arguments = (ins Arg<ReussirRefType, "reference to bridge">:$ref);
