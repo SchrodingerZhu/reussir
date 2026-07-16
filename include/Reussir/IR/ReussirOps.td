@@ -1145,6 +1145,13 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     of observing the moved-out element. The flag is cleared after storing the
     replacement.
 
+    On a mutex cell, the region form runs exactly once inside a
+    `sync.mutex.critical_section`: the element is moved into the body and the
+    yielded replacement is stored back before the lock is released. The held
+    lock provides the same exclusive borrow the in-use flag gives an exclusive
+    cell, so no flag bookkeeping is involved; a reentrant access through an
+    alias of the same cell blocks on the mutex instead of panicking.
+
     On an atomic cell, the region is a retryable, memory-effect-free
     computation and is committed with compare-exchange. It may run more than
     once under contention; the optional output comes from the successful
@@ -1152,7 +1159,7 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     operand, returns the old element, and lowers to an LLVM atomic RMW. Both
     atomic forms accept an optional ordering that defaults to `acq_rel`.
     Atomic RMW orderings unsupported by LLVM are rejected, as is any ordering
-    on an exclusive cell.
+    on an exclusive or mutex cell; the direct form is atomic-only.
 
     ```mlir
     %old = reussir.cell.rmw addi(%delta : i64,

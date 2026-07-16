@@ -1389,11 +1389,47 @@ public:
                   mlir::ConversionPatternRewriter &rewriter) const override {
     if (isAtomicCell(op.getCell()))
       return mlir::failure();
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    // On a mutex cell the held lock is the exclusive borrow: move the element
+    // into the body and store the yielded replacement back, all inside the
+    // critical section, with no in-use flag bookkeeping. The transfer keeps
+    // the region form's move semantics — no implicit acquire or drop.
+    if (access.cellType.getKind() == CellKind::mutex) {
+      mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), mutexView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *criticalBody = addMutexCriticalSectionBody(
+            critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(criticalBody);
+        mlir::Value slotRef =
+            getMutexPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+        mlir::Value oldValue = ReussirRefLoadOp::create(
+            rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+        mlir::Block &body = op.getBody().front();
+        auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+        rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                   mlir::ValueRange{oldValue});
+        rewriter.setInsertionPoint(yield);
+        ReussirRefStoreOp::create(rewriter, yield.getLoc(), slotRef,
+                                  yield.getNewValue());
+        mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                        yield.getOutput()
+                                            ? mlir::ValueRange{yield.getOutput()}
+                                            : mlir::ValueRange{});
+        rewriter.eraseOp(yield);
+      }
+      if (op->getNumResults() != 0)
+        rewriter.replaceOp(op, critical.getResults());
+      else
+        rewriter.eraseOp(op);
+      return mlir::success();
+    }
     // The verifier guarantees an exclusive cell here. The whole
     // read-modify-write becomes the guarded arm: raise the in-use flag for
     // the body so any reentrant access to the cell panics while its element
     // is moved out, and clear it with the replacement store.
-    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
     auto guarded = createGuardedAccess(
         access, op.getLoc(), rewriter,
         "cell.rmw on an exclusive cell that is in use", op->getResultTypes());
