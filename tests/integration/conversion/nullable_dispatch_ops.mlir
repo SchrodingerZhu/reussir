@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops --convert-scf-to-cf --convert-to-llvm | \
+// RUN: %reussir-opt %s --reussir-convert-to-std --convert-scf-to-cf --convert-to-llvm | \
 // RUN: %reussir-translate --mlir-to-llvmir | %FileCheck %s
 
 module {

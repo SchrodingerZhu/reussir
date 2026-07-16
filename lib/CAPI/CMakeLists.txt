@@ -31,7 +31,7 @@ set(REUSSIR_BACKEND_ARCHIVES
   # conversions
   MLIRReussirTypeConverter
   MLIRReussirBasicOpsLowering
-  MLIRReussirSCFOpsLowering
+  MLIRReussirConvertToSTD
   MLIRReussirRegionPatterns
   MLIRReussirAcquireDropExpansion
   MLIRReussirRcDecrementExpansion

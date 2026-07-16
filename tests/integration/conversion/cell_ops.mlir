@@ -1,10 +1,10 @@
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation))' | %FileCheck %s --check-prefix=TOKEN
 // RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQUIRE
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops --reussir-invariant-group-analysis | %FileCheck %s --check-prefix=INVARIANT
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=SCF
+// RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=EXPAND
+// RUN: %reussir-opt %s --reussir-convert-to-std --reussir-invariant-group-analysis | %FileCheck %s --check-prefix=INVARIANT
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion)' | %FileCheck %s --check-prefix=DROP
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-lowering-scf-ops,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !inner = !reussir.rc<i64>
 !nullable_inner = !reussir.nullable<!inner>

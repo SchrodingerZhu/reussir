@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops -convert-scf-to-cf -reussir-lowering-basic-ops -convert-to-llvm -reconcile-unrealized-casts | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std -convert-scf-to-cf -reussir-lowering-basic-ops -convert-to-llvm -reconcile-unrealized-casts | %FileCheck %s
 
 // Test closure uniqify operation with closure passed in and passed out
 // No create operation is used - closure is provided as function argument

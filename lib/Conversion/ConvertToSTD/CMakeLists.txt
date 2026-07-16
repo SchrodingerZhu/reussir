@@ -1,5 +1,5 @@
-add_mlir_conversion_library(MLIRReussirSCFOpsLowering
-  SCFOpsLowering.cpp
+add_mlir_conversion_library(MLIRReussirConvertToSTD
+  ConvertToSTD.cpp
 
   DEPENDS
   MLIRReussirConversionPassIncGen
@@ -11,7 +11,10 @@ add_mlir_conversion_library(MLIRReussirSCFOpsLowering
   MLIRArithDialect
   MLIRReussir
   MLIRMathDialect
+  MLIRPtrDialect
   MLIRSCFDialect
   MLIRFuncDialect
   MLIRTransforms
+  MLIRSync
+  MLIRSyncConvertSyncToSTD
 )

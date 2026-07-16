@@ -1802,7 +1802,7 @@ def ReussirClosureEvalOp : ReussirClosureOp<"eval", []> {
     the operation behaves as one `closure.uniqify` followed by one
     `closure.apply` per argument followed by the plain eval — i.e. a single
     uniqueness resolution for the whole pack instead of one per application
-    (the SCF-ops lowering expands it exactly so). The fused form is produced
+    (ConvertToSTD expands it exactly so). The fused form is produced
     by `reussir-closure-beta-reduction`, which folds single-use
     uniqify/apply chains into the pack; like the plain form it CONSUMES the
     closure and its argument pack, so argument ownership needs no special

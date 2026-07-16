@@ -1,4 +1,4 @@
-//===-- SCFOpsLowering.h - Reussir SCF ops lowering ------------*- c++ -*-===//
+//===-- ConvertToSTD.h - Reussir standard conversion ------------*- c++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -6,25 +6,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This header file provides lowering patterns for Reussir structured control
-// flow and Cell operations.
+// This header file provides patterns that lower high-level Reussir operations
+// to standard MLIR dialects.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
-#ifndef REUSSIR_CONVERSION_SCFOPSLOWERING_H
-#define REUSSIR_CONVERSION_SCFOPSLOWERING_H
+#ifndef REUSSIR_CONVERSION_CONVERTTOSTD_H
+#define REUSSIR_CONVERSION_CONVERTTOSTD_H
 
 #include <mlir/Pass/Pass.h>
 #include <mlir/Transforms/DialectConversion.h>
 
 namespace reussir {
 
-#define GEN_PASS_DECL_REUSSIRSCFOPSLOWERINGPASS
+#define GEN_PASS_DECL_REUSSIRCONVERTTOSTDPASS
 #include "Reussir/Conversion/Passes.h.inc"
 
-void populateSCFOpsLoweringConversionPatterns(
-    mlir::RewritePatternSet &patterns);
+void populateConvertToSTDConversionPatterns(mlir::RewritePatternSet &patterns);
 
 } // namespace reussir
 
-#endif // REUSSIR_CONVERSION_SCFOPSLOWERING_H
+#endif // REUSSIR_CONVERSION_CONVERTTOSTD_H

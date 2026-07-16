@@ -1,5 +1,5 @@
 // RUN: %reussir-opt %s \
-// RUN:   --reussir-lowering-scf-ops \
+// RUN:   --reussir-convert-to-std \
 // RUN:   --convert-scf-to-cf \
 // RUN:   --reussir-attach-native-target \
 // RUN:   --convert-to-llvm | \

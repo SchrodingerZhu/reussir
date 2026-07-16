@@ -174,7 +174,7 @@ MLIR Module with reussir.polyffi operations
     │       └─ llvm::Linker::linkModules() → merge
     │
     ▼ PassManager.run()
-    │   └─ SCF lowering → Basic ops lowering → LLVM dialect
+    │   └─ ConvertToSTD → Basic ops lowering → LLVM dialect
     │
     ▼ translateModuleToLLVMIR()
     │   └─ Main program LLVM IR

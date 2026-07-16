@@ -1,5 +1,5 @@
 // RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQ2D --check-prefix=DROP1D
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=CLONE
+// RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=CLONE
 
 !elt = !reussir.rc<i64>
 !arr2 = !reussir.array<2 x !elt>
