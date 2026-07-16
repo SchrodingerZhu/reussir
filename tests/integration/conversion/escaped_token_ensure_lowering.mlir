@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s -reussir-token-reuse --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s -reussir-token-reuse --reussir-convert-to-std | %FileCheck %s
 
 // The ensure lowering may replace its null check with the producing expanded
 // decrement's own condition — but only for the decrement's *own* token

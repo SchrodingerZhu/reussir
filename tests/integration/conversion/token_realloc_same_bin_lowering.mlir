@@ -1,10 +1,10 @@
-// RUN: %reussir-opt %s -reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s -reussir-convert-to-std | %FileCheck %s
 
 // A `token.realloc` is a real resize between two distinct layouts. Whether
 // the two layouts share an allocator bin is only a *pairing heuristic* in
 // TokenReuse — it says nothing about whether the block can be relabeled in
 // place (that holds only on a bin allocator that ignores the free size). So
-// SCF lowering never elides a realloc: every one is left for the direct
+// ConvertToSTD never elides a realloc: every one is left for the direct
 // `__reussir_reallocate` lowering, which resizes for real and is sound on
 // any allocator (mimalloc or a size-strict one alike).
 

@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s
 
 // Under the immortal encoding a nullary arm's value is always the per-tag
 // immediate, so dispatch peels such arms into `rc.compare_immortal` guards

@@ -1511,7 +1511,7 @@ transform [{
     #[test]
     fn lowers_a_match_through_the_pipeline() {
         // The whole match path lowers to the LLVM dialect: `record.dispatch`
-        // expands (SCF-ops lowering) to an `scf.index_switch` and thence to LLVM
+        // expands during ConvertToSTD to an `scf.index_switch` and thence to LLVM
         // control flow, and the reference projections lower to GEP/load.
         let src = r#"
             enum List<T> { Nil, Cons(T, List<T>) }

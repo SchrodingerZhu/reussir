@@ -37,7 +37,7 @@ MlirPass reussirCreateRegionPatternsPass(void);
 MlirPass reussirCreateIncDecCancellationPass(void);
 MlirPass reussirCreateRcDecrementExpansionPass(void);
 MlirPass reussirCreateInferVariantTagPass(void);
-MlirPass reussirCreateSCFOpsLoweringPass(void);
+MlirPass reussirCreateConvertToSTDPass(void);
 // Beta-reduces closure apply/eval chains (inlines fully visible closures,
 // collapses chained uniqueness checks). Aggressive-opt only: inlining closure
 // bodies hurts debuggability.

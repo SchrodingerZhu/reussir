@@ -1,7 +1,7 @@
 // RUN: %reussir-opt %s --reussir-unique-carrying-recursion-analysis | %FileCheck %s
 // RUN: %reussir-opt %s \
 // RUN:   --reussir-unique-carrying-recursion-analysis \
-// RUN:   --reussir-lowering-scf-ops \
+// RUN:   --reussir-convert-to-std \
 // RUN:   --reussir-rc-decrement-expansion \
 // RUN:   --reussir-acquire-drop-expansion \
 // RUN:   --reussir-acquire-drop-expansion='expand-decrement=1 outline-record=1' \

@@ -15,4 +15,6 @@ add_mlir_conversion_library(MLIRReussirTypeConverter
   MLIRTransforms
   MLIRLLVMDialect
   MLIRArithAttrToLLVMConversion
+  MLIRSync
+  MLIRSyncTypeConverter
 )

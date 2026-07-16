@@ -2,9 +2,10 @@ use std::env;
 use std::path::PathBuf;
 
 // Locates the directory holding the staged Reussir static archives
-// (libReussirCAPI.a and the libMLIRReussir* component archives). CMake sets
-// REUSSIR_CAPI_LIB_DIR when it drives the build; a direct `cargo` invocation
-// falls back to the in-tree `build/lib` next to the workspace root.
+// (libReussirCAPI.a plus the libMLIRReussir* and libMLIRSync* component
+// archives). CMake sets REUSSIR_CAPI_LIB_DIR when it drives the build; a direct
+// `cargo` invocation falls back to the in-tree `build/lib` next to the workspace
+// root.
 fn capi_lib_dir() -> PathBuf {
     if let Ok(dir) = env::var("REUSSIR_CAPI_LIB_DIR") {
         return PathBuf::from(dir);
@@ -13,18 +14,19 @@ fn capi_lib_dir() -> PathBuf {
     manifest.join("../../build/lib")
 }
 
-// Reussir component archives the C API references: the dialect, analyses, the
-// Rust-to-bitcode compiler, and every conversion/transformation pass exposed as
-// a factory. They are whole-archived so registrations are retained and so the
-// link order among them does not matter; their MLIR/LLVM references resolve
-// against mlir-sys' static MLIR/LLVM, which is emitted after these.
+// Component archives the C API references: Reussir's dialect, analyses,
+// Rust-to-bitcode compiler, and passes, plus the sync dialect and conversions
+// used by lock-guarded cells. They are whole-archived so registrations are
+// retained and so the link order among them does not matter; their MLIR/LLVM
+// references resolve against mlir-sys' static MLIR/LLVM, which is emitted after
+// these.
 const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussir",
     "MLIRReussirAnalysis",
     "ReussirRustCompiler",
     "MLIRReussirTypeConverter",
     "MLIRReussirBasicOpsLowering",
-    "MLIRReussirSCFOpsLowering",
+    "MLIRReussirConvertToSTD",
     "MLIRReussirRegionPatterns",
     "MLIRReussirAcquireDropExpansion",
     "MLIRReussirRcDecrementExpansion",
@@ -43,6 +45,12 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirInvariantGroupAnalysis",
     "MLIRReussirUniqueCarryingRecursionAnalysis",
     "MLIRReussirTRMCRecursionAnalysis",
+    // mlir-sync components referenced by Reussir's type converter,
+    // ConvertToSTD pass, and ConvertToLLVM interface.
+    "MLIRSync",
+    "MLIRSyncTypeConverter",
+    "MLIRSyncConvertSyncToSTD",
+    "MLIRSyncConvertSyncToLLVM",
     // The custom LLVM passes run by the JIT codegen helper (Jit.cpp).
     "ReussirLLVMAllocationSimplicationPass",
 ];

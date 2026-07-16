@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s
 
 module {
   // CHECK: func.func private @[[DISPATCHER1:.*REUSSIR_STRING_DISPATCHER.*]](%{{.*}}: !reussir.str<local>) -> (index, i1)

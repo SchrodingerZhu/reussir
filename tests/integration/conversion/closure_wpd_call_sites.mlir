@@ -1,5 +1,5 @@
 // RUN: %reussir-opt %s \
-// RUN:   --pass-pipeline='builtin.module(reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops{closure-wpd=1},reussir-convert-to-llvm,reconcile-unrealized-casts)' \
+// RUN:   --pass-pipeline='builtin.module(reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops{closure-wpd=1},reussir-convert-to-llvm,reconcile-unrealized-casts)' \
 // RUN: | %FileCheck %s
 
 // Closure WPD call-site type tests (docs/design/closure-wpd.md). Every

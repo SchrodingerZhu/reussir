@@ -78,15 +78,20 @@ def ReussirDebugInfoConversionPass
 }
 
 //===----------------------------------------------------------------------===//
-// SCFOpsLowering
+// ConvertToSTD
 //===----------------------------------------------------------------------===//
-def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
-  let summary = "lower Reussir structured control flow and Cell operations";
+def ReussirConvertToSTDPass
+    : Pass<"reussir-convert-to-std", "::mlir::ModuleOp"> {
+  let summary = "lower high-level Reussir operations to standard MLIR dialects";
   let description = [{
-    `reussir-lowering-scf-ops` lowers Reussir SCF operations to MLIR SCF
-    operations. It also lowers Cell creation and non-atomic Cell
-    get/set/rmw/in-use operations to RC borrows, mutable slot accesses, and
-    MLIR SCF guards.
+    `reussir-convert-to-std` lowers high-level Reussir operations to standard
+    MLIR dialects such as arith, func, memref, and scf. It also expands
+    high-level sync operations into structured control flow and runtime calls,
+    while leaving straight-line Reussir and sync bridge operations for the
+    final LLVM conversion.
+
+    Cell creation and non-atomic Cell get/set/rmw/in-use operations become RC
+    borrows, mutable slot accesses, and MLIR SCF guards.
     Cell get acquires the exact loaded value, set drops the old slot before
     storing the caller-owned replacement, and rmw moves the old and replacement
     values through its region without implicit ownership traffic.
@@ -104,7 +109,9 @@ def ReussirSCFOpsLoweringPass : ReussirLoweringPass<"scf-ops"> {
                            "::reussir::ReussirDialect",
                            "::mlir::math::MathDialect",
                            "::mlir::memref::MemRefDialect",
+                           "::mlir::ptr::PtrDialect",
                            "::mlir::scf::SCFDialect",
+                           "::mlir::sync::SyncDialect",
                            "::mlir::tensor::TensorDialect",
                            "::mlir::ub::UBDialect"];
 }
@@ -175,8 +182,8 @@ def ReussirRcDecrementExpansionPass : Pass<"reussir-rc-decrement-expansion"> {
   let summary = "expand Reussir rc decrement operations";
   let description = [{
     `reussir-rc-decrement-expansion` expands Reussir rc decrement operations.
-    This is separated from scf expansion pass as it may be used in early stages
-    of the pipeline.
+    This is separated from the ConvertToSTD pass because it may be used in
+    early stages of the pipeline.
   }];
 
   let dependentDialects = ["::reussir::ReussirDialect",

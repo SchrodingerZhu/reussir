@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s
 
 !arr4 = !reussir.array<4 x i8>
 !rc_arr4 = !reussir.rc<!arr4>

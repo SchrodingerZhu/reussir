@@ -90,7 +90,7 @@ pub enum Anchor {
     /// codegen, no tokens instantiated yet. For whole-program structural
     /// rewrites and custom analyses.
     Entry,
-    /// After the Reussir-level passes (both `scf-ops-lowering` runs and the
+    /// After the Reussir-level passes (both `ConvertToSTD` runs and the
     /// polymorphic-FFI compile are done), before the LLVM descent begins:
     /// array kernels are plain memref/scf/arith loop nests. The main
     /// scheduling surface — tiling, unrolling, fusion.
@@ -367,21 +367,21 @@ pub fn run_lowering_pipeline(
         module: sys::reussirCreateAcquireDropExpansionPass(false, false);
         // Materialize Cell accesses and their ownership effects before the
         // second inc/dec cancellation phase.
-        module: sys::reussirCreateSCFOpsLoweringPass();
+        module: sys::reussirCreateConvertToSTDPass();
         func:   sys::reussirCreateIncDecCancellationPass();
 
         // Second acquire/drop expansion phase: expand decrements and outline
         // record drops.
         module: sys::reussirCreateAcquireDropExpansionPass(true, true);
         func:   sys::reussirCreateTokenReusePass(options.reuse_token_across_call);
-        module: sys::reussirCreateSCFOpsLoweringPass();
+        module: sys::reussirCreateConvertToSTDPass();
         func:   sys::reussirCreateRcCreateSinkPass();
         func:   sys::reussirCreateRcCreateFusionPass();
         module: sys::reussirCreateTRMCRecursionAnalysisPass();
         module: sys::reussirCreateCompilePolymorphicFFIPass(false);
 
         // `kernel` anchor: the Reussir-level work is done (both
-        // scf-ops-lowering runs, FFI compiled) and the LLVM descent has not
+        // ConvertToSTD runs, FFI compiled) and the LLVM descent has not
         // begun — array kernels are plain memref/scf/arith loop nests, the
         // transform dialect's home turf. Runs before the invariant analysis
         // so that pass sees the scheduled IR.
@@ -472,6 +472,37 @@ mod tests {
         // After lowering, the function is an llvm.func rather than a func.func.
         let rendered = module.as_operation().to_string();
         assert!(rendered.contains("llvm.func @answer"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn lowers_sync_critical_section_through_c_api_pipeline() {
+        let context = crate::context();
+        let source = r#"
+            module {
+              func.func @read_locked(%lock: memref<!sync.rwlock<i64>>) -> i64 {
+                %result = sync.rwlock.read_critical_section %lock
+                    : memref<!sync.rwlock<i64>> -> i64 {
+                ^bb0(%payload: memref<i64>):
+                  %value = memref.load %payload[] : memref<i64>
+                  sync.yield %value : i64
+                }
+                func.return %result : i64
+              }
+            }
+        "#;
+        let mut module = Module::parse(&context, source).expect("module should parse");
+
+        run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
+            .expect("pipeline should succeed");
+
+        assert!(module.as_operation().verify());
+        let rendered = module.as_operation().to_string();
+        assert!(
+            rendered.contains("llvm.func @read_locked"),
+            "got:\n{rendered}"
+        );
+        assert!(!rendered.contains("sync."), "got:\n{rendered}");
+        assert!(!rendered.contains("ptr."), "got:\n{rendered}");
     }
 
     #[test]

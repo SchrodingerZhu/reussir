@@ -25,11 +25,11 @@ reussir-opt <input-file> \
  --reussir-rc-decrement-expansion \
  --reussir-infer-variant-tag \
  --reussir-acquire-drop-expansion \
- --reussir-lowering-scf-ops \
+ --reussir-convert-to-std \
  --reussir-inc-dec-cancellation \
  --reussir-acquire-drop-expansion='expand-decrement=1 outline-record=1' \
  --reussir-token-reuse \
- --reussir-lowering-scf-ops \
+ --reussir-convert-to-std \
  --reussir-compile-polymorphic-ffi \
  --convert-scf-to-cf \
  | \

@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s
 
 // Test closure uniqify operation rewrite pattern
 module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> : vector<2xi64>>>} {

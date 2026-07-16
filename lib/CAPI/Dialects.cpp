@@ -31,6 +31,7 @@
 #include <mlir/Dialect/Linalg/TransformOps/DialectExtension.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Ptr/IR/PtrDialect.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/SCF/TransformOps/SCFTransformOps.h>
 #include <mlir/Dialect/Transform/IR/TransformDialect.h>
@@ -42,6 +43,7 @@
 
 #include "Reussir/Conversion/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
+#include "Sync/IR/SyncDialect.h"
 
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(Reussir, reussir,
                                       ::reussir::ReussirDialect)
@@ -60,7 +62,8 @@ void populateReussirRegistry(mlir::DialectRegistry &registry) {
                   mlir::LLVM::LLVMDialect, mlir::arith::ArithDialect,
                   mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
                   mlir::math::MathDialect, mlir::ub::UBDialect,
-                  mlir::func::FuncDialect, mlir::cf::ControlFlowDialect>();
+                  mlir::func::FuncDialect, mlir::cf::ControlFlowDialect,
+                  mlir::ptr::PtrDialect, mlir::sync::SyncDialect>();
 
   // Since MLIR 17 the func dialect's DialectInlinerInterface lives in a
   // separately registered extension; without it the inliner pass resolves no

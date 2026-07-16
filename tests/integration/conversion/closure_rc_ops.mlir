@@ -1,6 +1,6 @@
 // RUN: %reussir-opt \
 // RUN:   -reussir-closure-outlining \
-// RUN:   -reussir-lowering-scf-ops \
+// RUN:   -reussir-convert-to-std \
 // RUN:   -convert-scf-to-cf \
 // RUN:   -reussir-lowering-basic-ops \
 // RUN:   -convert-to-llvm \
