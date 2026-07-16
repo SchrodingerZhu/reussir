@@ -127,7 +127,7 @@ unsafe extern "C" {
     pub fn reussirCreateIncDecCancellationPass() -> MlirPass;
     pub fn reussirCreateRcDecrementExpansionPass() -> MlirPass;
     pub fn reussirCreateInferVariantTagPass() -> MlirPass;
-    pub fn reussirCreateSCFOpsLoweringPass() -> MlirPass;
+    pub fn reussirCreateConvertToSTDPass() -> MlirPass;
     pub fn reussirCreateRcCreateSinkPass() -> MlirPass;
 
     /// Encodes nullary variants of shared rc-boxed enums as tagged pointer

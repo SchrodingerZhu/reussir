@@ -36,7 +36,7 @@
 
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/Conversion/Passes.h"
-#include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/Conversion/ConvertToSTD.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/Transformation/Passes.h"
@@ -84,8 +84,8 @@ MlirPass reussirCreateRcDecrementExpansionPass(void) {
 MlirPass reussirCreateInferVariantTagPass(void) {
   return wrapOwned(reussir::createReussirInferVariantTagPass());
 }
-MlirPass reussirCreateSCFOpsLoweringPass(void) {
-  return wrapOwned(reussir::createReussirSCFOpsLoweringPass());
+MlirPass reussirCreateConvertToSTDPass(void) {
+  return wrapOwned(reussir::createReussirConvertToSTDPass());
 }
 MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent) {
   reussir::ReussirSpecialPointerTagPassOptions options;

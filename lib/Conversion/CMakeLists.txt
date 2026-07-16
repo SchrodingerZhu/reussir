@@ -1,6 +1,6 @@
 add_subdirectory(TypeConverter)
 add_subdirectory(BasicOpsLowering)
-add_subdirectory(SCFOpsLowering)
+add_subdirectory(ConvertToSTD)
 add_subdirectory(RegionPatterns)
 add_subdirectory(AcquireDropExpansion)
 add_subdirectory(RcDecrementExpansion)
@@ -12,7 +12,7 @@ add_subdirectory(AttachNativeTarget)
 set(REUSSIR_CONVERSION_AGGREGATE_LIBS
   MLIRReussirTypeConverter
   MLIRReussirBasicOpsLowering
-  MLIRReussirSCFOpsLowering
+  MLIRReussirConvertToSTD
   MLIRReussirRegionPatterns
   MLIRReussirAcquireDropExpansion
   MLIRReussirRcDecrementExpansion

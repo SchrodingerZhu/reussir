@@ -1,5 +1,5 @@
 // RUN: %reussir-opt %s \
-// RUN:   --pass-pipeline='builtin.module(reussir-lowering-scf-ops)' \
+// RUN:   --pass-pipeline='builtin.module(reussir-convert-to-std)' \
 // RUN: | %FileCheck %s
 
 // A fused `closure.eval` (`with` pack) expands to unchecked applies plus the

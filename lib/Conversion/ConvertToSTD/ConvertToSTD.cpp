@@ -1,4 +1,4 @@
-//===-- SCFOpsLowering.cpp - Reussir SCF ops lowering impl -----*- C++ -*-===//
+//===-- ConvertToSTD.cpp - Reussir standard conversion impl -----*- C++ -*-===//
 //
 // Part of the Reussir project, dual licensed under the Apache License v2.0 or
 // the MIT License.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/Conversion/ConvertToSTD.h"
 #include "Reussir/Conversion/Blake3Symbol.h"
 #include "Reussir/Conversion/RcDecrementExpansion.h"
 #include "Reussir/IR/ReussirDialect.h"
@@ -30,6 +30,7 @@
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Math/IR/Math.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Ptr/IR/PtrOps.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/UB/IR/UBOps.h>
@@ -41,11 +42,15 @@
 #include <mlir/Pass/Pass.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
+#include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 #include <utility>
+
+#include "Sync/Conversion/ConvertSyncToSTD.h"
+#include "Sync/IR/SyncDialect.h"
 
 namespace reussir {
 
-#define GEN_PASS_DEF_REUSSIRSCFOPSLOWERINGPASS
+#define GEN_PASS_DEF_REUSSIRCONVERTTOSTDPASS
 #include "Reussir/Conversion/Passes.h.inc"
 //===----------------------------------------------------------------------===//
 // String Pattern Trie
@@ -1474,24 +1479,25 @@ public:
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// SCFOpsLoweringPass
+// ConvertToSTDPass
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct SCFOpsLoweringPass
-    : public impl::ReussirSCFOpsLoweringPassBase<SCFOpsLoweringPass> {
+struct ConvertToSTDPass
+    : public impl::ReussirConvertToSTDPassBase<ConvertToSTDPass> {
   using Base::Base;
   void runOnOperation() override {
     mlir::ConversionTarget target(getContext());
     mlir::RewritePatternSet patterns(&getContext());
 
-    populateSCFOpsLoweringConversionPatterns(patterns);
+    populateConvertToSTDConversionPatterns(patterns);
 
     target.addLegalDialect<mlir::arith::ArithDialect,
                            mlir::bufferization::BufferizationDialect,
                            mlir::func::FuncDialect, mlir::linalg::LinalgDialect,
                            mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                           mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                           mlir::ptr::PtrDialect, mlir::scf::SCFDialect,
+                           mlir::sync::SyncDialect, mlir::tensor::TensorDialect,
                            mlir::ub::UBDialect, reussir::ReussirDialect>();
     target.addDynamicallyLegalOp<ReussirArrayViewOp>([](ReussirArrayViewOp op) {
       return llvm::isa<mlir::MemRefType>(op.getView().getType());
@@ -1530,15 +1536,41 @@ struct SCFOpsLoweringPass
         ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+                                      std::move(patterns)))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Reussir conversion may introduce high-level synchronization operations.
+    // Expand their structured control flow here as part of the same standard
+    // conversion stage. The remaining straight-line sync bridge operations
+    // are intentionally kept for the final LLVM conversion.
+    // Seed the greedy driver only with sync operations: it will still visit
+    // the operations created by their multi-step expansion, without folding
+    // unrelated standard IR elsewhere in the module.
+    llvm::SmallVector<mlir::Operation *> syncOps;
+    getOperation()->walk([&](mlir::Operation *op) {
+      if (op->getName().getDialectNamespace() ==
+          mlir::sync::SyncDialect::getDialectNamespace())
+        syncOps.push_back(op);
+    });
+    if (syncOps.empty())
+      return;
+
+    mlir::RewritePatternSet syncPatterns(&getContext());
+    mlir::sync::populateConvertSyncToSTDPatterns(syncPatterns);
+    mlir::GreedyRewriteConfig config;
+    config.setStrictness(mlir::GreedyRewriteStrictness::ExistingAndNewOps);
+    if (failed(mlir::applyOpPatternsGreedily(
+            syncOps, mlir::FrozenRewritePatternSet(std::move(syncPatterns)),
+            config)))
       signalPassFailure();
   }
 };
 } // namespace
 
-void populateSCFOpsLoweringConversionPatterns(
-    mlir::RewritePatternSet &patterns) {
-  // Add conversion patterns for Reussir SCF operations
+void populateConvertToSTDConversionPatterns(mlir::RewritePatternSet &patterns) {
+  // Add patterns for high-level Reussir operations.
   patterns.add<
       ReussirNullableDispatchOpRewritePattern, ReussirArrayViewOpRewritePattern,
       ReussirRecordDispatchOpRewritePattern,

@@ -1,13 +1,13 @@
 // RUN: %reussir-opt %s | %FileCheck %s --check-prefix=ROUNDTRIP
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s --check-prefix=SCF
-// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-lowering-scf-ops,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=SCF
+// RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-acquire-drop-expansion,reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s --check-prefix=LLVM
 
 !atomic_i64 = !reussir.rc<!reussir.cell<i64 atomic> atomic>
 !atomic_f32 = !reussir.rc<!reussir.cell<f32 atomic> atomic>
 
 module {
   // Atomic Cell creation is structural initialization, not an atomic access,
-  // so SCF lowering still materializes the RC box and payload slot.
+  // so ConvertToSTD still materializes the RC box and payload slot.
   // SCF-LABEL: func.func @atomic_create
   // SCF: reussir.rc.create
   // SCF-NOT: reussir.cell.create
@@ -65,7 +65,7 @@ module {
     return %old : i64
   }
 
-  // LLVM has no atomicrmw multiply, so the SCF lowering expands the direct
+  // LLVM has no atomicrmw multiply, so ConvertToSTD expands the direct
   // multiply into an scf.while retry loop committed with the weak
   // ref.cmpxchg bridge; the LLVM lowering never touches control flow.
   // SCF-LABEL: func.func @direct_multiply

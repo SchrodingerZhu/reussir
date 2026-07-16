@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s
 
 // A free of a *nullable* token must be guarded before it reaches the runtime
 // call: the null case (the shared branch of an expanded rc decrement) must

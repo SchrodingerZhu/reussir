@@ -6,11 +6,11 @@
 // RUN: --reussir-rc-decrement-expansion \
 // RUN: --reussir-infer-variant-tag \
 // RUN: --reussir-acquire-drop-expansion \
-// RUN: --reussir-lowering-scf-ops \
+// RUN: --reussir-convert-to-std \
 // RUN: --reussir-inc-dec-cancellation \
 // RUN: --reussir-acquire-drop-expansion='expand-decrement=1 outline-record=1' \
 // RUN: --reussir-token-reuse \
-// RUN: --reussir-lowering-scf-ops \
+// RUN: --reussir-convert-to-std \
 // RUN: --reussir-compile-polymorphic-ffi \
 // RUN: --convert-scf-to-cf \
 // RUN: --convert-to-llvm | \

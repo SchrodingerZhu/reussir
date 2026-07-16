@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-lowering-scf-ops --convert-to-llvm | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std --convert-to-llvm | %FileCheck %s
 
 module {
   // CHECK-LABEL: @test_startswith_safe

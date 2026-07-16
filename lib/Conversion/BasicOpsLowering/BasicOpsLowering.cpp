@@ -24,6 +24,7 @@
 #include <mlir/Conversion/MathToLLVM/MathToLLVM.h>
 #include <mlir/Conversion/MathToLibm/MathToLibm.h>
 #include <mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h>
+#include <mlir/Conversion/PtrToLLVM/PtrToLLVM.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
 #include <mlir/Conversion/UBToLLVM/UBToLLVM.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -62,6 +63,7 @@
 #include "Reussir/IR/ReussirTypes.h"
 #include "Reussir/Support/AllocatorBinModel.h"
 #include "Reussir/Transformation/SpecialPointerTag.h"
+#include "Sync/Conversion/ConvertSyncToLLVM.h"
 #include "mlir/IR/Location.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/BinaryFormat/Dwarf.h"
@@ -859,7 +861,7 @@ convertAtomicRMWKind(mlir::arith::AtomicRMWKind kind) {
     return LLVMKind::_xor;
   case ArithKind::mulf:
   case ArithKind::muli:
-    // LLVM has no atomicrmw multiply; the SCF lowering expands those kinds
+    // LLVM has no atomicrmw multiply; ConvertToSTD expands those kinds
     // (and the region form) into an scf.while + ref.cmpxchg retry loop.
     return std::nullopt;
   }
@@ -878,13 +880,13 @@ struct ReussirAtomicCellRmwConversionPattern
     if (!cellType.getAtomic())
       return rewriter.notifyMatchFailure(op, "cell is not atomic");
     // Only the straight-line native kinds reach the LLVM conversion; every
-    // loop-shaped read-modify-write was expanded during SCF lowering.
+    // loop-shaped read-modify-write was expanded during ConvertToSTD.
     auto kind = op.getKind();
     std::optional<mlir::LLVM::AtomicBinOp> llvmKind =
         kind ? convertAtomicRMWKind(*kind) : std::nullopt;
     if (!llvmKind)
       return rewriter.notifyMatchFailure(
-          op, "loop-shaped atomic RMW must be expanded during SCF lowering");
+          op, "loop-shaped atomic RMW must be expanded during ConvertToSTD");
 
     auto *converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
@@ -3646,8 +3648,8 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirRecordCoerceOp, ReussirRegionVTableOp, ReussirRcFreezeOp,
         ReussirRegionCleanupOp, ReussirRegionCreateOp, ReussirRcReinterpretOp,
         ReussirCellCreateOp, ReussirCellGetOp, ReussirCellSetOp,
-        ReussirCellRmwOp, ReussirCellYieldOp, ReussirClosureApplyOp,
-        ReussirClosureCloneOp, ReussirClosureEvalOp,
+        ReussirCellRmwOp, ReussirCellYieldOp,
+        ReussirClosureApplyOp, ReussirClosureCloneOp, ReussirClosureEvalOp,
         ReussirClosureInspectPayloadOp, ReussirClosureCursorOp,
         ReussirClosureInstantiateOp, ReussirClosureVtableOp,
         ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcFetchSubOp,
@@ -3753,7 +3755,12 @@ void registerReussirBasicOpsLoweringInterface(mlir::DialectRegistry &registry) {
   mlir::registerConvertFuncToLLVMInterface(registry);
   mlir::registerConvertMathToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
+  mlir::ptr::registerConvertPtrToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
+  // Lock-guarded cells lower their remaining `sync` fast-path/bridge
+  // operations to LLVM through this interface during the basic-ops lowering's
+  // `convert-to-llvm` step.
+  mlir::sync::registerConvertSyncToLLVMInterface(registry);
   registry.addExtension(
       +[](mlir::MLIRContext *context, ReussirDialect *dialect) {
         dialect->addInterfaces<ReussirConvertToLLVMPatternInterface>();

@@ -8,6 +8,8 @@
 
 #include "Reussir/Conversion/TypeConverter.h"
 #include "Reussir/IR/ReussirTypes.h"
+#include "Sync/Conversion/TypeConverter.h"
+#include "Sync/IR/SyncTypes.h"
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/DataLayout.h>
@@ -180,6 +182,10 @@ mlir::LowerToLLVMOptions getReussirToLLVMOptions(mlir::ModuleOp op) {
 
 void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   auto dataLayout = buildMLIRDataLayout(converter);
+  // Lock-guarded cells lower onto the `sync` dialect: register its type
+  // conversions so that `convertType` can resolve `!sync.*` wrappers (and, via
+  // the CellType conversion below, the reussir cell types built on them).
+  mlir::sync::populateSyncToLLVMTypeConversions(converter);
   converter.addConversion(
       [&converter, dataLayout](RecordType type,
                                llvm::SmallVectorImpl<mlir::Type> &results) {
@@ -236,11 +242,24 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   // the RC payload shape. An exclusive cell additionally carries a trailing
   // i1 in-use flag, addressed as `ref.project [1]`.
   converter.addConversion([&converter](CellType type) -> mlir::Type {
+    // A lock-guarded cell is physically the corresponding `sync` primitive
+    // wrapping the payload (`!sync.rwlock<T>` etc.). Defer to the sync type
+    // conversions so the RC box gets the lock header plus payload layout.
+    mlir::MLIRContext *ctx = type.getContext();
+    if (type.getRwlock())
+      return converter.convertType(
+          mlir::sync::RwLockType::get(ctx, type.getElementType()));
+    if (type.getMutex())
+      return converter.convertType(
+          mlir::sync::MutexType::get(ctx, type.getElementType()));
+    if (type.getFlatlock())
+      return converter.convertType(
+          mlir::sync::CombiningLockType::get(ctx, type.getElementType()));
     llvm::SmallVector<mlir::Type> members{
         converter.convertType(type.getElementType())};
     if (type.getExclusive())
-      members.push_back(mlir::IntegerType::get(type.getContext(), 1));
-    return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
+      members.push_back(mlir::IntegerType::get(ctx, 1));
+    return mlir::LLVM::LLVMStructType::getLiteral(ctx, members);
   });
 
   converter.addConversion([&converter](RcBoxType type) -> mlir::Type {

@@ -79,7 +79,7 @@ module;
 #include "Reussir/Bridge.h"
 #include "Reussir/Conversion/BasicOpsLowering.h"
 #include "Reussir/Conversion/Passes.h"
-#include "Reussir/Conversion/SCFOpsLowering.h"
+#include "Reussir/Conversion/ConvertToSTD.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/LLVMPass/AllocationSimplication.h"
@@ -164,7 +164,7 @@ void createLoweringPipeline(mlir::PassManager &pm,
   pm.addNestedPass<mlir::func::FuncOp>(
       reussir::createReussirInferVariantTagPass());
   pm.addPass(reussir::createReussirAcquireDropExpansionPass());
-  pm.addPass(reussir::createReussirSCFOpsLoweringPass());
+  pm.addPass(reussir::createReussirConvertToSTDPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       reussir::createReussirIncDecCancellationPass());
 
@@ -179,7 +179,7 @@ void createLoweringPipeline(mlir::PassManager &pm,
     pm.addNestedPass<mlir::func::FuncOp>(
         reussir::createReussirTokenReusePass(tokenReuseOpts));
   }
-  pm.addPass(reussir::createReussirSCFOpsLoweringPass());
+  pm.addPass(reussir::createReussirConvertToSTDPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       reussir::createReussirRcCreateSinkPass());
   pm.addNestedPass<mlir::func::FuncOp>(
