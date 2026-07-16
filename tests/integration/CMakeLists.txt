@@ -178,7 +178,8 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # builds after the runtime, not concurrently, and enables the repl-rs suite.
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
-  DEPENDS reussir-opt reussir-rt reussir-translate reussir-syntax rrc rrepl)
+  DEPENDS reussir-opt reussir-rt reussir-translate reussir-syntax rrc rrepl
+          mlir-sync-runtime)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer
