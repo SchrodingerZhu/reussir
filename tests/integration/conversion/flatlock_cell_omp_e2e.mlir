@@ -1,17 +1,9 @@
 // REQUIRES: openmp
-// On Windows `-lreussir_rt` resolves to the Rust *staticlib*, so this test
-// would statically combine two Rust runtimes (reussir_rt's bundled std and
-// the no_std mlir_sync archive both define `rust_eh_personality` /
-// `rust_begin_unwind`) and lld-link fails with LNK2005; see
-// mutex_cell_omp_e2e.mlir. ELF/Mach-O link reussir_rt as a shared library.
-// UNSUPPORTED: windows
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' -o %t.mlir
 // RUN: %reussir-translate --mlir-to-llvmir %t.mlir | %opt -S -O2 -o %t.ll
 // RUN: %llc %t.ll -relocation-model=pic -filetype=obj -o %t.o
-// %sync_runtime_lib must precede -lreussir_rt: the staticlib bundles its own
-// Rust core, and only archive-first ordering lets the linker resolve its
-// internal core symbols from the archive itself (see mutex_cell_omp_e2e.mlir).
-// RUN: %cc %openmp_flags %t.o %S/flatlock_cell_omp_e2e_main.c %sync_runtime_lib -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// The futex slow paths ride inside reussir_rt (see mutex_cell_omp_e2e.mlir).
+// RUN: %cc %openmp_flags %t.o %S/flatlock_cell_omp_e2e_main.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
 // A flatlock cell under real contention: an OpenMP driver

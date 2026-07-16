@@ -1087,6 +1087,12 @@ dependencies = [
 
 [[package]]
 name = "linux-raw-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+
+[[package]]
+name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
@@ -1292,6 +1298,14 @@ version = "220.0.2"
 source = "git+https://github.com/reussir-lang/mlir-sys?rev=eddb6b0fcab6980633eedf6e549276b3e9b7d18a#eddb6b0fcab6980633eedf6e549276b3e9b7d18a"
 dependencies = [
  "bindgen",
+]
+
+[[package]]
+name = "mlir_sync"
+version = "0.1.0"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=a0337795eb7ce85d2c988440a50a48e11f27a929#a0337795eb7ce85d2c988440a50a48e11f27a929"
+dependencies = [
+ "portable_futex",
 ]
 
 [[package]]
@@ -1662,6 +1676,16 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+
+[[package]]
+name = "portable_futex"
+version = "0.1.0"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=a0337795eb7ce85d2c988440a50a48e11f27a929#a0337795eb7ce85d2c988440a50a48e11f27a929"
+dependencies = [
+ "linux-raw-sys 0.11.0",
+ "syscalls",
+ "winapi",
+]
 
 [[package]]
 name = "powerfmt"
@@ -2098,6 +2122,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "libc",
  "libmimalloc-sys",
+ "mlir_sync",
  "num_enum",
  "smallvec",
  "stacker",
@@ -2158,7 +2183,7 @@ dependencies = [
  "bitflags 2.13.0",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.12.1",
  "windows-sys",
 ]
 
@@ -2433,6 +2458,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "syscalls"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81c645a4de0d803ced6ef0388a2646aa1ef8467173b5d59a2c33c88de4ab76e7"
 
 [[package]]
 name = "tblgen"
