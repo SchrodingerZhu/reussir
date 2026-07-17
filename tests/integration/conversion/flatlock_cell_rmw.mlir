@@ -1,4 +1,6 @@
-// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s %sync_std_check_prefixes
+// The STD run has no cconv-sensitive checks, so it keeps a plain prefix —
+// FileCheck rejects requested prefixes with no directives.
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=STD
 // RUN: %reussir-opt %s --pass-pipeline='builtin.module(reussir-attach-native-target,func.func(reussir-token-instantiation),reussir-rc-decrement-expansion,reussir-acquire-drop-expansion,reussir-convert-to-std,reussir-acquire-drop-expansion{expand-decrement=1 outline-record=1},func.func(reussir-token-reuse),reussir-convert-to-std,convert-scf-to-cf,reussir-lowering-basic-ops,convert-to-llvm,reconcile-unrealized-casts,canonicalize,cse)' | %reussir-translate --mlir-to-llvmir | %FileCheck %s %sync_llvm_check_prefixes
 
 !inner = !reussir.rc<i64 atomic>
