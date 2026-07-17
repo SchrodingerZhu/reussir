@@ -1534,6 +1534,41 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   return mlir::success();
 }
 
+mlir::LogicalResult ReussirCellRdlockOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  // Only an rwlock cell has a shared read lock to take; every other lock
+  // kind reads through its exclusive critical section via get/rmw.
+  if (!(*cellType).getRwlock())
+    return emitOpError("read transaction requires an rwlock cell, got a cell "
+                       "of kind '")
+           << stringifyCellKind((*cellType).getKind()) << "'";
+
+  if (!llvm::hasSingleElement(getBody()))
+    return emitOpError("body must contain exactly one block");
+  mlir::Block &block = getBody().front();
+  if (block.getNumArguments() != 1)
+    return emitOpError("body must accept exactly one cell element argument");
+  if (block.getArgument(0).getType() != (*cellType).getElementType())
+    return emitOpError(
+               "body argument type must match cell element type, expected ")
+           << (*cellType).getElementType() << ", got "
+           << block.getArgument(0).getType();
+  if (block.empty() || !llvm::isa<ReussirScfYieldOp>(block.getTerminator()))
+    return emitOpError("body must terminate with reussir.scf.yield");
+
+  auto yield = llvm::cast<ReussirScfYieldOp>(block.getTerminator());
+  if (static_cast<bool>(getOutput()) != static_cast<bool>(yield.getValue()))
+    return emitOpError("body must yield exactly one optional output when the "
+                       "operation has a result");
+  if (getOutput() && getOutput().getType() != yield.getValue().getType())
+    return emitOpError(
+               "body output type must match operation result type, got ")
+           << yield.getValue().getType() << " and " << getOutput().getType();
+  return mlir::success();
+}
+
 mlir::LogicalResult ReussirCellInUseOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
@@ -2261,7 +2296,14 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
   mlir::Type yieldedType = getValue() ? getValue().getType() : mlir::Type{};
   mlir::Type expectedType = mlir::Type{};
   bool allowImplicitArrayResult = false;
-  if (auto nullableParent =
+  // The rdlock check looks at the immediate parent (not the nearest ancestor
+  // of a type): an rdlock body may itself sit inside a dispatch region, and
+  // this yield belongs to the rdlock.
+  if (auto rdlockParent = llvm::dyn_cast_if_present<ReussirCellRdlockOp>(
+          getOperation()->getParentOp()))
+    expectedType = rdlockParent.getOutput() ? rdlockParent.getOutput().getType()
+                                            : mlir::Type{};
+  else if (auto nullableParent =
           getOperation()->getParentOfType<ReussirNullableDispatchOp>())
     expectedType = nullableParent.getValue()
                        ? nullableParent.getValue().getType()

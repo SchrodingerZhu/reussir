@@ -1171,7 +1171,8 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     On an rwlock cell, the region form is the same borrow inside a
     `sync.rwlock.write_critical_section`: storing the replacement mutates the
     protected slot, so the read-modify-write holds the lock exclusively even
-    when the body never writes.
+    when the body never writes. Read-only transactions that want to share
+    the lock use `reussir.cell.rdlock` instead.
 
     On an atomic cell, the region is a retryable, memory-effect-free
     computation and is committed with compare-exchange. It may run more than
@@ -1194,6 +1195,42 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
   let results = (outs Res<Optional<AnyType>, "body output">:$output);
   let regions = (region MaxSizedRegion<1>:$body);
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def ReussirCellRdlockOp : ReussirCellOp<"rdlock", []> {
+  let summary = "Run a read transaction over an rwlock cell";
+  let description = [{
+    `reussir.cell.rdlock` executes its single-block body inside a
+    `sync.rwlock.read_critical_section` over an rwlock cell: a longer read
+    transaction that shares the lock with concurrent gets and other read
+    transactions instead of serializing behind the write lock. Only rwlock
+    cells are accepted — every other lock kind reads through its exclusive
+    critical section via `cell.get`/`cell.rmw`.
+
+    Unlike `reussir.cell.rmw`, the body does not borrow the element. The
+    element is cloned into the body — loaded and acquired exactly like
+    `reussir.cell.get` (safe under the shared lock: the acquisition bumps the
+    element's own atomic counts, never the protected slot) — and the cell
+    keeps its element untouched. The body owns the clone and must consume it.
+    Nothing is stored back: the body terminates with `reussir.scf.yield`,
+    which carries only the optional operation result.
+
+    ```mlir
+    %len = reussir.cell.rdlock(%cell : !reussir.rc<!reussir.cell<!inner rwlock> atomic>) -> i64 {
+      ^bb0(%value: !inner):
+        %len = func.call @inspect(%value) : (!inner) -> i64
+        reussir.scf.yield %len : i64
+    }
+    ```
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "cell to read">:$cell);
+  let results = (outs Res<Optional<AnyType>, "body output">:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)` (`->` type($output)^)?
+    $body attr-dict
+  }];
   let hasVerifier = 1;
 }
 
@@ -1628,7 +1665,8 @@ def ReussirScfYieldOp
           "yield", [ReturnLike, Terminator,
                     ParentOneOf<["::reussir::ReussirNullableDispatchOp",
                                  "::reussir::ReussirRecordDispatchOp",
-                                 "::reussir::ReussirArrayWithUniqueViewOp"]>]> {
+                                 "::reussir::ReussirArrayWithUniqueViewOp",
+                                 "::reussir::ReussirCellRdlockOp"]>]> {
   let summary = "Yield a value from a scf operation";
   let description = [{
     `reussir.scf.yield` terminates a high-level structured control flow operation.

@@ -1663,6 +1663,52 @@ public:
   }
 };
 
+// A read transaction over an rwlock cell: the body runs inside a read
+// critical section, sharing the lock with concurrent gets and other read
+// transactions. The element is cloned into the body — acquire and load, the
+// same door cell.get uses, safe under the shared lock because the
+// acquisition never writes the protected slot — and the yield carries only
+// the optional result out of the section.
+class ReussirCellRdlockOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellRdlockOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellRdlockOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+    auto critical = mlir::sync::SyncRwLockReadCriticalSectionOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), lockView);
+    {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      mlir::Block *criticalBody =
+          addCriticalSectionBody(critical, access, op.getLoc(), rewriter);
+      rewriter.setInsertionPointToStart(criticalBody);
+      mlir::Value slotRef =
+          getLockPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+      mlir::Value value =
+          acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
+      mlir::Block &body = op.getBody().front();
+      auto yield = llvm::cast<ReussirScfYieldOp>(body.getTerminator());
+      rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                 mlir::ValueRange{value});
+      rewriter.setInsertionPoint(yield);
+      mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                      yield.getValue()
+                                          ? mlir::ValueRange{yield.getValue()}
+                                          : mlir::ValueRange{});
+      rewriter.eraseOp(yield);
+    }
+    if (op->getNumResults() != 0)
+      rewriter.replaceOp(op, critical.getResults());
+    else
+      rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
 // LLVM's atomicrmw has no multiply flavor; direct multiply takes the same
 // retry loop as the region form. Every other direct kind is a straight-line
 // llvm.atomicrmw and stays high-level until the LLVM lowering.
@@ -1848,7 +1894,8 @@ struct ConvertToSTDPass
         ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
         ReussirClosureUniqifyOp, ReussirArrayWithUniqueViewOp,
         ReussirTokenEnsureOp, ReussirStrByteAtOp, ReussirStrSelectOp,
-        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp>();
+        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellRdlockOp,
+        ReussirCellInUseOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
@@ -1896,7 +1943,8 @@ void populateConvertToSTDConversionPatterns(mlir::RewritePatternSet &patterns) {
       ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
       ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
       ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
-      ReussirCellRmwOpRewritePattern, ReussirAtomicCellRmwOpRewritePattern,
+      ReussirCellRmwOpRewritePattern, ReussirCellRdlockOpRewritePattern,
+      ReussirAtomicCellRmwOpRewritePattern,
       ReussirCellInUseOpRewritePattern>(patterns.getContext());
 }
 

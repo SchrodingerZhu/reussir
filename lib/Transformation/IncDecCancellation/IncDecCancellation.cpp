@@ -244,10 +244,11 @@ llvm::LogicalResult runIncDecCancellation(mlir::func::FuncOp func) {
           setOp &&
           !isTriviallyCopyable(setOp.getCell().getType().getElementType()))
         break;
-      // A `reussir.cell.rmw` body is arbitrary nested code (it may drop the
-      // moved-out element or anything else) that this same-block scan never
-      // visits — treat the whole op as opaque.
-      if (llvm::isa<ReussirCellRmwOp>(next))
+      // A `reussir.cell.rmw` or `reussir.cell.rdlock` body is arbitrary
+      // nested code (it may drop the moved-out or cloned element or anything
+      // else) that this same-block scan never visits — treat the whole op as
+      // opaque.
+      if (llvm::isa<ReussirCellRmwOp, ReussirCellRdlockOp>(next))
         break;
       // Count-*observing* ops: `array.with_unique_view`, `closure.uniqify`
       // and a standalone `rc.is_unique` read `count == 1` to decide between
