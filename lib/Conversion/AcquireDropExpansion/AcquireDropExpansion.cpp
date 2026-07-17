@@ -70,12 +70,20 @@ private:
         auto critical = mlir::sync::SyncMutexCriticalSectionOp::create(
             rewriter, op.getLoc(), mlir::TypeRange{}, storageView);
         criticalBody = &critical.getBody();
-      } else {
+      } else if (cellType.getFlatlock()) {
         auto critical =
             mlir::sync::SyncCombiningLockCriticalSectionOp::create(
                 rewriter, op.getLoc(), storageView,
                 /*combine_limit=*/mlir::IntegerAttr{});
         criticalBody = &critical.getBody();
+      } else if (cellType.getRwlock()) {
+        // Releasing the payload mutates managed state behind the slot, so the
+        // drop takes the write side, uniform with set/rmw.
+        auto critical = mlir::sync::SyncRwLockWriteCriticalSectionOp::create(
+            rewriter, op.getLoc(), mlir::TypeRange{}, storageView);
+        criticalBody = &critical.getBody();
+      } else {
+        llvm_unreachable("unhandled lock-guarded cell kind");
       }
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       mlir::Block *body = rewriter.createBlock(
