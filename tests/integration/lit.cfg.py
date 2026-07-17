@@ -45,6 +45,17 @@ config.substitutions.append((r'%reussir-translate',
 config.substitutions.append((r'%cc', append_flags(config.cc_path, config.cc_runtime_flags)))
 
 config.substitutions.append((r'%FileCheck', sh_path(config.filecheck_path)))
+# The sync futex slow-path calls carry the preserve_most calling convention
+# only when the backend was built with MLIR_SYNC_ENABLE_NIGHTLY_FEATURE.
+# That option is forced OFF on Windows (see cmake/MlirSync.cmake: rustc
+# lowers extern "rust-cold" to the plain C convention there), so tests that
+# pin the annotation select their check prefixes from the build config:
+# *-PM checks the preserve_most form, *-CC the plain C form.
+_sync_cconv = 'PM' if config.sync_preserve_most else 'CC'
+config.substitutions.append((r'%sync_std_check_prefixes',
+                             '--check-prefixes=STD,STD-' + _sync_cconv))
+config.substitutions.append((r'%sync_llvm_check_prefixes',
+                             '--check-prefixes=LLVM,LLVM-' + _sync_cconv))
 linkage_check_prefixes = (
     '--check-prefixes=CHECK,CHECK-COFF'
     if sys.platform == 'win32'

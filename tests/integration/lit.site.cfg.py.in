@@ -31,6 +31,7 @@ config.asan_flags = r'@asan_flags@'
 config.lsan_flags = r'@lsan_flags@'
 config.msan_flags = r'@msan_flags@'
 config.tsan_flags = r'@tsan_flags@'
+config.sync_preserve_most = '@MLIR_SYNC_ENABLE_NIGHTLY_FEATURE@'.upper() in ('ON', 'TRUE', '1', 'YES')
 config.asan_env = r'@asan_env@'
 config.lsan_env = r'@lsan_env@'
 config.msan_env = r'@msan_env@'
