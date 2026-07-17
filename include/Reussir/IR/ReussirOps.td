@@ -1083,12 +1083,16 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     the mutex through a `sync.mutex.critical_section` region. On a flatlock
     cell they run inside a `sync.combining_lock.critical_section`, whose body
     may be served by a combining thread: the cloned value returns to the
-    caller through a captured stack slot rather than a region result.
+    caller through a captured stack slot rather than a region result. On an
+    rwlock cell they run inside a `sync.rwlock.read_critical_section`:
+    concurrent gets share the read lock, and the acquisition only bumps the
+    element's own (atomic) counts, never the protected slot.
 
     On an atomic cell, this is an atomic load. The optional ordering defaults
     to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
     elements are arithmetic primitives, so clone ownership is trivial. An
-    ordering cannot be attached to a plain, exclusive, mutex, or flatlock cell access.
+    ordering cannot be attached to a plain, exclusive, or lock-guarded cell
+    access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<ReussirRcCellType, "cell to read">:$cell);
@@ -1117,13 +1121,15 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     replacement execute while holding the mutex through a
     `sync.mutex.critical_section` region. On a flatlock cell they run inside a
     `sync.combining_lock.critical_section`, possibly served by a combining
-    thread.
+    thread. On an rwlock cell they run inside a
+    `sync.rwlock.write_critical_section`: the replacement mutates the
+    protected slot, so it takes the lock exclusively.
 
     On an atomic cell, this is an atomic store. The optional ordering defaults
     to `release`; store orderings unsupported by LLVM are rejected. No old
     managed value needs to be dropped because atomic cell elements are
-    arithmetic primitives. An ordering cannot be attached to a plain or
-    exclusive or mutex or flatlock cell access.
+    arithmetic primitives. An ordering cannot be attached to a plain,
+    exclusive, or lock-guarded cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<AnyType, "replacement value">:$value,

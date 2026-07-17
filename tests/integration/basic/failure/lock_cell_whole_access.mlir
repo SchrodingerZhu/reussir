@@ -1,25 +1,19 @@
 // RUN: %reussir-opt %s -verify-diagnostics -split-input-file
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
-// leading slot, so an operation needs a dedicated lock-aware lowering. Mutex
-// and flatlock create/get/set/rmw are supported; the remaining rwlock
-// operations stay rejected until their critical-section lowerings land.
+// leading slot, so an operation needs a dedicated lock-aware lowering.
+// Create/get/set are supported on every lock kind, and rmw on mutex and
+// flatlock cells; the rwlock rmw stays rejected until its critical-section
+// lowering lands.
 !rwlock_cell1 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
 
-func.func @get_rwlock(%cell: !rwlock_cell1) -> i64 {
+func.func @rmw_rwlock(%cell: !rwlock_cell1) -> i64 {
   // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  %v = reussir.cell.get(%cell : !rwlock_cell1) : i64
-  return %v : i64
-}
-
-// -----
-
-!rwlock_cell = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
-
-func.func @set_rwlock(%cell: !rwlock_cell, %value: i64) {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  reussir.cell.set(%value : i64, %cell : !rwlock_cell)
-  return
+  %old = reussir.cell.rmw(%cell : !rwlock_cell1) -> i64 {
+    ^bb0(%current: i64):
+      reussir.cell.yield(%current : i64) output(%current : i64)
+  }
+  return %old : i64
 }
 
 // -----

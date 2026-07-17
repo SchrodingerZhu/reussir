@@ -119,9 +119,9 @@ static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
 
 // A cell operation without a dedicated lock-aware lowering is unsound on a
 // lock-guarded cell: its payload lives inside a `sync` primitive rather than at
-// the leading slot, and reaching it requires holding the lock. Mutex create,
-// get, set, and the region form of rmw are handled separately through `sync`
-// operations.
+// the leading slot, and reaching it requires holding the lock. Create, get,
+// and set are handled separately through `sync` operations on every lock
+// kind, as is the region form of rmw on mutex and flatlock cells.
 static mlir::LogicalResult rejectLockGuardedCell(mlir::Operation *op,
                                                  CellType cellType) {
   if (cellType.getLockGuarded())
@@ -1310,10 +1310,8 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated get lowering: a mutex or flatlock
+  // critical section, or an rwlock read critical section.
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Load)))
     return mlir::failure();
@@ -1327,10 +1325,8 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated set lowering: a mutex or flatlock
+  // critical section, or an rwlock write critical section.
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Store)))
     return mlir::failure();
