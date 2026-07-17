@@ -12,10 +12,23 @@ include(FetchContent)
 # `sync-opt` tool that we do not need here.
 set(SYNC_ENABLE_TESTS OFF CACHE BOOL "Build sync dialect integration tests" FORCE)
 
+# Default the sync backend to the preserve_most calling convention on the
+# futex slow paths: ConvertSyncToSTD annotates the runtime declarations and
+# calls with #llvm.cconv<preserve_mostcc>, keeping lock fast paths free of
+# caller-saved register spills. The matching runtime side is unconditional —
+# reussir-rt always builds mlir_sync with its `nightly` feature (see
+# crates/reussir-rt/Cargo.toml), so a preserve_most-annotated call always
+# lands on a preserve_most callee. Turning this OFF only drops the caller
+# annotation, which is still ABI-safe (a preserve_most callee saves a
+# superset of what a C-convention caller expects).
+option(MLIR_SYNC_ENABLE_NIGHTLY_FEATURE
+  "Annotate sync runtime slow-path declarations and calls with preserve_most"
+  ON)
+
 FetchContent_Declare(
   mlirsync
   GIT_REPOSITORY https://github.com/reussir-lang/mlir-sync.git
-  GIT_TAG a0337795eb7ce85d2c988440a50a48e11f27a929
+  GIT_TAG 3b9412ea23464e262fcfb8f5f4d2538ddb17fadc
 )
 
 FetchContent_MakeAvailable(mlirsync)

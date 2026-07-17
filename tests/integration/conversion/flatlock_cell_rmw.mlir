@@ -27,7 +27,7 @@ module {
   // STD: return %[[RESULT]]
   // LLVM-LABEL: define i64 @rmw_addi
   // LLVM: atomicrmw xchg ptr %{{.+}}, i8 1 acquire
-  // LLVM: call void @mlir_sync_combining_lock_attach_slow_path
+  // LLVM: call preserve_mostcc void @mlir_sync_combining_lock_attach_slow_path
   // LLVM: ret i64
   func.func @rmw_addi(%delta: i64, %cell: !flatlock_i64) -> i64 {
     %old = reussir.cell.rmw(%cell : !flatlock_i64) -> i64 {

@@ -22,7 +22,7 @@ module {
 // STD: scf.while
 // STD: sync.raw_rwlock.load_state
 // STD: sync.raw_rwlock.cmpxchg_state
-// STD: func.call @mlir_sync_rwlock_read_lock_slow_path
+// STD: func.call @mlir_sync_rwlock_read_lock_slow_path{{.*}} {CConv = #llvm.cconv<preserve_mostcc>}
 // STD: sync.rwlock.get_payload
 // STD: memref.load
 // STD: sync.raw_rwlock.read_unlock_fast
@@ -34,6 +34,6 @@ module {
 // LLVM-NOT: sync.
 // LLVM: llvm.load
 // LLVM: llvm.cmpxchg
-// LLVM: llvm.call @mlir_sync_rwlock_read_lock_slow_path
+// LLVM: llvm.call preserve_mostcc @mlir_sync_rwlock_read_lock_slow_path
 // LLVM: llvm.atomicrmw sub
 // LLVM-NOT: sync.

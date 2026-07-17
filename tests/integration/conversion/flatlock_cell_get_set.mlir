@@ -24,7 +24,7 @@ module {
   // STD: sync.combining_lock.has_tail %[[VIEW]]
   // STD: sync.combining_lock.try_acquire %[[VIEW]]
   // STD: "sync.combining_lock.capture"
-  // STD: func.call @mlir_sync_combining_lock_attach_slow_path
+  // STD: func.call @mlir_sync_combining_lock_attach_slow_path{{.*}} {CConv = #llvm.cconv<preserve_mostcc>}
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<i64>) : !reussir.ref<i64 field atomic>
   // STD: reussir.ref.acquire(%[[SLOT]]
   // STD: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
@@ -35,7 +35,7 @@ module {
   // LLVM-LABEL: define i64 @get_i64
   // LLVM: load atomic ptr, ptr %{{.+}} monotonic
   // LLVM: atomicrmw xchg ptr %{{.+}}, i8 1 acquire
-  // LLVM: call void @mlir_sync_combining_lock_attach_slow_path
+  // LLVM: call preserve_mostcc void @mlir_sync_combining_lock_attach_slow_path
   // LLVM: ret i64
   func.func @get_i64(%cell: !flatlock_i64) -> i64 {
     %value = reussir.cell.get(%cell : !flatlock_i64) : i64
@@ -55,7 +55,7 @@ module {
   // STD: return
   // LLVM-LABEL: define void @set_i64
   // LLVM: atomicrmw xchg ptr %{{.+}}, i8 1 acquire
-  // LLVM: call void @mlir_sync_combining_lock_attach_slow_path
+  // LLVM: call preserve_mostcc void @mlir_sync_combining_lock_attach_slow_path
   // LLVM: ret void
   func.func @set_i64(%value: i64, %cell: !flatlock_i64) {
     reussir.cell.set(%value : i64, %cell : !flatlock_i64)
