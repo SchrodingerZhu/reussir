@@ -1168,6 +1168,11 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     possibly on the combining thread serving the waiter's request; the
     optional output returns to the caller through a captured stack slot.
 
+    On an rwlock cell, the region form is the same borrow inside a
+    `sync.rwlock.write_critical_section`: storing the replacement mutates the
+    protected slot, so the read-modify-write holds the lock exclusively even
+    when the body never writes.
+
     On an atomic cell, the region is a retryable, memory-effect-free
     computation and is committed with compare-exchange. It may run more than
     once under contention; the optional output comes from the successful
@@ -1175,7 +1180,7 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     operand, returns the old element, and lowers to an LLVM atomic RMW. Both
     atomic forms accept an optional ordering that defaults to `acq_rel`.
     Atomic RMW orderings unsupported by LLVM are rejected, as is any ordering
-    on an exclusive, mutex, or flatlock cell; the direct form is atomic-only.
+    on an exclusive or lock-guarded cell; the direct form is atomic-only.
 
     ```mlir
     %old = reussir.cell.rmw addi(%delta : i64,

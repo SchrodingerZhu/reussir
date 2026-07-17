@@ -2,24 +2,11 @@
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
 // leading slot, so an operation needs a dedicated lock-aware lowering.
-// Create/get/set are supported on every lock kind, and rmw on mutex and
-// flatlock cells; the rwlock rmw stays rejected until its critical-section
-// lowering lands.
-!rwlock_cell1 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
-
-func.func @rmw_rwlock(%cell: !rwlock_cell1) -> i64 {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  %old = reussir.cell.rmw(%cell : !rwlock_cell1) -> i64 {
-    ^bb0(%current: i64):
-      reussir.cell.yield(%current : i64) output(%current : i64)
-  }
-  return %old : i64
-}
-
-// -----
-
-// The mutex exemption covers exactly create/get/set/rmw: a mutex cell has no
-// in-use flag to observe, so `cell.in_use` stays rejected.
+// Create/get/set and the region form of rmw are supported on every lock
+// kind.
+//
+// The lock exemption covers exactly create/get/set/rmw: a lock-guarded cell
+// has no in-use flag to observe, so `cell.in_use` stays rejected.
 !mutex_cell = !reussir.rc<!reussir.cell<i64 mutex> atomic>
 
 func.func @in_use_mutex(%cell: !mutex_cell) -> i1 {
@@ -48,6 +35,17 @@ func.func @direct_rmw_mutex(%delta: i64, %cell: !mutex_cell) -> i64 {
 func.func @direct_rmw_flatlock(%delta: i64, %cell: !flatlock_cell2) -> i64 {
   // expected-error @+1 {{direct atomic RMW form requires an atomic cell, got a flatlock cell}}
   %old = reussir.cell.rmw addi(%delta : i64, %cell : !flatlock_cell2) -> i64
+  return %old : i64
+}
+
+// -----
+
+// And on an rwlock cell: the region form takes the write lock instead.
+!rwlock_cell2 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
+
+func.func @direct_rmw_rwlock(%delta: i64, %cell: !rwlock_cell2) -> i64 {
+  // expected-error @+1 {{direct atomic RMW form requires an atomic cell, got an rwlock cell}}
+  %old = reussir.cell.rmw addi(%delta : i64, %cell : !rwlock_cell2) -> i64
   return %old : i64
 }
 
