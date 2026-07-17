@@ -3,7 +3,7 @@
 // RUN: %reussir-translate --mlir-to-llvmir %t.mlir | %opt -S -O2 -o %t.ll
 // RUN: %cc %tsan_flags -c -x ir %t.ll -o %t.o
 // RUN: %cc %tsan_flags %openmp_flags %t.o %S/../conversion/atomic_rc_omp_e2e_main.c %reussir_rt_tsan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
-// RUN: TSAN_OPTIONS=abort_on_error=1:halt_on_error=1:suppressions=%S/Inputs/tsan-libomp.supp %t.exe
+// RUN: TSAN_OPTIONS=abort_on_error=1:halt_on_error=1:ignore_noninstrumented_modules=1:suppressions=%S/Inputs/tsan-libomp.supp %t.exe
 
 // TSan leg of the atomic rc OpenMP e2e: any plain (non-atomic) access to the
 // count word — the exact bug class the acquire/release lowering exists to
@@ -12,4 +12,9 @@
 // too-weak ordering shows up (payload reads racing the final free). Only
 // libomp-internal reports are suppressed: the runtime is not instrumented,
 // and its thread-management noise carries libomp/__kmp frames that a real
-// refcount race never has.
+// refcount race never has. The name-based suppressions only match when
+// libomp carries symbols (conda/brew builds); distro packages are stripped,
+// so back them with ignore_noninstrumented_modules=1 — TSan's documented
+// answer for uninstrumented OpenMP runtimes. It drops reports whose access
+// originates in a non-instrumented module, so races between instrumented
+// accesses (everything the driver and lowered code touch) still fire.
