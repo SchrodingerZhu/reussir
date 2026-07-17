@@ -5,6 +5,9 @@ dependencies:
   - cmake
   - ninja
   - lit
+  # lit's --timeout (set via LIT_OPTS in the workflow) needs psutil to
+  # reap wedged test processes.
+  - psutil
   - clangxx=22.1.8
   - compiler-rt=22.1.8
   - llvmdev=22.1.8

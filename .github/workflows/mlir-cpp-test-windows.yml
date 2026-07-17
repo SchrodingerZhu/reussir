@@ -18,6 +18,10 @@ env:
 jobs:
   build:
     runs-on: windows-2025
+    # A healthy run finishes well under an hour; without a cap, a single
+    # deadlocked test executable pins the job until the 6-hour runner limit
+    # (the contended-lock e2e drivers have done exactly that).
+    timeout-minutes: 120
 
     steps:
       - name: Checkout code
@@ -242,6 +246,11 @@ jobs:
       - name: Run Integration Tests
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        env:
+          # Kill and name any individual test that wedges (lit reports it as
+          # TIMEOUT) instead of hanging the whole job; needs psutil from the
+          # conda environment.
+          LIT_OPTS: --timeout=900
         run: |
           $env:RUSTC_WRAPPER = "sccache"
           $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"

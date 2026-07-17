@@ -21,9 +21,25 @@ set(SYNC_ENABLE_TESTS OFF CACHE BOOL "Build sync dialect integration tests" FORC
 # lands on a preserve_most callee. Turning this OFF only drops the caller
 # annotation, which is still ABI-safe (a preserve_most callee saves a
 # superset of what a C-convention caller expects).
-option(MLIR_SYNC_ENABLE_NIGHTLY_FEATURE
-  "Annotate sync runtime slow-path declarations and calls with preserve_most"
-  ON)
+#
+# Windows is the exception and must stay OFF: rustc lowers `extern
+# "rust-cold"` to the plain C calling convention on Windows targets (LLVM's
+# preserve_most is broken there), so the runtime slow paths are Win64-C no
+# matter how the crate is built. That flips the mismatch into the unsafe
+# direction — a preserve_most-annotated call site keeps live values in
+# RCX/RDX/R8-R10 across the call, exactly the registers a Win64-C callee is
+# free to clobber. Under contention this corrupts the inlined lock fast
+# paths (the rwlock OpenMP e2e test deadlocked the Windows CI). With the
+# annotation off, caller and callee agree on the C convention.
+if(WIN32)
+  set(MLIR_SYNC_ENABLE_NIGHTLY_FEATURE OFF CACHE BOOL
+    "Annotate sync runtime slow-path declarations and calls with preserve_most (unsupported on Windows)"
+    FORCE)
+else()
+  option(MLIR_SYNC_ENABLE_NIGHTLY_FEATURE
+    "Annotate sync runtime slow-path declarations and calls with preserve_most"
+    ON)
+endif()
 
 FetchContent_Declare(
   mlirsync

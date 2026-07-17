@@ -24,9 +24,12 @@ libmimalloc-sys = { version = "0.1.44", optional = true, features = ["extended"]
 # panic machinery here. `nightly` is unconditional (the workspace pins a
 # nightly toolchain): the slow paths get the extern "rust-cold" ABI (LLVM
 # preserve_most), matching the annotation the backend emits under
-# MLIR_SYNC_ENABLE_NIGHTLY_FEATURE (Reussir's default). A preserve_most
-# callee saves a superset of what a C-convention caller expects, so an
-# unannotated call site remains safe.
+# MLIR_SYNC_ENABLE_NIGHTLY_FEATURE (Reussir's default off Windows). A
+# preserve_most callee saves a superset of what a C-convention caller
+# expects, so an unannotated call site remains safe. On Windows rustc
+# lowers "rust-cold" to the plain C convention instead (preserve_most is
+# broken in LLVM there), which is why cmake/MlirSync.cmake forces the
+# caller-side annotation OFF on WIN32 — both sides then agree on C.
 mlir_sync = { git = "https://github.com/reussir-lang/mlir-sync.git", rev = "3b9412ea23464e262fcfb8f5f4d2538ddb17fadc", features = ["nightly"] }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
