@@ -198,6 +198,14 @@
             pkgs.libxml2
           ];
 
+          # libomp: the OpenMP e2e lit tests probe `clang -fopenmp` and are
+          # skipped when it fails. As a buildInput the cc wrapper injects
+          # omp.h (-isystem) and libomp.so (-L) via NIX_CFLAGS_COMPILE /
+          # NIX_LDFLAGS, which `packages` (nativeBuildInputs) would not.
+          buildInputs = [
+            llvmPkgs.openmp
+          ];
+
           # --- CMake discovery: tell cmake exactly where the LLVM/MLIR configs are
           LLVM_DIR = "${llvmMlirJoin}/lib/cmake/llvm";
           MLIR_DIR = "${llvmMlirJoin}/lib/cmake/mlir";
@@ -245,7 +253,11 @@
             # zlib: rustc links rrc without an rpath entry for it (LLVM's
             # system-libs pull in -lz), so the binary needs it findable at
             # run time — lit tests execute build/bin/rrc directly.
-            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            # openmp: the lit OpenMP probe links via the wrapper's NIX_LDFLAGS
+            # (no rpath — `-print-file-name=libomp.so` does not see wrapper
+            # -L paths), so the probe binary finds libomp.so only through
+            # LD_LIBRARY_PATH.
+            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${llvmPkgs.openmp}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             # crates/reussir-rt/CMakeLists.txt sets LOCAL_RUSTUP_HOME = build/.rustup
             # and then tries to run `rustup toolchain install <channel>-<host-triple>`
