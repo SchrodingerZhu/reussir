@@ -1218,13 +1218,9 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), rcType);
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex and flatlock creation have dedicated lowerings through
-  // `sync.mutex.init` / `sync.combining_lock.init`. Other lock kinds remain
-  // unavailable until their create operations are implemented.
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated creation lowering through its
+  // `sync` init operation (`sync.mutex.init` / `sync.combining_lock.init` /
+  // `sync.rwlock.init`), so creation is never rejected on a lock kind.
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError("initial value type must match cell element type, got ")
            << getValue().getType() << " and " << (*cellType).getElementType();

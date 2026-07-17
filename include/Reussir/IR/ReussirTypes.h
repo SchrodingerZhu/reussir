@@ -46,11 +46,11 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap);
 mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
                              bool isField, bool memBoxInternal = false);
 class CellType;
-// The `sync` primitive type physically backing a lock-guarded cell with a
-// lowered access path: `!sync.mutex<T>` for a mutex cell,
-// `!sync.combining_lock<T>` for a flatlock cell. Null for every other cell
-// kind (rwlock included until its operations are implemented) — callers use
-// this both to compute the cell's layout and to type its storage views.
+// The `sync` primitive type physically backing a lock-guarded cell:
+// `!sync.mutex<T>` for a mutex cell, `!sync.combining_lock<T>` for a flatlock
+// cell, `!sync.rwlock<T>` for an rwlock cell. Null for every other cell kind —
+// callers use this both to compute the cell's layout and to type its storage
+// views.
 mlir::Type lockGuardedStorageType(CellType type);
 
 namespace scanner {

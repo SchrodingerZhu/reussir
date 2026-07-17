@@ -1313,6 +1313,13 @@ public:
       rewriter.replaceOp(op, created.getRcPtr());
       return mlir::success();
     }
+    if (cellType.getKind() == CellKind::rwlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      mlir::sync::SyncRwLockInitOp::create(rewriter, op.getLoc(), lockView,
+                                           op.getValue());
+      rewriter.replaceOp(op, created.getRcPtr());
+      return mlir::success();
+    }
     mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
     ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
     // A fresh exclusive cell starts out not in use.
