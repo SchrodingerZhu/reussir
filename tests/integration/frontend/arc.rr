@@ -33,3 +33,17 @@ fn passthrough<T>(a: Arc<T>) -> Arc<T> {
 pub fn call_passthrough(a: Arc<Data>) -> Arc<Data> {
     passthrough(a)
 }
+
+// An array and a closure are single shared rc boxes like a [shared] record,
+// so they take the atomic coloring the same way.
+// HIR: pub fn #arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
+// MIR-DAG: pub fn @_RC3arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
+pub fn arr(a: Arc<[f64; 8]>) -> Arc<[f64; 8]> {
+    a
+}
+
+// HIR: pub fn #clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
+// MIR-DAG: pub fn @_RC3clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
+pub fn clo(f: Arc<(i64) -> i64>) -> Arc<(i64) -> i64> {
+    f
+}

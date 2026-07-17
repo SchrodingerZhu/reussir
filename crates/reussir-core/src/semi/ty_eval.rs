@@ -39,7 +39,7 @@
 //! binding. Generics are left uncolored — their modality is resolved at
 //! monomorphization.
 
-use crate::semi::ty::{Flexivity, FpTy, IntTy, Ty, TyKind};
+use crate::semi::ty::{DefId, Flexivity, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
 
 use super::ctxt::{DefaultCap, Elaborator};
@@ -146,22 +146,25 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
 
         // The built-in atomic-rc coloring (a root builtin: never
-        // module-qualified). `Arc<X>` is the `[shared]` record `X` behind a
-        // box whose refcount is adjusted atomically, so the value may cross
-        // threads; everything but the rc discipline is `X`'s own.
+        // module-qualified). `Arc<X>` is the shared rc box `X` — a `[shared]`
+        // record, an array, or a closure — whose refcount is adjusted
+        // atomically, so the value may cross threads; everything but the rc
+        // discipline is `X`'s own.
         if path.segments.is_empty() && self.sym(key) == "Arc" {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
-                    // Only a `[shared]` record can be arc-colored: the box
-                    // layout is the record's own, with atomic counting. A
-                    // generic/hole/bottom inner is deferred — resolved inners
-                    // are re-checked at monomorphization.
-                    if let Some(kind) = self.non_shared_record_kind(inner) {
+                    // Only a shared rc box can be arc-colored: the box layout
+                    // is the inner type's own, with atomic counting. A
+                    // generic/hole/bottom inner is deferred to the
+                    // instantiation check (it lands with `Arc` construction;
+                    // until then a generic inner can only be grounded from an
+                    // already-checked `Arc` annotation).
+                    if let Some(kind) = self.arc_inner_rejection(inner) {
                         self.error(
                             Some(span),
                             format!(
-                                "`Arc` inner type `{}` is not a `[shared]` record ({kind})",
+                                "`Arc` inner type `{}` is not a `[shared]` record, array, or closure ({kind})",
                                 self.ty_display(inner)
                             ),
                         );
@@ -180,19 +183,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         return self.eval_record_type_expr(path, args, span, key);
     }
 
-    /// Why `t` cannot be the inner of an `Arc`, or `None` when it can (a
-    /// `[shared]` record) or the answer must wait (generic/hole/bottom, settled
-    /// by the monomorphization-time instantiation check).
-    pub(crate) fn non_shared_record_kind(&self, t: Ty<'tcx>) -> Option<&'static str> {
-        match t.kind() {
-            TyKind::Record { def, .. } => match self.records[def].default_cap {
-                DefaultCap::Shared => None,
-                DefaultCap::Value => Some("a `[value]` record"),
-                DefaultCap::Regional => Some("a `[regional]` record"),
-            },
-            TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => None,
-            _ => Some("not a record"),
-        }
+    /// [`arc_inner_rejection`] against this elaborator's record table.
+    pub(crate) fn arc_inner_rejection(&self, t: Ty<'tcx>) -> Option<&'static str> {
+        arc_inner_rejection(|def| self.records.get(&def).map(|r| r.default_cap), t)
     }
 
     /// Evaluate a statically shaped array type (`[f64; 512]`,
@@ -364,6 +357,38 @@ pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
             | TyKind::Hole(_)
             | TyKind::Bottom
     )
+}
+
+/// Why `t` cannot be the inner of an `Arc`, or `None` when it can — a shared
+/// rc box: a `[shared]` record, an array, or a closure — or when the answer
+/// must wait (generic/hole/bottom). `cap_of` looks up a record's default
+/// capability; an unknown record defers rather than rejecting. Shared between
+/// `ty_eval` (a concrete annotation) and monomorphization (the deferred half:
+/// a generic inner is first grounded by an instantiation, e.g. a trampoline's
+/// explicit type arguments).
+pub fn arc_inner_rejection<'tcx>(
+    cap_of: impl FnOnce(DefId) -> Option<DefaultCap>,
+    t: Ty<'tcx>,
+) -> Option<&'static str> {
+    match t.kind() {
+        TyKind::Record { def, .. } => match cap_of(*def) {
+            Some(DefaultCap::Shared) | None => None,
+            Some(DefaultCap::Value) => Some("a `[value]` record"),
+            Some(DefaultCap::Regional) => Some("a `[regional]` record"),
+        },
+        // An array or a closure is one shared rc box exactly like a
+        // `[shared]` record, so it takes the atomic coloring the same way.
+        TyKind::Array { .. } | TyKind::Closure { .. } => None,
+        TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => None,
+        // A cell is a shared box too, but synchronization is the cell's own
+        // axis (plain vs exclusive, and the atomic flavor at the MLIR level)
+        // — `Arc` must not stack a second discipline on top.
+        TyKind::Cell { .. } => Some("a cell"),
+        TyKind::Arc(_) => Some("already an `Arc`"),
+        TyKind::Nullable(_) => Some("a nullable"),
+        // Scalars, `str`, unit: not rc-managed boxes at all.
+        _ => Some("not an rc box"),
+    }
 }
 
 fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
