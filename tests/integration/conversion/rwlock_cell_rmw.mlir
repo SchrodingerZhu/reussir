@@ -15,7 +15,7 @@ module {
   // STD: %[[RAW:.+]] = sync.rwlock.get_raw_rwlock %[[VIEW]]
   // STD: sync.raw_rwlock.load_state %[[RAW]]
   // STD: sync.raw_rwlock.cmpxchg_state %[[RAW]]
-  // STD: func.call @mlir_sync_rwlock_write_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_write_lock_slow_path
   // STD-NOT: read_lock
   // STD-NOT: reussir.expect
   // STD-NOT: reussir.panic
@@ -48,7 +48,7 @@ module {
   // caller-owned replacement transfers in, and the only atomics left are the
   // lock words themselves.
   // STD-LABEL: func.func @rmw_swap
-  // STD: func.call @mlir_sync_rwlock_write_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_write_lock_slow_path
   // STD-NOT: reussir.rc.inc
   // STD-NOT: reussir.ref.acquire
   // STD-NOT: reussir.ref.drop
@@ -74,7 +74,7 @@ module {
 
   // The output is optional; a resultless read-modify-write erases cleanly.
   // STD-LABEL: func.func @rmw_no_output
-  // STD: func.call @mlir_sync_rwlock_write_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_write_lock_slow_path
   // STD: reussir.ref.store
   // STD: sync.raw_rwlock.write_unlock_fast
   // STD-NOT: reussir.cell.rmw

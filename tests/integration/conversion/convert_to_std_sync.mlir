@@ -1,5 +1,5 @@
-// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s %sync_std_check_prefixes
-// RUN: %reussir-opt %s --reussir-convert-to-std --convert-scf-to-cf --reussir-lowering-basic-ops --convert-to-llvm | %FileCheck %s %sync_llvm_check_prefixes
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=STD
+// RUN: %reussir-opt %s --reussir-convert-to-std --convert-scf-to-cf --reussir-lowering-basic-ops --convert-to-llvm | %FileCheck %s --check-prefix=LLVM
 
 module {
   func.func @read_locked(%lock: memref<!sync.rwlock<i64>>) -> i64 {
@@ -15,16 +15,16 @@ module {
 
 // Reussir's ConvertToSTD pass owns sync's structured expansion. It removes
 // the high-level critical section but deliberately leaves the straight-line
-// bridge operations for the later LLVM conversion.
+// bridge operations for the later LLVM conversion. The slow path is reached
+// through the backend-generated internal preserve_most trampoline, which
+// forwards to the plain-C runtime entry point.
 // STD-LABEL: func.func @read_locked
 // STD-NOT: sync.rwlock.read_critical_section
 // STD: sync.rwlock.get_raw_rwlock
 // STD: scf.while
 // STD: sync.raw_rwlock.load_state
 // STD: sync.raw_rwlock.cmpxchg_state
-// STD: func.call @mlir_sync_rwlock_read_lock_slow_path
-// STD-PM-SAME: {CConv = #llvm.cconv<preserve_mostcc>}
-// STD-CC-NOT: #llvm.cconv<preserve_mostcc>
+// STD: func.call @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path{{.*}} {CConv = #llvm.cconv<preserve_mostcc>}
 // STD: sync.rwlock.get_payload
 // STD: memref.load
 // STD: sync.raw_rwlock.read_unlock_fast
@@ -36,7 +36,6 @@ module {
 // LLVM-NOT: sync.
 // LLVM: llvm.load
 // LLVM: llvm.cmpxchg
-// LLVM-PM: llvm.call preserve_mostcc @mlir_sync_rwlock_read_lock_slow_path
-// LLVM-CC: llvm.call @mlir_sync_rwlock_read_lock_slow_path
+// LLVM: llvm.call preserve_mostcc @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path
 // LLVM: llvm.atomicrmw sub
 // LLVM-NOT: sync.

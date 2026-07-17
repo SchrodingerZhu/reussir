@@ -13,7 +13,7 @@ module {
   // STD-LABEL: func.func @read_i64
   // STD: %[[VIEW:.+]] = reussir.ref.to_memref{{.*}} : memref<!sync.rwlock<i64>>
   // STD: %[[RAW:.+]] = sync.rwlock.get_raw_rwlock %[[VIEW]]
-  // STD: func.call @mlir_sync_rwlock_read_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path
   // STD-NOT: write_lock
   // STD: %[[PAYLOAD:.+]] = sync.rwlock.get_payload %[[VIEW]]
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<i64>) : !reussir.ref<i64 field atomic>
@@ -46,7 +46,7 @@ module {
   // are safe — and the body owns and consumes the clone. The result is
   // optional; a resultless transaction erases cleanly.
   // STD-LABEL: func.func @read_rc_no_output
-  // STD: func.call @mlir_sync_rwlock_read_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path
   // STD: %[[PAYLOAD:.+]] = sync.rwlock.get_payload
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<!reussir.rc<i64 atomic>>) : !reussir.ref<!reussir.rc<i64 atomic> field atomic>
   // STD: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
