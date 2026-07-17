@@ -1085,6 +1085,51 @@ mod tests {
     }
 
     #[test]
+    fn infers_arc_ctors() {
+        // The struct and variant arc constructors type at `Arc<R>`.
+        let src = "struct Pair { a: i32 }\n\
+                   enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   fn f(v: i32) -> Arc<Pair> { Arc<Pair> { a: v } }\n\
+                   fn g() -> Arc<List<i32>> { Arc<List<i32>>::Cons{1, List::Nil} }\n\
+                   fn h() -> Arc<List<i32>> { Arc<List<i32>>::Nil }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn arc_ctor_is_not_the_plain_record_type() {
+        // The arc coloring is part of the type: an arc'd constructor does not
+        // check against the bare record.
+        let src = "struct Pair { a: i32 }\nfn f() -> Pair { Arc<Pair> { a: 1 } }";
+        assert!(!reports_of(src).is_empty(), "expected a type mismatch");
+    }
+
+    #[test]
+    fn rejects_arc_ctor_of_non_shared_record() {
+        let src = "struct [value] Pair { a: i32 }\nfn f() -> i32 { Arc<Pair> { a: 1 }; 0 }";
+        assert!(
+            has_error(
+                src,
+                "`Arc` constructs a `[shared]` record; `Pair` is not one"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_ctor_without_inner_type() {
+        let src = "struct Pair { a: i32 }\nfn f() -> i32 { Arc { a: 1 }; 0 }";
+        assert!(
+            has_error(
+                src,
+                "`Arc` construction takes exactly one explicit type argument"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
     fn accepts_arc_of_shared_record_and_generic() {
         // A `[shared]` record inner is the intended case; a generic inner is
         // deferred to the instantiation check.

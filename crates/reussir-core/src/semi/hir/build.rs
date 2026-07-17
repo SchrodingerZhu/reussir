@@ -831,6 +831,7 @@ mod tests {
         roundtrip(
             r#"
             struct Data { value: i64 }
+            enum List<T> { Nil, Cons(T, List<T>) }
             pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
                 a
             }
@@ -839,6 +840,15 @@ mod tests {
             }
             pub fn generic<T>(a: Arc<T>) -> Arc<T> {
                 a
+            }
+            pub fn make(v: i64) -> Arc<Data> {
+                Arc<Data> { value: v }
+            }
+            pub fn make_list() -> Arc<List<i64>> {
+                Arc<List<i64>>::Cons{1, List::Nil}
+            }
+            pub fn make_nil() -> Arc<List<i64>> {
+                Arc<List<i64>>::Nil
             }
             "#,
         );
