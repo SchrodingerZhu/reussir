@@ -79,6 +79,9 @@ jobs:
           # their bindgen step. python3-lldb-* provides lldb's script support,
           # which the debuginfo lit suite needs to load the Reussir formatters
           # (tests/integration/debuginfo; gdb comes with the runner image).
+          # libomp-*-dev lets lit's `%cc -fopenmp` probe succeed so the
+          # OpenMP e2e drivers (conversion/*_omp_e2e and the omp sanitizer
+          # tests) actually run instead of reporting UNSUPPORTED.
           sudo apt-get install -y \
             clang-${{ matrix.llvm-version }} \
             lldb-${{ matrix.llvm-version }} \
@@ -90,7 +93,8 @@ jobs:
             mlir-${{ matrix.llvm-version }}-tools \
             llvm-${{ matrix.llvm-version }}-dev \
             llvm-${{ matrix.llvm-version }}-tools \
-            libpolly-${{ matrix.llvm-version }}-dev
+            libpolly-${{ matrix.llvm-version }}-dev \
+            libomp-${{ matrix.llvm-version }}-dev
           
           echo "LD_LIBRARY_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "LLVM_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-${{ matrix.llvm-version }}" >> $GITHUB_ENV
@@ -119,7 +123,12 @@ jobs:
           -DMLIR_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/mlir
 
       - name: Build
-        run: cmake --build build --parallel
+        # Also build the sanitized runtime variants here: the `check` target
+        # does not depend on them, and lit decides the asan/lsan/msan/tsan
+        # features by whether the libraries exist when it starts — built only
+        # later (by check-sanitizer), the whole sanitizer/ suite shows up as
+        # UNSUPPORTED in the main integration-test run.
+        run: cmake --build build --parallel --target all reussir-rt-sanitizers
 
       - name: Run Unit Tests
         run: |

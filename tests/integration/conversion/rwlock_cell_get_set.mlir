@@ -15,14 +15,14 @@ module {
   // STD: scf.while
   // STD: sync.raw_rwlock.load_state %[[RAW]]
   // STD: sync.raw_rwlock.cmpxchg_state %[[RAW]]
-  // STD: func.call @mlir_sync_rwlock_read_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path
   // STD-NOT: write_lock
   // STD: %[[PAYLOAD:.+]] = sync.rwlock.get_payload %[[VIEW]]
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<i64>) : !reussir.ref<i64 field atomic>
   // STD: reussir.ref.acquire(%[[SLOT]]
   // STD-NEXT: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
   // STD: sync.raw_rwlock.read_unlock_fast %[[RAW]]
-  // STD: func.call @mlir_sync_rwlock_unlock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_unlock_slow_path
   // STD: return %[[VALUE]]
   // LLVM-LABEL: define i64 @get_i64
   // LLVM: cmpxchg
@@ -42,14 +42,14 @@ module {
   // STD: scf.while
   // STD: sync.raw_rwlock.load_state %[[RAW]]
   // STD: sync.raw_rwlock.cmpxchg_state %[[RAW]]
-  // STD: func.call @mlir_sync_rwlock_write_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_write_lock_slow_path
   // STD-NOT: read_lock
   // STD: %[[PAYLOAD:.+]] = sync.rwlock.get_payload %[[VIEW]]
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<i64>) : !reussir.ref<i64 field atomic>
   // STD: reussir.ref.drop(%[[SLOT]]
   // STD: reussir.ref.store(%[[SLOT]]
   // STD: sync.raw_rwlock.write_unlock_fast %[[RAW]]
-  // STD: func.call @mlir_sync_rwlock_unlock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_unlock_slow_path
   // STD: return
   // LLVM-LABEL: define void @set_i64
   // LLVM: cmpxchg ptr %{{.+}}, i32 0, i32 1073741823
@@ -66,7 +66,7 @@ module {
   // are safe.
   // STD-LABEL: func.func @get_rc
   // STD: %[[VIEW:.+]] = reussir.ref.to_memref{{.*}} : memref<!sync.rwlock<!reussir.rc<i64 atomic>>>
-  // STD: func.call @mlir_sync_rwlock_read_lock_slow_path
+  // STD: func.call @__sync_trampoline_mlir_sync_rwlock_read_lock_slow_path
   // STD: %[[PAYLOAD:.+]] = sync.rwlock.get_payload %[[VIEW]]
   // STD: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<!reussir.rc<i64 atomic>>) : !reussir.ref<!reussir.rc<i64 atomic> field atomic>
   // STD: %[[VALUE:.+]] = reussir.ref.load(%[[SLOT]]
@@ -89,7 +89,7 @@ module {
   // MANAGE-SAME: %[[NEW:[a-zA-Z0-9_]+]]: !reussir.rc<i64 atomic>
   // MANAGE-NOT: reussir.rc.inc
   // MANAGE: %[[VIEW:.+]] = reussir.ref.to_memref{{.*}} : memref<!sync.rwlock<!reussir.rc<i64 atomic>>>
-  // MANAGE: func.call @mlir_sync_rwlock_write_lock_slow_path
+  // MANAGE: func.call @__sync_trampoline_mlir_sync_rwlock_write_lock_slow_path
   // MANAGE: %[[PAYLOAD:.+]] = sync.rwlock.get_payload %[[VIEW]]
   // MANAGE: %[[SLOT:.+]] = reussir.ref.from_memref(%[[PAYLOAD]] : memref<!reussir.rc<i64 atomic>>) : !reussir.ref<!reussir.rc<i64 atomic> field atomic>
   // MANAGE: %[[OLD:.+]] = reussir.ref.load(%[[SLOT]]
