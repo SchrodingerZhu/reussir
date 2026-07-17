@@ -1166,10 +1166,13 @@ static mlir::Value getMutexView(const CellAccess &access, mlir::Location loc,
   return getLockStorageView(access, loc, rewriter);
 }
 
-static mlir::Block *
-addMutexCriticalSectionBody(mlir::sync::SyncMutexCriticalSectionOp critical,
-                            const CellAccess &access, mlir::Location loc,
-                            mlir::PatternRewriter &rewriter) {
+// The single-block body of any lock critical section, entered with a
+// zero-ranked memref view of the protected payload.
+template <typename CriticalSectionOp>
+static mlir::Block *addCriticalSectionBody(CriticalSectionOp critical,
+                                           const CellAccess &access,
+                                           mlir::Location loc,
+                                           mlir::PatternRewriter &rewriter) {
   auto payloadViewType =
       mlir::MemRefType::get({}, access.cellType.getElementType());
   return rewriter.createBlock(&critical.getBody(), critical.getBody().begin(),
@@ -1198,15 +1201,6 @@ createCombiningCriticalSection(const CellAccess &access, mlir::Location loc,
       rewriter, loc, lockView, /*combine_limit=*/mlir::IntegerAttr{});
 }
 
-static mlir::Block *addCombiningCriticalSectionBody(
-    mlir::sync::SyncCombiningLockCriticalSectionOp critical,
-    const CellAccess &access, mlir::Location loc,
-    mlir::PatternRewriter &rewriter) {
-  auto payloadViewType =
-      mlir::MemRefType::get({}, access.cellType.getElementType());
-  return rewriter.createBlock(&critical.getBody(), critical.getBody().begin(),
-                              {payloadViewType}, {loc});
-}
 
 static mlir::Value acquireThenLoadCellSlot(mlir::Value slotRef,
                                            mlir::Location loc,
@@ -1313,6 +1307,13 @@ public:
       rewriter.replaceOp(op, created.getRcPtr());
       return mlir::success();
     }
+    if (cellType.getKind() == CellKind::rwlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      mlir::sync::SyncRwLockInitOp::create(rewriter, op.getLoc(), lockView,
+                                           op.getValue());
+      rewriter.replaceOp(op, created.getRcPtr());
+      return mlir::success();
+    }
     mlir::Value slotRef = projectCellSlot(access, op.getLoc(), rewriter);
     ReussirRefStoreOp::create(rewriter, op.getLoc(), slotRef, op.getValue());
     // A fresh exclusive cell starts out not in use.
@@ -1340,7 +1341,7 @@ public:
           rewriter, op.getLoc(), op->getResultTypes(), mutexView);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *body = addMutexCriticalSectionBody(critical, access,
+        mlir::Block *body = addCriticalSectionBody(critical, access,
                                                         op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
@@ -1362,7 +1363,7 @@ public:
           createCombiningCriticalSection(access, op.getLoc(), rewriter);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *body = addCombiningCriticalSectionBody(
+        mlir::Block *body = addCriticalSectionBody(
             critical, access, op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
@@ -1376,6 +1377,27 @@ public:
       rewriter.replaceOp(op, mlir::memref::LoadOp::create(
                                  rewriter, op.getLoc(), out, mlir::ValueRange{})
                                  .getResult());
+      return mlir::success();
+    }
+    // A get only clones: the load and the acquisition (which bumps the
+    // element's own counts, never the protected slot) are safe under a shared
+    // read lock, so concurrent gets proceed in parallel.
+    if (access.cellType.getKind() == CellKind::rwlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncRwLockReadCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), lockView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *body =
+            addCriticalSectionBody(critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(body);
+        mlir::Value slotRef =
+            getLockPayloadRef(body, access, op.getLoc(), rewriter);
+        mlir::Value value =
+            acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
+        mlir::sync::SyncYieldOp::create(rewriter, op.getLoc(), value);
+      }
+      rewriter.replaceOp(op, critical.getResults());
       return mlir::success();
     }
     auto emitLoadAndAcquire = [&]() -> mlir::Value {
@@ -1415,7 +1437,7 @@ public:
           rewriter, op.getLoc(), op->getResultTypes(), mutexView);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *body = addMutexCriticalSectionBody(critical, access,
+        mlir::Block *body = addCriticalSectionBody(critical, access,
                                                         op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
@@ -1431,8 +1453,26 @@ public:
           createCombiningCriticalSection(access, op.getLoc(), rewriter);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *body = addCombiningCriticalSectionBody(
+        mlir::Block *body = addCriticalSectionBody(
             critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(body);
+        mlir::Value slotRef =
+            getLockPayloadRef(body, access, op.getLoc(), rewriter);
+        dropThenStoreCellSlot(slotRef, op.getValue(), op.getLoc(), rewriter);
+        mlir::sync::SyncYieldOp::create(rewriter, op.getLoc());
+      }
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+    // A set mutates the protected slot, so it takes the rwlock exclusively.
+    if (access.cellType.getKind() == CellKind::rwlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncRwLockWriteCriticalSectionOp::create(
+          rewriter, op.getLoc(), mlir::TypeRange{}, lockView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *body =
+            addCriticalSectionBody(critical, access, op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(body);
         mlir::Value slotRef =
             getLockPayloadRef(body, access, op.getLoc(), rewriter);
@@ -1482,7 +1522,7 @@ public:
           rewriter, op.getLoc(), op->getResultTypes(), mutexView);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *criticalBody = addMutexCriticalSectionBody(
+        mlir::Block *criticalBody = addCriticalSectionBody(
             critical, access, op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(criticalBody);
         mlir::Value slotRef =
@@ -1522,7 +1562,7 @@ public:
           createCombiningCriticalSection(access, op.getLoc(), rewriter);
       {
         mlir::OpBuilder::InsertionGuard guard(rewriter);
-        mlir::Block *criticalBody = addCombiningCriticalSectionBody(
+        mlir::Block *criticalBody = addCriticalSectionBody(
             critical, access, op.getLoc(), rewriter);
         rewriter.setInsertionPointToStart(criticalBody);
         mlir::Value slotRef =
@@ -1548,6 +1588,42 @@ public:
                                    rewriter, op.getLoc(), out,
                                    mlir::ValueRange{})
                                    .getResult());
+      else
+        rewriter.eraseOp(op);
+      return mlir::success();
+    }
+    // An rwlock read-modify-write stores its replacement into the protected
+    // slot, so the borrow runs inside a write critical section — exclusive
+    // like the mutex path, with the optional output leaving as a region
+    // result. The transfer keeps the region form's move semantics.
+    if (access.cellType.getKind() == CellKind::rwlock) {
+      mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+      auto critical = mlir::sync::SyncRwLockWriteCriticalSectionOp::create(
+          rewriter, op.getLoc(), op->getResultTypes(), lockView);
+      {
+        mlir::OpBuilder::InsertionGuard guard(rewriter);
+        mlir::Block *criticalBody =
+            addCriticalSectionBody(critical, access, op.getLoc(), rewriter);
+        rewriter.setInsertionPointToStart(criticalBody);
+        mlir::Value slotRef =
+            getLockPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+        mlir::Value oldValue = ReussirRefLoadOp::create(
+            rewriter, op.getLoc(), access.cellType.getElementType(), slotRef);
+        mlir::Block &body = op.getBody().front();
+        auto yield = llvm::cast<ReussirCellYieldOp>(body.getTerminator());
+        rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                   mlir::ValueRange{oldValue});
+        rewriter.setInsertionPoint(yield);
+        ReussirRefStoreOp::create(rewriter, yield.getLoc(), slotRef,
+                                  yield.getNewValue());
+        mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                        yield.getOutput()
+                                            ? mlir::ValueRange{yield.getOutput()}
+                                            : mlir::ValueRange{});
+        rewriter.eraseOp(yield);
+      }
+      if (op->getNumResults() != 0)
+        rewriter.replaceOp(op, critical.getResults());
       else
         rewriter.eraseOp(op);
       return mlir::success();
@@ -1581,6 +1657,52 @@ public:
     rewriter.eraseOp(yield);
     if (op->getNumResults() != 0)
       rewriter.replaceOp(op, guarded.getResults());
+    else
+      rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+// A read transaction over an rwlock cell: the body runs inside a read
+// critical section, sharing the lock with concurrent gets and other read
+// transactions. The element is cloned into the body — acquire and load, the
+// same door cell.get uses, safe under the shared lock because the
+// acquisition never writes the protected slot — and the yield carries only
+// the optional result out of the section.
+class ReussirCellRdlockOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirCellRdlockOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirCellRdlockOp op, OpAdaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    CellAccess access = borrowCell(op.getCell(), op.getLoc(), rewriter);
+    mlir::Value lockView = getLockStorageView(access, op.getLoc(), rewriter);
+    auto critical = mlir::sync::SyncRwLockReadCriticalSectionOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), lockView);
+    {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      mlir::Block *criticalBody =
+          addCriticalSectionBody(critical, access, op.getLoc(), rewriter);
+      rewriter.setInsertionPointToStart(criticalBody);
+      mlir::Value slotRef =
+          getLockPayloadRef(criticalBody, access, op.getLoc(), rewriter);
+      mlir::Value value =
+          acquireThenLoadCellSlot(slotRef, op.getLoc(), rewriter);
+      mlir::Block &body = op.getBody().front();
+      auto yield = llvm::cast<ReussirScfYieldOp>(body.getTerminator());
+      rewriter.inlineBlockBefore(&body, criticalBody, criticalBody->end(),
+                                 mlir::ValueRange{value});
+      rewriter.setInsertionPoint(yield);
+      mlir::sync::SyncYieldOp::create(rewriter, yield.getLoc(),
+                                      yield.getValue()
+                                          ? mlir::ValueRange{yield.getValue()}
+                                          : mlir::ValueRange{});
+      rewriter.eraseOp(yield);
+    }
+    if (op->getNumResults() != 0)
+      rewriter.replaceOp(op, critical.getResults());
     else
       rewriter.eraseOp(op);
     return mlir::success();
@@ -1772,7 +1894,8 @@ struct ConvertToSTDPass
         ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
         ReussirClosureUniqifyOp, ReussirArrayWithUniqueViewOp,
         ReussirTokenEnsureOp, ReussirStrByteAtOp, ReussirStrSelectOp,
-        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellInUseOp>();
+        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellRdlockOp,
+        ReussirCellInUseOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
@@ -1820,7 +1943,8 @@ void populateConvertToSTDConversionPatterns(mlir::RewritePatternSet &patterns) {
       ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
       ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
       ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
-      ReussirCellRmwOpRewritePattern, ReussirAtomicCellRmwOpRewritePattern,
+      ReussirCellRmwOpRewritePattern, ReussirCellRdlockOpRewritePattern,
+      ReussirAtomicCellRmwOpRewritePattern,
       ReussirCellInUseOpRewritePattern>(patterns.getContext());
 }
 

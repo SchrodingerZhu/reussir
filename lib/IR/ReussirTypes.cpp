@@ -1084,11 +1084,9 @@ CellType::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 // to the element's alignment — the same layout LLVM derives for
 // `{element, i1}`.
 //
-// Lock-guarded cells with a lowered access path delegate to their `sync`
-// storage type's data-layout interface because token instantiation sizes the
-// RC allocation before the cell is converted to the sync type. Lock kinds
-// without lowered operations (rwlock, for now) remain unconstructable and
-// retain the element-only fallback.
+// Lock-guarded cells delegate to their `sync` storage type's data-layout
+// interface because token instantiation sizes the RC allocation before the
+// cell is converted to the sync type.
 
 mlir::Type lockGuardedStorageType(CellType type) {
   switch (type.getKind()) {
@@ -1098,6 +1096,9 @@ mlir::Type lockGuardedStorageType(CellType type) {
   case CellKind::flatlock:
     return mlir::sync::CombiningLockType::get(type.getContext(),
                                               type.getElementType());
+  case CellKind::rwlock:
+    return mlir::sync::RwLockType::get(type.getContext(),
+                                       type.getElementType());
   default:
     return {};
   }

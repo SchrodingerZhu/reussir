@@ -75,7 +75,7 @@ module {
   }
 
   func.func @rmw_requires_exclusive(%cell: !rc_cell_i64) {
-    // expected-error @+1 {{read-modify-write requires an exclusive, atomic, mutex, or flatlock cell, got a plain cell}}
+    // expected-error @+1 {{read-modify-write requires an exclusive, atomic, or lock-guarded cell, got a plain cell}}
     reussir.cell.rmw(%cell : !rc_cell_i64) {
       ^bb0(%old: i64):
         reussir.cell.yield(%old : i64)

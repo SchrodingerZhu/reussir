@@ -1,41 +1,12 @@
 // RUN: %reussir-opt %s -verify-diagnostics -split-input-file
 
 // A lock-guarded cell keeps its payload inside a `sync` primitive, not at the
-// leading slot, so an operation needs a dedicated lock-aware lowering. Mutex
-// create/get/set/rmw and flatlock create/get/set are supported; the other
-// lock operations remain unavailable.
-!rwlock_cell1 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
-
-func.func @get_rwlock(%cell: !rwlock_cell1) -> i64 {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  %v = reussir.cell.get(%cell : !rwlock_cell1) : i64
-  return %v : i64
-}
-
-// -----
-
-!rwlock_cell = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
-
-func.func @set_rwlock(%cell: !rwlock_cell, %value: i64) {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  reussir.cell.set(%value : i64, %cell : !rwlock_cell)
-  return
-}
-
-// -----
-
-!rwlock_cell2 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
-
-func.func @create_rwlock(%value: i64) -> !rwlock_cell2 {
-  // expected-error @+1 {{whole-element access is not supported on a cell of kind 'rwlock'; access it through a critical-section region}}
-  %cell = reussir.cell.create value(%value : i64) : !rwlock_cell2
-  return %cell : !rwlock_cell2
-}
-
-// -----
-
-// The mutex exemption covers exactly create/get/set/rmw: a mutex cell has no
-// in-use flag to observe, so `cell.in_use` stays rejected.
+// leading slot, so an operation needs a dedicated lock-aware lowering.
+// Create/get/set and the region form of rmw are supported on every lock
+// kind.
+//
+// The lock exemption covers exactly create/get/set/rmw: a lock-guarded cell
+// has no in-use flag to observe, so `cell.in_use` stays rejected.
 !mutex_cell = !reussir.rc<!reussir.cell<i64 mutex> atomic>
 
 func.func @in_use_mutex(%cell: !mutex_cell) -> i1 {
@@ -64,6 +35,17 @@ func.func @direct_rmw_mutex(%delta: i64, %cell: !mutex_cell) -> i64 {
 func.func @direct_rmw_flatlock(%delta: i64, %cell: !flatlock_cell2) -> i64 {
   // expected-error @+1 {{direct atomic RMW form requires an atomic cell, got a flatlock cell}}
   %old = reussir.cell.rmw addi(%delta : i64, %cell : !flatlock_cell2) -> i64
+  return %old : i64
+}
+
+// -----
+
+// And on an rwlock cell: the region form takes the write lock instead.
+!rwlock_cell2 = !reussir.rc<!reussir.cell<i64 rwlock> atomic>
+
+func.func @direct_rmw_rwlock(%delta: i64, %cell: !rwlock_cell2) -> i64 {
+  // expected-error @+1 {{direct atomic RMW form requires an atomic cell, got an rwlock cell}}
+  %old = reussir.cell.rmw addi(%delta : i64, %cell : !rwlock_cell2) -> i64
   return %old : i64
 }
 

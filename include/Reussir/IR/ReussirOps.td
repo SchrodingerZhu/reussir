@@ -1083,12 +1083,16 @@ def ReussirCellGetOp : ReussirCellOp<"get", []> {
     the mutex through a `sync.mutex.critical_section` region. On a flatlock
     cell they run inside a `sync.combining_lock.critical_section`, whose body
     may be served by a combining thread: the cloned value returns to the
-    caller through a captured stack slot rather than a region result.
+    caller through a captured stack slot rather than a region result. On an
+    rwlock cell they run inside a `sync.rwlock.read_critical_section`:
+    concurrent gets share the read lock, and the acquisition only bumps the
+    element's own (atomic) counts, never the protected slot.
 
     On an atomic cell, this is an atomic load. The optional ordering defaults
     to `acquire`; load orderings unsupported by LLVM are rejected. Atomic cell
     elements are arithmetic primitives, so clone ownership is trivial. An
-    ordering cannot be attached to a plain, exclusive, mutex, or flatlock cell access.
+    ordering cannot be attached to a plain, exclusive, or lock-guarded cell
+    access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<ReussirRcCellType, "cell to read">:$cell);
@@ -1117,13 +1121,15 @@ def ReussirCellSetOp : ReussirCellOp<"set", []> {
     replacement execute while holding the mutex through a
     `sync.mutex.critical_section` region. On a flatlock cell they run inside a
     `sync.combining_lock.critical_section`, possibly served by a combining
-    thread.
+    thread. On an rwlock cell they run inside a
+    `sync.rwlock.write_critical_section`: the replacement mutates the
+    protected slot, so it takes the lock exclusively.
 
     On an atomic cell, this is an atomic store. The optional ordering defaults
     to `release`; store orderings unsupported by LLVM are rejected. No old
     managed value needs to be dropped because atomic cell elements are
-    arithmetic primitives. An ordering cannot be attached to a plain or
-    exclusive or mutex or flatlock cell access.
+    arithmetic primitives. An ordering cannot be attached to a plain,
+    exclusive, or lock-guarded cell access.
   }];
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering,
       Arg<AnyType, "replacement value">:$value,
@@ -1162,6 +1168,12 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     possibly on the combining thread serving the waiter's request; the
     optional output returns to the caller through a captured stack slot.
 
+    On an rwlock cell, the region form is the same borrow inside a
+    `sync.rwlock.write_critical_section`: storing the replacement mutates the
+    protected slot, so the read-modify-write holds the lock exclusively even
+    when the body never writes. Read-only transactions that want to share
+    the lock use `reussir.cell.rdlock` instead.
+
     On an atomic cell, the region is a retryable, memory-effect-free
     computation and is committed with compare-exchange. It may run more than
     once under contention; the optional output comes from the successful
@@ -1169,7 +1181,7 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
     operand, returns the old element, and lowers to an LLVM atomic RMW. Both
     atomic forms accept an optional ordering that defaults to `acq_rel`.
     Atomic RMW orderings unsupported by LLVM are rejected, as is any ordering
-    on an exclusive, mutex, or flatlock cell; the direct form is atomic-only.
+    on an exclusive or lock-guarded cell; the direct form is atomic-only.
 
     ```mlir
     %old = reussir.cell.rmw addi(%delta : i64,
@@ -1183,6 +1195,42 @@ def ReussirCellRmwOp : ReussirCellOp<"rmw", []> {
   let results = (outs Res<Optional<AnyType>, "body output">:$output);
   let regions = (region MaxSizedRegion<1>:$body);
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def ReussirCellRdlockOp : ReussirCellOp<"rdlock", []> {
+  let summary = "Run a read transaction over an rwlock cell";
+  let description = [{
+    `reussir.cell.rdlock` executes its single-block body inside a
+    `sync.rwlock.read_critical_section` over an rwlock cell: a longer read
+    transaction that shares the lock with concurrent gets and other read
+    transactions instead of serializing behind the write lock. Only rwlock
+    cells are accepted — every other lock kind reads through its exclusive
+    critical section via `cell.get`/`cell.rmw`.
+
+    Unlike `reussir.cell.rmw`, the body does not borrow the element. The
+    element is cloned into the body — loaded and acquired exactly like
+    `reussir.cell.get` (safe under the shared lock: the acquisition bumps the
+    element's own atomic counts, never the protected slot) — and the cell
+    keeps its element untouched. The body owns the clone and must consume it.
+    Nothing is stored back: the body terminates with `reussir.scf.yield`,
+    which carries only the optional operation result.
+
+    ```mlir
+    %len = reussir.cell.rdlock(%cell : !reussir.rc<!reussir.cell<!inner rwlock> atomic>) -> i64 {
+      ^bb0(%value: !inner):
+        %len = func.call @inspect(%value) : (!inner) -> i64
+        reussir.scf.yield %len : i64
+    }
+    ```
+  }];
+  let arguments = (ins Arg<ReussirRcCellType, "cell to read">:$cell);
+  let results = (outs Res<Optional<AnyType>, "body output">:$output);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `(` $cell `:` qualified(type($cell)) `)` (`->` type($output)^)?
+    $body attr-dict
+  }];
   let hasVerifier = 1;
 }
 
@@ -1617,7 +1665,8 @@ def ReussirScfYieldOp
           "yield", [ReturnLike, Terminator,
                     ParentOneOf<["::reussir::ReussirNullableDispatchOp",
                                  "::reussir::ReussirRecordDispatchOp",
-                                 "::reussir::ReussirArrayWithUniqueViewOp"]>]> {
+                                 "::reussir::ReussirArrayWithUniqueViewOp",
+                                 "::reussir::ReussirCellRdlockOp"]>]> {
   let summary = "Yield a value from a scf operation";
   let description = [{
     `reussir.scf.yield` terminates a high-level structured control flow operation.

@@ -119,9 +119,9 @@ static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
 
 // A cell operation without a dedicated lock-aware lowering is unsound on a
 // lock-guarded cell: its payload lives inside a `sync` primitive rather than at
-// the leading slot, and reaching it requires holding the lock. Mutex create,
-// get, set, and the region form of rmw are handled separately through `sync`
-// operations.
+// the leading slot, and reaching it requires holding the lock. Create, get,
+// set, and the region form of rmw are handled separately through `sync`
+// operations on every lock kind.
 static mlir::LogicalResult rejectLockGuardedCell(mlir::Operation *op,
                                                  CellType cellType) {
   if (cellType.getLockGuarded())
@@ -1218,13 +1218,9 @@ mlir::LogicalResult ReussirCellCreateOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), rcType);
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex and flatlock creation have dedicated lowerings through
-  // `sync.mutex.init` / `sync.combining_lock.init`. Other lock kinds remain
-  // unavailable until their create operations are implemented.
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated creation lowering through its
+  // `sync` init operation (`sync.mutex.init` / `sync.combining_lock.init` /
+  // `sync.rwlock.init`), so creation is never rejected on a lock kind.
   if (getValue().getType() != (*cellType).getElementType())
     return emitOpError("initial value type must match cell element type, got ")
            << getValue().getType() << " and " << (*cellType).getElementType();
@@ -1314,10 +1310,8 @@ mlir::LogicalResult ReussirCellGetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated get lowering: a mutex or flatlock
+  // critical section, or an rwlock read critical section.
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Load)))
     return mlir::failure();
@@ -1331,10 +1325,8 @@ mlir::LogicalResult ReussirCellSetOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock-guarded kind has a dedicated set lowering: a mutex or flatlock
+  // critical section, or an rwlock write critical section.
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Store)))
     return mlir::failure();
@@ -1448,13 +1440,10 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
   auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
   if (mlir::failed(cellType))
     return mlir::failure();
-  // Mutex and flatlock read-modify-write have dedicated lowerings: the region
-  // runs as a critical section, borrowing the element RefCell-style with the
-  // held lock standing in for the exclusive cell's in-use flag.
-  if ((*cellType).getKind() != CellKind::mutex &&
-      (*cellType).getKind() != CellKind::flatlock &&
-      mlir::failed(rejectLockGuardedCell(getOperation(), *cellType)))
-    return mlir::failure();
+  // Every lock kind's read-modify-write has a dedicated lowering: the region
+  // runs as a critical section (a write one on an rwlock cell), borrowing the
+  // element RefCell-style with the held lock standing in for the exclusive
+  // cell's in-use flag.
   if (mlir::failed(verifyCellAtomicOrdering(
           getOperation(), *cellType, getOrdering(), CellAtomicAccess::Rmw)))
     return mlir::failure();
@@ -1469,14 +1458,15 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
     return emitOpError("region form requires a body");
 
   if (!(*cellType).getExclusive() && !(*cellType).getAtomic() &&
-      !(*cellType).getMutex() && !(*cellType).getFlatlock())
-    return emitOpError("read-modify-write requires an exclusive, atomic, "
-                       "mutex, or flatlock cell, got a plain cell");
+      !(*cellType).getLockGuarded())
+    return emitOpError("read-modify-write requires an exclusive, atomic, or "
+                       "lock-guarded cell, got a plain cell");
   if (!(*cellType).getAtomic() && direct)
     return emitOpError("direct atomic RMW form requires an atomic cell, got ")
-           << ((*cellType).getExclusive() ? "an exclusive cell"
-               : (*cellType).getMutex()  ? "a mutex cell"
-                                          : "a flatlock cell");
+           << ((*cellType).getExclusive()  ? "an exclusive cell"
+               : (*cellType).getMutex()    ? "a mutex cell"
+               : (*cellType).getFlatlock() ? "a flatlock cell"
+                                           : "an rwlock cell");
 
   mlir::Type elementType = (*cellType).getElementType();
   if (direct) {
@@ -1541,6 +1531,41 @@ mlir::LogicalResult ReussirCellRmwOp::verify() {
                    "be retried; operation has effects: ")
                << nested.getName();
   }
+  return mlir::success();
+}
+
+mlir::LogicalResult ReussirCellRdlockOp::verify() {
+  auto cellType = verifySharedCellOperand(getOperation(), getCell().getType());
+  if (mlir::failed(cellType))
+    return mlir::failure();
+  // Only an rwlock cell has a shared read lock to take; every other lock
+  // kind reads through its exclusive critical section via get/rmw.
+  if (!(*cellType).getRwlock())
+    return emitOpError("read transaction requires an rwlock cell, got a cell "
+                       "of kind '")
+           << stringifyCellKind((*cellType).getKind()) << "'";
+
+  if (!llvm::hasSingleElement(getBody()))
+    return emitOpError("body must contain exactly one block");
+  mlir::Block &block = getBody().front();
+  if (block.getNumArguments() != 1)
+    return emitOpError("body must accept exactly one cell element argument");
+  if (block.getArgument(0).getType() != (*cellType).getElementType())
+    return emitOpError(
+               "body argument type must match cell element type, expected ")
+           << (*cellType).getElementType() << ", got "
+           << block.getArgument(0).getType();
+  if (block.empty() || !llvm::isa<ReussirScfYieldOp>(block.getTerminator()))
+    return emitOpError("body must terminate with reussir.scf.yield");
+
+  auto yield = llvm::cast<ReussirScfYieldOp>(block.getTerminator());
+  if (static_cast<bool>(getOutput()) != static_cast<bool>(yield.getValue()))
+    return emitOpError("body must yield exactly one optional output when the "
+                       "operation has a result");
+  if (getOutput() && getOutput().getType() != yield.getValue().getType())
+    return emitOpError(
+               "body output type must match operation result type, got ")
+           << yield.getValue().getType() << " and " << getOutput().getType();
   return mlir::success();
 }
 
@@ -2271,7 +2296,14 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
   mlir::Type yieldedType = getValue() ? getValue().getType() : mlir::Type{};
   mlir::Type expectedType = mlir::Type{};
   bool allowImplicitArrayResult = false;
-  if (auto nullableParent =
+  // The rdlock check looks at the immediate parent (not the nearest ancestor
+  // of a type): an rdlock body may itself sit inside a dispatch region, and
+  // this yield belongs to the rdlock.
+  if (auto rdlockParent = llvm::dyn_cast_if_present<ReussirCellRdlockOp>(
+          getOperation()->getParentOp()))
+    expectedType = rdlockParent.getOutput() ? rdlockParent.getOutput().getType()
+                                            : mlir::Type{};
+  else if (auto nullableParent =
           getOperation()->getParentOfType<ReussirNullableDispatchOp>())
     expectedType = nullableParent.getValue()
                        ? nullableParent.getValue().getType()
