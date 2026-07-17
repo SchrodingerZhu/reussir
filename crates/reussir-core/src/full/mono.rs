@@ -38,6 +38,15 @@
 //! record instance is finalized — reporting any non-regional (value/shared)
 //! instantiation. The *flexivity* rules (flex capture/return/assign) are a
 //! separate concern enforced at the Semi stage on concrete records, not here.
+//!
+//! # `Arc` inner check at the instantiation boundary
+//!
+//! `ty_eval` rejects a concrete `Arc` inner that is not a shared rc box (a
+//! `[shared]` record, an array, or a closure) but lets a generic inner
+//! (`Arc<T>`) through. An instantiation — e.g. a trampoline's explicit type
+//! arguments — is the first point where such a type grounds, so mono re-walks
+//! every substituted type and reports any `Arc<i32>`/`Arc<Cell<…>>` it finds
+//! (see [`arc_inner_rejection`]).
 
 use std::collections::VecDeque;
 
@@ -58,6 +67,7 @@ use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use crate::semi::ty::{FpTy, IntTy};
+use crate::semi::ty_eval::arc_inner_rejection;
 use crate::surface::Span;
 use crate::utils::string::StringToken;
 
@@ -116,6 +126,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         queue: VecDeque::new(),
         seen: FxHashSet::default(),
         records: FxHashSet::default(),
+        record_defs: input.records,
+        reported_arcs: FxHashSet::default(),
         reports: Vec::new(),
         cur_file: FileId::ROOT,
         ids: mir::ExprIdGen::default(),
@@ -138,6 +150,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             continue;
         };
         driver.cur_file = func.file;
+        driver.reported_arcs.clear();
 
         // Bind this instance's generics, then ground the signature and lower the
         // body into the MIR.
@@ -162,6 +175,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             .map(|(name, var, ty)| {
                 let ty = subst_ty(tcx, *ty, &subst);
                 driver.note_records(ty);
+                driver.check_arc_inners(ty, func.span);
                 mir::Param {
                     name: *name,
                     var: *var,
@@ -171,6 +185,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             .collect();
         let return_ty = subst_ty(tcx, func.return_ty, &subst);
         driver.note_records(return_ty);
+        driver.check_arc_inners(return_ty, func.span);
         let body = func.body.as_ref().map(|b| driver.lower_ref(b, &subst));
 
         let symbol = driver.symbol_of(inst.def, inst.ty_args);
@@ -356,6 +371,7 @@ fn ty_depth(ty: Ty<'_>) -> usize {
     match *ty.kind() {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
         TyKind::Cell { elem: inner, .. } => 1 + ty_depth(inner),
+        TyKind::Arc(inner) => 1 + ty_depth(inner),
         TyKind::Array { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
@@ -417,6 +433,13 @@ struct Driver<'a, 'tcx> {
     seen: FxHashSet<Instance<'tcx>>,
     /// Ground record instances whose layout is needed (keyed flex-independently).
     records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
+    /// Record definitions (for their default capability) — the deferred `Arc`
+    /// inner check needs to tell a `[shared]` record from the rest.
+    record_defs: &'a FxHashMap<DefId, Record<'tcx>>,
+    /// `Arc` types already reported by the deferred inner check; cleared per
+    /// function instance so an offending instantiation reports once, not once
+    /// per mention in the body.
+    reported_arcs: FxHashSet<Ty<'tcx>>,
     reports: Vec<Report>,
     /// The declaration file of the item currently being instantiated; stamped
     /// onto reports so multi-file diagnostics point into the right source.
@@ -490,7 +513,52 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             TyKind::Nullable(inner) => self.note_records(inner),
             TyKind::Cell { elem: inner, .. } => self.note_records(inner),
+            TyKind::Arc(inner) => self.note_records(inner),
             TyKind::Array { elem, .. } => self.note_records(elem),
+            _ => {}
+        }
+    }
+
+    /// The deferred half of the `Arc` inner check (see the module docs):
+    /// `ty_eval` lets a generic inner (`Arc<T>`) through, so a ground
+    /// instantiation is the first point where an `Arc` of a non-box —
+    /// `Arc<i32>`, `Arc<Cell<…>>` — can exist. Walk a substituted type and
+    /// report every such `Arc`, once per type per function instance (see
+    /// [`reported_arcs`](Self::reported_arcs)).
+    fn check_arc_inners(&mut self, ty: Ty<'tcx>, span: Option<Span>) {
+        match *ty.kind() {
+            TyKind::Arc(inner) => {
+                let rejection = arc_inner_rejection(
+                    |def| self.record_defs.get(&def).map(|r| r.default_cap),
+                    inner,
+                );
+                if let Some(kind) = rejection
+                    && self.reported_arcs.insert(ty)
+                {
+                    self.error(
+                        span,
+                        format!(
+                            "this instantiation grounds an `Arc` inner type that is not a \
+                             `[shared]` record, array, or closure ({kind})"
+                        ),
+                    );
+                }
+                self.check_arc_inners(inner, span);
+            }
+            TyKind::Record { args, .. } => {
+                for &arg in args {
+                    self.check_arc_inners(arg, span);
+                }
+            }
+            TyKind::Closure { params, ret } => {
+                for &p in params {
+                    self.check_arc_inners(p, span);
+                }
+                self.check_arc_inners(ret, span);
+            }
+            TyKind::Nullable(inner) => self.check_arc_inners(inner, span),
+            TyKind::Cell { elem: inner, .. } => self.check_arc_inners(inner, span),
+            TyKind::Array { elem, .. } => self.check_arc_inners(elem, span),
             _ => {}
         }
     }
@@ -525,6 +593,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
             TyKind::Cell { elem: inner, .. } => self.discover_records(inner, worklist),
+            TyKind::Arc(inner) => self.discover_records(inner, worklist),
             TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
             _ => {}
         }
@@ -590,6 +659,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     fn lower_expr(&mut self, e: &Expr<'tcx>, subst: &Subst<'tcx>) -> mir::Expr<'tcx> {
         let ty = subst_ty(self.tcx, e.ty, subst);
         self.note_records(ty);
+        self.check_arc_inners(ty, e.span);
         let kind = self.lower_kind(&e.kind, subst);
         self.check_literal_range(&kind, ty, e.span);
         mir::Expr {
@@ -1231,6 +1301,7 @@ mod tests {
             }
             TyKind::Nullable(inner) => is_ground(inner),
             TyKind::Cell { elem: inner, .. } => is_ground(inner),
+            TyKind::Arc(inner) => is_ground(inner),
             TyKind::Array { elem, .. } => is_ground(elem),
             _ => true,
         }
@@ -1502,6 +1573,49 @@ mod tests {
                 "expected a regionality diagnostic, got {reports:#?}"
             );
         });
+    }
+
+    #[test]
+    fn arc_generic_rejects_non_box_instantiation() {
+        // `ty_eval` defers a generic `Arc` inner; a trampoline's explicit type
+        // arguments are the first point where it grounds. `Arc<i32>` and
+        // `Arc<Cell<i32>>` must be rejected here — `Arc` takes only a shared
+        // rc box (a `[shared]` record, an array, or a closure).
+        let src = r#"
+            fn passthrough<T>(a: Arc<T>) -> Arc<T> { a }
+            extern "C" trampoline "bad_scalar" = passthrough<i32>;
+            extern "C" trampoline "bad_cell" = passthrough<Cell<i32>>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports.iter().any(|m| m.contains(
+                "grounds an `Arc` inner type that is not a `[shared]` record, \
+                 array, or closure (not an rc box)"
+            )),
+            "{reports:#?}"
+        );
+        assert!(
+            reports.iter().any(|m| m.contains(
+                "grounds an `Arc` inner type that is not a `[shared]` record, \
+                 array, or closure (a cell)"
+            )),
+            "{reports:#?}"
+        );
+    }
+
+    #[test]
+    fn arc_generic_accepts_shared_box_instantiations() {
+        // A `[shared]` record, an array, and a closure are all shared rc
+        // boxes, so grounding `Arc<T>` at them is fine.
+        let src = r#"
+            struct Data { value: i64 }
+            fn passthrough<T>(a: Arc<T>) -> Arc<T> { a }
+            extern "C" trampoline "ok_record" = passthrough<Data>;
+            extern "C" trampoline "ok_array" = passthrough<[f64; 8]>;
+            extern "C" trampoline "ok_closure" = passthrough<(i64) -> i64>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(reports.is_empty(), "{reports:#?}");
     }
 
     #[test]

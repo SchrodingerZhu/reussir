@@ -156,6 +156,11 @@ pub enum TyKind<'tcx> {
         exclusive: bool,
     },
     Nullable(Ty<'tcx>),
+    /// An atomically reference-counted coloring of a `[shared]` record:
+    /// `Arc<X>` is the same nominal `X` behind a box whose refcount is
+    /// adjusted with atomic operations, so the value may cross threads. Only
+    /// the rc discipline differs — reads (projection, matching) see `X`.
+    Arc(Ty<'tcx>),
     /// A rigid type parameter in scope.
     Generic(GenericId),
     /// A unification variable.
@@ -282,6 +287,10 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn mk_nullable(&self, inner: Ty<'tcx>) -> Ty<'tcx> {
         self.mk(TyKind::Nullable(inner))
+    }
+
+    pub fn mk_arc(&self, inner: Ty<'tcx>) -> Ty<'tcx> {
+        self.mk(TyKind::Arc(inner))
     }
 
     pub fn mk_record(&self, def: DefId, args: &[Ty<'tcx>], flex: Flexivity) -> Ty<'tcx> {

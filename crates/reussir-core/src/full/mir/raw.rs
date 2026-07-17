@@ -211,6 +211,7 @@ pub enum Ty {
         inner: Box<Ty>,
         exclusive: bool,
     },
+    Arc(Box<Ty>),
     /// `[cap] path<args>` — a regional/value record type.
     Record {
         cap: Cap,

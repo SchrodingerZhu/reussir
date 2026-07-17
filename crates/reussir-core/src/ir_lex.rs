@@ -90,6 +90,8 @@ pub enum Token<'a> {
     Cell,
     #[token("RefCell")]
     RefCell,
+    #[token("Arc")]
+    Arc,
     #[token("NonNull")]
     NonNull,
     #[token("Null")]

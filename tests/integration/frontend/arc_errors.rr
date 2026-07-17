@@ -1,0 +1,40 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// Arc is a root builtin type constructor.
+// CHECK-DAG: `Arc` takes exactly one type argument
+fn missing_type(a: Arc) -> i64 { 0 }
+
+// CHECK-DAG: record name `Arc` is reserved for the builtin type
+struct Arc { value: i64 }
+
+// Only a shared rc box — a [shared] record, an array, or a closure — can be
+// arc-colored.
+// CHECK-DAG: `Arc` inner type `i64` is not a `[shared]` record, array, or closure (not an rc box)
+fn scalar_inner(a: Arc<i64>) -> i64 { 0 }
+
+// A cell is a shared box, but synchronization is the cell's own axis; Arc
+// must not stack a second discipline on top of it.
+// CHECK-DAG: `Arc` inner type `Cell<i64>` is not a `[shared]` record, array, or closure (a cell)
+fn cell_inner(a: Arc<Cell<i64>>) -> i64 { 0 }
+
+struct [value] Flat { value: i64 }
+// CHECK-DAG: `Arc` inner type `Flat` is not a `[shared]` record, array, or closure (a `[value]` record)
+fn value_inner(a: Arc<Flat>) -> i64 { 0 }
+
+struct [regional] Node { value: i64, next: [field] Node }
+// CHECK-DAG: `Arc` inner type `[regional] Node` is not a `[shared]` record, array, or closure (a `[regional]` record)
+fn regional_inner(a: Arc<Node>) -> i64 { 0 }
+
+// An arc cannot sit inline in a record member yet (the MLIR record encoding
+// has no per-member atomic axis).
+struct [shared] Shared { value: i64 }
+// CHECK-DAG: an `Arc` record member is not supported yet
+struct Holder { a: Arc<Shared> }
+
+// A mutable `[field]` link stores a regional record, never a shared box.
+// CHECK-DAG: a `[field]` link element must be a regional record
+struct [regional] BadLink { value: [field] Arc<Shared> }
+
+// An arc is already atomically counted; wrapping it again double-boxes.
+// CHECK-DAG: `Arc` inner type `Arc<Shared>` is not a `[shared]` record, array, or closure (already an `Arc`)
+fn nested_inner(a: Arc<Arc<Shared>>) -> i64 { 0 }

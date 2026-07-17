@@ -994,6 +994,116 @@ mod tests {
         );
     }
 
+    // ----- arc-shared-inner -----
+
+    #[test]
+    fn rejects_arc_of_scalar() {
+        let src = "fn f(x: Arc<i32>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                src,
+                "is not a `[shared]` record, array, or closure (not an rc box)"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_of_cell() {
+        // A cell is a shared box, but synchronization is the cell's own axis;
+        // `Arc` must not stack a second discipline on top of it.
+        let src = "fn f(x: Arc<Cell<i32>>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                src,
+                "is not a `[shared]` record, array, or closure (a cell)"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_of_arc() {
+        let src = "struct Pair { a: i32 }\nfn f(x: Arc<Arc<Pair>>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                src,
+                "is not a `[shared]` record, array, or closure (already an `Arc`)"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_of_value_record() {
+        let src = "struct [value] Pair { a: i32 }\nfn f(x: Arc<Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                src,
+                "is not a `[shared]` record, array, or closure (a `[value]` record)"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_of_regional_record() {
+        let src = "struct [regional] C { v: i32, next: [field] C }\n\
+                   fn f(x: Arc<C>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                src,
+                "is not a `[shared]` record, array, or closure (a `[regional]` record)"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_arity() {
+        let src = "struct Pair { a: i32 }\nfn f(x: Arc<Pair, Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "`Arc` takes exactly one type argument"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_record_member() {
+        let src = "struct Pair { a: i32 }\nstruct Holder { p: Arc<Pair> }";
+        assert!(
+            has_error(src, "an `Arc` record member is not supported yet"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn accepts_arc_of_shared_record_and_generic() {
+        // A `[shared]` record inner is the intended case; a generic inner is
+        // deferred to the instantiation check.
+        let src = "struct Pair { a: i32 }\n\
+                   fn f(x: Arc<Pair>) -> i32 { 0 }\n\
+                   fn g<T>(x: Arc<T>) -> i32 { 0 }\n\
+                   fn h(x: Nullable<Arc<Pair>>) -> i32 { 0 }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn accepts_arc_of_array_and_closure() {
+        // Arrays and closures are single shared rc boxes like a `[shared]`
+        // record, so they take the atomic coloring the same way.
+        let src = "fn f(x: Arc<[f64; 8]>) -> i32 { 0 }\n\
+                   fn g(x: Arc<(i64) -> i64>) -> i32 { 0 }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
     // ----- region-flex-checks -----
 
     #[test]

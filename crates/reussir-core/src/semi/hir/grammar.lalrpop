@@ -182,6 +182,7 @@ Ty: raw::Ty = {
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
     "Cell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), exclusive: false },
     "RefCell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), exclusive: true },
+    "Arc" "<" <t:Ty> ">" => raw::Ty::Arc(Box::new(t)),
     <cap:Cap> "#" <path:PathArgs>
         => raw::Ty::Record { cap, path: path.0, args: path.1 },
     "[" <elem:Ty> ";" <dims:CommaPlus<"int">> "]"
@@ -388,6 +389,7 @@ extern {
         "Nullable" => Token::Nullable,
         "Cell" => Token::Cell,
         "RefCell" => Token::RefCell,
+        "Arc" => Token::Arc,
         "NonNull" => Token::NonNull,
         "Null" => Token::Null,
         "poison" => Token::Poison,

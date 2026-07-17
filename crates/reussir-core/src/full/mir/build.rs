@@ -273,6 +273,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let inner = self.ty(inner);
                 self.tcx.mk_cell(inner, *exclusive)
             }
+            raw::Ty::Arc(inner) => {
+                let inner = self.ty(inner);
+                self.tcx.mk_arc(inner)
+            }
             raw::Ty::Record { cap: c, path, args } => {
                 let def = self.record_def(path);
                 let args: Vec<Ty<'tcx>> = args.iter().map(|a| self.ty(a)).collect();
@@ -762,6 +766,22 @@ mod tests {
             }
             pub fn mixed(c: Cell<RefCell<i64>>) -> Cell<RefCell<i64>> {
                 c
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn roundtrips_arcs() {
+        roundtrip(
+            r#"
+            struct Data { value: i64 }
+            fn generic<T>(a: T) -> T { a }
+            pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
+                generic(a)
+            }
+            pub fn maybe(a: Nullable<Arc<Data>>) -> Nullable<Arc<Data>> {
+                a
             }
             "#,
         );
