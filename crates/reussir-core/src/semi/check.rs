@@ -877,6 +877,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// (PROJ) `Γ ⊢ base.acc₁.….accₙ ⇒ (Proj(hb,[idxᵢ]) : Tₙ)`: `base ⇒ T₀`, then at each
     /// step the (shallow-resolved) record type's field `accᵢ` gives the next type `Tᵢ`
     /// and its numeric index. A non-record head or missing field poisons.
+    /// Reads see through the arc coloring: `Arc<X>` projects and matches as
+    /// `X` — only the rc discipline differs. Returns the shallow-resolved
+    /// type, unwrapped once if it is an arc.
+    pub(super) fn peel_arc(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+        let ty = self.infer.shallow_resolve(ty);
+        match ty.kind() {
+            TyKind::Arc(inner) => self.infer.shallow_resolve(*inner),
+            _ => ty,
+        }
+    }
+
     fn infer_access(
         &mut self,
         base: &surface::Expr,
@@ -884,7 +895,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let base = self.infer_expr(base);
-        let mut cur = self.infer.shallow_resolve(base.ty);
+        let mut cur = self.peel_arc(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
             let TyKind::Record { def, args, flex } = cur.kind() else {

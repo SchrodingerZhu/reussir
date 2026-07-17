@@ -70,3 +70,24 @@ pub fn make(v: i64) -> Arc<Data> {
 pub fn make_list() -> Arc<List<i64>> {
     Arc<List<i64>>::Cons{1, List::Nil}
 }
+
+// Reads see through the arc coloring: projection and matching are the inner
+// record's own, at their declared field types.
+// HIR: pub fn #read(v0 (a): Arc<#Data>) -> i64
+// HIR-NEXT: proj(v0 : Arc<#Data>, 0) : i64
+// MIR-DAG: pub fn @_RC4read(v0 (a): Arc<Data>) -> i64
+// MIR-DAG: proj(v0 : Arc<Data>, 0) : i64
+pub fn read(a: Arc<Data>) -> i64 {
+    a.value
+}
+
+// HIR: pub fn #head(v0 (l): Arc<#List::<i64>>) -> i64
+// HIR-NEXT: match v0 : Arc<#List::<i64>> {
+// MIR-DAG: pub fn @_RC4head(v0 (l): Arc<List::<i64>>) -> i64
+// MIR-DAG: match v0 : Arc<List::<i64>> {
+pub fn head(l: Arc<List<i64>>) -> i64 {
+    match l {
+        List::Cons(x, _) => x,
+        List::Nil => 0
+    }
+}
