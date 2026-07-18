@@ -335,7 +335,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ("Integral", builtins.integral),
             ("FloatingPoint", builtins.floating_point),
             ("PtrLike", builtins.ptr_like),
-            ("Send", builtins.send),
             ("Sync", builtins.sync),
         ]
         .into_iter()

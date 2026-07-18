@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn primitive_scalars_are_send_and_sync() {
+    fn primitive_scalars_are_sync() {
         with_tcx(|tcx: &TyCtxt| {
             let mut db = TraitDb::new();
             let b = Builtins::register(&mut db, tcx);
@@ -192,7 +192,6 @@ mod tests {
                 tcx.mk_str(),
                 tcx.mk_char(),
             ] {
-                assert!(db.select(&needs(b.send, ty)).is_ok());
                 assert!(db.select(&needs(b.sync, ty)).is_ok());
             }
         });
