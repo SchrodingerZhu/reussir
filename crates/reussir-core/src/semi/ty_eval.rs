@@ -39,10 +39,12 @@
 //! binding. Generics are left uncolored — their modality is resolved at
 //! monomorphization.
 
+use crate::semi::infer::Instantiation;
+use crate::semi::traits::sync::{SyncEnv, SyncVerdict, wf_arc};
 use crate::semi::ty::{DefId, Flexivity, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
 
-use super::ctxt::{DefaultCap, Elaborator};
+use super::ctxt::{DefaultCap, Elaborator, RecordFields};
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Evaluate a surface type, coloring concrete regional records as
@@ -168,6 +170,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                                 self.ty_display(inner)
                             ),
                         );
+                    } else if self.records_complete {
+                        // Body-position annotations run after record fields
+                        // populate, so the member (`Sync`) half of the wf
+                        // check answers here. Signature and member positions
+                        // evaluate earlier and blocked — the post-populate
+                        // sweep re-checks them.
+                        self.report_arc_wf(inner, Some(span));
                     }
                     self.tcx.mk_arc(inner)
                 }
@@ -402,4 +411,106 @@ fn is_concretely_non_pointer(t: Ty<'_>) -> bool {
             | TyKind::Unit
             | TyKind::Nullable(_)
     )
+}
+
+//===------------------------------------------------------------------===//
+// Structural `Sync` over the elaborator's tables
+//===------------------------------------------------------------------===//
+
+/// [`SyncEnv`] over the elaborator: record capabilities from the collected
+/// table, member types instantiated through the inference context.
+pub(crate) struct ElabSyncEnv<'e, 'a, 'tcx> {
+    pub el: &'e Elaborator<'a, 'tcx>,
+}
+
+impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
+    fn default_cap(&self, def: DefId) -> Option<DefaultCap> {
+        self.el.records.get(&def).map(|r| r.default_cap)
+    }
+
+    fn members(&self, def: DefId, args: &'tcx [Ty<'tcx>]) -> Option<Vec<(String, Ty<'tcx>)>> {
+        let rec = self.el.records.get(&def)?;
+        let fields = rec.fields.as_ref()?;
+        let inst = Instantiation::from_pairs(
+            rec.ty_params
+                .iter()
+                .map(|(_, g)| *g)
+                .zip(args.iter().copied()),
+        );
+        let subst = |t: Ty<'tcx>| self.el.infer.instantiate_ty(t, &inst);
+        Some(match fields {
+            RecordFields::Named(fs) => fs
+                .iter()
+                .map(|(n, t, _)| (self.el.sym(*n).to_owned(), subst(*t)))
+                .collect(),
+            RecordFields::Unnamed(fs) => fs
+                .iter()
+                .enumerate()
+                .map(|(i, (t, _))| (i.to_string(), subst(*t)))
+                .collect(),
+            RecordFields::Variants(vs) => vs
+                .iter()
+                .flat_map(|v| {
+                    let vname = self.el.sym(v.name);
+                    v.fields
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, t)| (format!("{vname}.{i}"), *t))
+                })
+                .map(|(label, t)| (label, subst(t)))
+                .collect(),
+        })
+    }
+}
+
+impl<'a, 'tcx> Elaborator<'a, 'tcx> {
+    /// Report an ill-formed `Arc<inner>` whose kind is admissible but whose
+    /// contents are not `Sync`. Call only where records are complete (the
+    /// post-populate sweep and body checking); a blocked verdict defers to
+    /// the monomorphization backstop.
+    pub(crate) fn report_arc_wf(&mut self, inner: Ty<'tcx>, span: Option<surface::Span>) {
+        if self.arc_inner_rejection(inner).is_some() {
+            // The kind gate owns this error at its own site.
+            return;
+        }
+        if let SyncVerdict::NotSync(w) = wf_arc(&ElabSyncEnv { el: self }, inner) {
+            self.error(
+                span,
+                format!(
+                    "`Arc<{}>` is ill-formed: {}; every member of an `Arc` inner must be `Sync`",
+                    self.ty_display(inner),
+                    w.describe()
+                ),
+            );
+        }
+    }
+
+    /// Walk a signature or member type and wf-check every `Arc` node inside
+    /// it. Function prototypes are scanned before record fields populate, so
+    /// their annotation-site checks blocked; the post-populate sweep re-runs
+    /// them through this walker (mono's `check_arc_inners` is the ground
+    /// backstop for what still blocks here, e.g. generic inners).
+    pub(crate) fn sweep_arc_wf(&mut self, ty: Ty<'tcx>, span: Option<surface::Span>) {
+        match *ty.kind() {
+            TyKind::Arc(inner) => {
+                self.report_arc_wf(inner, span);
+                self.sweep_arc_wf(inner, span);
+            }
+            TyKind::Record { args, .. } => {
+                for &arg in args {
+                    self.sweep_arc_wf(arg, span);
+                }
+            }
+            TyKind::Closure { params, ret } => {
+                for &p in params {
+                    self.sweep_arc_wf(p, span);
+                }
+                self.sweep_arc_wf(ret, span);
+            }
+            TyKind::Nullable(inner) => self.sweep_arc_wf(inner, span),
+            TyKind::Cell { elem, .. } => self.sweep_arc_wf(elem, span),
+            TyKind::Array { elem, .. } => self.sweep_arc_wf(elem, span),
+            _ => {}
+        }
+    }
 }

@@ -240,6 +240,27 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 if ty_has_hole(self_ty) {
                     return Discharge::Defer;
                 }
+                // `Sync` is the structural thread-safety auto trait: answered
+                // by the checker over the type's shape, never by impl search
+                // (docs/design/thread-safety.md §2.2).
+                if tref.trait_id == self.builtins.sync {
+                    use crate::semi::traits::sync::{SyncVerdict, sync_verdict};
+                    use crate::semi::ty_eval::ElabSyncEnv;
+                    return match sync_verdict(&ElabSyncEnv { el: self }, self_ty) {
+                        SyncVerdict::Sync => Discharge::Solved,
+                        SyncVerdict::NotSync(w) => Discharge::Failed(format!(
+                            "`{}` is not `Sync`: {}",
+                            self.ty_display(self_ty),
+                            w.describe()
+                        )),
+                        // The verdict depends on a generic nested under a
+                        // constructor: everything grounds at monomorphization
+                        // (where the `Arc` wf backstop re-checks), so be
+                        // optimistic here rather than reporting a spurious
+                        // ambiguity.
+                        SyncVerdict::Blocked => Discharge::Solved,
+                    };
+                }
                 let goal = Obligation::Trait(TraitRef {
                     trait_id: tref.trait_id,
                     args: vec![self_ty],

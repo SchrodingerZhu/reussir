@@ -14,9 +14,9 @@
 //! reached from any thread, concurrently. It subsumes both of Rust's `Send`
 //! and `Sync` — duplicable rc handles make transfer-without-sharing
 //! unprovable, so the two predicates collapse (see
-//! `docs/design/thread-safety.md`). Phase 0 only declares it and gives the
-//! leaves (primitive scalars) `Sync` impls; structural auto-trait propagation
-//! (a record is `Sync` iff its members are) lands in Phase 1+.
+//! `docs/design/thread-safety.md`). It is declared here for name resolution
+//! and bound syntax only: ground `Sync` goals are answered *structurally* by
+//! [`crate::semi::traits::sync`], never by impl search, so it has no impls.
 
 use crate::semi::ty::{FpTy, GenericId, IntTy, Ty, TyCtxt};
 
@@ -111,17 +111,6 @@ impl Builtins {
         for &ty in &fps {
             implement(floating_point, ty, db);
         }
-        // Primitive scalars are the `Sync` leaves.
-        let scalars = ints.iter().chain(&fps).copied().chain([
-            tcx.mk_bool(),
-            tcx.mk_str(),
-            tcx.mk_char(),
-            tcx.mk_unit(),
-        ]);
-        for ty in scalars {
-            implement(sync, ty, db);
-        }
-
         Builtins {
             num,
             integral,

@@ -1586,6 +1586,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // Wrap only a successfully built constructor; an error path stays the
         // poison it already is.
         if matches!(e.ty.kind(), TyKind::Record { .. }) {
+            // The coloring site: the arc's contents must be `Sync`. (Ctors
+            // run during body checking, after record fields populate; a
+            // generic-blocked verdict defers to the mono backstop.)
+            self.report_arc_wf(e.ty, span);
             e.ty = self.tcx.mk_arc(e.ty);
         }
         e

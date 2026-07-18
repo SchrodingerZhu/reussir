@@ -294,6 +294,14 @@ pub struct Elaborator<'a, 'tcx> {
     /// ([`Elaborator::set_current_file`]); the check passes restore it per item
     /// from the item's own declaration file.
     pub current_file: FileId,
+    /// Whether record fields are populated for the current [`run_files`]
+    /// batch. `Arc` well-formedness needs member types (the structural `Sync`
+    /// check), so annotation-site checks fire only once this is set; types
+    /// evaluated earlier (signatures, record members) are re-checked by the
+    /// post-populate sweep ([`Elaborator::sweep_arc_wf`]).
+    ///
+    /// [`run_files`]: Elaborator::run_files
+    pub(super) records_complete: bool,
 
     // ----- per-function working state (reset by `enter_function`) -----
     pub infer: InferCtxt<'a, 'tcx>,
@@ -357,6 +365,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             elaborated: Vec::new(),
             reports: Vec::new(),
             current_file: FileId::ROOT,
+            records_complete: false,
             infer: InferCtxt::new(tcx),
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
@@ -873,13 +882,59 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .zip(&function_defs)
             .filter_map(|((_, _, _, anchor), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
-        records
+        // Field types evaluated during population may reference records whose
+        // own fields are not populated yet, so `Arc` wf checks (which need
+        // member types for the structural `Sync` half) stay silent until the
+        // sweep below.
+        self.records_complete = false;
+        let record_defs: Vec<DefId> = records
             .iter()
             .zip(record_defs)
             .filter_map(|((rec, _, _), def)| Some((rec, def?)))
-            .for_each(|(rec, def)| {
+            .map(|(rec, def)| {
                 self.populate_record(rec, def);
-            });
+                def
+            })
+            .collect();
+        // Post-populate sweep: signatures and record members were evaluated
+        // before fields existed, so their `Arc` nodes wf-check only now.
+        // Restricted to this batch's items so a REPL re-run does not re-report
+        // earlier ones. Body annotations check inline during `check_function`.
+        for def in record_defs {
+            let Some(rec) = self.records.get(&def) else {
+                continue;
+            };
+            let (span, file) = (rec.span, rec.file);
+            let member_tys: Vec<Ty<'tcx>> = match &rec.fields {
+                Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
+                Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
+                Some(RecordFields::Variants(vs)) => {
+                    vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
+                }
+                None => Vec::new(),
+            };
+            self.set_current_file(file);
+            for t in member_tys {
+                self.sweep_arc_wf(t, span);
+            }
+        }
+        for def in function_defs.iter().flatten() {
+            let Some(proto) = self.functions.get(def) else {
+                continue;
+            };
+            let (span, file) = (proto.span, proto.file);
+            let tys: Vec<Ty<'tcx>> = proto
+                .params
+                .iter()
+                .map(|(_, t)| *t)
+                .chain([proto.return_ty])
+                .collect();
+            self.set_current_file(file);
+            for t in tys {
+                self.sweep_arc_wf(t, span);
+            }
+        }
+        self.records_complete = true;
         functions
             .iter()
             .zip(function_defs)

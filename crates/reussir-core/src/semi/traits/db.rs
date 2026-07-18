@@ -181,21 +181,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn primitive_scalars_are_sync() {
-        with_tcx(|tcx: &TyCtxt| {
-            let mut db = TraitDb::new();
-            let b = Builtins::register(&mut db, tcx);
-            for ty in [
-                tcx.mk_int(IntTy::Unsigned(64)),
-                tcx.mk_bool(),
-                tcx.mk_str(),
-                tcx.mk_char(),
-            ] {
-                assert!(db.select(&needs(b.sync, ty)).is_ok());
-            }
-        });
-    }
+    // `Sync` has no impls: ground goals are answered structurally by
+    // `traits::sync` (see its tests), so nothing here selects it.
 
     #[test]
     fn transitive_super_traits_build_a_full_evidence_chain() {
