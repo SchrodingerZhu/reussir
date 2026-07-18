@@ -260,16 +260,19 @@ how the accessor ops are implemented**:
   the lock. The lock guards the *slot*; it never guards the element's own
   count traffic.
 - **Escapes.** Symmetrically, any op that lets the element (or a clone of it)
-  leave the critical section — today `cell.get`/`cell.rdlock` clone the
-  element out; an `rmw` region can yield it as output — places the element's
-  counts in unsynchronized hands. With `Sync(τ)` those counts are atomic and
-  this is fine.
+  leave the critical section — `cell.get`/`cell.rdlock` return a clone; an
+  `rmw` region can yield it as output — places the element's counts in
+  unsynchronized hands once the value is out. With `Sync(τ)` those counts are
+  atomic and this is fine.
 
-So even if the current clone-out lowering of `get`/`rdlock` on lock cells is
-revised (flagged as a questionable implementation choice — see §7), the type
-bound stays `Sync(τ)`. This is also what the rwlock lowering already assumes:
-`cell.rdlock` acquires the clone by bumping "the element's own *(atomic)*
-counts" under the shared read lock.
+To be precise about the lowering (verified in `ConvertToSTD.cpp` and
+`AcquireDropExpansion.cpp`): the acquire/drop that get/set/rmw/rdlock and the
+box drop glue perform always execute *inside* the critical section — it is
+the returned clone that subsequently lives outside the lock, and whose later
+drop happens on the caller's thread. That escape is designed behavior, not a
+defect, and it is exactly what the `Sync(τ)` bound makes sound. Even if the
+accessor surface were narrowed to region-only access, the bound would not
+weaken (the store argument above stands on its own).
 
 The bound also closes the smuggling hole from §1: a cell reachable from shared
 space can only ever *hold* `Sync` values, so no later store can leak a
@@ -347,12 +350,7 @@ Not yet implemented (ordered roughly by dependency):
 5. **Surface types for sync cells** (`Atomic<τ>`, `Mutex<τ>`, `Flatlock<τ>`,
    `Rwlock<τ>`) with the §4.2 element bounds enforced in the frontend, not
    just the dialect verifier.
-6. **Revisit lock-cell accessor semantics**: whether `cell.get`/`cell.rdlock`
-   clone-out on lock cells is the right surface (flagged as a wrong
-   implementation choice; candidates: restrict lock cells to `rmw`/`rdlock`
-   region access). Note §4.3: the `Sync(τ)` element bound does not change
-   either way.
-7. *(later)* escape hatches — an unsafe "assert Sync" for FFI types and an
+6. *(later)* escape hatches — an unsafe "assert Sync" for FFI types and an
    opt-out poison for structurally-Sync but thread-affine types (Rust
    `unsafe impl` / `MutexGuard` precedents); a linear closure kind (§3.2);
    sync regional objects (§6).
