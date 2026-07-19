@@ -42,7 +42,13 @@ bool isTriviallyCopyable(mlir::Type type);
 mlir::LogicalResult verifyAtomicElementType(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, mlir::Type eleTy,
     llvm::StringRef what);
-mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap);
+// `parentAtomic` is the projecting rc/ref's atomic kind. Atomicity is a
+// whole-subtree property: a member link's atomic kind is the join of what
+// the member type writes and what the parent inherits down (an atomic parent
+// floods atomic through derived shared links, nullable wrappers, and value
+// records; an explicit atomic rc member stands on its own in normal space).
+mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap,
+                            AtomicKind parentAtomic = AtomicKind::normal);
 mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
                              bool isField, bool memBoxInternal = false);
 class CellType;

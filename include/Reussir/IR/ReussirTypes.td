@@ -191,8 +191,14 @@ def ReussirRecordType
       // Position of logical member `index` in the packed physical order —
       // i.e. the GEP field index of that member in the converted LLVM struct.
       uint32_t getPhysicalMemberIndex(const mlir::DataLayout &dataLayout, uint32_t index) const;
-      ::mlir::FlatSymbolRefAttr getDtorName() const;
-      ::mlir::FlatSymbolRefAttr getAcquireName() const;
+      // Outlined drop/acquire glue symbols. The glue's body derives member
+      // links from its argument reference's atomic kind (the whole-subtree
+      // rule), so each kind gets its own symbol and the atomic variant names
+      // a distinct intrinsic path.
+      ::mlir::FlatSymbolRefAttr
+      getDtorName(AtomicKind kind = AtomicKind::normal) const;
+      ::mlir::FlatSymbolRefAttr
+      getAcquireName(AtomicKind kind = AtomicKind::normal) const;
       size_t emitScannerInstructions(
         llvm::SmallVectorImpl<int32_t> &buffer,
         const mlir::DataLayout &dataLayout, const scanner::EmitState &EmitState) const;
