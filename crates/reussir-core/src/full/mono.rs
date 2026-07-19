@@ -208,6 +208,15 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     // layout unresolved.
     driver.close_records_over_fields(input.records, tcx);
 
+    // Reject inline-recursive record *instances* before resolving layouts: a
+    // `[value]` record stored inside itself through a chain of inline members
+    // has no finite layout (the LLVM conversion would recurse forever). Semi
+    // rejects the def-level cycles it can see; grounding can create new ones
+    // through generics (`[value] Wrap<T> { x: T }` instantiated at a value
+    // record that contains `Wrap` back), so the closed instance set is walked
+    // here with every member substituted.
+    driver.reject_infinite_value_recursion(tcx);
+
     // Resolve the discovered record instances to symbols. Collect the keys first
     // so the interner can be borrowed mutably while we map them.
     let record_keys: Vec<(DefId, &'tcx [Ty<'tcx>])> = driver.records.iter().copied().collect();
@@ -714,6 +723,110 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 // legal and semi's wf check blocks on the generic. This walk
                 // is its only ground checkpoint.
                 self.check_arc_inners(ground, record.span);
+            }
+        }
+    }
+
+    /// The instances stored *inline* in instance `(def, args)`'s layout:
+    /// ground member heads that are `[value]`-capability records. Pointers
+    /// (shared/regional records, `Arc`, `Nullable`, cells, arrays, closures)
+    /// break an inline chain.
+    fn inline_value_instances(
+        &self,
+        tcx: &'a TyCtxt<'tcx>,
+        def: DefId,
+        args: &'tcx [Ty<'tcx>],
+    ) -> Vec<(DefId, &'tcx [Ty<'tcx>])> {
+        let Some(record) = self.record_defs.get(&def) else {
+            return Vec::new();
+        };
+        let mut subst = Subst::default();
+        for ((_, gid), &ty) in record.ty_params.iter().zip(args.iter()) {
+            subst.insert(*gid, ty);
+        }
+        let field_tys: Vec<Ty<'tcx>> = match record.fields.as_ref() {
+            Some(RecordFields::Named(fields)) => fields.iter().map(|(_, ty, _)| *ty).collect(),
+            Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _)| *ty).collect(),
+            Some(RecordFields::Variants(variants)) => variants
+                .iter()
+                .flat_map(|v| v.fields.iter().copied())
+                .collect(),
+            None => Vec::new(),
+        };
+        field_tys
+            .into_iter()
+            .filter_map(|t| match *subst_ty(tcx, t, &subst).kind() {
+                TyKind::Record { def, args, .. }
+                    if self
+                        .record_defs
+                        .get(&def)
+                        .is_some_and(|r| r.default_cap == DefaultCap::Value) =>
+                {
+                    Some((def, args))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The ground half of the infinite-size check (see semi's
+    /// `reject_infinite_value_recursion`): walk the closed record-instance
+    /// set and report any `[value]` instance stored inline within itself.
+    fn reject_infinite_value_recursion(&mut self, tcx: &'a TyCtxt<'tcx>) {
+        type Key<'tcx> = (DefId, &'tcx [Ty<'tcx>]);
+        // 1 = on the current DFS path, 2 = finished.
+        let mut color: FxHashMap<Key<'tcx>, u8> = FxHashMap::default();
+        let roots: Vec<Key<'tcx>> = self.records.iter().copied().collect();
+        for root in roots {
+            if color.contains_key(&root)
+                || !self
+                    .record_defs
+                    .get(&root.0)
+                    .is_some_and(|r| r.default_cap == DefaultCap::Value)
+            {
+                continue;
+            }
+            let mut stack: Vec<(Key<'tcx>, Vec<Key<'tcx>>)> =
+                vec![(root, self.inline_value_instances(tcx, root.0, root.1))];
+            color.insert(root, 1);
+            while let Some((_, succs)) = stack.last_mut() {
+                let Some(next) = succs.pop() else {
+                    let (done, _) = stack.pop().expect("non-empty stack");
+                    color.insert(done, 2);
+                    continue;
+                };
+                match color.get(&next) {
+                    Some(1) => {
+                        let cycle: Vec<String> = stack
+                            .iter()
+                            .map(|(k, _)| k.0)
+                            .skip_while(|&d| d != next.0)
+                            .map(|d| {
+                                self.resolver
+                                    .resolve(self.record_defs[&d].name)
+                                    .to_owned()
+                            })
+                            .collect();
+                        let span = self.record_defs[&next.0].span;
+                        self.error(
+                            span,
+                            format!(
+                                "this instantiation creates a recursive `[value]` \
+                                 record of infinite size: `{}` is stored inline \
+                                 within itself (through `{}`); break the cycle \
+                                 with a boxed link",
+                                cycle.first().cloned().unwrap_or_default(),
+                                cycle.join("` → `"),
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        let succs = self.inline_value_instances(tcx, next.0, next.1);
+                        color.insert(next, 1);
+                        stack.push((next, succs));
+                    }
+                }
             }
         }
     }
@@ -1735,6 +1848,26 @@ mod tests {
             reports
                 .iter()
                 .any(|m| m.contains("not a `[shared]` record, array, or closure")),
+            "{reports:#?}"
+        );
+    }
+
+    #[test]
+    fn ground_value_recursion_is_rejected_at_instantiation() {
+        // The def-level check cannot see a cycle closed through a generic:
+        // `Wrap<T>` stores `T` inline, and instantiating it at a record that
+        // contains `Wrap<A>` back closes the loop only once ground.
+        let src = r#"
+            struct [value] Wrap<T> { x: T }
+            struct [value] A { w: Wrap<A> }
+            fn f(a: A) -> i64 { 0 }
+            extern "C" trampoline "f_ffi" = f;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("recursive `[value]` record of infinite size")),
             "{reports:#?}"
         );
     }

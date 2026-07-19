@@ -896,6 +896,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 def
             })
             .collect();
+        // Now that this batch's fields exist, reject inline-recursive record
+        // cycles: a `[value]` record stored inside a `[value]` record, around
+        // to itself, never crosses a box and has no finite layout. Forward
+        // references only resolve within a batch, so a new cycle is always
+        // rooted in this batch's defs.
+        self.reject_infinite_value_recursion(&record_defs);
         // Post-populate sweep: signatures and record members were evaluated
         // before fields existed, so their `Arc` nodes wf-check only now.
         // Restricted to this batch's items so a REPL re-run does not re-report
@@ -1271,6 +1277,104 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn field_ty(&mut self, ty: &surface::Type, mutable: bool) -> Ty<'tcx> {
         let t = self.eval_type(ty);
         if mutable { self.tcx.mk_nullable(t) } else { t }
+    }
+
+    /// The defs stored *inline* in `def`'s layout: direct member (or variant
+    /// arm field) heads that are `[value]`-capability records. Every other
+    /// member kind — shared/regional records, `Arc`, `Nullable`, cells,
+    /// arrays, closures — is a pointer and breaks an inline chain. Heads
+    /// only: a `[value]` head's *type arguments* can also be stored inline,
+    /// but which of them actually are is only known once the generic
+    /// grounds, so that half is checked at monomorphization.
+    fn inline_value_heads(&self, def: DefId) -> Vec<DefId> {
+        let Some(rec) = self.records.get(&def) else {
+            return Vec::new();
+        };
+        let member_tys: Vec<Ty<'tcx>> = match &rec.fields {
+            Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
+            Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
+            Some(RecordFields::Variants(vs)) => {
+                vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
+            }
+            None => Vec::new(),
+        };
+        member_tys
+            .into_iter()
+            .filter_map(|t| match *t.kind() {
+                TyKind::Record { def, .. }
+                    if self
+                        .records
+                        .get(&def)
+                        .is_some_and(|r| r.default_cap == DefaultCap::Value) =>
+                {
+                    Some(def)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Reject inline-recursive record cycles — a `[value]` record reachable
+    /// from itself purely through inline storage has no finite layout (the
+    /// LLVM conversion would recurse forever computing it). Only
+    /// `[value]`-capability records can participate: every edge *into* a
+    /// shared/regional record is a pointer, so a cycle is a cycle among
+    /// value defs. Reported once per back-edge, naming the cycle.
+    pub(super) fn reject_infinite_value_recursion(&mut self, batch: &[DefId]) {
+        // 1 = on the current DFS path, 2 = finished.
+        let mut color: FxHashMap<DefId, u8> = FxHashMap::default();
+        for &root in batch {
+            if color.contains_key(&root)
+                || !self
+                    .records
+                    .get(&root)
+                    .is_some_and(|r| r.default_cap == DefaultCap::Value)
+            {
+                continue;
+            }
+            let mut stack: Vec<(DefId, Vec<DefId>)> =
+                vec![(root, self.inline_value_heads(root))];
+            color.insert(root, 1);
+            while let Some((_, succs)) = stack.last_mut() {
+                let Some(next) = succs.pop() else {
+                    let (done, _) = stack.pop().expect("non-empty stack");
+                    color.insert(done, 2);
+                    continue;
+                };
+                match color.get(&next) {
+                    Some(1) => {
+                        // Back-edge: the cycle is the path suffix from `next`.
+                        let cycle: Vec<String> = stack
+                            .iter()
+                            .map(|(d, _)| d)
+                            .skip_while(|&&d| d != next)
+                            .map(|d| self.sym(self.records[d].name).to_owned())
+                            .collect();
+                        let (span, file) =
+                            (self.records[&next].span, self.records[&next].file);
+                        self.set_current_file(file);
+                        self.error(
+                            span,
+                            format!(
+                                "recursive `[value]` record has infinite size: \
+                                 `{}` is stored inline within itself (through `{}`); \
+                                 break the cycle with a boxed link (e.g. a \
+                                 `[shared]` record or `Arc`)",
+                                cycle.first().cloned().unwrap_or_default(),
+                                cycle.join("` → `"),
+                            ),
+                        );
+                    }
+                    Some(2) => {}
+                    None => {
+                        color.insert(next, 1);
+                        let succs = self.inline_value_heads(next);
+                        stack.push((next, succs));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
     }
 
     /// Enforce that a `[field]` link's element is regional. The element (peeled

@@ -1085,6 +1085,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_infinite_value_recursion() {
+        // A `[value]` record stored inline within itself has no finite
+        // layout: mutual and self cycles are rejected at declaration.
+        let mutual = "struct [value] A { b: B }\nstruct [value] B { a: A }";
+        assert!(
+            has_error(mutual, "recursive `[value]` record has infinite size"),
+            "{:#?}",
+            reports_of(mutual)
+        );
+        let direct = "struct [value] A { a: A }";
+        assert!(
+            has_error(direct, "recursive `[value]` record has infinite size"),
+            "{:#?}",
+            reports_of(direct)
+        );
+    }
+
+    #[test]
+    fn boxed_links_break_value_recursion() {
+        // Any pointer member breaks the inline chain: a shared box makes
+        // the recursion finite. (A shared record holding a value chain is
+        // fine too — edges into a shared record are pointers, so it can
+        // never sit on an inline cycle.)
+        let src = "struct S { a: A }\n\
+                   struct [value] A { s: S }\n\
+                   struct Shared2 { v: i64 }\n\
+                   struct [value] C { s: Shared2 }\n\
+                   struct [value] D { c: C }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
     fn infers_arc_ctors() {
         // The struct and variant arc constructors type at `Arc<R>`.
         let src = "struct Pair { a: i32 }\n\
