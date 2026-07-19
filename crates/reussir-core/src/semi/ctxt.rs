@@ -806,6 +806,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// the owning item's file/module scope), and collect trampoline roots per
     /// file.
     fn run_files(&mut self, files: &[(FileId, Vec<TokenKey>, &surface::Program)]) {
+        // This batch's record fields are not populated yet, so `Arc` wf
+        // checks (which need member types for the structural `Sync` half)
+        // stay silent from the very first scan — a previous batch may have
+        // left the flag set — until the post-populate sweep re-checks.
+        self.records_complete = false;
         // Project each item once — `kind()` re-walks the node and is not
         // memoized — then run the passes over the typed collections, each item
         // tagged with its file/module scope.
@@ -882,11 +887,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .zip(&function_defs)
             .filter_map(|((_, _, _, anchor), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
-        // Field types evaluated during population may reference records whose
-        // own fields are not populated yet, so `Arc` wf checks (which need
-        // member types for the structural `Sync` half) stay silent until the
-        // sweep below.
-        self.records_complete = false;
         let record_defs: Vec<DefId> = records
             .iter()
             .zip(record_defs)

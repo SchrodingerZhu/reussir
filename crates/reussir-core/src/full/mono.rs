@@ -707,6 +707,13 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             for field_ty in field_tys {
                 let ground = subst_ty(tcx, field_ty, &subst);
                 self.discover_records(ground, &mut worklist);
+                // The member position is where an `Arc` can ground without
+                // ever appearing in a signature or expression type: a direct
+                // `Arc` slot is rejected at declaration, but one behind a
+                // `Nullable`/`Cell` wrapper (`next: Nullable<Arc<T>>`) is
+                // legal and semi's wf check blocks on the generic. This walk
+                // is its only ground checkpoint.
+                self.check_arc_inners(ground, record.span);
             }
         }
     }
@@ -1697,6 +1704,37 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
                     && m.contains("member `Cons.1`")),
+            "{reports:#?}"
+        );
+    }
+
+    #[test]
+    fn arc_behind_a_generic_member_is_checked_at_instantiation() {
+        // A member-position `Arc` can ground without ever appearing in a
+        // signature or expression type: `link: Nullable<Arc<T>>` is a legal
+        // member (only a *direct* `Arc` slot is rejected at declaration) and
+        // semi's wf check blocks on the generic — closing the record set
+        // over fields is its only ground checkpoint, for both halves of the
+        // check.
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            struct Holder<T> { link: Nullable<Arc<T>> }
+            fn keep<T>(h: Holder<T>) -> Holder<T> { h }
+            extern "C" trampoline "unsync_member" = keep<List<i64>>;
+            extern "C" trampoline "non_box_member" = keep<i32>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `Cons.1`")),
+            "{reports:#?}"
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("not a `[shared]` record, array, or closure")),
             "{reports:#?}"
         );
     }

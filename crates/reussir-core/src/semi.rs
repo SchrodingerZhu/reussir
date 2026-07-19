@@ -1127,6 +1127,37 @@ mod tests {
     }
 
     #[test]
+    fn later_batch_arc_wf_reports_once() {
+        // A second `run` batch (the REPL shape) scans its signatures while
+        // the flag left by the previous batch's completed sweep would still
+        // be set; the annotation-site check must stay silent until this
+        // batch's own sweep, or the error doubles.
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
+                &interner;
+            let mut elab = Elaborator::new(tcx, resolver);
+            for src in [
+                "enum List<T> { Nil, Cons(T, List<T>) }",
+                "fn f(l: Arc<List<i32>>) -> i32 { 0 }",
+            ] {
+                let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(parse.ok(), "{src}: {:#?}", parse.errors);
+                elab.run(&surface::program(&parse.root));
+            }
+            let arc_errors = elab
+                .reports
+                .iter()
+                .filter(|r| {
+                    r.message
+                        .contains("every member of an `Arc` inner must be `Sync`")
+                })
+                .count();
+            assert_eq!(arc_errors, 1, "{:#?}", elab.reports);
+        });
+    }
+
+    #[test]
     fn arc_wf_witness_names_a_nested_member_path() {
         // The `!Sync` leaf sits two levels down, through a `[value]` record;
         // the diagnostic walks the path instead of blaming the root.
