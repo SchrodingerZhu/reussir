@@ -188,7 +188,9 @@ pub enum CellFn {
     /// `set(cell, value)`: replace and drop the old value.
     Set,
     /// `rmw(cell, update)`: move the value through `update` and store its
-    /// result. Every kind but a plain `Cell`.
+    /// result. Every kind but a plain `Cell` and an `Atomic` cell (the
+    /// atomic CAS-retry region must be effect-free, which a closure call is
+    /// not; dedicated atomic arithmetic intrinsics are future work).
     Rmw,
     /// `in_use(cell)`: whether the element is currently moved out into an
     /// active `rmw` updater. Exclusive cells (`RefCell`) only.
@@ -231,7 +233,7 @@ impl CellFn {
         use crate::semi::ty::CellKind;
         match self {
             CellFn::Alloc | CellFn::Get | CellFn::Set => true,
-            CellFn::Rmw => kind != CellKind::Plain,
+            CellFn::Rmw => kind != CellKind::Plain && kind != CellKind::Atomic,
             CellFn::InUse => kind == CellKind::Exclusive,
             CellFn::Rdlock => kind == CellKind::Rwlock,
         }
@@ -242,8 +244,8 @@ impl CellFn {
         match self {
             CellFn::Alloc | CellFn::Get | CellFn::Set => "any cell",
             CellFn::Rmw => {
-                "an exclusive or synchronized cell (`RefCell`, `Atomic`, \
-                 `Mutex`, `FlatLock`, or `RwLock`)"
+                "an exclusive or lock-guarded cell (`RefCell`, `Mutex`, \
+                 `FlatLock`, or `RwLock`)"
             }
             CellFn::InUse => "an exclusive cell (`RefCell`)",
             CellFn::Rdlock => "an `RwLock` cell",

@@ -152,8 +152,13 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // payload (`!reussir.rc<!reussir.array<dims x elem>>`); see #344.
             TyKind::Array { .. } => Ok(self.rc_type(self.array_inner_of(ty)?)),
             // A cell is one shared rc box around its payload container. Unlike
-            // arrays, its element may itself be a managed type.
-            TyKind::Cell { .. } => Ok(self.rc_type(self.cell_inner_of(ty)?)),
+            // arrays, its element may itself be a managed type. A sync-kind
+            // cell is born in an *atomically counted* box — the dialect
+            // requires it (`CellType::requiresAtomicSharedBox`), and it is
+            // what makes the cell `Sync` with no `Arc` involved.
+            TyKind::Cell { kind, .. } => {
+                Ok(self.rc_type_in(self.cell_inner_of(ty)?, kind.is_sync()))
+            }
             // The arc coloring: the same shared payload behind a box whose
             // refcount is adjusted with atomic operations. Of the shared rc
             // boxes an `Arc` may color (a `[shared]` record, an array, or a

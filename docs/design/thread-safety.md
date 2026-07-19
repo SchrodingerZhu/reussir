@@ -434,9 +434,13 @@ Not yet implemented (ordered roughly by dependency):
    closures remain item 4.
 4. **Arc construction for arrays and closures** (annotations are accepted;
    constructors don't exist), including the §3.2 creation-site capture check.
-5. **Surface types for sync cells** (`Atomic<τ>`, `Mutex<τ>`, `Flatlock<τ>`,
-   `Rwlock<τ>`) with the §4.2 element bounds enforced in the frontend, not
-   just the dialect verifier.
+5. ~~Surface types for sync cells~~ — **implemented**: `Atomic<τ>`,
+   `Mutex<τ>`, `FlatLock<τ>`, `RwLock<τ>` with the §4.2 element bounds
+   enforced at annotation/sweep/mono, the `core::intrinsic::cell` matrix
+   over every kind, and `rdlock` read transactions. One narrowing: surface
+   `rmw` is rejected on `Atomic` cells (the CAS-retry region must be
+   effect-free, which a closure call is not) — dedicated atomic arithmetic
+   intrinsics (`fetch_add`, …) are follow-up work.
 6. *(later)* escape hatches — an unsafe "assert Sync" for FFI types and an
    opt-out poison for structurally-Sync but thread-affine types (Rust
    `unsafe impl` / `MutexGuard` precedents); a linear closure kind (§3.2);

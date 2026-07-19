@@ -1141,6 +1141,25 @@ mod tests {
     }
 
     #[test]
+    fn atomic_rmw_is_gated() {
+        // The atomic CAS-retry region must be effect-free, which a closure
+        // call is not — rmw on an Atomic cell is rejected at the checker
+        // until dedicated atomic arithmetic intrinsics exist.
+        let src = "fn f(a: Atomic<i64>) -> i64 {\n\
+                       core::intrinsic::cell::rmw(a, |x| x + 1);\n\
+                       core::intrinsic::cell::get(a)\n\
+                   }";
+        assert!(
+            has_error(
+                src,
+                "`core::intrinsic::cell::rmw` is not supported on `Atomic<i64>`"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
     fn sync_cell_element_bounds() {
         // Atomic demands an arithmetic primitive …
         let bad_atomic = "struct Pair { a: i32 }\nfn f(a: Atomic<Pair>) -> i32 { 0 }";

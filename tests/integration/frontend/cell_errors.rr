@@ -22,7 +22,7 @@ fn unknown(c: Cell<i64>) -> i64 { core::intrinsic::cell::swap(c) }
 
 // Read-modify-write and the guard flag dispatch on the operand and demand
 // the exclusive flavor.
-// CHECK: `core::intrinsic::cell::rmw` is not supported on `Cell<i64>`; it requires an exclusive or synchronized cell
+// CHECK: `core::intrinsic::cell::rmw` is not supported on `Cell<i64>`; it requires an exclusive or lock-guarded cell
 fn plain_rmw(c: Cell<i64>) -> unit {
     core::intrinsic::cell::rmw(c, |x| x)
 }

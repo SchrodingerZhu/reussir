@@ -2869,8 +2869,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 let TyKind::Cell { elem, kind } = *base.ty.kind() else {
                     return err("cell RMW operand is not a cell");
                 };
-                if kind == reussir_core::semi::ty::CellKind::Plain {
-                    return err("cell RMW is not supported on a plain cell");
+                if matches!(
+                    kind,
+                    reussir_core::semi::ty::CellKind::Plain
+                        | reussir_core::semi::ty::CellKind::Atomic
+                ) {
+                    return err("cell RMW is not supported on this cell kind");
                 }
                 let elem_ty = self.tys.mlir_ty(elem)?;
                 let body = Block::new(&[(elem_ty, loc)]);
