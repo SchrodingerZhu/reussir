@@ -170,9 +170,10 @@ member form the dialect admits, because the container's capability cannot
 derive it: the container may be a normal, thread-local box while the member's
 count is shared with other threads (its drop glue must decrement atomically
 even though the container's own count is plain). `Arc` members are legal in
-shared and `[value]` records; a `[regional]` record rejects them (§6 —
-regions and threads do not mix, and the region scanner has no atomic link
-handling).
+shared and `[value]` records; a `[regional]` record rejects them **for now
+(not implemented)** — nothing in the current machinery is known to break,
+but the interaction with the deferred sync-regional design (§6) is
+deliberately left undecided until that design is written down.
 
 ### 3.2 Arc closures: type-level WF plus a creation-site capture check
 

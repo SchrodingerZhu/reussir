@@ -1379,15 +1379,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Enforce that a `[field]` link's element is regional. The element (peeled
     /// from the `Nullable` link) must be a regional record: a concrete
-    /// Reject an `Arc` member of a `[regional]` record: regions and threads
-    /// do not mix (design doc §6), and the region scanner has no atomic
-    /// member-link handling. Shared and `[value]` records may hold `Arc`
-    /// members — the member type spells its own atomic link (§3.3).
+    /// Reject an `Arc` member of a `[regional]` record — **not implemented
+    /// for now**: nothing in the current machinery is known to break (the
+    /// region scanner only walks `[field]` links, and member release goes
+    /// through the ordinary drop glue at the written member type), but the
+    /// interaction with the deferred sync-regional design (§6 —
+    /// freeze/rigid release, region teardown) is deliberately left
+    /// undecided. Shared and `[value]` records may hold `Arc` members —
+    /// the member type spells its own atomic link (§3.3).
     fn reject_arc_member(&mut self, record_cap: DefaultCap, fty: Ty<'tcx>, span: Option<Span>) {
         if record_cap == DefaultCap::Regional && matches!(fty.kind(), TyKind::Arc(_)) {
             self.error(
                 span,
-                "an `Arc` member of a `[regional]` record is not supported                  (regions and threads do not mix)",
+                "an `Arc` member of a `[regional]` record is not implemented yet",
             );
         }
     }

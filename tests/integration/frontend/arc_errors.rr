@@ -26,11 +26,11 @@ struct [regional] Node { value: i64, next: [field] Node }
 fn regional_inner(a: Arc<Node>) -> i64 { 0 }
 
 // An `Arc` member is legal in shared/value records (its type spells the
-// atomic link), but not in a `[regional]` record: regions and threads do
-// not mix.
+// atomic link); a `[regional]` record rejects it for now — not implemented,
+// pending the §6 sync-regional design.
 struct [shared] Shared { value: i64 }
 struct Holder { a: Arc<Shared> }
-// CHECK-DAG: an `Arc` member of a `[regional]` record is not supported
+// CHECK-DAG: an `Arc` member of a `[regional]` record is not implemented yet
 struct [regional] RegionalHolder { v: i64, a: Arc<Shared> }
 
 // A mutable `[field]` link stores a regional record, never a shared box.
