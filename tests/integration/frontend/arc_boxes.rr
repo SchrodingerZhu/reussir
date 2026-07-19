@@ -1,0 +1,23 @@
+// An array and a closure are single shared rc boxes like a [shared] record,
+// so they take the atomic coloring the same way — at the type level. Their
+// atomic lowering has not landed, so this file stays frontend-only (arc.rr
+// carries the MLIR/LLVM checks for the record lowering) and the lowering gap
+// is checked to stay an explicit error rather than a malformed box.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %not %rrc %s --emit mlir -o - 2>&1 | %FileCheck %s --check-prefix=MLIR
+
+// MLIR: arc'd arrays and closures do not lower yet
+
+// HIR: pub fn #arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
+// MIR-DAG: pub fn @_RC3arr(v0 (a): Arc<[f64; 8]>) -> Arc<[f64; 8]>
+pub fn arr(a: Arc<[f64; 8]>) -> Arc<[f64; 8]> {
+    a
+}
+
+// HIR: pub fn #clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
+// MIR-DAG: pub fn @_RC3clo(v0 (f): Arc<(i64) -> i64>) -> Arc<(i64) -> i64>
+pub fn clo(f: Arc<(i64) -> i64>) -> Arc<(i64) -> i64> {
+    f
+}
