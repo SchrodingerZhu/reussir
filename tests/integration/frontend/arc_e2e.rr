@@ -74,6 +74,31 @@ pub fn test_recursive() -> i64 {
 }
 extern "C" trampoline "test_recursive_ffi" = test_recursive;
 
+// A shared record mixing both member forms: an explicit `Arc<Data>` header
+// (its slot spells the atomic link — readable from bare and arc'd boxes
+// alike) and bare recursive children that promote under the arc'd box. The
+// whole tree retains/releases every link at its own discipline.
+enum Tree {
+    Leaf,
+    Node(Arc<Data>, Tree, Tree)
+}
+
+fn tree_sum(t: Arc<Tree>) -> i64 {
+    match t {
+        Tree::Node(h, l, r) => h.value + tree_sum(l) + tree_sum(r),
+        Tree::Leaf => 0
+    }
+}
+
+pub fn test_tree() -> i64 {
+    let l = Arc<Tree>::Node{Arc<Data> { value: 30 }, Arc<Tree>::Leaf, Arc<Tree>::Leaf};
+    let shared_header = Arc<Data> { value: 5 };
+    let r = Arc<Tree>::Node{shared_header, Arc<Tree>::Leaf, Arc<Tree>::Leaf};
+    let root = Arc<Tree>::Node{Arc<Data> { value: 7 }, l, r};
+    tree_sum(root)
+}
+extern "C" trampoline "test_tree_ffi" = test_tree;
+
 fn id<T>(x: T) -> T { x }
 
 // A generic instantiated at an arc'd type keeps the atomic discipline.

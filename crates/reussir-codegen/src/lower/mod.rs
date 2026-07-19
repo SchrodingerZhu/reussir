@@ -1199,6 +1199,50 @@ transform [{
     }
 
     #[test]
+    fn lowers_explicit_arc_member_as_atomic_link() {
+        // An `Arc` member is the written form of the whole-subtree rule: the
+        // member slot in the record type spells `rc<…, atomic>`, and reading
+        // it out of a *bare* (normal) container hands out the atomic rc with
+        // no arc context involved.
+        let src = r#"
+            struct Inner { v: i64 }
+            struct Holder { h: Arc<Inner> }
+            pub fn get(x: Holder) -> Arc<Inner> { x.h }
+        "#;
+        let mlir = lower_source(src);
+        // The member type is the explicit atomic link inside the record body…
+        assert!(
+            mlir.contains("{!reussir.rc<!reussir.record<compound \"_RC5Inner\" {i64}> atomic>}"),
+            "{mlir}"
+        );
+        // …and the container itself stays a normal shared box.
+        assert!(!mlir.contains("\"_RC6Holder\"{{.*}} atomic"), "{mlir}");
+    }
+
+    #[test]
+    fn promoted_member_stays_bare_in_the_declaration() {
+        // The §3.3 spine: one record serves both colorings — the recursive
+        // member is declared bare (no `atomic` inside the record body), and
+        // the box's own atomic kind derives the interior discipline (atomic
+        // create, atomic borrow).
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            pub fn make() -> Arc<List<i64>> {
+                Arc<List<i64>>::Cons{1, Arc<List<i64>>::Nil}
+            }
+        "#;
+        let mlir = lower_source(src);
+        // The Cons arm's tail member is the bare variant record, not an rc.
+        assert!(
+            mlir.contains("{i64, !reussir.record<variant \"_RIC4ListxE\">}"),
+            "{mlir}"
+        );
+        // The boxes create atomically and borrows inherit the context.
+        assert!(mlir.contains("reussir.rc.create"), "{mlir}");
+        assert!(mlir.contains("atomic>"), "{mlir}");
+    }
+
+    #[test]
     fn lowers_arc_to_an_atomic_rc_box() {
         // An arc'd value is the same shared record behind an atomically
         // counted box: the constructor creates `!reussir.rc<…, atomic>` and a

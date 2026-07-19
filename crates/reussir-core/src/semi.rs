@@ -1077,8 +1077,8 @@ mod tests {
     #[test]
     fn arc_record_members_are_allowed() {
         // An `Arc` member spells its own atomic link (§3.3) — legal in
-        // shared and `[value]` records; a `[regional]` record still rejects
-        // it (regions and threads do not mix).
+        // shared and `[value]` records; a `[regional]` record rejects it for
+        // now (not implemented — the §6 sync-regional design will decide).
         let ok = "struct Pair { a: i32 }\n\
                   struct Holder { p: Arc<Pair> }\n\
                   struct [value] VHolder { p: Arc<Pair> }";
@@ -1086,7 +1086,7 @@ mod tests {
         let regional = "struct Pair { a: i32 }\n\
                         struct [regional] R { v: i64, p: Arc<Pair> }";
         assert!(
-            has_error(regional, "an `Arc` member of a `[regional]` record"),
+            has_error(regional, "an `Arc` member of a `[regional]` record is not implemented yet"),
             "{:#?}",
             reports_of(regional)
         );
@@ -1168,6 +1168,62 @@ mod tests {
                    fn f(l: Arc<List<i32>>) -> i32 { 0 }\n\
                    fn g(t: Arc<Tree>) -> i32 { 0 }";
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn arc_mixes_explicit_and_promoted_members() {
+        // A shared record can mix both member forms (§3.3): an explicit
+        // `Arc<Inner>` member keeps its declared type everywhere — readable
+        // from a *bare* box too, no arc context needed — while the bare
+        // recursive children promote only under the arc'd box. The arc'd
+        // ctor demands the explicit member as declared and the recursive
+        // ones promoted.
+        let src = "struct Inner { v: i64 }\n\
+                   enum Tree { Leaf, Node(Arc<Inner>, Tree, Tree) }\n\
+                   fn node(h: Arc<Inner>, l: Arc<Tree>, r: Arc<Tree>) -> Arc<Tree> {\n\
+                       Arc<Tree>::Node{h, l, r}\n\
+                   }\n\
+                   fn header(t: Arc<Tree>) -> Arc<Inner> {\n\
+                       match t {\n\
+                           Tree::Node(h, _, _) => h,\n\
+                           Tree::Leaf => Arc<Inner> { v: 0 }\n\
+                       }\n\
+                   }\n\
+                   fn left(t: Arc<Tree>) -> Arc<Tree> {\n\
+                       match t {\n\
+                           Tree::Node(_, l, _) => l,\n\
+                           Tree::Leaf => Arc<Tree>::Leaf\n\
+                       }\n\
+                   }\n\
+                   fn bare_header(t: Tree) -> Arc<Inner> {\n\
+                       match t {\n\
+                           Tree::Node(h, _, _) => h,\n\
+                           Tree::Leaf => Arc<Inner> { v: 0 }\n\
+                       }\n\
+                   }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn value_intermediate_requires_explicit_arc_member() {
+        // A `[value]` record in the recursive group folds *outside* the
+        // promotion group: loaded out of the box by value, nothing carries
+        // its coloring, so a bare same-group link inside it refutes …
+        let bad = "struct [value] V { l: List }\n\
+                   enum List { Nil, Cons(V) }\n\
+                   fn f(l: Arc<List>) -> i32 { 0 }";
+        assert!(
+            has_error(bad, "every member of an `Arc` inner must be `Sync`"),
+            "{:#?}",
+            reports_of(bad)
+        );
+        // … and the expressible alternative is an explicit `Arc` member,
+        // which is `Sync` on its own (closed coinductively through the
+        // enclosing arc).
+        let good = "struct [value] W { l: Arc<List> }\n\
+                    enum List { Nil, Cons(W) }\n\
+                    fn f(l: Arc<List>) -> i32 { 0 }";
+        assert!(reports_of(good).is_empty(), "{:#?}", reports_of(good));
     }
 
     #[test]
