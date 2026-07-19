@@ -105,18 +105,25 @@ pub fn render(
         let start = start.min(len.saturating_sub(1));
         let end = end.clamp(start + 1, len.max(start + 1));
         let span = (diag.file, start as usize..end as usize);
-        // The message heads the report (a greppable summary line) and annotates
-        // the underlined span, so the caret line stands on its own.
-        Report::build(diag.severity.report_kind(), span.clone())
+        // The message's first line heads the report (a greppable summary
+        // line) and annotates the underlined span, so the caret line stands
+        // on its own; any further lines are rendered as notes below the
+        // snippet (a `note: ` prefix, if present, is dropped in favor of
+        // ariadne's own `Note:` heading) instead of bloating the label.
+        let mut lines = diag.message.lines();
+        let primary = lines.next().unwrap_or(diag.message);
+        let mut report = Report::build(diag.severity.report_kind(), span.clone())
             .with_config(Config::default().with_color(color))
-            .with_message(diag.message)
+            .with_message(primary)
             .with_label(
                 Label::new(span)
-                    .with_message(diag.message)
+                    .with_message(primary)
                     .with_color(diag.severity.color()),
-            )
-            .finish()
-            .write(cache, &mut out)?;
+            );
+        for note in lines {
+            report = report.with_note(note.strip_prefix("note: ").unwrap_or(note));
+        }
+        report.finish().write(cache, &mut out)?;
     }
     Ok(())
 }
