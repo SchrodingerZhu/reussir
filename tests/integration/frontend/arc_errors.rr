@@ -25,11 +25,13 @@ struct [regional] Node { value: i64, next: [field] Node }
 // CHECK-DAG: `Arc` inner type `[regional] Node` is not a `[shared]` record, array, or closure (a `[regional]` record)
 fn regional_inner(a: Arc<Node>) -> i64 { 0 }
 
-// An arc cannot sit inline in a record member yet (the MLIR record encoding
-// has no per-member atomic axis).
+// An `Arc` member is legal in shared/value records (its type spells the
+// atomic link), but not in a `[regional]` record: regions and threads do
+// not mix.
 struct [shared] Shared { value: i64 }
-// CHECK-DAG: an `Arc` record member is not supported yet
 struct Holder { a: Arc<Shared> }
+// CHECK-DAG: an `Arc` member of a `[regional]` record is not supported
+struct [regional] RegionalHolder { v: i64, a: Arc<Shared> }
 
 // A mutable `[field]` link stores a regional record, never a shared box.
 // CHECK-DAG: a `[field]` link element must be a regional record
@@ -39,12 +41,14 @@ struct [regional] BadLink { value: [field] Arc<Shared> }
 // CHECK-DAG: `Arc` inner type `Arc<Shared>` is not a `[shared]` record, array, or closure (already an `Arc`)
 fn nested_inner(a: Arc<Arc<Shared>>) -> i64 { 0 }
 
-// The stratified wf rule: the arc colors exactly one box, so every member of
-// the inner must be `Sync` on its own — a recursive tail is a bare shared box
-// and refutes (until §3.3 SCC promotion lands with the per-member atomic axis).
-enum List<T> { Nil, Cons(T, List<T>) }
-// CHECK-DAG: `Arc<List<i64>>` is ill-formed: member `Cons.1` is a plain `[shared]` rc box whose refcount is not atomic; every member of an `Arc` inner must be `Sync`
-fn recursive_inner(l: Arc<List<i64>>) -> i64 { 0 }
+// The stratified wf rule: the arc colors exactly one box, so a bare shared
+// member *outside the recursive group* must be `Sync` on its own — §3.3 SCC
+// promotion covers only the arc'd spine itself (see arc.rr for the accepted
+// recursive shape).
+struct Outside { value: i64 }
+struct Carrier { o: Outside }
+// CHECK-DAG: `Arc<Carrier>` is ill-formed: member `o` is a plain `[shared]` rc box whose refcount is not atomic; every member of an `Arc` inner must be `Sync`
+fn non_group_member(c: Arc<Carrier>) -> i64 { 0 }
 
 // The arc constructors demand an explicit `[shared]` record inner.
 // CHECK-DAG: `Arc` construction takes exactly one explicit type argument

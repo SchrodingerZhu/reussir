@@ -895,9 +895,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let base = self.infer_expr(base);
-        let mut cur = self.peel_arc(base.ty);
+        let mut raw = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
+            // Reads see through the arc coloring, but the coloring is the
+            // atomic *context* of everything inside: a bare shared field read
+            // through an arc'd base comes out at its promoted (`Arc`) type —
+            // the §3.3 whole-subtree rule at the typing level.
+            let arced = matches!(raw.kind(), TyKind::Arc(_));
+            let cur = self.peel_arc(raw);
             let TyKind::Record { def, args, flex } = cur.kind() else {
                 let shown = self.infer.resolve(cur);
                 self.error(
@@ -911,9 +917,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return self.poison(span);
             };
             indices.push(idx);
-            cur = self.infer.shallow_resolve(field_ty);
+            let field_ty = self.infer.shallow_resolve(field_ty);
+            raw = if arced {
+                let group = self.arc_recursive_group(*def);
+                self.arc_promote_member_ty(&group, field_ty)
+            } else {
+                field_ty
+            };
         }
-        self.mk_expr(ExprKind::Proj(Box::new(base), indices), cur, span)
+        self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
     }
 
     /// Resolve an access on a record type to `(field index, field type, mutable)`.
@@ -1518,7 +1530,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 && matches!(self.records[&def].fields, Some(RecordFields::Variants(_)))
             {
                 self.record_use(enum_key);
-                return self.infer_variant(def, enum_key, path.basename, ty_args, args, span);
+                return self.infer_variant(def, enum_key, path.basename, ty_args, args, false, span);
             }
             let Some(def) = self.resolve_record_ref(path) else {
                 let hint = self.record_suggestion(enum_key);
@@ -1527,7 +1539,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return self.poison(span);
             };
             self.record_use(path.basename);
-            return self.infer_struct_def(def, path.basename, ty_args, args, span);
+            return self.infer_struct_def(def, path.basename, ty_args, args, false, span);
         }
         // A bare struct constructor.
         self.infer_struct(path.basename, ty_args, args, span)
@@ -1580,8 +1592,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.record_use(ipath.basename);
         let iargs: Vec<Option<surface::Type>> = iargs.iter().cloned().map(Some).collect();
         let mut e = match variant {
-            None => self.infer_struct_def(def, ipath.basename, &iargs, args, span),
-            Some(v) => self.infer_variant(def, ipath.basename, v, &iargs, args, span),
+            None => self.infer_struct_def(def, ipath.basename, &iargs, args, true, span),
+            Some(v) => self.infer_variant(def, ipath.basename, v, &iargs, args, true, span),
         };
         // Wrap only a successfully built constructor; an error path stays the
         // poison it already is.
@@ -1645,7 +1657,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.poison(span);
         };
         self.record_use(name);
-        self.infer_struct_def(def, name, ty_args, args, span)
+        self.infer_struct_def(def, name, ty_args, args, false, span)
     }
 
     /// The resolved-def core of [`Self::infer_struct`] (shared with the
@@ -1656,6 +1668,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         name: TokenKey,
         ty_args: &[Option<surface::Type>],
         args: &[(Option<TokenKey>, surface::Expr)],
+        arc: bool,
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let record = self.records[&def].clone();
@@ -1677,7 +1690,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         let inst = self.instantiate(&record.generics_as_decls(), ty_args, span);
-        let field_tys = self.field_types(&record.fields, &inst);
+        let mut field_tys = self.field_types(&record.fields, &inst);
+        if arc {
+            // The arc'd constructor is the coloring site: its atomic context
+            // flows into the fields (§3.3) — a bare same-group shared field
+            // is expected at its promoted `Arc` type, so the whole spine is
+            // built atomic from birth (the closed colored world).
+            let group = self.arc_recursive_group(def);
+            for (_, ty) in field_tys.iter_mut() {
+                *ty = self.arc_promote_member_ty(&group, *ty);
+            }
+        }
 
         let checked = self.check_ctor_args(name, args, &field_tys, span);
         let ty_args = self.inst_args(&record.generics_as_decls(), &inst);
@@ -1704,6 +1727,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         variant: TokenKey,
         ty_args: &[Option<surface::Type>],
         args: &[(Option<TokenKey>, surface::Expr)],
+        arc: bool,
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let record = self.records[&def].clone();
@@ -1729,9 +1753,24 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         let payload = variants[vidx].fields.clone();
         let inst = self.instantiate(&record.generics_as_decls(), ty_args, span);
+        // Under the arc'd constructor, the atomic context flows into the
+        // payload (§3.3): bare same-group shared fields are expected at their
+        // promoted `Arc` types — the spine is built atomic from birth.
+        let group = if arc {
+            self.arc_recursive_group(def)
+        } else {
+            rustc_hash::FxHashSet::default()
+        };
         let payload_tys: Vec<Ty<'tcx>> = payload
             .iter()
-            .map(|t| self.infer.instantiate_ty(*t, &inst))
+            .map(|t| {
+                let t = self.infer.instantiate_ty(*t, &inst);
+                if arc {
+                    self.arc_promote_member_ty(&group, t)
+                } else {
+                    t
+                }
+            })
             .collect();
 
         let mut checked = Vec::new();

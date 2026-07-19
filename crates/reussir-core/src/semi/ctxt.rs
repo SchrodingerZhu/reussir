@@ -1148,7 +1148,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (name, ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
-                        self.reject_arc_member(fty, span);
+                        self.reject_arc_member(default_cap, fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1161,7 +1161,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .map(|f| {
                         let (ty, mutable) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
-                        self.reject_arc_member(fty, span);
+                        self.reject_arc_member(default_cap, fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -1179,7 +1179,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                                 .iter()
                                 .map(|t| {
                                     let fty = self.eval_type(t);
-                                    self.reject_arc_member(fty, span);
+                                    self.reject_arc_member(default_cap, fty, span);
                                     fty
                                 })
                                 .collect(),
@@ -1379,12 +1379,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Enforce that a `[field]` link's element is regional. The element (peeled
     /// from the `Nullable` link) must be a regional record: a concrete
-    /// Reject a record member whose slot is directly `Arc<…>`: the MLIR record
-    /// encoding names an rc-managed member by its capability and has no
-    /// per-member atomic axis yet, so an arc cannot sit inline in a record.
-    fn reject_arc_member(&mut self, fty: Ty<'tcx>, span: Option<Span>) {
-        if matches!(fty.kind(), TyKind::Arc(_)) {
-            self.error(span, "an `Arc` record member is not supported yet");
+    /// Reject an `Arc` member of a `[regional]` record: regions and threads
+    /// do not mix (design doc §6), and the region scanner has no atomic
+    /// member-link handling. Shared and `[value]` records may hold `Arc`
+    /// members — the member type spells its own atomic link (§3.3).
+    fn reject_arc_member(&mut self, record_cap: DefaultCap, fty: Ty<'tcx>, span: Option<Span>) {
+        if record_cap == DefaultCap::Regional && matches!(fty.kind(), TyKind::Arc(_)) {
+            self.error(
+                span,
+                "an `Arc` member of a `[regional]` record is not supported                  (regions and threads do not mix)",
+            );
         }
     }
 

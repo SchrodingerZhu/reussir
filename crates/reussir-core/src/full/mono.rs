@@ -481,6 +481,21 @@ impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
                 .collect(),
         })
     }
+
+    fn member_record_defs(&self, def: DefId) -> Option<Vec<DefId>> {
+        let rec = self.record_defs.get(&def)?;
+        let fields = rec.fields.as_ref()?;
+        let mut out = Vec::new();
+        let mut walk = |t: Ty<'tcx>| crate::semi::traits::sync::collect_record_defs(t, &mut out);
+        match fields {
+            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _)| walk(*t)),
+            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _)| walk(*t)),
+            RecordFields::Variants(vs) => vs
+                .iter()
+                .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),
+        }
+        Some(out)
+    }
 }
 
 /// Mutable worklist + lowering state.
@@ -1803,21 +1818,30 @@ mod tests {
     #[test]
     fn arc_generic_rejects_non_sync_instantiation() {
         // The kind is admissible (a `[shared]` record) but the contents are
-        // not `Sync`: `Cons` holds a bare `List<T>` whose refcount is not
-        // atomic. Semi defers the generic inner; grounding it here is the
-        // backstop.
+        // not `Sync`: `S` holds a bare shared `Q` *outside its recursive
+        // group*, so §3.3 promotion does not apply and the plain box
+        // refutes. Semi defers the generic inner; grounding it here is the
+        // backstop. A recursive instantiation, by contrast, promotes and is
+        // accepted.
         let src = r#"
+            struct Q { x: i64 }
+            struct S { p: Q }
             enum List<T> { Nil, Cons(T, List<T>) }
             fn passthrough<T>(a: Arc<T>) -> Arc<T> { a }
-            extern "C" trampoline "bad_list" = passthrough<List<i32>>;
+            extern "C" trampoline "bad_s" = passthrough<S>;
+            extern "C" trampoline "ok_list" = passthrough<List<i32>>;
         "#;
         let reports = mono_reports(src);
         assert!(
             reports
                 .iter()
                 .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `Cons.1`")),
+                    && m.contains("member `p`")),
             "{reports:#?}"
+        );
+        assert!(
+            !reports.iter().any(|m| m.contains("Cons")),
+            "the recursive instantiation must promote, not refute: {reports:#?}"
         );
     }
 
@@ -1830,10 +1854,11 @@ mod tests {
         // over fields is its only ground checkpoint, for both halves of the
         // check.
         let src = r#"
-            enum List<T> { Nil, Cons(T, List<T>) }
+            struct Q { x: i64 }
+            struct S { p: Q }
             struct Holder<T> { link: Nullable<Arc<T>> }
             fn keep<T>(h: Holder<T>) -> Holder<T> { h }
-            extern "C" trampoline "unsync_member" = keep<List<i64>>;
+            extern "C" trampoline "unsync_member" = keep<S>;
             extern "C" trampoline "non_box_member" = keep<i32>;
         "#;
         let reports = mono_reports(src);
@@ -1841,7 +1866,7 @@ mod tests {
             reports
                 .iter()
                 .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `Cons.1`")),
+                    && m.contains("member `p`")),
             "{reports:#?}"
         );
         assert!(

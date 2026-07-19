@@ -51,6 +51,83 @@ pub trait SyncEnv<'tcx> {
     /// (`name` / `.0` / `Variant.0`). `None` when the fields are not
     /// populated yet — the verdict blocks and the mono backstop re-checks.
     fn members(&self, def: DefId, args: &'tcx [Ty<'tcx>]) -> Option<Vec<(String, Ty<'tcx>)>>;
+
+    /// The defs of record heads referenced anywhere in `def`'s declared
+    /// member types (through nullables, value members, type arguments, …) —
+    /// the def-level reference graph the recursive-group (SCC) computation
+    /// walks. `None` when the fields are not populated yet.
+    fn member_record_defs(&self, def: DefId) -> Option<Vec<DefId>>;
+}
+
+/// Collect the def of every record head appearing anywhere in `ty`, for the
+/// [`SyncEnv::member_record_defs`] implementations: the def-level reference
+/// graph the recursive-group computation walks.
+pub fn collect_record_defs<'tcx>(ty: Ty<'tcx>, out: &mut Vec<DefId>) {
+    match *ty.kind() {
+        TyKind::Record { def, args, .. } => {
+            out.push(def);
+            for &arg in args {
+                collect_record_defs(arg, out);
+            }
+        }
+        TyKind::Arc(inner) | TyKind::Nullable(inner) => collect_record_defs(inner, out),
+        TyKind::Cell { elem, .. } | TyKind::Array { elem, .. } => collect_record_defs(elem, out),
+        TyKind::Closure { params, ret } => {
+            for &p in params {
+                collect_record_defs(p, out);
+            }
+            collect_record_defs(ret, out);
+        }
+        _ => {}
+    }
+}
+
+/// The recursive group of `root`: every def `D` such that `root` reaches `D`
+/// and `D` reaches `root` through the def-level member-reference graph
+/// (`root` itself included). §3.3's SCC promotion re-colors exactly these
+/// under an `Arc`. Type arguments are ignored at this level, so polymorphic
+/// recursion collapses onto its def. Returns `None` (blocked) when any
+/// reachable def's fields are not populated yet.
+pub fn recursive_group<'tcx>(
+    env: &dyn SyncEnv<'tcx>,
+    root: DefId,
+) -> Option<FxHashSet<DefId>> {
+    // Forward reachability from `root`.
+    let mut forward = FxHashSet::default();
+    let mut stack = vec![root];
+    while let Some(def) = stack.pop() {
+        if !forward.insert(def) {
+            continue;
+        }
+        for next in env.member_record_defs(def)? {
+            stack.push(next);
+        }
+    }
+    // Keep the defs that reach back: walk each candidate's forward set for
+    // `root`. Record graphs are small; quadratic is fine.
+    let mut group = FxHashSet::default();
+    for &candidate in &forward {
+        let mut seen = FxHashSet::default();
+        let mut stack = vec![candidate];
+        let mut reaches_root = false;
+        while let Some(def) = stack.pop() {
+            if def == root {
+                reaches_root = true;
+                break;
+            }
+            if !seen.insert(def) {
+                continue;
+            }
+            for next in env.member_record_defs(def)? {
+                stack.push(next);
+            }
+        }
+        if reaches_root {
+            group.insert(candidate);
+        }
+    }
+    group.insert(root);
+    Some(group)
 }
 
 /// Why a type is not `Sync`.
@@ -122,6 +199,7 @@ pub fn sync_verdict<'tcx>(env: &dyn SyncEnv<'tcx>, ty: Ty<'tcx>) -> SyncVerdict<
         env,
         on_path: FxHashSet::default(),
         path: Vec::new(),
+        group: FxHashSet::default(),
     };
     cx.check(ty)
 }
@@ -134,6 +212,7 @@ pub fn wf_arc<'tcx>(env: &dyn SyncEnv<'tcx>, inner: Ty<'tcx>) -> SyncVerdict<'tc
         env,
         on_path: FxHashSet::default(),
         path: Vec::new(),
+        group: FxHashSet::default(),
     };
     cx.on_path.insert(inner);
     cx.wf(inner)
@@ -145,6 +224,15 @@ struct Cx<'e, 'tcx> {
     /// a cycle and coinductively succeeds.
     on_path: FxHashSet<Ty<'tcx>>,
     path: Vec<String>,
+    /// The recursive group of the shared record whose members are currently
+    /// being folded under an `Arc` (§3.3): a bare shared member whose def is
+    /// in the group is checked *as its arc'd version* — the automatic SCC
+    /// promotion — instead of refuting as a plain box. Empty outside an arc'd
+    /// fold, and cleared while folding a `[value]` member's own members: a
+    /// value intermediate can escape the box by value, where nothing carries
+    /// the coloring, so its same-group links must be written as explicit
+    /// `Arc` members instead.
+    group: FxHashSet<DefId>,
 }
 
 impl<'tcx> Cx<'_, 'tcx> {
@@ -212,13 +300,32 @@ impl<'tcx> Cx<'_, 'tcx> {
             }
             TyKind::Record { def, args, .. } => match self.env.default_cap(def) {
                 None => SyncVerdict::Blocked,
+                // A bare shared member of the current arc'd recursive group
+                // promotes (§3.3): it is checked as its own `Arc`, and the
+                // coinductive guard closes the cycle. Outside the group the
+                // bare box refutes — shareability is carried by the coloring.
+                Some(DefaultCap::Shared) if self.group.contains(&def) => {
+                    if !self.on_path.insert(ty) {
+                        return SyncVerdict::Sync;
+                    }
+                    let verdict = self.wf(ty);
+                    self.on_path.remove(&ty);
+                    verdict
+                }
                 Some(DefaultCap::Shared) => self.refute(ty, NotSyncReason::NonAtomicBox),
                 Some(DefaultCap::Regional) => self.refute(ty, NotSyncReason::Regional),
                 // A `[value]` record is inline storage: `Sync` iff its
-                // members are.
+                // members are. Its fold runs *outside* the promotion group —
+                // a value intermediate can leave the box by value, where
+                // nothing carries the coloring.
                 Some(DefaultCap::Value) => match self.env.members(def, args) {
                     None => SyncVerdict::Blocked,
-                    Some(members) => self.fold(members),
+                    Some(members) => {
+                        let saved = std::mem::take(&mut self.group);
+                        let verdict = self.fold(members);
+                        self.group = saved;
+                        verdict
+                    }
                 },
             },
             TyKind::Arc(inner) => {
@@ -245,28 +352,48 @@ impl<'tcx> Cx<'_, 'tcx> {
             TyKind::Record { def, args, .. } => match self.env.default_cap(def) {
                 Some(DefaultCap::Shared) => match self.env.members(def, args) {
                     None => SyncVerdict::Blocked,
-                    Some(members) => self.fold(members),
+                    Some(members) => {
+                        // The members fold under this record's recursive
+                        // group: same-group bare shared links promote (§3.3).
+                        let Some(group) = recursive_group(self.env, def) else {
+                            return SyncVerdict::Blocked;
+                        };
+                        let saved = std::mem::replace(&mut self.group, group);
+                        let verdict = self.fold(members);
+                        self.group = saved;
+                        verdict
+                    }
                 },
                 None => SyncVerdict::Blocked,
                 // Value/regional inners: the kind gate's error.
                 Some(_) => SyncVerdict::Sync,
             },
+            // Array elements and closure arguments are not record-member
+            // positions, so the SCC promotion does not apply inside them —
+            // their fold runs outside any group.
             TyKind::Array { elem, .. } => {
+                let saved = std::mem::take(&mut self.group);
                 self.path.push("the array element".to_owned());
                 let verdict = self.check(elem);
                 self.path.pop();
+                self.group = saved;
                 verdict
             }
             // Argument types only: applied arguments become captures, so the
             // type-level bound covers every later partial application. The
             // creation-site check of *environment* captures lands with arc'd
             // closure construction.
-            TyKind::Closure { params, .. } => self.fold(
-                params
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &p)| (format!("closure argument {i}"), p)),
-            ),
+            TyKind::Closure { params, .. } => {
+                let saved = std::mem::take(&mut self.group);
+                let verdict = self.fold(
+                    params
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &p)| (format!("closure argument {i}"), p)),
+                );
+                self.group = saved;
+                verdict
+            }
             TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => SyncVerdict::Blocked,
             // Everything else is the kind gate's error.
             _ => SyncVerdict::Sync,
@@ -295,6 +422,15 @@ mod tests {
         }
         fn members(&self, def: DefId, _args: &'tcx [Ty<'tcx>]) -> Option<Vec<(String, Ty<'tcx>)>> {
             self.records.get(&def).and_then(|(_, m)| m.clone())
+        }
+        fn member_record_defs(&self, def: DefId) -> Option<Vec<DefId>> {
+            let (_, members) = self.records.get(&def)?;
+            let members = members.as_ref()?;
+            let mut out = Vec::new();
+            for (_, ty) in members {
+                collect_record_defs(*ty, &mut out);
+            }
+            Some(out)
         }
     }
 

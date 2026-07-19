@@ -1075,12 +1075,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_arc_record_member() {
-        let src = "struct Pair { a: i32 }\nstruct Holder { p: Arc<Pair> }";
+    fn arc_record_members_are_allowed() {
+        // An `Arc` member spells its own atomic link (§3.3) — legal in
+        // shared and `[value]` records; a `[regional]` record still rejects
+        // it (regions and threads do not mix).
+        let ok = "struct Pair { a: i32 }\n\
+                  struct Holder { p: Arc<Pair> }\n\
+                  struct [value] VHolder { p: Arc<Pair> }";
+        assert!(reports_of(ok).is_empty(), "{:#?}", reports_of(ok));
+        let regional = "struct Pair { a: i32 }\n\
+                        struct [regional] R { v: i64, p: Arc<Pair> }";
         assert!(
-            has_error(src, "an `Arc` record member is not supported yet"),
+            has_error(regional, "an `Arc` member of a `[regional]` record"),
             "{:#?}",
-            reports_of(src)
+            reports_of(regional)
         );
     }
 
@@ -1129,28 +1137,66 @@ mod tests {
 
     #[test]
     fn rejects_arc_whose_member_is_a_bare_shared_record() {
-        // The stratified wf rule: the arc colors exactly one box, so every
-        // member must be `Sync` on its own — a bare `[shared]` member (its
-        // refcount is not atomic) refutes, and the witness names it.
-        let src = "enum List<T> { Nil, Cons(T, List<T>) }\n\
-                   fn f(l: Arc<List<i32>>) -> i32 { 0 }";
+        // The stratified wf rule: the arc colors exactly one box, so a bare
+        // `[shared]` member *outside the recursive group* refutes — it is
+        // not part of the spine the coloring floods, so it must already be
+        // `Sync` (an `Arc` member) on its own.
+        let src = "struct Q { x: i64 }\n\
+                   struct S { p: Q }\n\
+                   fn f(s: Arc<S>) -> i32 { 0 }";
         assert!(
             has_error(src, "every member of an `Arc` inner must be `Sync`"),
             "{:#?}",
             reports_of(src)
         );
         assert!(
-            has_error(src, "member `Cons.1` is a plain `[shared]` rc box"),
+            has_error(src, "member `p` is a plain `[shared]` rc box"),
             "{:#?}",
             reports_of(src)
         );
     }
 
     #[test]
+    fn arc_of_recursive_enum_is_wf_via_scc_promotion() {
+        // §3.3: Arc<List> selects the atomic instantiation of List's whole
+        // recursive group — the Cons tail promotes to Arc<List<T>>
+        // automatically, and the coinductive rule closes the cycle. Mutual
+        // recursion promotes the same way.
+        let src = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   enum Tree { Leaf(i64), Node(Forest) }\n\
+                   enum Forest { None, More(Tree, Forest) }\n\
+                   fn f(l: Arc<List<i32>>) -> i32 { 0 }\n\
+                   fn g(t: Arc<Tree>) -> i32 { 0 }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn arc_ctor_and_match_use_promoted_field_types() {
+        // The closed colored world: the arc'd Cons demands an arc'd tail,
+        // and matching through the arc binds the tail at its promoted type.
+        let ok = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                  fn cons(x: i32, xs: Arc<List<i32>>) -> Arc<List<i32>> {\n\
+                      Arc<List<i32>>::Cons{x, xs}\n\
+                  }\n\
+                  fn tail(l: Arc<List<i32>>) -> Arc<List<i32>> {\n\
+                      match l {\n\
+                          List::Cons(_, xs) => xs,\n\
+                          List::Nil => Arc<List<i32>>::Nil\n\
+                      }\n\
+                  }";
+        assert!(reports_of(ok).is_empty(), "{:#?}", reports_of(ok));
+        // A bare tail cannot enter the atomic world implicitly.
+        let bad = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   fn f(x: i32) -> i32 { Arc<List<i32>>::Cons{x, List::Nil}; 0 }";
+        assert!(!reports_of(bad).is_empty(), "{:#?}", reports_of(bad));
+    }
+
+    #[test]
     fn rejects_arc_wf_at_the_ctor_site() {
         // The coloring site checks too: no annotation is needed to trip it.
-        let src = "enum List<T> { Nil, Cons(T, List<T>) }\n\
-                   fn f() -> i32 { Arc<List<i32>>::Cons{1, List::Nil}; 0 }";
+        let src = "struct Q { x: i64 }\n\
+                   struct S { p: Q }\n\
+                   fn f() -> i32 { Arc<S> { p: Q { x: 1 } }; 0 }";
         assert!(
             has_error(src, "every member of an `Arc` inner must be `Sync`"),
             "{:#?}",
@@ -1170,8 +1216,8 @@ mod tests {
                 &interner;
             let mut elab = Elaborator::new(tcx, resolver);
             for src in [
-                "enum List<T> { Nil, Cons(T, List<T>) }",
-                "fn f(l: Arc<List<i32>>) -> i32 { 0 }",
+                "struct Q { x: i64 }\nstruct S { p: Q }",
+                "fn f(s: Arc<S>) -> i32 { 0 }",
             ] {
                 let parse = reussir_syntax::parse_with_interner(src, interner.clone());
                 assert!(parse.ok(), "{src}: {:#?}", parse.errors);
