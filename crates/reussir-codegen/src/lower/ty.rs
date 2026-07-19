@@ -184,19 +184,23 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// Lower a type as it appears *as a record member*. A managed member is named
     /// by its bare element type, never an `rc` pointer: the dialect boxes a member
     /// whose element capability is `shared`/`regional` to a pointer on its own (a
-    /// `!reussir.rc<…>` member is rejected — "use capability instead"). This holds
-    /// for a `shared`/`regional` record member (its inner record type), for a
-    /// closure, array, or cell member (its bare payload type). A scalar or
-    /// `[value]` record member is the same as [`mlir_ty`](Self::mlir_ty).
+    /// plain `!reussir.rc<…>` member is rejected — "use capability instead").
+    /// This holds for a `shared`/`regional` record member (its inner record
+    /// type), for a closure, array, or cell member (its bare payload type). A
+    /// scalar or `[value]` record member is the same as [`mlir_ty`](Self::mlir_ty).
+    ///
+    /// The one exception is an `Arc` member: its link's atomicity cannot be
+    /// derived from any capability (the container may be a normal, thread-local
+    /// box while the member's count is shared across threads), so it is spelled
+    /// as the explicit member type `rc<…, shared, atomic>` — the only rc member
+    /// form the dialect admits.
     fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
+            TyKind::Arc(_) => self.mlir_ty(ty),
             TyKind::Record { .. } => self.record_inner_of(ty),
             TyKind::Closure { params, ret } => self.closure_inner(params, ret),
             TyKind::Array { .. } => self.array_inner_of(ty),
             TyKind::Cell { .. } => self.cell_inner_of(ty),
-            // Member capabilities have no atomic axis, so an arc member is
-            // rejected at elaboration; reaching here means a check was missed.
-            TyKind::Arc(_) => err("an `Arc` record member is not supported yet"),
             _ => self.mlir_ty(ty),
         }
     }
@@ -444,6 +448,18 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         rc(inner, cap, ReussirAtomicKind::Normal)
     }
 
+    /// A shared `rc` link at an explicit atomic context: the member-link type
+    /// derived under the whole-subtree rule (atomic parent → atomic link) or
+    /// for an explicit `Arc` member.
+    pub(super) fn rc_type_in(&self, inner: Type<'c>, atomic: bool) -> Type<'c> {
+        let kind = if atomic {
+            ReussirAtomicKind::Atomic
+        } else {
+            ReussirAtomicKind::Normal
+        };
+        rc(inner, ReussirCapability::Shared, kind)
+    }
+
     /// `!reussir.region` — the arena-allocator handle a `regional` function or a
     /// `region-run` body threads to its regional allocations.
     pub(super) fn region_type(&self) -> Type<'c> {
@@ -462,6 +478,23 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// (region-local and mutable, or frozen).
     pub(super) fn ref_type_with_cap(&self, inner: Type<'c>, cap: ReussirCapability) -> Type<'c> {
         r#ref(inner, cap, ReussirAtomicKind::Normal)
+    }
+
+    /// `!reussir.ref<inner, cap>` at an explicit atomic context — projected
+    /// references inherit their parent reference's atomic kind (the
+    /// whole-subtree rule; the dialect verifier enforces it).
+    pub(super) fn ref_type_in(
+        &self,
+        inner: Type<'c>,
+        cap: ReussirCapability,
+        atomic: bool,
+    ) -> Type<'c> {
+        let kind = if atomic {
+            ReussirAtomicKind::Atomic
+        } else {
+            ReussirAtomicKind::Normal
+        };
+        r#ref(inner, cap, kind)
     }
 
     /// The `!reussir.ref` type for borrowing the payload of a managed box of
