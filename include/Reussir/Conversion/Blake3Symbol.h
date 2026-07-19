@@ -1,23 +1,27 @@
-//===-- Blake3Symbol.h - BLAKE3-hashed symbol mangling ---------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Content-addressed symbol names for lowering-generated globals (panic
-// messages, string prefixes, string dispatchers): a Rust-v0-style identifier
-// `_RNvC<len(ns)><ns><len(digits)>[_]<digits>` whose digits are the base-62
-// encoding of the payload's 256-bit BLAKE3 digest.
-//
-// The digest-to-number convention matches the Rust frontend's `StringToken`
-// (`reussir-core`'s `utils::string` + `utils::b62`): each 8-byte chunk of the
-// digest is combined little-endian into a word, word 0 is the most
-// significant, and the alphabet is `0-9a-zA-Z`. Both sides therefore derive
-// identical digits from the same payload, on any host.
-//
+///
+/// \file
+/// Content-addressed symbol names for lowering-generated globals (panic
+/// messages, string prefixes, string dispatchers): a Rust-v0-style identifier
+/// `_RNvC<len(ns)><ns><len(digits)>[_]<digits>` whose digits are the base-62
+/// encoding of the payload's 256-bit BLAKE3 digest.
+///
+/// The digest-to-number convention matches the Rust frontend's `StringToken`
+/// (`reussir-core`'s `utils::string` + `utils::b62`): each 8-byte chunk of the
+/// digest is combined little-endian into a word, word 0 is the most
+/// significant, and the alphabet is `0-9a-zA-Z`. Both sides therefore derive
+/// identical digits from the same payload, on any host.
+///
 //===----------------------------------------------------------------------===//
+
 #ifndef REUSSIR_CONVERSION_BLAKE3SYMBOL_H
 #define REUSSIR_CONVERSION_BLAKE3SYMBOL_H
 

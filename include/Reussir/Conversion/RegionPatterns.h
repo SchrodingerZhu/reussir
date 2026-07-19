@@ -1,14 +1,18 @@
-//===-- RegionPatterns.h - Reussir region-related patterns --*- c++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// This header file provides lowering/cleanup patterns related to region ops.
-//
+///
+/// \file
+/// This header file provides lowering/cleanup patterns related to region ops.
+///
 //===----------------------------------------------------------------------===//
+
 #pragma once
 #ifndef REUSSIR_CONVERSION_REGIONPATTERNS_H
 #define REUSSIR_CONVERSION_REGIONPATTERNS_H

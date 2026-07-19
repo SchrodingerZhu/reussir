@@ -1,86 +1,89 @@
-//===-- UniqueCarryingRecursionAnalysis.cpp ---------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Uniqueness-carrying analysis and `.unique` specialization.
-//
-// # The claim
-//
-// A function *carries uniqueness* when every rc-typed result it returns is,
-// on every path, either **fresh** (produced by an `rc.create*` whose count
-// is initialized to 1 and never shared afterwards) or **carried** (one of
-// the function's own rc arguments, passed through unshared). The payoff:
-// at a call site where every carried argument is *itself* proven unique,
-// the results are unique too — so a directly self-recursive carrying
-// function can run a specialized `.unique` clone that asserts argument
-// uniqueness at entry (`rc.assume_unique`, an `llvm.assume(count == 1)`
-// after lowering), letting the reuse machinery take unique fast paths
-// through the whole recursion.
-//
-// # Provenance lattice
-//
-// Per rc value: `Unknown` (bottom) or a pair `{fresh, carriedArgs}` meaning
-// "on some path this is a fresh create / argument i". Join is the pointwise
-// union: the value is unique iff every contributor is, so a joined value is
-// proven unique under an assumption set exactly when *all* its carried bits
-// are assumed (freshness needs no assumption). `Unknown` is absorbing in
-// proofs (never unique) and the identity of the join.
-//
-// # Sharing discipline (the part provenance alone cannot see)
-//
-// Freshness at the definition does not survive sharing: a created value
-// that is also retained elsewhere (`rc.inc`, a second consuming user)
-// reaches the recursive call with count > 1, and asserting uniqueness on
-// it would be undefined behavior. Provenance is therefore *disqualified*
-// (demoted to `Unknown`) when the value has any retaining user, or more
-// than one consuming user. Forwarding terminators (`scf.yield`,
-// `reussir.scf.yield`, `func.return`) and read-only observers (`rc.borrow`,
-// `rc.fetch`, `rc.is_unique`, `rc.assume_unique`) do not count: forwards
-// sit on mutually exclusive paths (their sharing is checked at the level of
-// the forwarded result), and reads do not retain. This is conservative —
-// consuming uses on mutually exclusive paths are also rejected — but it is
-// what makes the entry assumption sound without a path-sensitive count
-// analysis. The frontend's ownership discipline guarantees any genuine
-// sharing materializes as an explicit `rc.inc`, which this check sees.
-//
-// # Control flow
-//
-// Region results are traced only through operations whose results are
-// *exhaustively* defined by their regions' yields: `scf.if`,
-// `scf.index_switch`, `scf.execute_region`, and `reussir.record.dispatch`.
-// Loop-carrying ops (`scf.for`, `scf.while`) are deliberately Unknown:
-// their results may come from the *init* operands on a zero-trip count, a
-// path the yield-only join would miss. `reussir.array.with_unique_view` is
-// fresh only in its implicit-result form (an empty yield returns the
-// uniquified array itself, count 1 by construction); an explicit yield is
-// traced like any other forward.
-//
-// # Fixpoint
-//
-// Function summaries start at bottom and are recomputed from the previous
-// round until stable — a Kleene iteration of a monotone map (joins only
-// accumulate bits, bounded by the argument count), so it terminates at the
-// least fixpoint. Optimism about recursion is sound coinductively: any
-// value a terminating execution actually returns is produced by a finite
-// chain of creates/argument passes, which some iteration covers.
-//
-// # Specialization
-//
-// For each carrying, directly self-recursive function, the set of provable
-// assumption vectors is closed off: starting from the empty assumption,
-// each self call contributes the argument subset it can prove, and each
-// discovered subset is re-run (the clone bodies are copies of the base, so
-// walking the base under the subset's assumptions is equivalent). Each
-// subset gets one clone (`f.unique` when it is the only one, else
-// `f.unique_<bits>`), marked private/internal and tagged
-// `reussir.unique_clone`; debug info is stripped (the clone has no distinct
-// source location). Reruns are idempotent: self calls are reset to the base
-// symbol before re-deciding, and existing clones are found by the marker.
-//
+///
+/// \file
+/// Uniqueness-carrying analysis and `.unique` specialization.
+///
+/// # The claim
+///
+/// A function *carries uniqueness* when every rc-typed result it returns is,
+/// on every path, either **fresh** (produced by an `rc.create*` whose count
+/// is initialized to 1 and never shared afterwards) or **carried** (one of
+/// the function's own rc arguments, passed through unshared). The payoff:
+/// at a call site where every carried argument is *itself* proven unique,
+/// the results are unique too — so a directly self-recursive carrying
+/// function can run a specialized `.unique` clone that asserts argument
+/// uniqueness at entry (`rc.assume_unique`, an `llvm.assume(count == 1)`
+/// after lowering), letting the reuse machinery take unique fast paths
+/// through the whole recursion.
+///
+/// # Provenance lattice
+///
+/// Per rc value: `Unknown` (bottom) or a pair `{fresh, carriedArgs}` meaning
+/// "on some path this is a fresh create / argument i". Join is the pointwise
+/// union: the value is unique iff every contributor is, so a joined value is
+/// proven unique under an assumption set exactly when *all* its carried bits
+/// are assumed (freshness needs no assumption). `Unknown` is absorbing in
+/// proofs (never unique) and the identity of the join.
+///
+/// # Sharing discipline (the part provenance alone cannot see)
+///
+/// Freshness at the definition does not survive sharing: a created value
+/// that is also retained elsewhere (`rc.inc`, a second consuming user)
+/// reaches the recursive call with count > 1, and asserting uniqueness on
+/// it would be undefined behavior. Provenance is therefore *disqualified*
+/// (demoted to `Unknown`) when the value has any retaining user, or more
+/// than one consuming user. Forwarding terminators (`scf.yield`,
+/// `reussir.scf.yield`, `func.return`) and read-only observers (`rc.borrow`,
+/// `rc.fetch`, `rc.is_unique`, `rc.assume_unique`) do not count: forwards
+/// sit on mutually exclusive paths (their sharing is checked at the level of
+/// the forwarded result), and reads do not retain. This is conservative —
+/// consuming uses on mutually exclusive paths are also rejected — but it is
+/// what makes the entry assumption sound without a path-sensitive count
+/// analysis. The frontend's ownership discipline guarantees any genuine
+/// sharing materializes as an explicit `rc.inc`, which this check sees.
+///
+/// # Control flow
+///
+/// Region results are traced only through operations whose results are
+/// *exhaustively* defined by their regions' yields: `scf.if`,
+/// `scf.index_switch`, `scf.execute_region`, and `reussir.record.dispatch`.
+/// Loop-carrying ops (`scf.for`, `scf.while`) are deliberately Unknown:
+/// their results may come from the *init* operands on a zero-trip count, a
+/// path the yield-only join would miss. `reussir.array.with_unique_view` is
+/// fresh only in its implicit-result form (an empty yield returns the
+/// uniquified array itself, count 1 by construction); an explicit yield is
+/// traced like any other forward.
+///
+/// # Fixpoint
+///
+/// Function summaries start at bottom and are recomputed from the previous
+/// round until stable — a Kleene iteration of a monotone map (joins only
+/// accumulate bits, bounded by the argument count), so it terminates at the
+/// least fixpoint. Optimism about recursion is sound coinductively: any
+/// value a terminating execution actually returns is produced by a finite
+/// chain of creates/argument passes, which some iteration covers.
+///
+/// # Specialization
+///
+/// For each carrying, directly self-recursive function, the set of provable
+/// assumption vectors is closed off: starting from the empty assumption,
+/// each self call contributes the argument subset it can prove, and each
+/// discovered subset is re-run (the clone bodies are copies of the base, so
+/// walking the base under the subset's assumptions is equivalent). Each
+/// subset gets one clone (`f.unique` when it is the only one, else
+/// `f.unique_<bits>`), marked private/internal and tagged
+/// `reussir.unique_clone`; debug info is stripped (the clone has no distinct
+/// source location). Reruns are idempotent: self calls are reset to the base
+/// symbol before re-deciding, and existing clones are found by the marker.
+///
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/IR/ReussirDialect.h"

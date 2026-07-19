@@ -1,26 +1,30 @@
-//===-- VariantDebugInfo.cpp - variant_part DWARF fixup ---------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// MLIR's `DICompositeTypeAttr` has no discriminator field, so the debug-info
-// conversion can only describe an enum as a `{ tag, payload-union }` struct: a
-// debugger then shows every case overlapping and leaves the user to read the
-// tag. This post-translation pass rewrites that struct into a real DWARF
-// `DW_TAG_variant_part` — a discriminant member plus one `DW_TAG_variant` per
-// case carrying its `DW_AT_discr_value` — which gdb uses to display only the
-// live case.
-//
-// It runs on the translated `llvm::Module` because the `discriminator` operand
-// (and the per-case discriminant constant) exist only at the LLVM-DI level,
-// not in MLIR's attribute. The composite is rewritten *in place*: every Reussir
-// composite is a `distinct` node, so mutating its `elements` operand preserves
-// node identity — a recursive payload that points back at the enum, and every
-// variable whose type is the enum, see the variant_part with no further work.
-//
+///
+/// \file
+/// MLIR's `DICompositeTypeAttr` has no discriminator field, so the debug-info
+/// conversion can only describe an enum as a `{ tag, payload-union }` struct: a
+/// debugger then shows every case overlapping and leaves the user to read the
+/// tag. This post-translation pass rewrites that struct into a real DWARF
+/// `DW_TAG_variant_part` — a discriminant member plus one `DW_TAG_variant` per
+/// case carrying its `DW_AT_discr_value` — which gdb uses to display only the
+/// live case.
+///
+/// It runs on the translated `llvm::Module` because the `discriminator` operand
+/// (and the per-case discriminant constant) exist only at the LLVM-DI level,
+/// not in MLIR's attribute. The composite is rewritten *in place*: every
+/// Reussir composite is a `distinct` node, so mutating its `elements` operand
+/// preserves node identity — a recursive payload that points back at the enum,
+/// and every variable whose type is the enum, see the variant_part with no
+/// further work.
+///
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/Conversion/Passes.h"

@@ -1,32 +1,36 @@
-//===-- ClosureWpd.h - closure whole-program devirt type ids ---*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Type identifiers for whole-program devirtualization (WPD) of closures.
-//
-// `closure.apply`/`closure.uniqify`/`closure.clone` never change a closure's
-// vtable — only the static type (one fewer leading parameter) and the cursor
-// — so the RETURN type is the one component of the static type that every
-// value backed by the same vtable agrees on. It is also the only thing the
-// slot ABIs depend on (`evaluate` is `fn(rc<box>) -> c` reading all arguments
-// from the payload; `drop`/`clone` are signature-free). Each closure vtable
-// therefore carries exactly one type id, keyed by its return type, and each
-// indirect slot call site asserts the id of its operand's return type: the
-// minimal scheme under which every vtable observable at a tested site carries
-// the tested id, which is all `WholeProgramDevirt` requires.
-//
-// The id embeds the base-62 BLAKE3 digest of the return type's canonical
-// textual form (the `Blake3Symbol.h` convention), so identical return types
-// produce identical ids in any module. Ids are metadata strings, never
-// symbols, so no mangling scheme applies.
-//
-// See docs/design/closure-wpd.md for the full design.
-//
+///
+/// \file
+/// Type identifiers for whole-program devirtualization (WPD) of closures.
+///
+/// `closure.apply`/`closure.uniqify`/`closure.clone` never change a closure's
+/// vtable — only the static type (one fewer leading parameter) and the cursor
+/// — so the RETURN type is the one component of the static type that every
+/// value backed by the same vtable agrees on. It is also the only thing the
+/// slot ABIs depend on (`evaluate` is `fn(rc<box>) -> c` reading all arguments
+/// from the payload; `drop`/`clone` are signature-free). Each closure vtable
+/// therefore carries exactly one type id, keyed by its return type, and each
+/// indirect slot call site asserts the id of its operand's return type: the
+/// minimal scheme under which every vtable observable at a tested site carries
+/// the tested id, which is all `WholeProgramDevirt` requires.
+///
+/// The id embeds the base-62 BLAKE3 digest of the return type's canonical
+/// textual form (the `Blake3Symbol.h` convention), so identical return types
+/// produce identical ids in any module. Ids are metadata strings, never
+/// symbols, so no mangling scheme applies.
+///
+/// See docs/design/closure-wpd.md for the full design.
+///
 //===----------------------------------------------------------------------===//
+
 #ifndef REUSSIR_CONVERSION_CLOSUREWPD_H
 #define REUSSIR_CONVERSION_CLOSUREWPD_H
 

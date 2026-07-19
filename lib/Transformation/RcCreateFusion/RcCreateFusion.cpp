@@ -1,9 +1,16 @@
-//===-- RcCreateFusion.cpp - Reussir rc.create fusion -----------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
+//===----------------------------------------------------------------------===//
+///
+/// \file
+/// This file implements fusion of Reussir rc.create operations.
+///
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/IR/ReussirDialect.h"

@@ -1,14 +1,18 @@
-//===-- BasicOpsLowering.h - Reussir basic ops lowering --------*- c++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// This header file provides lowering patterns for basic Reussir operations.
-//
+///
+/// \file
+/// This header file provides lowering patterns for basic Reussir operations.
+///
 //===----------------------------------------------------------------------===//
+
 #pragma once
 #ifndef REUSSIR_CONVERSION_BASICOPSLOWERING_H
 #define REUSSIR_CONVERSION_BASICOPSLOWERING_H

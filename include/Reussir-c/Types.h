@@ -1,17 +1,20 @@
-//===-- Types.h - Reussir dialect type C API -------------------*- C -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// C API constructors for the Reussir dialect types. The dialect types use
-// custom printers/parsers, so the generic MLIR C API cannot build them; these
-// entry points wrap each type's C++ `get` builder so the Rust bindings
-// (mlir-sys / melior) can construct Reussir types directly rather than by
-// round-tripping through textual MLIR.
-//
+///
+/// \file
+/// C API constructors for the Reussir dialect types. The dialect types use
+/// custom printers/parsers, so the generic MLIR C API cannot build them; these
+/// entry points wrap each type's C++ `get` builder so the Rust bindings
+/// (mlir-sys / melior) can construct Reussir types directly rather than by
+/// round-tripping through textual MLIR.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_C_TYPES_H

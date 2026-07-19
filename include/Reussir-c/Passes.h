@@ -1,16 +1,19 @@
-//===-- Passes.h - Reussir backend pipeline C API --------------*- C -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// C API for assembling the Reussir lowering pipeline from Rust. Each Reussir
-// (and required upstream) pass is exposed as an MlirPass factory so the Rust
-// backend can build the pipeline step by step with melior's pass manager, plus
-// the standalone helpers the pipeline depends on.
-//
+///
+/// \file
+/// C API for assembling the Reussir lowering pipeline from Rust. Each Reussir
+/// (and required upstream) pass is exposed as an MlirPass factory so the Rust
+/// backend can build the pipeline step by step with melior's pass manager, plus
+/// the standalone helpers the pipeline depends on.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_C_PASSES_H

@@ -1,15 +1,18 @@
-//===-- Dialects.h - Reussir dialect C API ---------------------*- C -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// C API entry points for the Reussir dialect. These let Rust bindings built on
-// the MLIR C API (mlir-sys / melior) register and load the out-of-tree Reussir
-// dialect alongside the upstream dialects it depends on.
-//
+///
+/// \file
+/// C API entry points for the Reussir dialect. These let Rust bindings built on
+/// the MLIR C API (mlir-sys / melior) register and load the out-of-tree Reussir
+/// dialect alongside the upstream dialects it depends on.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_C_DIALECTS_H
