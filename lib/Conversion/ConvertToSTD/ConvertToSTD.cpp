@@ -464,7 +464,8 @@ private:
       mlir::Type targetVariantType =
           getProjectedType(recordType.getMembers()[*singletonTag],
                            recordType.getMemberIsField()[*singletonTag],
-                           variantRef.getCapability());
+                           variantRef.getCapability(),
+                           variantRef.getAtomicKind());
       RefType coercedType =
           RefType::get(rewriter.getContext(), targetVariantType,
                        variantRef.getCapability(), variantRef.getAtomicKind());

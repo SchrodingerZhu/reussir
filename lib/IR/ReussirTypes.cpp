@@ -264,7 +264,9 @@ mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
          recordTy.getDefaultCapability() == Capability::regional)) ||
        llvm::isa<ArrayType, CellType>(rawMember)))
     member = ptrTy;
-  if (llvm::isa<ClosureType>(member))
+  // An explicit atomic rc member (thread-safety design §3.3) and a raw
+  // closure are always stored as pointers, box-internal or not.
+  if (llvm::isa<ClosureType, RcType>(member))
     member = ptrTy;
   return member;
 }
@@ -330,9 +332,26 @@ RecordType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
       return mlir::failure();
     }
 
-    if (llvm::isa<RcType>(member) || llvm::isa<RefType>(member)) {
+    if (auto rcMember = llvm::dyn_cast<RcType>(member)) {
+      // A member's *normal* shared link is derived from its capability, so a
+      // plain rc member stays banned. An **atomic** shared link cannot be
+      // derived — the member type carries a different refcount discipline
+      // than its nominal capability implies (an `Arc` member, or the
+      // same-group link of an arc'd recursive record, thread-safety design
+      // §3.3) — so it is spelled explicitly as the member type.
+      if (rcMember.getCapability() != Capability::shared ||
+          rcMember.getAtomicKind() != AtomicKind::atomic) {
+        emitError() << "rc members must be atomic shared links; a normal "
+                       "link is derived from the member's capability instead";
+        return mlir::failure();
+      }
+      if (isField) {
+        emitError() << "an atomic rc member cannot be a [field] link";
+        return mlir::failure();
+      }
+    } else if (llvm::isa<RefType>(member)) {
       emitError()
-          << "Members must not be Rc or Ref types, use capability instead";
+          << "Members must not be Ref types, use capability instead";
       return mlir::failure();
     }
 
@@ -562,22 +581,31 @@ reussir::Capability RecordType::getDefaultCapability() const {
 }
 bool RecordType::getFixed() const { return getImpl()->fixed; }
 
-::mlir::FlatSymbolRefAttr RecordType::getDtorName() const {
+::mlir::FlatSymbolRefAttr RecordType::getDtorName(AtomicKind kind) const {
   auto name = getName();
   if (!name)
     return nullptr;
-  auto prefix = llvm::Twine("_RINvNvC4core9intrinsic13drop_in_place");
+  // The glue derives member links from its argument reference's atomic kind,
+  // so each kind is a distinct intrinsic (the length prefix is the v0 length
+  // of the path segment).
+  auto prefix =
+      llvm::Twine(kind == AtomicKind::atomic
+                      ? "_RINvNvC4core9intrinsic20drop_in_place_atomic"
+                      : "_RINvNvC4core9intrinsic13drop_in_place");
   auto suffix = llvm::Twine("E");
   auto recordName = name.getValue();
   auto dtorName = (prefix + recordName.ltrim("_R") + suffix).str();
   return ::mlir::FlatSymbolRefAttr::get(getContext(), dtorName);
 }
 
-::mlir::FlatSymbolRefAttr RecordType::getAcquireName() const {
+::mlir::FlatSymbolRefAttr RecordType::getAcquireName(AtomicKind kind) const {
   auto name = getName();
   if (!name)
     return nullptr;
-  auto prefix = llvm::Twine("_RINvNvC4core9intrinsic16acquire_in_place");
+  auto prefix =
+      llvm::Twine(kind == AtomicKind::atomic
+                      ? "_RINvNvC4core9intrinsic23acquire_in_place_atomic"
+                      : "_RINvNvC4core9intrinsic16acquire_in_place");
   auto suffix = llvm::Twine("E");
   auto recordName = name.getValue();
   auto acquireName = (prefix + recordName.ltrim("_R") + suffix).str();
@@ -1447,7 +1475,17 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(ViewType)
 // is a rc pointer. Or it can be a rigid rc pointer if the field record is
 // regional.
 // Otherwise, we directly return the type.
-mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap) {
+//
+// Atomicity is a whole-subtree property (thread-safety design §3.3): the
+// `Sync` discipline guarantees nothing nonatomic is ever stored inside an
+// atomically counted box, so a member link's atomic kind is the *join* of
+// what the member type writes and what the parent context (`parentAtomic`,
+// the projecting rc/ref's atomic kind) inherits down. Derived shared links
+// and nullable-wrapped links flood atomic under an atomic parent; an
+// explicit atomic rc member (an `Arc` island inside a normal record) is
+// already written atomic and stands on its own.
+mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap,
+                            AtomicKind parentAtomic) {
   Capability targetCap =
       llvm::TypeSwitch<mlir::Type, Capability>(type)
           .Case<RecordType>([fieldCap](RecordType type) -> Capability {
@@ -1469,16 +1507,32 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap) {
   }
   if (targetCap == Capability::shared) {
     // An atomic scalar or lock-guarded cell member is managed by an atomic
-    // shared RC box (see `RcType::verify`); every other shared member keeps
-    // the default nonatomic refcount.
+    // shared RC box (see `RcType::verify`); an atomic parent floods its
+    // discipline down (the whole-subtree rule); every other shared member
+    // keeps the default nonatomic refcount.
     auto cellTy = llvm::dyn_cast<CellType>(type);
-    AtomicKind atomicKind = cellTy && cellTy.requiresAtomicSharedBox()
+    AtomicKind atomicKind = parentAtomic == AtomicKind::atomic ||
+                                    (cellTy && cellTy.requiresAtomicSharedBox())
                                 ? AtomicKind::atomic
                                 : AtomicKind::normal;
     return RcType::get(type.getContext(), type, Capability::shared, atomicKind);
   }
   if (targetCap == Capability::regional)
     return RcType::get(type.getContext(), type, Capability::rigid);
+  // A nullable-wrapped shared link is an explicit member type, but the
+  // whole-subtree rule still applies: under an atomic parent the wrapped
+  // link is atomic (the `Sync` rule made storing anything else illegal).
+  if (parentAtomic == AtomicKind::atomic) {
+    if (auto nullableTy = llvm::dyn_cast<NullableType>(type)) {
+      if (auto rcTy = llvm::dyn_cast<RcType>(nullableTy.getPtrTy());
+          rcTy && rcTy.getCapability() == Capability::shared &&
+          rcTy.getAtomicKind() == AtomicKind::normal)
+        return NullableType::get(
+            type.getContext(),
+            RcType::get(type.getContext(), rcTy.getElementType(),
+                        Capability::shared, AtomicKind::atomic));
+    }
+  }
   return type;
 }
 

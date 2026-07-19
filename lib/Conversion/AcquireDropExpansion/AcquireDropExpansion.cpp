@@ -184,20 +184,23 @@ private:
     return mlir::success();
   }
 
+  // Member links and every projected/coerced reference inherit `refAtomic`,
+  // the dropped reference's atomic kind — the whole-subtree rule: inside an
+  // atomically counted box, every shared link is atomic.
   mlir::LogicalResult
   rewriteDropCompound(RecordType recordType, Capability refCap,
-                      ReussirRefDropOp op,
+                      AtomicKind refAtomic, ReussirRefDropOp op,
                       mlir::PatternRewriter &rewriter) const {
     assert(recordType.isCompound());
     for (auto [idx, memberTy, memberIsField] : llvm::enumerate(
              recordType.getMembers(), recordType.getMemberIsField())) {
       if (memberIsField)
         continue;
-      auto projectedTy = getProjectedType(memberTy, false, refCap);
+      auto projectedTy = getProjectedType(memberTy, false, refCap, refAtomic);
       if (isTriviallyCopyable(projectedTy))
         continue;
       RefType projectedRefTy =
-          RefType::get(op.getContext(), projectedTy, refCap);
+          RefType::get(op.getContext(), projectedTy, refCap, refAtomic);
       mlir::IntegerAttr index = rewriter.getIndexAttr(idx);
       mlir::Value projectedVal = ReussirRefProjectOp::create(
           rewriter, op.getLoc(), projectedRefTy, op.getRef(), index);
@@ -209,7 +212,7 @@ private:
 
   mlir::LogicalResult
   rewriteDropVariant(RecordType recordType, Capability refCap,
-                     ReussirRefDropOp op,
+                     AtomicKind refAtomic, ReussirRefDropOp op,
                      mlir::PatternRewriter &rewriter) const {
     assert(recordType.isVariant());
     llvm::SmallVector<mlir::Attribute> tagSets;
@@ -221,9 +224,10 @@ private:
         tagSets.size());
     for (auto [idx, memberTy, memberIsField] : llvm::enumerate(
              recordType.getMembers(), recordType.getMemberIsField())) {
-      auto projectedTy = getProjectedType(memberTy, memberIsField, refCap);
+      auto projectedTy =
+          getProjectedType(memberTy, memberIsField, refCap, refAtomic);
       RefType projectedRefTy =
-          RefType::get(op.getContext(), projectedTy, refCap);
+          RefType::get(op.getContext(), projectedTy, refCap, refAtomic);
       mlir::Block *block = rewriter.createBlock(
           &dispatcher.getRegions()[idx], dispatcher.getRegions()[idx].begin(),
           {projectedRefTy}, {op.getLoc()});
@@ -240,11 +244,12 @@ private:
 
   mlir::LogicalResult
   rewriteDropVariant(RecordType recordType, size_t tag, Capability refCap,
-                     ReussirRefDropOp op,
+                     AtomicKind refAtomic, ReussirRefDropOp op,
                      mlir::PatternRewriter &rewriter) const {
     assert(recordType.isVariant());
     auto targetType = recordType.getMembers()[tag];
-    auto targetRefType = rewriter.getType<RefType>(targetType, refCap);
+    auto targetRefType =
+        rewriter.getType<RefType>(targetType, refCap, refAtomic);
     auto targetRef =
         ReussirRecordCoerceOp::create(rewriter, op.getLoc(), targetRefType,
                                       rewriter.getIndexAttr(tag), op.getRef());
@@ -347,20 +352,23 @@ public:
         .Case<RecordType>([&](RecordType recordType) {
           if (shouldOutline(op, recordType)) {
             mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
-            mlir::func::FuncOp dtor =
-                createDtorIfNotExists(moduleOp, recordType, rewriter);
+            mlir::func::FuncOp dtor = createDtorIfNotExists(
+                moduleOp, recordType, rewriter, refType.getAtomicKind());
             mlir::func::CallOp::create(rewriter, op.getLoc(), dtor,
                                        op.getRef());
             rewriter.eraseOp(op);
             return llvm::success();
           }
+          AtomicKind refAtomic = refType.getAtomicKind();
           if (recordType.isCompound())
-            return rewriteDropCompound(recordType, refCap, op, rewriter);
+            return rewriteDropCompound(recordType, refCap, refAtomic, op,
+                                       rewriter);
           if (op.getVariant())
             return rewriteDropVariant(recordType,
                                       op.getVariant()->getZExtValue(), refCap,
-                                      op, rewriter);
-          return rewriteDropVariant(recordType, refCap, op, rewriter);
+                                      refAtomic, op, rewriter);
+          return rewriteDropVariant(recordType, refCap, refAtomic, op,
+                                    rewriter);
         })
         .Case<NullableType>([&](NullableType nullableType) {
           return rewriteDropNullable(nullableType, op, rewriter);
@@ -410,21 +418,21 @@ public:
     if (auto recordType = llvm::dyn_cast<RecordType>(elementType)) {
       if (shouldOutline(op, recordType)) {
         mlir::ModuleOp moduleOp = op->getParentOfType<mlir::ModuleOp>();
-        mlir::func::FuncOp acquireFunc =
-            emitOwnershipAcquisitionFuncIfNotExists(moduleOp, recordType,
-                                                    rewriter);
+        mlir::func::FuncOp acquireFunc = emitOwnershipAcquisitionFuncIfNotExists(
+            moduleOp, recordType, rewriter, refType.getAtomicKind());
         mlir::func::CallOp::create(rewriter, op.getLoc(), acquireFunc,
                                    op.getRef());
         rewriter.eraseOp(op);
         return mlir::success();
       }
 
-      // For variant with known tag, coerce first then acquire
+      // For variant with known tag, coerce first then acquire; the coerced
+      // reference stays inside the same box and keeps its atomic context.
       if (recordType.isVariant() && op.getVariant()) {
         size_t tag = op.getVariant()->getZExtValue();
         auto targetType = recordType.getMembers()[tag];
-        auto targetRefType =
-            rewriter.getType<RefType>(targetType, refType.getCapability());
+        auto targetRefType = rewriter.getType<RefType>(
+            targetType, refType.getCapability(), refType.getAtomicKind());
         auto targetRef = ReussirRecordCoerceOp::create(
             rewriter, op.getLoc(), targetRefType, rewriter.getIndexAttr(tag),
             op.getRef());

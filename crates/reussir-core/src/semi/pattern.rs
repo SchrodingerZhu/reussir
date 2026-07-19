@@ -316,7 +316,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         ty: Ty<'tcx>,
     ) -> Pat<'tcx> {
         // An `Arc<Enum<…>>` scrutinee dispatches on the inner enum's
-        // constructors; the pattern spelling is the plain one.
+        // constructors; the pattern spelling is the plain one. The coloring
+        // is the atomic context of everything inside, though: bare shared
+        // fields bind at their promoted (`Arc`) types (§3.3).
+        let arced = matches!(self.infer.shallow_resolve(ty).kind(), TyKind::Arc(_));
         let ty = self.peel_arc(ty);
         // The built-in nullable constructors, by the same qualifier convention
         // as [`Elaborator::infer_ctor`] on the expression side.
@@ -388,11 +391,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         );
         // Recurse into each declared field. Missing trailing fields (e.g. behind
         // a `..` ellipsis or an arity error) are treated as wildcards.
+        let group = if arced {
+            self.arc_recursive_group(enum_def)
+        } else {
+            rustc_hash::FxHashSet::default()
+        };
         let fields = payload
             .iter()
             .enumerate()
             .map(|(i, decl)| {
                 let field_ty = self.infer.instantiate_ty(*decl, &inst);
+                let field_ty = if arced {
+                    self.arc_promote_member_ty(&group, field_ty)
+                } else {
+                    field_ty
+                };
                 match ctor.args.get(i) {
                     Some(arg) => self.check_pat(&arg.kind, span, field_ty),
                     None => Pat::Wild,

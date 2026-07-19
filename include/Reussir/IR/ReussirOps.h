@@ -91,9 +91,13 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
 // drop operation. Returns the existing destructor if one is already present.
 //
 //===----------------------------------------------------------------------===//
-mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
-                                         RecordType type,
-                                         mlir::OpBuilder &builder);
+// `kind` is the atomic context the glue is dropped from: the glue's argument
+// reference carries it, and the expanded body derives member links from it
+// (whole-subtree rule), so each kind gets its own outlined symbol.
+mlir::func::FuncOp
+createDtorIfNotExists(mlir::ModuleOp moduleOp, RecordType type,
+                      mlir::OpBuilder &builder,
+                      AtomicKind kind = AtomicKind::normal);
 
 //===----------------------------------------------------------------------===//
 // emitOwnershipAcquisitionFuncIfNotExists
@@ -106,7 +110,8 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
 //
 //===----------------------------------------------------------------------===//
 mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
-    mlir::ModuleOp moduleOp, RecordType type, mlir::OpBuilder &builder);
+    mlir::ModuleOp moduleOp, RecordType type, mlir::OpBuilder &builder,
+    AtomicKind kind = AtomicKind::normal);
 
 //===----------------------------------------------------------------------===//
 

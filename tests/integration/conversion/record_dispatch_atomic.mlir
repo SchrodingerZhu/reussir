@@ -19,8 +19,11 @@ module {
     %result = reussir.record.dispatch(%opt_ref : !reussir.ref<!option shared atomic>) -> i32 {
       [0] -> {
         ^bb0(%some_ref : !reussir.ref<!option_some shared atomic>):
-          %field_ref = reussir.ref.project(%some_ref : !reussir.ref<!option_some shared atomic>) [0] : !reussir.ref<i32 shared>
-          %extracted = reussir.ref.load(%field_ref : !reussir.ref<i32 shared>) : i32
+          // The projected reference inherits the parent's atomic kind (the
+          // whole-subtree rule): interior references of an atomic box stay
+          // in the atomic context.
+          %field_ref = reussir.ref.project(%some_ref : !reussir.ref<!option_some shared atomic>) [0] : !reussir.ref<i32 shared atomic>
+          %extracted = reussir.ref.load(%field_ref : !reussir.ref<i32 shared atomic>) : i32
           reussir.scf.yield %extracted : i32
       }
       [1] -> {

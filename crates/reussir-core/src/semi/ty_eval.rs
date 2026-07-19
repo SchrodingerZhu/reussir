@@ -461,9 +461,65 @@ impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
                 .collect(),
         })
     }
+
+    fn member_record_defs(&self, def: DefId) -> Option<Vec<DefId>> {
+        let rec = self.el.records.get(&def)?;
+        let fields = rec.fields.as_ref()?;
+        let mut out = Vec::new();
+        let mut walk = |t: Ty<'tcx>| crate::semi::traits::sync::collect_record_defs(t, &mut out);
+        match fields {
+            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _)| walk(*t)),
+            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _)| walk(*t)),
+            RecordFields::Variants(vs) => vs
+                .iter()
+                .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),
+        }
+        Some(out)
+    }
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
+    /// The recursive group (SCC) of `def` over the record member-reference
+    /// graph — the defs whose bare shared links re-color under an `Arc` of
+    /// any group member (§3.3). Empty when fields are not populated yet (the
+    /// promotion then simply does not fire; mono re-derives it ground).
+    pub(crate) fn arc_recursive_group(&self, def: DefId) -> rustc_hash::FxHashSet<DefId> {
+        crate::semi::traits::sync::recursive_group(&ElabSyncEnv { el: self }, def)
+            .unwrap_or_default()
+    }
+
+    /// §3.3 SCC promotion of a member/field type read or written through an
+    /// arc'd box: a bare shared record head in `group` becomes its own `Arc`
+    /// (through a `Nullable` wrapper); everything else is untouched. This is
+    /// the typing half of the whole-subtree rule — representationally the
+    /// declaration stays bare and the box's atomic context derives the links.
+    pub(crate) fn arc_promote_member_ty(
+        &self,
+        group: &rustc_hash::FxHashSet<DefId>,
+        ty: Ty<'tcx>,
+    ) -> Ty<'tcx> {
+        match *ty.kind() {
+            TyKind::Record { def, .. }
+                if group.contains(&def)
+                    && self
+                        .records
+                        .get(&def)
+                        .is_some_and(|r| r.default_cap == DefaultCap::Shared) =>
+            {
+                self.tcx.mk_arc(ty)
+            }
+            TyKind::Nullable(inner) => {
+                let promoted = self.arc_promote_member_ty(group, inner);
+                if promoted == inner {
+                    ty
+                } else {
+                    self.tcx.mk_nullable(promoted)
+                }
+            }
+            _ => ty,
+        }
+    }
+
     /// Report an ill-formed `Arc<inner>` whose kind is admissible but whose
     /// contents are not `Sync`. Call only where records are complete (the
     /// post-populate sweep and body checking); a blocked verdict defers to

@@ -105,7 +105,8 @@ struct RcDecrementExpansionPattern
           if (bound.contains(static_cast<int64_t>(idx)) || memberIsField)
             continue;
           auto projectedTy = getProjectedType(memberTy, memberIsField,
-                                              Capability::unspecified);
+                                              Capability::unspecified,
+                                              type.getAtomicKind());
           if (isTriviallyCopyable(projectedTy))
             continue;
           // Unbound members release through `ref.drop` — the same route the

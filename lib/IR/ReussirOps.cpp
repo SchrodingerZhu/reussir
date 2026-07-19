@@ -194,9 +194,13 @@ verifyRcCreateLikeSymbolUses(mlir::Operation *op, mlir::Value region,
   return mlir::success();
 }
 
+// `boxAtomic` is the atomic kind of the box being assembled: an atomic box
+// demands atomic member links (the whole-subtree rule — its ctor fields
+// must already be atomically counted where they are shared boxes).
 mlir::LogicalResult verifyCompoundFields(mlir::Operation *op,
                                          RecordType recordType,
-                                         mlir::ValueRange fields) {
+                                         mlir::ValueRange fields,
+                                         AtomicKind boxAtomic) {
   if (!recordType)
     return op->emitOpError("RC element type must be a record type");
   if (!recordType.getComplete())
@@ -207,14 +211,26 @@ mlir::LogicalResult verifyCompoundFields(mlir::Operation *op,
     return op->emitOpError("number of fields must match number of members");
   for (auto [field, member, memberCapability] : llvm::zip(
            fields, recordType.getMembers(), recordType.getMemberIsField())) {
-    mlir::Type projectedType =
-        reussir::getProjectedType(member, memberCapability, Capability::flex);
+    mlir::Type projectedType = reussir::getProjectedType(
+        member, memberCapability, Capability::flex, boxAtomic);
     if (projectedType != field.getType())
       return op->emitOpError("field type must match projected member type, ")
              << "field type: " << field.getType()
              << ", projected member type: " << projectedType;
   }
   return mlir::success();
+}
+
+// The standalone assemble ops do not know the atomic kind of the box their
+// record eventually lands in, so a shared-link field is accepted at either
+// kind here; the box-level `rc.create` verifiers pin the exact one.
+bool fieldMatchesEitherKind(mlir::Type member, bool isField,
+                            mlir::Type fieldTy) {
+  return fieldTy ==
+             reussir::getProjectedType(member, isField, Capability::flex) ||
+         fieldTy == reussir::getProjectedType(member, isField,
+                                              Capability::flex,
+                                              AtomicKind::atomic);
 }
 
 mlir::LogicalResult verifySkippedFields(mlir::Operation *op,
@@ -403,7 +419,8 @@ void ReussirRcDecOp::rematerializeBoundRetains(mlir::OpBuilder &builder) {
   for (int64_t idx : getBoundMembersAttr().asArrayRef()) {
     auto projectedTy = getProjectedType(payload.getMembers()[idx],
                                         payload.getMemberIsField()[idx],
-                                        Capability::unspecified);
+                                        Capability::unspecified,
+                                        rcType.getAtomicKind());
     auto projectedRefTy = builder.getType<RefType>(
         projectedTy, Capability::unspecified, rcType.getAtomicKind());
     mlir::Value slot =
@@ -698,7 +715,8 @@ ReussirRcCreateOp::verifySymbolUses(mlir::SymbolTableCollection &symbolTable) {
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcCreateCompoundOp::verify() {
   RecordType recordType = getRecordType();
-  if (failed(verifyCompoundFields(getOperation(), recordType, getFields())))
+  if (failed(verifyCompoundFields(getOperation(), recordType, getFields(),
+                                  getRcPtr().getType().getAtomicKind())))
     return mlir::failure();
   if (failed(verifySkippedFields(getOperation(), getFields().size())))
     return mlir::failure();
@@ -806,7 +824,8 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
 
   if (hasValue) {
     mlir::Type projectedType = reussir::getProjectedType(
-        targetVariantType, targetVariantIsField, Capability::flex);
+        targetVariantType, targetVariantIsField, Capability::flex,
+        getRcPtr().getType().getAtomicKind());
     if (projectedType != getValue().getType())
       return emitOpError("value type must match projected type, ")
              << "value type: " << getValue().getType()
@@ -820,7 +839,8 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
     if (!compoundType || !compoundType.isCompound())
       return emitOpError("compound fields payload requires the selected "
                          "variant member to be a compound record");
-    if (failed(verifyCompoundFields(getOperation(), compoundType, getFields())))
+    if (failed(verifyCompoundFields(getOperation(), compoundType, getFields(),
+                                    getRcPtr().getType().getAtomicKind())))
       return mlir::failure();
     if (failed(verifyHoleFields(getOperation(), getFields().getTypes(),
                                 getHoles().getTypes())))
@@ -1018,13 +1038,14 @@ mlir::LogicalResult ReussirRecordCompoundOp::verify() {
   for (auto [field, member, memberCapability] :
        llvm::zip(getFields(), compoundType.getMembers(),
                  compoundType.getMemberIsField())) {
-    // Since this is assemble phase, assume flex ref capability.
-    mlir::Type projectedType =
-        reussir::getProjectedType(member, memberCapability, Capability::flex);
-    if (projectedType != field.getType())
+    // Since this is assemble phase, assume flex ref capability. The eventual
+    // box's atomic kind is unknown here, so either link kind is accepted.
+    if (!fieldMatchesEitherKind(member, memberCapability, field.getType()))
       return emitOpError("field type must match projected member type, ")
              << "field type: " << field.getType()
-             << ", projected member type: " << projectedType;
+             << ", projected member type: "
+             << reussir::getProjectedType(member, memberCapability,
+                                          Capability::flex);
   }
   return mlir::success();
 }
@@ -1045,12 +1066,16 @@ mlir::LogicalResult ReussirRecordVariantOp::verify() {
     return emitOpError("tag out of bounds");
   mlir::Type targetVariantType = variantType.getMembers()[tag];
   bool targetVariantIsIsField = variantType.getMemberIsField()[tag];
-  mlir::Type projectedType = reussir::getProjectedType(
-      targetVariantType, targetVariantIsIsField, Capability::flex);
-  if (projectedType != getValue().getType())
+  // The eventual box's atomic kind is unknown to the standalone assemble op,
+  // so either link kind is accepted; `rc.create` pins the exact one.
+  if (!fieldMatchesEitherKind(targetVariantType, targetVariantIsIsField,
+                              getValue().getType()))
     return emitOpError("value type must match projected type, ")
            << "value type: " << getValue().getType()
-           << ", projected type: " << projectedType;
+           << ", projected type: "
+           << reussir::getProjectedType(targetVariantType,
+                                        targetVariantIsIsField,
+                                        Capability::flex);
   if (targetVariantIsIsField)
     return emitOpError("TODO: check this is nested in a region operation");
   return mlir::success();
@@ -1110,10 +1135,11 @@ mlir::LogicalResult ReussirRecordCoerceOp::verify() {
     return emitOpError("tag out of bounds: ")
            << tag << " >= " << recordType.getMembers().size();
 
-  // Get the target variant element type at the specified tag position
+  // Get the target variant element type at the specified tag position; the
+  // arm inherits the scrutinee reference's atomic kind (whole-subtree rule).
   mlir::Type targetVariantElementType = getProjectedType(
       recordType.getMembers()[tag], recordType.getMemberIsField()[tag],
-      variantRefType.getCapability());
+      variantRefType.getCapability(), variantRefType.getAtomicKind());
 
   // Check that the output reference element type matches the target variant
   // element type
@@ -1662,15 +1688,24 @@ mlir::LogicalResult ReussirRefProjectOp::verify() {
   bool memberIsField = recordType.getMemberIsField()[index];
 
   // Calculate the expected projected type based on the member type, member
-  // capability, and reference capability
-  mlir::Type expectedProjectedType = reussir::getProjectedType(
-      memberType, memberIsField, refType.getCapability());
+  // capability, reference capability, and the reference's atomic kind (an
+  // atomic parent floods its discipline down — whole-subtree rule)
+  mlir::Type expectedProjectedType =
+      reussir::getProjectedType(memberType, memberIsField,
+                                refType.getCapability(),
+                                refType.getAtomicKind());
 
   // Check that the projected type matches the expected type
   if (expectedProjectedType != projectedType.getElementType())
     return emitOpError("projected type mismatch: expected ")
            << expectedProjectedType << ", got "
            << projectedType.getElementType();
+
+  // The projected reference stays inside the same box, so it keeps the
+  // parent reference's atomic context.
+  if (projectedType.getAtomicKind() != refType.getAtomicKind())
+    return emitOpError("projected reference must inherit the parent "
+                       "reference's atomic kind");
 
   // Check that the projected reference has the same capability as the
   // original reference. Or if the refType is flex, then the projected type
@@ -2050,7 +2085,8 @@ mlir::LogicalResult ReussirRecordDispatchOp::verify() {
       int64_t tag = tagSet[0];
       mlir::Type expectedType =
           getProjectedType(members[tag], recordType.getMemberIsField()[tag],
-                           variantRefType.getCapability());
+                           variantRefType.getCapability(),
+                           variantRefType.getAtomicKind());
       mlir::Type actualType = block.getArgument(0).getType();
 
       // The argument should be a reference to the member type
@@ -3042,17 +3078,22 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
           // The value is already a reference, so we can use it directly
 
           if (recordType.getKind() == RecordKind::compound) {
-            // For compound types, recursively apply to each field
+            // For compound types, recursively apply to each field. Member
+            // links and the projected references inherit the parent
+            // reference's atomic kind (whole-subtree rule).
             for (auto [i, actualMemberType, actualMemberCap] : llvm::enumerate(
                      recordType.getMembers(), recordType.getMemberIsField())) {
               auto projectedType = getProjectedType(
-                  actualMemberType, actualMemberCap, refType.getCapability());
+                  actualMemberType, actualMemberCap, refType.getCapability(),
+                  refType.getAtomicKind());
               if (isTriviallyCopyable(projectedType))
                 continue;
               auto fieldRef = ReussirRefProjectOp::create(
                   builder, loc,
-                  RefType::get(builder.getContext(), projectedType), value,
-                  builder.getIndexAttr(i));
+                  RefType::get(builder.getContext(), projectedType,
+                               Capability::unspecified,
+                               refType.getAtomicKind()),
+                  value, builder.getIndexAttr(i));
 
               if (emitOwnershipAcquisition(fieldRef, builder, loc).failed())
                 return mlir::failure();
@@ -3079,11 +3120,15 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                                  recordType.getMemberIsField())) {
 
               auto projectedType = getProjectedType(
-                  actualVariantType, actualVariantCap, refType.getCapability());
+                  actualVariantType, actualVariantCap, refType.getCapability(),
+                  refType.getAtomicKind());
 
-              // Create a block for this variant region
+              // Create a block for this variant region; the arm reference
+              // inherits the scrutinee's atomic kind.
               RefType projectedRefTy =
-                  RefType::get(builder.getContext(), projectedType);
+                  RefType::get(builder.getContext(), projectedType,
+                               Capability::unspecified,
+                               refType.getAtomicKind());
               auto *block = builder.createBlock(
                   &dispatchOp.getRegions()[i],
                   dispatchOp.getRegions()[i].begin(), {projectedRefTy}, {loc});
@@ -3166,9 +3211,10 @@ void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
 //===----------------------------------------------------------------------===//
 mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
                                          RecordType type,
-                                         mlir::OpBuilder &builder) {
+                                         mlir::OpBuilder &builder,
+                                         AtomicKind kind) {
   mlir::SymbolTable symTable(moduleOp);
-  auto dtorName = type.getDtorName();
+  auto dtorName = type.getDtorName(kind);
   if (!dtorName)
     llvm::report_fatal_error("only named record types have destructors");
   std::string funcName = dtorName.getValue().str();
@@ -3176,7 +3222,10 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
     return funcOp;
   mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(moduleOp.getBody());
-  RefType refType = builder.getType<RefType>(type);
+  // The argument reference carries the atomic context; the `ref.drop` below
+  // re-enters the expansion, which derives member links from it.
+  RefType refType =
+      builder.getType<RefType>(type, Capability::unspecified, kind);
   auto dtor =
       mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), funcName,
                                  builder.getFunctionType({refType}, {}));
@@ -3205,9 +3254,10 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
 // emitOwnershipAcquisitionFuncIfNotExists
 //===----------------------------------------------------------------------===//
 mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
-    mlir::ModuleOp moduleOp, RecordType type, mlir::OpBuilder &builder) {
+    mlir::ModuleOp moduleOp, RecordType type, mlir::OpBuilder &builder,
+    AtomicKind kind) {
   mlir::SymbolTable symTable(moduleOp);
-  auto acquireName = type.getAcquireName();
+  auto acquireName = type.getAcquireName(kind);
   if (!acquireName)
     llvm::report_fatal_error(
         "only named record types have ownership acquisition functions");
@@ -3219,8 +3269,10 @@ mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
   mlir::OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(moduleOp.getBody());
 
-  // Construct RefType from RecordType
-  RefType refType = builder.getType<RefType>(type);
+  // Construct RefType from RecordType; the argument reference carries the
+  // atomic context the member walk derives links from.
+  RefType refType =
+      builder.getType<RefType>(type, Capability::unspecified, kind);
 
   auto funcOp =
       mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), funcName,
@@ -3291,9 +3343,16 @@ mlir::LogicalResult ReussirRecordExtractOp::verify() {
   if (members.size() < indexVal)
     return emitOpError("index out of bounds");
   auto memberType = members[indexVal];
+  // An extract reads from a record *value*, whose enclosing box (if any) is
+  // not visible here — accept the member link at either atomic kind, like
+  // the standalone assemble ops.
   auto projectedType = getProjectedType(
       memberType, recordType.getMemberIsField()[indexVal], Capability::value);
-  if (projectedType != getField().getType())
+  auto atomicProjectedType = getProjectedType(
+      memberType, recordType.getMemberIsField()[indexVal], Capability::value,
+      AtomicKind::atomic);
+  if (projectedType != getField().getType() &&
+      atomicProjectedType != getField().getType())
     return emitOpError("projected type mismatch");
   return mlir::success();
 }

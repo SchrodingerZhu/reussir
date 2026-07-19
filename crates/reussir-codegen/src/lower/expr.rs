@@ -111,6 +111,10 @@ enum Anchor<'c, 'b, 'tcx> {
         reference: Value<'c, 'b>,
         variant: &'tcx mir::VariantDef<'tcx>,
         cap: ReussirCapability,
+        /// The case reference's atomic kind, inherited from the dispatched
+        /// enum's box (whole-subtree rule) — arm-field projections derive
+        /// their link discipline from it.
+        atomic: bool,
         whole: Cursor<'c, 'b, 'tcx>,
     },
 }
@@ -174,11 +178,15 @@ enum Cursor<'c, 'b, 'tcx> {
     Value { val: Value<'c, 'b>, ty: Ty<'tcx> },
     /// A borrowed `!reussir.ref<…, cap>` into a record whose MIR type is `ty`.
     /// `cap` is the reference's capability, carried so a further projection out
-    /// of it picks the matching projected-reference capability.
+    /// of it picks the matching projected-reference capability. `atomic` is
+    /// the reference's atomic kind: the whole-subtree rule — interior
+    /// references of an atomically counted box stay in the atomic context,
+    /// and member links derive their refcount discipline from it.
     Ref {
         val: Value<'c, 'b>,
         ty: Ty<'tcx>,
         cap: ReussirCapability,
+        atomic: bool,
     },
 }
 
@@ -186,12 +194,14 @@ enum Cursor<'c, 'b, 'tcx> {
 /// the projected reference's element type and capability, and whether the
 /// projection is a pointer link to load (an `rc` member) rather than an inline
 /// sub-field to keep navigating by reference. See
-/// [`projected_member`](Lowerer::projected_member).
+/// [`projected_member`](Lowerer::projected_member). `atomic` carries the
+/// parent reference's atomic context into the projected reference.
 struct ProjectedMember<'c, 'tcx> {
     field_ty: Ty<'tcx>,
     elem_ty: Type<'c>,
     proj_cap: ReussirCapability,
     is_link: bool,
+    atomic: bool,
 }
 
 /// Per-program lowering state: the context to build in, the type arena, the
@@ -949,7 +959,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             block,
             dialect::rc_borrow(self.context, ref_ty, dst_val, loc).into(),
         );
-        let proj = self.projected_member(dst.ty, ReussirCapability::Flex, field)?;
+        // A `[field]` assignment target is regional; regional boxes are never
+        // atomic (design doc §6 — regions and threads do not mix).
+        let proj = self.projected_member(dst.ty, ReussirCapability::Flex, false, field)?;
         let field_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
         let index = IntegerAttribute::new(Type::index(self.context), i64::from(field));
         let field_ref = self.append(
@@ -1346,7 +1358,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // (kept in each arm's `Case` anchor for a whole-value binding), and the
         // variant reference feeds the dispatch.
         let whole = self.resolve(block, env, root_idx, path)?;
-        let (variant_ref, enum_ty, cap) = self.resolve_variant_ref(block, whole)?;
+        let (variant_ref, enum_ty, cap, atomic) = self.resolve_variant_ref(block, whole)?;
         let variants = match self.tys.record_of(enum_ty).map(|r| r.layout) {
             Some(mir::RecordLayout::Variant(variants)) => variants,
             _ => return err("match scrutinee is not an enum"),
@@ -1379,6 +1391,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                         reference: arg,
                         variant,
                         cap,
+                        atomic,
                         whole,
                     },
                 ));
@@ -1839,25 +1852,32 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// Turn an already-resolved enum [`Cursor`] into a `!reussir.ref` to its
     /// variant record, ready to feed `reussir.record.dispatch`: a boxed enum is
     /// borrowed, an inline `[value]` enum is spilled, and a value already reached
-    /// by reference is used as-is. Returns the reference, the enum's MIR type, and
-    /// the reference capability (which the arm payload references inherit).
+    /// by reference is used as-is. Returns the reference, the enum's MIR type,
+    /// the reference capability, and the reference's atomic kind (which the arm
+    /// payload references inherit).
     fn resolve_variant_ref<'b>(
         &self,
         block: &'b Block<'c>,
         cursor: Cursor<'c, 'b, 'tcx>,
-    ) -> Result<(Value<'c, 'b>, Ty<'tcx>, ReussirCapability)> {
+    ) -> Result<(Value<'c, 'b>, Ty<'tcx>, ReussirCapability, bool)> {
         let loc = self.loc();
         match cursor {
-            Cursor::Ref { val, ty, cap } => Ok((val, ty, cap)),
+            Cursor::Ref {
+                val,
+                ty,
+                cap,
+                atomic,
+            } => Ok((val, ty, cap, atomic)),
             Cursor::Value { val, ty } => {
                 let inner = self.tys.record_inner_of(ty)?;
+                let atomic = matches!(ty.kind(), TyKind::Arc(_));
                 if let Some(cap) = self.record_ref_cap(ty)? {
                     let ref_ty = self.tys.borrow_ref_type(ty, inner, cap);
                     let reference = self.append(
                         block,
                         dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
                     );
-                    Ok((reference, ty, cap))
+                    Ok((reference, ty, cap, atomic))
                 } else {
                     // A spilled reference is always at `unspecified` capability
                     // (`reussir.ref.spilled` rejects anything else); the arm
@@ -1868,7 +1888,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                         block,
                         dialect::ref_spilled(self.context, ref_ty, val, loc).into(),
                     );
-                    Ok((reference, ty, cap))
+                    Ok((reference, ty, cap, false))
                 }
             }
         }
@@ -1912,6 +1932,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 reference,
                 variant,
                 cap,
+                atomic,
                 whole,
             } => {
                 // Naming the whole switched value (empty suffix): the case payload
@@ -1921,7 +1942,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     return Ok(whole);
                 };
                 let mut cursor =
-                    self.project_variant_field(block, reference, variant, cap, *first)?;
+                    self.project_variant_field(block, reference, variant, cap, atomic, *first)?;
                 for &idx in rest {
                     cursor = self.project_one(block, cursor, idx)?;
                 }
@@ -1940,6 +1961,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         case_ref: Value<'c, 'b>,
         variant: &'tcx mir::VariantDef<'tcx>,
         cap: ReussirCapability,
+        atomic: bool,
         idx: u32,
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
@@ -1947,8 +1969,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             .fields
             .get(idx as usize)
             .ok_or_else(|| LoweringError("variant field index out of range".into()))?;
-        let proj = self.projected_member_of(field_ty, false, cap)?;
-        let proj_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
+        let proj = self.projected_member_of(field_ty, false, cap, atomic)?;
+        let proj_ref_ty = self
+            .tys
+            .ref_type_in(proj.elem_ty, proj.proj_cap, proj.atomic);
         let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
         let projected = self.append(
             block,
@@ -1968,6 +1992,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 val: projected,
                 ty: proj.field_ty,
                 cap: proj.proj_cap,
+                atomic: proj.atomic,
             })
         }
     }
@@ -2024,14 +2049,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 if let Some(cap) = self.record_ref_cap(ty)? {
                     // A boxed record value (shared or regional) is an rc pointer:
                     // borrow it at its capability to obtain a reference, then
-                    // project through that reference.
+                    // project through that reference. An arc'd box opens the
+                    // atomic context its interior inherits.
                     let inner = self.tys.record_inner_of(ty)?;
+                    let atomic = matches!(ty.kind(), TyKind::Arc(_));
                     let ref_ty = self.tys.borrow_ref_type(ty, inner, cap);
                     let borrowed = self.append(
                         block,
                         dialect::rc_borrow(self.context, ref_ty, val, loc).into(),
                     );
-                    self.project_ref(block, borrowed, ty, cap, idx)
+                    self.project_ref(block, borrowed, ty, cap, atomic, idx)
                 } else {
                     // An inline `[value]` record value: read the field out by value
                     // (an inline record has no `[field]` link members).
@@ -2047,7 +2074,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     })
                 }
             }
-            Cursor::Ref { val, ty, cap } => self.project_ref(block, val, ty, cap, idx),
+            Cursor::Ref {
+                val,
+                ty,
+                cap,
+                atomic,
+            } => self.project_ref(block, val, ty, cap, atomic, idx),
         }
     }
 
@@ -2061,11 +2093,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         reference: Value<'c, 'b>,
         record_ty: Ty<'tcx>,
         ref_cap: ReussirCapability,
+        ref_atomic: bool,
         idx: u32,
     ) -> Result<Cursor<'c, 'b, 'tcx>> {
         let loc = self.loc();
-        let proj = self.projected_member(record_ty, ref_cap, idx)?;
-        let proj_ref_ty = self.tys.ref_type_with_cap(proj.elem_ty, proj.proj_cap);
+        let proj = self.projected_member(record_ty, ref_cap, ref_atomic, idx)?;
+        let proj_ref_ty = self
+            .tys
+            .ref_type_in(proj.elem_ty, proj.proj_cap, proj.atomic);
         let index = IntegerAttribute::new(Type::index(self.context), i64::from(idx));
         let projected = self.append(
             block,
@@ -2085,6 +2120,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 val: projected,
                 ty: proj.field_ty,
                 cap: proj.proj_cap,
+                atomic: proj.atomic,
             })
         }
     }
@@ -2114,10 +2150,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         &self,
         record_ty: Ty<'tcx>,
         ref_cap: ReussirCapability,
+        ref_atomic: bool,
         idx: u32,
     ) -> Result<ProjectedMember<'c, 'tcx>> {
         let (field_ty, is_field) = self.field_at(record_ty, idx)?;
-        self.projected_member_of(field_ty, is_field, ref_cap)
+        self.projected_member_of(field_ty, is_field, ref_cap, ref_atomic)
     }
 
     /// The projection of a member given its MIR type and link flag directly, the
@@ -2130,6 +2167,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         field_ty: Ty<'tcx>,
         is_field: bool,
         ref_cap: ReussirCapability,
+        ref_atomic: bool,
     ) -> Result<ProjectedMember<'c, 'tcx>> {
         if is_field {
             // A mutable link: `nullable<rc<inner, flex|rigid>>`. Taken out of a
@@ -2155,14 +2193,37 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 elem_ty,
                 proj_cap,
                 is_link: true,
+                atomic: ref_atomic,
             })
-        } else if self.tys.is_shared_record(field_ty) {
+        } else if matches!(field_ty.kind(), TyKind::Arc(_)) {
+            // An explicit `Arc` member: the link's atomicity is *written* (the
+            // container cannot derive it — an atomic island in normal space).
             let inner = self.tys.record_inner_of(field_ty)?;
             Ok(ProjectedMember {
                 field_ty,
-                elem_ty: self.tys.rc_type(inner),
+                elem_ty: self.tys.rc_type_in(inner, true),
                 proj_cap: ref_cap,
                 is_link: true,
+                atomic: ref_atomic,
+            })
+        } else if self.tys.is_shared_record(field_ty) {
+            // A bare shared member: the link derives from the parent context
+            // (whole-subtree rule) — one declaration serves both colorings of
+            // a recursive spine, so under an atomic parent the loaded value is
+            // refined to its `Arc` coloring, mirroring the regional member's
+            // rigid refinement below.
+            let inner = self.tys.record_inner_of(field_ty)?;
+            let field_ty = if ref_atomic {
+                self.tcx.mk_arc(field_ty)
+            } else {
+                field_ty
+            };
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.rc_type_in(inner, ref_atomic),
+                proj_cap: ref_cap,
+                is_link: true,
+                atomic: ref_atomic,
             })
         } else if self.tys.is_regional_record(field_ty) {
             // A non-`[field]` regional member is a frozen link: the dialect
@@ -2182,15 +2243,34 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 elem_ty: self.tys.rc_type_with_cap(inner, ReussirCapability::Rigid),
                 proj_cap: ref_cap,
                 is_link: true,
+                atomic: ref_atomic,
             })
         } else if matches!(field_ty.kind(), TyKind::Cell { .. }) {
             // A cell member is stored as a bare payload type in the record
-            // declaration, but dialect projection materializes a shared rc link.
+            // declaration, but dialect projection materializes a shared rc link
+            // whose atomicity the cell kind itself decides.
             Ok(ProjectedMember {
                 field_ty,
                 elem_ty: self.tys.mlir_ty(field_ty)?,
                 proj_cap: ref_cap,
                 is_link: true,
+                atomic: ref_atomic,
+            })
+        } else if let TyKind::Nullable(elem) = *field_ty.kind()
+            && ref_atomic
+            && self.tys.is_shared_record(elem)
+            && !matches!(elem.kind(), TyKind::Arc(_))
+        {
+            // A nullable-wrapped bare shared link under an atomic parent: the
+            // whole-subtree rule floods through the wrapper — refine both the
+            // slot type and the loaded value's coloring.
+            let field_ty = self.tcx.mk_nullable(self.tcx.mk_arc(elem));
+            Ok(ProjectedMember {
+                field_ty,
+                elem_ty: self.tys.mlir_ty(field_ty)?,
+                proj_cap: ref_cap,
+                is_link: false,
+                atomic: ref_atomic,
             })
         } else {
             Ok(ProjectedMember {
@@ -2198,6 +2278,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 elem_ty: self.tys.mlir_ty(field_ty)?,
                 proj_cap: ref_cap,
                 is_link: false,
+                atomic: ref_atomic,
             })
         }
     }
