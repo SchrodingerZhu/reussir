@@ -120,7 +120,9 @@ self-sufficiently thread-safe.**
 
 ```
 WF(Arc<X>)          where X is a [shared] record
-    ⟺  Sync(member_i)  for every member type of X (every arm, for variants)
+    ⟺  Sync(member_i′)  for every member type of X (every arm, for variants),
+        where member_i′ re-colors a member in X's recursive group as its own
+        Arc (§3.3) and is member_i unchanged otherwise
 
 WF(Arc<Array<T>>)   ⟺  Sync(T)
 
@@ -207,6 +209,66 @@ constraint on captures or argument types — single-threaded code pays nothing.
 capture bound to a transfer-style check (Rust `FnOnce` + `spawn`, Futhark's
 "a consuming function may not be called twice" restriction), but that requires
 linearity the type system does not have; out of scope here.
+
+### 3.3 Recursive types: color propagation through the recursive group
+
+The flat WF rule alone cannot express an arc'd recursive structure. In
+
+```
+enum List<T> { Nil, Cons(T, List<T>) }
+```
+
+the `Cons` tail is a bare `[shared]` box — never `Sync` — so a literal reading
+of §3 makes `Arc<List<T>>` permanently ill-formed. The unsoundness it guards
+against is real (an atomic head over a non-atomic spine), but the *shareable
+list as such* is not unsound; the declaration simply has no way to say "under
+`Arc`, this link is also `Arc`". Rust answers with duplication (an `Rc` list
+and an `Arc` list are unrelated types, one per pointer flavor); because our
+`Arc` is a coloring of the same record rather than a wrapper type, we can do
+better.
+
+**Rule (decided 2026-07-19): `Arc<X>` selects the atomic instantiation of
+`X`'s whole recursive group.** When wf-checking `Arc<X>`, a member whose type
+belongs to `X`'s SCC — the same def, or a mutually recursive partner
+(`Tree`/`Forest`) — is checked *as its arc'd version* instead of bare; the
+coinductive cycle rule then closes the recursion. Equivalently: the promotion
+rewrites the declaration into what would be written by hand
+(`Cons(T, Arc<List<T>>)`), one declaration serving both worlds:
+
+- bare `List<T>`: the fast thread-local list, normal refcounts everywhere;
+- `Arc<List<T>>`: the same declaration with every spine link atomic.
+
+Promotion is **automatic** — no `Self` keyword or per-member opt-in. Nothing
+expressible is lost: under static coloring, a bare same-group member behind an
+`Arc` could never be legal (it would have to be `Sync`), so for such a member
+the only possible meanings are *promoted* or *rejected*; auto-promotion turns
+a permanent error into the one meaning that can exist. An explicit-`Self`
+surface was considered and set aside: it cannot name a mutual-recursion
+partner, so the SCC rule is needed underneath regardless.
+
+Members *outside* the group are untouched — the §3 stratification still
+demands they be independently `Sync` (already `Arc`'d, sync cells, `Sync`
+value types). `Cons`'s head `T` is bounded exactly as before.
+
+**The colored world is closed; conversion is an explicit rebuild.**
+`Arc<List<T>>::Cons{h, t}` requires `t : Arc<List<T>>` — an atomic list is
+built atomic from `Nil` up — and matching an `Arc<List<T>>` binds the tail at
+`Arc<List<T>>`. There is no implicit demotion, and no implicit promotion of an
+existing bare list: converting one is an O(n) deep rebuild, which stays
+user-written (a dedicated deep-copy operation may be added later, but is not
+committed here). The cost profile is the one already accepted in §1: an arc'd
+spine pays atomic refcounting from birth, where Koka would pay only after
+actual sharing.
+
+Representationally this refines the per-member atomic axis (§3.1, open
+item 2): member atomicity is **per record instance, derived from the
+instance's color**, not fixed per declaration. A `(def, args)` pair can exist
+at both colors; the two instances share layout offsets (the axis is metadata
+driving acquire/drop/scanner emission and borrow types) but differ in
+same-group member links and drop glue, and nullary constructors (`Nil`) need a
+per-color box. Until that axis lands, the frontend keeps rejecting
+`Arc<List<T>>` outright — accepting it early would lower an atomic head over a
+normal-spined payload, precisely the racy shape the rule exists to prevent.
 
 ## 4. Cells
 
@@ -311,6 +373,9 @@ Arc<·> applicable to:   [shared] records, arrays, closures   — nothing else
 Arc<cell>               never (kind carries atomicity instead)
 Arc nesting             never (already an arc)
 Arc member in a record  intended, blocked on per-member atomic axis (§3.1)
+Arc<recursive X>        WF via automatic SCC promotion — every same-group
+                        member link re-colors atomic (§3.3); closed world,
+                        bare→arc conversion is an explicit rebuild
 ```
 
 ## 6. Regional objects *(open, deliberately deferred)*
@@ -342,7 +407,11 @@ Not yet implemented (ordered roughly by dependency):
    diagnostics.
 2. **Per-member atomic axis** in the MLIR record encoding, unlocking `Arc`
    record members (§3.1) — without which `Arc` WF is only satisfiable by
-   records with no rc members.
+   records with no rc members. Scope refined by §3.3: the axis is derived
+   per record *instance* from its color (a `(def, args)` pair exists at up
+   to two colors), and the frontend's SCC-promotion rewrite in the `Sync`
+   checker ships together with it — the current outright rejection of
+   `Arc<List<T>>` must not be lifted before the colored lowering exists.
 3. **`Arc` lowering** (`reussir-codegen` currently errors: "`Arc` lowering is
    not implemented yet").
 4. **Arc construction for arrays and closures** (annotations are accepted;
