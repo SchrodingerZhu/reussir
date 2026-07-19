@@ -1720,6 +1720,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// enum and variant index, instantiate generics to θ, check each payload argument
     /// against its instantiated type, and return the enum type `R`. Constructing a
     /// regional enum outside a region is a diagnostic.
+    #[allow(clippy::too_many_arguments)]
     fn infer_variant(
         &mut self,
         def: DefId,

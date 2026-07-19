@@ -1,9 +1,8 @@
 // End-to-end Arc semantics: the arc'd constructor allocates an atomically
 // counted box, sharing retains it atomically, and reads (projection and
-// matching) are the inner record's own. Enum payloads are scalars: the arc
-// colors exactly one box, so a member holding a bare shared box (a recursive
-// tail link) is rejected by the structural `Sync` check until the per-member
-// atomic axis lands (design doc §3.3 SCC promotion).
+// matching) are the inner record's own. A recursive enum arcs as a whole
+// spine (§3.3 SCC promotion): one declaration serves both colorings, and the
+// atomic context of the box derives every interior link.
 
 // RUN: %rrc %s -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/arc_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
@@ -52,6 +51,28 @@ pub fn test_nullable() -> i64 {
     }
 }
 extern "C" trampoline "test_nullable_ffi" = test_nullable;
+
+// The §3.3 recursive spine: the whole list is built atomic from `Nil` up
+// (the arc'd Cons demands an arc'd tail), and matching through the coloring
+// binds the tail at its promoted `Arc<List<i64>>` type — every spine link
+// retains/releases through the atomic discipline.
+enum List<T> {
+    Nil,
+    Cons(T, List<T>)
+}
+
+fn sum(l: Arc<List<i64>>) -> i64 {
+    match l {
+        List::Cons(x, xs) => x + sum(xs),
+        List::Nil => 0
+    }
+}
+
+pub fn test_recursive() -> i64 {
+    let l = Arc<List<i64>>::Cons{7, Arc<List<i64>>::Cons{35, Arc<List<i64>>::Nil}};
+    sum(l)
+}
+extern "C" trampoline "test_recursive_ffi" = test_recursive;
 
 fn id<T>(x: T) -> T { x }
 

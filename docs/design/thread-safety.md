@@ -159,17 +159,20 @@ Consequences:
    decrement on any thread is safe; every value a reader can clone out is
    `Sync`, so concurrent reads are safe.
 
-### 3.1 Reads through the coloring *(open: per-member atomic axis)*
+### 3.1 Reads through the coloring
 
 Projection and matching on `Arc<X>` see `X`'s members. A member that is itself
-an rc object must come out **with its own coloring** — i.e. the member was
-declared `Arc<Y>` and projects as `Arc<Y>`. This is why `Arc` record members
-are a prerequisite for `Arc` being useful on anything but leaf records, and
-they are currently rejected ("an `Arc` record member is not supported yet",
-`ctxt.rs::reject_arc_member`): the MLIR record encoding stores a per-member
-capability but no per-member atomic axis, so a member `Arc<Y>` cannot yet
-lower to `rc<Y, shared, atomic>` inside the record layout. Adding that axis is
-the main outstanding dialect work for this design.
+an rc object comes out **with its own coloring**: a declared `Arc<Y>` member
+projects as `Arc<Y>`, and a bare same-group member of an arc'd recursive
+record projects *promoted* (§3.3). Representationally, an `Arc<Y>` member
+lowers to the explicit member type `rc<Y, shared, atomic>` — the one rc
+member form the dialect admits, because the container's capability cannot
+derive it: the container may be a normal, thread-local box while the member's
+count is shared with other threads (its drop glue must decrement atomically
+even though the container's own count is plain). `Arc` members are legal in
+shared and `[value]` records; a `[regional]` record rejects them (§6 —
+regions and threads do not mix, and the region scanner has no atomic link
+handling).
 
 ### 3.2 Arc closures: type-level WF plus a creation-site capture check
 
@@ -260,15 +263,29 @@ committed here). The cost profile is the one already accepted in §1: an arc'd
 spine pays atomic refcounting from birth, where Koka would pay only after
 actual sharing.
 
-Representationally this refines the per-member atomic axis (§3.1, open
-item 2): member atomicity is **per record instance, derived from the
-instance's color**, not fixed per declaration. A `(def, args)` pair can exist
-at both colors; the two instances share layout offsets (the axis is metadata
-driving acquire/drop/scanner emission and borrow types) but differ in
-same-group member links and drop glue, and nullary constructors (`Nil`) need a
-per-color box. Until that axis lands, the frontend keeps rejecting
-`Arc<List<T>>` outright — accepting it early would lower an atomic head over a
-normal-spined payload, precisely the racy shape the rule exists to prevent.
+**Representation: the whole-subtree rule.** Atomicity needs *no* record
+encoding at all — no per-member flag array, no colored record instances, no
+dual mangling. The `Sync` discipline guarantees nothing nonatomic is ever
+stored inside an atomically counted box, so a member link's atomic kind is
+the **join of what the member type writes and what the parent context
+inherits**: the box's `rc<…, atomic>` floods its discipline down through
+`rc.borrow`/`ref.project` (interior references carry the parent's atomic
+kind), deriving every bare shared link, nullable wrapper, and value-record
+interior atomically — one `List` record type serves both colorings, and
+`Arc<X>` is `rc<X's own record, shared, atomic>` exactly as before. The only
+written atomicity is the `Arc` *island in normal space* (§3.1's explicit
+`rc<…, shared, atomic>` member type). Outlined drop/acquire glue forks per
+atomic kind (`drop_in_place_atomic…`), since the glue's body derives from
+its argument reference's kind.
+
+One consequence of context-carried coloring: a **`[value]` intermediate**
+containing a bare same-group link cannot promote — loaded out of the box by
+value, nothing would carry its coloring, so its drop glue would release the
+link at the wrong discipline. The checker therefore folds value-record
+members outside the promotion group; such shapes are expressed with an
+explicit `Arc` member inside the value record instead. (Variant *arms* are
+the enum's own members and promote normally — `Cons`'s tail is the canonical
+case.)
 
 ## 4. Cells
 
@@ -405,15 +422,15 @@ Not yet implemented (ordered roughly by dependency):
 1. **`Sync` auto trait** — retire the Phase-0 `Send` declaration, keep `Sync`
    as the single predicate, and add its structural propagation + member-path
    diagnostics.
-2. **Per-member atomic axis** in the MLIR record encoding, unlocking `Arc`
-   record members (§3.1) — without which `Arc` WF is only satisfiable by
-   records with no rc members. Scope refined by §3.3: the axis is derived
-   per record *instance* from its color (a `(def, args)` pair exists at up
-   to two colors), and the frontend's SCC-promotion rewrite in the `Sync`
-   checker ships together with it — the current outright rejection of
-   `Arc<List<T>>` must not be lifted before the colored lowering exists.
-3. **`Arc` lowering** (`reussir-codegen` currently errors: "`Arc` lowering is
-   not implemented yet").
+2. ~~Per-member atomic axis~~ — superseded and **implemented** as the §3.3
+   whole-subtree rule: no record encoding at all; interior references
+   inherit the box's atomic kind, `Arc` members are explicit
+   `rc<…, shared, atomic>` member types, `Arc<List<T>>` is accepted with the
+   whole spine atomic, and the SCC promotion ships in the `Sync` checker
+   (`semi/traits/sync.rs::recursive_group`).
+3. **`Arc` lowering** — implemented for records (atomic create, borrow,
+   projection, dispatch, atomic drop/acquire glue); arc'd arrays and
+   closures remain item 4.
 4. **Arc construction for arrays and closures** (annotations are accepted;
    constructors don't exist), including the §3.2 creation-site capture check.
 5. **Surface types for sync cells** (`Atomic<τ>`, `Mutex<τ>`, `Flatlock<τ>`,
