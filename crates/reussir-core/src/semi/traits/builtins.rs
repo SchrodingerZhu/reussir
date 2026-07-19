@@ -5,14 +5,18 @@
 //! engine as any user trait — there is no special-cased DAG. The hierarchy is:
 //!
 //! ```text
-//! Num            PtrLike      Send   Sync
+//! Num            PtrLike      Sync
 //! ├── Integral   (impl: i8..=u64)
 //! └── FloatingPoint (impl: f16..f8)
 //! ```
 //!
-//! `Send`/`Sync` are marker (auto) traits. Phase 0 only declares them and gives
-//! the leaves (primitive scalars) `Send`/`Sync` impls; structural auto-trait
-//! propagation (a record is `Send` iff its fields are) lands in Phase 1+.
+//! `Sync` is the single thread-safety marker (auto) trait: a value may be
+//! reached from any thread, concurrently. It subsumes both of Rust's `Send`
+//! and `Sync` — duplicable rc handles make transfer-without-sharing
+//! unprovable, so the two predicates collapse (see
+//! `docs/design/thread-safety.md`). Phase 0 only declares it and gives the
+//! leaves (primitive scalars) `Sync` impls; structural auto-trait propagation
+//! (a record is `Sync` iff its members are) lands in Phase 1+.
 
 use crate::semi::ty::{FpTy, GenericId, IntTy, Ty, TyCtxt};
 
@@ -25,9 +29,9 @@ pub struct Builtins {
     pub integral: TraitId,
     pub floating_point: TraitId,
     pub ptr_like: TraitId,
-    /// Marker (auto) trait: a value may be transferred across threads.
-    pub send: TraitId,
-    /// Marker (auto) trait: a value may be shared across threads.
+    /// Marker (auto) trait: a value may be reached from any thread,
+    /// concurrently. Subsumes both of Rust's `Send` and `Sync`
+    /// (`docs/design/thread-safety.md`).
     pub sync: TraitId,
 }
 
@@ -51,7 +55,6 @@ impl Builtins {
         let integral = fresh_trait();
         let floating_point = fresh_trait();
         let ptr_like = fresh_trait();
-        let send = fresh_trait();
         let sync = fresh_trait();
 
         let declare = |id, name: &str, supertraits, db: &mut TraitDb<'tcx>| {
@@ -68,7 +71,6 @@ impl Builtins {
         declare(integral, "Integral", vec![self_ref(num)], db);
         declare(floating_point, "FloatingPoint", vec![self_ref(num)], db);
         declare(ptr_like, "PtrLike", vec![], db);
-        declare(send, "Send", vec![], db);
         declare(sync, "Sync", vec![], db);
 
         let mut next_impl = 0u32;
@@ -109,7 +111,7 @@ impl Builtins {
         for &ty in &fps {
             implement(floating_point, ty, db);
         }
-        // Primitive scalars are the `Send`/`Sync` leaves.
+        // Primitive scalars are the `Sync` leaves.
         let scalars = ints.iter().chain(&fps).copied().chain([
             tcx.mk_bool(),
             tcx.mk_str(),
@@ -117,7 +119,6 @@ impl Builtins {
             tcx.mk_unit(),
         ]);
         for ty in scalars {
-            implement(send, ty, db);
             implement(sync, ty, db);
         }
 
@@ -126,7 +127,6 @@ impl Builtins {
             integral,
             floating_point,
             ptr_like,
-            send,
             sync,
         }
     }

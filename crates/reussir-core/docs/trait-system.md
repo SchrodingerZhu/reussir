@@ -354,7 +354,7 @@ crates/reussir-core/src/
     traits.rs         TraitRef, Obligation, Evidence
     traits/db.rs      instance database, select(), super-trait evidence chains
     traits/def.rs     TraitDef, ImplDef, MethodSig, AssocTyDef
-    traits/builtins.rs  lang-item traits + impls (Num/Integral/FP/PtrLike/Send/Sync)
+    traits/builtins.rs  lang-item traits + impls (Num/Integral/FP/PtrLike/Sync)
     hir.rs            Semi HIR: Expr/ExprKind, DecisionTree, Function
     ctxt.rs           collected items + Elaborator state + scan/collect driver
     ty_eval.rs        surface-type → Ty + the regional capability coloring
