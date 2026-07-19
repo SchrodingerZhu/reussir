@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use crate::ir_lex::{LexError, Token, unescape_debug_str};
 use crate::literal::{FloatLit, Integer};
 use crate::semi::hir::raw as raw;
+use crate::semi::ty::CellKind;
 
 grammar<'input>;
 
@@ -180,8 +181,12 @@ Ty: raw::Ty = {
     "!" => raw::Ty::Bottom,
     <g:"generic"> => raw::Ty::Generic(g),
     "Nullable" "<" <t:Ty> ">" => raw::Ty::Nullable(Box::new(t)),
-    "Cell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), exclusive: false },
-    "RefCell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), exclusive: true },
+    "Cell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Plain },
+    "RefCell" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Exclusive },
+    "Atomic" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Atomic },
+    "Mutex" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Mutex },
+    "FlatLock" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Flatlock },
+    "RwLock" "<" <t:Ty> ">" => raw::Ty::Cell { inner: Box::new(t), kind: CellKind::Rwlock },
     "Arc" "<" <t:Ty> ">" => raw::Ty::Arc(Box::new(t)),
     <cap:Cap> "#" <path:PathArgs>
         => raw::Ty::Record { cap, path: path.0, args: path.1 },
@@ -389,6 +394,10 @@ extern {
         "Nullable" => Token::Nullable,
         "Cell" => Token::Cell,
         "RefCell" => Token::RefCell,
+        "Atomic" => Token::AtomicCell,
+        "Mutex" => Token::MutexCell,
+        "FlatLock" => Token::FlatLockCell,
+        "RwLock" => Token::RwLockCell,
         "Arc" => Token::Arc,
         "NonNull" => Token::NonNull,
         "Null" => Token::Null,

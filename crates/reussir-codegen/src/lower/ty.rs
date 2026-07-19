@@ -27,9 +27,9 @@ use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
-    ReussirAtomicKind, ReussirCapability, ReussirLifeScope, ReussirRecordKind, array, cell,
-    closure, nullable, rc, record_complete_in_place, record_incomplete, record_is_complete, r#ref,
-    region, str as str_type,
+    ReussirAtomicKind, ReussirCapability, ReussirCellKind, ReussirLifeScope, ReussirRecordKind,
+    array, cell_with_kind, closure, nullable, rc, record_complete_in_place, record_incomplete,
+    record_is_complete, r#ref, region, str as str_type,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
@@ -170,11 +170,15 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                         ReussirAtomicKind::Atomic,
                     ))
                 } else if matches!(inner.kind(), TyKind::Array { .. } | TyKind::Closure { .. }) {
-                    err("arc'd arrays and closures do not lower yet: only a `[shared]` \
-                         record inner is implemented")
+                    err(
+                        "arc'd arrays and closures do not lower yet: only a `[shared]` \
+                         record inner is implemented",
+                    )
                 } else {
-                    err("`Arc` requires a shared rc box inner (a `[shared]` record, an \
-                         array, or a closure)")
+                    err(
+                        "`Arc` requires a shared rc box inner (a `[shared]` record, an \
+                         array, or a closure)",
+                    )
                 }
             }
             _ => scalar_ty(self.context, ty),
@@ -430,10 +434,10 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     /// element uses full type lowering because cells may recursively own
     /// managed values.
     pub(super) fn cell_inner_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
-        let TyKind::Cell { elem, exclusive } = *ty.kind() else {
+        let TyKind::Cell { elem, kind } = *ty.kind() else {
             return err("cell payload requested for a non-cell type");
         };
-        Ok(cell(self.mlir_ty(elem)?, exclusive))
+        Ok(cell_with_kind(self.mlir_ty(elem)?, backend_cell_kind(kind)))
     }
 
     /// `!reussir.rc<inner, shared>` — the pointer type for a heap-allocated,
@@ -523,6 +527,20 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             ReussirCapability::Unspecified,
             ReussirAtomicKind::Normal,
         )
+    }
+}
+
+/// The dialect's cell kind for the semi `CellKind`: the two lattices
+/// mirror each other one to one.
+pub(super) fn backend_cell_kind(kind: reussir_core::semi::ty::CellKind) -> ReussirCellKind {
+    use reussir_core::semi::ty::CellKind as K;
+    match kind {
+        K::Plain => ReussirCellKind::Plain,
+        K::Exclusive => ReussirCellKind::Exclusive,
+        K::Atomic => ReussirCellKind::Atomic,
+        K::Mutex => ReussirCellKind::Mutex,
+        K::Flatlock => ReussirCellKind::Flatlock,
+        K::Rwlock => ReussirCellKind::Rwlock,
     }
 }
 

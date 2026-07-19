@@ -816,11 +816,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                             .iter()
                             .map(|(k, _)| k.0)
                             .skip_while(|&d| d != next.0)
-                            .map(|d| {
-                                self.resolver
-                                    .resolve(self.record_defs[&d].name)
-                                    .to_owned()
-                            })
+                            .map(|d| self.resolver.resolve(self.record_defs[&d].name).to_owned())
                             .collect();
                         let span = self.record_defs[&next.0].span;
                         self.error(
@@ -1833,10 +1829,10 @@ mod tests {
         "#;
         let reports = mono_reports(src);
         assert!(
-            reports
-                .iter()
-                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `p`")),
+            reports.iter().any(
+                |m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `p`")
+            ),
             "{reports:#?}"
         );
         assert!(
@@ -1863,10 +1859,10 @@ mod tests {
         "#;
         let reports = mono_reports(src);
         assert!(
-            reports
-                .iter()
-                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `p`")),
+            reports.iter().any(
+                |m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `p`")
+            ),
             "{reports:#?}"
         );
         assert!(

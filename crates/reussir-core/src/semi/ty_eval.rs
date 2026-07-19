@@ -100,12 +100,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // `Cell<T>` is the plain get/set cell; `RefCell<T>` is the exclusive
         // flavor that additionally supports guarded read-modify-write.
         if path.segments.is_empty() && matches!(self.sym(key), "Cell" | "RefCell") {
-            let exclusive = self.sym(key) == "RefCell";
-            let name = if exclusive { "RefCell" } else { "Cell" };
+            let kind = if self.sym(key) == "RefCell" {
+                crate::semi::ty::CellKind::Exclusive
+            } else {
+                crate::semi::ty::CellKind::Plain
+            };
+            let name = kind.surface_name();
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
-                    self.tcx.mk_cell(inner, exclusive)
+                    self.tcx.mk_cell(inner, kind)
                 }
                 _ => {
                     self.error(

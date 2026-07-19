@@ -116,6 +116,77 @@ pub enum FpTy {
     Float8,
 }
 
+/// The synchronization discipline of a [`TyKind::Cell`], mirroring the
+/// dialect's `CellKind` lattice (thread-safety design §4). The kind decides
+/// whether the cell's box is atomically counted, whether the cell is `Sync`,
+/// which element types it admits, and which `core::intrinsic::cell`
+/// operations apply.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CellKind {
+    /// Surface `Cell<T>`: whole-element `get`/`set`, no synchronization.
+    Plain,
+    /// Surface `RefCell<T>`: adds the guarded `rmw` move-out region and the
+    /// `in_use` flag observation.
+    Exclusive,
+    /// Surface `Atomic<T>`: an inline atomic arithmetic scalar; accesses are
+    /// atomic loads/stores/rmw.
+    Atomic,
+    /// Surface `Mutex<T>`: accesses run inside a mutex critical section.
+    Mutex,
+    /// Surface `FlatLock<T>`: accesses run inside a flat-combining lock
+    /// critical section (the body may execute on the combining thread).
+    Flatlock,
+    /// Surface `RwLock<T>`: reads (`get`/`rdlock`) share the read lock,
+    /// writes (`set`/`rmw`) take it exclusively.
+    Rwlock,
+}
+
+impl CellKind {
+    /// The surface type-constructor name, also used by the textual IR.
+    pub fn surface_name(self) -> &'static str {
+        match self {
+            CellKind::Plain => "Cell",
+            CellKind::Exclusive => "RefCell",
+            CellKind::Atomic => "Atomic",
+            CellKind::Mutex => "Mutex",
+            CellKind::Flatlock => "FlatLock",
+            CellKind::Rwlock => "RwLock",
+        }
+    }
+
+    /// Parse a surface / textual-IR type-constructor name.
+    pub fn parse(name: &str) -> Option<CellKind> {
+        match name {
+            "Cell" => Some(CellKind::Plain),
+            "RefCell" => Some(CellKind::Exclusive),
+            "Atomic" => Some(CellKind::Atomic),
+            "Mutex" => Some(CellKind::Mutex),
+            "FlatLock" => Some(CellKind::Flatlock),
+            "RwLock" => Some(CellKind::Rwlock),
+            _ => None,
+        }
+    }
+
+    /// Whether the cell is a synchronization primitive: born in an atomic
+    /// shared box and `Sync` by itself (given its element bound).
+    pub fn is_sync(self) -> bool {
+        matches!(
+            self,
+            CellKind::Atomic | CellKind::Mutex | CellKind::Flatlock | CellKind::Rwlock
+        )
+    }
+
+    /// Whether accesses are guarded by a lock. Lock-guarded cells require a
+    /// `Sync` element: the lock only protects the stored slot, while clones
+    /// of the element leave the critical section and are used concurrently.
+    pub fn is_lock(self) -> bool {
+        matches!(
+            self,
+            CellKind::Mutex | CellKind::Flatlock | CellKind::Rwlock
+        )
+    }
+}
+
 /// The structure of a type. Compound variants hold interned children
 /// (`Ty<'tcx>` and arena slices), so `TyKind` is `Copy` and its derived
 /// `Eq`/`Hash` bottom out in pointer comparison — exactly the hash-cons key.
@@ -147,13 +218,12 @@ pub enum TyKind<'tcx> {
         dims: &'tcx [u64],
     },
     /// A shared mutable cell. The cell box is always reference-counted; `T`
-    /// may itself contain reference-counted ownership. An `exclusive` cell is
-    /// the surface `RefCell<T>`: it additionally supports in-place
-    /// read-modify-write, guarded at runtime by an in-use flag while the
-    /// element is moved out through the updater.
+    /// may itself contain reference-counted ownership. The [`CellKind`]
+    /// mirrors the dialect's lattice and decides both the synchronization
+    /// discipline and which `core::intrinsic::cell` operations apply.
     Cell {
         elem: Ty<'tcx>,
-        exclusive: bool,
+        kind: CellKind,
     },
     Nullable(Ty<'tcx>),
     /// An atomically reference-counted coloring of a `[shared]` record:
@@ -281,8 +351,8 @@ impl<'tcx> TyCtxt<'tcx> {
         self.mk(TyKind::Array { elem, dims })
     }
 
-    pub fn mk_cell(&self, elem: Ty<'tcx>, exclusive: bool) -> Ty<'tcx> {
-        self.mk(TyKind::Cell { elem, exclusive })
+    pub fn mk_cell(&self, elem: Ty<'tcx>, kind: CellKind) -> Ty<'tcx> {
+        self.mk(TyKind::Cell { elem, kind })
     }
 
     pub fn mk_nullable(&self, inner: Ty<'tcx>) -> Ty<'tcx> {

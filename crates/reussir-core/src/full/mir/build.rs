@@ -269,9 +269,9 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let inner = self.ty(inner);
                 self.tcx.mk_nullable(inner)
             }
-            raw::Ty::Cell { inner, exclusive } => {
+            raw::Ty::Cell { inner, kind } => {
                 let inner = self.ty(inner);
-                self.tcx.mk_cell(inner, *exclusive)
+                self.tcx.mk_cell(inner, *kind)
             }
             raw::Ty::Arc(inner) => {
                 let inner = self.ty(inner);

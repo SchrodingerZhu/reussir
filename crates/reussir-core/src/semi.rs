@@ -1086,7 +1086,10 @@ mod tests {
         let regional = "struct Pair { a: i32 }\n\
                         struct [regional] R { v: i64, p: Arc<Pair> }";
         assert!(
-            has_error(regional, "an `Arc` member of a `[regional]` record is not implemented yet"),
+            has_error(
+                regional,
+                "an `Arc` member of a `[regional]` record is not implemented yet"
+            ),
             "{:#?}",
             reports_of(regional)
         );
@@ -1188,12 +1191,18 @@ mod tests {
             reports_of(creation)
         );
         assert!(
-            has_error(creation, "fields of the recursive group `List` are promoted to `Arc`"),
+            has_error(
+                creation,
+                "fields of the recursive group `List` are promoted to `Arc`"
+            ),
             "{:#?}",
             reports_of(creation)
         );
         assert!(
-            has_error(creation, "construct it as `Arc<List<i32>>::…` from the start"),
+            has_error(
+                creation,
+                "construct it as `Arc<List<i32>>::…` from the start"
+            ),
             "{:#?}",
             reports_of(creation)
         );

@@ -2840,7 +2840,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 if !matches!(
                     *base.ty.kind(),
                     TyKind::Cell {
-                        exclusive: true,
+                        kind: reussir_core::semi::ty::CellKind::Exclusive,
                         ..
                     }
                 ) {
@@ -2868,7 +2868,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     .ok_or_else(|| LoweringError("cell update closure produced no value".into()))?;
                 let TyKind::Cell {
                     elem,
-                    exclusive: true,
+                    kind: reussir_core::semi::ty::CellKind::Exclusive,
                 } = *base.ty.kind()
                 else {
                     return err("cell RMW operand is not an exclusive cell");

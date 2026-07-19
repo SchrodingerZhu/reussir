@@ -23,6 +23,7 @@ use crate::full::mir::{
     self, ClosureExpr, DecisionTree, Expr, ExprKind, Function, Param, SwitchCases,
 };
 use crate::semi::hir::{ExprId, VarId};
+use crate::semi::ty::CellKind;
 use crate::semi::ty::{DefId, Flexivity, IntTy, Ty, TyCtxt};
 use crate::surface::Visibility;
 use crate::with_tcx;
@@ -306,7 +307,14 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
     }
 
     fn cell_ty(&self, elem: Ty<'tcx>, exclusive: bool) -> Ty<'tcx> {
-        self.tcx.mk_cell(elem, exclusive)
+        self.tcx.mk_cell(
+            elem,
+            if exclusive {
+                CellKind::Exclusive
+            } else {
+                CellKind::Plain
+            },
+        )
     }
 
     fn cell_op(
@@ -1051,9 +1059,12 @@ fn is_rr_classification() {
             "frozen rigid value is a managed object ⇒ rc"
         );
         assert!(rr.is_rr(tcx.mk_nullable(rc)), "nullable rc is RR");
-        assert!(rr.is_rr(tcx.mk_cell(i64t, false)), "a cell is always RR");
         assert!(
-            rr.is_rr(tcx.mk_cell(i64t, true)),
+            rr.is_rr(tcx.mk_cell(i64t, CellKind::Plain)),
+            "a cell is always RR"
+        );
+        assert!(
+            rr.is_rr(tcx.mk_cell(i64t, CellKind::Exclusive)),
             "an exclusive cell is always RR"
         );
         assert!(

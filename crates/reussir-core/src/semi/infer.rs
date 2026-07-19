@@ -217,9 +217,9 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let elem = self.resolve(*elem);
                 self.tcx.mk_array(elem, dims)
             }
-            TyKind::Cell { elem, exclusive } => {
+            TyKind::Cell { elem, kind } => {
                 let elem = self.resolve(*elem);
-                self.tcx.mk_cell(elem, *exclusive)
+                self.tcx.mk_cell(elem, *kind)
             }
             _ => ty,
         }
@@ -308,16 +308,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify(*x, *y),
             (TyKind::Arc(x), TyKind::Arc(y)) => self.unify(*x, *y),
-            (
-                TyKind::Cell {
-                    elem: x,
-                    exclusive: e1,
-                },
-                TyKind::Cell {
-                    elem: y,
-                    exclusive: e2,
-                },
-            ) if e1 == e2 => self.unify(*x, *y),
+            (TyKind::Cell { elem: x, kind: e1 }, TyKind::Cell { elem: y, kind: e2 })
+                if e1 == e2 =>
+            {
+                self.unify(*x, *y)
+            }
             (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
                 if d1 == d2 =>
             {
@@ -525,16 +520,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
             (TyKind::Nullable(x), TyKind::Nullable(y)) => self.unify_instantiated(*x, inst, *y),
             (TyKind::Arc(x), TyKind::Arc(y)) => self.unify_instantiated(*x, inst, *y),
-            (
-                TyKind::Cell {
-                    elem: x,
-                    exclusive: e1,
-                },
-                TyKind::Cell {
-                    elem: y,
-                    exclusive: e2,
-                },
-            ) if e1 == e2 => self.unify_instantiated(*x, inst, *y),
+            (TyKind::Cell { elem: x, kind: e1 }, TyKind::Cell { elem: y, kind: e2 })
+                if e1 == e2 =>
+            {
+                self.unify_instantiated(*x, inst, *y)
+            }
             (TyKind::Array { elem: e1, dims: d1 }, TyKind::Array { elem: e2, dims: d2 })
                 if d1 == d2 =>
             {
@@ -601,9 +591,9 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let elem = self.materialize(*elem, inst);
                 self.tcx.mk_array(elem, dims)
             }
-            TyKind::Cell { elem, exclusive } => {
+            TyKind::Cell { elem, kind } => {
                 let elem = self.materialize(*elem, inst);
-                self.tcx.mk_cell(elem, *exclusive)
+                self.tcx.mk_cell(elem, *kind)
             }
             _ => template,
         }

@@ -88,10 +88,7 @@ pub fn collect_record_defs<'tcx>(ty: Ty<'tcx>, out: &mut Vec<DefId>) {
 /// under an `Arc`. Type arguments are ignored at this level, so polymorphic
 /// recursion collapses onto its def. Returns `None` (blocked) when any
 /// reachable def's fields are not populated yet.
-pub fn recursive_group<'tcx>(
-    env: &dyn SyncEnv<'tcx>,
-    root: DefId,
-) -> Option<FxHashSet<DefId>> {
+pub fn recursive_group<'tcx>(env: &dyn SyncEnv<'tcx>, root: DefId) -> Option<FxHashSet<DefId>> {
     // Forward reachability from `root`.
     let mut forward = FxHashSet::default();
     let mut stack = vec![root];
@@ -147,9 +144,7 @@ pub enum NotSyncReason {
 impl NotSyncReason {
     pub fn describe(self) -> &'static str {
         match self {
-            NotSyncReason::NonAtomicBox => {
-                "a plain `[shared]` rc box whose refcount is not atomic"
-            }
+            NotSyncReason::NonAtomicBox => "a plain `[shared]` rc box whose refcount is not atomic",
             NotSyncReason::Regional => "a regional object",
             NotSyncReason::PlainCell => "a plain `Cell`, which is unsynchronized",
             NotSyncReason::ExclusiveCell => "a `RefCell`, whose in-use guard is not atomic",
@@ -246,10 +241,7 @@ impl<'tcx> Cx<'_, 'tcx> {
 
     /// Fold a labeled member list: the first definite failure wins; a block
     /// only surfaces when nothing fails outright.
-    fn fold(
-        &mut self,
-        members: impl IntoIterator<Item = (String, Ty<'tcx>)>,
-    ) -> SyncVerdict<'tcx> {
+    fn fold(&mut self, members: impl IntoIterator<Item = (String, Ty<'tcx>)>) -> SyncVerdict<'tcx> {
         let mut blocked = false;
         for (label, ty) in members {
             self.path.push(label);
@@ -284,9 +276,11 @@ impl<'tcx> Cx<'_, 'tcx> {
             | TyKind::Bottom => SyncVerdict::Sync,
             TyKind::Generic(_) | TyKind::Hole(_) => SyncVerdict::Blocked,
             TyKind::Nullable(inner) => self.check(inner),
-            TyKind::Cell { exclusive, .. } => self.refute(
+            // Sync-kind cells gain their `Sync` verdict in the next commit;
+            // until then every kind conservatively refutes.
+            TyKind::Cell { kind, .. } => self.refute(
                 ty,
-                if exclusive {
+                if kind == crate::semi::ty::CellKind::Exclusive {
                     NotSyncReason::ExclusiveCell
                 } else {
                     NotSyncReason::PlainCell
@@ -405,7 +399,7 @@ impl<'tcx> Cx<'_, 'tcx> {
 mod tests {
     use super::*;
     use crate::semi::ctxt::DefaultCap;
-    use crate::semi::ty::{Flexivity, IntTy, Ty, TyCtxt};
+    use crate::semi::ty::{CellKind, Flexivity, IntTy, Ty, TyCtxt};
     use crate::with_tcx;
     use rustc_hash::FxHashMap;
 
@@ -483,10 +477,8 @@ mod tests {
                 (DefaultCap::Value, Some(vec![("leaf".into(), leaf)])),
             );
             let mid = rec(tcx, 2);
-            env.records.insert(
-                DefId(3),
-                (DefaultCap::Value, Some(vec![("m".into(), mid)])),
-            );
+            env.records
+                .insert(DefId(3), (DefaultCap::Value, Some(vec![("m".into(), mid)])));
             let SyncVerdict::NotSync(w) = sync_verdict(&env, rec(tcx, 3)) else {
                 panic!("expected NotSync");
             };
@@ -560,7 +552,7 @@ mod tests {
                 DefId(0),
                 (
                     DefaultCap::Shared,
-                    Some(vec![("c".into(), tcx.mk_cell(i32t, false))]),
+                    Some(vec![("c".into(), tcx.mk_cell(i32t, CellKind::Plain))]),
                 ),
             );
             let SyncVerdict::NotSync(w) = wf_arc(&env, rec(tcx, 0)) else {
@@ -569,7 +561,7 @@ mod tests {
             assert_eq!(w.reason, NotSyncReason::PlainCell);
             assert_eq!(w.path, vec!["c".to_owned()]);
             assert!(matches!(
-                sync_verdict(&env, tcx.mk_cell(i32t, true)),
+                sync_verdict(&env, tcx.mk_cell(i32t, CellKind::Exclusive)),
                 SyncVerdict::NotSync(Witness {
                     reason: NotSyncReason::ExclusiveCell,
                     ..
