@@ -1320,6 +1320,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     span,
                 )
             }
+            CellFn::Rdlock => {
+                // `rdlock(cell, reader)`: the reader runs over a *clone* of
+                // the element inside the shared read lock — `reader : T -> ρ`
+                // for a fresh `ρ`, which is the operation's result. The clone
+                // is consumed by the reader like any owned argument.
+                let [cell, reader] = fc.args.as_slice() else {
+                    self.error(
+                        span,
+                        format!("`core::intrinsic::cell::{name}` expects two arguments"),
+                    );
+                    return self.poison(span);
+                };
+                let cell = self.infer_expr(cell);
+                let Some(elem) = self.cell_element(cell.ty, func, &name, span) else {
+                    return self.poison(span);
+                };
+                let result = self.infer.new_hole_ty();
+                let expected = self.tcx.mk_closure(&[elem], result);
+                let reader = self.check_expr(reader, expected);
+                self.mk_expr(
+                    ExprKind::Intrinsic {
+                        op,
+                        args: vec![cell, reader],
+                    },
+                    result,
+                    span,
+                )
+            }
         }
     }
 
@@ -1334,14 +1362,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     ) -> Option<Ty<'tcx>> {
         let resolved = self.infer.shallow_resolve(ty);
         if let TyKind::Cell { elem, kind } = *resolved.kind() {
-            if func.requires_exclusive() && kind != CellKind::Exclusive {
+            if !func.supported_on(kind) {
                 let shown = self.infer.resolve(resolved);
                 self.error(
                     span,
                     format!(
-                        "`core::intrinsic::cell::{method}` requires an exclusive cell, found \
-                         `{}`; use a `RefCell`",
-                        self.ty_display(shown)
+                        "`core::intrinsic::cell::{method}` is not supported on `{}`; \
+                         it requires {}",
+                        self.ty_display(shown),
+                        func.requirement()
                     ),
                 );
                 return None;

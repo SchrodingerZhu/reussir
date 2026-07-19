@@ -359,6 +359,25 @@ pub fn cell_rmw<'c>(
     builder.build().expect("valid reussir.cell.rmw")
 }
 
+/// `reussir.cell.rdlock(%cell) (-> R)? { body }` — run a read transaction
+/// over an rwlock cell: the body receives a clone of the element (loaded and
+/// acquired under the shared read lock), must consume it, and terminates
+/// with `reussir.scf.yield` carrying the optional result.
+pub fn cell_rdlock<'c>(
+    cell: Value<'c, '_>,
+    result_type: Option<Type<'c>>,
+    body: Region<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let mut builder = OperationBuilder::new("reussir.cell.rdlock", location)
+        .add_operands(&[cell])
+        .add_regions([body]);
+    if let Some(result_type) = result_type {
+        builder = builder.add_results(&[result_type]);
+    }
+    builder.build().expect("valid reussir.cell.rdlock")
+}
+
 /// `reussir.cell.yield(%replacement : T)` — terminate a cell RMW body.
 pub fn cell_yield<'c>(
     replacement: Value<'c, '_>,

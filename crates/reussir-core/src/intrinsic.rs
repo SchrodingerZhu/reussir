@@ -172,12 +172,13 @@ pub enum ArrayFn {
 
 /// A built-in operation on a shared mutable [`Cell`](crate::semi::ty::TyKind::Cell),
 /// spelled `core::intrinsic::cell::<fn>` and dispatched on the operand's
-/// cell flavor. A plain `Cell` supports only whole-element
-/// `alloc`/`get`/`set`; an exclusive `RefCell` additionally supports the
-/// guarded `rmw` and the `in_use` observation of its guard flag. The
-/// operation itself does not record the flavor — operand and result types
-/// carry it, the checker enforces it, and the dialect verifier re-checks
-/// it after lowering.
+/// cell kind. `alloc`/`get`/`set` work on every kind; `rmw` on every kind
+/// but a plain `Cell` (the exclusive in-use region, an atomic CAS-retry, or
+/// a lock's critical section); `in_use` observes the exclusive guard flag;
+/// `rdlock` runs a read transaction over an `RwLock` cell. The operation
+/// itself does not record the kind — operand and result types carry it, the
+/// checker enforces the matrix, and the dialect verifier re-checks it after
+/// lowering.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CellFn {
     /// `alloc(value)`: move `value` into a fresh cell.
@@ -187,11 +188,14 @@ pub enum CellFn {
     /// `set(cell, value)`: replace and drop the old value.
     Set,
     /// `rmw(cell, update)`: move the value through `update` and store its
-    /// result. Exclusive cells (`RefCell`) only.
+    /// result. Every kind but a plain `Cell`.
     Rmw,
     /// `in_use(cell)`: whether the element is currently moved out into an
     /// active `rmw` updater. Exclusive cells (`RefCell`) only.
     InUse,
+    /// `rdlock(cell, reader)`: run `reader` over a clone of the element
+    /// inside the shared read lock. `RwLock` cells only.
+    Rdlock,
 }
 
 impl CellFn {
@@ -203,6 +207,7 @@ impl CellFn {
             "set" => Some(CellFn::Set),
             "rmw" => Some(CellFn::Rmw),
             "in_use" => Some(CellFn::InUse),
+            "rdlock" => Some(CellFn::Rdlock),
             _ => None,
         }
     }
@@ -215,14 +220,34 @@ impl CellFn {
             CellFn::Set => "set",
             CellFn::Rmw => "rmw",
             CellFn::InUse => "in_use",
+            CellFn::Rdlock => "rdlock",
         }
     }
 
-    /// Whether this operation exists only on an exclusive cell (`RefCell`).
-    /// The checker rejects these on a plain `Cell` operand, and lowering
-    /// re-derives the flavor from the monomorphized operand type.
-    pub fn requires_exclusive(self) -> bool {
-        matches!(self, CellFn::Rmw | CellFn::InUse)
+    /// Whether this operation is available on a cell of `kind` — the §4.2
+    /// access matrix. Lowering re-derives the kind from the monomorphized
+    /// operand type; the dialect verifier re-checks after lowering.
+    pub fn supported_on(self, kind: crate::semi::ty::CellKind) -> bool {
+        use crate::semi::ty::CellKind;
+        match self {
+            CellFn::Alloc | CellFn::Get | CellFn::Set => true,
+            CellFn::Rmw => kind != CellKind::Plain,
+            CellFn::InUse => kind == CellKind::Exclusive,
+            CellFn::Rdlock => kind == CellKind::Rwlock,
+        }
+    }
+
+    /// Which operands support this operation, for diagnostics.
+    pub fn requirement(self) -> &'static str {
+        match self {
+            CellFn::Alloc | CellFn::Get | CellFn::Set => "any cell",
+            CellFn::Rmw => {
+                "an exclusive or synchronized cell (`RefCell`, `Atomic`, \
+                 `Mutex`, `FlatLock`, or `RwLock`)"
+            }
+            CellFn::InUse => "an exclusive cell (`RefCell`)",
+            CellFn::Rdlock => "an `RwLock` cell",
+        }
     }
 }
 

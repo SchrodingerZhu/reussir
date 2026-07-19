@@ -22,12 +22,12 @@ fn unknown(c: Cell<i64>) -> i64 { core::intrinsic::cell::swap(c) }
 
 // Read-modify-write and the guard flag dispatch on the operand and demand
 // the exclusive flavor.
-// CHECK: `core::intrinsic::cell::rmw` requires an exclusive cell, found `Cell<i64>`; use a `RefCell`
+// CHECK: `core::intrinsic::cell::rmw` is not supported on `Cell<i64>`; it requires an exclusive or synchronized cell
 fn plain_rmw(c: Cell<i64>) -> unit {
     core::intrinsic::cell::rmw(c, |x| x)
 }
 
-// CHECK: `core::intrinsic::cell::in_use` requires an exclusive cell, found `Cell<i64>`; use a `RefCell`
+// CHECK: `core::intrinsic::cell::in_use` is not supported on `Cell<i64>`; it requires an exclusive cell (`RefCell`)
 fn plain_in_use(c: Cell<i64>) -> bool { core::intrinsic::cell::in_use(c) }
 
 // CHECK: `core::intrinsic::cell::get` expects a cell as its first argument, found `i64`

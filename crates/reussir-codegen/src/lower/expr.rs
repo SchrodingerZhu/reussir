@@ -2866,13 +2866,12 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 let closure = self
                     .expr(block, env, kernel)?
                     .ok_or_else(|| LoweringError("cell update closure produced no value".into()))?;
-                let TyKind::Cell {
-                    elem,
-                    kind: reussir_core::semi::ty::CellKind::Exclusive,
-                } = *base.ty.kind()
-                else {
-                    return err("cell RMW operand is not an exclusive cell");
+                let TyKind::Cell { elem, kind } = *base.ty.kind() else {
+                    return err("cell RMW operand is not a cell");
                 };
+                if kind == reussir_core::semi::ty::CellKind::Plain {
+                    return err("cell RMW is not supported on a plain cell");
+                }
                 let elem_ty = self.tys.mlir_ty(elem)?;
                 let body = Block::new(&[(elem_ty, loc)]);
                 let current = body
@@ -2894,6 +2893,50 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 // paid only for the eval above.
                 block.append_operation(dialect::rc_dec(self.context, closure, loc).into());
                 Ok(None)
+            }
+            CellFn::Rdlock => {
+                // A read transaction over an rwlock cell: the body receives a
+                // *clone* of the element (loaded and acquired under the
+                // shared read lock) and consumes it through the reader
+                // closure; the reader's result leaves through the region
+                // yield as the operation's result.
+                let base = &args[0];
+                let cell = self
+                    .expr(block, env, base)?
+                    .ok_or_else(|| LoweringError("cell operand produced no value".into()))?;
+                self.remember_temp(env, base, cell);
+                let kernel = &args[1];
+                let closure = self
+                    .expr(block, env, kernel)?
+                    .ok_or_else(|| LoweringError("cell reader closure produced no value".into()))?;
+                let TyKind::Cell { elem, .. } = *base.ty.kind() else {
+                    return err("cell rdlock operand is not a cell");
+                };
+                let elem_ty = self.tys.mlir_ty(elem)?;
+                let body = Block::new(&[(elem_ty, loc)]);
+                let current = body
+                    .argument(0)
+                    .expect("cell rdlock body takes the cloned element")
+                    .into();
+                body.append_operation(dialect::rc_inc(self.context, closure, loc).into());
+                let output = self.call_kernel(&body, closure, kernel.ty, &[current])?;
+                body.append_operation(builders::scf_yield(output, loc));
+                let region = Region::new();
+                region.append_block(body);
+                let result_ty = if is_unit(e.ty) {
+                    None
+                } else {
+                    Some(self.tys.mlir_ty(e.ty)?)
+                };
+                let op = builders::cell_rdlock(cell, result_ty, region, loc);
+                let result = if result_ty.is_some() {
+                    Some(self.append(block, op))
+                } else {
+                    block.append_operation(op);
+                    None
+                };
+                block.append_operation(dialect::rc_dec(self.context, closure, loc).into());
+                Ok(result)
             }
         }
     }
