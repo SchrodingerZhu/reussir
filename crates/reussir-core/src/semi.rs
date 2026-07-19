@@ -1171,6 +1171,66 @@ mod tests {
     }
 
     #[test]
+    fn arc_coloring_mismatch_explains_itself() {
+        // A mismatch that is *only* the arc coloring gets the reconciliation
+        // diagnostic instead of a bare "type mismatch" — on both sides of
+        // the confusion. Creation side: feeding a bare value where the
+        // atomic world demands an arc'd one names the SCC promotion and
+        // says how to fix it …
+        let creation = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                        fn f(x: i32) -> i32 { Arc<List<i32>>::Cons{x, List::Nil}; 0 }";
+        assert!(
+            has_error(
+                creation,
+                "cannot reconcile thread-safety: expected `Arc<List<i32>>`, found `List<i32>`"
+            ),
+            "{:#?}",
+            reports_of(creation)
+        );
+        assert!(
+            has_error(creation, "fields of the recursive group `List` are promoted to `Arc`"),
+            "{:#?}",
+            reports_of(creation)
+        );
+        assert!(
+            has_error(creation, "construct it as `Arc<List<i32>>::…` from the start"),
+            "{:#?}",
+            reports_of(creation)
+        );
+        // … and projection side: a field matched out of an arc'd box keeps
+        // the coloring, which the diagnostic explains rather than leaving
+        // the user wondering where the `Arc` came from.
+        let projection = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                          fn tail(l: Arc<List<i32>>) -> List<i32> {\n\
+                              match l { List::Cons(_, xs) => xs, List::Nil => List::Nil }\n\
+                          }";
+        assert!(
+            has_error(
+                projection,
+                "a value read out of an arc'd box keeps its `Arc` coloring"
+            ),
+            "{:#?}",
+            reports_of(projection)
+        );
+        // A non-recursive pair still reconciles, without the SCC note.
+        let flat = "struct Pair { a: i32 }\n\
+                    fn f(p: Pair) -> Arc<Pair> { p }";
+        assert!(
+            has_error(
+                flat,
+                "cannot reconcile thread-safety: expected `Arc<Pair>`, found `Pair`"
+            ),
+            "{:#?}",
+            reports_of(flat)
+        );
+        assert!(
+            !has_error(flat, "recursive group"),
+            "{:#?}",
+            reports_of(flat)
+        );
+    }
+
+    #[test]
     fn arc_mixes_explicit_and_promoted_members() {
         // A shared record can mix both member forms (§3.3): an explicit
         // `Arc<Inner>` member keeps its declared type everywhere — readable

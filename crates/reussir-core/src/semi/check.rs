@@ -115,6 +115,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if self.infer.unify(expected, found).is_err() {
             let e = self.infer.resolve(expected);
             let f = self.infer.resolve(found);
+            if let Some(message) = self.arc_reconciliation_error(e, f) {
+                self.error(span, message);
+                return;
+            }
             self.error(
                 span,
                 format!(
@@ -146,6 +150,95 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 ),
             );
         }
+    }
+
+    /// The rich diagnostic for a mismatch that is *only* about the arc
+    /// coloring: `Arc<T>` against `T` (possibly under matching `Nullable`
+    /// wrappers). Plain "type mismatch" reads as noise here — the user either
+    /// fed a bare value where the atomic world demands an arc'd one (the
+    /// creation side) or is surprised that a field read through an `Arc` came
+    /// out arc'd (the projection side) — so explain the §3.3 rule the way
+    /// rustc explains lifetimes: what clashed, why the type is what it is,
+    /// and what to do about it. Returns `None` for any other mismatch.
+    fn arc_reconciliation_error(
+        &mut self,
+        expected: Ty<'tcx>,
+        found: Ty<'tcx>,
+    ) -> Option<String> {
+        // Peel matching `Nullable` wrappers: a promoted `Nullable<Arc<T>>`
+        // member mismatches a bare `Nullable<T>` the same way.
+        let (mut e, mut f) = (expected, found);
+        while let (TyKind::Nullable(ei), TyKind::Nullable(fi)) = (e.kind(), f.kind()) {
+            (e, f) = (*ei, *fi);
+        }
+        // Exactly one side is arc'd, and underneath they are the same type.
+        // Probe with a real unification so a still-unsolved hole on the bare
+        // side (`List<_>` against `Arc<List<i32>>`) is recognized — and
+        // solved, which also silences the "cannot infer" cascade the failed
+        // outer unification would otherwise leave behind.
+        let (inner, arc_is_expected) = match (e.kind(), f.kind()) {
+            (TyKind::Arc(inner), _) if self.infer.unify(*inner, f).is_ok() => (*inner, true),
+            (_, TyKind::Arc(inner)) if self.infer.unify(e, *inner).is_ok() => (*inner, false),
+            _ => return None,
+        };
+        let inner = self.infer.resolve(inner);
+        let shown = self.ty_display(inner);
+        // Re-resolve both sides: the probe above may have just solved holes
+        // the failed outer unification left behind (`List<_>` → `List<i32>`).
+        let (expected, found) = (self.infer.resolve(expected), self.infer.resolve(found));
+        let mut message = format!(
+            "cannot reconcile thread-safety: expected `{}`, found `{}`",
+            self.ty_display(expected),
+            self.ty_display(found),
+        );
+        // When the type is genuinely recursive, the arc'd side usually exists
+        // because of the SCC promotion — name the group and the rule.
+        if let TyKind::Record { def, .. } = *inner.kind()
+            && self.def_is_recursive(def)
+        {
+            let group = self.arc_recursive_group(def);
+            let mut names: Vec<&str> = group
+                .iter()
+                .filter_map(|d| self.records.get(d).map(|r| self.sym(r.name)))
+                .collect();
+            names.sort_unstable();
+            message.push_str(&format!(
+                "\nnote: fields of the recursive group `{}` are promoted to \
+                 `Arc` inside an arc'd box",
+                names.join("`, `"),
+            ));
+        }
+        if arc_is_expected {
+            message.push_str(&format!(
+                "\nnote: a plain value is never re-colored; construct it as \
+                 `Arc<{shown}>::…` from the start",
+            ));
+        } else {
+            message.push_str(
+                "\nnote: a value read out of an arc'd box keeps its `Arc` coloring",
+            );
+        }
+        Some(message)
+    }
+
+    /// Whether `def` sits on a genuine recursion: some chain of record member
+    /// references starting from its members returns to it. (Unlike
+    /// [`Elaborator::arc_recursive_group`], which always contains its root,
+    /// this distinguishes a recursive record from a plain one.)
+    fn def_is_recursive(&self, def: DefId) -> bool {
+        use crate::semi::traits::sync::SyncEnv;
+        let env = crate::semi::ty_eval::ElabSyncEnv { el: self };
+        let mut stack = env.member_record_defs(def).unwrap_or_default();
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(next) = stack.pop() {
+            if next == def {
+                return true;
+            }
+            if seen.insert(next) {
+                stack.extend(env.member_record_defs(next).unwrap_or_default());
+            }
+        }
+        false
     }
 
     /// The flexivity coloring at the head of `ty`, peeling a `Nullable` wrapper
