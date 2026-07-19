@@ -1,13 +1,16 @@
-//===-- ReussirInterfaces.h - Reussir Interfaces ---------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// This file declares the interfaces for the Reussir dialect.
-//
+///
+/// \file
+/// This file declares the interfaces for the Reussir dialect.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_IR_REUSSIRINTERFACES_H

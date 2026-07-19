@@ -1,14 +1,17 @@
-//===-- ReussirDialect.td - Reussir dialect definition -----*- tablegen -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// This file defines the Reussir dialect. This is to be used as a common
-// tablegen header that provides common dialect references.
-//
+///
+/// \file
+/// This file defines the Reussir dialect. This is to be used as a common
+/// tablegen header that provides common dialect references.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_IR_REUSSIRDIALECT_TD

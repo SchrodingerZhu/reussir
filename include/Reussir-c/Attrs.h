@@ -1,16 +1,19 @@
-//===-- Attrs.h - Reussir dialect attribute C API --------------*- C -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// C API constructors for the Reussir debug-info attributes. These attributes
-// describe a value's debug type / variable so the debug-info conversion pass
-// can emit LLVM DI; they use custom storage that the generic MLIR C API cannot
-// build, so the code generator constructs them through these entry points.
-//
+///
+/// \file
+/// C API constructors for the Reussir debug-info attributes. These attributes
+/// describe a value's debug type / variable so the debug-info conversion pass
+/// can emit LLVM DI; they use custom storage that the generic MLIR C API cannot
+/// build, so the code generator constructs them through these entry points.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_C_ATTRS_H

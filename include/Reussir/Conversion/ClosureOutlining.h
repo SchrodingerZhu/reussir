@@ -1,13 +1,16 @@
-//===-- ClosureOutlining.h - Reussir closure outlining -------*- c++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// This header file provides the ClosureOutlining pass declaration.
-//
+///
+/// \file
+/// This header file provides the ClosureOutlining pass declaration.
+///
 //===----------------------------------------------------------------------===//
 
 #pragma once

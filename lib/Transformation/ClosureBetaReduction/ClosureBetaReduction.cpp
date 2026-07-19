@@ -1,71 +1,74 @@
-//===-- ClosureBetaReduction.cpp - Reussir closure beta reduction -*-C++-*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Beta-reduce closure application chains. Runs right after the inliner (so
-// cross-function create→eval pairs are visible) and before token
-// instantiation / closure outlining (so `closure.create` bodies are still
-// inline regions and carry no materialized token yet).
-//
-// Three one-step local patterns under the greedy driver; their fixpoint
-// walks each eval's chain without any hand-driven recursion:
-//
-//  * FOLD: `eval(apply(a, x), pack)` with a single-use apply becomes
-//    `eval(x, [a] ++ pack)` — the argument prepends, so the pack stays in
-//    application order. Dominance is free (def-use edge), and ownership is
-//    untouched: the fused eval consumes closure and pack exactly as the
-//    apply chain did.
-//
-//  * STRIP: a single-use `closure.uniqify` under a fused eval is erased
-//    when it is a provable runtime no-op — its operand is a single-use
-//    `closure.apply` or `closure.create`, i.e. a value that is unique by
-//    construction (a fresh box, or an in-place application to a value the
-//    chain's genuine guard already made unique). The bottom-most uniqify,
-//    whose operand is anything else, never matches: it stays in the IR as
-//    the fused eval's operand — the fused form carries `apply`'s contract
-//    (uniqueness is the producer's obligation) and never re-establishes it.
-//
-//  * INLINE: `eval(create{body}, pack)` over a single-use inlined create is
-//    a visible beta redex: the body block is spliced in front of the eval
-//    with the pack substituted for its parameters (legal anywhere — the
-//    region is IsolatedFromAbove), and the chain, the create, and its dead
-//    `token.alloc` are erased. Evals spliced out of the body are re-queued
-//    by the driver, which is what makes the reduction recursive.
-//
-//  * STRUCTURALINLINE: a redex carried into a supported structured region,
-//    in its general frontend shape —
-//
-//      %c = create {body}; (uniqify; apply cap)*     // capture binding
-//      structural* {                                 // LoopLike or cell.rmw
-//        rc.inc %c; (uniqify; apply x_i)*; eval(...) // per-execution chain
-//      }
-//      rc.dec %c
-//
-//    The body is spliced into the innermost region at the eval and the closure
-//    box vanishes: its create / per-execution inc+chain / trailing dec traffic
-//    is self-contained (a fresh box nothing else can observe), so erasing all
-//    of it is count-neutral. The per-execution uniqify is a *genuine* guard —
-//    the carried box is shared, so it clones every execution — but the clone
-//    is itself a fresh box the chain consumes whole: cloning inc'd the stored
-//    captures out
-//    and the eval consumed them, a wash the fused form reproduces. Capture
-//    counts are preserved, not reasoned about: each rc-typed capture bound
-//    *outside* the structure gains a per-execution `rc.inc` at the splice
-//    point (the inlined body consumes its capture parameters each execution)
-//    and one `rc.dec` where the box's dec stood (the box's drop used to
-//    release the ref the apply consumed). Captures bound *inside* the
-//    structure were consumed once per execution before and still are — they
-//    just take their seat in the substitution pack.
-//
-// Fused evals that bottom out anywhere else survive the pass; the SCF-ops
-// lowering re-expands them into unchecked applies + plain eval, so the net
-// effect of FOLD+STRIP on a chain the inliner merged is the removal of its
-// intermediate uniqueness checks.
-//
+///
+/// \file
+/// Beta-reduce closure application chains. Runs right after the inliner (so
+/// cross-function create→eval pairs are visible) and before token
+/// instantiation / closure outlining (so `closure.create` bodies are still
+/// inline regions and carry no materialized token yet).
+///
+/// Three one-step local patterns under the greedy driver; their fixpoint
+/// walks each eval's chain without any hand-driven recursion:
+///
+///  * FOLD: `eval(apply(a, x), pack)` with a single-use apply becomes
+///    `eval(x, [a] ++ pack)` — the argument prepends, so the pack stays in
+///    application order. Dominance is free (def-use edge), and ownership is
+///    untouched: the fused eval consumes closure and pack exactly as the
+///    apply chain did.
+///
+///  * STRIP: a single-use `closure.uniqify` under a fused eval is erased
+///    when it is a provable runtime no-op — its operand is a single-use
+///    `closure.apply` or `closure.create`, i.e. a value that is unique by
+///    construction (a fresh box, or an in-place application to a value the
+///    chain's genuine guard already made unique). The bottom-most uniqify,
+///    whose operand is anything else, never matches: it stays in the IR as
+///    the fused eval's operand — the fused form carries `apply`'s contract
+///    (uniqueness is the producer's obligation) and never re-establishes it.
+///
+///  * INLINE: `eval(create{body}, pack)` over a single-use inlined create is
+///    a visible beta redex: the body block is spliced in front of the eval
+///    with the pack substituted for its parameters (legal anywhere — the
+///    region is IsolatedFromAbove), and the chain, the create, and its dead
+///    `token.alloc` are erased. Evals spliced out of the body are re-queued
+///    by the driver, which is what makes the reduction recursive.
+///
+///  * STRUCTURALINLINE: a redex carried into a supported structured region,
+///    in its general frontend shape —
+///
+///      %c = create {body}; (uniqify; apply cap)*     // capture binding
+///      structural* {                                 // LoopLike or cell.rmw
+///        rc.inc %c; (uniqify; apply x_i)*; eval(...) // per-execution chain
+///      }
+///      rc.dec %c
+///
+///    The body is spliced into the innermost region at the eval and the closure
+///    box vanishes: its create / per-execution inc+chain / trailing dec traffic
+///    is self-contained (a fresh box nothing else can observe), so erasing all
+///    of it is count-neutral. The per-execution uniqify is a *genuine* guard —
+///    the carried box is shared, so it clones every execution — but the clone
+///    is itself a fresh box the chain consumes whole: cloning inc'd the stored
+///    captures out
+///    and the eval consumed them, a wash the fused form reproduces. Capture
+///    counts are preserved, not reasoned about: each rc-typed capture bound
+///    *outside* the structure gains a per-execution `rc.inc` at the splice
+///    point (the inlined body consumes its capture parameters each execution)
+///    and one `rc.dec` where the box's dec stood (the box's drop used to
+///    release the ref the apply consumed). Captures bound *inside* the
+///    structure were consumed once per execution before and still are — they
+///    just take their seat in the substitution pack.
+///
+/// Fused evals that bottom out anywhere else survive the pass; the SCF-ops
+/// lowering re-expands them into unchecked applies + plain eval, so the net
+/// effect of FOLD+STRIP on a chain the inliner merged is the removal of its
+/// intermediate uniqueness checks.
+///
 //===----------------------------------------------------------------------===//
 
 #include <llvm/ADT/STLExtras.h>

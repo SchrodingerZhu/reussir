@@ -1,29 +1,32 @@
-//===-- TRMCRecursionAnalysis.cpp -------------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Tail recursion modulo constructors via first-class constructor contexts.
-//
-// A self-recursive function returning an rc-boxed value is split into a thin
-// wrapper and a `.trmc` helper that threads a `!reussir.cctx` accumulator —
-// the partially built result with one unfilled hole. Every return-position
-// leaf of the helper is rewritten into exactly one of three shapes:
-//
-//   A. a constructor whose field is a direct self-call: allocate the
-//      constructor with a hole, `cctx.extend` the context with it, and
-//      tail-call the helper — the constructor chain becomes a loop;
-//   B. a plain self tail call: thread the context through unchanged;
-//   C. anything else: `cctx.apply` the context to the finished value.
-//
-// Because every leaf has a sound rewrite, eligibility is purely per-site: a
-// non-constructor arm (say, a rebalancing wrapper call around the recursion)
-// no longer disables the constructor arms next to it — it simply takes the
-// apply fallback, exactly like Koka's ctail compilation.
-//
+///
+/// \file
+/// Tail recursion modulo constructors via first-class constructor contexts.
+///
+/// A self-recursive function returning an rc-boxed value is split into a thin
+/// wrapper and a `.trmc` helper that threads a `!reussir.cctx` accumulator —
+/// the partially built result with one unfilled hole. Every return-position
+/// leaf of the helper is rewritten into exactly one of three shapes:
+///
+///   A. a constructor whose field is a direct self-call: allocate the
+///      constructor with a hole, `cctx.extend` the context with it, and
+///      tail-call the helper — the constructor chain becomes a loop;
+///   B. a plain self tail call: thread the context through unchanged;
+///   C. anything else: `cctx.apply` the context to the finished value.
+///
+/// Because every leaf has a sound rewrite, eligibility is purely per-site: a
+/// non-constructor arm (say, a rebalancing wrapper call around the recursion)
+/// no longer disables the constructor arms next to it — it simply takes the
+/// apply fallback, exactly like Koka's ctail compilation.
+///
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/IR/ReussirDialect.h"

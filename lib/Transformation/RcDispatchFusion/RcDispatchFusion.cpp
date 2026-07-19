@@ -1,59 +1,62 @@
-//===-- RcDispatchFusion.cpp ------------------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// Fuses a pattern match's consumption of its scrutinee into a *destructuring*
-// decrement (Koka's `dropn_reuse` shape).
-//
-// The frontend lowers `match v { Ctor(a, b, ..) => .. }` into a borrowing
-// dispatch whose taken arm retains every bound member and then decrements the
-// scrutinee:
-//
-//   %ref = reussir.rc.borrow %v
-//   reussir.record.dispatch(%ref) {
-//     [k] -> ^arm(%payload):
-//       %a = ref.load(ref.project %payload [i])
-//       rc.inc %a                      // retain the binding
-//       ...
-//       rc.dec %v                      // release the box (transitive glue)
-//   }
-//
-// The retain/release pair over each bound member is pure count traffic on the
-// hot unique path: the box dies and its slots could simply transfer. This
-// pass erases the bound retains and tags the decrement with the arm's tag and
-// the bound member indices; `reussir-rc-decrement-expansion` then expands it
-// shallowly — unique: release only *unbound* rc members and take the box as a
-// token; shared: retain the bound members and drop the count. A preceding
-// increment cancels against the destructuring decrement in
-// `reussir-inc-dec-cancellation` by rematerializing the bound retains
-// (borrow semantics), which is what turns inlined read-only predicates like
-// rbtree's `is_red` into pure tag reads.
-//
-// The same consumption shape appears without a pattern match: a
-// rebuild-style update of a compound box reads its fields, retains the ones
-// it keeps, and releases the box —
-//
-//   %front = ref.load(ref.project(rc.borrow %q, 1))
-//   rc.inc %front                    // keeps the front list
-//   %state = ref.load(ref.project(rc.borrow %q, 2))
-//   ref.acquire (ref.spilled %state) // keeps the [value] state's children
-//   ...
-//   rc.dec %q
-//   ... build the updated box from the loaded fields ...
-//
-// (functional-queue's snoc/uncons over its Hood-Melville Queue). On the hot
-// unique path every one of those retains is answered by the release of the
-// same member inside the whole-record drop — pure count traffic, and for a
-// [value] member a whole tag-switch of child increments each way. The
-// second walk below fuses these into a *tagless* destructuring decrement
-// whose bound members index the compound record itself: unique — the kept
-// members transfer, only unkept managed members release; shared — the
-// retains rematerialize (see `rematerializeBoundRetains`).
-//
+///
+/// \file
+/// Fuses a pattern match's consumption of its scrutinee into a *destructuring*
+/// decrement (Koka's `dropn_reuse` shape).
+///
+/// The frontend lowers `match v { Ctor(a, b, ..) => .. }` into a borrowing
+/// dispatch whose taken arm retains every bound member and then decrements the
+/// scrutinee:
+///
+///   %ref = reussir.rc.borrow %v
+///   reussir.record.dispatch(%ref) {
+///     [k] -> ^arm(%payload):
+///       %a = ref.load(ref.project %payload [i])
+///       rc.inc %a                      // retain the binding
+///       ...
+///       rc.dec %v                      // release the box (transitive glue)
+///   }
+///
+/// The retain/release pair over each bound member is pure count traffic on the
+/// hot unique path: the box dies and its slots could simply transfer. This
+/// pass erases the bound retains and tags the decrement with the arm's tag and
+/// the bound member indices; `reussir-rc-decrement-expansion` then expands it
+/// shallowly — unique: release only *unbound* rc members and take the box as a
+/// token; shared: retain the bound members and drop the count. A preceding
+/// increment cancels against the destructuring decrement in
+/// `reussir-inc-dec-cancellation` by rematerializing the bound retains
+/// (borrow semantics), which is what turns inlined read-only predicates like
+/// rbtree's `is_red` into pure tag reads.
+///
+/// The same consumption shape appears without a pattern match: a
+/// rebuild-style update of a compound box reads its fields, retains the ones
+/// it keeps, and releases the box —
+///
+///   %front = ref.load(ref.project(rc.borrow %q, 1))
+///   rc.inc %front                    // keeps the front list
+///   %state = ref.load(ref.project(rc.borrow %q, 2))
+///   ref.acquire (ref.spilled %state) // keeps the [value] state's children
+///   ...
+///   rc.dec %q
+///   ... build the updated box from the loaded fields ...
+///
+/// (functional-queue's snoc/uncons over its Hood-Melville Queue). On the hot
+/// unique path every one of those retains is answered by the release of the
+/// same member inside the whole-record drop — pure count traffic, and for a
+/// [value] member a whole tag-switch of child increments each way. The
+/// second walk below fuses these into a *tagless* destructuring decrement
+/// whose bound members index the compound record itself: unique — the kept
+/// members transfer, only unkept managed members release; shared — the
+/// retains rematerialize (see `rematerializeBoundRetains`).
+///
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/IR/ReussirDialect.h"

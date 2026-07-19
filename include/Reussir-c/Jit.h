@@ -1,17 +1,20 @@
-//===-- Jit.h - Reussir JIT codegen C API ----------------------*- C -*-===//
+//===----------------------------------------------------------------------===//
 //
-// Part of the Reussir project, dual licensed under the Apache License v2.0 or
+// Part of the Reussir Project, dual licensed under the Apache License v2.0 or
 // the MIT License.
+// See https://github.com/reussir-lang/reussir/blob/main/LICENSE for license
+// information.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 //===----------------------------------------------------------------------===//
-//
-// LLVM-side codegen helpers for the Rust ORC JIT (reussir-jit). These are the
-// pieces that cannot be expressed through the LLVM-C ORC API the Rust engine is
-// built on: the Reussir custom LLVM optimization pipeline (which runs C++
-// passes) and TPDE object compilation. They operate on opaque `LLVMModuleRef`
-// values so the Rust side can keep driving the ORC session through llvm-sys.
-//
+///
+/// \file
+/// LLVM-side codegen helpers for the Rust ORC JIT (reussir-jit). These are the
+/// pieces that cannot be expressed through the LLVM-C ORC API used by the Rust
+/// engine: the Reussir custom LLVM optimization pipeline (which runs C++
+/// passes) and TPDE object compilation. They operate on opaque `LLVMModuleRef`
+/// values so the Rust side can keep driving the ORC session through llvm-sys.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef REUSSIR_C_JIT_H
