@@ -1128,6 +1128,51 @@ mod tests {
     }
 
     #[test]
+    fn sync_cell_surface_types() {
+        // The four sync kinds are surface type constructors with per-kind
+        // element bounds. Well-formed shapes elaborate cleanly, including
+        // the composition direction: an Arc'd record with a sync-cell
+        // member is interior mutability behind an arc.
+        let ok = "struct Pair { a: i32 }\n\
+                  struct Counter { hits: Atomic<i64>, guard: Mutex<i64> }\n\
+                  fn f(m: Mutex<i64>, a: Atomic<f64>, l: FlatLock<i64>, r: RwLock<Arc<Pair>>) -> i32 { 0 }\n\
+                  fn g(c: Arc<Counter>) -> i32 { 0 }";
+        assert!(reports_of(ok).is_empty(), "{:#?}", reports_of(ok));
+    }
+
+    #[test]
+    fn sync_cell_element_bounds() {
+        // Atomic demands an arithmetic primitive …
+        let bad_atomic = "struct Pair { a: i32 }\nfn f(a: Atomic<Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(bad_atomic, "`Atomic<Pair>` is ill-formed"),
+            "{:#?}",
+            reports_of(bad_atomic)
+        );
+        // … the lock kinds demand a Sync element (Mutex<Arc> yes,
+        // Mutex<bare shared> no) …
+        let bad_mutex = "struct Pair { a: i32 }\nfn f(m: Mutex<Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                bad_mutex,
+                "the element of a lock-guarded cell must be `Sync`"
+            ),
+            "{:#?}",
+            reports_of(bad_mutex)
+        );
+        // … and a pointer-or-primitive slot shape.
+        let bad_slot = "struct [value] V { a: i32 }\nfn f(r: RwLock<V>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                bad_slot,
+                "`RwLock<V>` is ill-formed: the element is a `[value]` record"
+            ),
+            "{:#?}",
+            reports_of(bad_slot)
+        );
+    }
+
+    #[test]
     fn infers_arc_ctors() {
         // The struct and variant arc constructors type at `Arc<R>`.
         let src = "struct Pair { a: i32 }\n\

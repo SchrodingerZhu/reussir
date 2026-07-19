@@ -96,19 +96,26 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk_generic(generic);
         }
 
-        // Built-in type constructors are roots and never module-qualified.
-        // `Cell<T>` is the plain get/set cell; `RefCell<T>` is the exclusive
-        // flavor that additionally supports guarded read-modify-write.
-        if path.segments.is_empty() && matches!(self.sym(key), "Cell" | "RefCell") {
-            let kind = if self.sym(key) == "RefCell" {
-                crate::semi::ty::CellKind::Exclusive
-            } else {
-                crate::semi::ty::CellKind::Plain
-            };
+        // Built-in cell type constructors are roots and never
+        // module-qualified. `Cell<T>` is the plain get/set cell; `RefCell<T>`
+        // the exclusive flavor with guarded read-modify-write; `Atomic<T>`,
+        // `Mutex<T>`, `FlatLock<T>`, and `RwLock<T>` are the synchronization
+        // kinds (thread-safety design §4), each with its own element bound
+        // checked by [`Elaborator::report_cell_wf`].
+        if path.segments.is_empty()
+            && let Some(kind) = crate::semi::ty::CellKind::parse(self.sym(key))
+        {
             let name = kind.surface_name();
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
+                    if self.records_complete {
+                        // Same staging as `Arc` wf: the lock kinds' `Sync`
+                        // element bound needs record members, so annotation
+                        // sites evaluated before fields populate are
+                        // re-checked by the post-populate sweep.
+                        self.report_cell_wf(inner, kind, Some(span));
+                    }
                     self.tcx.mk_cell(inner, kind)
                 }
                 _ => {
@@ -379,6 +386,51 @@ pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
 /// `ty_eval` (a concrete annotation) and monomorphization (the deferred half:
 /// a generic inner is first grounded by an instantiation, e.g. a trampoline's
 /// explicit type arguments).
+/// Why `t` cannot be the element of an `Atomic` cell, or `None` when it can
+/// (or when it is a generic/hole, deferred to the monomorphization
+/// backstop): the dialect stores the element as an inline atomic scalar, so
+/// only integer and floating-point primitives qualify (every supported fp
+/// width is a power of two).
+pub fn atomic_cell_element_rejection(t: Ty<'_>) -> Option<&'static str> {
+    match *t.kind() {
+        TyKind::Int(IntTy::Signed(w) | IntTy::Unsigned(w)) => {
+            if w.is_power_of_two() && w >= 8 {
+                None
+            } else {
+                Some("an integer whose width is not a power of two of at least 8 bits")
+            }
+        }
+        TyKind::Fp(_) => None,
+        TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => None,
+        TyKind::Bool => Some("`bool` (use an 8-bit integer)"),
+        TyKind::Char => Some("`char` (use a 32-bit integer)"),
+        _ => Some("not an integer or floating-point primitive"),
+    }
+}
+
+/// Why `t` cannot sit in a lock-guarded cell's slot, or `None` when it can
+/// (or when the answer waits for monomorphization): the slot is a memref
+/// element, so it stores a primitive or an rc pointer — inline aggregates
+/// and nullable wrappers do not qualify. (The `Sync` element bound is
+/// checked separately; this is only the storage-shape half.)
+pub fn lock_cell_slot_rejection<'tcx>(
+    cap_of: impl FnOnce(DefId) -> Option<DefaultCap>,
+    t: Ty<'tcx>,
+) -> Option<&'static str> {
+    match *t.kind() {
+        TyKind::Record { def, .. } => match cap_of(def) {
+            Some(DefaultCap::Value) => {
+                Some("a `[value]` record, which is stored inline rather than as a pointer")
+            }
+            _ => None,
+        },
+        TyKind::Nullable(_) => Some("a nullable, whose null case has no pointer to store"),
+        TyKind::Str => Some("a `str`"),
+        TyKind::Unit => Some("the unit type"),
+        _ => None,
+    }
+}
+
 pub fn arc_inner_rejection<'tcx>(
     cap_of: impl FnOnce(DefId) -> Option<DefaultCap>,
     t: Ty<'tcx>,
@@ -528,6 +580,65 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// contents are not `Sync`. Call only where records are complete (the
     /// post-populate sweep and body checking); a blocked verdict defers to
     /// the monomorphization backstop.
+    /// Report an ill-formed cell type per its kind's element bound
+    /// (thread-safety design §4.2). `Atomic` demands an integer or
+    /// floating-point primitive; the lock-guarded kinds demand a
+    /// pointer-or-primitive slot shape and a `Sync` element. Concrete
+    /// violations report here; generic elements defer to the
+    /// monomorphization backstop. Plain and exclusive cells have no bound.
+    pub(crate) fn report_cell_wf(
+        &mut self,
+        elem: Ty<'tcx>,
+        kind: crate::semi::ty::CellKind,
+        span: Option<surface::Span>,
+    ) {
+        use crate::semi::traits::sync::sync_verdict;
+        use crate::semi::ty::CellKind;
+        match kind {
+            CellKind::Plain | CellKind::Exclusive => {}
+            CellKind::Atomic => {
+                if let Some(what) = atomic_cell_element_rejection(elem) {
+                    self.error(
+                        span,
+                        format!(
+                            "`Atomic<{}>` is ill-formed: the element is {what}",
+                            self.ty_display(elem)
+                        ),
+                    );
+                }
+            }
+            CellKind::Mutex | CellKind::Flatlock | CellKind::Rwlock => {
+                let name = kind.surface_name();
+                if let Some(what) = lock_cell_slot_rejection(
+                    |def| self.records.get(&def).map(|r| r.default_cap),
+                    elem,
+                ) {
+                    self.error(
+                        span,
+                        format!(
+                            "`{name}<{}>` is ill-formed: the element is {what}",
+                            self.ty_display(elem)
+                        ),
+                    );
+                    return;
+                }
+                if let SyncVerdict::NotSync(w) = sync_verdict(&ElabSyncEnv { el: self }, elem) {
+                    self.error(
+                        span,
+                        format!(
+                            "`{name}<{}>` is ill-formed: {}; the element of a \
+                             lock-guarded cell must be `Sync` — the lock protects \
+                             the stored slot, while clones of the element leave \
+                             the critical section",
+                            self.ty_display(elem),
+                            w.describe()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     pub(crate) fn report_arc_wf(&mut self, inner: Ty<'tcx>, span: Option<surface::Span>) {
         if self.arc_inner_rejection(inner).is_some() {
             // The kind gate owns this error at its own site.
@@ -568,7 +679,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.sweep_arc_wf(ret, span);
             }
             TyKind::Nullable(inner) => self.sweep_arc_wf(inner, span),
-            TyKind::Cell { elem, .. } => self.sweep_arc_wf(elem, span),
+            TyKind::Cell { elem, kind } => {
+                self.report_cell_wf(elem, kind, span);
+                self.sweep_arc_wf(elem, span);
+            }
             TyKind::Array { elem, .. } => self.sweep_arc_wf(elem, span),
             _ => {}
         }
