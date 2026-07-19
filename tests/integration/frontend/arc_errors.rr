@@ -58,6 +58,22 @@ fn ctor_no_inner() -> i64 { Arc { value: 1 }; 0 }
 fn ctor_value_inner() -> i64 { Arc<Flat> { value: 1 }; 0 }
 
 // The arc coloring is part of the type: an arc'd constructor does not check
-// against the bare record.
-// CHECK-DAG: type mismatch
+// against the bare record, and the mismatch explains the coloring rather
+// than shrugging "type mismatch".
+// CHECK-DAG: cannot reconcile thread-safety: expected `Shared`, found `Arc<Shared>`
 fn ctor_is_colored() -> Shared { Arc<Shared> { value: 1 } }
+
+enum List<T> { Nil, Cons(T, List<T>) }
+// The recursive case names the strongly connected component and the §3.3
+// promotion, on both sides of the confusion: feeding a bare value into the
+// atomic world …
+// CHECK-DAG: cannot reconcile thread-safety: expected `Arc<List<i64>>`, found `List<i64>`
+// CHECK-DAG: fields of the recursive group `List` are promoted to `Arc`
+// CHECK-DAG: construct it as `Arc<List<i64>>::…` from the start
+fn bare_into_atomic() -> i64 { Arc<List<i64>>::Cons{1, List::Nil}; 0 }
+
+// … and being surprised that a projected field carries the coloring.
+// CHECK-DAG: a value read out of an arc'd box keeps its `Arc` coloring
+fn projected_is_arc(l: Arc<List<i64>>) -> List<i64> {
+    match l { List::Cons(_, xs) => xs, List::Nil => List::Nil }
+}
