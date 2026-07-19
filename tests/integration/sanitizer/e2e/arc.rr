@@ -1,6 +1,6 @@
 // REQUIRES: asan
 // ASan+LSan gate over frontend/arc_e2e.rr: atomic retain/release balance on
-// the arc'd boxes (sharing, enum payload links, nullable wrapping, generic
+// the arc'd boxes (sharing, enum payloads, nullable wrapping, generic
 // instantiation) — a missed atomic decrement leaks, a doubled one
 // double-frees.
 

@@ -13,6 +13,7 @@
 pub mod builtins;
 pub mod db;
 pub mod def;
+pub mod sync;
 
 pub use db::{SelectError, TraitDb};
 pub use def::{AssocTyDef, ImplDef, MethodSig, TraitDef};

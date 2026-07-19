@@ -776,7 +776,7 @@ mod tests {
         roundtrip(
             r#"
             struct Data { value: i64 }
-            enum List<T> { Nil, Cons(T, List<T>) }
+            enum Opt<T> { None, Some(T) }
             fn generic<T>(a: T) -> T { a }
             pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
                 generic(a)
@@ -787,16 +787,16 @@ mod tests {
             pub fn make(v: i64) -> Arc<Data> {
                 Arc<Data> { value: v }
             }
-            pub fn make_list() -> Arc<List<i64>> {
-                Arc<List<i64>>::Cons{1, List::Nil}
+            pub fn make_some() -> Arc<Opt<i64>> {
+                Arc<Opt<i64>>::Some{1}
             }
             pub fn read(a: Arc<Data>) -> i64 {
                 a.value
             }
-            pub fn head(l: Arc<List<i64>>) -> i64 {
-                match l {
-                    List::Cons(x, _) => x,
-                    List::Nil => 0
+            pub fn get(o: Arc<Opt<i64>>) -> i64 {
+                match o {
+                    Opt::Some(x) => x,
+                    Opt::None => 0
                 }
             }
             "#,

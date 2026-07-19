@@ -65,6 +65,7 @@ use crate::semi::ctxt::{
 };
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
+use crate::semi::traits::sync::{SyncEnv, SyncVerdict, wf_arc};
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
 use crate::semi::ty::{FpTy, IntTy};
 use crate::semi::ty_eval::arc_inner_rejection;
@@ -121,6 +122,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
 
     let mut driver = Driver {
         tcx,
+        resolver: input.resolver,
         mangler: Mangler::new(input.defs, input.resolver),
         symbols: Rodeo::default(),
         queue: VecDeque::new(),
@@ -422,9 +424,61 @@ fn is_regional_arg(ty: Ty<'_>) -> bool {
     )
 }
 
+/// [`SyncEnv`] over ground mono state: capabilities and members from the
+/// elaborated record table, member types grounded with [`subst_ty`]. Every
+/// type here is ground, so — unlike the semi-side env — nothing blocks on
+/// incomplete fields or generics.
+struct MonoSyncEnv<'a, 'tcx> {
+    tcx: &'a TyCtxt<'tcx>,
+    record_defs: &'a FxHashMap<DefId, Record<'tcx>>,
+    resolver: &'a dyn Resolver<TokenKey>,
+}
+
+impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
+    fn default_cap(&self, def: DefId) -> Option<DefaultCap> {
+        self.record_defs.get(&def).map(|r| r.default_cap)
+    }
+
+    fn members(&self, def: DefId, args: &'tcx [Ty<'tcx>]) -> Option<Vec<(String, Ty<'tcx>)>> {
+        let rec = self.record_defs.get(&def)?;
+        let fields = rec.fields.as_ref()?;
+        let subst: Subst<'tcx> = rec
+            .ty_params
+            .iter()
+            .map(|(_, g)| *g)
+            .zip(args.iter().copied())
+            .collect();
+        let ground = |t: Ty<'tcx>| subst_ty(self.tcx, t, &subst);
+        Some(match fields {
+            RecordFields::Named(fs) => fs
+                .iter()
+                .map(|(n, t, _)| (self.resolver.resolve(*n).to_owned(), ground(*t)))
+                .collect(),
+            RecordFields::Unnamed(fs) => fs
+                .iter()
+                .enumerate()
+                .map(|(i, (t, _))| (i.to_string(), ground(*t)))
+                .collect(),
+            RecordFields::Variants(vs) => vs
+                .iter()
+                .flat_map(|v| {
+                    let vname = self.resolver.resolve(v.name);
+                    v.fields
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, t)| (format!("{vname}.{i}"), *t))
+                })
+                .map(|(label, t)| (label, ground(t)))
+                .collect(),
+        })
+    }
+}
+
 /// Mutable worklist + lowering state.
 struct Driver<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
+    /// Symbol resolution for diagnostics (member labels in `Sync` witnesses).
+    resolver: &'a dyn Resolver<TokenKey>,
     mangler: Mangler<'a>,
     /// Interner for every mangled symbol; moved into the final `mir::Program`.
     symbols: Rodeo,
@@ -532,16 +586,39 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                     |def| self.record_defs.get(&def).map(|r| r.default_cap),
                     inner,
                 );
-                if let Some(kind) = rejection
-                    && self.reported_arcs.insert(ty)
-                {
-                    self.error(
-                        span,
-                        format!(
-                            "this instantiation grounds an `Arc` inner type that is not a \
-                             `[shared]` record, array, or closure ({kind})"
-                        ),
-                    );
+                if let Some(kind) = rejection {
+                    if self.reported_arcs.insert(ty) {
+                        self.error(
+                            span,
+                            format!(
+                                "this instantiation grounds an `Arc` inner type that is not a \
+                                 `[shared]` record, array, or closure ({kind})"
+                            ),
+                        );
+                    }
+                } else {
+                    // The kind is admissible; the ground backstop for the
+                    // structural half: every member must be `Sync`. Semi
+                    // checks concrete annotations/ctors eagerly but defers
+                    // anything a generic blocks — instantiation is where
+                    // those ground.
+                    let env = MonoSyncEnv {
+                        tcx: self.tcx,
+                        record_defs: self.record_defs,
+                        resolver: self.resolver,
+                    };
+                    if let SyncVerdict::NotSync(w) = wf_arc(&env, inner)
+                        && self.reported_arcs.insert(ty)
+                    {
+                        self.error(
+                            span,
+                            format!(
+                                "this instantiation grounds an `Arc` whose contents are not \
+                                 `Sync`: {}",
+                                w.describe()
+                            ),
+                        );
+                    }
                 }
                 self.check_arc_inners(inner, span);
             }
@@ -630,6 +707,13 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             for field_ty in field_tys {
                 let ground = subst_ty(tcx, field_ty, &subst);
                 self.discover_records(ground, &mut worklist);
+                // The member position is where an `Arc` can ground without
+                // ever appearing in a signature or expression type: a direct
+                // `Arc` slot is rejected at declaration, but one behind a
+                // `Nullable`/`Cell` wrapper (`next: Nullable<Arc<T>>`) is
+                // legal and semi's wf check blocks on the generic. This walk
+                // is its only ground checkpoint.
+                self.check_arc_inners(ground, record.span);
             }
         }
     }
@@ -1599,6 +1683,58 @@ mod tests {
                 "grounds an `Arc` inner type that is not a `[shared]` record, \
                  array, or closure (a cell)"
             )),
+            "{reports:#?}"
+        );
+    }
+
+    #[test]
+    fn arc_generic_rejects_non_sync_instantiation() {
+        // The kind is admissible (a `[shared]` record) but the contents are
+        // not `Sync`: `Cons` holds a bare `List<T>` whose refcount is not
+        // atomic. Semi defers the generic inner; grounding it here is the
+        // backstop.
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            fn passthrough<T>(a: Arc<T>) -> Arc<T> { a }
+            extern "C" trampoline "bad_list" = passthrough<List<i32>>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `Cons.1`")),
+            "{reports:#?}"
+        );
+    }
+
+    #[test]
+    fn arc_behind_a_generic_member_is_checked_at_instantiation() {
+        // A member-position `Arc` can ground without ever appearing in a
+        // signature or expression type: `link: Nullable<Arc<T>>` is a legal
+        // member (only a *direct* `Arc` slot is rejected at declaration) and
+        // semi's wf check blocks on the generic — closing the record set
+        // over fields is its only ground checkpoint, for both halves of the
+        // check.
+        let src = r#"
+            enum List<T> { Nil, Cons(T, List<T>) }
+            struct Holder<T> { link: Nullable<Arc<T>> }
+            fn keep<T>(h: Holder<T>) -> Holder<T> { h }
+            extern "C" trampoline "unsync_member" = keep<List<i64>>;
+            extern "C" trampoline "non_box_member" = keep<i32>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `Cons.1`")),
+            "{reports:#?}"
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("not a `[shared]` record, array, or closure")),
             "{reports:#?}"
         );
     }

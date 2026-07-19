@@ -1088,11 +1088,99 @@ mod tests {
     fn infers_arc_ctors() {
         // The struct and variant arc constructors type at `Arc<R>`.
         let src = "struct Pair { a: i32 }\n\
-                   enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   enum Opt<T> { None, Some(T) }\n\
                    fn f(v: i32) -> Arc<Pair> { Arc<Pair> { a: v } }\n\
-                   fn g() -> Arc<List<i32>> { Arc<List<i32>>::Cons{1, List::Nil} }\n\
-                   fn h() -> Arc<List<i32>> { Arc<List<i32>>::Nil }";
+                   fn g() -> Arc<Opt<i32>> { Arc<Opt<i32>>::Some{1} }\n\
+                   fn h() -> Arc<Opt<i32>> { Arc<Opt<i32>>::None }";
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn rejects_arc_whose_member_is_a_bare_shared_record() {
+        // The stratified wf rule: the arc colors exactly one box, so every
+        // member must be `Sync` on its own — a bare `[shared]` member (its
+        // refcount is not atomic) refutes, and the witness names it.
+        let src = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   fn f(l: Arc<List<i32>>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "every member of an `Arc` inner must be `Sync`"),
+            "{:#?}",
+            reports_of(src)
+        );
+        assert!(
+            has_error(src, "member `Cons.1` is a plain `[shared]` rc box"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_wf_at_the_ctor_site() {
+        // The coloring site checks too: no annotation is needed to trip it.
+        let src = "enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   fn f() -> i32 { Arc<List<i32>>::Cons{1, List::Nil}; 0 }";
+        assert!(
+            has_error(src, "every member of an `Arc` inner must be `Sync`"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn later_batch_arc_wf_reports_once() {
+        // A second `run` batch (the REPL shape) scans its signatures while
+        // the flag left by the previous batch's completed sweep would still
+        // be set; the annotation-site check must stay silent until this
+        // batch's own sweep, or the error doubles.
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
+                &interner;
+            let mut elab = Elaborator::new(tcx, resolver);
+            for src in [
+                "enum List<T> { Nil, Cons(T, List<T>) }",
+                "fn f(l: Arc<List<i32>>) -> i32 { 0 }",
+            ] {
+                let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(parse.ok(), "{src}: {:#?}", parse.errors);
+                elab.run(&surface::program(&parse.root));
+            }
+            let arc_errors = elab
+                .reports
+                .iter()
+                .filter(|r| {
+                    r.message
+                        .contains("every member of an `Arc` inner must be `Sync`")
+                })
+                .count();
+            assert_eq!(arc_errors, 1, "{:#?}", elab.reports);
+        });
+    }
+
+    #[test]
+    fn arc_wf_witness_names_a_nested_member_path() {
+        // The `!Sync` leaf sits two levels down, through a `[value]` record;
+        // the diagnostic walks the path instead of blaming the root.
+        let src = "struct Leaf { x: i32 }\n\
+                   struct [value] Mid { leaf: Leaf }\n\
+                   struct Top { m: Mid }\n\
+                   fn f(t: Arc<Top>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "member `m.leaf` is a plain `[shared]` rc box"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_arc_whose_member_is_a_cell() {
+        let src = "struct Counter { c: Cell<i32> }\n\
+                   fn f(x: Arc<Counter>) -> i32 { 0 }";
+        assert!(
+            has_error(src, "member `c` is a plain `Cell`"),
+            "{:#?}",
+            reports_of(src)
+        );
     }
 
     #[test]
@@ -1134,13 +1222,10 @@ mod tests {
         // Projection and matching see through the arc coloring; the bound
         // fields carry their declared (plain) types.
         let src = "struct Pair { a: i32, b: i32 }\n\
-                   enum List<T> { Nil, Cons(T, List<T>) }\n\
+                   enum Opt<T> { None, Some(T) }\n\
                    fn f(p: Arc<Pair>) -> i32 { p.a + p.b }\n\
-                   fn g(l: Arc<List<i32>>) -> i32 {\n\
-                       match l { List::Cons(x, xs) => x + len(xs), List::Nil => 0 }\n\
-                   }\n\
-                   fn len<T>(l: List<T>) -> i32 {\n\
-                       match l { List::Cons(_, xs) => 1 + len(xs), List::Nil => 0 }\n\
+                   fn g(o: Arc<Opt<i32>>) -> i32 {\n\
+                       match o { Opt::Some(x) => x, Opt::None => 0 }\n\
                    }";
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
     }

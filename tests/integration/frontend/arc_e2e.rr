@@ -1,7 +1,9 @@
 // End-to-end Arc semantics: the arc'd constructor allocates an atomically
-// counted box, sharing retains it atomically, reads (projection and
-// matching) are the inner record's own, and the arc colors only the outer
-// box — enum payload links stay plain shared values.
+// counted box, sharing retains it atomically, and reads (projection and
+// matching) are the inner record's own. Enum payloads are scalars: the arc
+// colors exactly one box, so a member holding a bare shared box (a recursive
+// tail link) is rejected by the structural `Sync` check until the per-member
+// atomic axis lands (design doc §3.3 SCC promotion).
 
 // RUN: %rrc %s -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/arc_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
@@ -14,9 +16,9 @@ struct [shared] Data {
     value: i64
 }
 
-enum List<T> {
-    Nil,
-    Cons(T, List<T>)
+enum Opt<T> {
+    None,
+    Some(T)
 }
 
 fn read_twice(a: Arc<Data>, b: Arc<Data>) -> i64 {
@@ -30,19 +32,13 @@ pub fn test_share() -> i64 {
 }
 extern "C" trampoline "test_share_ffi" = test_share;
 
-// The arc colors only the outer box: the tail links are plain shared lists.
-fn sum(l: List<i64>) -> i64 {
-    match l {
-        List::Cons(x, xs) => x + sum(xs),
-        List::Nil => 0
-    }
-}
-
+// An arc'd enum: the variant constructor is the inner enum's own, matching
+// peels the coloring, and drop releases the tagged payload atomically.
 pub fn test_enum() -> i64 {
-    let l = Arc<List<i64>>::Cons{7, List::Cons{35, List::Nil}};
+    let l = Arc<Opt<i64>>::Some{42};
     match l {
-        List::Cons(x, xs) => x + sum(xs),
-        List::Nil => 0
+        Opt::Some(x) => x,
+        Opt::None => 0
     }
 }
 extern "C" trampoline "test_enum_ffi" = test_enum;
