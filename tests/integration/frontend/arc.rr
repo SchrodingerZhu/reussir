@@ -36,9 +36,12 @@ pub fn call_passthrough(a: Arc<Data>) -> Arc<Data> {
     passthrough(a)
 }
 
-enum List<T> {
-    Nil,
-    Cons(T, List<T>)
+// Scalar payloads only: a recursive enum (`Cons(T, List<T>)`) holds a bare
+// shared box, so its `Arc` is rejected by the structural `Sync` check until
+// the per-member atomic axis lands (design doc §3.3 SCC promotion).
+enum Opt<T> {
+    None,
+    Some(T)
 }
 
 // The arc constructors are the inner record's own, at the arc'd type: the
@@ -52,11 +55,11 @@ pub fn make(v: i64) -> Arc<Data> {
     Arc<Data> { value: v }
 }
 
-// HIR: pub fn #make_list() -> Arc<#List::<i64>>
-// HIR-NEXT: #List::<i64>#1(1 : i64, #List::<i64>#0() : #List::<i64>) : Arc<#List::<i64>>
-// MIR-DAG: pub fn @_RC9make_list() -> Arc<List::<i64>>
-pub fn make_list() -> Arc<List<i64>> {
-    Arc<List<i64>>::Cons{1, List::Nil}
+// HIR: pub fn #make_opt() -> Arc<#Opt::<i64>>
+// HIR-NEXT: #Opt::<i64>#1(1 : i64) : Arc<#Opt::<i64>>
+// MIR-DAG: pub fn @_RC8make_opt() -> Arc<Opt::<i64>>
+pub fn make_opt() -> Arc<Opt<i64>> {
+    Arc<Opt<i64>>::Some{1}
 }
 
 // The lowering: an arc'd value is `!reussir.rc<…, atomic>`, constructed
@@ -88,13 +91,13 @@ pub fn read(a: Arc<Data>) -> i64 {
     a.value
 }
 
-// HIR: pub fn #head(v0 (l): Arc<#List::<i64>>) -> i64
-// HIR-NEXT: match v0 : Arc<#List::<i64>> {
-// MIR-DAG: pub fn @_RC4head(v0 (l): Arc<List::<i64>>) -> i64
-// MIR-DAG: match v0 : Arc<List::<i64>> {
-pub fn head(l: Arc<List<i64>>) -> i64 {
+// HIR: pub fn #head(v0 (l): Arc<#Opt::<i64>>) -> i64
+// HIR-NEXT: match v0 : Arc<#Opt::<i64>> {
+// MIR-DAG: pub fn @_RC4head(v0 (l): Arc<Opt::<i64>>) -> i64
+// MIR-DAG: match v0 : Arc<Opt::<i64>> {
+pub fn head(l: Arc<Opt<i64>>) -> i64 {
     match l {
-        List::Cons(x, _) => x,
-        List::Nil => 0
+        Opt::Some(x) => x,
+        Opt::None => 0
     }
 }
