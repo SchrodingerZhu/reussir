@@ -911,6 +911,18 @@ pub struct TransformScript {
     pub body_span: Span,
 }
 
+/// A file-scoped path abbreviation. Both surface spellings — `import p (as
+/// n)?;` and `alias n = p;` — project here: `name` is the identifier the
+/// binding introduces (the path's last segment when no rename is given) and
+/// `path` its target. Imports are always private; `visibility` is kept so the
+/// elaborator can reject `pub import` with a real diagnostic.
+#[derive(Clone, Debug)]
+pub struct ImportDecl {
+    pub visibility: Visibility,
+    pub name: Spanned<TokenKey>,
+    pub path: Path,
+}
+
 #[derive(Clone, Debug)]
 pub enum StmtKind {
     Function(Function),
@@ -919,6 +931,7 @@ pub enum StmtKind {
     Mod(Visibility, TokenKey),
     ExternTrampoline(ExternTrampoline),
     Transform(TransformScript),
+    Import(ImportDecl),
 }
 
 /// A statement (a view over a top-level item node).
@@ -952,6 +965,7 @@ impl Stmt {
             ModStmt => StmtKind::Mod(visibility_of(node), key(name_after(node, ModKw))),
             ExternTrampolineStmt => StmtKind::ExternTrampoline(extern_of(node)),
             TransformStmt => StmtKind::Transform(transform_of(node)),
+            ImportStmt | AliasStmt => StmtKind::Import(import_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
         }
     }
@@ -1117,6 +1131,37 @@ fn extern_of(node: &ResolvedNode) -> ExternTrampoline {
     }
 }
 
+fn import_of(node: &ResolvedNode) -> ImportDecl {
+    let path_node = child_node(node, PathKind).expect("import target path");
+    let path = path_of(path_node);
+    // The bound name: the renaming identifier (after `as` / after `alias`) when
+    // present, otherwise the target path's last segment.
+    let name_token = match node.kind() {
+        SyntaxKind::ImportStmt => tokens(node)
+            .skip_while(|t| t.kind() != AsKw)
+            .skip(1) // the `as` token itself is identifier-like
+            .find(|t| t.kind().is_ident_like())
+            .unwrap_or_else(|| {
+                tokens(path_node)
+                    .filter(|t| t.kind().is_ident_like())
+                    .last()
+                    .expect("non-empty path")
+            }),
+        SyntaxKind::AliasStmt => name_after(node, AliasKw),
+        k => unreachable!("unexpected import node {k:?}"),
+    };
+    let ns = token_span(name_token);
+    ImportDecl {
+        visibility: visibility_of(node),
+        name: Spanned {
+            value: key(name_token),
+            start: ns.start,
+            end: ns.end,
+        },
+        path,
+    }
+}
+
 fn transform_of(node: &ResolvedNode) -> TransformScript {
     let token = tokens(node)
         .find(|token| token.kind() == RawMlirLiteral)
@@ -1211,6 +1256,28 @@ mod tests {
         assert!(f.is_regional);
         // The `[flex]` flag on the first parameter is preserved.
         assert!(f.params[0].2);
+    }
+
+    #[test]
+    fn views_imports_and_aliases() {
+        let parse = parse(
+            "import core::intrinsic::math;\nimport core::intrinsic::array as arr;\nalias rt = core::intrinsic::math::sqrt;",
+        );
+        let prog = program(&parse.root);
+        assert_eq!(prog.len(), 3);
+        let cases = [
+            ("math", "math"),
+            ("arr", "array"),
+            ("rt", "sqrt"),
+        ];
+        for (stmt, (name, basename)) in prog.iter().zip(cases) {
+            let StmtKind::Import(decl) = stmt.kind() else {
+                panic!("expected an import");
+            };
+            assert_eq!(parse.resolver().resolve(decl.name.value), name);
+            assert_eq!(parse.resolver().resolve(decl.path.basename), basename);
+            assert_eq!(decl.visibility, Visibility::Private);
+        }
     }
 
     #[test]

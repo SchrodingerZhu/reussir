@@ -4,6 +4,8 @@
 
 // RUN: %rrc %s --emit hir -o - | %FileCheck %s
 
+import core::intrinsic::array;
+
 // CHECK: pub fn #id(v0 (a): [f64; 8]) -> [f64; 8]
 pub fn id(a : [f64; 8]) -> [f64; 8] {
     a
@@ -12,32 +14,32 @@ pub fn id(a : [f64; 8]) -> [f64; 8] {
 // CHECK: pub fn #splat_ones() -> [i32; 4, 4]
 // CHECK: array#splat(1 : i32
 pub fn splat_ones() -> [i32; 4, 4] {
-    core::intrinsic::array::splat<[i32; 4, 4]>(1)
+    array::splat<[i32; 4, 4]>(1)
 }
 
 // CHECK: pub fn #bump(v0 (a): [f64; 8], v1 (i): i64, v2 (v): f64) -> [f64; 8]
 // CHECK: array#set(v0 : [f64; 8] {{.*}}, v1 : i64 {{.*}}, (array#get(v0
 pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
-    core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
+    array::set(a, i, array::get(a, i) + v)
 }
 
 // A rank-2 access takes one index per dimension, row-major.
 // CHECK: pub fn #cell(v0 (m): [i32; 4, 4], v1 (i): i64, v2 (j): i64) -> i32
 // CHECK: array#get(v0 : [i32; 4, 4] {{.*}}, v1 : i64 {{.*}}, v2 : i64
 pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
-    core::intrinsic::array::get(m, i, j)
+    array::get(m, i, j)
 }
 
 // CHECK: pub fn #make() -> [f64; 8]
 // CHECK: array#tabulate(closure[](v{{[0-9]+}}: i64) {
 pub fn make() -> [f64; 8] {
-    core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64)
+    array::tabulate<[f64; 8]>(|i| i as f64)
 }
 
 // CHECK: pub fn #sum(v0 (a): [f64; 8]) -> f64
 // CHECK: array#fold(v0 : [f64; 8]{{.*}}, 0.0 : f64{{.*}}, closure[](v{{[0-9]+}}: f64, v{{[0-9]+}}: f64) {
 pub fn sum(a : [f64; 8]) -> f64 {
-    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+    array::fold(a, 0.0, |acc, x| acc + x)
 }
 
 // The kernel is an ordinary closure: a stencil reading the enclosing array
@@ -46,9 +48,9 @@ pub fn sum(a : [f64; 8]) -> f64 {
 // CHECK: array#tabulate(closure[v0: [f64; 8]](v{{[0-9]+}}: i64) {
 // CHECK: array#get(v0
 pub fn blur(x : [f64; 8]) -> [f64; 8] {
-    core::intrinsic::array::tabulate<[f64; 8]>(|i|
-        if i == 0 { core::intrinsic::array::get(x, i) }
-        else { (core::intrinsic::array::get(x, i - 1) + core::intrinsic::array::get(x, i)) / 2.0 })
+    array::tabulate<[f64; 8]>(|i|
+        if i == 0 { array::get(x, i) }
+        else { (array::get(x, i - 1) + array::get(x, i)) / 2.0 })
 }
 
 // A named closure works too — the kernel operand is any closure-typed
@@ -56,5 +58,5 @@ pub fn blur(x : [f64; 8]) -> [f64; 8] {
 // CHECK: pub fn #apply_named(v0 (f): (f64, f64) -> f64, v1 (a): [f64; 8]) -> f64
 // CHECK: array#fold(v1 : [f64; 8]{{.*}}, 1.0 : f64{{.*}}, v0 : (f64, f64) -> f64
 pub fn apply_named(f : (f64, f64) -> f64, a : [f64; 8]) -> f64 {
-    core::intrinsic::array::fold(a, 1.0, f)
+    array::fold(a, 1.0, f)
 }

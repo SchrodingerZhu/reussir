@@ -39,6 +39,8 @@ pub enum SyntaxKind {
     AsKw,
     TrueKw,
     FalseKw,
+    ImportKw,
+    AliasKw,
 
     // ===== Tokens: punctuation =====
     /// `::`
@@ -124,6 +126,10 @@ pub enum SyntaxKind {
     ExternTrampolineStmt,
     /// A module-level `transform [{ ... }];` item.
     TransformStmt,
+    /// `import path (as name)?;` — a file-scoped path abbreviation.
+    ImportStmt,
+    /// `alias name = path;` — the renaming spelling of an import.
+    AliasStmt,
     GenericParamList,
     GenericParam,
     ParamList,
@@ -215,7 +221,15 @@ impl SyntaxKind {
     pub fn starts_stmt(self) -> bool {
         matches!(
             self,
-            FnKw | StructKw | EnumKw | PubKw | ModKw | ExternKw | RegionalKw | Pound
+            FnKw | StructKw
+                | EnumKw
+                | PubKw
+                | ModKw
+                | ExternKw
+                | RegionalKw
+                | ImportKw
+                | AliasKw
+                | Pound
         )
     }
 
@@ -241,6 +255,8 @@ impl SyntaxKind {
                 | AsKw
                 | TrueKw
                 | FalseKw
+                | ImportKw
+                | AliasKw
         )
     }
 
@@ -269,6 +285,8 @@ impl SyntaxKind {
             AsKw => "`as`",
             TrueKw => "`true`",
             FalseKw => "`false`",
+            ImportKw => "`import`",
+            AliasKw => "`alias`",
             PathSep => "`::`",
             Arrow => "`->`",
             FatArrow => "`=>`",

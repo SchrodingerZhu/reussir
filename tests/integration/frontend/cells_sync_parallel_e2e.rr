@@ -16,6 +16,8 @@
 // RUN: %cc %openmp_flags %t.opt.o %S/cells_sync_parallel_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::cell;
+
 enum Map {
     Tip,
     Node(i64, i64, Map, Map)
@@ -48,7 +50,7 @@ fn total(m: Arc<Map>) -> i64 {
 }
 
 pub fn make_stats() -> Mutex<Arc<Map>> {
-    core::intrinsic::cell::alloc<Mutex<Arc<Map>>>(Arc<Map>::Tip)
+    cell::alloc<Mutex<Arc<Map>>>(Arc<Map>::Tip)
 }
 extern "C" trampoline "make_stats_ffi" = make_stats;
 
@@ -72,7 +74,7 @@ extern "C" trampoline "dup_ffi" = dup;
 // commit a short critical section running the pure insert.
 fn loop_insert(stats: Mutex<Arc<Map>>, k: i64, stride: i64, upto: i64) -> i64 {
     if k < upto {
-        core::intrinsic::cell::rmw(stats, |m| insert(m, k, k));
+        cell::rmw(stats, |m| insert(m, k, k));
         loop_insert(stats, k + stride, stride, upto)
     } else {
         0
@@ -86,6 +88,6 @@ extern "C" trampoline "worker_ffi" = worker;
 
 // The final fold over a snapshot, consuming the last reference.
 pub fn grand_total(stats: Mutex<Arc<Map>>) -> i64 {
-    total(core::intrinsic::cell::get(stats))
+    total(cell::get(stats))
 }
 extern "C" trampoline "grand_total_ffi" = grand_total;

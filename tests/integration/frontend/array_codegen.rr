@@ -32,7 +32,7 @@
 // CHECK: scf.yield %[[NEXT]] : f64
 // CHECK: reussir.rc.dec
 pub fn sum(a : [f64; 8]) -> f64 {
-    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+    array::fold(a, 0.0, |acc, x| acc + x)
 }
 
 // Rank-2 access: one bounds compare per dimension, and-reduced into one guard.
@@ -43,7 +43,7 @@ pub fn sum(a : [f64; 8]) -> f64 {
 // CHECK: scf.if %[[OK2]] -> (i32) {
 // CHECK: memref.load %{{.+}}[%{{.+}}, %{{.+}}] : memref<4x4xi32>
 pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
-    core::intrinsic::array::get(m, i, j)
+    array::get(m, i, j)
 }
 
 // A tabulate constructor: a fresh rc.create over a poison payload (uniquely
@@ -67,7 +67,7 @@ pub fn cell(m : [i32; 4, 4], i : i64, j : i64) -> i32 {
 // CHECK: reussir.rc.dec
 // CHECK: return %[[ARR]]
 pub fn iota() -> [f64; 8] {
-    core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64)
+    array::tabulate<[f64; 8]>(|i| i as f64)
 }
 
 // A splat constructor: the same fresh box, one value stored everywhere — no
@@ -79,7 +79,7 @@ pub fn iota() -> [f64; 8] {
 // CHECK: scf.for
 // CHECK: memref.store
 pub fn ones() -> [f64; 8] {
-    core::intrinsic::array::splat<[f64; 8]>(1.0)
+    array::splat<[f64; 8]>(1.0)
 }
 
 // CHECK-LABEL: func.func @_RC4read
@@ -97,7 +97,7 @@ pub fn ones() -> [f64; 8] {
 // CHECK: reussir.rc.dec(%arg0
 // CHECK: return %[[R]]
 pub fn read(a : [f64; 8], i : i64) -> f64 {
-    core::intrinsic::array::get(a, i)
+    array::get(a, i)
 }
 
 // CHECK-LABEL: func.func @_RC5write
@@ -113,7 +113,7 @@ pub fn read(a : [f64; 8], i : i64) -> f64 {
 // CHECK: ub.poison : !reussir.rc<!reussir.array<8 x f64>>
 // CHECK: return %[[OUT]]
 pub fn write(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
-    core::intrinsic::array::set(a, i, v)
+    array::set(a, i, v)
 }
 
 // At -Oaggressive the loop-carried beta reduction inlines the literal
@@ -136,6 +136,8 @@ pub fn write(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
 // RUN: %rrc %s --emit llvm-ir -Oaggressive -o %t.vec.ll
 // RUN: %FileCheck %s --check-prefix=VEC < %t.vec.ll
 
+import core::intrinsic::array;
+
 // The same shape isolated for inspection: take an array parameter, add one
 // to every element by tail recursion over get/set, return the result — no
 // construction, no reduction. At -Oaggressive the recursion becomes a
@@ -148,8 +150,8 @@ fn bump_from(a : [f32; 1024], i : i64) -> [f32; 1024] {
     if i == 1024 {
         a
     } else {
-        let v = core::intrinsic::array::get(a, i);
-        bump_from(core::intrinsic::array::set(a, i, v + 1.0), i + 1)
+        let v = array::get(a, i);
+        bump_from(array::set(a, i, v + 1.0), i + 1)
     }
 }
 pub fn plus_one(a : [f32; 1024]) -> [f32; 1024] {

@@ -7,6 +7,8 @@
 // RUN: %rrc %s --emit mlir -o - | %FileCheck %s --check-prefix=MLIR
 // RUN: %rrc %s -o %t.o
 
+import core::intrinsic::math;
+
 // CHECK: fn #cos(v0 (x): f64) -> f64 {
 // CHECK-NEXT: intrinsic#math#cos#1(v0 : f64) : f64
 // CHECK-NEXT: }
@@ -19,11 +21,11 @@
 // MLIR: math.sin %{{.*}} fastmath<fast> : f64
 
 fn cos(x : f64) -> f64 {
-    core::intrinsic::math::cos(x, 1)
+    math::cos(x, 1)
 }
 
 fn sin(x : f64) -> f64 {
-    core::intrinsic::math::sin(x, 127)
+    math::sin(x, 127)
 }
 
 pub fn main(x : f64) -> f64 {
