@@ -90,6 +90,14 @@ pub enum Token<'a> {
     Cell,
     #[token("RefCell")]
     RefCell,
+    #[token("Atomic")]
+    AtomicCell,
+    #[token("Mutex")]
+    MutexCell,
+    #[token("FlatLock")]
+    FlatLockCell,
+    #[token("RwLock")]
+    RwLockCell,
     #[token("Arc")]
     Arc,
     #[token("NonNull")]

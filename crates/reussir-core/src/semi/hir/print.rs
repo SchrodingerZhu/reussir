@@ -316,8 +316,8 @@ impl<'a> Printer<'a> {
             TyKind::Generic(g) => text(format!("${}", g.0)),
             TyKind::Hole(_) => unreachable!("a fully elaborated HIR carries no inference holes"),
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
-            TyKind::Cell { elem, exclusive } => {
-                text(if exclusive { "RefCell<" } else { "Cell<" }) + self.ty(elem) + text(">")
+            TyKind::Cell { elem, kind } => {
+                text(kind.surface_name()) + text("<") + self.ty(elem) + text(">")
             }
             TyKind::Arc(inner) => text("Arc<") + self.ty(inner) + text(">"),
             TyKind::Array { elem, dims } => {

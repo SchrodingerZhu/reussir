@@ -264,8 +264,8 @@ impl Render<'_> {
             TyKind::Unit => text("()"),
             TyKind::Bottom => text("!"),
             TyKind::Nullable(inner) => text("Nullable<") + self.ty(inner) + text(">"),
-            TyKind::Cell { elem, exclusive } => {
-                text(if exclusive { "RefCell<" } else { "Cell<" }) + self.ty(elem) + text(">")
+            TyKind::Cell { elem, kind } => {
+                text(kind.surface_name()) + text("<") + self.ty(elem) + text(">")
             }
             TyKind::Arc(inner) => text("Arc<") + self.ty(inner) + text(">"),
             TyKind::Array { elem, dims } => {

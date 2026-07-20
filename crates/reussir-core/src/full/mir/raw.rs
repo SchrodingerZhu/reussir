@@ -209,7 +209,7 @@ pub enum Ty {
     Nullable(Box<Ty>),
     Cell {
         inner: Box<Ty>,
-        exclusive: bool,
+        kind: crate::semi::ty::CellKind,
     },
     Arc(Box<Ty>),
     /// `[cap] path<args>` — a regional/value record type.

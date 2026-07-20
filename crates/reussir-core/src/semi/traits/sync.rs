@@ -88,10 +88,7 @@ pub fn collect_record_defs<'tcx>(ty: Ty<'tcx>, out: &mut Vec<DefId>) {
 /// under an `Arc`. Type arguments are ignored at this level, so polymorphic
 /// recursion collapses onto its def. Returns `None` (blocked) when any
 /// reachable def's fields are not populated yet.
-pub fn recursive_group<'tcx>(
-    env: &dyn SyncEnv<'tcx>,
-    root: DefId,
-) -> Option<FxHashSet<DefId>> {
+pub fn recursive_group<'tcx>(env: &dyn SyncEnv<'tcx>, root: DefId) -> Option<FxHashSet<DefId>> {
     // Forward reachability from `root`.
     let mut forward = FxHashSet::default();
     let mut stack = vec![root];
@@ -147,9 +144,7 @@ pub enum NotSyncReason {
 impl NotSyncReason {
     pub fn describe(self) -> &'static str {
         match self {
-            NotSyncReason::NonAtomicBox => {
-                "a plain `[shared]` rc box whose refcount is not atomic"
-            }
+            NotSyncReason::NonAtomicBox => "a plain `[shared]` rc box whose refcount is not atomic",
             NotSyncReason::Regional => "a regional object",
             NotSyncReason::PlainCell => "a plain `Cell`, which is unsynchronized",
             NotSyncReason::ExclusiveCell => "a `RefCell`, whose in-use guard is not atomic",
@@ -246,10 +241,7 @@ impl<'tcx> Cx<'_, 'tcx> {
 
     /// Fold a labeled member list: the first definite failure wins; a block
     /// only surfaces when nothing fails outright.
-    fn fold(
-        &mut self,
-        members: impl IntoIterator<Item = (String, Ty<'tcx>)>,
-    ) -> SyncVerdict<'tcx> {
+    fn fold(&mut self, members: impl IntoIterator<Item = (String, Ty<'tcx>)>) -> SyncVerdict<'tcx> {
         let mut blocked = false;
         for (label, ty) in members {
             self.path.push(label);
@@ -284,14 +276,29 @@ impl<'tcx> Cx<'_, 'tcx> {
             | TyKind::Bottom => SyncVerdict::Sync,
             TyKind::Generic(_) | TyKind::Hole(_) => SyncVerdict::Blocked,
             TyKind::Nullable(inner) => self.check(inner),
-            TyKind::Cell { exclusive, .. } => self.refute(
-                ty,
-                if exclusive {
-                    NotSyncReason::ExclusiveCell
-                } else {
-                    NotSyncReason::PlainCell
-                },
-            ),
+            // The cell verdict follows the kind lattice (thread-safety
+            // design §4): a plain/exclusive cell is unsynchronized and
+            // refutes; an atomic cell is `Sync` outright (its element is an
+            // arithmetic scalar by formation); a lock-guarded cell is `Sync`
+            // exactly when its element is — the lock protects the stored
+            // slot, but clones of the element leave the critical section and
+            // are used concurrently, so the element must carry its own
+            // thread safety.
+            TyKind::Cell { elem, kind } => {
+                use crate::semi::ty::CellKind;
+                match kind {
+                    CellKind::Plain => self.refute(ty, NotSyncReason::PlainCell),
+                    CellKind::Exclusive => self.refute(ty, NotSyncReason::ExclusiveCell),
+                    CellKind::Atomic => SyncVerdict::Sync,
+                    CellKind::Mutex | CellKind::Flatlock | CellKind::Rwlock => {
+                        self.path
+                            .push(format!("the `{}` element", kind.surface_name()));
+                        let verdict = self.check(elem);
+                        self.path.pop();
+                        verdict
+                    }
+                }
+            }
             // Bare shared rc boxes: never `Sync`, regardless of contents —
             // shareability is carried by the box coloring (`Arc`), not the
             // nominal type.
@@ -405,7 +412,7 @@ impl<'tcx> Cx<'_, 'tcx> {
 mod tests {
     use super::*;
     use crate::semi::ctxt::DefaultCap;
-    use crate::semi::ty::{Flexivity, IntTy, Ty, TyCtxt};
+    use crate::semi::ty::{CellKind, Flexivity, IntTy, Ty, TyCtxt};
     use crate::with_tcx;
     use rustc_hash::FxHashMap;
 
@@ -483,10 +490,8 @@ mod tests {
                 (DefaultCap::Value, Some(vec![("leaf".into(), leaf)])),
             );
             let mid = rec(tcx, 2);
-            env.records.insert(
-                DefId(3),
-                (DefaultCap::Value, Some(vec![("m".into(), mid)])),
-            );
+            env.records
+                .insert(DefId(3), (DefaultCap::Value, Some(vec![("m".into(), mid)])));
             let SyncVerdict::NotSync(w) = sync_verdict(&env, rec(tcx, 3)) else {
                 panic!("expected NotSync");
             };
@@ -560,7 +565,7 @@ mod tests {
                 DefId(0),
                 (
                     DefaultCap::Shared,
-                    Some(vec![("c".into(), tcx.mk_cell(i32t, false))]),
+                    Some(vec![("c".into(), tcx.mk_cell(i32t, CellKind::Plain))]),
                 ),
             );
             let SyncVerdict::NotSync(w) = wf_arc(&env, rec(tcx, 0)) else {
@@ -569,12 +574,62 @@ mod tests {
             assert_eq!(w.reason, NotSyncReason::PlainCell);
             assert_eq!(w.path, vec!["c".to_owned()]);
             assert!(matches!(
-                sync_verdict(&env, tcx.mk_cell(i32t, true)),
+                sync_verdict(&env, tcx.mk_cell(i32t, CellKind::Exclusive)),
                 SyncVerdict::NotSync(Witness {
                     reason: NotSyncReason::ExclusiveCell,
                     ..
                 })
             ));
+        });
+    }
+
+    #[test]
+    fn sync_cells_are_sync_with_sync_elements() {
+        with_tcx(|tcx: &TyCtxt| {
+            let mut env = TestEnv::default();
+            let i32t = tcx.mk_int(IntTy::Signed(32));
+            // Atomic cells and lock cells over Sync elements are Sync — the
+            // sanctioned primitive for sharing mutable state, no Arc needed.
+            for kind in [
+                CellKind::Atomic,
+                CellKind::Mutex,
+                CellKind::Flatlock,
+                CellKind::Rwlock,
+            ] {
+                assert!(
+                    matches!(
+                        sync_verdict(&env, tcx.mk_cell(i32t, kind)),
+                        SyncVerdict::Sync
+                    ),
+                    "{kind:?}"
+                );
+            }
+            // A lock cell over a bare shared record refutes through the
+            // element: the lock guards the slot, not the element's counts
+            // (Mutex<Rc>-analog no, Mutex<Arc> yes).
+            env.records
+                .insert(DefId(0), (DefaultCap::Shared, Some(vec![])));
+            let bare = rec(tcx, 0);
+            let SyncVerdict::NotSync(w) = sync_verdict(&env, tcx.mk_cell(bare, CellKind::Mutex))
+            else {
+                panic!("expected NotSync");
+            };
+            assert_eq!(w.path, vec!["the `Mutex` element".to_owned()]);
+            assert_eq!(w.reason, NotSyncReason::NonAtomicBox);
+            assert!(matches!(
+                sync_verdict(&env, tcx.mk_cell(tcx.mk_arc(bare), CellKind::Mutex)),
+                SyncVerdict::Sync
+            ));
+            // The composition direction: an Arc'd record holding a sync-cell
+            // member is well-formed — interior mutability behind an arc.
+            env.records.insert(
+                DefId(1),
+                (
+                    DefaultCap::Shared,
+                    Some(vec![("m".into(), tcx.mk_cell(i32t, CellKind::Mutex))]),
+                ),
+            );
+            assert!(matches!(wf_arc(&env, rec(tcx, 1)), SyncVerdict::Sync));
         });
     }
 

@@ -457,8 +457,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.push_ty_display(out, inner);
                 out.push('>');
             }
-            TyKind::Cell { elem, exclusive } => {
-                out.push_str(if exclusive { "RefCell<" } else { "Cell<" });
+            TyKind::Cell { elem, kind } => {
+                out.push_str(kind.surface_name());
+                out.push('<');
                 self.push_ty_display(out, elem);
                 out.push('>');
             }
@@ -1332,8 +1333,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             {
                 continue;
             }
-            let mut stack: Vec<(DefId, Vec<DefId>)> =
-                vec![(root, self.inline_value_heads(root))];
+            let mut stack: Vec<(DefId, Vec<DefId>)> = vec![(root, self.inline_value_heads(root))];
             color.insert(root, 1);
             while let Some((_, succs)) = stack.last_mut() {
                 let Some(next) = succs.pop() else {
@@ -1350,8 +1350,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             .skip_while(|&&d| d != next)
                             .map(|d| self.sym(self.records[d].name).to_owned())
                             .collect();
-                        let (span, file) =
-                            (self.records[&next].span, self.records[&next].file);
+                        let (span, file) = (self.records[&next].span, self.records[&next].file);
                         self.set_current_file(file);
                         self.error(
                             span,

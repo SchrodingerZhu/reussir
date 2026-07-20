@@ -630,9 +630,12 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
             TyKind::Nullable(inner) => {
                 format!("Nullable<{}>", Self::render_ty_with(elab, inner))
             }
-            TyKind::Cell { elem, exclusive } => {
-                let name = if exclusive { "RefCell" } else { "Cell" };
-                format!("{name}<{}>", Self::render_ty_with(elab, elem))
+            TyKind::Cell { elem, kind } => {
+                format!(
+                    "{}<{}>",
+                    kind.surface_name(),
+                    Self::render_ty_with(elab, elem)
+                )
             }
             TyKind::Arc(inner) => {
                 format!("Arc<{}>", Self::render_ty_with(elab, inner))

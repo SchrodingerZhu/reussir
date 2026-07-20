@@ -658,7 +658,69 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 self.check_arc_inners(ret, span);
             }
             TyKind::Nullable(inner) => self.check_arc_inners(inner, span),
-            TyKind::Cell { elem: inner, .. } => self.check_arc_inners(inner, span),
+            TyKind::Cell { elem: inner, kind } => {
+                // The ground half of the cell element bounds (see semi's
+                // `report_cell_wf`): a generic element defers to this point.
+                use crate::semi::ty::CellKind;
+                use crate::semi::ty_eval::{
+                    atomic_cell_element_rejection, lock_cell_slot_rejection,
+                };
+                match kind {
+                    CellKind::Plain | CellKind::Exclusive => {}
+                    CellKind::Atomic => {
+                        if let Some(what) = atomic_cell_element_rejection(inner)
+                            && self.reported_arcs.insert(ty)
+                        {
+                            self.error(
+                                span,
+                                format!(
+                                    "this instantiation grounds an `Atomic` cell \
+                                     whose element is {what}"
+                                ),
+                            );
+                        }
+                    }
+                    CellKind::Mutex | CellKind::Flatlock | CellKind::Rwlock => {
+                        let slot = lock_cell_slot_rejection(
+                            |def| self.record_defs.get(&def).map(|r| r.default_cap),
+                            inner,
+                        );
+                        if let Some(what) = slot {
+                            if self.reported_arcs.insert(ty) {
+                                self.error(
+                                    span,
+                                    format!(
+                                        "this instantiation grounds a `{}` cell \
+                                         whose element is {what}",
+                                        kind.surface_name()
+                                    ),
+                                );
+                            }
+                        } else {
+                            let env = MonoSyncEnv {
+                                tcx: self.tcx,
+                                record_defs: self.record_defs,
+                                resolver: self.resolver,
+                            };
+                            if let SyncVerdict::NotSync(w) =
+                                crate::semi::traits::sync::sync_verdict(&env, inner)
+                                && self.reported_arcs.insert(ty)
+                            {
+                                self.error(
+                                    span,
+                                    format!(
+                                        "this instantiation grounds a `{}` cell whose \
+                                         element is not `Sync`: {}",
+                                        kind.surface_name(),
+                                        w.describe()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+                self.check_arc_inners(inner, span);
+            }
             TyKind::Array { elem, .. } => self.check_arc_inners(elem, span),
             _ => {}
         }
@@ -816,11 +878,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                             .iter()
                             .map(|(k, _)| k.0)
                             .skip_while(|&d| d != next.0)
-                            .map(|d| {
-                                self.resolver
-                                    .resolve(self.record_defs[&d].name)
-                                    .to_owned()
-                            })
+                            .map(|d| self.resolver.resolve(self.record_defs[&d].name).to_owned())
                             .collect();
                         let span = self.record_defs[&next.0].span;
                         self.error(
@@ -1833,10 +1891,10 @@ mod tests {
         "#;
         let reports = mono_reports(src);
         assert!(
-            reports
-                .iter()
-                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `p`")),
+            reports.iter().any(
+                |m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `p`")
+            ),
             "{reports:#?}"
         );
         assert!(
@@ -1863,10 +1921,10 @@ mod tests {
         "#;
         let reports = mono_reports(src);
         assert!(
-            reports
-                .iter()
-                .any(|m| m.contains("grounds an `Arc` whose contents are not `Sync`")
-                    && m.contains("member `p`")),
+            reports.iter().any(
+                |m| m.contains("grounds an `Arc` whose contents are not `Sync`")
+                    && m.contains("member `p`")
+            ),
             "{reports:#?}"
         );
         assert!(
@@ -1895,6 +1953,37 @@ mod tests {
                 .any(|m| m.contains("recursive `[value]` record of infinite size")),
             "{reports:#?}"
         );
+    }
+
+    #[test]
+    fn ground_cell_element_bounds_are_rechecked() {
+        // Semi defers a generic cell element; grounding is where the bounds
+        // land: a bare shared record fails the lock kinds' Sync bound, a
+        // record fails Atomic's primitive bound, while Sync instantiations
+        // pass.
+        let src = r#"
+            struct Pair { a: i32 }
+            fn hold<T>(m: Mutex<T>) -> Mutex<T> { m }
+            fn count<T>(a: Atomic<T>) -> Atomic<T> { a }
+            extern "C" trampoline "bad_mutex" = hold<Pair>;
+            extern "C" trampoline "ok_mutex" = hold<i64>;
+            extern "C" trampoline "bad_atomic" = count<Pair>;
+            extern "C" trampoline "ok_atomic" = count<i64>;
+        "#;
+        let reports = mono_reports(src);
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("grounds a `Mutex` cell whose element is not `Sync`")),
+            "{reports:#?}"
+        );
+        assert!(
+            reports
+                .iter()
+                .any(|m| m.contains("grounds an `Atomic` cell whose element is")),
+            "{reports:#?}"
+        );
+        assert_eq!(reports.len(), 2, "{reports:#?}");
     }
 
     #[test]

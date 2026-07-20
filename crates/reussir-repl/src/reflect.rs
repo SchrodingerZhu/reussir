@@ -470,8 +470,10 @@ impl<'tcx> Walker<'_, 'tcx> {
                 }
                 TyKind::Unit => out.push_str("()"),
                 TyKind::Closure { .. } => out.push_str("<closure>"),
-                TyKind::Cell { exclusive, .. } => {
-                    out.push_str(if exclusive { "<refcell>" } else { "<cell>" })
+                TyKind::Cell { kind, .. } => {
+                    out.push('<');
+                    out.push_str(&kind.surface_name().to_lowercase());
+                    out.push('>');
                 }
                 TyKind::Nullable(inner) => {
                     let ptr = addr.cast::<*const u8>().read_unaligned();

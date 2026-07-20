@@ -1,0 +1,56 @@
+// The sync-cell surface (thread-safety design §4): Atomic / Mutex /
+// FlatLock / RwLock are surface type constructors whose boxes are born
+// atomically counted, and the `core::intrinsic::cell` namespace dispatches
+// on the kind — including the RwLock-only `rdlock` read transaction.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
+
+struct [shared] Data {
+    value: i64
+}
+
+// The four kinds round-trip both textual IRs and lower to kind-tagged cells
+// inside atomic shared boxes.
+// HIR: pub fn #make_mutex() -> Mutex<i64>
+// MIR-DAG: pub fn @_RC10make_mutex() -> Mutex<i64>
+// MLIR-DAG: !reussir.rc<!reussir.cell<i64 mutex> atomic>
+pub fn make_mutex() -> Mutex<i64> {
+    core::intrinsic::cell::alloc<Mutex<i64>>(0)
+}
+
+// HIR: pub fn #make_atomic() -> Atomic<i64>
+// MLIR-DAG: !reussir.rc<!reussir.cell<i64 atomic> atomic>
+pub fn make_atomic() -> Atomic<i64> {
+    core::intrinsic::cell::alloc<Atomic<i64>>(0)
+}
+
+// HIR: pub fn #make_flatlock() -> FlatLock<i64>
+// MLIR-DAG: !reussir.rc<!reussir.cell<i64 flatlock> atomic>
+pub fn make_flatlock() -> FlatLock<i64> {
+    core::intrinsic::cell::alloc<FlatLock<i64>>(0)
+}
+
+// A lock cell over an Arc'd element: the Mutex<Arc> composition.
+// HIR: pub fn #make_rwlock(v0 (d): Arc<#Data>) -> RwLock<Arc<#Data>>
+// MLIR-DAG: !reussir.rc<!reussir.cell<!reussir.rc<!reussir.record<compound "_RC4Data" {i64}> atomic> rwlock> atomic>
+pub fn make_rwlock(d: Arc<Data>) -> RwLock<Arc<Data>> {
+    core::intrinsic::cell::alloc<RwLock<Arc<Data>>>(d)
+}
+
+// get/set/rmw dispatch on the kind; rmw's update runs inside the mutex
+// critical section.
+// MLIR-DAG: reussir.cell.rmw
+pub fn bump(m: Mutex<i64>) -> i64 {
+    core::intrinsic::cell::rmw(m, |x| x + 1);
+    core::intrinsic::cell::get(m)
+}
+
+// The read transaction: the reader receives a clone of the element under
+// the shared read lock and its result leaves through the region yield.
+// HIR: pub fn #peek(v0 (r): RwLock<Arc<#Data>>) -> i64
+// MLIR-DAG: reussir.cell.rdlock
+pub fn peek(r: RwLock<Arc<Data>>) -> i64 {
+    core::intrinsic::cell::rdlock(r, |d| d.value)
+}

@@ -1086,7 +1086,10 @@ mod tests {
         let regional = "struct Pair { a: i32 }\n\
                         struct [regional] R { v: i64, p: Arc<Pair> }";
         assert!(
-            has_error(regional, "an `Arc` member of a `[regional]` record is not implemented yet"),
+            has_error(
+                regional,
+                "an `Arc` member of a `[regional]` record is not implemented yet"
+            ),
             "{:#?}",
             reports_of(regional)
         );
@@ -1122,6 +1125,70 @@ mod tests {
                    struct [value] C { s: Shared2 }\n\
                    struct [value] D { c: C }";
         assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn sync_cell_surface_types() {
+        // The four sync kinds are surface type constructors with per-kind
+        // element bounds. Well-formed shapes elaborate cleanly, including
+        // the composition direction: an Arc'd record with a sync-cell
+        // member is interior mutability behind an arc.
+        let ok = "struct Pair { a: i32 }\n\
+                  struct Counter { hits: Atomic<i64>, guard: Mutex<i64> }\n\
+                  fn f(m: Mutex<i64>, a: Atomic<f64>, l: FlatLock<i64>, r: RwLock<Arc<Pair>>) -> i32 { 0 }\n\
+                  fn g(c: Arc<Counter>) -> i32 { 0 }";
+        assert!(reports_of(ok).is_empty(), "{:#?}", reports_of(ok));
+    }
+
+    #[test]
+    fn atomic_rmw_is_gated() {
+        // The atomic CAS-retry region must be effect-free, which a closure
+        // call is not — rmw on an Atomic cell is rejected at the checker
+        // until dedicated atomic arithmetic intrinsics exist.
+        let src = "fn f(a: Atomic<i64>) -> i64 {\n\
+                       core::intrinsic::cell::rmw(a, |x| x + 1);\n\
+                       core::intrinsic::cell::get(a)\n\
+                   }";
+        assert!(
+            has_error(
+                src,
+                "`core::intrinsic::cell::rmw` is not supported on `Atomic<i64>`"
+            ),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn sync_cell_element_bounds() {
+        // Atomic demands an arithmetic primitive …
+        let bad_atomic = "struct Pair { a: i32 }\nfn f(a: Atomic<Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(bad_atomic, "`Atomic<Pair>` is ill-formed"),
+            "{:#?}",
+            reports_of(bad_atomic)
+        );
+        // … the lock kinds demand a Sync element (Mutex<Arc> yes,
+        // Mutex<bare shared> no) …
+        let bad_mutex = "struct Pair { a: i32 }\nfn f(m: Mutex<Pair>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                bad_mutex,
+                "the element of a lock-guarded cell must be `Sync`"
+            ),
+            "{:#?}",
+            reports_of(bad_mutex)
+        );
+        // … and a pointer-or-primitive slot shape.
+        let bad_slot = "struct [value] V { a: i32 }\nfn f(r: RwLock<V>) -> i32 { 0 }";
+        assert!(
+            has_error(
+                bad_slot,
+                "`RwLock<V>` is ill-formed: the element is a `[value]` record"
+            ),
+            "{:#?}",
+            reports_of(bad_slot)
+        );
     }
 
     #[test]
@@ -1188,12 +1255,18 @@ mod tests {
             reports_of(creation)
         );
         assert!(
-            has_error(creation, "fields of the recursive group `List` are promoted to `Arc`"),
+            has_error(
+                creation,
+                "fields of the recursive group `List` are promoted to `Arc`"
+            ),
             "{:#?}",
             reports_of(creation)
         );
         assert!(
-            has_error(creation, "construct it as `Arc<List<i32>>::…` from the start"),
+            has_error(
+                creation,
+                "construct it as `Arc<List<i32>>::…` from the start"
+            ),
             "{:#?}",
             reports_of(creation)
         );

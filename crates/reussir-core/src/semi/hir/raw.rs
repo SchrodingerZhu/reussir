@@ -177,7 +177,7 @@ pub enum Ty {
     Nullable(Box<Ty>),
     Cell {
         inner: Box<Ty>,
-        exclusive: bool,
+        kind: crate::semi::ty::CellKind,
     },
     Arc(Box<Ty>),
     Record {
