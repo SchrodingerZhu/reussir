@@ -1,0 +1,91 @@
+// REQUIRES: openmp
+// The capability showcase for the thread-safety design, driven by real OS
+// threads: a persistent map shared across OpenMP threads through a
+// `Mutex<Arc<Map>>`, each thread committing pure path-copying inserts over
+// a strided slice of the keyspace, with the final fold proving no update
+// was lost and no count was torn. The worker body is exported over the C
+// ABI: multi-argument trampolines take a pointer to a packed argument
+// struct, and arguments are owned, so the driver splits its one reference
+// into N + 1 with `dup` (threading `keep` forward) — one per worker plus one
+// for the final fold, each consumed exactly once.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %openmp_flags %t.o %S/cells_sync_parallel_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %openmp_flags %t.opt.o %S/cells_sync_parallel_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+enum Map {
+    Tip,
+    Node(i64, i64, Map, Map)
+}
+
+// Path-copying insert in the colored world: untouched subtrees are shared,
+// and a uniquely held path is updated in place by Perceus reuse.
+fn insert(m: Arc<Map>, k: i64, v: i64) -> Arc<Map> {
+    match m {
+        Map::Tip => Arc<Map>::Node{k, v, Arc<Map>::Tip, Arc<Map>::Tip},
+        Map::Node(nk, nv, l, r) => {
+            if k < nk {
+                Arc<Map>::Node{nk, nv, insert(l, k, v), r}
+            } else {
+                if k > nk {
+                    Arc<Map>::Node{nk, nv, l, insert(r, k, v)}
+                } else {
+                    Arc<Map>::Node{nk, v, l, r}
+                }
+            }
+        }
+    }
+}
+
+fn total(m: Arc<Map>) -> i64 {
+    match m {
+        Map::Tip => 0,
+        Map::Node(_, nv, l, r) => nv + total(l) + total(r)
+    }
+}
+
+pub fn make_stats() -> Mutex<Arc<Map>> {
+    core::intrinsic::cell::alloc<Mutex<Arc<Map>>>(Arc<Map>::Tip)
+}
+extern "C" trampoline "make_stats_ffi" = make_stats;
+
+// Split one owned handle into two: the ctor references `s` twice, so the
+// returned pair holds two live references. Both fields carry the same
+// atomically counted cell — a `[value]` struct, so the pair is returned by
+// value (two pointers, no heap box) and the C driver consumes each handle
+// exactly once. Threading `keep` forward turns one reference into N + 1 with
+// no leak and no over-release.
+struct [value] Pair {
+    keep: Mutex<Arc<Map>>,
+    extra: Mutex<Arc<Map>>
+}
+
+pub fn dup(s: Mutex<Arc<Map>>) -> Pair {
+    Pair { keep: s, extra: s }
+}
+extern "C" trampoline "dup_ffi" = dup;
+
+// One worker's whole job: commit a strided slice of the keyspace, each
+// commit a short critical section running the pure insert.
+fn loop_insert(stats: Mutex<Arc<Map>>, k: i64, stride: i64, upto: i64) -> i64 {
+    if k < upto {
+        core::intrinsic::cell::rmw(stats, |m| insert(m, k, k));
+        loop_insert(stats, k + stride, stride, upto)
+    } else {
+        0
+    }
+}
+
+pub fn worker(stats: Mutex<Arc<Map>>, tid: i64, stride: i64, upto: i64) -> i64 {
+    loop_insert(stats, tid, stride, upto)
+}
+extern "C" trampoline "worker_ffi" = worker;
+
+// The final fold over a snapshot, consuming the last reference.
+pub fn grand_total(stats: Mutex<Arc<Map>>) -> i64 {
+    total(core::intrinsic::cell::get(stats))
+}
+extern "C" trampoline "grand_total_ffi" = grand_total;
