@@ -37,7 +37,7 @@ pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
 
 // The record alias covers type annotations, constructor calls (incl. the
 // nullary spelling), and match qualifiers.
-// CHECK: fn #len(v0 (l): List<i64>) -> i64 {
+// CHECK: fn #len(v0 (l): #List::<i64>) -> i64 {
 pub fn len(l : L<i64>) -> i64 {
     match l {
         L::Nil => 0,
@@ -45,7 +45,7 @@ pub fn len(l : L<i64>) -> i64 {
     }
 }
 
-// CHECK: fn #make() -> List<i64> {
+// CHECK: fn #make() -> #List::<i64> {
 pub fn make() -> L<i64> {
     L::Cons{1, L::Nil}
 }
