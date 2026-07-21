@@ -160,4 +160,74 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
         sym
     }
 
+    /// Whether the type lowers to an LLVM integer or pointer at the
+    /// boundary. Mirrors `isTrivialFFIType` in
+    /// `CABISignatureConversion.cpp`: scalars that are integers (`iN`,
+    /// `bool`, `char`) and rc pointers (opaque `#[ffi]` and shared records)
+    /// qualify; floats and aggregates do not.
+    pub fn integer_like(&self, ty: Ty<'tcx>) -> bool {
+        match *ty.kind() {
+            TyKind::Int(_) | TyKind::Bool | TyKind::Char => true,
+            TyKind::Record { def, .. } => self.records.get(&def).is_some_and(|r| {
+                r.ffi.is_some() || r.default_cap == DefaultCap::Shared
+            }),
+            _ => false,
+        }
+    }
+
+    /// The trampoline triviality rule, mirroring `evaluateCABISignatureForC`
+    /// (`CABISignatureConversion.cpp`): trivial iff the return is `unit` or
+    /// integer-like and there are fewer than four parameters, all
+    /// integer-like.
+    pub fn classify_trivial(&self, params: &[Ty<'tcx>], ret: Ty<'tcx>) -> bool {
+        let trivial_ret = matches!(*ret.kind(), TyKind::Unit) || self.integer_like(ret);
+        let trivial_params = params.len() < 4 && params.iter().all(|&p| self.integer_like(p));
+        trivial_ret && trivial_params
+    }
+}
+
+/// A Rust spelling of `name` as a binding identifier: raw (`r#name`) when
+/// the plain form could collide with a Rust keyword. `Err` for the few
+/// identifiers Rust cannot spell at all.
+pub fn rust_ident(name: &str) -> Result<String, String> {
+    match name {
+        "self" | "Self" | "super" | "crate" | "_" => Err(format!(
+            "parameter name `{name}` cannot cross the FFI boundary"
+        )),
+        // `r#` is valid on any non-reserved identifier, so apply it
+        // uniformly rather than tracking the keyword list.
+        _ => Ok(format!("r#{name}")),
+    }
+}
+
+/// Substitute `[:Name:]` generic placeholders in a foreign body with the
+/// instance's rendered Rust spellings. Unknown keys are left verbatim (the
+/// Rust compiler then reports them in context).
+pub fn substitute_placeholders(body: &str, map: &FxHashMap<&str, String>) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(start) = rest.find("[:") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find(":]") {
+            Some(end) => {
+                let key = &after[..end];
+                match map.get(key) {
+                    Some(value) => out.push_str(value),
+                    None => {
+                        out.push_str("[:");
+                        out.push_str(key);
+                        out.push_str(":]");
+                    }
+                }
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str("[:");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
