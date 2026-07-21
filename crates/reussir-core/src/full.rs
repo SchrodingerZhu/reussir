@@ -13,6 +13,7 @@
 //!
 //! [`semi`]: crate::semi
 
+pub mod ffi;
 pub mod mangle;
 pub mod mir;
 pub mod mono;
