@@ -69,6 +69,9 @@ pub struct Program {
     pub funcs: Vec<Func>,
     pub trampolines: Vec<Tramp>,
     pub transforms: Vec<Transform>,
+    pub ffi_imports: Vec<FfiImport>,
+    pub ffi_textures: Vec<FfiTexture>,
+    pub ffi_rc_glue: Vec<FfiRcGlue>,
 }
 
 /// One top-level item, as the grammar yields them before partitioning.
@@ -80,6 +83,9 @@ pub enum Item {
     Func(Func),
     Tramp(Tramp),
     Transform(Transform),
+    FfiImport(FfiImport),
+    FfiTexture(FfiTexture),
+    FfiRcGlue(FfiRcGlue),
 }
 
 /// A ground record declaration: its v0 symbol, the capability it declares by
@@ -146,6 +152,9 @@ impl Program {
             funcs: Vec::new(),
             trampolines: Vec::new(),
             transforms: Vec::new(),
+            ffi_imports: Vec::new(),
+            ffi_textures: Vec::new(),
+            ffi_rc_glue: Vec::new(),
         };
         for item in items {
             match item {
@@ -155,6 +164,9 @@ impl Program {
                 Item::Func(f) => p.funcs.push(f),
                 Item::Tramp(t) => p.trampolines.push(t),
                 Item::Transform(t) => p.transforms.push(t),
+                Item::FfiImport(f) => p.ffi_imports.push(f),
+                Item::FfiTexture(t) => p.ffi_textures.push(t),
+                Item::FfiRcGlue(g) => p.ffi_rc_glue.push(g),
             }
         }
         p
@@ -187,6 +199,30 @@ pub struct Tramp {
     pub abi: String,
     pub export: String,
     pub target: String,
+    pub import: bool,
+}
+
+/// An `#[ffi(import)]` instance: `ffi import @sym = @boundary "texture";`.
+#[derive(Clone, Debug)]
+pub struct FfiImport {
+    pub symbol: String,
+    pub boundary: String,
+    pub texture: String,
+}
+
+/// A standalone foreign texture: `ffi texture @anchor "texture";`.
+#[derive(Clone, Debug)]
+pub struct FfiTexture {
+    pub anchor: String,
+    pub texture: String,
+}
+
+/// Reussir-side rc glue: `ffi glue @acquire @release : ty;`.
+#[derive(Clone, Debug)]
+pub struct FfiRcGlue {
+    pub acquire: String,
+    pub release: String,
+    pub ty: Ty,
 }
 
 #[derive(Clone, Debug)]

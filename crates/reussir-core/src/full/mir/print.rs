@@ -104,12 +104,36 @@ impl<'a> Printer<'a> {
                 .map(|function| r.function(function)),
         );
         items.extend(program.trampolines.iter().map(|trampoline| {
+            let direction = if trampoline.import { "import " } else { "" };
             text(format!(
-                "extern \"{}\" trampoline \"{}\" = @{};",
+                "extern \"{}\" trampoline {direction}\"{}\" = @{};",
                 trampoline.abi,
                 r.sym(trampoline.export),
                 r.sym(trampoline.target),
             ))
+        }));
+        items.extend(program.ffi_imports.iter().map(|import| {
+            text(format!(
+                "ffi import @{} = @{} {:?};",
+                r.sym(import.symbol),
+                r.sym(import.boundary),
+                import.texture,
+            ))
+        }));
+        items.extend(program.ffi_textures.iter().map(|texture| {
+            text(format!(
+                "ffi texture @{} {:?};",
+                r.sym(texture.anchor),
+                texture.texture,
+            ))
+        }));
+        items.extend(program.ffi_rc_glue.iter().map(|glue| {
+            text(format!(
+                "ffi glue @{} @{} : ",
+                r.sym(glue.acquire),
+                r.sym(glue.release),
+            )) + r.ty(glue.ty)
+                + text(";")
         }));
 
         // One blank line between top-level items.

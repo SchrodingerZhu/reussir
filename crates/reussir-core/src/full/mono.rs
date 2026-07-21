@@ -145,6 +145,13 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         driver.enqueue(t.target, tcx.intern_tys(&t.ty_args));
     }
 
+    let mut ffi_imports_out: Vec<mir::FfiImport> = Vec::new();
+    let mut ffi_textures: Vec<mir::FfiTexture> = Vec::new();
+    let mut import_trampolines: Vec<mir::Trampoline> = Vec::new();
+    // Shared-record wrappers referenced by any texture, keyed by instance
+    // symbol (deterministic order) — each becomes one acquire/release pair.
+    let mut glue: std::collections::BTreeMap<String, Ty<'tcx>> = std::collections::BTreeMap::new();
+
     let mut functions = Vec::new();
     while let Some(inst) = driver.queue.pop_front() {
         let Some(func) = by_def.get(&inst.def) else {
@@ -275,19 +282,35 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         });
     }
 
-    let trampolines: Vec<mir::Trampoline> = input
+    let mut trampolines: Vec<mir::Trampoline> = input
         .trampolines
         .iter()
         .map(|t| mir::Trampoline {
             export: mir::Symbol(driver.symbols.get_or_intern(&t.name)),
             abi: t.abi.clone(),
             target: driver.symbol_of(t.target, tcx.intern_tys(&t.ty_args)),
+            import: false,
+        })
+        .collect();
+    trampolines.extend(import_trampolines);
+
+    // Reussir-side rc glue for every shared-record wrapper any texture
+    // referenced. The wrapped instances were noted during rendering, so
+    // their layouts are resolved above.
+    let ffi_rc_glue: Vec<mir::FfiRcGlue<'tcx>> = glue
+        .into_iter()
+        .map(|(sym, ty)| mir::FfiRcGlue {
+            ty,
+            acquire: mir::Symbol(driver.symbols.get_or_intern(format!("{sym}_ffi_acquire"))),
+            release: mir::Symbol(driver.symbols.get_or_intern(format!("{sym}_ffi_release"))),
         })
         .collect();
 
     // Deterministic output: sort by mangled text.
     functions.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0));
     records.sort_by_cached_key(|r| driver.symbols.resolve(&r.symbol.0));
+    ffi_imports_out.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0).to_owned());
+    ffi_textures.sort_by_cached_key(|t| driver.symbols.resolve(&t.anchor.0).to_owned());
 
     let Driver {
         symbols, reports, ..
@@ -299,6 +322,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             trampolines,
             string_literals: input.strings.clone(),
             transform_scripts: input.transform_scripts.to_vec(),
+            ffi_imports: ffi_imports_out,
+            ffi_textures,
+            ffi_rc_glue,
             symbols,
         },
         reports,

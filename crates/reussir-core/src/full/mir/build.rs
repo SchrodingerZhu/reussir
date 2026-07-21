@@ -194,6 +194,33 @@ impl<'tcx> Builder<'_, 'tcx> {
                 export: self.sym(&t.export),
                 abi: t.abi.clone(),
                 target: self.sym(&t.target),
+                import: t.import,
+            })
+            .collect();
+        let ffi_imports: Vec<mir::FfiImport> = raw
+            .ffi_imports
+            .iter()
+            .map(|f| mir::FfiImport {
+                symbol: self.sym(&f.symbol),
+                boundary: self.sym(&f.boundary),
+                texture: f.texture.clone(),
+            })
+            .collect();
+        let ffi_textures: Vec<mir::FfiTexture> = raw
+            .ffi_textures
+            .iter()
+            .map(|t| mir::FfiTexture {
+                anchor: self.sym(&t.anchor),
+                texture: t.texture.clone(),
+            })
+            .collect();
+        let ffi_rc_glue: Vec<mir::FfiRcGlue<'tcx>> = raw
+            .ffi_rc_glue
+            .iter()
+            .map(|g| mir::FfiRcGlue {
+                ty: self.ty(&g.ty),
+                acquire: self.sym(&g.acquire),
+                release: self.sym(&g.release),
             })
             .collect();
         let functions: Vec<mir::Function<'tcx>> = raw.funcs.iter().map(|f| self.func(f)).collect();
@@ -221,6 +248,9 @@ impl<'tcx> Builder<'_, 'tcx> {
             trampolines,
             string_literals,
             transform_scripts,
+            ffi_imports,
+            ffi_textures,
+            ffi_rc_glue,
             symbols,
         }
     }

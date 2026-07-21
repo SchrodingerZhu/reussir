@@ -59,6 +59,15 @@ pub struct Program<'tcx> {
     pub trampolines: Vec<Trampoline>,
     pub string_literals: Vec<(StringToken, String)>,
     pub transform_scripts: Vec<TransformScript>,
+    /// `#[ffi(import)]` function instances: the boundary wrapper texture and
+    /// symbols alongside the (bodyless) native function of the same symbol.
+    pub ffi_imports: Vec<FfiImport>,
+    /// Standalone foreign textures with no owning function (the drop hooks of
+    /// opaque record instances), anchored to a symbol for unit assignment.
+    pub ffi_textures: Vec<FfiTexture>,
+    /// Reussir-side rc glue exposed to foreign wrappers: per shared-record
+    /// instance crossing the boundary, tiny acquire/release functions.
+    pub ffi_rc_glue: Vec<FfiRcGlue<'tcx>>,
     /// Interner backing every [`Symbol`] in this program.
     pub symbols: Rodeo,
 }
@@ -153,12 +162,46 @@ pub struct VariantDef<'tcx> {
     pub fields: &'tcx [Ty<'tcx>],
 }
 
-/// An exported C-ABI trampoline aliasing a concrete function instance.
+/// A C-ABI trampoline. Export: `export` is the created boundary symbol and
+/// `target` the internal function instance it unwraps into. Import: `export`
+/// is the external boundary symbol and `target` the native (declared)
+/// function whose definition the lowering materializes.
 #[derive(Clone, Debug)]
 pub struct Trampoline {
     pub export: Symbol,
     pub abi: String,
     pub target: Symbol,
+    pub import: bool,
+}
+
+/// An `#[ffi(import)]` function instance: `symbol` names the native function
+/// (also present in [`Program::functions`], bodyless), `boundary` the
+/// external Rust-side symbol, and `texture` the self-contained Rust source
+/// defining `boundary`.
+#[derive(Clone, Debug)]
+pub struct FfiImport {
+    pub symbol: Symbol,
+    pub boundary: Symbol,
+    pub texture: String,
+}
+
+/// A standalone foreign texture (an opaque record instance's drop hook),
+/// emitted in `anchor`'s home codegen unit.
+#[derive(Clone, Debug)]
+pub struct FfiTexture {
+    pub anchor: Symbol,
+    pub texture: String,
+}
+
+/// Reussir-side rc glue for a shared record instance crossing the FFI
+/// boundary: `acquire` increments and `release` decrements (running drop at
+/// zero) the box of a value of type `ty`. Bound by the generated Rust
+/// wrappers' `Clone`/`Drop` impls.
+#[derive(Clone, Copy, Debug)]
+pub struct FfiRcGlue<'tcx> {
+    pub ty: Ty<'tcx>,
+    pub acquire: Symbol,
+    pub release: Symbol,
 }
 
 /// A monomorphized expression: a ground type, the structure, and a source span.
