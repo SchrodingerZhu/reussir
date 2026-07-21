@@ -1,16 +1,17 @@
-// The `import`/`alias` path abbreviations (docs/design/import-alias.md):
-// file-scoped bindings that expand before resolution, so the abbreviated
-// spellings elaborate to exactly the same HIR as the fully-qualified ones.
+// The `import` path abbreviations (docs/design/import.md): file-scoped
+// bindings that expand before resolution, so the abbreviated spellings
+// elaborate to exactly the same HIR as the fully-qualified ones.
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o
 
-// `import` binds the path's last segment; `alias` and `import … as …` bind
-// the given name. One binding serves types, values, and constructors alike.
+// `import` binds the path's last segment; `import … as …` binds the given
+// name — for modules, functions, and records alike. One binding serves
+// types, values, and constructors.
 import core::intrinsic::math;
-alias arr = core::intrinsic::array;
+import core::intrinsic::array as arr;
 import core::intrinsic::math::sqrt as rt;
-alias L = List;
+import List as L;
 
 enum List<T> { Nil, Cons(T, List<T>) }
 
@@ -27,15 +28,15 @@ pub fn root(x : f64) -> f64 {
     rt(x, 0)
 }
 
-// The aliased array family, including a mixed spelling: expansion happens
-// per reference, so the full path stays available alongside the alias.
+// The imported array family, including a mixed spelling: expansion happens
+// per reference, so the full path stays available alongside the import.
 // CHECK: fn #bump(v0 (a): [f64; 8], v1 (i): i64, v2 (v): f64) -> [f64; 8] {
 // CHECK: array#set(v0 : [f64; 8]{{.*}}array#get(v0
 pub fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
     arr::set(a, i, core::intrinsic::array::get(a, i) + v)
 }
 
-// The record alias covers type annotations, constructor calls (incl. the
+// The record import covers type annotations, constructor calls (incl. the
 // nullary spelling), and match qualifiers.
 // CHECK: fn #len(v0 (l): #List::<i64>) -> i64 {
 pub fn len(l : L<i64>) -> i64 {

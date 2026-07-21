@@ -96,8 +96,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk_generic(generic);
         }
 
-        // Expand `import`/`alias` bindings before the builtin-name checks so
-        // an aliased builtin type former spells the same as the original.
+        // Expand `import` bindings before the builtin-name checks so an
+        // imported builtin type former spells the same as the original.
         // Generics were checked first — a binding never shadows one.
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);

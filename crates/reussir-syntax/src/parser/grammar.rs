@@ -5,11 +5,9 @@
 //! ```text
 //! source-file ::= stmt*
 //! stmt        ::= 'pub'? (fn-stmt | struct-stmt | enum-stmt | mod-stmt
-//!                           | extern-stmt | transform-stmt
-//!                           | import-stmt | alias-stmt)
+//!                           | extern-stmt | transform-stmt | import-stmt)
 //! transform-stmt ::= 'transform' RAW-MLIR-LITERAL ';'
 //! import-stmt ::= 'import' path ('as' name)? ';'
-//! alias-stmt  ::= 'alias' name '=' path ';'
 //! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)? (block | ';')
 //! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields)
 //! enum-stmt   ::= 'enum' capability? name generics? '{' variant,* '}'
@@ -47,7 +45,7 @@ impl Parser<'_> {
                 // again.
                 let e = self.start();
                 self.error(format!(
-                    "expected a top-level item (fn, struct, enum, mod, extern, transform, import, or alias), found {}",
+                    "expected a top-level item (fn, struct, enum, mod, extern, transform, or import), found {}",
                     self.current().describe()
                 ));
                 while !self.at_eof() && !self.current().starts_stmt() && !self.at_transform_stmt() {
@@ -73,11 +71,10 @@ impl Parser<'_> {
             ModKw => self.mod_stmt(m),
             ExternKw => self.extern_trampoline_stmt(m),
             ImportKw => self.import_stmt(m),
-            AliasKw => self.alias_stmt(m),
             Ident if self.at_transform_stmt() => self.transform_stmt(m),
             _ => {
                 self.error(format!(
-                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `transform`, `import`, or `alias` after visibility, found {}",
+                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `transform`, or `import` after visibility, found {}",
                     self.current().describe()
                 ));
                 // Consume nothing further; the outer loop recovers.
@@ -286,16 +283,6 @@ impl Parser<'_> {
         }
         self.expect(Semicolon);
         m.complete(self, ImportStmt);
-    }
-
-    /// `alias name = path;`.
-    fn alias_stmt(&mut self, m: Marker) {
-        self.expect(AliasKw);
-        self.expect_ident("an alias name");
-        self.expect(Eq);
-        self.path();
-        self.expect(Semicolon);
-        m.complete(self, AliasStmt);
     }
 
     /// `extern "ABI" trampoline "sym" = path<T,...>;`.

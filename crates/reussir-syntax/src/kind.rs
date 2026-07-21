@@ -40,7 +40,6 @@ pub enum SyntaxKind {
     TrueKw,
     FalseKw,
     ImportKw,
-    AliasKw,
 
     // ===== Tokens: punctuation =====
     /// `::`
@@ -128,8 +127,6 @@ pub enum SyntaxKind {
     TransformStmt,
     /// `import path (as name)?;` — a file-scoped path abbreviation.
     ImportStmt,
-    /// `alias name = path;` — the renaming spelling of an import.
-    AliasStmt,
     GenericParamList,
     GenericParam,
     ParamList,
@@ -228,7 +225,6 @@ impl SyntaxKind {
                 | ExternKw
                 | RegionalKw
                 | ImportKw
-                | AliasKw
                 | Pound
         )
     }
@@ -256,7 +252,6 @@ impl SyntaxKind {
                 | TrueKw
                 | FalseKw
                 | ImportKw
-                | AliasKw
         )
     }
 
@@ -286,7 +281,6 @@ impl SyntaxKind {
             TrueKw => "`true`",
             FalseKw => "`false`",
             ImportKw => "`import`",
-            AliasKw => "`alias`",
             PathSep => "`::`",
             Arrow => "`->`",
             FatArrow => "`=>`",

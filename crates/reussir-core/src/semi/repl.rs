@@ -460,14 +460,14 @@ mod tests {
     #[test]
     fn imports_bind_for_later_inputs() {
         session(|s, tcx| {
-            // `import`/`alias` route as items and their bindings persist for
-            // later expressions in the session (one shared REPL "file").
+            // `import` routes as an item and its binding persists for later
+            // expressions in the session (one shared REPL "file").
             s.define("import core::intrinsic::math as m;");
             assert_eq!(
                 s.eval("m::sqrt(4.0, 0)").unwrap(),
                 tcx.mk_fp(FpTy::Ieee(64))
             );
-            s.define("fn double(x: i64) -> i64 { x * 2 }\nalias d = double;");
+            s.define("fn double(x: i64) -> i64 { x * 2 }\nimport double as d;");
             assert_eq!(s.eval("d(21)").unwrap(), tcx.mk_int(IntTy::Signed(64)));
         });
     }

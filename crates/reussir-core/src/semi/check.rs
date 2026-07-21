@@ -576,7 +576,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let callee = self.mk_expr(ExprKind::Var(id), ty, span);
             return self.closure_apply(callee, &fc.args, span);
         }
-        // Expand the callee path through the file's `import`/`alias` bindings
+        // Expand the callee path through the file's `import` bindings
         // *here*, before the textual intrinsic check below: `arr::get(…)` with
         // `import core::intrinsic::array as arr;` must dispatch as the
         // intrinsic. Locals were checked first — a binding never shadows one.
@@ -1646,8 +1646,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        // Expand `import`/`alias` bindings before the builtin-spelling checks
-        // so an aliased `Nullable`/`Arc`/enum qualifier dispatches the same as
+        // Expand `import` bindings before the builtin-spelling checks so an
+        // imported `Nullable`/`Arc`/enum qualifier dispatches the same as
         // its full spelling.
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);

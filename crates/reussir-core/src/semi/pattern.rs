@@ -321,8 +321,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // fields bind at their promoted (`Arc`) types (§3.3).
         let arced = matches!(self.infer.shallow_resolve(ty).kind(), TyKind::Arc(_));
         let ty = self.peel_arc(ty);
-        // Expand `import`/`alias` bindings so an aliased qualifier (`L::Cons`
-        // with `alias L = pkg::List`, or an aliased `Nullable`) matches the
+        // Expand `import` bindings so an imported qualifier (`L::Cons` with
+        // `import pkg::List as L`, or an imported `Nullable`) matches the
         // same as its full spelling.
         let expanded_pat;
         let ctor = match self.expand_path(&ctor.path) {

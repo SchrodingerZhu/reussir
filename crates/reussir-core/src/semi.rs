@@ -945,7 +945,7 @@ mod tests {
         });
     }
 
-    // ----- import / alias -----
+    // ----- import -----
 
     /// Elaborate and print the HIR (no locations), to compare an abbreviated
     /// program against its fully-qualified spelling.
@@ -973,11 +973,11 @@ mod tests {
              fn g(a: [f64; 4], i: i64) -> f64 { core::intrinsic::array::get(a, i) }\n\
              fn h(x: f64) -> f64 { core::intrinsic::math::sqrt(x, 0) }",
         );
-        // All three binding spellings: `import` (last segment), `alias`, and
-        // `import … as …` on a single intrinsic function.
+        // Both binding spellings: `import` (last segment) and `import … as …`,
+        // the latter on a whole module and on a single intrinsic function.
         let abbreviated = printed_hir(
             "import core::intrinsic::math;\n\
-             alias arr = core::intrinsic::array;\n\
+             import core::intrinsic::array as arr;\n\
              import core::intrinsic::math::sqrt as rt;\n\
              fn f(x: f64) -> f64 { math::sqrt(x, 0) }\n\
              fn g(a: [f64; 4], i: i64) -> f64 { arr::get(a, i) }\n\
@@ -993,12 +993,13 @@ mod tests {
              fn len(l: List<i64>) -> i64 { match l { List::Nil => 0, List::Cons(x, xs) => 1 + len(xs) } }\n\
              fn make() -> List<i64> { List::Cons{1, List::Nil} }",
         );
-        // The alias covers type annotations, constructors (incl. nullary),
-        // and pattern qualifiers; `LL` also exercises alias-to-alias.
+        // A record import covers type annotations, constructors (incl.
+        // nullary), and pattern qualifiers; `LL` also exercises a binding
+        // that targets another binding.
         let abbreviated = printed_hir(
             "enum List<T> { Nil, Cons(T, List<T>) }\n\
-             alias L = List;\n\
-             alias LL = L;\n\
+             import List as L;\n\
+             import L as LL;\n\
              fn len(l: L<i64>) -> i64 { match l { LL::Nil => 0, L::Cons(x, xs) => 1 + len(xs) } }\n\
              fn make() -> LL<i64> { L::Cons{1, LL::Nil} }",
         );
@@ -1061,16 +1062,16 @@ mod tests {
                 "cannot be `pub`",
             ),
             (
-                "import core::intrinsic::math;\nalias math = core::intrinsic::array;",
+                "import core::intrinsic::math;\nimport core::intrinsic::array as math;",
                 "already bound",
             ),
-            ("alias core = foo;", "reserved path head"),
+            ("import foo as core;", "reserved path head"),
         ] {
             assert!(has_error(src, expected), "{src:?}: {:#?}", reports_of(src));
         }
-        // A self-referential alias chain must fail resolution, not hang.
+        // A self-referential binding chain must fail resolution, not hang.
         assert!(has_error(
-            "alias a = b::x;\nalias b = a::y;\nfn f() -> i64 { a::z(1) }",
+            "import b::x as a;\nimport a::y as b;\nfn f() -> i64 { a::z(1) }",
             "unknown function",
         ));
     }

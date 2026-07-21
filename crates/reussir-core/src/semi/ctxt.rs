@@ -52,9 +52,9 @@ pub struct TransformScript {
     pub file: FileId,
 }
 
-/// One `import`/`alias` binding: within `file`, reference paths headed by
-/// `name` expand through `path` (see [`Elaborator::expand_path`] and
-/// `docs/design/import-alias.md`).
+/// One `import` binding: within `file`, reference paths headed by `name`
+/// expand through `path` (see [`Elaborator::expand_path`] and
+/// `docs/design/import.md`).
 #[derive(Clone, Debug)]
 pub struct ImportBinding {
     pub file: FileId,
@@ -295,8 +295,8 @@ pub struct Elaborator<'a, 'tcx> {
     pub transform_anchors: Vec<DefId>,
     /// Inline transform scripts, in source order.
     pub transform_scripts: Vec<TransformScript>,
-    /// File-scoped `import`/`alias` path bindings, in declaration order (see
-    /// `docs/design/import-alias.md`). Append-only so checkpoint/rollback
+    /// File-scoped `import` path bindings, in declaration order (see
+    /// `docs/design/import.md`). Append-only so checkpoint/rollback
     /// restores it by truncation; lookups scan backwards filtered by the
     /// current file — files hold a handful of bindings at most.
     pub imports: Vec<ImportBinding>,
@@ -541,7 +541,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     // ----- module-aware reference resolution -----
 
-    /// Declare one `import`/`alias` binding for `file`. Rejects `pub`
+    /// Declare one `import` binding for `file`. Rejects `pub`
     /// (bindings are file-private), the reserved path heads (`core`, `root`,
     /// `super`), and a duplicate name within the same file.
     pub(super) fn declare_import(
@@ -583,10 +583,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         });
     }
 
-    /// Expand a reference path through the current file's `import`/`alias`
-    /// bindings: a bound *first segment* is replaced by the binding's target
-    /// path; a bound *bare name* is replaced by the target outright. Expansion
-    /// iterates so an alias may target another alias; a self-referential chain
+    /// Expand a reference path through the current file's `import` bindings:
+    /// a bound *first segment* is replaced by the binding's target path; a
+    /// bound *bare name* is replaced by the target outright. Expansion
+    /// iterates so a binding may target another binding; a self-referential chain
     /// abandons expansion entirely (returns `None`), so the reference fails
     /// resolution with the ordinary diagnostic on the path *as written*.
     /// Returns `None` when nothing applies, so callers keep borrowing the
@@ -652,7 +652,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Resolve a type reference: bare names in the current module (falling
     /// back to the crate root), qualified paths per the module-relative rules
     /// (see [`DefTable::resolve_record_path`]). The path is first expanded
-    /// through the file's `import`/`alias` bindings ([`Self::expand_path`]).
+    /// through the file's `import` bindings ([`Self::expand_path`]).
     pub(super) fn resolve_record_ref(&self, path: &surface::Path) -> Option<DefId> {
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);
@@ -679,7 +679,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Resolve a constructor path's *qualifier* as a record: for
     /// `m::Enum::Variant` the qualifier is `m::Enum` (the basename names the
     /// variant). `None` when the path has no qualifier. Imports expand first,
-    /// so `L::Cons` with `alias L = pkg::List` names `pkg::List`'s variant.
+    /// so `L::Cons` with `import pkg::List as L` names `pkg::List`'s variant.
     pub(super) fn resolve_ctor_qualifier(&self, path: &surface::Path) -> Option<DefId> {
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);

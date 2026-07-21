@@ -1,4 +1,4 @@
-// Diagnostics for invalid `import`/`alias` declarations, and the ordinary
+// Diagnostics for invalid `import` declarations, and the ordinary
 // unknown-path diagnostics through a binding (which print the expanded path).
 
 // RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
@@ -7,15 +7,15 @@
 pub import core::intrinsic::math;
 
 // CHECK-DAG: `math` is already bound by an earlier import in this file
-alias math = core::intrinsic::array;
+import core::intrinsic::array as math;
 
 // CHECK-DAG: `core` is a reserved path head and cannot be bound by an import
-alias core = something;
+import something as core;
 
-// A self-referential alias chain cannot expand; the reference fails with the
-// ordinary unknown-function diagnostic instead of looping.
-alias a = b::x;
-alias b = a::y;
+// A self-referential binding chain cannot expand; the reference fails with
+// the ordinary unknown-function diagnostic instead of looping.
+import b::x as a;
+import a::y as b;
 // CHECK: unknown function `a::z`
 fn cyclic() -> i64 { a::z(1) }
 

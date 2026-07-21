@@ -911,11 +911,10 @@ pub struct TransformScript {
     pub body_span: Span,
 }
 
-/// A file-scoped path abbreviation. Both surface spellings — `import p (as
-/// n)?;` and `alias n = p;` — project here: `name` is the identifier the
-/// binding introduces (the path's last segment when no rename is given) and
-/// `path` its target. Imports are always private; `visibility` is kept so the
-/// elaborator can reject `pub import` with a real diagnostic.
+/// A file-scoped path abbreviation, `import p (as n)?;`: `name` is the
+/// identifier the binding introduces (the path's last segment when no rename
+/// is given) and `path` its target. Imports are always private; `visibility`
+/// is kept so the elaborator can reject `pub import` with a real diagnostic.
 #[derive(Clone, Debug)]
 pub struct ImportDecl {
     pub visibility: Visibility,
@@ -965,7 +964,7 @@ impl Stmt {
             ModStmt => StmtKind::Mod(visibility_of(node), key(name_after(node, ModKw))),
             ExternTrampolineStmt => StmtKind::ExternTrampoline(extern_of(node)),
             TransformStmt => StmtKind::Transform(transform_of(node)),
-            ImportStmt | AliasStmt => StmtKind::Import(import_of(node)),
+            ImportStmt => StmtKind::Import(import_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
         }
     }
@@ -1134,22 +1133,18 @@ fn extern_of(node: &ResolvedNode) -> ExternTrampoline {
 fn import_of(node: &ResolvedNode) -> ImportDecl {
     let path_node = child_node(node, PathKind).expect("import target path");
     let path = path_of(path_node);
-    // The bound name: the renaming identifier (after `as` / after `alias`) when
-    // present, otherwise the target path's last segment.
-    let name_token = match node.kind() {
-        SyntaxKind::ImportStmt => tokens(node)
-            .skip_while(|t| t.kind() != AsKw)
-            .skip(1) // the `as` token itself is identifier-like
-            .find(|t| t.kind().is_ident_like())
-            .unwrap_or_else(|| {
-                tokens(path_node)
-                    .filter(|t| t.kind().is_ident_like())
-                    .last()
-                    .expect("non-empty path")
-            }),
-        SyntaxKind::AliasStmt => name_after(node, AliasKw),
-        k => unreachable!("unexpected import node {k:?}"),
-    };
+    // The bound name: the renaming identifier after `as` when present,
+    // otherwise the target path's last segment.
+    let name_token = tokens(node)
+        .skip_while(|t| t.kind() != AsKw)
+        .skip(1) // the `as` token itself is identifier-like
+        .find(|t| t.kind().is_ident_like())
+        .unwrap_or_else(|| {
+            tokens(path_node)
+                .filter(|t| t.kind().is_ident_like())
+                .last()
+                .expect("non-empty path")
+        });
     let ns = token_span(name_token);
     ImportDecl {
         visibility: visibility_of(node),
@@ -1259,9 +1254,9 @@ mod tests {
     }
 
     #[test]
-    fn views_imports_and_aliases() {
+    fn views_imports() {
         let parse = parse(
-            "import core::intrinsic::math;\nimport core::intrinsic::array as arr;\nalias rt = core::intrinsic::math::sqrt;",
+            "import core::intrinsic::math;\nimport core::intrinsic::array as arr;\nimport core::intrinsic::math::sqrt as rt;",
         );
         let prog = program(&parse.root);
         assert_eq!(prog.len(), 3);

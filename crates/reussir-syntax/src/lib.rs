@@ -139,7 +139,7 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // name follows; a keyword-named variable is followed by an operator
         // (`fn + 1`) or nothing. `as` is the exception: `fn as i64` is a
         // cast of a variable named `fn`.
-        FnKw | ModKw | ImportKw | AliasKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
+        FnKw | ModKw | ImportKw => p.nth(1).is_ident_like() && p.nth(1) != AsKw,
         // Records may also carry a capability annotation before the name:
         // `struct [value] V { ... }`.
         StructKw | EnumKw => (p.nth(1).is_ident_like() && p.nth(1) != AsKw) || p.nth(1) == LBracket,
@@ -148,7 +148,7 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
         PubKw => matches!(
             p.nth(1),
-            RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw | ImportKw | AliasKw
+            RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw | ImportKw
         ),
         // `regional fn` is an item; any other `regional ...` is a region
         // expression.
@@ -268,7 +268,7 @@ mod tests {
             "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }",
             "import core::intrinsic::math;",
             "import core::intrinsic::math as m;",
-            "alias arr = core::intrinsic::array;",
+            "import core::intrinsic::math::sqrt as rt;",
         ];
         for source in items {
             let rp = parse_repl(source, interner.clone());
@@ -299,9 +299,9 @@ mod tests {
             "fn as i64",
             // A bare keyword-named variable (nothing follows).
             "enum",
-            // `import`/`alias` as keyword-named variables.
+            // `import` as a keyword-named variable.
             "import + 1",
-            "alias as i64",
+            "import as i64",
         ];
         for source in exprs {
             let rp = parse_repl(source, interner.clone());
@@ -394,11 +394,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_import_and_alias_items() {
-        // The three binding spellings; both node kinds encode as one
-        // `ImportStmt` of `[name, path]`.
+    fn parses_import_items() {
+        // Both spellings encode as one `ImportStmt` of `[name, path]`: the
+        // bare form binds the last segment, `as` binds the given name — for
+        // modules and individual functions alike.
         let json = json_of(
-            "import core::intrinsic::math;\nimport core::intrinsic::array as arr;\nalias rt = core::intrinsic::math::sqrt;",
+            "import core::intrinsic::math;\nimport core::intrinsic::array as arr;\nimport core::intrinsic::math::sqrt as rt;",
         );
         let cases = [
             ("math", vec!["core", "intrinsic"], "math"),
@@ -412,11 +413,10 @@ mod tests {
             assert_eq!(item["contents"][1]["pathSegments"], serde_json::json!(segments));
             assert_eq!(item["contents"][1]["pathBasename"], basename);
         }
-        // Both remain contextual words in identifier positions.
-        json_of("fn import(alias: i32) -> i32 { alias }");
+        // `import` remains a contextual word in identifier positions.
+        json_of("fn import(import: i32) -> i32 { import }");
         // The trailing semicolon is mandatory.
         assert!(!super::parse("import core::intrinsic::math").ok());
-        assert!(!super::parse("alias m = core::intrinsic::math").ok());
     }
 
     #[test]
