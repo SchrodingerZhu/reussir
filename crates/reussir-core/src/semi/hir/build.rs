@@ -849,6 +849,28 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_ffi_items() {
+        // The three FFI item forms: a foreign prelude, an opaque record, and
+        // foreign-bodied imports (with an escape-y body to exercise quoting).
+        roundtrip(
+            r#"
+            extern "rust" [{ use reussir_rt::collections::vec::Vec as RVec; }];
+
+            #[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+            pub struct Vec<T>;
+
+            #[ffi(import)]
+            pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+            #[ffi(import)]
+            pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, "\"".len() as i64; x) }];
+
+            pub fn use_it() -> Vec<f64> { push(new<f64>(), 1.0) }
+            "#,
+        );
+    }
+
+    #[test]
     fn roundtrips_cells() {
         roundtrip(
             r#"

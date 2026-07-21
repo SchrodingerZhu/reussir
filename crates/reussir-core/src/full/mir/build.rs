@@ -788,6 +788,31 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_ffi_items() {
+        // The MIR-side FFI carriage: opaque record layouts, import
+        // trampolines, wrapper/hook textures, and rc glue (the shared
+        // record element forces a transparent wrapper + acquire/release).
+        roundtrip(
+            r#"
+            extern "rust" [{ use reussir_rt::collections::vec::Vec as RVec; }];
+
+            #[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+            pub struct Vec<T>;
+
+            pub struct Item { value: i64 }
+
+            #[ffi(import)]
+            pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+            #[ffi(import)]
+            pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+            pub fn use_it() -> Vec<Item> { push(new<Item>(), Item{1}) }
+            "#,
+        );
+    }
+
+    #[test]
     fn roundtrips_cells() {
         roundtrip(
             r#"
