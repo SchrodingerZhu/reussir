@@ -63,6 +63,16 @@ pub struct FfiPrelude {
     pub file: FileId,
 }
 
+/// The foreign body of an `#[ffi(import)]` function: an opaque Rust block
+/// (braces included) evaluated with the function's parameters in scope,
+/// spliced into a generated boundary wrapper per monomorphized instance.
+#[derive(Clone, Debug)]
+pub struct FfiImport {
+    pub body: String,
+    pub span: Option<Span>,
+    pub file: FileId,
+}
+
 /// A validated `#[ffi(...)]` attribute.
 enum FfiSpec {
     /// `#[ffi(import)]` — a function implemented by its foreign body.
@@ -323,6 +333,8 @@ pub struct Elaborator<'a, 'tcx> {
     pub transform_scripts: Vec<TransformScript>,
     /// Foreign source blocks (`extern "rust" [{ ... }];`), in source order.
     pub ffi_preludes: Vec<FfiPrelude>,
+    /// Foreign bodies of `#[ffi(import)]` functions, keyed by their def.
+    pub ffi_imports: FxHashMap<DefId, FfiImport>,
     /// File-scoped `import` path bindings, in declaration order (see
     /// `docs/design/import.md`). Append-only so checkpoint/rollback
     /// restores it by truncation; lookups scan backwards filtered by the
@@ -404,6 +416,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
             ffi_preludes: Vec::new(),
+            ffi_imports: FxHashMap::default(),
             imports: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
@@ -889,6 +902,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let live = cp.defs as u32;
         self.records.retain(|def, _| def.0 < live);
         self.functions.retain(|def, _| def.0 < live);
+        self.ffi_imports.retain(|def, _| def.0 < live);
         self.generics.truncate(cp.generics);
         self.trampolines.truncate(cp.trampolines);
         self.transform_anchors.truncate(cp.transform_anchors);
@@ -984,7 +998,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     surface::StmtKind::Function(func) => {
                         let anchor =
                             self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
-                        functions.push((func, span, scope, anchor));
+                        let is_import = self.validate_ffi_function(&func, ffi, span);
+                        functions.push((func, span, scope, anchor, is_import));
                     }
                     surface::StmtKind::ExternTrampoline(t) => {
                         self.validate_transform_anchor(&attrs, None);
@@ -1052,16 +1067,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect();
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span, scope, _)| {
+            .map(|(func, span, scope, _, is_import)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_function(func, *span)
+                self.scan_function(func, *is_import, *span)
             })
             .collect();
         functions
             .iter()
             .zip(&function_defs)
-            .filter_map(|((_, _, _, anchor), def)| if *anchor { *def } else { None })
+            .filter_map(|((_, _, _, anchor, _), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
         let record_defs: Vec<DefId> = records
             .iter()
@@ -1120,7 +1135,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span, _, _), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _, _, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
@@ -1250,6 +1265,45 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Some(path)
     }
 
+    /// Check the `#[ffi(import)]` rules on a function; returns whether the
+    /// function is a valid FFI import (its foreign body registers under its
+    /// def in [`Self::scan_function`]).
+    fn validate_ffi_function(
+        &mut self,
+        func: &surface::Function,
+        ffi: Option<FfiSpec>,
+        span: Option<Span>,
+    ) -> bool {
+        let Some(spec) = ffi else {
+            if func.foreign_body.is_some() {
+                self.error(
+                    span,
+                    "a foreign function body (`[{ ... }];`) requires `#[ffi(import)]`",
+                );
+            }
+            return false;
+        };
+        if !matches!(spec, FfiSpec::Import) {
+            self.error(
+                span,
+                "`#[ffi(rust = ...)]` may only be attached to a field-less struct",
+            );
+            return false;
+        }
+        if func.foreign_body.is_none() {
+            self.error(
+                span,
+                "`#[ffi(import)]` requires a foreign body: `fn f(...) -> T [{ ... }];`",
+            );
+            return false;
+        }
+        if func.is_regional {
+            self.error(span, "an `#[ffi(import)]` function cannot be `regional`");
+            return false;
+        }
+        true
+    }
+
     fn scan_record(
         &mut self,
         rec: &surface::Record,
@@ -1319,7 +1373,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Some(def)
     }
 
-    fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) -> Option<DefId> {
+    fn scan_function(
+        &mut self,
+        func: &surface::Function,
+        is_ffi_import: bool,
+        span: Option<Span>,
+    ) -> Option<DefId> {
         let generics = self.collect_generics(&func.generics, span);
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
@@ -1367,6 +1426,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             file: self.current_file,
         };
         self.functions.insert(def, proto);
+        if is_ffi_import {
+            let block = func.foreign_body.as_ref().expect("validated ffi import");
+            self.ffi_imports.insert(
+                def,
+                FfiImport {
+                    body: block.body.clone(),
+                    span: Some(block.body_span),
+                    file: self.current_file,
+                },
+            );
+        }
         Some(def)
     }
 
