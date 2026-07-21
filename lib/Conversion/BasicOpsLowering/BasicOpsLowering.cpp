@@ -3262,13 +3262,30 @@ struct ReussirTrampolineOpConversionPattern
     : public mlir::OpConversionPattern<ReussirTrampolineOp> {
   using OpConversionPattern::OpConversionPattern;
 
+  // Recover the target's converted (native) LLVM signature. The target may
+  // still be a `func.func` or may already have been converted to an
+  // `llvm.func` by the time this pattern runs.
+  mlir::LLVM::LLVMFunctionType nativeSignature(mlir::Operation *funcOp) const {
+    if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(funcOp))
+      return llvmFuncOp.getFunctionType();
+    if (auto mlirFuncOp = mlir::dyn_cast<mlir::func::FuncOp>(funcOp)) {
+      auto converter =
+          static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+      auto funcTy = mlirFuncOp.getFunctionType();
+      mlir::TypeConverter::SignatureConversion signatureConversion(
+          funcTy.getNumInputs());
+      return llvm::dyn_cast_if_present<mlir::LLVM::LLVMFunctionType>(
+          converter->convertFunctionSignature(funcTy, /*isVariadic=*/false,
+                                              /*useBarePtrCallConv=*/false,
+                                              signatureConversion));
+    }
+    return {};
+  }
+
   mlir::LogicalResult
   matchAndRewrite(ReussirTrampolineOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::SymbolTable symTable = mlir::SymbolTable::getNearestSymbolTable(op);
-    auto converter =
-        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
-    auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     mlir::Operation *funcOp = symTable.lookup(op.getTarget());
     if (!funcOp)
       return mlir::failure();
@@ -3276,34 +3293,25 @@ struct ReussirTrampolineOpConversionPattern
     if (op.getAbiName() != "C")
       return mlir::failure();
 
-    mlir::LLVM::LLVMFunctionType llvmFuncTy;
-    if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(funcOp))
-      llvmFuncTy = llvmFuncOp.getFunctionType();
-    else if (auto mlirFuncOp = mlir::dyn_cast<mlir::func::FuncOp>(funcOp)) {
-      auto funcTy = mlirFuncOp.getFunctionType();
-      // Check if we need signature conversion
-      mlir::TypeConverter::SignatureConversion signatureConversion(
-          funcTy.getNumInputs());
-      llvmFuncTy = llvm::dyn_cast_if_present<mlir::LLVM::LLVMFunctionType>(
-          converter->convertFunctionSignature(funcTy, /*isVariadic=*/false,
-                                              /*useBarePtrCallConv=*/false,
-                                              signatureConversion));
-    }
+    mlir::LLVM::LLVMFunctionType llvmFuncTy = nativeSignature(funcOp);
     if (!llvmFuncTy)
       return mlir::failure();
 
+    if (op.getDirection() == reussir::TrampolineDirection::Import)
+      return rewriteImport(op, funcOp, llvmFuncTy, rewriter);
+    return rewriteExport(op, funcOp, llvmFuncTy, rewriter);
+  }
+
+  // Export: create the boundary symbol `sym_name`, unpack the boundary
+  // arguments, and call the internal `target`.
+  mlir::LogicalResult
+  rewriteExport(ReussirTrampolineOp op, mlir::Operation *funcOp,
+                mlir::LLVM::LLVMFunctionType llvmFuncTy,
+                mlir::ConversionPatternRewriter &rewriter) const {
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto llvmRetTy = llvmFuncTy.getReturnType();
     auto llvmParamTys = llvmFuncTy.getParams();
-    const bool isImport =
-        op.getDirection() == reussir::TrampolineDirection::Import;
-    CABISignature cabiSig;
-    if (isImport) {
-      cabiSig.isTrivial = true;
-      cabiSig.abiReturnType = llvmRetTy;
-      cabiSig.abiParamTypes.append(llvmParamTys.begin(), llvmParamTys.end());
-    } else {
-      cabiSig = evaluateCABISignatureForC(llvmRetTy, llvmParamTys);
-    }
+    CABISignature cabiSig = evaluateCABISignatureForC(llvmRetTy, llvmParamTys);
 
     auto trampolineTy = mlir::LLVM::LLVMFunctionType::get(
         cabiSig.abiReturnType, cabiSig.abiParamTypes);
@@ -3318,10 +3326,7 @@ struct ReussirTrampolineOpConversionPattern
     rewriter.setInsertionPointToStart(entry);
 
     llvm::SmallVector<mlir::Value> targetArgs;
-    if (isImport) {
-      targetArgs.append(trampoline.getArguments().begin(),
-                        trampoline.getArguments().end());
-    } else if (cabiSig.hasPackedArgs) {
+    if (cabiSig.hasPackedArgs) {
       auto packedArgsPtr = trampoline.getArgument(cabiSig.packedArgsIndex);
       for (const auto &[idx, paramType] : llvm::enumerate(llvmParamTys)) {
         llvm::SmallVector<mlir::LLVM::GEPArg, 2> gepArgs{
@@ -3351,7 +3356,7 @@ struct ReussirTrampolineOpConversionPattern
       return mlir::failure();
     }
 
-    if (cabiSig.hasReturnPtr && !isImport) {
+    if (cabiSig.hasReturnPtr) {
       mlir::LLVM::StoreOp::create(
           rewriter, op.getLoc(), callOp->getResult(0),
           trampoline.getArgument(cabiSig.returnPtrIndex));
@@ -3363,6 +3368,52 @@ struct ReussirTrampolineOpConversionPattern
         mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(),
                                      callOp->getResults());
     }
+
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+
+  // Import: provide `sym_name` — a symbol with the target's native
+  // signature — forwarding straight to the C-facing `target`.
+  mlir::LogicalResult
+  rewriteImport(ReussirTrampolineOp op, mlir::Operation *funcOp,
+                mlir::LLVM::LLVMFunctionType llvmFuncTy,
+                mlir::ConversionPatternRewriter &rewriter) const {
+    auto llvmRetTy = llvmFuncTy.getReturnType();
+    auto llvmParamTys = llvmFuncTy.getParams();
+
+    auto trampolineTy =
+        mlir::LLVM::LLVMFunctionType::get(llvmRetTy, llvmParamTys);
+    auto trampoline = mlir::LLVM::LLVMFuncOp::create(
+        rewriter, op.getLoc(), op.getSymName(), trampolineTy);
+    // The wrapper copies arguments/results through memory; instrument it
+    // like the functions it fronts.
+    inheritSanitizerPassthrough(op->getParentOfType<mlir::ModuleOp>(),
+                                trampoline);
+
+    mlir::Block *entry = trampoline.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entry);
+
+    llvm::SmallVector<mlir::Value> targetArgs;
+    targetArgs.append(trampoline.getArguments().begin(),
+                      trampoline.getArguments().end());
+
+    mlir::Operation *callOp;
+    if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(funcOp)) {
+      callOp = mlir::LLVM::CallOp::create(rewriter, op.getLoc(), llvmFuncOp,
+                                          targetArgs);
+    } else if (auto mlirFuncOp = mlir::dyn_cast<mlir::func::FuncOp>(funcOp)) {
+      callOp = mlir::func::CallOp::create(rewriter, op.getLoc(), mlirFuncOp,
+                                          targetArgs);
+    } else {
+      return mlir::failure();
+    }
+
+    if (llvm::isa<mlir::LLVM::LLVMVoidType>(llvmRetTy))
+      mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(), mlir::ValueRange{});
+    else
+      mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(),
+                                   callOp->getResults());
 
     rewriter.eraseOp(op);
     return mlir::success();
