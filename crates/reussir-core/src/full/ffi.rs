@@ -200,6 +200,137 @@ pub fn rust_ident(name: &str) -> Result<String, String> {
     }
 }
 
+/// The common texture head: linkage feature, lint silencing, the runtime
+/// crate, and the file's foreign preludes (brace interiors spliced).
+fn texture_head(preludes: &[&str]) -> String {
+    let mut out = String::from(
+        "#![feature(linkage)]\n#![allow(nonstandard_style, unused, unsafe_op_in_unsafe_fn)]\n\
+         extern crate reussir_rt;\n",
+    );
+    for prelude in preludes {
+        // A prelude block is `{ items... }`; splice the interior.
+        let interior = prelude
+            .strip_prefix('{')
+            .and_then(|p| p.strip_suffix('}'))
+            .unwrap_or(prelude);
+        out.push_str(interior);
+        out.push('\n');
+    }
+    out
+}
+
+/// One parameter of a generated wrapper: its Rust binding identifier and its
+/// Rust type spelling.
+pub struct WrapperParam {
+    pub ident: String,
+    pub rust_ty: String,
+}
+
+/// Render the boundary wrapper texture for one `#[ffi(import)]` function
+/// instance. `ret` is `None` for a `unit` return; `ret_direct` says the
+/// result crosses directly (`unit` or integer-like — mirrors
+/// `hasReturnPtr`); `body` is the user's Rust block (braces included) with
+/// generic placeholders already substituted.
+pub fn import_texture(
+    preludes: &[&str],
+    decls: &BTreeMap<String, WrapperDecl<'_>>,
+    boundary: &str,
+    params: &[WrapperParam],
+    ret: Option<&str>,
+    trivial: bool,
+    ret_direct: bool,
+    body: &str,
+) -> String {
+    let mut out = texture_head(preludes);
+    for decl in decls.values() {
+        out.push_str(&decl.decl);
+    }
+    let attrs = "#[linkage = \"weak_odr\"]\n#[unsafe(no_mangle)]\n";
+    if trivial {
+        let sig: Vec<String> = params
+            .iter()
+            .map(|p| format!("{}: {}", p.ident, p.rust_ty))
+            .collect();
+        let ret_ann = ret.map(|r| format!(" -> {r}")).unwrap_or_default();
+        let _ = write!(
+            out,
+            "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {body}\n",
+            sig.join(", ")
+        );
+        return out;
+    }
+    // The nontrivial boundary: a leading return pointer when the result does
+    // not cross directly, and every parameter packed into a `#[repr(C)]`
+    // struct passed by pointer — the exact shape the import trampoline
+    // lowering calls (`rewriteImport` in `BasicOpsLowering.cpp`).
+    if !params.is_empty() {
+        let fields: Vec<&str> = params.iter().map(|p| p.rust_ty.as_str()).collect();
+        let _ = write!(
+            out,
+            "#[repr(C)]\nstruct __ReussirArgs({});\n",
+            fields.join(", ")
+        );
+    }
+    let mut sig = Vec::new();
+    if !ret_direct {
+        sig.push(format!(
+            "__reussir_ret: *mut {}",
+            ret.expect("an indirect return has a type")
+        ));
+    }
+    if !params.is_empty() {
+        sig.push("__reussir_args: *mut __ReussirArgs".to_owned());
+    }
+    let ret_ann = match (ret_direct, ret) {
+        (true, Some(r)) => format!(" -> {r}"),
+        _ => String::new(),
+    };
+    let _ = write!(
+        out,
+        "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {{\n",
+        sig.join(", ")
+    );
+    if !params.is_empty() {
+        let binders: Vec<&str> = params.iter().map(|p| p.ident.as_str()).collect();
+        let _ = write!(
+            out,
+            "    let __ReussirArgs({}) = unsafe {{ __reussir_args.read() }};\n",
+            binders.join(", ")
+        );
+    }
+    if ret_direct {
+        let _ = write!(out, "    {body}\n}}\n");
+    } else {
+        let _ = write!(
+            out,
+            "    let __reussir_result: {} = {body};\n    \
+             unsafe {{ __reussir_ret.write(__reussir_result) }};\n}}\n",
+            ret.expect("an indirect return has a type")
+        );
+    }
+    out
+}
+
+/// Render the drop-hook texture for one opaque `#[ffi]` record instance:
+/// a wrapper that takes the foreign value by transparent pointer and drops
+/// it. Called by the `rc.dec` lowering with the rc pointer.
+pub fn drop_texture(
+    decls: &BTreeMap<String, WrapperDecl<'_>>,
+    hook: &str,
+    rust_name: &str,
+) -> String {
+    let mut out = texture_head(&[]);
+    for decl in decls.values() {
+        out.push_str(&decl.decl);
+    }
+    let _ = write!(
+        out,
+        "#[linkage = \"weak_odr\"]\n#[unsafe(no_mangle)]\n\
+         pub unsafe extern \"C\" fn {hook}(_this: {rust_name}) {{}}\n"
+    );
+    out
+}
+
 /// Substitute `[:Name:]` generic placeholders in a foreign body with the
 /// instance's rendered Rust spellings. Unknown keys are left verbatim (the
 /// Rust compiler then reports them in context).
