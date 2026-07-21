@@ -64,6 +64,12 @@ RecordBody: (raw::Ty, raw::RecordBody, bool) = {
     "struct" <t:Ty> "{" <ms:Comma<Member>> "}" => (t, raw::RecordBody::Compound(ms), false),
     "enum" <fixed:"fixed"?> <t:Ty> "{" <vs:Comma<Variant>> "}"
         => (t, raw::RecordBody::Variant(vs), fixed.is_some()),
+    // An opaque `#[ffi]` instance: its Rust identity string and drop hook.
+    "ffi" <t:Ty> "{" <rust:"quoted"> "," "@" <hook:Sym> "}"
+        => (t, raw::RecordBody::Opaque {
+            rust_name: unescape_debug_str(rust).into_owned(),
+            drop_hook: hook,
+        }, false),
 };
 
 /// A compound field: an optional `name:` prefix (absent for a tuple field), an
@@ -84,6 +90,10 @@ Name: &'input str = {
     <name:"ident"> => name,
     "transform" => "transform",
     "transform_anchor" => "transform_anchor",
+    "import" => "import",
+    "ffi" => "ffi",
+    "texture" => "texture",
+    "glue" => "glue",
 };
 
 Func: raw::Func =
@@ -336,6 +346,10 @@ extern {
         "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
+        "import" => Token::Import,
+        "ffi" => Token::Ffi,
+        "texture" => Token::Texture,
+        "glue" => Token::Glue,
         "transform" => Token::Transform,
         "transform_anchor" => Token::TransformAnchor,
         "let" => Token::Let,

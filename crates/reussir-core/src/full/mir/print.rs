@@ -195,6 +195,18 @@ impl Render<'_> {
                     + comma_sep(parts)
                     + text(" }")
             }
+            mir::RecordLayout::Opaque {
+                rust_name,
+                drop_hook,
+            } => {
+                text("ffi ")
+                    + self.ty(rec.ty)
+                    + text(format!(
+                        " {{ {:?}, @{} }}",
+                        self.sym(rust_name),
+                        self.sym(drop_hook)
+                    ))
+            }
         };
         head + body + text(";")
     }

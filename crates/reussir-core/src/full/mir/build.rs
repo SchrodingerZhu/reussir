@@ -163,6 +163,13 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .collect();
                 mir::RecordLayout::Variant(self.tcx.alloc_slice(&vs))
             }
+            raw::RecordBody::Opaque {
+                rust_name,
+                drop_hook,
+            } => mir::RecordLayout::Opaque {
+                rust_name: self.sym(rust_name),
+                drop_hook: self.sym(drop_hook),
+            },
         };
         mir::RecordInstance {
             symbol: self.sym(&r.symbol),

@@ -2293,6 +2293,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let members = match rec.layout {
             mir::RecordLayout::Compound(ms) => ms,
             mir::RecordLayout::Variant(_) => return err("projection of an enum value"),
+            mir::RecordLayout::Opaque { .. } => {
+                return err("projection of an opaque `#[ffi]` value");
+            }
         };
         let field = members
             .get(idx as usize)

@@ -118,11 +118,15 @@ pub struct RecordInstance<'tcx> {
     pub layout: RecordLayout<'tcx>,
 }
 
-/// A ground record's shape: a struct's ordered fields, or an enum's variants.
+/// A ground record's shape: a struct's ordered fields, an enum's variants, or
+/// an opaque `#[ffi]` instance (a foreign rc box).
 #[derive(Clone, Copy, Debug)]
 pub enum RecordLayout<'tcx> {
     Compound(&'tcx [Member<'tcx>]),
     Variant(&'tcx [VariantDef<'tcx>]),
+    /// An opaque `#[ffi]` record instance: the rendered Rust type name (the
+    /// `ffi_object` identity string) and its drop-hook symbol.
+    Opaque { rust_name: Symbol, drop_hook: Symbol },
 }
 
 /// One compound field: its ground type and whether it is a mutable `[field]`

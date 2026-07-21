@@ -212,6 +212,8 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             ));
         }
         let members = match rec.layout {
+            // An opaque `#[ffi]` box: no visible members.
+            mir::RecordLayout::Opaque { .. } => Some(Vec::new()),
             mir::RecordLayout::Compound(members) => self.dbg_struct_members(members),
             mir::RecordLayout::Variant(variants) => variants
                 .iter()
