@@ -362,6 +362,53 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         let symbol = driver.symbol_of(def, args);
         // Layout is capability-independent, so canonicalize the coloring.
         let ty = tcx.mk_record(def, args, Flexivity::Irrelevant);
+        // An opaque `#[ffi]` instance: render its identity string and drop
+        // hook, and emit the hook's texture.
+        if let Some(record) = input.records.get(&def).filter(|r| r.ffi.is_some()) {
+            let fctx = FfiCtx {
+                records: input.records,
+                instance_symbol: &instance_symbol,
+            };
+            let mut decls: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
+                std::collections::BTreeMap::new();
+            let layout = match fctx.rust_name(ty, &mut decls) {
+                Ok(rust_name) => {
+                    let hook_name = format!("{}_ffi_drop", driver.symbols.resolve(&symbol.0));
+                    let texture = ffi_render::drop_texture(&decls, &hook_name, &rust_name);
+                    let layout = mir::RecordLayout::Opaque {
+                        rust_name: mir::Symbol(driver.symbols.get_or_intern(&rust_name)),
+                        drop_hook: mir::Symbol(driver.symbols.get_or_intern(&hook_name)),
+                    };
+                    ffi_textures.push(mir::FfiTexture {
+                        anchor: symbol,
+                        texture,
+                    });
+                    for (sym, decl) in decls {
+                        glue.entry(sym).or_insert(decl.ty);
+                    }
+                    layout
+                }
+                Err(err) => {
+                    driver.cur_file = record.file;
+                    driver.error(
+                        record.span,
+                        format!(
+                            "cannot instantiate the `#[ffi]` record at this type \
+                             argument: {err}"
+                        ),
+                    );
+                    mir::RecordLayout::Compound(&[])
+                }
+            };
+            records.push(mir::RecordInstance {
+                symbol,
+                ty,
+                default_cap: DefaultCap::Shared,
+                repr_fixed: false,
+                layout,
+            });
+            continue;
+        }
         // A record whose definition is missing (it failed to elaborate) gets an
         // empty value layout so lowering still has a well-formed instance.
         let (default_cap, layout) = match input.records.get(&def) {
