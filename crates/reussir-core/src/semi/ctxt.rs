@@ -52,6 +52,17 @@ pub struct TransformScript {
     pub file: FileId,
 }
 
+/// A foreign source block (`extern "rust" [{ ... }];`): opaque Rust items
+/// spliced verbatim ahead of every generated FFI wrapper of its file (`use`
+/// declarations, helper functions, ...). `body` has the `[{`/`}]` stripped
+/// down to the braces; the braces themselves are dropped when splicing.
+#[derive(Clone, Debug)]
+pub struct FfiPrelude {
+    pub body: String,
+    pub span: Option<Span>,
+    pub file: FileId,
+}
+
 /// One `import` binding: within `file`, reference paths headed by `name`
 /// expand through `path` (see [`Elaborator::expand_path`] and
 /// `docs/design/import.md`).
@@ -301,6 +312,8 @@ pub struct Elaborator<'a, 'tcx> {
     pub transform_anchors: Vec<DefId>,
     /// Inline transform scripts, in source order.
     pub transform_scripts: Vec<TransformScript>,
+    /// Foreign source blocks (`extern "rust" [{ ... }];`), in source order.
+    pub ffi_preludes: Vec<FfiPrelude>,
     /// File-scoped `import` path bindings, in declaration order (see
     /// `docs/design/import.md`). Append-only so checkpoint/rollback
     /// restores it by truncation; lookups scan backwards filtered by the
@@ -351,6 +364,7 @@ pub struct Checkpoint {
     pub(super) trampolines: usize,
     pub(super) transform_anchors: usize,
     pub(super) transform_scripts: usize,
+    pub(super) ffi_preludes: usize,
     pub(super) imports: usize,
     pub(super) elaborated: usize,
     pub(super) reports: usize,
@@ -380,6 +394,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
+            ffi_preludes: Vec::new(),
             imports: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
@@ -848,6 +863,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: self.trampolines.len(),
             transform_anchors: self.transform_anchors.len(),
             transform_scripts: self.transform_scripts.len(),
+            ffi_preludes: self.ffi_preludes.len(),
             imports: self.imports.len(),
             elaborated: self.elaborated.len(),
             reports: self.reports.len(),
@@ -868,6 +884,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.trampolines.truncate(cp.trampolines);
         self.transform_anchors.truncate(cp.transform_anchors);
         self.transform_scripts.truncate(cp.transform_scripts);
+        self.ffi_preludes.truncate(cp.ffi_preludes);
         self.imports.truncate(cp.imports);
         self.elaborated.truncate(cp.elaborated);
         self.reports.truncate(cp.reports);
@@ -980,6 +997,25 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         self.transform_scripts.push(TransformScript {
                             body: script.body,
                             span: Some(script.body_span),
+                            file: *file,
+                        });
+                    }
+                    // Foreign preludes register during this scan (like
+                    // bindings) so they apply file-wide regardless of order.
+                    surface::StmtKind::ExternSource(src) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        if src.abi != "rust" {
+                            self.error(
+                                span,
+                                format!(
+                                    "unsupported foreign source ABI `{}`; only `rust` is supported",
+                                    src.abi
+                                ),
+                            );
+                        }
+                        self.ffi_preludes.push(FfiPrelude {
+                            body: src.block.body,
+                            span: Some(src.block.body_span),
                             file: *file,
                         });
                     }
@@ -1312,6 +1348,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     })
                     .collect(),
             ),
+            surface::RecordFields::Opaque => RecordFields::Opaque,
         };
         self.generic_names.clear();
 
