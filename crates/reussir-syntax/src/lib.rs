@@ -269,6 +269,11 @@ mod tests {
             "import core::intrinsic::math;",
             "import core::intrinsic::math as m;",
             "import core::intrinsic::math::sqrt as rt;",
+            // FFI items: a foreign source block, an opaque record, and a
+            // foreign-bodied function.
+            "extern \"rust\" [{ use reussir_rt::collections::vec::Vec; }];",
+            "#[ffi(rust = \"::reussir_rt::collections::vec::Vec\")]\npub struct Vec<T>;",
+            "#[ffi(import)]\npub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ Vec::push(v, x) }];",
         ];
         for source in items {
             let rp = parse_repl(source, interner.clone());
@@ -417,6 +422,39 @@ mod tests {
         json_of("fn import(import: i32) -> i32 { import }");
         // The trailing semicolon is mandatory.
         assert!(!super::parse("import core::intrinsic::math").ok());
+    }
+
+    #[test]
+    fn parses_ffi_items() {
+        // The three FFI item forms: a foreign source block, an opaque
+        // (field-less) record, and a foreign-bodied function.
+        let json = json_of(
+            "extern \"rust\" [{ use reussir_rt::collections::vec::Vec as RVec; }];\n\
+             #[ffi(rust = \"::reussir_rt::collections::vec::Vec\")]\n\
+             pub struct Vec<T>;\n\
+             #[ffi(import)]\n\
+             pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];",
+        );
+        let source_block = unwrap_span(&json[0]);
+        assert_eq!(source_block["tag"], "ExternSourceStmt");
+        assert_eq!(source_block["contents"][0], "rust");
+        assert_eq!(
+            source_block["contents"][1],
+            "[{ use reussir_rt::collections::vec::Vec as RVec; }]"
+        );
+        let record = unwrap_span(&json[1]);
+        assert_eq!(record["tag"], "RecordStmt");
+        assert_eq!(record["contents"]["recordFields"]["tag"], "Opaque");
+        let func = unwrap_span(&json[2]);
+        assert_eq!(func["tag"], "FunctionStmt");
+        assert_eq!(func["contents"]["funcBody"], serde_json::Value::Null);
+        assert_eq!(
+            func["contents"]["funcForeignBody"],
+            "[{ RVec::push(v, x) }]"
+        );
+        // A foreign body requires the trailing semicolon.
+        assert!(!super::parse("fn f() -> i64 [{ 42 }]").ok());
+        assert!(!super::parse("extern \"rust\" [{ code }]").ok());
     }
 
     #[test]

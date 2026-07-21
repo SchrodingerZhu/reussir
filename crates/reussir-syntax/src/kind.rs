@@ -123,6 +123,9 @@ pub enum SyntaxKind {
     EnumStmt,
     ModStmt,
     ExternTrampolineStmt,
+    /// `extern "rust" [{ ... }];` — an opaque foreign source block shared by
+    /// the file's FFI functions.
+    ExternSourceStmt,
     /// A module-level `transform [{ ... }];` item.
     TransformStmt,
     /// `import path (as name)?;` — a file-scoped path abbreviation.
