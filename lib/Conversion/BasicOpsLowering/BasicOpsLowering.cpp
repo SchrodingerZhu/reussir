@@ -3373,47 +3373,100 @@ struct ReussirTrampolineOpConversionPattern
     return mlir::success();
   }
 
-  // Import: provide `sym_name` — a symbol with the target's native
-  // signature — forwarding straight to the C-facing `target`.
+  // Import: `target` is a body-less declaration carrying the native
+  // signature. Materialize its definition — pack the native arguments per
+  // the boundary convention and call the external boundary symbol
+  // `sym_name`, which is declared here with the packed signature.
   mlir::LogicalResult
   rewriteImport(ReussirTrampolineOp op, mlir::Operation *funcOp,
                 mlir::LLVM::LLVMFunctionType llvmFuncTy,
                 mlir::ConversionPatternRewriter &rewriter) const {
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
+    bool isDeclaration = false;
+    if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(funcOp))
+      isDeclaration = llvmFuncOp.isExternal();
+    else if (auto mlirFuncOp = mlir::dyn_cast<mlir::func::FuncOp>(funcOp))
+      isDeclaration = mlirFuncOp.isExternal();
+    if (!isDeclaration)
+      return rewriter.notifyMatchFailure(
+          op, "import target must be a body-less declaration");
+
     auto llvmRetTy = llvmFuncTy.getReturnType();
     auto llvmParamTys = llvmFuncTy.getParams();
+    CABISignature cabiSig = evaluateCABISignatureForC(llvmRetTy, llvmParamTys);
 
-    auto trampolineTy =
-        mlir::LLVM::LLVMFunctionType::get(llvmRetTy, llvmParamTys);
-    auto trampoline = mlir::LLVM::LLVMFuncOp::create(
-        rewriter, op.getLoc(), op.getSymName(), trampolineTy);
-    // The wrapper copies arguments/results through memory; instrument it
-    // like the functions it fronts.
-    inheritSanitizerPassthrough(op->getParentOfType<mlir::ModuleOp>(),
-                                trampoline);
-
-    mlir::Block *entry = trampoline.addEntryBlock(rewriter);
-    rewriter.setInsertionPointToStart(entry);
-
-    llvm::SmallVector<mlir::Value> targetArgs;
-    targetArgs.append(trampoline.getArguments().begin(),
-                      trampoline.getArguments().end());
-
-    mlir::Operation *callOp;
-    if (auto llvmFuncOp = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(funcOp)) {
-      callOp = mlir::LLVM::CallOp::create(rewriter, op.getLoc(), llvmFuncOp,
-                                          targetArgs);
-    } else if (auto mlirFuncOp = mlir::dyn_cast<mlir::func::FuncOp>(funcOp)) {
-      callOp = mlir::func::CallOp::create(rewriter, op.getLoc(), mlirFuncOp,
-                                          targetArgs);
+    // Get-or-declare the external boundary symbol.
+    auto boundaryTy = mlir::LLVM::LLVMFunctionType::get(
+        cabiSig.abiReturnType, cabiSig.abiParamTypes);
+    auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto boundary = module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(
+        op.getSymNameAttr().getValue());
+    if (boundary) {
+      if (boundary.getFunctionType() != boundaryTy)
+        return rewriter.notifyMatchFailure(
+            op, "conflicting declaration of the boundary symbol");
     } else {
-      return mlir::failure();
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(op);
+      boundary = mlir::LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                op.getSymName(), boundaryTy);
     }
 
-    if (llvm::isa<mlir::LLVM::LLVMVoidType>(llvmRetTy))
+    // Replace the declaration with the marshaling definition under the same
+    // (native) symbol name.
+    auto nativeName = mlir::SymbolTable::getSymbolName(funcOp);
+    rewriter.eraseOp(funcOp);
+    auto nativeTy = mlir::LLVM::LLVMFunctionType::get(llvmRetTy, llvmParamTys);
+    auto native = mlir::LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                 nativeName, nativeTy);
+    inheritSanitizerPassthrough(module, native);
+
+    mlir::Block *entry = native.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entry);
+
+    llvm::SmallVector<mlir::Value> callArgs;
+    mlir::Value retSlot;
+    if (cabiSig.isTrivial) {
+      callArgs.append(native.getArguments().begin(),
+                      native.getArguments().end());
+    } else {
+      mlir::Value one = mlir::LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), rewriter.getI64Type(),
+          rewriter.getI64IntegerAttr(1));
+      if (cabiSig.hasReturnPtr) {
+        retSlot = mlir::LLVM::AllocaOp::create(rewriter, op.getLoc(), ptrType,
+                                               cabiSig.returnStorageType, one,
+                                               /*alignment=*/0);
+        callArgs.push_back(retSlot);
+      }
+      if (cabiSig.hasPackedArgs) {
+        mlir::Value argsSlot = mlir::LLVM::AllocaOp::create(
+            rewriter, op.getLoc(), ptrType, cabiSig.packedArgsType, one,
+            /*alignment=*/0);
+        for (const auto &[idx, arg] : llvm::enumerate(native.getArguments())) {
+          llvm::SmallVector<mlir::LLVM::GEPArg, 2> gepArgs{
+              0, static_cast<int32_t>(idx)};
+          auto fieldPtr = mlir::LLVM::GEPOp::create(
+              rewriter, op.getLoc(), ptrType, cabiSig.packedArgsType, argsSlot,
+              gepArgs);
+          mlir::LLVM::StoreOp::create(rewriter, op.getLoc(), arg, fieldPtr);
+        }
+        callArgs.push_back(argsSlot);
+      }
+    }
+
+    auto callOp =
+        mlir::LLVM::CallOp::create(rewriter, op.getLoc(), boundary, callArgs);
+
+    if (cabiSig.hasReturnPtr) {
+      mlir::Value result = mlir::LLVM::LoadOp::create(rewriter, op.getLoc(),
+                                                      llvmRetTy, retSlot);
+      mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(), result);
+    } else if (llvm::isa<mlir::LLVM::LLVMVoidType>(llvmRetTy)) {
       mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(), mlir::ValueRange{});
-    else
-      mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(),
-                                   callOp->getResults());
+    } else {
+      mlir::LLVM::ReturnOp::create(rewriter, op.getLoc(), callOp.getResult());
+    }
 
     rewriter.eraseOp(op);
     return mlir::success();
