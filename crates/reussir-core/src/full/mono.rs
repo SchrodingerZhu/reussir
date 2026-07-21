@@ -56,12 +56,15 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::FileId;
 
+use crate::full::ffi::{FfiCtx, WrapperDecl, WrapperParam};
 use crate::full::mangle::Mangler;
 use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
+use crate::full::{ffi as ffi_render};
 use crate::literal;
 use crate::semi::ctxt::{
-    DefaultCap, Elaborator, Record, RecordFields, Report, Severity, TrampolineRoot, TransformScript,
+    DefaultCap, Elaborator, FfiImport, FfiPrelude, Record, RecordFields, Report, Severity,
+    TrampolineRoot, TransformScript,
 };
 use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
@@ -85,6 +88,8 @@ pub struct MonoInput<'a, 'tcx> {
     pub trampolines: &'a [TrampolineRoot<'tcx>],
     pub transform_anchors: &'a [DefId],
     pub transform_scripts: &'a [TransformScript],
+    pub ffi_imports: &'a FxHashMap<DefId, FfiImport>,
+    pub ffi_preludes: &'a [FfiPrelude],
     pub strings: Vec<(StringToken, String)>,
 }
 
@@ -100,6 +105,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: &self.trampolines,
             transform_anchors: &self.transform_anchors,
             transform_scripts: &self.transform_scripts,
+            ffi_imports: &self.ffi_imports,
+            ffi_preludes: &self.ffi_preludes,
             strings: self.strings.entries(),
         }
     }
@@ -145,6 +152,10 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         driver.enqueue(t.target, tcx.intern_tys(&t.ty_args));
     }
 
+    // FFI accumulators. `ffi_mangler` is a second (stateless) mangler the
+    // rendering closures borrow, keeping `driver` free for mutation.
+    let ffi_mangler = Mangler::new(input.defs, input.resolver);
+    let instance_symbol = |def: DefId, args: &'tcx [Ty<'tcx>]| ffi_mangler.mangle_instance(def, args);
     let mut ffi_imports_out: Vec<mir::FfiImport> = Vec::new();
     let mut ffi_textures: Vec<mir::FfiTexture> = Vec::new();
     let mut import_trampolines: Vec<mir::Trampoline> = Vec::new();
@@ -198,6 +209,103 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         let body = func.body.as_ref().map(|b| driver.lower_ref(b, &subst));
 
         let symbol = driver.symbol_of(inst.def, inst.ty_args);
+
+        // An `#[ffi(import)]` instance: render its boundary wrapper texture
+        // and register the import trampoline. The function itself stays a
+        // bodyless declaration under `symbol` (emitted below as usual).
+        if let Some(fimport) = input.ffi_imports.get(&inst.def) {
+            let fctx = FfiCtx {
+                records: input.records,
+                instance_symbol: &instance_symbol,
+            };
+            let mut decls: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
+                std::collections::BTreeMap::new();
+            let mut wrapper_params = Vec::new();
+            let mut ok = true;
+            for p in &params {
+                let name = input.resolver.resolve(p.name).to_owned();
+                let ident = ffi_render::rust_ident(&name);
+                let rust_ty = fctx.rust_name(p.ty, &mut decls);
+                match (ident, rust_ty) {
+                    (Ok(ident), Ok(rust_ty)) => {
+                        wrapper_params.push(WrapperParam { ident, rust_ty });
+                    }
+                    (ident, rust_ty) => {
+                        for err in [ident.err(), rust_ty.err()].into_iter().flatten() {
+                            driver.error(
+                                fimport.span,
+                                format!("`#[ffi(import)]` parameter `{name}`: {err}"),
+                            );
+                        }
+                        ok = false;
+                    }
+                }
+            }
+            let ret = match *return_ty.kind() {
+                TyKind::Unit => None,
+                _ => match fctx.rust_name(return_ty, &mut decls) {
+                    Ok(r) => Some(r),
+                    Err(err) => {
+                        driver.error(
+                            fimport.span,
+                            format!("`#[ffi(import)]` return type: {err}"),
+                        );
+                        ok = false;
+                        None
+                    }
+                },
+            };
+            if ok {
+                let param_tys: Vec<Ty<'tcx>> = params.iter().map(|p| p.ty).collect();
+                let trivial = fctx.classify_trivial(&param_tys, return_ty);
+                let ret_direct = matches!(*return_ty.kind(), TyKind::Unit)
+                    || fctx.integer_like(return_ty);
+                // `[:T:]` placeholders in the body substitute to the
+                // instance's Rust spellings.
+                let mut placeholders: FxHashMap<&str, String> = FxHashMap::default();
+                for ((gname, _), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
+                    if let Ok(rendered) = fctx.rust_name(ty, &mut decls) {
+                        placeholders.insert(input.resolver.resolve(*gname), rendered);
+                    }
+                }
+                let body_text =
+                    ffi_render::substitute_placeholders(&fimport.body, &placeholders);
+                let preludes: Vec<&str> = input
+                    .ffi_preludes
+                    .iter()
+                    .filter(|p| p.file == fimport.file)
+                    .map(|p| p.body.as_str())
+                    .collect();
+                let boundary_name =
+                    format!("{}_ffi", driver.symbols.resolve(&symbol.0));
+                let texture = ffi_render::import_texture(
+                    &preludes,
+                    &decls,
+                    &boundary_name,
+                    &wrapper_params,
+                    ret.as_deref(),
+                    trivial,
+                    ret_direct,
+                    &body_text,
+                );
+                let boundary = mir::Symbol(driver.symbols.get_or_intern(&boundary_name));
+                ffi_imports_out.push(mir::FfiImport {
+                    symbol,
+                    boundary,
+                    texture,
+                });
+                import_trampolines.push(mir::Trampoline {
+                    export: boundary,
+                    abi: "C".to_owned(),
+                    target: symbol,
+                    import: true,
+                });
+                for (sym, decl) in decls {
+                    glue.entry(sym).or_insert(decl.ty);
+                }
+            }
+        }
+
         functions.push(mir::Function {
             symbol,
             transform_anchor: input.transform_anchors.contains(&func.def),
@@ -1445,6 +1553,7 @@ mod tests {
             let strings = elab.strings.entries();
             let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
             let input = MonoInput {
@@ -1456,6 +1565,8 @@ mod tests {
                 trampolines: &parsed.trampolines,
                 transform_anchors: &parsed.transform_anchors,
                 transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
             };
             let (mir1, r1) = monomorphize(&input);
@@ -1539,10 +1650,12 @@ mod tests {
             let strings = elab.strings.entries();
             let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let hir = parse_hir(tcx, &hir_text).expect("re-parse HIR");
             let hir_text2 = HirPrinter::new(&hir.defs, &hir.names)
                 .with_transform_metadata(&hir.transform_anchors, &hir.transform_scripts)
+                .with_ffi_metadata(&hir.ffi_preludes, &hir.ffi_imports)
                 .program(&hir.funcs, &hir.strings, &hir.records, &hir.trampolines);
             assert_eq!(
                 hir_text, hir_text2,
@@ -1559,6 +1672,8 @@ mod tests {
                 trampolines: &hir.trampolines,
                 transform_anchors: &hir.transform_anchors,
                 transform_scripts: &hir.transform_scripts,
+                ffi_imports: &hir.ffi_imports,
+                ffi_preludes: &hir.ffi_preludes,
                 strings: hir.strings.clone(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);

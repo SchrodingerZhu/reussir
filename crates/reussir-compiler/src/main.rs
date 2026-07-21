@@ -793,7 +793,8 @@ fn frontend_package<'c, 'tcx>(
         } else {
             hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
         }
-        .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts);
+        .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+        .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports);
         let strings = elab.strings.entries();
         let text = printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         return Ok(Produced::Text(text));
@@ -855,7 +856,8 @@ fn frontend<'c, 'tcx>(
                 } else {
                     hir::print::Printer::with_sources(&elab.defs, elab.resolver, sources)
                 }
-                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts);
+                .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports);
                 let strings = elab.strings.entries();
                 let text =
                     printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
@@ -892,7 +894,8 @@ fn frontend<'c, 'tcx>(
                     }
                     _ => hir::print::Printer::new(&parsed.defs, &parsed.names),
                 }
-                .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts);
+                .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports);
                 let text = printer.program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -910,6 +913,8 @@ fn frontend<'c, 'tcx>(
                 trampolines: &parsed.trampolines,
                 transform_anchors: &parsed.transform_anchors,
                 transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
             };
             let (full, reports) = monomorphize(&input);
