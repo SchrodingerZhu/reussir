@@ -6,6 +6,8 @@
 // RUN: %cc %t.opt.o %S/array_struct_materialize.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::array;
+
 // Test: arrays materialized as fields inside value and shared records and as
 // enum variant payloads. An array is one shared rc box (like a closure), so a
 // record member of array type is the bare `!reussir.array` payload type — the
@@ -48,25 +50,25 @@ enum Payload {
 
 // --- Test 1: array in shared struct — construct, project, read ---
 pub fn test_shared() -> f64 {
-    let a = core::intrinsic::array::splat<[f64; 4]>(2.5);
+    let a = array::splat<[f64; 4]>(2.5);
     let h = SHolder { data: a, scale: 4.0 };
-    core::intrinsic::array::get(h.data, 3) * h.scale
+    array::get(h.data, 3) * h.scale
 }
 extern "C" trampoline "test_shared_ffi" = test_shared;
 
 // --- Test 2: array in value struct, copied (two owners of one box) ---
 pub fn test_value() -> i64 {
-    let h = VHolder { data: core::intrinsic::array::tabulate<[i64; 8]>(|i| i * i) };
+    let h = VHolder { data: array::tabulate<[i64; 8]>(|i| i * i) };
     let g = h;
-    core::intrinsic::array::get(h.data, 3) + core::intrinsic::array::get(g.data, 7)
+    array::get(h.data, 3) + array::get(g.data, 7)
 }
 extern "C" trampoline "test_value_ffi" = test_value;
 
 // --- Test 3: enum variant carrying an array, matched back out ---
 pub fn test_enum_blob() -> f64 {
-    let p = Payload::Blob{core::intrinsic::array::splat<[f64; 4]>(7.0)};
+    let p = Payload::Blob{array::splat<[f64; 4]>(7.0)};
     match p {
-        Payload::Blob(data) => core::intrinsic::array::fold(data, 0.0, |acc, x| acc + x),
+        Payload::Blob(data) => array::fold(data, 0.0, |acc, x| acc + x),
         Payload::Empty => -1.0
     }
 }
@@ -75,7 +77,7 @@ extern "C" trampoline "test_enum_blob_ffi" = test_enum_blob;
 pub fn test_enum_empty() -> f64 {
     let p = Payload::Empty{};
     match p {
-        Payload::Blob(data) => core::intrinsic::array::fold(data, 0.0, |acc, x| acc + x),
+        Payload::Blob(data) => array::fold(data, 0.0, |acc, x| acc + x),
         Payload::Empty => -1.0
     }
 }
@@ -85,18 +87,18 @@ extern "C" trampoline "test_enum_empty_ffi" = test_enum_empty;
 // live across the `set`, so the update clones and the original observes its
 // old value. 1.0 + 99.0 = 100.0 ---
 pub fn test_cow_field() -> f64 {
-    let h = SHolder { data: core::intrinsic::array::splat<[f64; 4]>(1.0), scale: 0.0 };
-    let updated = core::intrinsic::array::set(h.data, 0, 99.0);
-    core::intrinsic::array::get(h.data, 0) + core::intrinsic::array::get(updated, 0)
+    let h = SHolder { data: array::splat<[f64; 4]>(1.0), scale: 0.0 };
+    let updated = array::set(h.data, 0, 99.0);
+    array::get(h.data, 0) + array::get(updated, 0)
 }
 extern "C" trampoline "test_cow_field_ffi" = test_cow_field;
 
 // --- Test 5: projection multiplicity across call boundaries ---
 fn sum4(a : [f64; 4]) -> f64 {
-    core::intrinsic::array::fold(a, 0.0, |acc, x| acc + x)
+    array::fold(a, 0.0, |acc, x| acc + x)
 }
 pub fn test_multi() -> f64 {
-    let h = SHolder { data: core::intrinsic::array::tabulate<[f64; 4]>(|i| i as f64), scale: 2.0 };
+    let h = SHolder { data: array::tabulate<[f64; 4]>(|i| i as f64), scale: 2.0 };
     sum4(h.data) + sum4(h.data) + h.scale
 }
 extern "C" trampoline "test_multi_ffi" = test_multi;
@@ -107,24 +109,24 @@ extern "C" trampoline "test_multi_ffi" = test_multi;
 // members.)
 pub fn test_generic() -> i64 {
     let p = Pair {
-        fst: core::intrinsic::array::splat<[i64; 4]>(3),
-        snd: core::intrinsic::array::tabulate<[i64; 4]>(|i| i * 2)
+        fst: array::splat<[i64; 4]>(3),
+        snd: array::tabulate<[i64; 4]>(|i| i * 2)
     };
-    core::intrinsic::array::get(p.fst, 2) + core::intrinsic::array::get(p.snd, 3)
+    array::get(p.fst, 2) + array::get(p.snd, 3)
 }
 extern "C" trampoline "test_generic_ffi" = test_generic;
 
 // --- Test 7: array inside a value struct inside a shared struct ---
 pub fn test_nested() -> i64 {
-    let o = Outer { inner: VHolder { data: core::intrinsic::array::tabulate<[i64; 8]>(|i| i + 1) } };
-    core::intrinsic::array::get(o.inner.data, 5)
+    let o = Outer { inner: VHolder { data: array::tabulate<[i64; 8]>(|i| i + 1) } };
+    array::get(o.inner.data, 5)
 }
 extern "C" trampoline "test_nested_ffi" = test_nested;
 
 // --- Test 8: rank-2 array member ---
 pub fn test_rank2_field() -> i64 {
-    let g = Grid { cells: core::intrinsic::array::tabulate<[i64; 2, 3]>(|i, j| i * 10 + j) };
-    core::intrinsic::array::get(g.cells, 1, 2)
-        + core::intrinsic::array::fold(g.cells, 0, |acc, x| acc + x)
+    let g = Grid { cells: array::tabulate<[i64; 2, 3]>(|i, j| i * 10 + j) };
+    array::get(g.cells, 1, 2)
+        + array::fold(g.cells, 0, |acc, x| acc + x)
 }
 extern "C" trampoline "test_rank2_field_ffi" = test_rank2_field;

@@ -12,6 +12,8 @@
 // RUN: %cc %t.opt.o %S/example_qsort.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::array;
+
 fn lcg(x : i64) -> i64 {
     (x * 48271) % 2147483647
 }
@@ -21,21 +23,21 @@ fn fill(a : [i64; 65536], i : i64, x : i64) -> [i64; 65536] {
         a
     } else {
         let x1 = lcg(x);
-        fill(core::intrinsic::array::set(a, i, x1), i + 1, x1)
+        fill(array::set(a, i, x1), i + 1, x1)
     }
 }
 
 fn swap(a : [i64; 65536], i : i64, j : i64) -> [i64; 65536] {
-    let x = core::intrinsic::array::get(a, i);
-    let y = core::intrinsic::array::get(a, j);
-    core::intrinsic::array::set(core::intrinsic::array::set(a, i, y), j, x)
+    let x = array::get(a, i);
+    let y = array::get(a, j);
+    array::set(array::set(a, i, y), j, x)
 }
 
 fn qsort_go(a : [i64; 65536], lo : i64, hi : i64) -> [i64; 65536] {
     if lo >= hi {
         a
     } else {
-        let p = core::intrinsic::array::get(a, hi);
+        let p = array::get(a, hi);
         partition(a, lo, hi, p, lo, lo)
     }
 }
@@ -46,7 +48,7 @@ fn partition(a : [i64; 65536], lo : i64, hi : i64, p : i64, i : i64, j : i64) ->
         let a1 = swap(a, i, hi);
         qsort_go(qsort_go(a1, lo, i - 1), i + 1, hi)
     } else {
-        if core::intrinsic::array::get(a, j) < p {
+        if array::get(a, j) < p {
             partition(swap(a, i, j), lo, hi, p, i + 1, j + 1)
         } else {
             partition(a, lo, hi, p, i, j + 1)
@@ -59,7 +61,7 @@ fn check(a : [i64; 65536], i : i64, prev : i64, acc : i64) -> i64 {
     if i == 65536 {
         acc
     } else {
-        let v = core::intrinsic::array::get(a, i);
+        let v = array::get(a, i);
         if prev > v {
             0 - 1
         } else {
@@ -69,7 +71,7 @@ fn check(a : [i64; 65536], i : i64, prev : i64, acc : i64) -> i64 {
 }
 
 fn round(seed : i64) -> i64 {
-    let a = fill(core::intrinsic::array::splat<[i64; 65536]>(0), 0, seed);
+    let a = fill(array::splat<[i64; 65536]>(0), 0, seed);
     let s = qsort_go(a, 0, 65535);
     check(s, 0, 0 - 1, 0)
 }

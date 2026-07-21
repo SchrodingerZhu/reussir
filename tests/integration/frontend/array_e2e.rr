@@ -9,56 +9,58 @@
 // RUN: %cc %t.opt.o %S/array_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::array;
+
 // tabulate + fold: sum of 0..7 = 28.
 pub fn test_tabulate_sum() -> f64 {
-    core::intrinsic::array::fold(
-        core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64),
+    array::fold(
+        array::tabulate<[f64; 8]>(|i| i as f64),
         0.0, |acc, x| acc + x)
 }
 extern "C" trampoline "test_tabulate_sum_ffi" = test_tabulate_sum;
 
 // splat + get.
 pub fn test_splat_get() -> i64 {
-    let a = core::intrinsic::array::splat<[i64; 16]>(7);
-    core::intrinsic::array::get(a, 15)
+    let a = array::splat<[i64; 16]>(7);
+    array::get(a, 15)
 }
 extern "C" trampoline "test_splat_get_ffi" = test_splat_get;
 
 // A unique array updates in place through a call boundary.
 fn bump(a : [f64; 8], i : i64, v : f64) -> [f64; 8] {
-    core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
+    array::set(a, i, array::get(a, i) + v)
 }
 pub fn test_unique_update() -> f64 {
-    let a = core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64);
-    core::intrinsic::array::fold(bump(a, 3, 10.0), 0.0, |acc, x| acc + x)
+    let a = array::tabulate<[f64; 8]>(|i| i as f64);
+    array::fold(bump(a, 3, 10.0), 0.0, |acc, x| acc + x)
 }
 extern "C" trampoline "test_unique_update_ffi" = test_unique_update;
 
 // Copy-on-write: `a` is still live across the `set`, so the update must
 // clone; the original observes its old value. 1.0 + 99.0 = 100.0.
 pub fn test_cow() -> f64 {
-    let a = core::intrinsic::array::splat<[f64; 4]>(1.0);
-    let b = core::intrinsic::array::set(a, 0, 99.0);
-    core::intrinsic::array::get(a, 0) + core::intrinsic::array::get(b, 0)
+    let a = array::splat<[f64; 4]>(1.0);
+    let b = array::set(a, 0, 99.0);
+    array::get(a, 0) + array::get(b, 0)
 }
 extern "C" trampoline "test_cow_ffi" = test_cow;
 
 // Rank-2: m[i][j] = i * 10 + j, summed row-major; checked against the
 // closed form.
 pub fn test_rank2() -> i64 {
-    let m = core::intrinsic::array::tabulate<[i64; 4, 4]>(|i, j| i * 10 + j);
-    core::intrinsic::array::fold(m, 0, |acc, x| acc + x)
-        + core::intrinsic::array::get(m, 2, 3)
+    let m = array::tabulate<[i64; 4, 4]>(|i, j| i * 10 + j);
+    array::fold(m, 0, |acc, x| acc + x)
+        + array::get(m, 2, 3)
 }
 extern "C" trampoline "test_rank2_ffi" = test_rank2;
 
 // A stencil kernel reading the enclosing array.
 pub fn test_stencil() -> f64 {
-    let x = core::intrinsic::array::splat<[f64; 8]>(3.0);
-    let y = core::intrinsic::array::tabulate<[f64; 8]>(|i|
-        if i == 0 { core::intrinsic::array::get(x, i) }
-        else { (core::intrinsic::array::get(x, i - 1) + core::intrinsic::array::get(x, i)) / 2.0 });
-    core::intrinsic::array::fold(y, 0.0, |acc, v| acc + v)
+    let x = array::splat<[f64; 8]>(3.0);
+    let y = array::tabulate<[f64; 8]>(|i|
+        if i == 0 { array::get(x, i) }
+        else { (array::get(x, i - 1) + array::get(x, i)) / 2.0 });
+    array::fold(y, 0.0, |acc, v| acc + v)
 }
 extern "C" trampoline "test_stencil_ffi" = test_stencil;
 
@@ -68,9 +70,9 @@ extern "C" trampoline "test_stencil_ffi" = test_stencil;
 // maximal pressure on the closure rc path. 28.0 + (1.0 + 8.0) = 37.0.
 pub fn test_shared_kernel() -> f64 {
     let f = |acc, x| acc + x;
-    let a = core::intrinsic::array::tabulate<[f64; 8]>(|i| i as f64);
-    let b = core::intrinsic::array::splat<[f64; 4]>(2.0);
-    core::intrinsic::array::fold(a, 0.0, f) + core::intrinsic::array::fold(b, 1.0, f)
+    let a = array::tabulate<[f64; 8]>(|i| i as f64);
+    let b = array::splat<[f64; 4]>(2.0);
+    array::fold(a, 0.0, f) + array::fold(b, 1.0, f)
 }
 extern "C" trampoline "test_shared_kernel_ffi" = test_shared_kernel;
 
@@ -78,38 +80,38 @@ extern "C" trampoline "test_shared_kernel_ffi" = test_shared_kernel;
 // (copied out per element when unfused), and the read borrows it.
 // 3.0 * (0+1+2+3) = 18.0.
 pub fn test_capture_fold() -> f64 {
-    let w = core::intrinsic::array::splat<[f64; 4]>(3.0);
-    let a = core::intrinsic::array::tabulate<[f64; 4]>(|i| i as f64);
-    core::intrinsic::array::fold(a, 0.0, |acc, x|
-        acc + x * core::intrinsic::array::get(w, 0))
+    let w = array::splat<[f64; 4]>(3.0);
+    let a = array::tabulate<[f64; 4]>(|i| i as f64);
+    array::fold(a, 0.0, |acc, x|
+        acc + x * array::get(w, 0))
 }
 extern "C" trampoline "test_capture_fold_ffi" = test_capture_fold;
 
 // Rank-3: three nested loops, accumulator threaded through every level.
 // sum(i*100+j*10+k) = 1476, plus m[1][2][3] = 123 → 1599.
 pub fn test_rank3() -> i64 {
-    let m = core::intrinsic::array::tabulate<[i64; 2, 3, 4]>(|i, j, k| i * 100 + j * 10 + k);
-    core::intrinsic::array::fold(m, 0, |acc, x| acc + x)
-        + core::intrinsic::array::get(m, 1, 2, 3)
+    let m = array::tabulate<[i64; 2, 3, 4]>(|i, j, k| i * 100 + j * 10 + k);
+    array::fold(m, 0, |acc, x| acc + x)
+        + array::get(m, 1, 2, 3)
 }
 extern "C" trampoline "test_rank3_ffi" = test_rank3;
 
 // A `get` directly on a constructor result: the temporary base is released
 // right after the op by the value-keyed drop. (3*3) = 9.0.
 pub fn test_temp_base() -> f64 {
-    core::intrinsic::array::get(
-        core::intrinsic::array::tabulate<[f64; 4]>(|i| (i * i) as f64), 3)
+    array::get(
+        array::tabulate<[f64; 4]>(|i| (i * i) as f64), 3)
 }
 extern "C" trampoline "test_temp_base_ffi" = test_temp_base;
 
 // A chain of sets over a uniquely owned array: every step updates in
 // place, no clones. 1 + 2 + 3 + 0 = 6.
 pub fn test_chained_set() -> i64 {
-    let a = core::intrinsic::array::splat<[i64; 4]>(0);
-    let b = core::intrinsic::array::set(
-        core::intrinsic::array::set(
-            core::intrinsic::array::set(a, 0, 1), 1, 2), 2, 3);
-    core::intrinsic::array::fold(b, 0, |acc, x| acc + x)
+    let a = array::splat<[i64; 4]>(0);
+    let b = array::set(
+        array::set(
+            array::set(a, 0, 1), 1, 2), 2, 3);
+    array::fold(b, 0, |acc, x| acc + x)
 }
 extern "C" trampoline "test_chained_set_ffi" = test_chained_set;
 
@@ -120,13 +122,13 @@ fn plus_one_from(a : [f32; 1024], i : i64) -> [f32; 1024] {
     if i == 1024 {
         a
     } else {
-        let v = core::intrinsic::array::get(a, i);
-        plus_one_from(core::intrinsic::array::set(a, i, v + 1.0), i + 1)
+        let v = array::get(a, i);
+        plus_one_from(array::set(a, i, v + 1.0), i + 1)
     }
 }
 pub fn test_recursive_plus_one() -> f32 {
-    let a = core::intrinsic::array::splat<[f32; 1024]>(1.0);
+    let a = array::splat<[f32; 1024]>(1.0);
     let b = plus_one_from(a, 0);
-    core::intrinsic::array::fold(b, 0.0, |acc, x| acc + x)
+    array::fold(b, 0.0, |acc, x| acc + x)
 }
 extern "C" trampoline "test_recursive_plus_one_ffi" = test_recursive_plus_one;

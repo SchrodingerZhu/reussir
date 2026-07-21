@@ -52,6 +52,16 @@ pub struct TransformScript {
     pub file: FileId,
 }
 
+/// One `import` binding: within `file`, reference paths headed by `name`
+/// expand through `path` (see [`Elaborator::expand_path`] and
+/// `docs/design/import.md`).
+#[derive(Clone, Debug)]
+pub struct ImportBinding {
+    pub file: FileId,
+    pub name: TokenKey,
+    pub path: surface::Path,
+}
+
 /// Render `reports` to stderr with source-caret context and return whether any
 /// was an error (warnings alone do not fail a compile). A report the middle-end
 /// could not trace back to a span — an internal/whole-program error — prints as
@@ -285,6 +295,11 @@ pub struct Elaborator<'a, 'tcx> {
     pub transform_anchors: Vec<DefId>,
     /// Inline transform scripts, in source order.
     pub transform_scripts: Vec<TransformScript>,
+    /// File-scoped `import` path bindings, in declaration order (see
+    /// `docs/design/import.md`). Append-only so checkpoint/rollback
+    /// restores it by truncation; lookups scan backwards filtered by the
+    /// current file — files hold a handful of bindings at most.
+    pub imports: Vec<ImportBinding>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
     pub elaborated: Vec<Function<'tcx>>,
@@ -330,6 +345,7 @@ pub struct Checkpoint {
     pub(super) trampolines: usize,
     pub(super) transform_anchors: usize,
     pub(super) transform_scripts: usize,
+    pub(super) imports: usize,
     pub(super) elaborated: usize,
     pub(super) reports: usize,
 }
@@ -358,6 +374,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
+            imports: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
             generics: Vec::new(),
@@ -524,6 +541,89 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     // ----- module-aware reference resolution -----
 
+    /// Declare one `import` binding for `file`. Rejects `pub`
+    /// (bindings are file-private), the reserved path heads (`core`, `root`,
+    /// `super`), and a duplicate name within the same file.
+    pub(super) fn declare_import(
+        &mut self,
+        decl: &surface::ImportDecl,
+        span: Option<Span>,
+        file: FileId,
+    ) {
+        if decl.visibility == surface::Visibility::Public {
+            self.error(
+                span,
+                "imports are file-scoped and cannot be `pub`; re-exporting is not supported",
+            );
+        }
+        let name = decl.name.value;
+        let shown = self.sym(name);
+        if matches!(shown, "core" | "root" | "super") {
+            self.error(
+                Some(decl.name.span()),
+                format!("`{shown}` is a reserved path head and cannot be bound by an import"),
+            );
+            return;
+        }
+        if self
+            .imports
+            .iter()
+            .any(|b| b.file == file && b.name == name)
+        {
+            self.error(
+                Some(decl.name.span()),
+                format!("`{shown}` is already bound by an earlier import in this file"),
+            );
+            return;
+        }
+        self.imports.push(ImportBinding {
+            file,
+            name,
+            path: decl.path.clone(),
+        });
+    }
+
+    /// Expand a reference path through the current file's `import` bindings:
+    /// a bound *first segment* is replaced by the binding's target path; a
+    /// bound *bare name* is replaced by the target outright. Expansion
+    /// iterates so a binding may target another binding; a self-referential chain
+    /// abandons expansion entirely (returns `None`), so the reference fails
+    /// resolution with the ordinary diagnostic on the path *as written*.
+    /// Returns `None` when nothing applies, so callers keep borrowing the
+    /// original path in the common case.
+    pub(super) fn expand_path(&self, path: &surface::Path) -> Option<surface::Path> {
+        let binding = |name: TokenKey| {
+            self.imports
+                .iter()
+                .rev()
+                .find(|b| b.file == self.current_file && b.name == name)
+                .map(|b| &b.path)
+        };
+        let mut expanded: Option<surface::Path> = None;
+        let mut visited: smallvec::SmallVec<[TokenKey; 4]> = smallvec::SmallVec::new();
+        loop {
+            let p = expanded.as_ref().unwrap_or(path);
+            let head = p.segments.first().copied().unwrap_or(p.basename);
+            let Some(target) = binding(head) else { break };
+            if visited.contains(&head) {
+                return None;
+            }
+            visited.push(head);
+            expanded = Some(if p.segments.is_empty() {
+                target.clone()
+            } else {
+                let mut segments = target.segments.clone();
+                segments.push(target.basename);
+                segments.extend(p.segments[1..].iter().copied());
+                surface::Path {
+                    basename: p.basename,
+                    segments,
+                }
+            });
+        }
+        expanded
+    }
+
     /// Classify a reference path's qualifier segments: the `root`/`super`
     /// module keywords (by their interned text) or ordinary names.
     pub(super) fn classify_segs(&self, path: &surface::Path) -> Vec<crate::semi::resolve::PathSeg> {
@@ -551,8 +651,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Resolve a type reference: bare names in the current module (falling
     /// back to the crate root), qualified paths per the module-relative rules
-    /// (see [`DefTable::resolve_record_path`]).
+    /// (see [`DefTable::resolve_record_path`]). The path is first expanded
+    /// through the file's `import` bindings ([`Self::expand_path`]).
     pub(super) fn resolve_record_ref(&self, path: &surface::Path) -> Option<DefId> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
         if path.segments.is_empty() {
             self.defs.resolve_record(path.basename)
         } else {
@@ -563,6 +666,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Resolve a value (function) reference; see [`Self::resolve_record_ref`].
     pub(super) fn resolve_function_ref(&self, path: &surface::Path) -> Option<DefId> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
         if path.segments.is_empty() {
             self.defs.resolve_function(path.basename)
         } else {
@@ -573,8 +678,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Resolve a constructor path's *qualifier* as a record: for
     /// `m::Enum::Variant` the qualifier is `m::Enum` (the basename names the
-    /// variant). `None` when the path has no qualifier.
+    /// variant). `None` when the path has no qualifier. Imports expand first,
+    /// so `L::Cons` with `import pkg::List as L` names `pkg::List`'s variant.
     pub(super) fn resolve_ctor_qualifier(&self, path: &surface::Path) -> Option<DefId> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
         let (&enum_name, mods) = path.segments.split_last()?;
         if mods.is_empty() {
             self.defs.resolve_record(enum_name)
@@ -734,6 +842,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: self.trampolines.len(),
             transform_anchors: self.transform_anchors.len(),
             transform_scripts: self.transform_scripts.len(),
+            imports: self.imports.len(),
             elaborated: self.elaborated.len(),
             reports: self.reports.len(),
         }
@@ -753,6 +862,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.trampolines.truncate(cp.trampolines);
         self.transform_anchors.truncate(cp.transform_anchors);
         self.transform_scripts.truncate(cp.transform_scripts);
+        self.imports.truncate(cp.imports);
         self.elaborated.truncate(cp.elaborated);
         self.reports.truncate(cp.reports);
     }
@@ -851,6 +961,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     // no items.
                     surface::StmtKind::Mod(..) => {
                         self.validate_transform_anchor(&attrs, None);
+                    }
+                    // Bindings register during this scan — before any
+                    // resolution — so they apply file-wide regardless of
+                    // declaration order.
+                    surface::StmtKind::Import(decl) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        self.declare_import(&decl, span, *file);
                     }
                     surface::StmtKind::Transform(script) => {
                         self.validate_transform_anchor(&attrs, None);

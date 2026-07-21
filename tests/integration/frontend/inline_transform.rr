@@ -10,9 +10,11 @@
 // RUN:   | %FileCheck %s --check-prefix=LOWER
 // RUN: %rrc %t.mir --from mir --emit llvm-ir -O none -o %t.ll
 
+import core::intrinsic::array;
+
 #[transform_anchor]
 pub fn target() -> [i64; 4, 16] {
-    core::intrinsic::array::splat<[i64; 4, 16]>(7)
+    array::splat<[i64; 4, 16]>(7)
 }
 
 transform [{

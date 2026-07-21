@@ -169,6 +169,7 @@ pub enum IdentClass {
     As,
     True,
     False,
+    Import,
 }
 
 fn classify_ident(lex: &mut logos::Lexer<RawToken>) -> IdentClass {
@@ -187,6 +188,7 @@ fn classify_ident(lex: &mut logos::Lexer<RawToken>) -> IdentClass {
         "as" => IdentClass::As,
         "true" => IdentClass::True,
         "false" => IdentClass::False,
+        "import" => IdentClass::Import,
         _ => IdentClass::Plain,
     }
 }
@@ -345,6 +347,7 @@ impl RawToken {
                 IdentClass::As => SyntaxKind::AsKw,
                 IdentClass::True => SyntaxKind::TrueKw,
                 IdentClass::False => SyntaxKind::FalseKw,
+                IdentClass::Import => SyntaxKind::ImportKw,
             },
             RawToken::Int => SyntaxKind::IntLit,
             RawToken::Float => SyntaxKind::FloatLit,

@@ -9,6 +9,8 @@
 // RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
 // RUN: %rrc %s --emit mlir-llvm --no-source-locations -Oaggressive -o - | %FileCheck %s --check-prefix=FUSED
 
+import core::intrinsic::cell;
+
 struct [shared] Boxed {
     value: i64
 }
@@ -28,9 +30,9 @@ struct [value] Holder {
 // MLIR: reussir.cell.set(%arg1 : i64, %arg0 : !reussir.rc<!reussir.cell<i64>>)
 // MLIR: reussir.cell.get
 pub fn plain(c: Cell<i64>, replacement: i64) -> i64 {
-    let old = core::intrinsic::cell::get(c);
-    core::intrinsic::cell::set(c, replacement);
-    old + core::intrinsic::cell::get(c)
+    let old = cell::get(c);
+    cell::set(c, replacement);
+    old + cell::get(c)
 }
 
 // A Cell member is stored as the bare cell payload. Projection materializes
@@ -42,8 +44,8 @@ pub fn plain(c: Cell<i64>, replacement: i64) -> i64 {
 // MLIR: reussir.cell.set
 // MLIR: reussir.cell.get
 pub fn bump_h(h: Holder, replacement: Boxed) -> i64 {
-    core::intrinsic::cell::set(h.cell, replacement);
-    core::intrinsic::cell::get(h.cell).value
+    cell::set(h.cell, replacement);
+    cell::get(h.cell).value
 }
 
 // alloc has no cell operand to dispatch on: it defaults to a plain Cell, and
@@ -57,7 +59,7 @@ pub fn bump_h(h: Holder, replacement: Boxed) -> i64 {
 // MLIR: %[[INNER:.+]] = reussir.cell.create value(%{{.+}} : i64) : !reussir.rc<!reussir.cell<i64 exclusive>>
 // MLIR: reussir.cell.create value(%[[INNER]] : !reussir.rc<!reussir.cell<i64 exclusive>>) : !reussir.rc<!reussir.cell<!reussir.rc<!reussir.cell<i64 exclusive>>>>
 pub fn nested() -> Cell<RefCell<i64>> {
-    core::intrinsic::cell::alloc(core::intrinsic::cell::alloc<RefCell<i64>>(1))
+    cell::alloc(cell::alloc<RefCell<i64>>(1))
 }
 
 // The exclusive operations: rmw moves the element through the updater, and
@@ -84,11 +86,11 @@ pub fn nested() -> Cell<RefCell<i64>> {
 // MLIR: %[[FLAG:.+]] = reussir.cell.in_use(%arg0 : !reussir.rc<!reussir.cell<i64 exclusive>>) : i1
 // MLIR: reussir.cell.get
 pub fn guarded(c: RefCell<i64>, replacement: i64) -> i64 {
-    let old = core::intrinsic::cell::get(c);
-    core::intrinsic::cell::set(c, replacement);
-    core::intrinsic::cell::rmw(c, |x| x + 1);
-    let busy = core::intrinsic::cell::in_use(c);
-    if busy { 0 } else { old + core::intrinsic::cell::get(c) }
+    let old = cell::get(c);
+    cell::set(c, replacement);
+    cell::rmw(c, |x| x + 1);
+    let busy = cell::in_use(c);
+    if busy { 0 } else { old + cell::get(c) }
 }
 
 // Structural beta reduction is intentionally enabled through cell.rmw: a

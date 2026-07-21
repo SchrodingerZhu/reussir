@@ -321,6 +321,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // fields bind at their promoted (`Arc`) types (§3.3).
         let arced = matches!(self.infer.shallow_resolve(ty).kind(), TyKind::Arc(_));
         let ty = self.peel_arc(ty);
+        // Expand `import` bindings so an imported qualifier (`L::Cons` with
+        // `import pkg::List as L`, or an imported `Nullable`) matches the
+        // same as its full spelling.
+        let expanded_pat;
+        let ctor = match self.expand_path(&ctor.path) {
+            Some(path) => {
+                expanded_pat = surface::CtorPat {
+                    path,
+                    args: ctor.args.clone(),
+                    has_ellipsis: ctor.has_ellipsis,
+                    is_named: ctor.is_named,
+                };
+                &expanded_pat
+            }
+            None => ctor,
+        };
         // The built-in nullable constructors, by the same qualifier convention
         // as [`Elaborator::infer_ctor`] on the expression side.
         if ctor.path.segments.last().map(|k| self.sym(*k)) == Some("Nullable") {

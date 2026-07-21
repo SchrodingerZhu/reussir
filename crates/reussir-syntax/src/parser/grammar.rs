@@ -5,8 +5,9 @@
 //! ```text
 //! source-file ::= stmt*
 //! stmt        ::= 'pub'? (fn-stmt | struct-stmt | enum-stmt | mod-stmt
-//!                           | extern-stmt | transform-stmt)
+//!                           | extern-stmt | transform-stmt | import-stmt)
 //! transform-stmt ::= 'transform' RAW-MLIR-LITERAL ';'
+//! import-stmt ::= 'import' path ('as' name)? ';'
 //! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)? (block | ';')
 //! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields)
 //! enum-stmt   ::= 'enum' capability? name generics? '{' variant,* '}'
@@ -44,7 +45,7 @@ impl Parser<'_> {
                 // again.
                 let e = self.start();
                 self.error(format!(
-                    "expected a top-level item (fn, struct, enum, mod, extern, or transform), found {}",
+                    "expected a top-level item (fn, struct, enum, mod, extern, transform, or import), found {}",
                     self.current().describe()
                 ));
                 while !self.at_eof() && !self.current().starts_stmt() && !self.at_transform_stmt() {
@@ -69,10 +70,11 @@ impl Parser<'_> {
             EnumKw => self.enum_stmt(m),
             ModKw => self.mod_stmt(m),
             ExternKw => self.extern_trampoline_stmt(m),
+            ImportKw => self.import_stmt(m),
             Ident if self.at_transform_stmt() => self.transform_stmt(m),
             _ => {
                 self.error(format!(
-                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, or `transform` after visibility, found {}",
+                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `transform`, or `import` after visibility, found {}",
                     self.current().describe()
                 ));
                 // Consume nothing further; the outer loop recovers.
@@ -269,6 +271,18 @@ impl Parser<'_> {
         self.expect_ident("a module name");
         self.expect(Semicolon);
         m.complete(self, ModStmt);
+    }
+
+    /// `import path (as name)?;`.
+    fn import_stmt(&mut self, m: Marker) {
+        self.expect(ImportKw);
+        self.path();
+        if self.at(AsKw) {
+            self.bump();
+            self.expect_ident("an import name");
+        }
+        self.expect(Semicolon);
+        m.complete(self, ImportStmt);
     }
 
     /// `extern "ABI" trampoline "sym" = path<T,...>;`.

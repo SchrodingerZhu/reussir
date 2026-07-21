@@ -11,6 +11,8 @@
 // RUN: %cc %t.opt.o %S/cell_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::cell;
+
 struct [shared] Boxed {
     value: i64
 }
@@ -25,11 +27,11 @@ struct [shared] CycleNode {
 }
 
 pub fn test_scalar() -> i64 {
-    let c = core::intrinsic::cell::alloc<RefCell<i64>>(10);
-    let before = core::intrinsic::cell::get(c);
-    core::intrinsic::cell::set(c, 20);
-    core::intrinsic::cell::rmw(c, |x| x + 2);
-    before + core::intrinsic::cell::get(c)
+    let c = cell::alloc<RefCell<i64>>(10);
+    let before = cell::get(c);
+    cell::set(c, 20);
+    cell::rmw(c, |x| x + 2);
+    before + cell::get(c)
 }
 extern "C" trampoline "test_scalar_ffi" = test_scalar;
 
@@ -37,11 +39,11 @@ extern "C" trampoline "test_scalar_ffi" = test_scalar;
 // value, and RMW moves the current record through the updater without an
 // extra clone.
 pub fn test_managed_element() -> i64 {
-    let c = core::intrinsic::cell::alloc<RefCell<Boxed>>(Boxed { value: 5 });
-    let first = core::intrinsic::cell::get(c);
-    core::intrinsic::cell::set(c, Boxed { value: 8 });
-    core::intrinsic::cell::rmw(c, |x| Boxed { value: x.value + 3 });
-    first.value + core::intrinsic::cell::get(c).value
+    let c = cell::alloc<RefCell<Boxed>>(Boxed { value: 5 });
+    let first = cell::get(c);
+    cell::set(c, Boxed { value: 8 });
+    cell::rmw(c, |x| Boxed { value: x.value + 3 });
+    first.value + cell::get(c).value
 }
 extern "C" trampoline "test_managed_element_ffi" = test_managed_element;
 
@@ -49,13 +51,13 @@ extern "C" trampoline "test_managed_element_ffi" = test_managed_element;
 // RefCell reference. RMW directly on another temporary clone must release
 // that temporary only after the body.
 pub fn test_nested_cell() -> i64 {
-    let inner = core::intrinsic::cell::alloc<RefCell<i64>>(3);
-    let outer = core::intrinsic::cell::alloc(inner);
-    let alias = core::intrinsic::cell::get(outer);
-    core::intrinsic::cell::set(alias, 7);
-    core::intrinsic::cell::rmw(core::intrinsic::cell::get(outer), |x| x + 5);
-    core::intrinsic::cell::get(alias)
-        + core::intrinsic::cell::get(core::intrinsic::cell::get(outer))
+    let inner = cell::alloc<RefCell<i64>>(3);
+    let outer = cell::alloc(inner);
+    let alias = cell::get(outer);
+    cell::set(alias, 7);
+    cell::rmw(cell::get(outer), |x| x + 5);
+    cell::get(alias)
+        + cell::get(cell::get(outer))
 }
 extern "C" trampoline "test_nested_cell_ffi" = test_nested_cell;
 
@@ -63,31 +65,31 @@ extern "C" trampoline "test_nested_cell_ffi" = test_nested_cell;
 // keeps its member. Both the updater and subsequent read borrow those
 // projections.
 pub fn test_record_member() -> i64 {
-    let h = Holder { cell: core::intrinsic::cell::alloc<RefCell<Boxed>>(Boxed { value: 40 }) };
-    core::intrinsic::cell::rmw(h.cell, |x| Boxed { value: x.value + 2 });
-    core::intrinsic::cell::get(h.cell).value
+    let h = Holder { cell: cell::alloc<RefCell<Boxed>>(Boxed { value: 40 }) };
+    cell::rmw(h.cell, |x| Boxed { value: x.value + 2 });
+    cell::get(h.cell).value
 }
 extern "C" trampoline "test_record_member_ffi" = test_record_member;
 
 fn generic_get<T>(c: Cell<T>) -> T {
-    core::intrinsic::cell::get(c)
+    cell::get(c)
 }
 
 pub fn test_generic() -> i64 {
-    generic_get(core::intrinsic::cell::alloc(41))
+    generic_get(cell::alloc(41))
 }
 extern "C" trampoline "test_generic_ffi" = test_generic;
 
 // Outside any rmw body the guard flag reads false, including through a
 // generic instantiation.
 fn generic_busy<T>(c: RefCell<T>) -> bool {
-    core::intrinsic::cell::in_use(c)
+    cell::in_use(c)
 }
 
 pub fn test_in_use() -> i64 {
-    let c = core::intrinsic::cell::alloc<RefCell<i64>>(6);
+    let c = cell::alloc<RefCell<i64>>(6);
     let busy = generic_busy(c);
-    if busy { 0 } else { core::intrinsic::cell::get(c) + 1 }
+    if busy { 0 } else { cell::get(c) + 1 }
 }
 extern "C" trampoline "test_in_use_ffi" = test_in_use;
 
@@ -101,14 +103,14 @@ extern "C" trampoline "test_in_use_ffi" = test_in_use;
 // element (the acquisition fixed by the exclusive-cell backend rework), or
 // the read below would use freed memory once the cell is cleared.
 pub fn test_rc_cycle() -> i64 {
-    let link = core::intrinsic::cell::alloc(Nullable::Null);
+    let link = cell::alloc(Nullable::Null);
     let node = CycleNode { value: 42, next: link };
-    core::intrinsic::cell::set(link, Nullable::NonNull { node });
-    let value = match core::intrinsic::cell::get(link) {
+    cell::set(link, Nullable::NonNull { node });
+    let value = match cell::get(link) {
         Nullable::NonNull(node) => node.value,
         Nullable::Null => -1
     };
-    core::intrinsic::cell::set(link, Nullable::Null);
+    cell::set(link, Nullable::Null);
     value
 }
 extern "C" trampoline "test_rc_cycle_ffi" = test_rc_cycle;

@@ -945,6 +945,137 @@ mod tests {
         });
     }
 
+    // ----- import -----
+
+    /// Elaborate and print the HIR (no locations), to compare an abbreviated
+    /// program against its fully-qualified spelling.
+    fn printed_hir(source: &str) -> String {
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            let strings = elab.strings.entries();
+            crate::semi::hir::print::Printer::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &strings,
+                &elab.records,
+                &elab.trampolines,
+            )
+        })
+    }
+
+    #[test]
+    fn imports_abbreviate_intrinsics_like_the_full_spelling() {
+        let full = printed_hir(
+            "fn f(x: f64) -> f64 { core::intrinsic::math::sqrt(x, 0) }\n\
+             fn g(a: [f64; 4], i: i64) -> f64 { core::intrinsic::array::get(a, i) }\n\
+             fn h(x: f64) -> f64 { core::intrinsic::math::sqrt(x, 0) }",
+        );
+        // Both binding spellings: `import` (last segment) and `import … as …`,
+        // the latter on a whole module and on a single intrinsic function.
+        let abbreviated = printed_hir(
+            "import core::intrinsic::math;\n\
+             import core::intrinsic::array as arr;\n\
+             import core::intrinsic::math::sqrt as rt;\n\
+             fn f(x: f64) -> f64 { math::sqrt(x, 0) }\n\
+             fn g(a: [f64; 4], i: i64) -> f64 { arr::get(a, i) }\n\
+             fn h(x: f64) -> f64 { rt(x, 0) }",
+        );
+        assert_eq!(full, abbreviated);
+    }
+
+    #[test]
+    fn imports_abbreviate_records_in_every_position() {
+        let full = printed_hir(
+            "enum List<T> { Nil, Cons(T, List<T>) }\n\
+             fn len(l: List<i64>) -> i64 { match l { List::Nil => 0, List::Cons(x, xs) => 1 + len(xs) } }\n\
+             fn make() -> List<i64> { List::Cons{1, List::Nil} }",
+        );
+        // A record import covers type annotations, constructors (incl.
+        // nullary), and pattern qualifiers; `LL` also exercises a binding
+        // that targets another binding.
+        let abbreviated = printed_hir(
+            "enum List<T> { Nil, Cons(T, List<T>) }\n\
+             import List as L;\n\
+             import L as LL;\n\
+             fn len(l: L<i64>) -> i64 { match l { LL::Nil => 0, L::Cons(x, xs) => 1 + len(xs) } }\n\
+             fn make() -> LL<i64> { L::Cons{1, LL::Nil} }",
+        );
+        assert_eq!(full, abbreviated);
+    }
+
+    #[test]
+    fn locals_shadow_imports() {
+        // The imported `sqrt` takes two arguments; the local closure takes
+        // one. Elaborating without errors proves the local won.
+        check(
+            "import core::intrinsic::math::sqrt;\n\
+             fn f(x: f64) -> f64 { let sqrt = |y: f64| y; sqrt(x) }",
+            |_, _| {},
+        );
+    }
+
+    #[test]
+    fn import_bindings_are_file_scoped() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod m;\nimport m::helper as h;\npub fn go() -> u64 { h(1) }",
+                ),
+                (&["m"], "pub fn helper(x: u64) -> u64 { x }"),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+            },
+        );
+        // The binding must not leak into a sibling file.
+        check_package(
+            "p",
+            &[
+                (&[], "mod m;\nimport m::helper as h;"),
+                (
+                    &["m"],
+                    "pub fn helper(x: u64) -> u64 { x }\npub fn go() -> u64 { h(1) }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("unknown function `h`")),
+                    "expected the sibling file to miss the binding: {:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_imports() {
+        for (src, expected) in [
+            (
+                "pub import core::intrinsic::math;",
+                "cannot be `pub`",
+            ),
+            (
+                "import core::intrinsic::math;\nimport core::intrinsic::array as math;",
+                "already bound",
+            ),
+            ("import foo as core;", "reserved path head"),
+        ] {
+            assert!(has_error(src, expected), "{src:?}: {:#?}", reports_of(src));
+        }
+        // A self-referential binding chain must fail resolution, not hang.
+        assert!(has_error(
+            "import b::x as a;\nimport a::y as b;\nfn f() -> i64 { a::z(1) }",
+            "unknown function",
+        ));
+    }
+
     /// Elaborate a source string and return its diagnostics (for negative tests).
     fn reports_of(source: &str) -> Vec<crate::semi::Report> {
         with_tcx(|tcx| {

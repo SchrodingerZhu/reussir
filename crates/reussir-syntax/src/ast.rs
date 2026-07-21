@@ -129,6 +129,7 @@ impl Emitter<'_> {
             ModStmt => self.mod_stmt(node),
             ExternTrampolineStmt => self.extern_stmt(node),
             TransformStmt => self.transform_stmt(node),
+            ImportStmt => self.import_stmt(node),
             k => unreachable!("unexpected statement node {k:?}"),
         };
         tagged("SpannedStmt", self.with_node_span(node, inner))
@@ -290,6 +291,24 @@ impl Emitter<'_> {
     fn mod_stmt(&self, node: &ResolvedNode) -> Value {
         let name = self.name_after(node, ModKw);
         tagged("ModStmt", json!([self.visibility(node), name.text()]))
+    }
+
+    /// `import p (as n)?;` encodes as the bound name and the target path: the
+    /// renaming identifier when `as` is present, otherwise the path's last
+    /// segment.
+    fn import_stmt(&self, node: &ResolvedNode) -> Value {
+        let path = child_node(node, Path).expect("import target path");
+        let name = tokens(node)
+            .skip_while(|t| t.kind() != AsKw)
+            .skip(1) // the `as` token itself is identifier-like
+            .find(|t| is_ident_like(t.kind()))
+            .unwrap_or_else(|| {
+                tokens(path)
+                    .filter(|t| is_ident_like(t.kind()))
+                    .last()
+                    .expect("non-empty path")
+            });
+        tagged("ImportStmt", json!([name.text(), self.path(path)]))
     }
 
     fn extern_stmt(&self, node: &ResolvedNode) -> Value {

@@ -11,38 +11,40 @@
 // RUN: %cc %t.opt.o %S/cells_sync_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::cell;
+
 struct [shared] Data {
     value: i64
 }
 
 pub fn test_mutex() -> i64 {
-    let m = core::intrinsic::cell::alloc<Mutex<i64>>(40);
-    core::intrinsic::cell::rmw(m, |x| x + 1);
-    core::intrinsic::cell::rmw(m, |x| x + 1);
-    core::intrinsic::cell::get(m)
+    let m = cell::alloc<Mutex<i64>>(40);
+    cell::rmw(m, |x| x + 1);
+    cell::rmw(m, |x| x + 1);
+    cell::get(m)
 }
 extern "C" trampoline "test_mutex_ffi" = test_mutex;
 
 pub fn test_atomic() -> i64 {
-    let a = core::intrinsic::cell::alloc<Atomic<i64>>(5);
-    core::intrinsic::cell::set(a, 42);
-    core::intrinsic::cell::get(a)
+    let a = cell::alloc<Atomic<i64>>(5);
+    cell::set(a, 42);
+    cell::get(a)
 }
 extern "C" trampoline "test_atomic_ffi" = test_atomic;
 
 pub fn test_flatlock() -> i64 {
-    let f = core::intrinsic::cell::alloc<FlatLock<i64>>(3);
-    core::intrinsic::cell::set(f, 33);
-    core::intrinsic::cell::get(f)
+    let f = cell::alloc<FlatLock<i64>>(3);
+    cell::set(f, 33);
+    cell::get(f)
 }
 extern "C" trampoline "test_flatlock_ffi" = test_flatlock;
 
 // The Mutex<Arc> composition end to end: an arc'd element clones out of the
 // read transaction with its atomic count balanced.
 pub fn test_rwlock() -> i64 {
-    let r = core::intrinsic::cell::alloc<RwLock<Arc<Data>>>(Arc<Data> { value: 11 });
-    let first = core::intrinsic::cell::rdlock(r, |d| d.value);
-    core::intrinsic::cell::set(r, Arc<Data> { value: 31 });
-    first + core::intrinsic::cell::rdlock(r, |d| d.value)
+    let r = cell::alloc<RwLock<Arc<Data>>>(Arc<Data> { value: 11 });
+    let first = cell::rdlock(r, |d| d.value);
+    cell::set(r, Arc<Data> { value: 31 });
+    first + cell::rdlock(r, |d| d.value)
 }
 extern "C" trampoline "test_rwlock_ffi" = test_rwlock;

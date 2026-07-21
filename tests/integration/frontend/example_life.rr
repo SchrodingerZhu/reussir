@@ -13,25 +13,27 @@
 // RUN: %cc %t.opt.o %S/example_life.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.opt.exe
 
+import core::intrinsic::array;
+
 fn wrap(x : i64) -> i64 {
     (x + 64) % 64
 }
 
 fn step(g : [i32; 64, 64]) -> [i32; 64, 64] {
-    core::intrinsic::array::tabulate<[i32; 64, 64]>(|i, j| {
+    array::tabulate<[i32; 64, 64]>(|i, j| {
         let im = wrap(i - 1);
         let ip = wrap(i + 1);
         let jm = wrap(j - 1);
         let jp = wrap(j + 1);
-        let n = core::intrinsic::array::get(g, im, jm)
-              + core::intrinsic::array::get(g, im, j)
-              + core::intrinsic::array::get(g, im, jp)
-              + core::intrinsic::array::get(g, i, jm)
-              + core::intrinsic::array::get(g, i, jp)
-              + core::intrinsic::array::get(g, ip, jm)
-              + core::intrinsic::array::get(g, ip, j)
-              + core::intrinsic::array::get(g, ip, jp);
-        let alive = core::intrinsic::array::get(g, i, j);
+        let n = array::get(g, im, jm)
+              + array::get(g, im, j)
+              + array::get(g, im, jp)
+              + array::get(g, i, jm)
+              + array::get(g, i, jp)
+              + array::get(g, ip, jm)
+              + array::get(g, ip, j)
+              + array::get(g, ip, jp);
+        let alive = array::get(g, i, j);
         if alive == 1 {
             if n == 2 { 1 } else { if n == 3 { 1 } else { 0 } }
         } else {
@@ -46,7 +48,7 @@ fn run(g : [i32; 64, 64], n : i64) -> [i32; 64, 64] {
 
 // Deterministic ~34% soup from a per-cell hash; no PRNG state to thread.
 fn seed() -> [i32; 64, 64] {
-    core::intrinsic::array::tabulate<[i32; 64, 64]>(|i, j| {
+    array::tabulate<[i32; 64, 64]>(|i, j| {
         if (i * 2654435761 + j * 40503 + i * j * 2246822519) % 97 < 33 {
             1
         } else {
@@ -56,7 +58,7 @@ fn seed() -> [i32; 64, 64] {
 }
 
 fn population(g : [i32; 64, 64]) -> i64 {
-    core::intrinsic::array::fold(g, 0, |acc : i64, c : i32| acc + (c as i64))
+    array::fold(g, 0, |acc : i64, c : i32| acc + (c as i64))
 }
 
 fn life_test(gens : i64) -> i64 {

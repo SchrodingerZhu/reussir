@@ -1,0 +1,25 @@
+// Diagnostics for invalid `import` declarations, and the ordinary
+// unknown-path diagnostics through a binding (which print the expanded path).
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// CHECK-DAG: imports are file-scoped and cannot be `pub`
+pub import core::intrinsic::math;
+
+// CHECK-DAG: `math` is already bound by an earlier import in this file
+import core::intrinsic::array as math;
+
+// CHECK-DAG: `core` is a reserved path head and cannot be bound by an import
+import something as core;
+
+// A self-referential binding chain cannot expand; the reference fails with
+// the ordinary unknown-function diagnostic instead of looping.
+import b::x as a;
+import a::y as b;
+// CHECK: unknown function `a::z`
+fn cyclic() -> i64 { a::z(1) }
+
+// A binding into the `core` package is checked as the expanded intrinsic path.
+import core::intrinsic::array as arr;
+// CHECK: unknown array intrinsic `core::intrinsic::array::frobnicate`
+fn unknown_member() -> i64 { arr::frobnicate(1) }

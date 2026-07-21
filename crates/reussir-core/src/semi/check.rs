@@ -357,6 +357,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let inst = self.instantiate(&proto.generics, &[], span);
                 return self.lift_function(def, &proto, &inst, span);
             }
+            // A bare name bound by an import to a *qualified* path (e.g.
+            // `import List::Nil;`) is a nullary-constructor reference.
+            if let Some(expanded) = self.expand_path(path)
+                && !expanded.segments.is_empty()
+            {
+                return self.infer_ctor(&expanded, &[], &[], span);
+            }
             let hint = self.variable_suggestion(path.basename);
             self.error(
                 span,
@@ -569,6 +576,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let callee = self.mk_expr(ExprKind::Var(id), ty, span);
             return self.closure_apply(callee, &fc.args, span);
         }
+        // Expand the callee path through the file's `import` bindings
+        // *here*, before the textual intrinsic check below: `arr::get(…)` with
+        // `import core::intrinsic::array as arr;` must dispatch as the
+        // intrinsic. Locals were checked first — a binding never shadows one.
+        let expanded_fc;
+        let fc = match self.expand_path(&fc.name) {
+            Some(name) => {
+                expanded_fc = surface::FuncCall {
+                    name,
+                    ty_args: fc.ty_args.clone(),
+                    args: fc.args.clone(),
+                };
+                &expanded_fc
+            }
+            None => fc,
+        };
         // The built-in `core` package: `core::intrinsic::<family>::<fn>` calls
         // are intrinsics, and nothing else lives under `core` (the package name
         // is reserved, so this can never shadow user code).
@@ -1623,6 +1646,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
+        // Expand `import` bindings before the builtin-spelling checks so an
+        // imported `Nullable`/`Arc`/enum qualifier dispatches the same as
+        // its full spelling.
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
         let qualifier = path.segments.last().copied();
         // The built-in nullable constructors.
         if qualifier.map(|k| self.sym(k)) == Some("Nullable") {

@@ -5,6 +5,8 @@
 
 // RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
 
+import core::intrinsic::array;
+
 // CHECK-DAG: non-scalar array element types are not supported yet
 struct S { x: i32 }
 fn bad_elem(a : [S; 4]) -> i64 { 0 }
@@ -24,28 +26,28 @@ fn expr_extent(a : [f64; 2 + 2]) -> i64 { 0 }
 fn name_extent(a : [f64; n]) -> i64 { 0 }
 
 // CHECK: `core::intrinsic::array::splat` requires one explicit array type argument
-fn no_ty_args() -> [f64; 4] { core::intrinsic::array::splat(0.0) }
+fn no_ty_args() -> [f64; 4] { array::splat(0.0) }
 
 // CHECK: `core::intrinsic::array::splat` expects an array type argument (`[T; extents…]`), found `f64`
-fn scalar_ty_arg() -> [f64; 4] { core::intrinsic::array::splat<f64>(0.0) }
+fn scalar_ty_arg() -> [f64; 4] { array::splat<f64>(0.0) }
 
 // CHECK: unknown array intrinsic `core::intrinsic::array::build`
-fn bad_ctor() -> [f64; 4] { core::intrinsic::array::build<[f64; 4]>(0.0) }
+fn bad_ctor() -> [f64; 4] { array::build<[f64; 4]>(0.0) }
 
 // CHECK: `get` on `[f64; 4, 4]` expects 2 index argument(s), got 1
-fn rank_mismatch(m : [f64; 4, 4]) -> f64 { core::intrinsic::array::get(m, 0) }
+fn rank_mismatch(m : [f64; 4, 4]) -> f64 { array::get(m, 0) }
 
 // CHECK: `core::intrinsic::array::get` expects an array as its first argument, found `i64`
-fn not_an_array(x : i64) -> i64 { core::intrinsic::array::get(x, 0) }
+fn not_an_array(x : i64) -> i64 { array::get(x, 0) }
 
 // A tabulate kernel is checked as an ordinary closure: one i64 parameter
 // per dimension.
 // CHECK: type mismatch: expected `(i64, i64) -> f64`
 fn wrong_rank(m : [f64; 4, 4]) -> [f64; 4, 4] {
-    core::intrinsic::array::tabulate<[f64; 4, 4]>(|i| 0.0)
+    array::tabulate<[f64; 4, 4]>(|i| 0.0)
 }
 
 // CHECK: type mismatch: expected `(f64, f64) -> f64`
 fn wrong_kernel(a : [f64; 4]) -> f64 {
-    core::intrinsic::array::fold(a, 0.0, |acc: f64, x: i64| acc)
+    array::fold(a, 0.0, |acc: f64, x: i64| acc)
 }
