@@ -1,0 +1,15 @@
+// Boundary-type diagnostics reported per ground instance at
+// monomorphization (the declaration itself is generic and well-formed).
+
+// RUN: %not %rrc %s --emit mir -o - 2>&1 | %FileCheck %s
+
+pub struct [value] Point { x: i64, y: i64 }
+
+#[ffi(import)]
+pub fn consume<T>(p: T) -> i64 [{ 0 }];
+
+pub fn main() -> i64 {
+    consume(Point{1, 2})
+}
+
+// CHECK-DAG: `#[ffi(import)]` parameter `p`: a `[value]` record cannot cross the FFI boundary yet
