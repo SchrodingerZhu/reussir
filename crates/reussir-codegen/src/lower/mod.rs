@@ -378,17 +378,65 @@ pub fn lower_unit<'c, 'tcx>(
     }
     for t in &program.trampolines {
         // A trampoline is a body-carrying wrapper: it belongs to its target's
-        // home unit (the exported alias and the aliased body co-locate).
+        // home unit (the wrapper and the wrapped body co-locate; for an
+        // import, the target *is* the materialized definition).
         if !unit.is_home(program.symbol(t.target)) {
             continue;
         }
-        body.append_operation(builders::trampoline_export(
+        let build = if t.import {
+            builders::trampoline_import
+        } else {
+            builders::trampoline_export
+        };
+        body.append_operation(build(
             context,
             &t.abi,
             program.symbol(t.export),
             program.symbol(t.target),
             Location::unknown(context),
         ));
+    }
+    // The boundary wrapper texture of each `#[ffi(import)]` instance rides
+    // its native function's home unit, next to the import trampoline.
+    for import in &program.ffi_imports {
+        if !unit.is_home(program.symbol(import.symbol)) {
+            continue;
+        }
+        body.append_operation(builders::polyffi_texture(
+            context,
+            &import.texture,
+            Location::unknown(context),
+        ));
+    }
+    // Standalone foreign textures (opaque drop hooks), anchored by symbol.
+    for texture in &program.ffi_textures {
+        if !unit.is_home(program.symbol(texture.anchor)) {
+            continue;
+        }
+        body.append_operation(builders::polyffi_texture(
+            context,
+            &texture.texture,
+            Location::unknown(context),
+        ));
+    }
+    // Reussir-side rc glue the foreign wrappers link against; one pair per
+    // shared-record instance that crosses the boundary, in its home unit.
+    for glue in &program.ffi_rc_glue {
+        if !unit.is_home(program.symbol(glue.acquire)) {
+            continue;
+        }
+        for op in lowerer.ffi_rc_glue_pair(glue)? {
+            body.append_operation(op);
+        }
+    }
+    // Every opaque instance's drop hook is declared in every unit: the
+    // `rc.dec` lowering calls it, and its verifier requires the symbol. The
+    // definition arrives with the linked foreign bitcode.
+    for record in &program.records {
+        let mir::RecordLayout::Opaque { drop_hook, .. } = record.layout else {
+            continue;
+        };
+        body.append_operation(lowerer.ffi_drop_hook_decl(record, drop_hook)?);
     }
     embed_inline_transforms(context, &mut module, &program.transform_scripts)?;
     tracing::debug!(mlir = %module.as_operation(), "lowered program to MLIR");
