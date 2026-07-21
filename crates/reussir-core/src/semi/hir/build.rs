@@ -17,7 +17,8 @@ use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
 use crate::semi::ctxt::{
-    DefaultCap, Record, RecordFields, TrampolineRoot, TransformScript, Variant,
+    DefaultCap, FfiImport, FfiPrelude, Record, RecordFields, TrampolineRoot, TransformScript,
+    Variant,
 };
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
@@ -41,6 +42,8 @@ pub struct Parsed<'tcx> {
     pub strings: Vec<(StringToken, String)>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
+    pub ffi_imports: FxHashMap<DefId, FfiImport>,
+    pub ffi_preludes: Vec<FfiPrelude>,
     pub defs: DefTable,
     pub names: Names,
     /// The dump's source-file table, in id order: each file's display name.
@@ -124,6 +127,31 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         .zip(&funcs)
         .filter_map(|(raw, func)| raw.transform_anchor.then_some(func.def))
         .collect();
+    let ffi_imports: FxHashMap<DefId, FfiImport> = raw
+        .funcs
+        .iter()
+        .zip(&funcs)
+        .filter_map(|(raw, func)| match &raw.body {
+            raw::FuncBody::Ffi(body) => Some((
+                func.def,
+                FfiImport {
+                    body: body.clone(),
+                    span: span_of(raw.span),
+                    file: file_of(raw.file),
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    let ffi_preludes: Vec<FfiPrelude> = raw
+        .ffi_preludes
+        .iter()
+        .map(|p| FfiPrelude {
+            body: p.body.clone(),
+            span: span_of(p.span),
+            file: file_of(p.file),
+        })
+        .collect();
     let transform_scripts = raw
         .transforms
         .iter()
@@ -141,6 +169,8 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         strings,
         records,
         trampolines,
+        ffi_imports,
+        ffi_preludes,
         defs: b.defs,
         names: b.names,
         files,
@@ -654,6 +684,7 @@ mod tests {
             let strings = elab.strings.entries();
             let text = Printer::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
@@ -670,6 +701,7 @@ mod tests {
             );
             let text2 = Printer::new(&parsed.defs, &parsed.names)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -700,6 +732,7 @@ mod tests {
             let strings = elab.strings.entries();
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             assert!(
                 text.contains("0 = \"<test>\";"),
@@ -727,6 +760,7 @@ mod tests {
             }
             let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,

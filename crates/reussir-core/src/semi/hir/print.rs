@@ -16,7 +16,9 @@ use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::SourceCache;
 
-use crate::semi::ctxt::{DefaultCap, Record, RecordFields, TrampolineRoot, TransformScript};
+use crate::semi::ctxt::{
+    DefaultCap, FfiImport, FfiPrelude, Record, RecordFields, TrampolineRoot, TransformScript,
+};
 use crate::semi::hir::{
     ArithOp, CmpOp, DecisionTree, Expr, ExprKind, Function, PatVarRef, SwitchCases, VarId,
 };
@@ -43,6 +45,8 @@ pub struct Printer<'a> {
     sources: Option<&'a SourceCache>,
     transform_anchors: &'a [DefId],
     transform_scripts: &'a [TransformScript],
+    ffi_preludes: &'a [FfiPrelude],
+    ffi_imports: Option<&'a rustc_hash::FxHashMap<DefId, FfiImport>>,
 }
 
 impl<'a> Printer<'a> {
@@ -53,6 +57,8 @@ impl<'a> Printer<'a> {
             sources: None,
             transform_anchors: &[],
             transform_scripts: &[],
+            ffi_preludes: &[],
+            ffi_imports: None,
         }
     }
 
@@ -68,6 +74,8 @@ impl<'a> Printer<'a> {
             sources: Some(sources),
             transform_anchors: &[],
             transform_scripts: &[],
+            ffi_preludes: &[],
+            ffi_imports: None,
         }
     }
 
@@ -79,6 +87,18 @@ impl<'a> Printer<'a> {
     ) -> Self {
         self.transform_anchors = anchors;
         self.transform_scripts = scripts;
+        self
+    }
+
+    /// Attach FFI metadata (foreign preludes and import bodies) to the next
+    /// program rendering.
+    pub fn with_ffi_metadata(
+        mut self,
+        preludes: &'a [FfiPrelude],
+        imports: &'a rustc_hash::FxHashMap<DefId, FfiImport>,
+    ) -> Self {
+        self.ffi_preludes = preludes;
+        self.ffi_imports = Some(imports);
         self
     }
 
@@ -119,6 +139,11 @@ impl<'a> Printer<'a> {
             self.transform_scripts
                 .iter()
                 .map(|script| self.transform(script)),
+        );
+        items.extend(
+            self.ffi_preludes
+                .iter()
+                .map(|prelude| self.ffi_prelude(prelude)),
         );
         items.extend(funcs.iter().map(|function| self.function(function)));
 
@@ -246,6 +271,12 @@ impl<'a> Printer<'a> {
             + text(";")
     }
 
+    fn ffi_prelude(&self, prelude: &FfiPrelude) -> Doc<'static> {
+        text(format!("extern \"rust\" {:?}", prelude.body))
+            + self.item_loc(prelude.file, prelude.span)
+            + text(";")
+    }
+
     fn function(&self, f: &Function<'_>) -> Doc<'static> {
         let mut head = String::new();
         if self.transform_anchors.contains(&f.def) {
@@ -279,7 +310,10 @@ impl<'a> Printer<'a> {
             Some(body) => {
                 sig + text(" {") + indent(hardline() + self.expr(body)) + hardline() + text("}")
             }
-            None => sig + text(";"),
+            None => match self.ffi_imports.and_then(|m| m.get(&f.def)) {
+                Some(import) => sig + text(format!(" = ffi {:?};", import.body)),
+                None => sig + text(";"),
+            },
         }
     }
 
