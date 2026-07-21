@@ -40,6 +40,14 @@ pub enum Token<'a> {
     Extern,
     #[token("trampoline")]
     Trampoline,
+    #[token("import")]
+    Import,
+    #[token("ffi")]
+    Ffi,
+    #[token("texture")]
+    Texture,
+    #[token("glue")]
+    Glue,
     #[token("transform")]
     Transform,
     #[token("transform_anchor")]

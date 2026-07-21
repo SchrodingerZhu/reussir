@@ -245,6 +245,11 @@ impl<'tcx> Builder<'_, 'tcx> {
                     })
                     .collect(),
             ),
+            raw::RecordBody::Opaque(_) => RecordFields::Opaque,
+        };
+        let ffi = match &r.body {
+            raw::RecordBody::Opaque(path) => Some(path.clone()),
+            _ => None,
         };
         let record = Record {
             def,
@@ -253,7 +258,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             kind,
             default_cap,
             repr_fixed: r.repr_fixed,
-            ffi: None,
+            ffi,
             fields: Some(fields),
             regional_generics,
             span: span_of(r.span),
@@ -281,7 +286,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             .map(|p| (self.names.intern(&p.name), VarId(p.var), self.ty(&p.ty)))
             .collect();
         let return_ty = self.ty(&f.ret);
-        let body = f.body.as_ref().map(|b| self.expr(b));
+        let body = match &f.body {
+            raw::FuncBody::Expr(b) => Some(self.expr(b)),
+            raw::FuncBody::None | raw::FuncBody::Ffi(_) => None,
+        };
         Function {
             def,
             name,

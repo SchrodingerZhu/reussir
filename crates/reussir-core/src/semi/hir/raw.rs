@@ -20,6 +20,7 @@ pub struct Program {
     pub records: Vec<Record>,
     pub trampolines: Vec<Tramp>,
     pub transforms: Vec<Transform>,
+    pub ffi_preludes: Vec<FfiPrelude>,
     pub funcs: Vec<Func>,
 }
 
@@ -31,6 +32,7 @@ pub enum Item {
     Record(Record),
     Tramp(Tramp),
     Transform(Transform),
+    FfiPrelude(FfiPrelude),
     Func(Func),
 }
 
@@ -42,6 +44,7 @@ impl Program {
             records: Vec::new(),
             trampolines: Vec::new(),
             transforms: Vec::new(),
+            ffi_preludes: Vec::new(),
             funcs: Vec::new(),
         };
         for item in items {
@@ -51,11 +54,21 @@ impl Program {
                 Item::Record(r) => p.records.push(r),
                 Item::Tramp(t) => p.trampolines.push(t),
                 Item::Transform(t) => p.transforms.push(t),
+                Item::FfiPrelude(f) => p.ffi_preludes.push(f),
                 Item::Func(f) => p.funcs.push(f),
             }
         }
         p
     }
+}
+
+/// A foreign source block (`extern "rust" "..." in <file>;`).
+#[derive(Clone, Debug)]
+pub struct FfiPrelude {
+    pub abi: String,
+    pub body: String,
+    pub file: Option<u32>,
+    pub span: Option<Span>,
 }
 
 /// A record declaration carrying what mono reads: its path/kind/default cap, its
@@ -84,6 +97,8 @@ pub enum RecordBody {
     Compound(Vec<Member>),
     /// An enum's variants, in declaration order.
     Variant(Vec<Variant>),
+    /// An opaque `#[ffi]` record: the Rust type path it aliases.
+    Opaque(String),
 }
 
 /// One compound field: an optional source name (absent for a tuple field), a
@@ -143,7 +158,18 @@ pub struct Func {
     /// The file-table id the function's spans index (`in <id>`).
     pub file: Option<u32>,
     pub span: Option<Span>,
-    pub body: Option<Expr>,
+    pub body: FuncBody,
+}
+
+/// A function's body in the HIR form.
+#[derive(Clone, Debug)]
+pub enum FuncBody {
+    /// A declaration (`;`).
+    None,
+    /// An elaborated expression body.
+    Expr(Expr),
+    /// An `#[ffi(import)]` foreign body (`= ffi "...";`).
+    Ffi(String),
 }
 
 /// A generic parameter binder: its id and whether it sits at a `[flex]` position
