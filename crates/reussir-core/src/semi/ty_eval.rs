@@ -522,6 +522,9 @@ impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
                 })
                 .map(|(label, t)| (label, subst(t)))
                 .collect(),
+            // The foreign payload is invisible; `foreign` refutes before
+            // members are ever consulted.
+            RecordFields::Opaque => Vec::new(),
         })
     }
 
@@ -536,8 +539,13 @@ impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
             RecordFields::Variants(vs) => vs
                 .iter()
                 .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),
+            RecordFields::Opaque => {}
         }
         Some(out)
+    }
+
+    fn foreign(&self, def: DefId) -> bool {
+        self.el.records.get(&def).is_some_and(|r| r.ffi.is_some())
     }
 }
 

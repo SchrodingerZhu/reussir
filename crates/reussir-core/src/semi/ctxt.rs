@@ -132,6 +132,9 @@ pub enum RecordFields<'tcx> {
     /// `(type, is_mutable)`.
     Unnamed(Vec<(Ty<'tcx>, bool)>),
     Variants(Vec<Variant<'tcx>>),
+    /// An opaque `#[ffi]` record: no fields, no constructors — the value is
+    /// a foreign rc box whose payload only the foreign side interprets.
+    Opaque,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +154,9 @@ pub struct Record<'tcx> {
     /// `#[repr(fixed)]`: uniform max-arm box sizing for this enum instead of the
     /// default per-constructor sizing. Only ever set for enums.
     pub repr_fixed: bool,
+    /// `#[ffi(rust = "path")]`: the Rust type path this opaque record
+    /// aliases. Set exactly when `fields` is [`RecordFields::Opaque`].
+    pub ffi: Option<String>,
     pub fields: Option<RecordFields<'tcx>>,
     /// Generics that must be instantiated regional because they appear as the
     /// element of a `[field]` link (e.g. `inner: [field] T`). Checked at the
@@ -1035,7 +1041,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(RecordFields::Variants(vs)) => {
                     vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
                 }
-                None => Vec::new(),
+                Some(RecordFields::Opaque) | None => Vec::new(),
             };
             self.set_current_file(file);
             for t in member_tys {
@@ -1168,6 +1174,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             kind: rec.kind,
             default_cap,
             repr_fixed,
+            ffi: None,
             fields: None,
             regional_generics: Vec::new(),
             span,
@@ -1313,7 +1320,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let has_mut = match &fields {
                 RecordFields::Named(fs) => fs.iter().any(|(_, _, m)| *m),
                 RecordFields::Unnamed(fs) => fs.iter().any(|(_, m)| *m),
-                RecordFields::Variants(_) => false,
+                RecordFields::Variants(_) | RecordFields::Opaque => false,
             };
             if has_mut {
                 self.error(
@@ -1414,7 +1421,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Some(RecordFields::Variants(vs)) => {
                 vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
             }
-            None => Vec::new(),
+            Some(RecordFields::Opaque) | None => Vec::new(),
         };
         member_tys
             .into_iter()

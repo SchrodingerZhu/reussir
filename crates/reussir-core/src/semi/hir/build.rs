@@ -253,6 +253,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             kind,
             default_cap,
             repr_fixed: r.repr_fixed,
+            ffi: None,
             fields: Some(fields),
             regional_generics,
             span: span_of(r.span),

@@ -361,9 +361,11 @@ fn resolve_layout<'tcx>(
                 .collect();
             mir::RecordLayout::Variant(tcx.alloc_slice(&vdefs))
         }
-        // A record that failed field population elaborates with no fields; treat
-        // it as an empty compound so lowering still has a well-formed layout.
-        None => mir::RecordLayout::Compound(&[]),
+        // Opaque instances are resolved by the caller (they need the FFI
+        // rendering context); a record that failed field population
+        // elaborates with no fields. Both get an empty compound so lowering
+        // still has a well-formed layout.
+        Some(RecordFields::Opaque) | None => mir::RecordLayout::Compound(&[]),
     };
     (record.default_cap, layout)
 }
@@ -479,6 +481,9 @@ impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
                 })
                 .map(|(label, t)| (label, ground(t)))
                 .collect(),
+            // The foreign payload is invisible; `foreign` refutes before
+            // members are ever consulted.
+            RecordFields::Opaque => Vec::new(),
         })
     }
 
@@ -493,8 +498,13 @@ impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
             RecordFields::Variants(vs) => vs
                 .iter()
                 .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),
+            RecordFields::Opaque => {}
         }
         Some(out)
+    }
+
+    fn foreign(&self, def: DefId) -> bool {
+        self.record_defs.get(&def).is_some_and(|r| r.ffi.is_some())
     }
 }
 
@@ -788,7 +798,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                     .iter()
                     .flat_map(|v| v.fields.iter().copied())
                     .collect(),
-                None => Vec::new(),
+                Some(RecordFields::Opaque) | None => Vec::new(),
             };
             for field_ty in field_tys {
                 let ground = subst_ty(tcx, field_ty, &subst);
@@ -828,7 +838,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 .iter()
                 .flat_map(|v| v.fields.iter().copied())
                 .collect(),
-            None => Vec::new(),
+            Some(RecordFields::Opaque) | None => Vec::new(),
         };
         field_tys
             .into_iter()
