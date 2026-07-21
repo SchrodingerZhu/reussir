@@ -51,9 +51,9 @@ pub fn truncf<'c>(
 ///
 /// The op is attribute-only and its `direction` is a `TrampolineDirection`
 /// `I32EnumAttr` for which neither melior nor the Reussir C API exposes a
-/// constructor; the enum is stored as a signless `i32` (`Export` is case `1`).
-/// Building it here keeps that representational detail out of the code
-/// generator.
+/// constructor; the enum is stored as a signless `i32` (`Import` is case `0`,
+/// `Export` case `1`). Building it here keeps that representational detail
+/// out of the code generator.
 pub fn trampoline_export<'c>(
     context: &'c Context,
     abi_name: &str,
@@ -61,10 +61,34 @@ pub fn trampoline_export<'c>(
     target: &str,
     location: Location<'c>,
 ) -> Operation<'c> {
-    let export = IntegerAttribute::new(IntegerType::new(context, 32).into(), 1).into();
+    trampoline(context, 1, abi_name, sym_name, target, location)
+}
+
+/// `reussir.trampoline import "<abi>" @<sym_name> = @<target>`: `target` is a
+/// body-less declaration carrying the native signature (whose definition the
+/// lowering materializes) and `sym_name` the external boundary symbol.
+pub fn trampoline_import<'c>(
+    context: &'c Context,
+    abi_name: &str,
+    sym_name: &str,
+    target: &str,
+    location: Location<'c>,
+) -> Operation<'c> {
+    trampoline(context, 0, abi_name, sym_name, target, location)
+}
+
+fn trampoline<'c>(
+    context: &'c Context,
+    direction: i64,
+    abi_name: &str,
+    sym_name: &str,
+    target: &str,
+    location: Location<'c>,
+) -> Operation<'c> {
+    let direction = IntegerAttribute::new(IntegerType::new(context, 32).into(), direction).into();
     OperationBuilder::new("reussir.trampoline", location)
         .add_attributes(&[
-            (Identifier::new(context, "direction"), export),
+            (Identifier::new(context, "direction"), direction),
             (
                 Identifier::new(context, "target"),
                 FlatSymbolRefAttribute::new(context, target).into(),
@@ -80,6 +104,23 @@ pub fn trampoline_export<'c>(
         ])
         .build()
         .expect("valid reussir.trampoline")
+}
+
+/// `reussir.polyffi texture("...")` — an uncompiled foreign source texture;
+/// the `reussir-compile-polymorphic-ffi` pass compiles it to bitcode that the
+/// final translation links into the module.
+pub fn polyffi_texture<'c>(
+    context: &'c Context,
+    texture: &str,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.polyffi", location)
+        .add_attributes(&[(
+            Identifier::new(context, "moduleTexture"),
+            StringAttribute::new(context, texture).into(),
+        )])
+        .build()
+        .expect("valid reussir.polyffi")
 }
 
 /// `reussir.str.global @<sym_name> = "payload"`.
