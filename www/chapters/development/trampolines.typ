@@ -5,14 +5,22 @@
 == Trampolines
 
 `reussir.trampoline` models the backend FFI boundary for ordinary native calls.
-The operation now carries an explicit direction:
+In both directions `target` names the function with the *native*
+(Reussir-internal) signature and `sym_name` names the C-facing boundary
+symbol; the direction picks which side the lowering materializes:
 
 - `reussir.trampoline export "C" @ffi_name = @target`
-- `reussir.trampoline import "C" @reussir_name = @c_target`
+- `reussir.trampoline import "C" @c_boundary = @native_decl`
 
-`export` exposes an internal Reussir function to C-facing callers. `import`
-defines a Reussir symbol that forwards to a C-facing target already declared in
-the module.
+`export` exposes an internal Reussir function to C-facing callers: the
+lowering creates `@ffi_name` with the boundary signature, unpacking the
+boundary arguments and calling `@target`.
+
+`import` is the mirror image: `@native_decl` is an existing *body-less*
+declaration (Reussir callers `func.call` it natively); the lowering replaces
+the declaration with a definition that packs the native arguments per the
+boundary convention and calls the external boundary symbol `@c_boundary`,
+which it declares. Trivial signatures forward directly in both directions.
 
 === Trivial Boundary
 
@@ -40,7 +48,7 @@ LLVM struct in source order and passes a pointer to that struct. This applies
 even when the original arguments are individually integral or pointer values,
 for example once the arity reaches four.
 
-The resulting exported boundary therefore has one of these shapes:
+The resulting boundary therefore has one of these shapes:
 
 - trivial call: direct values in, direct value or `void` out;
 - nontrivial return only: `void` return plus leading return pointer;
@@ -51,30 +59,31 @@ The resulting exported boundary therefore has one of these shapes:
 
 === Import And Export Responsibilities
 
-The backend now focuses only on lowering the trampoline symbol itself.
-It does *not* synthesize caller-side stack storage for the packed argument
-struct or for the explicit return destination.
+For `export`, the backend creates only the boundary symbol; the external C
+caller must obey the boundary shape (packed-argument pointer, explicit return
+storage).
 
-That means the caller or callee on the C side is responsible for choosing
-whether it passes direct values or explicit pointers according to the trampoline
-signature. For `export`, the external C caller must obey that ABI shape. For
-`import`, the referenced C target must already be declared with that ABI shape,
-and the Reussir-side caller must provide the corresponding arguments.
+For `import`, the backend materializes the native-side marshaling itself —
+the packed-argument alloca, the return slot, and the call — so Reussir-side
+callers use the plain native signature. The external boundary symbol must be
+defined elsewhere with the boundary shape; the frontend's polymorphic FFI
+generates exactly that shape for its Rust wrapper functions (see the
+Polymorphic FFI chapter and `docs/design/polymorphic-ffi.md`).
 
 === Operation Shape
 
-The operation now includes an import/export enum attribute in assembly syntax:
+The operation includes an import/export enum attribute in assembly syntax:
 
 ```mlir
 reussir.trampoline export "C" @sum_ffi = @sum_internal
-reussir.trampoline import "C" @sum_internal = @sum_c
+reussir.trampoline import "C" @sum_c_boundary = @sum_native
 ```
 
 Currently only the `"C"` ABI is supported.
 
-=== TODO
+=== Frontend Surface
 
-- The frontend should expose user-facing facilities to import `"C"` functions
-  through `reussir.trampoline`, including helpers for constructing the packed
-  argument struct pointer and any required explicit return storage in
-  JIT-facing flows.
+`extern "C" trampoline "sym" = path<T,...>;` emits the export direction. The
+import direction is not written by hand: every `#[ffi(import)]` function
+instance emits one, binding its generated Rust boundary wrapper to the
+native declaration (`docs/design/polymorphic-ffi.md`).

@@ -1,0 +1,40 @@
+// Diagnostics for invalid `#[ffi(...)]` declarations and boundary types.
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+// CHECK-DAG: a field-less record is an opaque FFI record and requires `#[ffi(rust = "path")]`
+pub struct Naked;
+
+// CHECK-DAG: an `#[ffi(rust = ...)]` record cannot declare fields or variants
+#[ffi(rust = "::x::Y")]
+pub struct WithFields { x: i64 }
+
+// CHECK-DAG: an `#[ffi(rust = ...)]` record is always `[shared]`
+#[ffi(rust = "::x::Z")]
+pub struct [value] Valued;
+
+// CHECK-DAG: malformed `#[ffi(...)]`
+#[ffi(bogus)]
+pub fn bad() -> i64 { 0 }
+
+// CHECK-DAG: a foreign function body (`[{ ... }];`) requires `#[ffi(import)]`
+pub fn unmarked() -> i64 [{ 0 }];
+
+// CHECK-DAG: `#[ffi(import)]` requires a foreign body
+#[ffi(import)]
+pub fn bodyless() -> i64;
+
+// CHECK-DAG: `#[ffi(...)]` may only be attached to a struct or a function
+#[ffi(import)]
+import core::intrinsic::math;
+
+// CHECK-DAG: unsupported foreign source ABI `c`
+extern "c" [{ int x; }];
+
+// CHECK-DAG: `Vec` is an opaque `#[ffi]` record and has no constructor
+pub fn make() -> Vec<i64> {
+    Vec{}
+}

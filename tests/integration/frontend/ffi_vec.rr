@@ -1,0 +1,50 @@
+// UNSUPPORTED: darwin
+// The polymorphic-FFI frontend surface (docs/design/polymorphic-ffi.md):
+// an opaque `#[ffi]` record lowers to an rc'd `ffi_object`, every
+// `#[ffi(import)]` instance gets a boundary wrapper texture plus an import
+// trampoline, and each opaque instance gets a drop-hook texture.
+
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn len<T>(v: Vec<T>) -> u64 [{ v.len() as u64 }];
+
+// The opaque type composes: `Vec<Vec<f64>>` renders the nested Rust name.
+pub fn main() -> u64 {
+    let v = push(new<f64>(), 1.5);
+    let vv = push(new<Vec<f64>>(), v);
+    len(vv)
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The opaque instance type, with its per-instance drop hook:
+// CHECK-DAG: !reussir.rc<!reussir.ffi_object<"::reussir_rt::collections::vec::Vec<f64>", @_RIC3VecdE_ffi_drop>>
+// CHECK-DAG: !reussir.rc<!reussir.ffi_object<"::reussir_rt::collections::vec::Vec<::reussir_rt::collections::vec::Vec<f64>>", @_RIC3VecIC3VecdEE_ffi_drop>>
+
+// Import trampolines bind each native instance to its boundary wrapper:
+// CHECK-DAG: reussir.trampoline import "C" @_RIC3newdE_ffi = @_RIC3newdE
+// CHECK-DAG: reussir.trampoline import "C" @_RIC4pushdE_ffi = @_RIC4pushdE
+// CHECK-DAG: reussir.trampoline import "C" @_RIC3lenIC3VecdEE_ffi = @_RIC3lenIC3VecdEE
+
+// The wrapper textures splice the prelude and the user body; `push` is
+// nontrivial (an f64 argument), so its wrapper takes the packed-args pointer:
+// CHECK-DAG: reussir.polyffi texture("{{.*}}use reussir_rt::collections::vec::Vec as RVec;{{.*}}fn _RIC4pushdE_ffi(__reussir_args: *mut __ReussirArgs) -> ::reussir_rt::collections::vec::Vec<f64>{{.*}}RVec::push(v, x){{.*}}")
+
+// The drop-hook textures and their in-module declarations:
+// CHECK-DAG: reussir.polyffi texture("{{.*}}fn _RIC3VecdE_ffi_drop(_this: ::reussir_rt::collections::vec::Vec<f64>) {}{{.*}}")
+// CHECK-DAG: func.func private @_RIC3VecdE_ffi_drop(!reussir.rc<!reussir.ffi_object<"::reussir_rt::collections::vec::Vec<f64>", @_RIC3VecdE_ffi_drop>>)

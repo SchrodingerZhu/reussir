@@ -128,6 +128,7 @@ impl Emitter<'_> {
             EnumStmt => self.record_stmt(node, "EnumKind"),
             ModStmt => self.mod_stmt(node),
             ExternTrampolineStmt => self.extern_stmt(node),
+            ExternSourceStmt => self.extern_source_stmt(node),
             TransformStmt => self.transform_stmt(node),
             ImportStmt => self.import_stmt(node),
             k => unreachable!("unexpected statement node {k:?}"),
@@ -204,6 +205,9 @@ impl Emitter<'_> {
                 )
             },
         );
+        let foreign_body = tokens(node)
+            .find(|t| t.kind() == RawMlirLiteral)
+            .map(|t| Value::String(t.text().into()));
         let function = json!({
             "funcVisibility": self.visibility(node),
             "funcName": self.name_after(node, FnKw).text(),
@@ -212,6 +216,7 @@ impl Emitter<'_> {
             "funcReturnType": ret,
             "funcIsRegional": tokens(node).any(|t| t.kind() == RegionalKw),
             "funcBody": body,
+            "funcForeignBody": foreign_body,
         });
         tagged("FunctionStmt", function)
     }
@@ -260,6 +265,9 @@ impl Emitter<'_> {
                 })
                 .collect();
             tagged("Unnamed", Value::Array(fields))
+        } else if child_node(node, VariantList).is_none() {
+            // A field-less `struct V<T>;` — an opaque (FFI) record.
+            tagged0("Opaque")
         } else {
             let list = child_node(node, VariantList).expect("variant list");
             let variants: Vec<Value> = nodes(list)
@@ -338,6 +346,20 @@ impl Emitter<'_> {
             .find(|token| token.kind() == RawMlirLiteral)
             .expect("transform body");
         tagged("TransformStmt", Value::String(body.text().into()))
+    }
+
+    /// `extern "rust" [{ ... }];` — the ABI string and the opaque source.
+    fn extern_source_stmt(&self, node: &ResolvedNode) -> Value {
+        let abi = unescape_string(
+            tokens(node)
+                .find(|t| t.kind() == StringLit)
+                .expect("ABI string")
+                .text(),
+        );
+        let body = tokens(node)
+            .find(|t| t.kind() == RawMlirLiteral)
+            .expect("source body");
+        tagged("ExternSourceStmt", json!([abi, body.text()]))
     }
 
     // ===== paths and types =====

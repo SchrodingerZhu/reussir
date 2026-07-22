@@ -22,6 +22,7 @@ Item: raw::Item = {
     <r:RecordDecl> => raw::Item::Record(r),
     <t:TrampDecl> => raw::Item::Tramp(t),
     <t:TransformDecl> => raw::Item::Transform(t),
+    <p:FfiPreludeDecl> => raw::Item::FfiPrelude(p),
     <f:Func> => raw::Item::Func(f),
 };
 
@@ -52,6 +53,19 @@ RecordDecl: raw::Record = {
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
         body: raw::RecordBody::Compound(ms),
+    },
+    // An opaque `#[ffi]` record: `[shared] struct #Vec<$0> { ffi "path" };`.
+    <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    "{" "ffi" <rust:"quoted"> "}" ";"
+    => raw::Record {
+        default_cap,
+        repr_fixed: false,
+        kind: raw::RecordKind::Struct,
+        path,
+        generics: generics.unwrap_or_default(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+        body: raw::RecordBody::Opaque(unescape_debug_str(rust).into_owned()),
     },
     // Only an enum may carry the `fixed` marker (`#[repr(fixed)]`).
     <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
@@ -95,6 +109,16 @@ TrampDecl: raw::Tramp =
 TransformDecl: raw::Transform =
     "transform" <body:"quoted"> <loc:ItemLoc?> ";"
     => raw::Transform {
+        body: unescape_debug_str(body).into_owned(),
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+    };
+
+/// A foreign source block: `extern "rust" "{ items }" in <file>;`.
+FfiPreludeDecl: raw::FfiPrelude =
+    "extern" <abi:"quoted"> <body:"quoted"> <loc:ItemLoc?> ";"
+    => raw::FfiPrelude {
+        abi: abi.into(),
         body: unescape_debug_str(body).into_owned(),
         file: loc.map(|l| l.0),
         span: loc.and_then(|l| l.1),
@@ -156,11 +180,17 @@ Name: &'input str = {
     <name:"ident"> => name,
     "transform" => "transform",
     "transform_anchor" => "transform_anchor",
+    "import" => "import",
+    "ffi" => "ffi",
+    "texture" => "texture",
+    "glue" => "glue",
 };
 
-Body: Option<raw::Expr> = {
-    "{" <b:Block> "}" => Some(b),
-    ";" => None,
+Body: raw::FuncBody = {
+    "{" <b:Block> "}" => raw::FuncBody::Expr(b),
+    ";" => raw::FuncBody::None,
+    // An `#[ffi(import)]` foreign body.
+    "=" "ffi" <b:"quoted"> ";" => raw::FuncBody::Ffi(unescape_debug_str(b).into_owned()),
 };
 
 Param: raw::Param = <var:"var"> "(" <name:Name> ")" ":" <ty:Ty>
@@ -369,6 +399,10 @@ extern {
         "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
+        "import" => Token::Import,
+        "ffi" => Token::Ffi,
+        "texture" => Token::Texture,
+        "glue" => Token::Glue,
         "transform" => Token::Transform,
         "transform_anchor" => Token::TransformAnchor,
         "quoted" => Token::Quoted(<Cow<'input, str>>),

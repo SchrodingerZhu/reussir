@@ -853,12 +853,23 @@ fn let_name(node: &ResolvedNode) -> Option<&ResolvedToken> {
 
 // ===== statements =====
 
-/// An outer item attribute such as `#[transform_anchor]`.
+/// An outer item attribute such as `#[transform_anchor]` or
+/// `#[ffi(import)]`. Bare arguments land in `args`; `key = "value"` pairs
+/// land in `values` (strings decoded).
 #[derive(Clone, Debug)]
 pub struct Attribute {
     pub name: TokenKey,
     pub args: Vec<TokenKey>,
+    pub values: Vec<(TokenKey, String)>,
     pub span: Span,
+}
+
+/// An opaque foreign source block (`[{ ... }]`); `body` includes the
+/// surrounding braces.
+#[derive(Clone, Debug)]
+pub struct SourceBlock {
+    pub body: String,
+    pub body_span: Span,
 }
 
 /// A function definition. `params`/`return` carry the `[flex]` flag as a bool.
@@ -872,6 +883,8 @@ pub struct Function {
     pub return_type: Option<(Type, bool)>,
     pub is_regional: bool,
     pub body: Option<Expr>,
+    /// An opaque foreign body (`[{ ... }];`), for `#[ffi(import)]` functions.
+    pub foreign_body: Option<SourceBlock>,
 }
 
 #[derive(Clone, Debug)]
@@ -879,6 +892,8 @@ pub enum RecordFields {
     Named(Vec<Spanned<(TokenKey, Type, bool)>>),
     Unnamed(Vec<Spanned<(Type, bool)>>),
     Variants(Vec<Spanned<(TokenKey, SmallVec<[Type; 2]>)>>),
+    /// A field-less declaration (`struct V<T>;`): an opaque (FFI) record.
+    Opaque,
 }
 
 #[derive(Clone, Debug)]
@@ -911,6 +926,14 @@ pub struct TransformScript {
     pub body_span: Span,
 }
 
+/// A foreign source block item, `extern "rust" [{ ... }];` — opaque source
+/// shared by the file's FFI functions (imports, helper items, ...).
+#[derive(Clone, Debug)]
+pub struct ExternSource {
+    pub abi: String,
+    pub block: SourceBlock,
+}
+
 /// A file-scoped path abbreviation, `import p (as n)?;`: `name` is the
 /// identifier the binding introduces (the path's last segment when no rename
 /// is given) and `path` its target. Imports are always private; `visibility`
@@ -929,6 +952,7 @@ pub enum StmtKind {
     /// `mod` declaration: `(visibility, name)`.
     Mod(Visibility, TokenKey),
     ExternTrampoline(ExternTrampoline),
+    ExternSource(ExternSource),
     Transform(TransformScript),
     Import(ImportDecl),
 }
@@ -963,6 +987,7 @@ impl Stmt {
             EnumStmt => StmtKind::Record(record_of(node, RecordKind::EnumKind)),
             ModStmt => StmtKind::Mod(visibility_of(node), key(name_after(node, ModKw))),
             ExternTrampolineStmt => StmtKind::ExternTrampoline(extern_of(node)),
+            ExternSourceStmt => StmtKind::ExternSource(extern_source_of(node)),
             TransformStmt => StmtKind::Transform(transform_of(node)),
             ImportStmt => StmtKind::Import(import_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
@@ -971,10 +996,44 @@ impl Stmt {
 }
 
 fn attribute_of(node: &ResolvedNode) -> Attribute {
-    let mut names = tokens(node).filter(|token| token.kind().is_ident_like());
+    // Everything between the brackets, keeping `=` and string literals so
+    // `key = "value"` pairs can be recognized positionally.
+    let toks: Vec<_> = tokens(node)
+        .filter(|token| {
+            token.kind().is_ident_like()
+                || token.kind() == SyntaxKind::Eq
+                || token.kind() == StringLit
+        })
+        .collect();
+    let mut args = Vec::new();
+    let mut values = Vec::new();
+    let mut idx = 1;
+    while idx < toks.len() {
+        let tok = toks[idx];
+        if toks
+            .get(idx + 1)
+            .is_some_and(|next| next.kind() == SyntaxKind::Eq)
+        {
+            // `key = "value"`; a missing/ill-typed value already produced a
+            // parse error, so silently skipping here is fine.
+            if let Some(value) = toks
+                .get(idx + 2)
+                .filter(|value| value.kind() == StringLit)
+            {
+                values.push((key(tok), unescape_string(value.text())));
+            }
+            idx += 3;
+        } else {
+            if tok.kind().is_ident_like() {
+                args.push(key(tok));
+            }
+            idx += 1;
+        }
+    }
     Attribute {
-        name: key(names.next().expect("attribute name")),
-        args: names.map(key).collect(),
+        name: key(toks.first().expect("attribute name")),
+        args,
+        values,
         span: node_span(node),
     }
 }
@@ -1019,7 +1078,23 @@ fn function_of(node: &ResolvedNode) -> Function {
         return_type,
         is_regional: tokens(node).any(|t| t.kind() == RegionalKw),
         body,
+        foreign_body: source_block_of(node),
     }
+}
+
+/// The `[{ ... }]` block directly under `node`, if any, with the `[`/`]`
+/// stripped (the braces stay, so the text is a Rust block / item list).
+fn source_block_of(node: &ResolvedNode) -> Option<SourceBlock> {
+    let token = tokens(node).find(|t| t.kind() == RawMlirLiteral)?;
+    let text = token.text();
+    let span = token_span(token);
+    Some(SourceBlock {
+        body: text[1..text.len() - 1].to_owned(),
+        body_span: Span {
+            start: span.start + 1,
+            end: span.end - 1,
+        },
+    })
 }
 
 fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
@@ -1068,6 +1143,8 @@ fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
                 })
                 .collect(),
         )
+    } else if child_node(node, VariantList).is_none() {
+        RecordFields::Opaque
     } else {
         let list = child_node(node, VariantList).expect("variant list");
         RecordFields::Variants(
@@ -1127,6 +1204,19 @@ fn extern_of(node: &ResolvedNode) -> ExternTrampoline {
         abi,
         func: path_of(func),
         ty_args,
+    }
+}
+
+fn extern_source_of(node: &ResolvedNode) -> ExternSource {
+    let abi = unescape_string(
+        tokens(node)
+            .find(|t| t.kind() == StringLit)
+            .expect("ABI string")
+            .text(),
+    );
+    ExternSource {
+        abi,
+        block: source_block_of(node).expect("source block"),
     }
 }
 

@@ -1,0 +1,65 @@
+// UNSUPPORTED: darwin
+// End-to-end clone/drop across the FFI in both directions: a Rust
+// `Vec<List>` holds Reussir enum boxes through the generated
+// transparent-pointer wrapper. `duplicate` clones the vector on the Rust
+// side; the copy-on-write push then clones every element — each clone is a
+// call back into the compiler-emitted `_ffi_acquire` glue — and dropping
+// the original releases through `_ffi_release`. The list read back out
+// must still sum correctly after the round trip.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_vec_record_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_vec_record_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+pub enum List {
+    Nil,
+    Cons(i64, List),
+}
+
+pub fn sum_list(l: List) -> i64 {
+    match l {
+        List::Nil => 0,
+        List::Cons(x, xs) => x + sum_list(xs)
+    }
+}
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn get<T>(v: Vec<T>, i: u64) -> T [{
+    v.get(i as usize).unwrap()
+}];
+
+#[ffi(import)]
+pub fn duplicate<T>(v: Vec<T>) -> Vec<T> [{
+    // Clone the vector (a Rust rc bump), then push its first element onto
+    // the clone: the copy-on-write `make_mut` copies the element slice,
+    // cloning every Reussir box through the acquire glue. The original `v`
+    // drops here, releasing through the release glue.
+    let w = v.clone();
+    let n = w.get(0).unwrap();
+    w.push(n)
+}];
+
+pub fn main() -> i64 {
+    let l = List::Cons{40, List::Cons{2, List::Nil}};
+    let v = push(new<List>(), l);
+    let v = duplicate(v);
+    sum_list(get(v, 1))
+}
+
+extern "C" trampoline "reussir_main" = main;

@@ -40,6 +40,7 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
+#include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
 
 #include "Reussir/IR/ReussirDialect.h"
@@ -2010,9 +2011,21 @@ mlir::LogicalResult ReussirRegionVTableOp::verifySymbolUses(
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirTrampolineOp::verifySymbolUses(
     mlir::SymbolTableCollection &symbolTable) {
-  if (symbolTable.lookupNearestSymbolFrom(getOperation(), getTargetAttr()))
-    return mlir::success();
-  return emitOpError("target function not found: ") << getTargetAttr();
+  mlir::Operation *target =
+      symbolTable.lookupNearestSymbolFrom(getOperation(), getTargetAttr());
+  if (!target)
+    return emitOpError("target function not found: ") << getTargetAttr();
+  if (getDirection() == TrampolineDirection::Import) {
+    // The import lowering materializes the target's definition, so the
+    // target must be a body-less function declaration whose signature
+    // defines the native side of the boundary.
+    auto func = mlir::dyn_cast<mlir::FunctionOpInterface>(target);
+    if (!func || !func.getFunctionBody().empty())
+      return emitOpError("import target must be a body-less function "
+                         "declaration: ")
+             << getTargetAttr();
+  }
+  return mlir::success();
 }
 
 //===----------------------------------------------------------------------===//

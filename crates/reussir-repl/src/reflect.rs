@@ -117,6 +117,8 @@ pub fn harvest<'tcx>(
             continue;
         }
         let layout = match instance.layout {
+            // An opaque `#[ffi]` box has no reflectable interior.
+            mir::RecordLayout::Opaque { .. } => ShapeLayout::Compound(Vec::new()),
             mir::RecordLayout::Compound(members) => ShapeLayout::Compound(
                 members
                     .iter()

@@ -182,3 +182,31 @@ MLIR Module with reussir.polyffi operations
     ▼ llvm::Linker::linkModules()
         └─ Final linked LLVM module (main + FFI)
 ```
+
+== Frontend Surface
+
+The frontend generates `reussir.polyffi` textures itself — users never write
+`[:key:]` placeholders or MLIR. Three source forms drive it:
+
+```
+extern "rust" [{ use reussir_rt::collections::vec::Vec as RVec; }];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+```
+
+Per monomorphized instance, the compiler renders a self-contained Rust
+wrapper texture in the trampoline boundary shape, emits an import
+trampoline binding it to the native declaration, and — for opaque record
+instances — a drop-hook texture. Shared Reussir records crossing the
+boundary become generated `#[repr(transparent)]` pointer wrappers whose
+`Clone`/`Drop` call compiler-emitted `rc.inc`/`rc.dec` glue, so clone and
+drop flow correctly in both directions. Ownership is uniform: the boundary
+consumes, exactly like every other call.
+
+See `docs/design/polymorphic-ffi.md` for the full design (boundary
+classification, symbol scheme, the `Rc`-wrapper contract for exposing new
+types).

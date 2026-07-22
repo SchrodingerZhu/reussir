@@ -1,0 +1,43 @@
+// UNSUPPORTED: darwin
+// End-to-end polymorphic FFI: build a Rust `Vec<f64>` from Reussir, sum it
+// on the Rust side (consuming and dropping the vector there), and export
+// the result. Exercises trivial (`new`) and nontrivial (`push`, `total`)
+// boundary shapes.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_vec_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_vec_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn total(v: Vec<f64>) -> f64 [{
+    let mut sum = 0.0;
+    for i in 0..v.len() {
+        sum += v.get(i).unwrap();
+    }
+    sum
+}];
+
+pub fn main() -> f64 {
+    let v = new<f64>();
+    let v = push(v, 1.5);
+    let v = push(v, 2.25);
+    total(v)
+}
+
+extern "C" trampoline "reussir_main" = main;

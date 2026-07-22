@@ -1832,6 +1832,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return self.poison(span);
         }
+        if matches!(record.fields, Some(RecordFields::Opaque)) {
+            self.error(
+                span,
+                format!(
+                    "`{}` is an opaque `#[ffi]` record and has no constructor; \
+                     obtain values through its `#[ffi(import)]` functions",
+                    self.sym(name)
+                ),
+            );
+            return self.poison(span);
+        }
         // A regional record holds region-owned (`[field]`) links, so it can only
         // be created where a region owns it. Constructing one outside a region
         // would force lowering to emit a region-less flex rc (rejected by the

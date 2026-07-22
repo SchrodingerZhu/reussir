@@ -439,7 +439,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 Attribute::unit(self.context),
             ));
         }
-        if !emit_body || (func.visibility == Visibility::Private && !self.unit.is_split()) {
+        if !emit_body
+            || func.body.is_none()
+            || (func.visibility == Visibility::Private && !self.unit.is_split())
+        {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
                 StringAttribute::new(self.context, "private").into(),
@@ -491,6 +494,69 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             region,
             &attributes,
             func_loc,
+        ))
+    }
+
+    /// Build one Reussir-side FFI rc-glue pair: `acquire` increments and
+    /// `release` decrements the box of a value of `glue.ty`. Bound by the
+    /// generated foreign wrappers' `Clone`/`Drop` impls, so the symbols must
+    /// stay external for the linked bitcode to resolve them.
+    pub(super) fn ffi_rc_glue_pair(
+        &self,
+        glue: &mir::FfiRcGlue<'tcx>,
+    ) -> Result<[Operation<'c>; 2]> {
+        let loc = Location::unknown(self.context);
+        let ty = self.tys.mlir_ty(glue.ty)?;
+        let build = |symbol: &str, inc: bool| -> Result<Operation<'c>> {
+            let block = Block::new(&[(ty, loc)]);
+            let arg = block
+                .argument(0)
+                .map_err(|e| LoweringError(format!("missing glue argument: {e}").into()))?
+                .into();
+            let op = if inc {
+                dialect::rc_inc(self.context, arg, loc).into()
+            } else {
+                dialect::rc_dec(self.context, arg, loc).into()
+            };
+            block.append_operation(op);
+            block.append_operation(func::r#return(&[], loc));
+            let region = Region::new();
+            region.append_block(block);
+            Ok(func::func(
+                self.context,
+                StringAttribute::new(self.context, symbol),
+                TypeAttribute::new(FunctionType::new(self.context, &[ty], &[]).into()),
+                region,
+                &[],
+                loc,
+            ))
+        };
+        Ok([
+            build(self.program.symbol(glue.acquire), true)?,
+            build(self.program.symbol(glue.release), false)?,
+        ])
+    }
+
+    /// Declare an opaque instance's drop hook: `func.func private
+    /// @hook(!reussir.rc<!reussir.ffi_object<…>>)`. The `rc.dec` lowering
+    /// calls it; the definition arrives with the linked foreign bitcode.
+    pub(super) fn ffi_drop_hook_decl(
+        &self,
+        record: &mir::RecordInstance<'tcx>,
+        drop_hook: mir::Symbol,
+    ) -> Result<Operation<'c>> {
+        let loc = Location::unknown(self.context);
+        let ty = self.tys.mlir_ty(record.ty)?;
+        Ok(func::func(
+            self.context,
+            StringAttribute::new(self.context, self.program.symbol(drop_hook)),
+            TypeAttribute::new(FunctionType::new(self.context, &[ty], &[]).into()),
+            Region::new(),
+            &[(
+                Identifier::new(self.context, "sym_visibility"),
+                StringAttribute::new(self.context, "private").into(),
+            )],
+            loc,
         ))
     }
 
@@ -2293,6 +2359,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let members = match rec.layout {
             mir::RecordLayout::Compound(ms) => ms,
             mir::RecordLayout::Variant(_) => return err("projection of an enum value"),
+            mir::RecordLayout::Opaque { .. } => {
+                return err("projection of an opaque `#[ffi]` value");
+            }
         };
         let field = members
             .get(idx as usize)

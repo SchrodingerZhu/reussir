@@ -163,6 +163,13 @@ impl<'tcx> Builder<'_, 'tcx> {
                     .collect();
                 mir::RecordLayout::Variant(self.tcx.alloc_slice(&vs))
             }
+            raw::RecordBody::Opaque {
+                rust_name,
+                drop_hook,
+            } => mir::RecordLayout::Opaque {
+                rust_name: self.sym(rust_name),
+                drop_hook: self.sym(drop_hook),
+            },
         };
         mir::RecordInstance {
             symbol: self.sym(&r.symbol),
@@ -187,6 +194,33 @@ impl<'tcx> Builder<'_, 'tcx> {
                 export: self.sym(&t.export),
                 abi: t.abi.clone(),
                 target: self.sym(&t.target),
+                import: t.import,
+            })
+            .collect();
+        let ffi_imports: Vec<mir::FfiImport> = raw
+            .ffi_imports
+            .iter()
+            .map(|f| mir::FfiImport {
+                symbol: self.sym(&f.symbol),
+                boundary: self.sym(&f.boundary),
+                texture: f.texture.clone(),
+            })
+            .collect();
+        let ffi_textures: Vec<mir::FfiTexture> = raw
+            .ffi_textures
+            .iter()
+            .map(|t| mir::FfiTexture {
+                anchor: self.sym(&t.anchor),
+                texture: t.texture.clone(),
+            })
+            .collect();
+        let ffi_rc_glue: Vec<mir::FfiRcGlue<'tcx>> = raw
+            .ffi_rc_glue
+            .iter()
+            .map(|g| mir::FfiRcGlue {
+                ty: self.ty(&g.ty),
+                acquire: self.sym(&g.acquire),
+                release: self.sym(&g.release),
             })
             .collect();
         let functions: Vec<mir::Function<'tcx>> = raw.funcs.iter().map(|f| self.func(f)).collect();
@@ -214,6 +248,9 @@ impl<'tcx> Builder<'_, 'tcx> {
             trampolines,
             string_literals,
             transform_scripts,
+            ffi_imports,
+            ffi_textures,
+            ffi_rc_glue,
             symbols,
         }
     }
@@ -746,6 +783,31 @@ mod tests {
             pub fn b(a: [f64; 8], i: i64, v: f64) -> [f64; 8] {
                 core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
             }
+            "#,
+        );
+    }
+
+    #[test]
+    fn roundtrips_ffi_items() {
+        // The MIR-side FFI carriage: opaque record layouts, import
+        // trampolines, wrapper/hook textures, and rc glue (the shared
+        // record element forces a transparent wrapper + acquire/release).
+        roundtrip(
+            r#"
+            extern "rust" [{ use reussir_rt::collections::vec::Vec as RVec; }];
+
+            #[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+            pub struct Vec<T>;
+
+            pub struct Item { value: i64 }
+
+            #[ffi(import)]
+            pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+            #[ffi(import)]
+            pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+            pub fn use_it() -> Vec<Item> { push(new<Item>(), Item{1}) }
             "#,
         );
     }

@@ -21,9 +21,22 @@ Item: raw::Item = {
     "record" "@" <s:Sym> ":" <cap:DefCap> <kind:RecordBody> ";"
         => raw::Item::Record(raw::RecordDecl { symbol: s, default_cap: cap, ty: kind.0, body: kind.1, repr_fixed: kind.2 }),
     <f:Func> => raw::Item::Func(f),
-    "extern" <abi:"quoted"> "trampoline" <export:"quoted"> "=" "@" <target:Sym> ";"
-        => raw::Item::Tramp(raw::Tramp { abi: abi.into(), export: export.into(), target }),
+    "extern" <abi:"quoted"> "trampoline" <imp:"import"?> <export:"quoted"> "=" "@" <target:Sym> ";"
+        => raw::Item::Tramp(raw::Tramp { abi: abi.into(), export: export.into(), target, import: imp.is_some() }),
     <t:TransformDecl> => raw::Item::Transform(t),
+    "ffi" "import" "@" <symbol:Sym> "=" "@" <boundary:Sym> <texture:"quoted"> ";"
+        => raw::Item::FfiImport(raw::FfiImport {
+            symbol,
+            boundary,
+            texture: unescape_debug_str(texture).into_owned(),
+        }),
+    "ffi" "texture" "@" <anchor:Sym> <texture:"quoted"> ";"
+        => raw::Item::FfiTexture(raw::FfiTexture {
+            anchor,
+            texture: unescape_debug_str(texture).into_owned(),
+        }),
+    "ffi" "glue" "@" <acquire:Sym> "@" <release:Sym> ":" <t:Ty> ";"
+        => raw::Item::FfiRcGlue(raw::FfiRcGlue { acquire, release, ty: t }),
 };
 
 /// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
@@ -64,6 +77,12 @@ RecordBody: (raw::Ty, raw::RecordBody, bool) = {
     "struct" <t:Ty> "{" <ms:Comma<Member>> "}" => (t, raw::RecordBody::Compound(ms), false),
     "enum" <fixed:"fixed"?> <t:Ty> "{" <vs:Comma<Variant>> "}"
         => (t, raw::RecordBody::Variant(vs), fixed.is_some()),
+    // An opaque `#[ffi]` instance: its Rust identity string and drop hook.
+    "ffi" <t:Ty> "{" <rust:"quoted"> "," "@" <hook:Sym> "}"
+        => (t, raw::RecordBody::Opaque {
+            rust_name: unescape_debug_str(rust).into_owned(),
+            drop_hook: hook,
+        }, false),
 };
 
 /// A compound field: an optional `name:` prefix (absent for a tuple field), an
@@ -84,6 +103,10 @@ Name: &'input str = {
     <name:"ident"> => name,
     "transform" => "transform",
     "transform_anchor" => "transform_anchor",
+    "import" => "import",
+    "ffi" => "ffi",
+    "texture" => "texture",
+    "glue" => "glue",
 };
 
 Func: raw::Func =
@@ -336,6 +359,10 @@ extern {
         "fixed" => Token::Fixed,
         "extern" => Token::Extern,
         "trampoline" => Token::Trampoline,
+        "import" => Token::Import,
+        "ffi" => Token::Ffi,
+        "texture" => Token::Texture,
+        "glue" => Token::Glue,
         "transform" => Token::Transform,
         "transform_anchor" => Token::TransformAnchor,
         "let" => Token::Let,

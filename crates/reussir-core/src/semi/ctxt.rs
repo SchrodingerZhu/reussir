@@ -52,6 +52,36 @@ pub struct TransformScript {
     pub file: FileId,
 }
 
+/// A foreign source block (`extern "rust" [{ ... }];`): opaque Rust items
+/// spliced verbatim ahead of every generated FFI wrapper of its file (`use`
+/// declarations, helper functions, ...). `body` has the `[{`/`}]` stripped
+/// down to the braces; the braces themselves are dropped when splicing.
+#[derive(Clone, Debug)]
+pub struct FfiPrelude {
+    pub body: String,
+    pub span: Option<Span>,
+    pub file: FileId,
+}
+
+/// The foreign body of an `#[ffi(import)]` function: an opaque Rust block
+/// (braces included) evaluated with the function's parameters in scope,
+/// spliced into a generated boundary wrapper per monomorphized instance.
+#[derive(Clone, Debug)]
+pub struct FfiImport {
+    pub body: String,
+    pub span: Option<Span>,
+    pub file: FileId,
+}
+
+/// A validated `#[ffi(...)]` attribute.
+enum FfiSpec {
+    /// `#[ffi(import)]` — a function implemented by its foreign body.
+    Import,
+    /// `#[ffi(rust = "path")]` — an opaque record aliasing the Rust type
+    /// at `path` (a `#[repr(transparent)]` wrapper over `reussir_rt`'s `Rc`).
+    Opaque(String),
+}
+
 /// One `import` binding: within `file`, reference paths headed by `name`
 /// expand through `path` (see [`Elaborator::expand_path`] and
 /// `docs/design/import.md`).
@@ -132,6 +162,9 @@ pub enum RecordFields<'tcx> {
     /// `(type, is_mutable)`.
     Unnamed(Vec<(Ty<'tcx>, bool)>),
     Variants(Vec<Variant<'tcx>>),
+    /// An opaque `#[ffi]` record: no fields, no constructors — the value is
+    /// a foreign rc box whose payload only the foreign side interprets.
+    Opaque,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +184,9 @@ pub struct Record<'tcx> {
     /// `#[repr(fixed)]`: uniform max-arm box sizing for this enum instead of the
     /// default per-constructor sizing. Only ever set for enums.
     pub repr_fixed: bool,
+    /// `#[ffi(rust = "path")]`: the Rust type path this opaque record
+    /// aliases. Set exactly when `fields` is [`RecordFields::Opaque`].
+    pub ffi: Option<String>,
     pub fields: Option<RecordFields<'tcx>>,
     /// Generics that must be instantiated regional because they appear as the
     /// element of a `[field]` link (e.g. `inner: [field] T`). Checked at the
@@ -295,6 +331,10 @@ pub struct Elaborator<'a, 'tcx> {
     pub transform_anchors: Vec<DefId>,
     /// Inline transform scripts, in source order.
     pub transform_scripts: Vec<TransformScript>,
+    /// Foreign source blocks (`extern "rust" [{ ... }];`), in source order.
+    pub ffi_preludes: Vec<FfiPrelude>,
+    /// Foreign bodies of `#[ffi(import)]` functions, keyed by their def.
+    pub ffi_imports: FxHashMap<DefId, FfiImport>,
     /// File-scoped `import` path bindings, in declaration order (see
     /// `docs/design/import.md`). Append-only so checkpoint/rollback
     /// restores it by truncation; lookups scan backwards filtered by the
@@ -345,6 +385,7 @@ pub struct Checkpoint {
     pub(super) trampolines: usize,
     pub(super) transform_anchors: usize,
     pub(super) transform_scripts: usize,
+    pub(super) ffi_preludes: usize,
     pub(super) imports: usize,
     pub(super) elaborated: usize,
     pub(super) reports: usize,
@@ -374,6 +415,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
+            ffi_preludes: Vec::new(),
+            ffi_imports: FxHashMap::default(),
             imports: Vec::new(),
             records: FxHashMap::default(),
             functions: FxHashMap::default(),
@@ -842,6 +885,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trampolines: self.trampolines.len(),
             transform_anchors: self.transform_anchors.len(),
             transform_scripts: self.transform_scripts.len(),
+            ffi_preludes: self.ffi_preludes.len(),
             imports: self.imports.len(),
             elaborated: self.elaborated.len(),
             reports: self.reports.len(),
@@ -858,10 +902,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let live = cp.defs as u32;
         self.records.retain(|def, _| def.0 < live);
         self.functions.retain(|def, _| def.0 < live);
+        self.ffi_imports.retain(|def, _| def.0 < live);
         self.generics.truncate(cp.generics);
         self.trampolines.truncate(cp.trampolines);
         self.transform_anchors.truncate(cp.transform_anchors);
         self.transform_scripts.truncate(cp.transform_scripts);
+        self.ffi_preludes.truncate(cp.ffi_preludes);
         self.imports.truncate(cp.imports);
         self.elaborated.truncate(cp.elaborated);
         self.reports.truncate(cp.reports);
@@ -942,18 +988,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let span = span_of(stmt);
                 let attrs = stmt.attributes();
                 self.set_current_file(*file);
+                let ffi = self.ffi_attr(&attrs);
                 match stmt.kind() {
                     surface::StmtKind::Record(rec) => {
                         self.validate_transform_anchor(&attrs, None);
-                        records.push((rec, span, scope));
+                        let ffi = self.validate_ffi_record(&rec, ffi, span);
+                        records.push((rec, span, scope, ffi));
                     }
                     surface::StmtKind::Function(func) => {
                         let anchor =
                             self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
-                        functions.push((func, span, scope, anchor));
+                        let is_import = self.validate_ffi_function(&func, ffi, span);
+                        functions.push((func, span, scope, anchor, is_import));
                     }
                     surface::StmtKind::ExternTrampoline(t) => {
                         self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
                         trampolines.push((t, span, scope));
                     }
                     // `mod` declarations drive package *discovery* (the driver
@@ -961,19 +1011,42 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     // no items.
                     surface::StmtKind::Mod(..) => {
                         self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
                     }
                     // Bindings register during this scan — before any
                     // resolution — so they apply file-wide regardless of
                     // declaration order.
                     surface::StmtKind::Import(decl) => {
                         self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
                         self.declare_import(&decl, span, *file);
                     }
                     surface::StmtKind::Transform(script) => {
                         self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
                         self.transform_scripts.push(TransformScript {
                             body: script.body,
                             span: Some(script.body_span),
+                            file: *file,
+                        });
+                    }
+                    // Foreign preludes register during this scan (like
+                    // bindings) so they apply file-wide regardless of order.
+                    surface::StmtKind::ExternSource(src) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
+                        if src.abi != "rust" {
+                            self.error(
+                                span,
+                                format!(
+                                    "unsupported foreign source ABI `{}`; only `rust` is supported",
+                                    src.abi
+                                ),
+                            );
+                        }
+                        self.ffi_preludes.push(FfiPrelude {
+                            body: src.block.body,
+                            span: Some(src.block.body_span),
                             file: *file,
                         });
                     }
@@ -986,29 +1059,29 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // item's fields or checking a body against the wrong prototype.
         let record_defs: Vec<Option<DefId>> = records
             .iter()
-            .map(|(rec, span, scope)| {
+            .map(|(rec, span, scope, ffi)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_record(rec, *span)
+                self.scan_record(rec, ffi.clone(), *span)
             })
             .collect();
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span, scope, _)| {
+            .map(|(func, span, scope, _, is_import)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_function(func, *span)
+                self.scan_function(func, *is_import, *span)
             })
             .collect();
         functions
             .iter()
             .zip(&function_defs)
-            .filter_map(|((_, _, _, anchor), def)| if *anchor { *def } else { None })
+            .filter_map(|((_, _, _, anchor, _), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
         let record_defs: Vec<DefId> = records
             .iter()
             .zip(record_defs)
-            .filter_map(|((rec, _, _), def)| Some((rec, def?)))
+            .filter_map(|((rec, _, _, _), def)| Some((rec, def?)))
             .map(|(rec, def)| {
                 self.populate_record(rec, def);
                 def
@@ -1035,7 +1108,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(RecordFields::Variants(vs)) => {
                     vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
                 }
-                None => Vec::new(),
+                Some(RecordFields::Opaque) | None => Vec::new(),
             };
             self.set_current_file(file);
             for t in member_tys {
@@ -1062,7 +1135,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span, _, _), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _, _, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
@@ -1114,7 +1187,129 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         seen && valid
     }
 
-    fn scan_record(&mut self, rec: &surface::Record, span: Option<Span>) -> Option<DefId> {
+    /// Recognize a `#[ffi(...)]` attribute among `attrs`: `#[ffi(import)]`
+    /// or `#[ffi(rust = "path")]`. Malformed or duplicated uses report and
+    /// yield `None` (the item elaborates as if unannotated).
+    fn ffi_attr(&mut self, attrs: &[surface::Attribute]) -> Option<FfiSpec> {
+        let mut spec = None;
+        for attr in attrs {
+            if self.sym(attr.name) != "ffi" {
+                continue;
+            }
+            let span = Some(attr.span);
+            if spec.is_some() {
+                self.error(span, "`#[ffi(...)]` may only be specified once per item");
+                continue;
+            }
+            match (attr.args.as_slice(), attr.values.as_slice()) {
+                ([arg], []) if self.sym(*arg) == "import" => spec = Some(FfiSpec::Import),
+                ([], [(k, path)]) if self.sym(*k) == "rust" => {
+                    spec = Some(FfiSpec::Opaque(path.clone()));
+                }
+                _ => self.error(
+                    span,
+                    "malformed `#[ffi(...)]`: expected `#[ffi(import)]` or \
+                     `#[ffi(rust = \"path\")]`",
+                ),
+            }
+        }
+        spec
+    }
+
+    /// Reject an `#[ffi(...)]` attribute on an item kind that takes none.
+    fn reject_ffi_attr(&mut self, ffi: Option<FfiSpec>, span: Option<Span>) {
+        if ffi.is_some() {
+            self.error(
+                span,
+                "`#[ffi(...)]` may only be attached to a struct or a function",
+            );
+        }
+    }
+
+    /// Check the `#[ffi(rust = "path")]` rules on a record and return the
+    /// Rust path when the record is a valid opaque FFI record.
+    fn validate_ffi_record(
+        &mut self,
+        rec: &surface::Record,
+        ffi: Option<FfiSpec>,
+        span: Option<Span>,
+    ) -> Option<String> {
+        let opaque = matches!(rec.fields, surface::RecordFields::Opaque);
+        let Some(spec) = ffi else {
+            if opaque {
+                self.error(
+                    span,
+                    "a field-less record is an opaque FFI record and requires \
+                     `#[ffi(rust = \"path\")]`",
+                );
+            }
+            return None;
+        };
+        let FfiSpec::Opaque(path) = spec else {
+            self.error(span, "`#[ffi(import)]` may only be attached to a function");
+            return None;
+        };
+        if !opaque {
+            self.error(
+                span,
+                "an `#[ffi(rust = ...)]` record cannot declare fields or variants",
+            );
+            return None;
+        }
+        // The foreign side is a `#[repr(transparent)]` wrapper over
+        // `reussir_rt`'s `Rc`, i.e. a shared box: the capability is fixed.
+        if rec.default_cap != surface::Capability::Shared {
+            self.error(span, "an `#[ffi(rust = ...)]` record is always `[shared]`");
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Check the `#[ffi(import)]` rules on a function; returns whether the
+    /// function is a valid FFI import (its foreign body registers under its
+    /// def in [`Self::scan_function`]).
+    fn validate_ffi_function(
+        &mut self,
+        func: &surface::Function,
+        ffi: Option<FfiSpec>,
+        span: Option<Span>,
+    ) -> bool {
+        let Some(spec) = ffi else {
+            if func.foreign_body.is_some() {
+                self.error(
+                    span,
+                    "a foreign function body (`[{ ... }];`) requires `#[ffi(import)]`",
+                );
+            }
+            return false;
+        };
+        if !matches!(spec, FfiSpec::Import) {
+            self.error(
+                span,
+                "`#[ffi(rust = ...)]` may only be attached to a field-less struct",
+            );
+            return false;
+        }
+        if func.foreign_body.is_none() {
+            self.error(
+                span,
+                "`#[ffi(import)]` requires a foreign body: `fn f(...) -> T [{ ... }];`",
+            );
+            return false;
+        }
+        if func.is_regional {
+            self.error(span, "an `#[ffi(import)]` function cannot be `regional`");
+            return false;
+        }
+        true
+    }
+
+    fn scan_record(
+        &mut self,
+        rec: &surface::Record,
+        ffi: Option<String>,
+        span: Option<Span>,
+    ) -> Option<DefId> {
         let ty_params = self.collect_generics(&rec.ty_params, span);
         let default_cap = match rec.default_cap {
             surface::Capability::Value => DefaultCap::Value,
@@ -1168,6 +1363,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             kind: rec.kind,
             default_cap,
             repr_fixed,
+            ffi,
             fields: None,
             regional_generics: Vec::new(),
             span,
@@ -1177,7 +1373,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Some(def)
     }
 
-    fn scan_function(&mut self, func: &surface::Function, span: Option<Span>) -> Option<DefId> {
+    fn scan_function(
+        &mut self,
+        func: &surface::Function,
+        is_ffi_import: bool,
+        span: Option<Span>,
+    ) -> Option<DefId> {
         let generics = self.collect_generics(&func.generics, span);
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
@@ -1225,6 +1426,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             file: self.current_file,
         };
         self.functions.insert(def, proto);
+        if is_ffi_import {
+            let block = func.foreign_body.as_ref().expect("validated ffi import");
+            self.ffi_imports.insert(
+                def,
+                FfiImport {
+                    body: block.body.clone(),
+                    span: Some(block.body_span),
+                    file: self.current_file,
+                },
+            );
+        }
         Some(def)
     }
 
@@ -1305,6 +1517,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     })
                     .collect(),
             ),
+            surface::RecordFields::Opaque => RecordFields::Opaque,
         };
         self.generic_names.clear();
 
@@ -1313,7 +1526,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let has_mut = match &fields {
                 RecordFields::Named(fs) => fs.iter().any(|(_, _, m)| *m),
                 RecordFields::Unnamed(fs) => fs.iter().any(|(_, m)| *m),
-                RecordFields::Variants(_) => false,
+                RecordFields::Variants(_) | RecordFields::Opaque => false,
             };
             if has_mut {
                 self.error(
@@ -1414,7 +1627,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Some(RecordFields::Variants(vs)) => {
                 vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
             }
-            None => Vec::new(),
+            Some(RecordFields::Opaque) | None => Vec::new(),
         };
         member_tys
             .into_iter()

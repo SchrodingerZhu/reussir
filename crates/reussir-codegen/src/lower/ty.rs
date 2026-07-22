@@ -28,12 +28,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use reussir_backend::dialect::ty::{
     ReussirAtomicKind, ReussirCapability, ReussirCellKind, ReussirLifeScope, ReussirRecordKind,
-    array, cell_with_kind, closure, nullable, rc, record_complete_in_place, record_incomplete,
-    record_is_complete, r#ref, region, str as str_type,
+    array, cell_with_kind, closure, ffi_object, nullable, rc, record_complete_in_place,
+    record_incomplete, record_is_complete, r#ref, region, str as str_type,
 };
 use reussir_backend::melior::Context;
 use reussir_backend::melior::ir::Type;
-use reussir_backend::melior::ir::attribute::StringAttribute;
+use reussir_backend::melior::ir::attribute::{FlatSymbolRefAttribute, StringAttribute};
 use reussir_backend::melior::ir::r#type::IntegerType;
 
 use reussir_core::full::mir;
@@ -206,12 +206,31 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
     fn member_ty(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         match *ty.kind() {
             TyKind::Arc(_) => self.mlir_ty(ty),
+            // An opaque `#[ffi]` member cannot be spelled as a bare record
+            // (there is no inline layout); it is an explicit rc link, which
+            // the dialect stores as a pointer like any other rc member.
+            TyKind::Record { .. } if self.is_opaque_record(ty) => self.mlir_ty(ty),
             TyKind::Record { .. } => self.record_inner_of(ty),
             TyKind::Closure { params, ret } => self.closure_inner(params, ret),
             TyKind::Array { .. } => self.array_inner_of(ty),
             TyKind::Cell { .. } => self.cell_inner_of(ty),
             _ => self.mlir_ty(ty),
         }
+    }
+
+    /// Whether `ty` is an opaque `#[ffi]` record instance (a foreign rc box).
+    pub(super) fn is_opaque_record(&self, ty: Ty<'tcx>) -> bool {
+        self.record_of(ty)
+            .is_some_and(|rec| matches!(rec.layout, mir::RecordLayout::Opaque { .. }))
+    }
+
+    /// The `!reussir.ffi_object<…>` payload type of an opaque instance.
+    fn ffi_object_type(&self, rust_name: mir::Symbol, drop_hook: mir::Symbol) -> Type<'c> {
+        ffi_object(
+            self.context,
+            StringAttribute::new(self.context, self.program.symbol(rust_name)),
+            FlatSymbolRefAttribute::new(self.context, self.program.symbol(drop_hook)),
+        )
     }
 
     /// Lower a mutable `[field]` link member to its stored type. The member is
@@ -239,6 +258,9 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
                 self.variant_payload_type(v)
             }
             mir::RecordLayout::Compound(_) => err("variant payload requested for a struct record"),
+            mir::RecordLayout::Opaque { .. } => {
+                err("variant payload requested for an opaque `#[ffi]` record")
+            }
         }
     }
 
@@ -289,6 +311,12 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         let kind = match rec.layout {
             mir::RecordLayout::Compound(_) => ReussirRecordKind::Compound,
             mir::RecordLayout::Variant(_) => ReussirRecordKind::Variant,
+            // The payload of an opaque `#[ffi]` box is the foreign object
+            // itself — there is no identified record layout to build.
+            mir::RecordLayout::Opaque {
+                rust_name,
+                drop_hook,
+            } => return Ok(self.ffi_object_type(rust_name, drop_hook)),
         };
         let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
         let record = record_incomplete(self.context, name, kind);
@@ -311,6 +339,10 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         record: Type<'c>,
     ) -> Result<Type<'c>> {
         let (member_tys, member_is_field) = match rec.layout {
+            // Handled by `record_inner_type` before reaching here.
+            mir::RecordLayout::Opaque { .. } => {
+                return err("an opaque `#[ffi]` record has no layout to complete");
+            }
             mir::RecordLayout::Compound(members) => {
                 let mut tys = Vec::with_capacity(members.len());
                 let mut is_field = Vec::with_capacity(members.len());

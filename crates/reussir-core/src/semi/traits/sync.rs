@@ -57,6 +57,12 @@ pub trait SyncEnv<'tcx> {
     /// the def-level reference graph the recursive-group (SCC) computation
     /// walks. `None` when the fields are not populated yet.
     fn member_record_defs(&self, def: DefId) -> Option<Vec<DefId>>;
+
+    /// Whether `def` is an opaque `#[ffi]` record: its box is the foreign
+    /// non-atomic `Rc`, so it is never `Sync` and cannot re-color atomic.
+    fn foreign(&self, _def: DefId) -> bool {
+        false
+    }
 }
 
 /// Collect the def of every record head appearing anywhere in `ty`, for the
@@ -139,6 +145,9 @@ pub enum NotSyncReason {
     PlainCell,
     /// A `RefCell`: the in-use guard flag is not atomic.
     ExclusiveCell,
+    /// An opaque `#[ffi]` record: its box is the foreign non-atomic `Rc`,
+    /// which no coloring can make atomic.
+    ForeignBox,
 }
 
 impl NotSyncReason {
@@ -148,6 +157,9 @@ impl NotSyncReason {
             NotSyncReason::Regional => "a regional object",
             NotSyncReason::PlainCell => "a plain `Cell`, which is unsynchronized",
             NotSyncReason::ExclusiveCell => "a `RefCell`, whose in-use guard is not atomic",
+            NotSyncReason::ForeignBox => {
+                "an opaque `#[ffi]` record, whose foreign box is never atomic"
+            }
         }
     }
 }
@@ -357,6 +369,12 @@ impl<'tcx> Cx<'_, 'tcx> {
         use crate::semi::ctxt::DefaultCap;
         match *inner.kind() {
             TyKind::Record { def, args, .. } => match self.env.default_cap(def) {
+                // The kind gate admits an opaque `#[ffi]` record as a shared
+                // box, but its box is the foreign `Rc` — the atomic coloring
+                // cannot reach it.
+                Some(DefaultCap::Shared) if self.env.foreign(def) => {
+                    self.refute(inner, NotSyncReason::ForeignBox)
+                }
                 Some(DefaultCap::Shared) => match self.env.members(def, args) {
                     None => SyncVerdict::Blocked,
                     Some(members) => {

@@ -8,11 +8,13 @@
 //!                           | extern-stmt | transform-stmt | import-stmt)
 //! transform-stmt ::= 'transform' RAW-MLIR-LITERAL ';'
 //! import-stmt ::= 'import' path ('as' name)? ';'
-//! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)? (block | ';')
-//! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields)
+//! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)?
+//!                     (block | ';' | RAW-MLIR-LITERAL ';')
+//! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields | ';')
 //! enum-stmt   ::= 'enum' capability? name generics? '{' variant,* '}'
 //! mod-stmt    ::= 'mod' name ';'
-//! extern-stmt ::= 'extern' STRING 'trampoline' STRING '=' path ('<' type,* '>')? ';'
+//! extern-stmt ::= 'extern' STRING ('trampoline' STRING '=' path ('<' type,* '>')? ';'
+//!                                   | RAW-MLIR-LITERAL ';')
 //! type        ::= segment ('->' type)?          (right associative)
 //! segment     ::= '(' type,+ ')' | '[' type ';' expr,+ ']' | prim | path ('<' type,+ '>')?
 //! pattern     ::= pattern-kind ('if' expr)?
@@ -116,8 +118,12 @@ impl Parser<'_> {
             self.bump();
         } else if self.at(LBrace) {
             self.block_expr();
+        } else if self.at(RawMlirLiteral) {
+            // An opaque foreign body (`[{ Rust code }]`) for FFI functions.
+            self.bump();
+            self.expect(Semicolon);
         } else {
-            self.error("expected a function body (`{ ... }`) or `;`");
+            self.error("expected a function body (`{ ... }`, `[{ ... }];`) or `;`");
         }
         m.complete(self, FnStmt);
     }
@@ -183,8 +189,12 @@ impl Parser<'_> {
             self.named_fields();
         } else if self.at(LParen) {
             self.unnamed_fields();
+        } else if self.at(Semicolon) {
+            // A field-less declaration (`struct V<T>;`): an opaque record,
+            // only meaningful with an `#[ffi(...)]` attribute.
+            self.bump();
         } else {
-            self.error("expected `{` (named fields) or `(` (unnamed fields)");
+            self.error("expected `{` (named fields), `(` (unnamed fields), or `;`");
         }
         m.complete(self, StructStmt);
     }
@@ -285,15 +295,22 @@ impl Parser<'_> {
         m.complete(self, ImportStmt);
     }
 
-    /// `extern "ABI" trampoline "sym" = path<T,...>;`.
+    /// `extern "ABI" trampoline "sym" = path<T,...>;` or an opaque foreign
+    /// source block `extern "rust" [{ ... }];`.
     fn extern_trampoline_stmt(&mut self, m: Marker) {
         self.expect(ExternKw);
         self.expect(StringLit);
+        if self.at(RawMlirLiteral) {
+            self.bump();
+            self.expect(Semicolon);
+            m.complete(self, ExternSourceStmt);
+            return;
+        }
         if self.at_ctx_kw("trampoline") {
             self.bump();
         } else {
             self.error(format!(
-                "expected `trampoline`, found {}",
+                "expected `trampoline` or `[{{ ... }}]`, found {}",
                 self.current().describe()
             ));
         }
@@ -335,7 +352,12 @@ impl Parser<'_> {
                     if self.at(Comma) {
                         self.bump();
                     } else if self.at_ident_like() {
+                        // A bare argument, or a `key = "value"` pair.
                         self.bump();
+                        if self.at(Eq) {
+                            self.bump();
+                            self.expect(StringLit);
+                        }
                     } else {
                         self.error("expected an attribute argument");
                         break;

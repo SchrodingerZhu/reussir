@@ -248,6 +248,9 @@ impl<'tcx> RecordTable<'tcx> {
                     .iter()
                     .flat_map(|v| v.fields.iter().copied())
                     .collect(),
+                // An opaque `#[ffi]` box: rc-managed, but its payload is
+                // foreign — nothing for the ownership pass to walk into.
+                mir::RecordLayout::Opaque { .. } => Vec::new(),
             };
             table.insert(r.ty, RecordShape { managed, fields });
         }

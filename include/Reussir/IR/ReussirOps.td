@@ -2188,11 +2188,18 @@ def ReussirTrampolineOp
                                            SymbolUserOpInterface>]> {
   let summary = "Trampoline for FFI calls";
   let description = [{
-    `reussir.trampoline` describes an FFI boundary shim. The `direction`
-    attribute distinguishes between:
+    `reussir.trampoline` describes an FFI boundary shim. In both directions
+    `target` names the function with the *native* (Reussir-internal)
+    signature and `sym_name` names the C-facing boundary symbol; the
+    `direction` attribute picks which side the lowering materializes:
 
-    - `export`: expose a Reussir-internal function through a C-facing boundary.
-    - `import`: provide a Reussir symbol that forwards to a C-facing target.
+    - `export`: `target` is an existing internal definition; the lowering
+      creates `sym_name` with the boundary signature, unpacking the boundary
+      arguments and calling `target`.
+    - `import`: `target` is an existing body-less declaration (callers call
+      it natively); the lowering materializes `target`'s definition, packing
+      the native arguments and calling the external boundary symbol
+      `sym_name`, which it declares.
 
     The backend classifies a trampoline as trivial when it accepts fewer than
     four integral or pointer arguments and returns at most one integral or
@@ -2204,6 +2211,10 @@ def ReussirTrampolineOp
     - nontrivial returns use a leading return pointer parameter;
     - nontrivial argument lists are packed into a literal LLVM struct passed by
       pointer in source order.
+
+    The boundary is deliberately platform-independent: only pointers and
+    integers cross it, so no target-specific aggregate classification (and no
+    `sret`/`byval`) is involved on either side.
 
     Currently only the `"C"` ABI is supported.
   }];

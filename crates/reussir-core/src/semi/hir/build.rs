@@ -17,7 +17,8 @@ use rustc_hash::FxHashMap;
 
 use crate::ir_lex::lex;
 use crate::semi::ctxt::{
-    DefaultCap, Record, RecordFields, TrampolineRoot, TransformScript, Variant,
+    DefaultCap, FfiImport, FfiPrelude, Record, RecordFields, TrampolineRoot, TransformScript,
+    Variant,
 };
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
@@ -41,6 +42,8 @@ pub struct Parsed<'tcx> {
     pub strings: Vec<(StringToken, String)>,
     pub records: FxHashMap<DefId, Record<'tcx>>,
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
+    pub ffi_imports: FxHashMap<DefId, FfiImport>,
+    pub ffi_preludes: Vec<FfiPrelude>,
     pub defs: DefTable,
     pub names: Names,
     /// The dump's source-file table, in id order: each file's display name.
@@ -124,6 +127,31 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         .zip(&funcs)
         .filter_map(|(raw, func)| raw.transform_anchor.then_some(func.def))
         .collect();
+    let ffi_imports: FxHashMap<DefId, FfiImport> = raw
+        .funcs
+        .iter()
+        .zip(&funcs)
+        .filter_map(|(raw, func)| match &raw.body {
+            raw::FuncBody::Ffi(body) => Some((
+                func.def,
+                FfiImport {
+                    body: body.clone(),
+                    span: span_of(raw.span),
+                    file: file_of(raw.file),
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    let ffi_preludes: Vec<FfiPrelude> = raw
+        .ffi_preludes
+        .iter()
+        .map(|p| FfiPrelude {
+            body: p.body.clone(),
+            span: span_of(p.span),
+            file: file_of(p.file),
+        })
+        .collect();
     let transform_scripts = raw
         .transforms
         .iter()
@@ -141,6 +169,8 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         strings,
         records,
         trampolines,
+        ffi_imports,
+        ffi_preludes,
         defs: b.defs,
         names: b.names,
         files,
@@ -245,6 +275,11 @@ impl<'tcx> Builder<'_, 'tcx> {
                     })
                     .collect(),
             ),
+            raw::RecordBody::Opaque(_) => RecordFields::Opaque,
+        };
+        let ffi = match &r.body {
+            raw::RecordBody::Opaque(path) => Some(path.clone()),
+            _ => None,
         };
         let record = Record {
             def,
@@ -253,6 +288,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             kind,
             default_cap,
             repr_fixed: r.repr_fixed,
+            ffi,
             fields: Some(fields),
             regional_generics,
             span: span_of(r.span),
@@ -280,7 +316,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             .map(|p| (self.names.intern(&p.name), VarId(p.var), self.ty(&p.ty)))
             .collect();
         let return_ty = self.ty(&f.ret);
-        let body = f.body.as_ref().map(|b| self.expr(b));
+        let body = match &f.body {
+            raw::FuncBody::Expr(b) => Some(self.expr(b)),
+            raw::FuncBody::None | raw::FuncBody::Ffi(_) => None,
+        };
         Function {
             def,
             name,
@@ -645,6 +684,7 @@ mod tests {
             let strings = elab.strings.entries();
             let text = Printer::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
@@ -661,6 +701,7 @@ mod tests {
             );
             let text2 = Printer::new(&parsed.defs, &parsed.names)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -691,6 +732,7 @@ mod tests {
             let strings = elab.strings.entries();
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             assert!(
                 text.contains("0 = \"<test>\";"),
@@ -718,6 +760,7 @@ mod tests {
             }
             let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -801,6 +844,28 @@ mod tests {
             pub fn b(a: [f64; 8], i: i64, v: f64) -> [f64; 8] {
                 core::intrinsic::array::set(a, i, core::intrinsic::array::get(a, i) + v)
             }
+            "#,
+        );
+    }
+
+    #[test]
+    fn roundtrips_ffi_items() {
+        // The three FFI item forms: a foreign prelude, an opaque record, and
+        // foreign-bodied imports (with an escape-y body to exercise quoting).
+        roundtrip(
+            r#"
+            extern "rust" [{ use reussir_rt::collections::vec::Vec as RVec; }];
+
+            #[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+            pub struct Vec<T>;
+
+            #[ffi(import)]
+            pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+            #[ffi(import)]
+            pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, "\"".len() as i64; x) }];
+
+            pub fn use_it() -> Vec<f64> { push(new<f64>(), 1.0) }
             "#,
         );
     }
