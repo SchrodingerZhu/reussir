@@ -30,7 +30,13 @@
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
 
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/LoopSimplify.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
+
 #include "Reussir/LLVMPass/AllocationSimplication.h"
+#include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 
 #ifdef REUSSIR_HAS_TPDE
@@ -142,7 +148,30 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
   mpm.addPass(llvm::LowerTypeTestsPass(
       /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
       llvm::lowertypetests::DropTestKind::Assume));
+  // Linear-recurrence strength reduction brackets the default pipeline: the
+  // recursion linearization must see the recursive shape before the inliner
+  // rewrites it, and the matrix-exponentiation pass wants the canonicalized
+  // (rotated, indvar-simplified) loops the default pipeline leaves behind.
+  // Only speed-oriented levels opt in — the exponentiation kernel trades
+  // code size for time.
+  bool linearRecurrence =
+      opt == ReussirJitOptDefault || opt == ReussirJitOptAggressive;
+  if (linearRecurrence) {
+    llvm::FunctionPassManager cleanup;
+    cleanup.addPass(llvm::PromotePass());
+    mpm.addPass(
+        llvm::createModuleToFunctionPassAdaptor(std::move(cleanup)));
+    mpm.addPass(reussir::llvmpass::RecursionLinearizationPass());
+  }
   mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
+  if (linearRecurrence) {
+    llvm::FunctionPassManager matexp;
+    matexp.addPass(llvm::LoopSimplifyPass());
+    matexp.addPass(reussir::llvmpass::LinearRecurrenceMatExpPass());
+    matexp.addPass(llvm::InstCombinePass());
+    matexp.addPass(llvm::SimplifyCFGPass());
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(matexp)));
+  }
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);
 }

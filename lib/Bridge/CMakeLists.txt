@@ -38,6 +38,7 @@ add_mlir_library(MLIRReussirBridge
     MLIRReussirConversion
     MLIRReussirTransformation
     ReussirLLVMAllocationSimplicationPass
+    ReussirLLVMLinearRecurrencePass
     spdlog::spdlog
     ${TPDE_LINK_LIB}
 )

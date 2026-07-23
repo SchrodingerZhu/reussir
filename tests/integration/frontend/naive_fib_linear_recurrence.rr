@@ -1,0 +1,25 @@
+// RUN: %rrc %s --emit llvm-ir -o %t.ll
+// RUN: %FileCheck %s < %t.ll
+// RUN: %rrc %s -o %t.o
+// RUN: %cc %t.o %S/naive_fib_linear_recurrence.c -o %t.exe
+// RUN: %t.exe
+
+// The backend linear-recurrence passes (recursion linearization + matrix
+// exponentiation) must rewrite the naive doubly-recursive fibonacci at the
+// default optimization level: the optimized IR may not contain a
+// self-recursive call anymore, and the driver exercises arguments far beyond
+// what the exponential call tree could ever answer (values mod 2^64).
+
+// CHECK-LABEL: define{{.*}} @_RC9fibonacci(
+// CHECK-NOT: call{{.*}} @_RC9fibonacci(
+// CHECK: {{^[}]$}}
+
+pub fn fibonacci(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+extern "C" trampoline "naive_fibonacci_ffi" = fibonacci;

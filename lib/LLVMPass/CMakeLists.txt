@@ -1,2 +1,3 @@
 add_subdirectory(AllocationSimplication)
+add_subdirectory(LinearRecurrence)
 
