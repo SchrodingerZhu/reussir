@@ -90,22 +90,42 @@ their updates must stay affine. PHIs outside the closure — typically an exit
 counter of a different width — die with the loop. Add/sub/mul-by-constant
 and shl-by-constant are the recognized affine operations.
 
-### Rewrite
+### Rewrite (Kitamasa)
 
-With the augmented companion matrix `A = [[M, c], [0, 1]]`, the final state
-is `A^btc * s_0`. The pass emits a square-and-multiply loop over the bits of
-the materialized backedge-taken count (`O(K^3 log n)` ring operations for
-`K = |state| + 1`, capped at `K <= 7`), then rebuilds each live-out from the
-final state vector and deletes the original loop.
+With the augmented companion matrix `A = [[M, c], [0, 1]]` of dimension `D`,
+the final state is `A^btc * s_0`. Rather than exponentiating the matrix
+(`O(D^3)` per squaring), the pass works in the quotient ring
+`(Z/2^N)[z] / chi_A(z)`:
+
+1. `chi_A`, the characteristic polynomial of the compile-time constant `A`,
+   is computed at compile time by division-free cofactor expansion mod 2^N
+   (memoized on column subsets); it is monic by construction, so reduction
+   mod `chi_A` needs no division either.
+2. The emitted loop computes `p(z) = z^btc mod chi_A` by square-and-multiply
+   over the exponent's bits — each step is a degree-`< D` polynomial
+   multiply plus monic reduction, `O(D^2)` ring operations, with only `2D`
+   loop-carried coefficients instead of `2D^2` matrix entries.
+3. By Cayley–Hamilton (a polynomial identity over Z, hence valid in any
+   commutative ring including Z/2^N), `A^btc s_0 = p(A) s_0 =
+   sum_i p_i (A^i s_0)`. The Krylov vectors `A^i s_0` for `i < D` are
+   emitted once as straight-line code with the (typically sparse, 0/±1)
+   constant matrix entries folded away.
+
+Total: `O(D^2 log n)` emitted ring operations — the FFT-free Kitamasa
+bound. The FFT variant (`O(D log D log n)`) only wins for `D` in the dozens,
+far beyond the `D <= 7` cap here, so plain schoolbook polynomial
+multiplication is the right choice. Each live-out is then rebuilt from the
+final state vector and the original loop is deleted.
 
 ### Soundness
 
-Z/2^N is a commutative ring, so matrix exponentiation is bit-exact for
-wrapping arithmetic; `nsw`/`nuw` flags on the original operations only
-license *removing* poison, so dropping them in the emitted code is a
-refinement. If the backedge-taken count SCEV relied on no-wrap reasoning,
-the original loop already had the corresponding UB on the offending inputs.
-Loops whose exact trip count SCEV cannot compute are skipped.
+Z/2^N is a commutative ring, so both the polynomial arithmetic and
+Cayley–Hamilton are bit-exact for wrapping arithmetic; `nsw`/`nuw` flags on
+the original operations only license *removing* poison, so dropping them in
+the emitted code is a refinement. If the backedge-taken count SCEV relied on
+no-wrap reasoning, the original loop already had the corresponding UB on the
+offending inputs. Loops whose exact trip count SCEV cannot compute are
+skipped.
 
 ## Pipeline placement
 
