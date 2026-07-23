@@ -36,10 +36,15 @@ namespace reussir {
 //
 // Compiles all uncompiled polymorphic FFI operations in the module by
 // monomorphizing their templates and compiling them to LLVM bitcode.
+// `rustPath` and `libDir`, when non-empty, name the `rustc` executable and the
+// package search directory explicitly (see `findRustCompiler` /
+// `findRustCompilerDeps` for the fallback discovery).
 //
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult compilePolymorphicFFI(mlir::ModuleOp moduleOp,
-                                          bool optimized = false);
+                                          bool optimized = false,
+                                          llvm::StringRef rustPath = {},
+                                          llvm::StringRef libDir = {});
 
 //===----------------------------------------------------------------------===//
 // Variant debug-info fixup (post-translation)

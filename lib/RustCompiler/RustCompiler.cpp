@@ -69,7 +69,10 @@ constexpr std::array<llvm::StringRef, 14> RUSTC_DEPS_HINTS = {
 };
 } // namespace
 
-llvm::StringRef findRustCompiler() {
+llvm::StringRef findRustCompiler(llvm::StringRef preferred) {
+  // an explicit path from the driver wins over the environment and the probe
+  if (!preferred.empty())
+    return preferred;
   // first check if REUSSIR_RUSTC is set
   if (const char *env_p = std::getenv("REUSSIR_RUSTC"))
     return env_p;
@@ -82,7 +85,11 @@ llvm::StringRef findRustCompiler() {
   return "";
 }
 
-llvm::StringRef findRustCompilerDeps() {
+llvm::StringRef findRustCompilerDeps(llvm::StringRef preferred) {
+  // an explicit directory from the driver wins over the environment and the
+  // probe
+  if (!preferred.empty())
+    return preferred;
   // first check if REUSSIR_RUSTC_DEPS is set
   if (const char *env_p = std::getenv("REUSSIR_RUSTC_DEPS"))
     return env_p;
@@ -96,9 +103,11 @@ llvm::StringRef findRustCompilerDeps() {
 std::unique_ptr<llvm::MemoryBuffer>
 compileRustSourceToBitcode(llvm::LLVMContext &context,
                            llvm::StringRef sourceCode,
-                           llvm::ArrayRef<llvm::StringRef> additionalArgs) {
-  llvm::StringRef rustcPath = findRustCompiler();
-  llvm::StringRef rustcDepsPath = findRustCompilerDeps();
+                           llvm::ArrayRef<llvm::StringRef> additionalArgs,
+                           llvm::StringRef rustcPath,
+                           llvm::StringRef rustcDepsDir) {
+  rustcPath = findRustCompiler(rustcPath);
+  llvm::StringRef rustcDepsPath = findRustCompilerDeps(rustcDepsDir);
   if (rustcPath.empty() || rustcDepsPath.empty()) {
     llvm::SmallString<16> cwd;
     auto code = llvm::sys::fs::current_path(cwd);
@@ -173,9 +182,10 @@ compileRustSourceToBitcode(llvm::LLVMContext &context,
 
 std::unique_ptr<llvm::Module>
 compileRustSource(llvm::LLVMContext &context, llvm::StringRef sourceCode,
-                  llvm::ArrayRef<llvm::StringRef> additionalArgs) {
-  std::unique_ptr<llvm::MemoryBuffer> bitcode =
-      compileRustSourceToBitcode(context, sourceCode, additionalArgs);
+                  llvm::ArrayRef<llvm::StringRef> additionalArgs,
+                  llvm::StringRef rustcPath, llvm::StringRef rustcDepsDir) {
+  std::unique_ptr<llvm::MemoryBuffer> bitcode = compileRustSourceToBitcode(
+      context, sourceCode, additionalArgs, rustcPath, rustcDepsDir);
   if (!bitcode)
     return nullptr;
   auto moduleOrErr =

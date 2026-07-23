@@ -26,4 +26,22 @@ TEST(RustCompilerTest, CompileSimpleSource) {
   EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_push"), nullptr);
   EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_drop"), nullptr);
 }
+
+TEST(RustCompilerTest, ExplicitPathsOverrideDiscovery) {
+  // An explicit path short-circuits both the environment and the probe list.
+  EXPECT_EQ(findRustCompiler("/explicit/bin/rustc"), "/explicit/bin/rustc");
+  EXPECT_EQ(findRustCompilerDeps("/explicit/lib"), "/explicit/lib");
+
+  // Feeding the discovered locations back as explicit arguments exercises the
+  // override path end to end.
+  llvm::StringRef rustc = findRustCompiler();
+  llvm::StringRef deps = findRustCompilerDeps();
+  ASSERT_FALSE(rustc.empty());
+  ASSERT_FALSE(deps.empty());
+  llvm::LLVMContext context;
+  std::unique_ptr<llvm::Module> m =
+      compileRustSource(context, EXAMPLE_SOURCE, {}, rustc, deps);
+  ASSERT_NE(m, nullptr);
+  EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_new"), nullptr);
+}
 } // namespace reussir
