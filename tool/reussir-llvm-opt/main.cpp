@@ -16,6 +16,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include <optional>
+
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
@@ -43,6 +45,26 @@ llvm::cl::opt<std::string>
     passPipeline("passes",
                  llvm::cl::desc("Textual pass pipeline (same syntax as opt)"),
                  llvm::cl::init(""));
+llvm::cl::opt<std::string> linearRecurrencePipeline(
+    "linear-recurrence-pipeline",
+    llvm::cl::desc("Run the production default pipeline (O1/O2/O3/Os/Oz) "
+                   "with the linear-recurrence passes registered at its "
+                   "extension points, exactly as the Reussir backend does"),
+    llvm::cl::init(""));
+
+std::optional<llvm::OptimizationLevel> parseLevel(llvm::StringRef level) {
+  if (level == "O1")
+    return llvm::OptimizationLevel::O1;
+  if (level == "O2")
+    return llvm::OptimizationLevel::O2;
+  if (level == "O3")
+    return llvm::OptimizationLevel::O3;
+  if (level == "Os")
+    return llvm::OptimizationLevel::Os;
+  if (level == "Oz")
+    return llvm::OptimizationLevel::Oz;
+  return std::nullopt;
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -98,8 +120,24 @@ int main(int argc, char **argv) {
       });
 
   llvm::ModulePassManager mpm;
-  if (llvm::Error error =
-          passBuilder.parsePassPipeline(mpm, passPipeline)) {
+  if (!linearRecurrencePipeline.empty()) {
+    if (!passPipeline.empty()) {
+      llvm::errs() << argv[0]
+                   << ": --passes and --linear-recurrence-pipeline are "
+                      "mutually exclusive\n";
+      return 1;
+    }
+    std::optional<llvm::OptimizationLevel> level =
+        parseLevel(linearRecurrencePipeline);
+    if (!level) {
+      llvm::errs() << argv[0] << ": invalid optimization level '"
+                   << linearRecurrencePipeline << "'\n";
+      return 1;
+    }
+    reussir::llvmpass::registerLinearRecurrencePipelines(passBuilder);
+    mpm.addPass(passBuilder.buildPerModuleDefaultPipeline(*level));
+  } else if (llvm::Error error =
+                 passBuilder.parsePassPipeline(mpm, passPipeline)) {
     llvm::errs() << argv[0] << ": " << llvm::toString(std::move(error))
                  << "\n";
     return 1;

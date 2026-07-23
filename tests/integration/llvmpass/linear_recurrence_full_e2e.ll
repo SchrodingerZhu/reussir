@@ -1,13 +1,13 @@
-; RUN: %reussir-llvm-opt --passes='reussir-recursion-linearization,default<O2>,function(loop-simplify,reussir-linear-recurrence-matexp,instcombine,simplifycfg)' %s -o %t.ll
+; RUN: %reussir-llvm-opt --linear-recurrence-pipeline=O2 %s -o %t.ll
 ; RUN: %FileCheck %s < %t.ll
 ; RUN: %lli %t.ll
 
-; The full chain, mirroring the production pipeline placement: recursion
-; linearization before the default pipeline, matrix exponentiation after it.
-; The naive doubly-recursive fibonacci is asked for fib(10^15) mod 2^64 —
-; unreachable both for the exponential recursion (~2^(10^15) calls) and for a
-; linear-time loop (~10^15 iterations); only the O(log n) matrix
-; exponentiation path can answer within the test timeout.
+; The full chain with the exact production pipeline: recursion linearization
+; at pipeline start, Kitamasa exponentiation at the vectorizer-start
+; extension point. The naive doubly-recursive fibonacci is asked for
+; fib(10^15) mod 2^64 — unreachable both for the exponential recursion
+; (~2^(10^15) calls) and for a linear-time loop (~10^15 iterations); only
+; the O(log n) exponentiation path can answer within the test timeout.
 
 ; CHECK-LABEL: define{{.*}} i64 @fib(i64 %n)
 ; CHECK-NOT:     call

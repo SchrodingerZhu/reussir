@@ -38,13 +38,9 @@ module;
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
 #include <llvm/Transforms/IPO/FunctionAttrs.h>
 #include <llvm/Transforms/IPO/Inliner.h>
-#include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/ADCE.h>
-#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils.h>
-#include <llvm/Transforms/Utils/LoopSimplify.h>
-#include <llvm/Transforms/Utils/Mem2Reg.h>
 #include <mlir/Conversion/ConvertToLLVM/ToLLVMPass.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h>
@@ -254,29 +250,16 @@ void runNPMOptimization(llvm::Module &llvmModule, ReussirOptOption opt) {
   // Create the default optimization pipeline for the specified level.
   llvm::ModulePassManager mpm;
   mpm.addPass(reussir::llvmpass::RuntimeFunctionAttributorPass());
-  // Linear-recurrence strength reduction brackets the default pipeline: the
-  // recursion linearization must see the recursive shape before the inliner
-  // rewrites it, and the matrix-exponentiation pass wants the canonicalized
-  // (rotated, indvar-simplified) loops the default pipeline leaves behind.
-  // Only speed-oriented levels opt in — the exponentiation kernel trades
-  // code size for time.
-  bool linearRecurrence =
-      opt == REUSSIR_OPT_DEFAULT || opt == REUSSIR_OPT_AGGRESSIVE;
-  if (linearRecurrence) {
-    llvm::FunctionPassManager cleanup;
-    cleanup.addPass(llvm::PromotePass());
-    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(cleanup)));
-    mpm.addPass(reussir::llvmpass::RecursionLinearizationPass());
-  }
+  // Linear-recurrence strength reduction hooks into the default pipeline's
+  // extension points: recursion linearization at pipeline start (before the
+  // inliner tears the recursive shape apart) and the Kitamasa rewrite at
+  // vectorizer start (canonicalized loops, but before SLP can fold wider
+  // recurrence windows into vector PHIs the matcher cannot see). Only
+  // speed-oriented levels opt in — the exponentiation kernel trades code
+  // size for time.
+  if (opt == REUSSIR_OPT_DEFAULT || opt == REUSSIR_OPT_AGGRESSIVE)
+    reussir::llvmpass::registerLinearRecurrencePipelines(pb);
   mpm.addPass(pb.buildPerModuleDefaultPipeline(optLevel));
-  if (linearRecurrence) {
-    llvm::FunctionPassManager matexp;
-    matexp.addPass(llvm::LoopSimplifyPass());
-    matexp.addPass(reussir::llvmpass::LinearRecurrenceMatExpPass());
-    matexp.addPass(llvm::InstCombinePass());
-    matexp.addPass(llvm::SimplifyCFGPass());
-    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(matexp)));
-  }
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
 
   // Run the optimization

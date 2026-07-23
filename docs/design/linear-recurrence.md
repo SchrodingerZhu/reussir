@@ -129,20 +129,27 @@ skipped.
 
 ## Pipeline placement
 
-Both `runNPMOptimization` (bridge) and `reussirRunBackendLLVMPipeline`
-(rrc/JIT) bracket the default pipeline at the speed-oriented levels
-(default/aggressive):
+`registerLinearRecurrencePipelines` hooks both passes into the default
+pipeline's extension points; both `runNPMOptimization` (bridge) and
+`reussirRunBackendLLVMPipeline` (rrc/JIT) register it at the
+speed-oriented levels (default/aggressive):
 
-```
-mem2reg → recursion-linearization → default<O2/O3>
-        → loop-simplify → matexp → instcombine → simplifycfg
-```
+- **Pipeline start**: `mem2reg → recursion-linearization`. Linearization
+  must run before the inliner tears the recursive shape apart.
+- **Vectorizer start**: `loop-simplify → matexp → early-cse → instcombine`.
+  This point is load-bearing in both directions. The loops are already
+  canonicalized (rotated, indvar-simplified) — exactly what the inlined
+  `step` helper of a linear recurrence collapses into — but the vectorizers
+  have not run yet: placed *after* the whole pipeline instead, SLP
+  vectorizes wider recurrence windows (order >= 4) into vector PHIs the
+  affine matcher cannot see, and the rewrite silently never fires. And
+  because the rewrite runs *inside* the pipeline, the emitted kernel gets
+  the full late pipeline (instcombine, vectorizers, unrolling) on top of
+  the immediate EarlyCSE, which folds the schoolbook squaring's commutative
+  duplicate products (b_i*b_j vs b_j*b_i).
 
-Linearization must run *before* the inliner tears the recursive shape apart;
-matrix exponentiation wants the rotated, indvar-simplified single-block
-loops the default pipeline produces — which is exactly what the inlined
-`step` helper of a linear recurrence collapses into, closing the
-recursion → loop → log-time chain.
+The `reussir-llvm-opt` flag `--linear-recurrence-pipeline=<level>` runs
+this exact configuration, which is what the end-to-end lit tests use.
 
 ## Limits and future work
 
