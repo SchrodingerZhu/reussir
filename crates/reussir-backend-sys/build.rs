@@ -53,6 +53,7 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRSyncConvertSyncToLLVM",
     // The custom LLVM passes run by the JIT codegen helper (Jit.cpp).
     "ReussirLLVMAllocationSimplicationPass",
+    "ReussirLLVMLinearRecurrencePass",
 ];
 
 // TPDE static archives (and TPDE's own vendored dependencies: spdlog plus the

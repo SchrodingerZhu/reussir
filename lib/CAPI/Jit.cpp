@@ -31,6 +31,7 @@
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
 
 #include "Reussir/LLVMPass/AllocationSimplication.h"
+#include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 
 #ifdef REUSSIR_HAS_TPDE
@@ -142,6 +143,15 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
   mpm.addPass(llvm::LowerTypeTestsPass(
       /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
       llvm::lowertypetests::DropTestKind::Assume));
+  // Linear-recurrence strength reduction hooks into the default pipeline's
+  // extension points: recursion linearization at pipeline start (before the
+  // inliner tears the recursive shape apart) and the Kitamasa rewrite at
+  // vectorizer start (canonicalized loops, but before SLP can fold wider
+  // recurrence windows into vector PHIs the matcher cannot see). Only
+  // speed-oriented levels opt in — the exponentiation kernel trades code
+  // size for time.
+  if (opt == ReussirJitOptDefault || opt == ReussirJitOptAggressive)
+    reussir::llvmpass::registerLinearRecurrencePipelines(pb);
   mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);

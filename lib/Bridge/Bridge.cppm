@@ -88,6 +88,7 @@ module;
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/LLVMPass/AllocationSimplication.h"
+#include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
 #include "Reussir/Transformation/Passes.h"
 
@@ -249,6 +250,15 @@ void runNPMOptimization(llvm::Module &llvmModule, ReussirOptOption opt) {
   // Create the default optimization pipeline for the specified level.
   llvm::ModulePassManager mpm;
   mpm.addPass(reussir::llvmpass::RuntimeFunctionAttributorPass());
+  // Linear-recurrence strength reduction hooks into the default pipeline's
+  // extension points: recursion linearization at pipeline start (before the
+  // inliner tears the recursive shape apart) and the Kitamasa rewrite at
+  // vectorizer start (canonicalized loops, but before SLP can fold wider
+  // recurrence windows into vector PHIs the matcher cannot see). Only
+  // speed-oriented levels opt in — the exponentiation kernel trades code
+  // size for time.
+  if (opt == REUSSIR_OPT_DEFAULT || opt == REUSSIR_OPT_AGGRESSIVE)
+    reussir::llvmpass::registerLinearRecurrencePipelines(pb);
   mpm.addPass(pb.buildPerModuleDefaultPipeline(optLevel));
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
 

@@ -5,7 +5,7 @@ import sys
 config.name = 'Reussir'
 config.test_format = lit.formats.ShTest(True)
 
-config.suffixes = ['.mlir', '.rr', '.repl']
+config.suffixes = ['.mlir', '.rr', '.repl', '.ll']
 # `Inputs/` directories hold companion files (transform scripts, C drivers)
 # referenced by tests via %S; they are not tests themselves.
 config.excludes = ['Inputs']
@@ -40,6 +40,8 @@ config.substitutions.append((r'%reussir-opt',
                              bin_tool('reussir-opt')))
 config.substitutions.append((r'%reussir-translate',
                              bin_tool('reussir-translate')))
+config.substitutions.append((r'%reussir-llvm-opt',
+                             bin_tool('reussir-llvm-opt')))
 
 # Add C compiler substitution using CMake's C compiler
 config.substitutions.append((r'%cc', append_flags(config.cc_path, config.cc_runtime_flags)))
