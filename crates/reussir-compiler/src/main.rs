@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use palc::Parser;
 
-use reussir_backend::llvm::LlvmLowering;
+use reussir_backend::llvm::{LlvmLowering, PolyffiPaths};
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{
@@ -714,8 +714,13 @@ fn backend_module(
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
-    let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
-        .map_err(|e| format!("{name}: {e}"))?;
+    let prepared = LlvmLowering::prepare(
+        &module,
+        machine.data_layout(),
+        optimize_ffi,
+        &PolyffiPaths::default(),
+    )
+    .map_err(|e| format!("{name}: {e}"))?;
     pipeline::run_lowering_pipeline(context, &mut module, &options)
         .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
 

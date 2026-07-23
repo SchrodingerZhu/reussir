@@ -188,8 +188,11 @@ MlirPass reussirCreateReconcileUnrealizedCastsPass(void) {
 // Standalone helpers
 //===----------------------------------------------------------------------===//
 
-bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized) {
-  return succeeded(reussir::compilePolymorphicFFI(unwrap(module), optimized));
+bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
+                                  MlirStringRef rustPath,
+                                  MlirStringRef libDir) {
+  return succeeded(reussir::compilePolymorphicFFI(
+      unwrap(module), optimized, unwrap(rustPath), unwrap(libDir)));
 }
 
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
