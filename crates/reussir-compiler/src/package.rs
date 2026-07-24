@@ -1,13 +1,16 @@
-//! Package discovery: map a package root directory to its source files and
-//! module paths by following `mod` declarations from `lib.rr`.
+//! Package discovery: map a package's crate-root file to its source files and
+//! module paths by following `mod` declarations.
 //!
 //! The layout follows the reference frontend (Rust-flavoured):
 //!
-//! * `lib.rr` is the crate root, module path `[package]`.
-//! * A file's **location** determines its module path — `foo.rr` and
-//!   `foo/mod.rr` are `[package, foo]`, `foo/bar.rr` is `[package, foo, bar]`
-//!   — while `mod name;` declarations only drive *discovery*: a declaration
-//!   in file `F` looks for `dir(F)/name.rr`, then `dir(F)/name/mod.rr`.
+//! * The crate root is an explicit file — `lib.rr` under `--package-root`, or
+//!   the input file itself under `<input> --package-name` — with module path
+//!   `[package]` regardless of its name.
+//! * Every other file's **location** (relative to the crate root's directory)
+//!   determines its module path — `foo.rr` and `foo/mod.rr` are
+//!   `[package, foo]`, `foo/bar.rr` is `[package, foo, bar]` — while
+//!   `mod name;` declarations only drive *discovery*: a declaration in file
+//!   `F` looks for `dir(F)/name.rr`, then `dir(F)/name/mod.rr`.
 //! * Duplicate declarations and cycles are tolerated (each file is loaded
 //!   once, keyed by its canonical path); a declaration with no source file is
 //!   an error naming both candidates.
@@ -52,18 +55,13 @@ pub enum PackageError {
     },
 }
 
-/// Load the package rooted at `root` under `name`: read `lib.rr`, follow
-/// `mod` declarations transitively, and parse every file with `interner`.
+/// Load the package rooted at the directory `root` under `name`: `lib.rr` is
+/// the crate root; see [`load_package_rooted`].
 pub fn load_package(
     root: &Path,
     name: &str,
     interner: &Arc<MultiThreadedTokenInterner>,
 ) -> Result<PackageSource, PackageError> {
-    if name == "core" {
-        return Err(PackageError::Message(
-            "package name 'core' is reserved for the built-in core package".into(),
-        ));
-    }
     let root = root.canonicalize().map_err(|e| {
         PackageError::Message(format!("cannot open package root {}: {e}", root.display()))
     })?;
@@ -74,12 +72,40 @@ pub fn load_package(
             root.display()
         )));
     }
+    load_package_rooted(&lib, name, interner)
+}
+
+/// Load the package whose crate root is the file `root_file` under `name`:
+/// follow `mod` declarations transitively from it, and parse every file with
+/// `interner`. The crate root maps to module path `[name]` whatever the file
+/// is called; every other file's path derives from its location relative to
+/// the crate root's directory.
+pub fn load_package_rooted(
+    root_file: &Path,
+    name: &str,
+    interner: &Arc<MultiThreadedTokenInterner>,
+) -> Result<PackageSource, PackageError> {
+    if name == "core" {
+        return Err(PackageError::Message(
+            "package name 'core' is reserved for the built-in core package".into(),
+        ));
+    }
+    let root_file = root_file.canonicalize().map_err(|e| {
+        PackageError::Message(format!(
+            "cannot open package crate root {}: {e}",
+            root_file.display()
+        ))
+    })?;
+    let root = root_file
+        .parent()
+        .expect("a source file has a directory")
+        .to_owned();
 
     let mut cache = SourceCache::new();
     let mut files = Vec::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // Depth-first from the crate root, matching declaration order.
-    let mut work: Vec<PathBuf> = vec![lib];
+    let mut work: Vec<PathBuf> = vec![root_file.clone()];
 
     while let Some(path) = work.pop() {
         let canonical = path
@@ -128,7 +154,7 @@ pub fn load_package(
         children.reverse();
         work.extend(children);
 
-        let module = module_path(&root, &canonical, name);
+        let module = module_path(&root, &root_file, &canonical, name);
         files.push(PackageSourceFile {
             file,
             module,
@@ -153,10 +179,15 @@ fn mod_decls(parse: &Parse) -> Vec<String> {
         .collect()
 }
 
-/// A file's module path from its location under the package root:
-/// `lib.rr` → `[pkg]`, `foo.rr` and `foo/mod.rr` → `[pkg, foo]`,
-/// `foo/bar.rr` → `[pkg, foo, bar]`.
-fn module_path(root: &Path, file: &Path, pkg: &str) -> Vec<String> {
+/// A file's module path: the crate-root file itself is `[pkg]` whatever its
+/// name; any other file derives from its location under the crate root's
+/// directory — `foo.rr` and `foo/mod.rr` → `[pkg, foo]`, `foo/bar.rr` →
+/// `[pkg, foo, bar]`. All paths are canonical, so identity is plain equality.
+fn module_path(root: &Path, root_file: &Path, file: &Path, pkg: &str) -> Vec<String> {
+    let mut path = vec![pkg.to_owned()];
+    if file == root_file {
+        return path;
+    }
     let rel = file.strip_prefix(root).unwrap_or(file);
     let mut segs: Vec<String> = rel
         .with_extension("")
@@ -166,10 +197,6 @@ fn module_path(root: &Path, file: &Path, pkg: &str) -> Vec<String> {
     if segs.last().is_some_and(|s| s == "mod") {
         segs.pop();
     }
-    if segs.as_slice() == ["lib"] {
-        segs.clear();
-    }
-    let mut path = vec![pkg.to_owned()];
     path.extend(segs);
     path
 }
@@ -209,6 +236,43 @@ mod tests {
             ]
         );
         assert_eq!(pkg.files[0].file, FileId::ROOT);
+    }
+
+    #[test]
+    fn roots_a_package_at_an_arbitrary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "main.rr", "mod util;\npub fn e() -> u64 { 0 }");
+        write(dir.path(), "util.rr", "pub fn o() -> u64 { 1 }");
+        let pkg = load_package_rooted(&dir.path().join("main.rr"), "app", &interner())
+            .unwrap_or_else(|_| panic!());
+        let modules: Vec<Vec<String>> = pkg.files.iter().map(|f| f.module.clone()).collect();
+        assert_eq!(
+            modules,
+            vec![
+                vec!["app".to_owned()],
+                vec!["app".to_owned(), "util".to_owned()],
+            ]
+        );
+        assert_eq!(pkg.files[0].file, FileId::ROOT);
+    }
+
+    #[test]
+    fn a_non_root_lib_file_keeps_its_own_module_path() {
+        // Only crate-root identity collapses a file to `[pkg]`; a discovered
+        // file that happens to be called `lib.rr` is an ordinary module.
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "main.rr", "mod lib;\npub fn e() -> u64 { 0 }");
+        write(dir.path(), "lib.rr", "pub fn o() -> u64 { 1 }");
+        let pkg = load_package_rooted(&dir.path().join("main.rr"), "app", &interner())
+            .unwrap_or_else(|_| panic!());
+        let modules: Vec<Vec<String>> = pkg.files.iter().map(|f| f.module.clone()).collect();
+        assert_eq!(
+            modules,
+            vec![
+                vec!["app".to_owned()],
+                vec!["app".to_owned(), "lib".to_owned()],
+            ]
+        );
     }
 
     #[test]

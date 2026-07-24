@@ -4,6 +4,10 @@
 
 // RUN: %rrc --package-root %S/module_basic --package-name mylib --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc --package-root %S/module_basic --package-name mylib -o %t.o --relocation-mode pic
+
+// Rooting the package at `lib.rr` directly (`<input> --package-name`) is the
+// same compilation: identical module paths, identical HIR.
+// RUN: %rrc %S/module_basic/lib.rr --package-name mylib --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %cc %t.o %S/module_basic/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
