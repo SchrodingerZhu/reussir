@@ -28,6 +28,29 @@ use reussir_backend_sys as sys;
 
 use crate::pipeline::OptLevel;
 
+/// Explicit locations for the polymorphic-FFI texture compile. Empty fields
+/// fall back to the `REUSSIR_RUSTC` / `REUSSIR_RUSTC_DEPS` environment
+/// variables and the built-in probe list (see `RustCompiler.cpp`).
+#[derive(Clone, Debug, Default)]
+pub struct PolyffiPaths {
+    /// The `rustc` executable used to compile textures.
+    pub rust_path: Option<String>,
+    /// The directory searched for Rust packages (`rustc -L`) — `libreussir_rt`
+    /// and friends.
+    pub libdir: Option<String>,
+}
+
+// Views an optional string as the borrowed MlirStringRef the C API takes; the
+// referent must outlive every use of the result. `None` becomes an empty ref,
+// which the C side treats as "fall back to discovery".
+fn opt_string_ref(s: &Option<String>) -> sys::mlir_sys::MlirStringRef {
+    let s = s.as_deref().unwrap_or("");
+    sys::mlir_sys::MlirStringRef {
+        data: s.as_ptr().cast(),
+        length: s.len(),
+    }
+}
+
 /// Translates a lowered MLIR `module` to an LLVM IR module created in `context`.
 ///
 /// The returned module is owned alongside `context`. Returns an error if MLIR
@@ -100,11 +123,24 @@ impl LlvmLowering {
     ///
     /// Gathering erases the polyffi ops, so the lowering pipeline's own
     /// `CompilePolymorphicFFIPass` then sees nothing to do.
-    pub fn prepare(module: &Module, data_layout: &str, optimized: bool) -> Result<Self, String> {
+    ///
+    /// `paths` pins the rustc executable and package directory the texture
+    /// compile uses; default it to keep the environment/probe discovery.
+    pub fn prepare(
+        module: &Module,
+        data_layout: &str,
+        optimized: bool,
+        paths: &PolyffiPaths,
+    ) -> Result<Self, String> {
         let data_layout =
             CString::new(data_layout).map_err(|_| "data layout contains a NUL byte".to_string())?;
         unsafe {
-            if !sys::reussirCompilePolymorphicFFI(module.to_raw(), optimized) {
+            if !sys::reussirCompilePolymorphicFFI(
+                module.to_raw(),
+                optimized,
+                opt_string_ref(&paths.rust_path),
+                opt_string_ref(&paths.libdir),
+            ) {
                 return Err("failed to compile polymorphic FFI".into());
             }
             let context = LLVMContextCreate();

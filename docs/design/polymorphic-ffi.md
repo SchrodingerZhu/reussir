@@ -140,8 +140,14 @@ possible extension; it was deliberately left out of v1.)
 ## Pipeline and toolchain
 
 The `reussir-compile-polymorphic-ffi` pass substitutes and compiles each
-texture with the `rustc` located via `REUSSIR_RUSTC` (deps —
-`libreussir_rt` — via `REUSSIR_RUSTC_DEPS`); `translateToModule` links the
+texture with `rustc`. The driver flags `--polyffi-rust-path` (the `rustc`
+executable; a bare name resolves through `PATH`) and `--polyffi-libdir`
+(the package directory passed as `-L`, holding `libreussir_rt` and
+friends) pin the toolchain explicitly; they take precedence over the
+`REUSSIR_RUSTC` / `REUSSIR_RUSTC_DEPS` environment variables, which in
+turn beat the built-in probe list. The flags are the first step toward
+building against a host `cargo`/`rustc` toolchain instead of shipping a
+full Rust sysroot alongside the compiler. `translateToModule` links the
 gathered bitcode into the final LLVM module. The JIT/REPL path does not
 gather polyffi modules yet and rejects programs containing them.
 

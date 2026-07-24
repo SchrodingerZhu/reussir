@@ -56,6 +56,10 @@ config.substitutions.append((r'%linkage_check_prefixes', linkage_check_prefixes)
 config.substitutions.append((r'%not', sh_path(config.not_path)))
 config.substitutions.append((r'%opt', sh_path(config.opt_path)))
 config.substitutions.append((r'%library_path', sh_path(config.library_path)))
+# The rustc the build provisioned for polyffi texture compiles — the same
+# value REUSSIR_RUSTC is set to; exposed so tests can exercise the explicit
+# --polyffi-rust-path/--polyffi-libdir flags without the environment.
+config.substitutions.append((r'%rustc_path', sh_path(config.environment['REUSSIR_RUSTC'])))
 config.substitutions.append((r'%llc', sh_path(config.llc_path)))
 config.substitutions.append((r'%extra_sys_libs', sh_path(config.extra_sys_libs)))
 config.substitutions.append((r'%lli', sh_path(config.lli_path)))

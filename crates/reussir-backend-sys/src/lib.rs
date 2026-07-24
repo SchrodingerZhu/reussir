@@ -181,8 +181,16 @@ unsafe extern "C" {
     //==-- Standalone helpers --==//
 
     /// Monomorphizes and compiles polymorphic FFI operations in the module.
-    /// Returns true on success.
-    pub fn reussirCompilePolymorphicFFI(module: MlirModule, optimized: bool) -> bool;
+    /// Returns true on success. `rust_path` and `lib_dir` name the rustc
+    /// executable and the Rust package search directory explicitly; pass empty
+    /// string refs to fall back to the `REUSSIR_RUSTC` / `REUSSIR_RUSTC_DEPS`
+    /// environment variables and the built-in probe list.
+    pub fn reussirCompilePolymorphicFFI(
+        module: MlirModule,
+        optimized: bool,
+        rust_path: MlirStringRef,
+        lib_dir: MlirStringRef,
+    ) -> bool;
 
     /// Gathers the LLVM bitcode modules attached to compiled operations into a
     /// single LLVM module owned by `context`. Returns null on failure; otherwise

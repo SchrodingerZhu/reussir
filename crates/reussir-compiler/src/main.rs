@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use palc::Parser;
 
-use reussir_backend::llvm::LlvmLowering;
+use reussir_backend::llvm::{LlvmLowering, PolyffiPaths};
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{
@@ -216,6 +216,20 @@ struct Cli {
     /// Target features. Defaults to the native host features (none for a custom triple).
     #[arg(long = "target-features")]
     target_features: Option<String>,
+
+    /// `rustc` used to compile polymorphic-FFI textures. A bare name resolves
+    /// through `PATH` (the host-toolchain workflow: `--polyffi-rust-path
+    /// rustc`); takes precedence over the `REUSSIR_RUSTC` environment
+    /// variable and the built-in probe list.
+    #[arg(long = "polyffi-rust-path", value_name = "PATH")]
+    polyffi_rust_path: Option<PathBuf>,
+
+    /// Directory searched for the Rust packages polymorphic-FFI textures
+    /// link against (`rustc -L`) — `libreussir_rt` and friends. Takes
+    /// precedence over the `REUSSIR_RUSTC_DEPS` environment variable and the
+    /// built-in probe list.
+    #[arg(long = "polyffi-libdir", value_name = "DIR")]
+    polyffi_libdir: Option<PathBuf>,
 
     /// Let the token-reuse pass reuse tokens across function calls.
     #[arg(long = "reuse-across-call")]
@@ -668,6 +682,62 @@ fn backend(
 /// The back leg for one module, writing to `output` (per-unit paths in a
 /// partitioned build; `-o` itself otherwise).
 #[allow(clippy::too_many_arguments)]
+/// Resolve the explicit polyffi toolchain locations from the command line.
+/// Both are validated here so a typo fails with a clear driver diagnostic
+/// instead of a texture-compile error deep in the pipeline.
+fn polyffi_paths(cli: &Cli) -> Result<PolyffiPaths, String> {
+    let rust_path = cli
+        .polyffi_rust_path
+        .as_deref()
+        .map(resolve_rustc)
+        .transpose()?;
+    let libdir = match cli.polyffi_libdir.as_deref() {
+        Some(dir) if !dir.is_dir() => {
+            return Err(format!(
+                "--polyffi-libdir `{}` is not a directory",
+                dir.display()
+            ));
+        }
+        Some(dir) => Some(dir.to_string_lossy().into_owned()),
+        None => None,
+    };
+    Ok(PolyffiPaths { rust_path, libdir })
+}
+
+/// A bare `--polyffi-rust-path` name (no separator) searches `PATH`; anything
+/// else is used as given. Either way the executable must exist.
+fn resolve_rustc(path: &Path) -> Result<String, String> {
+    let is_bare = path.components().count() == 1 && !path.is_absolute();
+    if is_bare && !path.exists() {
+        let name = path.as_os_str().to_owned();
+        let found = std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).find_map(|dir| {
+                let candidate = dir.join(&name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                if cfg!(windows) {
+                    let with_exe = dir.join(format!("{}.exe", name.to_string_lossy()));
+                    if with_exe.is_file() {
+                        return Some(with_exe);
+                    }
+                }
+                None
+            })
+        });
+        if let Some(found) = found {
+            return Ok(found.to_string_lossy().into_owned());
+        }
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "--polyffi-rust-path `{}` does not exist",
+            path.display()
+        ));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 fn backend_module(
     cli: &Cli,
     context: &reussir_backend::melior::Context,
@@ -714,8 +784,13 @@ fn backend_module(
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
-    let prepared = LlvmLowering::prepare(&module, machine.data_layout(), optimize_ffi)
-        .map_err(|e| format!("{name}: {e}"))?;
+    let prepared = LlvmLowering::prepare(
+        &module,
+        machine.data_layout(),
+        optimize_ffi,
+        &polyffi_paths(cli)?,
+    )
+    .map_err(|e| format!("{name}: {e}"))?;
     pipeline::run_lowering_pipeline(context, &mut module, &options)
         .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
 

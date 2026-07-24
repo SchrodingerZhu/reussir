@@ -16,7 +16,7 @@
 use std::ffi::CString;
 
 use reussir_backend::context;
-use reussir_backend::llvm::LlvmLowering;
+use reussir_backend::llvm::{LlvmLowering, PolyffiPaths};
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{LoweringOptions, run_lowering_pipeline};
 
@@ -37,19 +37,22 @@ module {
 #[test]
 #[ignore = "requires rustc + a REUSSIR_RUSTC_DEPS directory for the polyffi bitcode compile"]
 fn polyffi_function_is_linked_in() {
-    // The Rust-compiler helper requires a non-empty deps directory even when the
-    // template pulls in no external crates; any existing directory will do.
-    if std::env::var_os("REUSSIR_RUSTC_DEPS").is_none() {
-        unsafe { std::env::set_var("REUSSIR_RUSTC_DEPS", env!("CARGO_MANIFEST_DIR")) };
-    }
+    // The Rust-compiler helper requires a non-empty package directory even when
+    // the template pulls in no external crates; any existing directory will do,
+    // passed explicitly through `PolyffiPaths` (rustc still resolves through
+    // the environment/probe discovery).
+    let paths = PolyffiPaths {
+        libdir: Some(env!("CARGO_MANIFEST_DIR").to_owned()),
+        ..PolyffiPaths::default()
+    };
 
     let context = context();
     let mut module = Module::parse(&context, MODULE).expect("polyffi module parses");
 
     // Gather (compiles the template + collects its bitcode) must run before the
     // lowering pipeline erases the polyffi op; the link happens in `finish`.
-    let prepared =
-        LlvmLowering::prepare(&module, "", false).expect("polyffi compile + gather succeeds");
+    let prepared = LlvmLowering::prepare(&module, "", false, &paths)
+        .expect("polyffi compile + gather succeeds");
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
         .expect("lowering pipeline succeeds");
     let finalized = prepared.finish(&module).expect("translate + link succeeds");
