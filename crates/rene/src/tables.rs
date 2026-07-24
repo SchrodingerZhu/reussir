@@ -10,6 +10,18 @@ use redb::TableDefinition;
 /// Build status: string keys (the `*_KEY` constants) to JSON-encoded values.
 pub const STATUS: TableDefinition<&str, &str> = TableDefinition::new("status");
 
+/// The package's source graph, as last reported by `rrc --scan-deps`: each
+/// file's path to a JSON [`crate::deps::SourceRecord`] (module path, mtime,
+/// size, Blake3 digest). Written by [`crate::deps`], always wholesale — the
+/// graph is a single snapshot, so a rebuild replaces every row rather than
+/// updating one.
+pub const SOURCES: TableDefinition<&str, &str> = TableDefinition::new("sources");
+
+/// Blake3 hex digest of the evaluated manifest the [`SOURCES`] snapshot was
+/// taken under (a bare hex string). A mismatch invalidates the snapshot: a
+/// changed configuration may change the package's layout.
+pub const SOURCES_CONFIG_HASH_KEY: &str = "sources.config-hash";
+
 /// Blake3 hex digest of the bundled `reussir-rt` source archive the baked
 /// runtime was built from (a JSON string). Written by [`crate::rt`]; a
 /// mismatch with the running `rene`'s bundle invalidates the bake.

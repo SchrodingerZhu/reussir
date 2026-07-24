@@ -1,0 +1,5 @@
+// Module `demo::math`, reached from the crate root's `mod math;`.
+
+pub fn add(a: u64, b: u64) -> u64 {
+    a + b
+}

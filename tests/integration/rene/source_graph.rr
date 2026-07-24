@@ -1,0 +1,83 @@
+// `rene`'s source-graph table, end to end against the real `rrc`: the graph
+// `rene inspect` records, and each of the three conditions that rebuild it —
+// no record yet, a changed configuration, and a moved file. The package is
+// copied to a scratch directory first, because the test edits it.
+//
+// The build directory lands inside the copy (`%t.pkg/reussir-build`), so no
+// `--build-dir` is needed and `clean` has a real directory to remove.
+
+// RUN: rm -rf %t.pkg && cp -R %S/source_graph %t.pkg
+
+// Condition 1, before anything is recorded: `--frozen` reports the empty
+// state without scanning, and without leaving a build directory behind.
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=FRESH
+// RUN: test ! -e %t.pkg/reussir-build
+
+// FRESH:      "files": []
+// FRESH:      "package": "graph"
+// FRESH:      "state": "uninitialized"
+
+// A plain `inspect` scans the package through `rrc --scan-deps` and records
+// the graph: discovery order (the crate root first), module paths, and a
+// Blake3 digest per file.
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=SCAN
+
+// SCAN:      "files": [
+// SCAN:          "hash": "{{[0-9a-f]+}}"
+// SCAN:          "module": [
+// SCAN-NEXT:       "graph"
+// SCAN-NEXT:     ],
+// SCAN:          "path": "{{.*}}lib.rr"
+// SCAN:          "hash": "{{[0-9a-f]+}}"
+// SCAN:          "module": [
+// SCAN-NEXT:       "graph",
+// SCAN-NEXT:       "math"
+// SCAN-NEXT:     ],
+// SCAN:          "path": "{{.*}}math.rr"
+// SCAN:      "package": "graph"
+// SCAN:      "state": "up-to-date"
+
+// Nothing moved, so the record stands and a second run re-scans nothing.
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl 2>&1 >/dev/null | %FileCheck %s --check-prefix=NOOP
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=CACHED
+
+// NOOP: package sources are up to date
+// CACHED: "state": "up-to-date"
+
+// Condition 3: a modified file. Appending both moves the modification time
+// and changes the size, so the check trips whatever timestamp granularity
+// the filesystem under the test happens to have.
+// RUN: echo "pub fn mul(a: u64, b: u64) -> u64 { a * b }" >> %t.pkg/src/math.rr
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=TOUCHED
+
+// TOUCHED: "state": "file-changed"
+
+// The rebuild re-scans the whole graph rather than patching that one entry —
+// an edit can add or drop `mod` declarations — and leaves it current again.
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=RESCANNED
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=RESCANNED
+
+// RESCANNED: "state": "up-to-date"
+
+// A new module reached from the crate root joins the graph on the next scan.
+// RUN: echo "pub fn zero() -> u64 { 0 }" > %t.pkg/src/extra.rr
+// RUN: printf 'mod extra;\n' >> %t.pkg/src/lib.rr
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=GREW
+
+// GREW: "path": "{{.*}}lib.rr"
+// GREW: "path": "{{.*}}math.rr"
+// GREW: "path": "{{.*}}extra.rr"
+// GREW: "state": "up-to-date"
+
+// Condition 2: the evaluated manifest changed. Nothing on disk moved, but the
+// configuration the graph was taken under did.
+// RUN: printf '{ package = { name = "graph", version = "0.2.0" } }\n' > %t.pkg/rene.ncl
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=RECONFIGURED
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=RESCANNED
+
+// RECONFIGURED: "state": "config-changed"
+
+// `clean` drops the whole build directory, taking the record with it.
+// RUN: %rene clean --manifest-path %t.pkg/rene.ncl
+// RUN: test ! -e %t.pkg/reussir-build
+// RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=FRESH
