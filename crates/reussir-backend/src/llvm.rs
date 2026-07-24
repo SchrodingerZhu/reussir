@@ -88,6 +88,37 @@ pub unsafe fn translate_to_llvm_ir(
     }
 }
 
+/// How a compilation is packaged for link-time optimization — the Rust face
+/// of the C `ReussirLtoMode`.
+///
+/// It selects which module pipeline runs: the per-module one, or an LTO
+/// pre-link pipeline that leaves the whole-program work to the link step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LtoMode {
+    /// No LTO: the full per-module pipeline, native code out.
+    #[default]
+    None,
+    /// ThinLTO: pre-link pipeline, bitcode carrying a module summary index.
+    Thin,
+    /// Full ("fat") LTO: pre-link pipeline, plain bitcode.
+    Fat,
+}
+
+impl LtoMode {
+    /// The `ReussirLtoMode` discriminant the C API expects.
+    pub fn as_c_int(self) -> std::ffi::c_int {
+        match self {
+            LtoMode::None => 0,
+            LtoMode::Thin => 1,
+            LtoMode::Fat => 2,
+        }
+    }
+
+    pub fn is_lto(self) -> bool {
+        self != LtoMode::None
+    }
+}
+
 /// Runs the Reussir backend LLVM pass pipeline on `module` in place (a no-op for
 /// [`OptLevel::None`]/[`OptLevel::Tpde`], matching the C++ backend).
 ///
@@ -95,7 +126,7 @@ pub unsafe fn translate_to_llvm_ir(
 /// vectorization) work against; without one they would run on the base
 /// TargetTransformInfo, which has no vector registers, and never fire. Pass
 /// null to have the pipeline build a host TargetMachine internally (the JIT
-/// case).
+/// case). `lto` picks the per-module or the matching pre-link pipeline.
 ///
 /// # Safety
 /// `module` must be a valid `LLVMModuleRef`, and `machine` a valid
@@ -104,12 +135,14 @@ pub unsafe fn run_backend_llvm_pipeline(
     module: LLVMModuleRef,
     opt: OptLevel,
     machine: llvm_sys::target_machine::LLVMTargetMachineRef,
+    lto: LtoMode,
 ) {
     unsafe {
         sys::reussirRunBackendLLVMPipeline(
             module as sys::LLVMModuleRef,
             opt.as_reussir_opt_option(),
             machine as sys::LLVMTargetMachineRef,
+            lto.as_c_int(),
         );
     }
 }

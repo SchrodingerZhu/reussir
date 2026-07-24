@@ -20,6 +20,7 @@
 #ifndef REUSSIR_C_JIT_H
 #define REUSSIR_C_JIT_H
 
+#include "Reussir-c/Artifact.h"
 #include "llvm-c/TargetMachine.h"
 #include "llvm-c/Types.h"
 
@@ -37,17 +38,22 @@ typedef enum ReussirJitOptLevel {
 } ReussirJitOptLevel;
 
 // Runs the Reussir LLVM optimization pipeline on `module` in place: the
-// RuntimeFunctionAttributor pass, the default per-module pipeline at the
-// requested level, then the AllocationSimplification pass. A no-op for the
-// `None` and `Tpde` levels (matching the C++ backend).
+// RuntimeFunctionAttributor pass, the module pipeline at the requested
+// level, then the AllocationSimplification pass. A no-op for the `None` and
+// `Tpde` levels (matching the C++ backend).
 //
 // `machine` supplies the target model the cost-driven passes (loop/SLP
 // vectorization) work against; without one the pipeline would run on the
 // base TargetTransformInfo, which has no vector registers, and every
 // vectorization would be costed as impossible. Pass NULL to have the
 // pipeline build a host TargetMachine internally (the JIT case).
+//
+// `lto` picks *which* module pipeline: the per-module one for
+// `ReussirLtoNone`, or the matching LTO pre-link pipeline, which stops short
+// of the whole-program work the linker will redo over the combined module.
 void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
-                                   LLVMTargetMachineRef machine);
+                                   LLVMTargetMachineRef machine,
+                                   ReussirLtoMode lto);
 
 // Compiles `module` to an ELF object file using TPDE, after setting the given
 // data layout and target triple on it. Returns NULL if TPDE support was not

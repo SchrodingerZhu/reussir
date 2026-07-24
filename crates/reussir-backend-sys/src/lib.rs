@@ -233,12 +233,38 @@ unsafe extern "C" {
 
     /// Runs the Reussir LLVM optimization pipeline on `module` in place at the
     /// requested level (a no-op for `None`/`Tpde`). `opt` mirrors the backend's
-    /// `ReussirOptOption`/`ReussirJitOptLevel` C enum.
+    /// `ReussirOptOption`/`ReussirJitOptLevel` C enum; `lto` mirrors
+    /// `ReussirLtoMode` and picks the per-module pipeline (0) or an LTO
+    /// pre-link pipeline (1 = thin, 2 = fat).
     pub fn reussirRunBackendLLVMPipeline(
         module: LLVMModuleRef,
         opt: c_int,
         machine: LLVMTargetMachineRef,
+        lto: c_int,
     );
+
+    //==-- Artifact packaging (Artifact.h) --==//
+
+    /// Writes `module` to `path` as LLVM bitcode for the given LTO mode
+    /// (1 = thin, which attaches the module summary index; 2 = fat). Returns
+    /// null on success, else an error message to free with
+    /// `LLVMDisposeMessage`.
+    pub fn reussirWriteLtoBitcode(
+        module: LLVMModuleRef,
+        path: *const c_char,
+        mode: c_int,
+    ) -> *mut c_char;
+
+    /// Writes an archive at `path` over `count` member files, with a symbol
+    /// table covering native objects and bitcode alike. `triple` selects the
+    /// archive flavor (null = host default). Returns null on success, else an
+    /// error message to free with `LLVMDisposeMessage`.
+    pub fn reussirWriteArchive(
+        path: *const c_char,
+        members: *const *const c_char,
+        count: usize,
+        triple: *const c_char,
+    ) -> *mut c_char;
 
     /// Compiles `module` to an ELF object with TPDE after stamping the given data
     /// layout and triple on it. Returns null if TPDE is unavailable or

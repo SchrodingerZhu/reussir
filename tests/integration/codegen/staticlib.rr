@@ -1,0 +1,56 @@
+// `rrc --emit staticlib`: the codegen units are archived into one library
+// instead of left as loose `<stem>.<i>.o` files, so how many there are stops
+// being visible to whoever links it.
+//
+// Each partitioning is linked against the same C driver and run: a symbol
+// that failed to resolve across members would fail the link, and a
+// miscompile would fail the driver's own checks.
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.1.a --emit staticlib --relocation-mode pic --codegen-units 1
+// RUN: %cc %S/staticlib/driver.c %t.1.a -o %t.1.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.1.exe | %FileCheck %s --check-prefix=EXEC
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.2.a --emit staticlib --relocation-mode pic --codegen-units 2
+// RUN: %cc %S/staticlib/driver.c %t.2.a -o %t.2.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.2.exe | %FileCheck %s --check-prefix=EXEC
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.4.a --emit staticlib --relocation-mode pic --codegen-units 4
+// RUN: %cc %S/staticlib/driver.c %t.4.a -o %t.4.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.4.exe | %FileCheck %s --check-prefix=EXEC
+
+// EXEC: fib=55 twice=42
+
+// One member per codegen unit, in unit order, named after the library — the
+// scratch directory they were emitted into stays out of the archive.
+// RUN: %llvm-ar t %t.4.a | %FileCheck %s --check-prefix=MEMBERS
+// RUN: %llvm-ar t %t.1.a | %FileCheck %s --check-prefix=ONE
+
+// MEMBERS-NOT:  {{[/\\]}}
+// MEMBERS:      {{.*}}.0.o
+// MEMBERS-NEXT: {{.*}}.1.o
+// MEMBERS-NEXT: {{.*}}.2.o
+// MEMBERS-NEXT: {{.*}}.3.o
+// MEMBERS-NOT:  {{.*}}.4.o
+
+// ONE:     {{.*}}.0.o
+// ONE-NOT: {{.*}}.1.o
+
+// However the units fell out, the archive's symbol table indexes both
+// trampolines, which is what lets the linker pull the right members in.
+// RUN: %llvm-nm --defined-only %t.4.a | %FileCheck %s --check-prefix=SYMS
+
+// SYMS-DAG: fib_ffi
+// SYMS-DAG: twice_ffi
+
+// A static library is a file, not a stream.
+// RUN: %not %rrc %S/staticlib/lib.rr -o - --emit staticlib 2>&1 | %FileCheck %s --check-prefix=STDOUT
+
+// STDOUT: cannot write `staticlib` to stdout
+
+// The two link-requiring targets are recognized, and refused up front rather
+// than after compiling.
+// RUN: %not %rrc %S/staticlib/lib.rr -o %t.exe --emit executable 2>&1 | %FileCheck %s --check-prefix=EXE
+// RUN: %not %rrc %S/staticlib/lib.rr -o %t.dylib --emit dynlib 2>&1 | %FileCheck %s --check-prefix=DYN
+
+// EXE: emitting `executable` is not implemented yet
+// DYN: emitting `dynlib` is not implemented yet

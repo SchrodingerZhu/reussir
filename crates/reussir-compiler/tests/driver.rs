@@ -401,3 +401,184 @@ fn scan_deps_requires_package_mode() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--package-root"), "stderr:\n{stderr}");
 }
+
+/// `--emit staticlib` archives the codegen units: one member per unit,
+/// whatever the partitioning, and the loose objects never reach the user's
+/// output directory.
+#[test]
+fn archives_the_codegen_units_into_a_static_library() {
+    let (dir, src) = source("staticlib");
+
+    for units in [1, 2, 4] {
+        let lib = dir.path().join(format!("libprog.{units}.a"));
+        let output = rrc(&[
+            &src,
+            Path::new("-o"),
+            &lib,
+            Path::new("--emit"),
+            Path::new("staticlib"),
+            Path::new("--relocation-mode"),
+            Path::new("pic"),
+            Path::new("--codegen-units"),
+            Path::new(&units.to_string()),
+        ]);
+        assert!(
+            output.status.success(),
+            "staticlib with {units} units failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let bytes = std::fs::read(&lib).expect("read the archive");
+        assert!(
+            bytes.starts_with(b"!<arch>\n"),
+            "not an archive: {:02x?}",
+            &bytes[..bytes.len().min(8)]
+        );
+        // Members are named after the library and numbered by unit; the
+        // scratch directory they were emitted into must not appear.
+        let text = String::from_utf8_lossy(&bytes);
+        for unit in 0..units {
+            assert!(
+                text.contains(&format!("libprog.{units}.{unit}.o")),
+                "member {unit} of {units} missing from the archive"
+            );
+        }
+        assert!(
+            !text.contains("rrc-staticlib-"),
+            "the scratch directory leaked into the archive"
+        );
+    }
+
+    // Nothing but the archives: no stray `.o` siblings of `-o`.
+    let strays: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".o"))
+        .collect();
+    assert!(strays.is_empty(), "left loose objects behind: {strays:?}");
+}
+
+/// Under `--lto` the members are bitcode instead of native objects, so the
+/// link step can optimize across them.
+#[test]
+fn a_static_library_under_lto_archives_bitcode() {
+    let (dir, src) = source("staticlib-lto");
+
+    for mode in ["thin", "fat"] {
+        let lib = dir.path().join(format!("lib{mode}.a"));
+        let output = rrc(&[
+            &src,
+            Path::new("-o"),
+            &lib,
+            Path::new("--emit"),
+            Path::new("staticlib"),
+            Path::new("--lto"),
+            Path::new(mode),
+            Path::new("--relocation-mode"),
+            Path::new("pic"),
+            Path::new("--codegen-units"),
+            Path::new("2"),
+        ]);
+        assert!(
+            output.status.success(),
+            "--lto {mode} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let bytes = std::fs::read(&lib).expect("read the archive");
+        assert!(bytes.starts_with(b"!<arch>\n"));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains(&format!("lib{mode}.0.bc")) && text.contains(&format!("lib{mode}.1.bc")),
+            "--lto {mode} did not archive bitcode members"
+        );
+        // The magic of every LLVM bitcode wrapper — the members really are
+        // bitcode, not objects wearing a `.bc` name.
+        assert!(
+            bytes.windows(4).any(|w| w == b"BC\xc0\xde"),
+            "no bitcode magic in the --lto {mode} archive"
+        );
+    }
+}
+
+/// The archive is a pure function of its inputs: no timestamps, no scratch
+/// paths, nothing that differs between two identical builds.
+#[test]
+fn a_static_library_is_reproducible() {
+    let (dir, src) = source("staticlib-repro");
+    let build = |name: &str| -> Vec<u8> {
+        let lib = dir.path().join(name);
+        let output = rrc(&[
+            &src,
+            Path::new("-o"),
+            &lib,
+            Path::new("--emit"),
+            Path::new("staticlib"),
+            Path::new("--relocation-mode"),
+            Path::new("pic"),
+            Path::new("--codegen-units"),
+            Path::new("2"),
+        ]);
+        assert!(
+            output.status.success(),
+            "staticlib failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::read(&lib).expect("read the archive")
+    };
+    // Same name both times: the member names derive from it, so a differing
+    // name would differ for an uninteresting reason.
+    let first = build("libsame.a");
+    let second = build("libsame.a");
+    assert_eq!(first, second, "two identical builds differ");
+}
+
+/// The link-requiring targets are recognized — by `--emit` and by the output
+/// extension — and refused before any compilation happens.
+#[test]
+fn refuses_the_targets_that_need_a_linker() {
+    let (dir, src) = source("link-products");
+
+    for (args, expected) in [
+        (vec!["--emit", "executable"], "executable"),
+        (vec!["--emit", "dynlib"], "dynlib"),
+    ] {
+        let out = dir.path().join("out.bin");
+        let mut argv: Vec<&Path> = vec![&src, Path::new("-o"), &out];
+        argv.extend(args.iter().map(Path::new));
+        let output = rrc(&argv);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "expected a usage error for {expected}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected) && stderr.contains("not implemented yet"),
+            "stderr:\n{stderr}"
+        );
+        assert!(!out.exists(), "{expected} produced a file anyway");
+    }
+
+    // A shared-library extension names the same unimplemented stage.
+    let out = dir.path().join("libprog.so");
+    let output = rrc(&[&src, Path::new("-o"), &out]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("dynlib"),
+        "a `.so` output should resolve to the dynlib stage"
+    );
+}
+
+/// `--lto` describes how a *library* is packed; it is meaningless for the
+/// other targets, and says so rather than silently doing nothing.
+#[test]
+fn rejects_lto_without_a_static_library() {
+    let (dir, src) = source("lto-misuse");
+    let out = dir.path().join("prog.o");
+    let output = rrc(&[&src, Path::new("-o"), &out, Path::new("--lto"), Path::new("fat")]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--lto applies to"), "stderr:\n{stderr}");
+}

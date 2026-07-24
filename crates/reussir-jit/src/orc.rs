@@ -44,7 +44,7 @@ use melior::ir::Module;
 
 // The MLIR→LLVM-IR translation and the backend LLVM pass pipeline are shared with
 // the AOT compiler; `OptLevel` is the backend's pipeline level.
-use reussir_backend::llvm::{run_backend_llvm_pipeline, translate_to_llvm_ir};
+use reussir_backend::llvm::{LtoMode, run_backend_llvm_pipeline, translate_to_llvm_ir};
 pub use reussir_backend::pipeline::OptLevel;
 
 // TPDE object compilation is JIT-specific (libReussirCAPI / lib/CAPI/Jit.cpp); it
@@ -383,7 +383,9 @@ impl OrcJit {
 
             // Run the Reussir LLVM passes in place, then add the IR module.
             tracing::trace!("running backend LLVM pass pipeline");
-            run_backend_llvm_pipeline(llvm_module, opt, std::ptr::null_mut());
+            // The JIT links nothing after this, so there is no link step for
+            // an LTO pre-link pipeline to hand work to: always per-module.
+            run_backend_llvm_pipeline(llvm_module, opt, std::ptr::null_mut(), LtoMode::None);
             self.add_owned_module(context, llvm_module, tracker)?;
             tracing::debug!("added LLVM-IR module to the JIT");
             Ok(())

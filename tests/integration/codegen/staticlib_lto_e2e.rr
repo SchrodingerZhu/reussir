@@ -1,0 +1,16 @@
+// REQUIRES: lto-link
+// The LTO libraries actually link and run: the linker consumes the bitcode
+// members, optimizes across them, and the result computes what the plain
+// build does. Gated on the toolchain being able to link `-flto` at all (see
+// the probe in lit.cfg.py) — an archive of bitcode needs a linker with the
+// LTO plugin, which not every host has.
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.fat.a --emit staticlib --lto fat --relocation-mode pic --codegen-units 2
+// RUN: %cc %lto_link_flags %S/staticlib/driver.c %t.fat.a -o %t.fat.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.fat.exe | %FileCheck %s
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.thin.a --emit staticlib --lto thin --relocation-mode pic --codegen-units 2
+// RUN: %cc %lto_link_flags %S/staticlib/driver.c %t.thin.a -o %t.thin.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.thin.exe | %FileCheck %s
+
+// CHECK: fib=55 twice=42
