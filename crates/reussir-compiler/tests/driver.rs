@@ -285,3 +285,89 @@ fn compiles_to_the_wasm_target() {
         &bytes[..bytes.len().min(8)]
     );
 }
+
+/// `--scan-deps` lists the package source graph — `lib.rr` plus everything
+/// reachable through `mod` declarations — as canonical paths in discovery
+/// order, without compiling anything.
+#[test]
+fn scan_deps_lists_the_package_source_graph() {
+    let dir = scratch("scan-deps");
+    let write = |rel: &str, content: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
+    };
+    let lib = write("lib.rr", "mod utils;\npub fn e() -> u64 { 0 }");
+    let utils = write("utils/mod.rr", "mod math;\npub fn o() -> u64 { 1 }");
+    let math = write("utils/math.rr", "pub fn d(x: u64) -> u64 { x }");
+
+    let output = rrc(&[
+        Path::new("--package-root"),
+        dir.path(),
+        Path::new("--package-name"),
+        Path::new("mypkg"),
+        Path::new("--scan-deps"),
+    ]);
+    assert!(
+        output.status.success(),
+        "scan-deps failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Discovery canonicalizes (macOS tempdirs sit behind /var -> /private/var);
+    // compare against the canonical form of each expected file.
+    let canonical = |path: &Path| {
+        path.canonicalize()
+            .expect("canonicalize expected path")
+            .display()
+            .to_string()
+    };
+    let stdout = String::from_utf8(output.stdout).expect("scan-deps stdout is utf-8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [canonical(&lib), canonical(&utils), canonical(&math)],
+        "stdout:\n{stdout}"
+    );
+}
+
+/// `-o` redirects the `--scan-deps` listing into a file.
+#[test]
+fn scan_deps_writes_the_listing_to_the_output_file() {
+    let dir = scratch("scan-deps-o");
+    std::fs::write(dir.path().join("lib.rr"), "pub fn e() -> u64 { 0 }").unwrap();
+    let out = dir.path().join("deps.txt");
+    let output = rrc(&[
+        Path::new("--package-root"),
+        dir.path(),
+        Path::new("--package-name"),
+        Path::new("p"),
+        Path::new("--scan-deps"),
+        Path::new("-o"),
+        &out,
+    ]);
+    assert!(
+        output.status.success(),
+        "scan-deps failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "listing must go to -o, not stdout");
+    let listing = read(&out);
+    let expected = dir.path().join("lib.rr").canonicalize().unwrap();
+    assert_eq!(listing.trim(), expected.display().to_string());
+}
+
+/// Without package mode there is no source graph to scan.
+#[test]
+fn scan_deps_requires_package_mode() {
+    let (_dir, src) = source("scan-deps-nopkg");
+    let output = rrc(&[&src, Path::new("--scan-deps")]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected a usage error, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--package-root"), "stderr:\n{stderr}");
+}
