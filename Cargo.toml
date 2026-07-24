@@ -10,12 +10,18 @@ members = [
     "crates/reussir-codegen",
     "crates/reussir-compiler",
     "crates/reussir-repl",
+    "crates/rene",
 ]
 # The backend crates (and reussir-codegen, which depends on them) link against
 # MLIR and the staged Reussir C API, so they are excluded from the default
 # `cargo build`; build them explicitly (e.g. `cargo build -p reussir-backend`
 # or `cargo build -p reussir-codegen`) with the CMake build wiring up the env.
-default-members = ["crates/reussir-rt", "crates/reussir-syntax", "crates/reussir-core"]
+default-members = [
+    "crates/reussir-rt",
+    "crates/reussir-syntax",
+    "crates/reussir-core",
+    "crates/rene",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -86,7 +92,11 @@ malachite-nz = "0.9"
 llvm-sys = "221"
 melior = "0.27"
 mlir-sys = "220"
+# The stable embedding interface to the Nickel configuration language; `rene`
+# evaluates package manifests (`rene.ncl`) with it.
+nickel-lang = "2.2"
 palc = "0.0.2"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 stacker = "0.1.21"
 tracing = "0.1"

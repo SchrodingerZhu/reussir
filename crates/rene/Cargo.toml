@@ -1,0 +1,31 @@
+[package]
+name = "rene"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reussir package manager: builds packages described by a Nickel manifest"
+
+[lib]
+name = "rene"
+
+[[bin]]
+name = "rene"
+path = "src/main.rs"
+
+[dependencies]
+# Evaluates the `rene.ncl` manifest; the manifest is a full Nickel program
+# (imports, contracts, merging), not a static data file.
+nickel-lang.workspace = true
+palc.workspace = true
+serde.workspace = true
+# Re-render the evaluated manifest's JSON export pretty-printed for `build`'s
+# config dump.
+serde_json.workspace = true
+tracing.workspace = true
+# Install a subscriber so `-v`/`RUST_LOG` surface events (to stderr, never
+# stdout — the config dump owns stdout).
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# Auto-cleaned scratch directories for the manifest loading tests.
+tempfile = "3"
