@@ -128,6 +128,8 @@ endif()
 
 set(rustc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rustc${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rrc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc${CMAKE_EXECUTABLE_SUFFIX})
+# The package manager (`crates/rene`), driving rrc for the rene/ suite.
+set(rene_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rene${CMAKE_EXECUTABLE_SUFFIX})
 # The Rust REPL (`crates/reussir-repl`, binary `rrepl`).
 set(rrepl_path ${REUSSIR_RREPL_BINARY})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
@@ -179,7 +181,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
   DEPENDS reussir-opt reussir-rt reussir-translate reussir-llvm-opt
-          reussir-syntax rrc rrepl)
+          reussir-syntax rrc rrepl rene)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer

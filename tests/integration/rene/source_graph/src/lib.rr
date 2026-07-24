@@ -1,0 +1,5 @@
+mod math;
+
+pub fn entry(n: u64) -> u64 {
+    math::add(n, 10)
+}

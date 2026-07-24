@@ -46,3 +46,7 @@ zstd.workspace = true
 [dev-dependencies]
 # Auto-cleaned scratch directories for the manifest loading tests.
 tempfile = "3"
+# The CLI tests check `rene inspect`'s JSON report, and that the digests it
+# records really are Blake3 of the file contents.
+blake3.workspace = true
+serde_json.workspace = true

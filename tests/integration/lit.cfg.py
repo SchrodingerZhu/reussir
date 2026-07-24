@@ -128,6 +128,10 @@ if _openmp_flags:
     config.substitutions.append((r'%openmp_flags', _openmp_flags))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
+# The package manager. It shells out to `rrc` for the source-graph scan, so
+# point it at the staged driver rather than whatever `rrc` a PATH lookup finds.
+config.substitutions.append((r'%rene', sh_path(config.rene_path)))
+config.environment['REUSSIR_RRC'] = sh_path(config.reussir_rrc_path)
 # The Rust REPL; its suite lives in repl-rs/ and only runs when the `rrepl`
 # CMake target has been built.
 config.substitutions.append((r'%rrepl', sh_path(config.rrepl_path)))

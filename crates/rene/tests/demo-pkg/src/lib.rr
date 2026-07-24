@@ -1,0 +1,8 @@
+// The demo package's crate root. `rene` hands `src/` to `rrc` as the package
+// root, so this file is module `demo` and its `mod` declarations discover the
+// rest of the graph.
+mod math;
+
+pub fn entry(n: u64) -> u64 {
+    math::add(n, 10)
+}

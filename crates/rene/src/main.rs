@@ -1,9 +1,11 @@
 //! `rene`: the Reussir package manager driver.
 //!
 //! `rene build` locates the package manifest (`rene.ncl`), takes the build
-//! directory's lock (the status database), bakes the bundled `reussir-rt`
-//! runtime with the user's Rust toolchain if needed, and prints the library
-//! directories to pass to `rrc --polyffi-libdir`. `rene clean` deletes the
+//! directory's lock (the status database), records the package's source graph
+//! (re-scanning it through `rrc --scan-deps` only when something moved), bakes
+//! the bundled `reussir-rt` runtime with the user's Rust toolchain if needed,
+//! and prints the library directories to pass to `rrc --polyffi-libdir`.
+//! `rene inspect` reports that source graph as JSON; `rene clean` deletes the
 //! build directory unless another instance holds it. Compiling the package
 //! itself comes in a later stage.
 //!
@@ -17,7 +19,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{manifest, rt};
+use rene::{deps, manifest, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -51,6 +53,7 @@ struct Location {
 enum Command {
     Build(BuildArgs),
     Clean(CleanArgs),
+    Inspect(InspectArgs),
 }
 
 /// Build the current package: bake the bundled reussir-rt runtime if needed,
@@ -66,6 +69,21 @@ struct BuildArgs {
 struct CleanArgs {
     #[command(flatten)]
     location: Location,
+}
+
+/// Print the package's recorded source graph as JSON: the configuration
+/// checksum, whether the record still stands, and every file with its module
+/// path, modification time, size, and Blake3 digest.
+#[derive(palc::Args)]
+struct InspectArgs {
+    #[command(flatten)]
+    location: Location,
+
+    /// Report the recorded graph as it stands instead of re-scanning a stale
+    /// one: no `rrc`, no writes, and no build directory created if there is
+    /// none. `state` still says whether the record can be trusted.
+    #[arg(long)]
+    frozen: bool,
 }
 
 fn main() -> ExitCode {
@@ -89,6 +107,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Build(args) => build(&args.location),
         Command::Clean(args) => clean(&args.location),
+        Command::Inspect(args) => inspect(&args.location, args.frozen),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -156,13 +175,16 @@ fn build(location: &Location) -> Result<(), String> {
     // (`dir`) for the rest of the build.
     let dir = BuildDir::open(&root).map_err(|e| e.to_string())?;
     if dir.is_cleaning().map_err(|e| e.to_string())? {
-        return Err(format!(
-            "build directory `{}` has a pending or interrupted clean; \
-             run `rene clean` first",
-            root.display()
-        ));
+        return Err(pending_clean(&root));
     }
+    // The source graph first: it is cheap, it fails fast on a broken package,
+    // and a build that finds nothing moved has nothing to do beyond reporting
+    // the (already baked) runtime.
+    let sources = deps::prepare(&dir, &loaded)?;
     let artifacts = rt::prepare(&dir)?;
+    if !sources.rescanned() {
+        tracing::info!(files = sources.files.len(), "nothing to do");
+    }
 
     tracing::info!("TODO: compiling the package is not implemented yet");
     tracing::info!("pass these directories to `rrc --polyffi-libdir`:");
@@ -170,6 +192,62 @@ fn build(location: &Location) -> Result<(), String> {
         println!("{}", libdir.display());
     }
     Ok(())
+}
+
+/// `rene inspect`: report the recorded source graph as JSON on stdout. By
+/// default a stale record is refreshed first (the same scan `build` runs, but
+/// without the runtime bake), so the report describes the package as it is
+/// now; `--frozen` reports what is on record and never writes.
+fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
+    let manifest_path = locate_manifest(&location.manifest_path)?;
+    let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
+    let root = resolve_build_dir(location)?;
+    let hash = deps::config_hash(&loaded.dump);
+
+    let (state, files) = if frozen {
+        match BuildDir::open_existing(&root).map_err(|e| e.to_string())? {
+            Some(dir) => (
+                deps::staleness(&dir, &hash)?,
+                dir.sources().map_err(|e| e.to_string())?,
+            ),
+            // No build directory at all: nothing has been recorded, and
+            // `--frozen` must not create one to say so.
+            None => (deps::Staleness::Uninitialized, Vec::new()),
+        }
+    } else {
+        let dir = BuildDir::open(&root).map_err(|e| e.to_string())?;
+        if dir.is_cleaning().map_err(|e| e.to_string())? {
+            return Err(pending_clean(&root));
+        }
+        let prepared = deps::prepare(&dir, &loaded)?;
+        // After a refresh the record is by construction current; report that
+        // rather than the reason it was rebuilt (which the log already
+        // carries).
+        (deps::Staleness::UpToDate, prepared.files)
+    };
+
+    let report = serde_json::json!({
+        "package": loaded.manifest.package.name,
+        "manifest": loaded.path.display().to_string(),
+        "build_dir": root.display().to_string(),
+        "config_hash": hash,
+        "state": state.tag(),
+        "reason": state.to_string(),
+        "files": files.iter().map(deps::SourceFile::to_json).collect::<Vec<_>>(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn pending_clean(root: &std::path::Path) -> String {
+    format!(
+        "build directory `{}` has a pending or interrupted clean; \
+         run `rene clean` first",
+        root.display()
+    )
 }
 
 fn clean(location: &Location) -> Result<(), String> {

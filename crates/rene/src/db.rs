@@ -18,9 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
-use redb::{Database, DatabaseError, ReadableDatabase, TableError};
+use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableError};
 
-use crate::tables;
+use crate::{deps, tables};
 
 /// The status database's file name inside the build directory.
 pub const DB_FILE: &str = "rene.redb";
@@ -71,6 +71,25 @@ impl BuildDir {
         })
     }
 
+    /// Open an *existing* build directory, or `None` if there is none. Unlike
+    /// [`BuildDir::open`] this never creates one, so a read-only query
+    /// (`rene inspect --frozen`) does not leave a build directory behind in a
+    /// package that was never built.
+    pub fn open_existing(root: &Path) -> Result<Option<Self>, DbError> {
+        let path = root.join(DB_FILE);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let db = Database::open(&path).map_err(|e| match e {
+            DatabaseError::DatabaseAlreadyOpen => DbError::InUse(path.clone()),
+            other => DbError::Other(format!("cannot open `{}`: {other}", path.display())),
+        })?;
+        Ok(Some(BuildDir {
+            root: root.to_owned(),
+            db,
+        }))
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -102,6 +121,59 @@ impl BuildDir {
             let mut table = txn.open_table(tables::STATUS).map_err(other)?;
             for (key, value) in entries {
                 table.insert(key, value).map_err(other)?;
+            }
+        }
+        txn.commit().map_err(other)
+    }
+
+    /// The recorded source graph, in path order (redb iterates its keys, and
+    /// the path is the key). Empty both for a fresh database and for one
+    /// whose sources table was never written.
+    pub fn sources(&self) -> Result<Vec<deps::SourceFile>, DbError> {
+        let txn = self.db.begin_read().map_err(other)?;
+        let table = match txn.open_table(tables::SOURCES) {
+            Ok(table) => table,
+            Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(other(e)),
+        };
+        let mut files = Vec::new();
+        for row in table.iter().map_err(other)? {
+            let (key, value) = row.map_err(other)?;
+            let (module, mtime_ns, size, hash) = value.value();
+            files.push(deps::SourceFile {
+                path: key.value().to_owned(),
+                record: deps::SourceRecord {
+                    module: deps::split_module(module),
+                    mtime_ns,
+                    size,
+                    hash: *hash,
+                },
+            });
+        }
+        Ok(files)
+    }
+
+    /// Replace the whole source graph. The table is emptied first: a rebuilt
+    /// graph is a new snapshot, and a file that dropped out of it must not
+    /// survive as a phantom row that would keep invalidating later builds.
+    pub fn replace_sources(&self, files: &[deps::SourceFile]) -> Result<(), DbError> {
+        let txn = self.db.begin_write().map_err(other)?;
+        {
+            let mut table = txn.open_table(tables::SOURCES).map_err(other)?;
+            table.retain(|_, _| false).map_err(other)?;
+            for file in files {
+                let module = file.record.module.join(deps::MODULE_SEPARATOR);
+                table
+                    .insert(
+                        file.path.as_str(),
+                        (
+                            module.as_str(),
+                            file.record.mtime_ns,
+                            file.record.size,
+                            &file.record.hash,
+                        ),
+                    )
+                    .map_err(other)?;
             }
         }
         txn.commit().map_err(other)

@@ -10,6 +10,32 @@ use redb::TableDefinition;
 /// Build status: string keys (the `*_KEY` constants) to JSON-encoded values.
 pub const STATUS: TableDefinition<&str, &str> = TableDefinition::new("status");
 
+/// The package's source graph, as last reported by `rrc --scan-deps`: one
+/// row per file, keyed by its path, holding what staleness is judged from.
+/// The value is a redb tuple, which encodes it natively:
+///
+/// ```text
+/// path -> (module, mtime_ns, size, blake3)
+/// ```
+///
+/// `module` is the file's module path in its written form (`pkg::math`);
+/// segments are identifiers, so joining is unambiguous. `blake3` is the raw
+/// 32-byte digest — hex is for [`crate::deps::SourceFile::to_json`] to
+/// render, not for storage to carry.
+///
+/// The graph is a *set* of files: nothing in rene depends on the order the
+/// scan walked them in (staleness checks every row, and `rrc` rediscovers
+/// the graph itself), so rows simply come back in path order. Written by
+/// [`crate::deps`], always wholesale — the graph is a single snapshot, so a
+/// rebuild replaces every row rather than updating one.
+pub const SOURCES: TableDefinition<&str, (&str, u64, u64, &[u8; 32])> =
+    TableDefinition::new("sources");
+
+/// Blake3 hex digest of the evaluated manifest the [`SOURCES`] snapshot was
+/// taken under (a bare hex string). A mismatch invalidates the snapshot: a
+/// changed configuration may change the package's layout.
+pub const SOURCES_CONFIG_HASH_KEY: &str = "sources.config-hash";
+
 /// Blake3 hex digest of the bundled `reussir-rt` source archive the baked
 /// runtime was built from (a JSON string). Written by [`crate::rt`]; a
 /// mismatch with the running `rene`'s bundle invalidates the bake.
