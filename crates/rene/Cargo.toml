@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Reussir package manager: builds packages described by a Nickel manifest"
+build = "build.rs"
 
 [lib]
 name = "rene"
@@ -13,18 +14,34 @@ name = "rene"
 path = "src/main.rs"
 
 [dependencies]
+# Content hash of the bundled runtime source, the staleness key for the baked
+# artifacts recorded in the build-status database.
+blake3.workspace = true
 # Evaluates the `rene.ncl` manifest; the manifest is a full Nickel program
 # (imports, contracts, merging), not a static data file.
 nickel-lang.workspace = true
 palc.workspace = true
+# The build-status store; its exclusive file lock is also the build-dir lock.
+redb.workspace = true
 serde.workspace = true
 # Re-render the evaluated manifest's JSON export pretty-printed for `build`'s
-# config dump.
+# config dump, parse `cargo --message-format=json` output, and encode the
+# build-status records.
 serde_json.workspace = true
+# Unpack the bundled runtime source into the build directory.
+tar.workspace = true
 tracing.workspace = true
 # Install a subscriber so `-v`/`RUST_LOG` surface events (to stderr, never
-# stdout — the config dump owns stdout).
+# stdout — stdout carries machine-readable output like the libdir listing).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+zstd.workspace = true
+
+[build-dependencies]
+# Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its
+# manifest rewritten standalone (toml_edit resolves workspace inheritance).
+tar.workspace = true
+toml_edit.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 # Auto-cleaned scratch directories for the manifest loading tests.
