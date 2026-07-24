@@ -31,6 +31,9 @@ reussir-codegen = { path = "../reussir-codegen" }
 reussir-core = { path = "../reussir-core" }
 reussir-syntax = { path = "../reussir-syntax" }
 palc.workspace = true
+# Encodes the `--scan-deps` source-graph listing (and lets the driver tests
+# parse it back).
+serde_json.workspace = true
 # The lowering and backend pipeline emit `tracing` events; install a subscriber
 # so `-v`/`RUST_LOG` surface them (to stderr, never stdout).
 tracing.workspace = true

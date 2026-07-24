@@ -184,11 +184,19 @@ struct Cli {
     #[arg(long = "package-name")]
     package_name: Option<String>,
 
+    /// Instead of compiling, describe the package's source graph — `lib.rr`
+    /// plus everything reachable through `mod` declarations — as JSON:
+    /// `{"package": …, "files": [{"path": …, "module": […]}]}`, with files in
+    /// discovery order and paths canonical. Requires package mode; the JSON
+    /// goes to `-o` (stdout by default).
+    #[arg(long = "scan-deps")]
+    scan_deps: bool,
+
     /// Output file (`-` writes a text dump — `hir`/`mir`/`mlir`/`mlir-llvm` — to
     /// stdout). The target stage is inferred from its extension unless `--emit`
-    /// is given.
+    /// is given. Required except with `--scan-deps`.
     #[arg(short = 'o', long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// Stage to emit: `hir`, `mir`, `mlir`, `mlir-llvm`, `llvm-ir`, `asm`, or
     /// `obj`. Defaults to the output extension (else `obj`).
@@ -354,7 +362,7 @@ fn resolve_input_stage(cli: &Cli, input: &Path) -> Result<Stage, String> {
 fn resolve_target(cli: &Cli) -> Result<Stage, String> {
     let stage = cli
         .emit
-        .or_else(|| Stage::from_extension(&cli.output))
+        .or_else(|| cli.output.as_deref().and_then(Stage::from_extension))
         .unwrap_or(Stage::Obj);
     if stage == Stage::Rr {
         return Err("`rr` is the source input, not an emittable stage".into());
@@ -521,10 +529,20 @@ fn run(cli: &Cli) -> Result<bool, String> {
         }
         (None, None, _) => None,
     };
+
+    // `--scan-deps` stops after discovery: list the package's source graph
+    // instead of compiling.
+    if cli.scan_deps {
+        return scan_deps(cli, package.as_ref());
+    }
+
+    let Some(output) = cli.output.as_deref() else {
+        return Err("no output file given; pass -o".into());
+    };
     let target = resolve_target(cli)?;
     // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj` go through the
     // file-based LLVM emitter, so `-o -` would write a file literally named `-`.
-    if cli.output.as_os_str() == "-" && target.output_kind().is_some() {
+    if output.as_os_str() == "-" && target.output_kind().is_some() {
         return Err(format!(
             "cannot write `{target}` to stdout; give a file path with -o"
         ));
@@ -553,7 +571,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
                 .into(),
         );
     }
-    if cli.codegen_units > 1 && cli.output.as_os_str() == "-" {
+    if cli.codegen_units > 1 && output.as_os_str() == "-" {
         return Err(
             "--codegen-units > 1 writes one file per unit; give a file path with -o".into(),
         );
@@ -583,28 +601,10 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         }
         let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-        let loaded = match &root {
-            PackageRoot::Dir(dir) => package::load_package(dir, &pkg_name, &interner),
-            PackageRoot::File(file) => package::load_package_rooted(file, &pkg_name, &interner),
-        };
-        let pkg = match loaded {
+        let pkg = match load_package_or_render(&root, &pkg_name, &interner) {
             Ok(pkg) => pkg,
-            Err(package::PackageError::Message(msg)) => return Err(msg),
-            Err(package::PackageError::ParseErrors {
-                cache,
-                file,
-                errors,
-            }) => {
-                let color = std::io::stderr().is_terminal();
-                let _ = diagnostics::render_errors(
-                    &cache,
-                    file,
-                    &errors,
-                    color,
-                    std::io::stderr().lock(),
-                );
-                return Ok(false);
-            }
+            Err(msg) if msg.is_empty() => return Ok(false),
+            Err(msg) => return Err(msg),
         };
         let name = pkg.cache.name(FileId::ROOT).to_owned();
         let context = reussir_backend::context();
@@ -621,7 +621,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
                     return Ok(false);
                 }
             };
-        return backend(cli, &context, produced, target, opt, reloc, &spec, &name);
+        return backend(cli, &context, produced, target, opt, reloc, &spec, &name, output);
     }
 
     let Some(input) = &cli.input else {
@@ -650,7 +650,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             .ok_or_else(|| format!("cannot emit `{target}` from LLVM IR"))?;
         let machine = TargetMachine::new(&spec, opt, reloc)?;
         let finalized = parse_llvm_ir(&name, source)?;
-        emit_to_file(finalized, &machine, opt, kind, &cli.output)?;
+        emit_to_file(finalized, &machine, opt, kind, output)?;
         return Ok(true);
     }
 
@@ -674,7 +674,73 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         },
     };
-    backend(cli, &context, produced, target, opt, reloc, &spec, &name)
+    backend(cli, &context, produced, target, opt, reloc, &spec, &name, output)
+}
+
+/// Discover and parse the package from its crate root — `lib.rr` under a
+/// root directory, or the rooting input file itself — rendering syntax errors
+/// through the same ariadne path as compile diagnostics.
+///
+/// An empty `Err` string signals diagnostics were already printed (a compile
+/// failure, exit 1) rather than a driver error (exit 2).
+fn load_package_or_render(
+    root: &PackageRoot,
+    name: &str,
+    interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
+) -> Result<package::PackageSource, String> {
+    let loaded = match root {
+        PackageRoot::Dir(dir) => package::load_package(dir, name, interner),
+        PackageRoot::File(file) => package::load_package_rooted(file, name, interner),
+    };
+    match loaded {
+        Ok(pkg) => Ok(pkg),
+        Err(package::PackageError::Message(msg)) => Err(msg),
+        Err(package::PackageError::ParseErrors {
+            cache,
+            file,
+            errors,
+        }) => {
+            let color = std::io::stderr().is_terminal();
+            let _ = diagnostics::render_errors(&cache, file, &errors, color, std::io::stderr().lock());
+            Err(String::new())
+        }
+    }
+}
+
+/// `--scan-deps`: run package discovery — which parses every file to follow
+/// its `mod` declarations — and describe the source graph as JSON instead of
+/// compiling: the package name and, in discovery order, every file's
+/// canonical path and module path.
+fn scan_deps(cli: &Cli, package: Option<&(PackageRoot, String)>) -> Result<bool, String> {
+    let Some((root, pkg_name)) = package else {
+        return Err(
+            "--scan-deps requires package mode: --package-root, or an input file rooted \
+             by --package-name"
+                .into(),
+        );
+    };
+    let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+    let pkg = match load_package_or_render(root, pkg_name, &interner) {
+        Ok(pkg) => pkg,
+        Err(msg) if msg.is_empty() => return Ok(false),
+        Err(msg) => return Err(msg),
+    };
+    let files: Vec<serde_json::Value> = pkg
+        .files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "path": pkg.cache.name(file.file),
+                "module": file.module,
+            })
+        })
+        .collect();
+    let graph = serde_json::json!({ "package": pkg_name, "files": files });
+    let mut text = serde_json::to_string_pretty(&graph)
+        .map_err(|e| format!("failed to encode the source graph: {e}"))?;
+    text.push('\n');
+    write_text(cli.output.as_deref().unwrap_or(Path::new("-")), &text)?;
+    Ok(true)
 }
 
 /// The shared back leg from a produced text/module: write a text dump, or run
@@ -689,17 +755,18 @@ fn backend(
     reloc: RelocMode,
     spec: &TargetSpec,
     name: &str,
+    output: &Path,
 ) -> Result<bool, String> {
     let module = match produced {
         Produced::Text(text) => {
-            write_text(&cli.output, &text)?;
+            write_text(output, &text)?;
             return Ok(true);
         }
         // A partitioned build runs the whole back leg once per unit, writing
         // `<stem>.<i>.<ext>` siblings of `-o`.
         Produced::Units(units) => {
             for (index, module) in units.into_iter().enumerate() {
-                let out = unit_output(&cli.output, index);
+                let out = unit_output(output, index);
                 backend_module(cli, context, module, target, opt, reloc, spec, name, &out)?;
             }
             return Ok(true);
@@ -708,15 +775,7 @@ fn backend(
     };
 
     backend_module(
-        cli,
-        context,
-        module,
-        target,
-        opt,
-        reloc,
-        spec,
-        name,
-        &cli.output.clone(),
+        cli, context, module, target, opt, reloc, spec, name, output,
     )
 }
 
