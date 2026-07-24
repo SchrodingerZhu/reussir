@@ -111,13 +111,17 @@ fn clean_errors_out_when_the_db_is_in_use() {
 fn build_bakes_the_runtime_and_prints_the_libdirs() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("reussir-build");
-    let libdir = tmp.path().join("fake-rust-libdir");
+    let tmp_dir = tempfile::tempdir().unwrap();
+    // Canonicalized: macOS tempdirs sit behind the `/var -> /private/var`
+    // symlink, and the deps line rene prints comes from cargo's artifact
+    // report, whose paths the fake cargo roots at the resolved `$PWD`.
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    let libdir = tmp.join("fake-rust-libdir");
     std::fs::create_dir_all(&libdir).unwrap();
 
     let script = |name: &str, body: String| -> PathBuf {
-        let path = tmp.path().join(name);
+        let path = tmp.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
@@ -181,7 +185,7 @@ fn build_bakes_the_runtime_and_prints_the_libdirs() {
     let out = build(&root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), stdout);
-    let runs = std::fs::read_to_string(tmp.path().join("cargo-runs")).unwrap();
+    let runs = std::fs::read_to_string(tmp.join("cargo-runs")).unwrap();
     assert_eq!(runs.lines().count(), 1, "the second build re-ran cargo");
 }
 
