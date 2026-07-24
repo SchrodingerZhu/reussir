@@ -42,7 +42,7 @@ fn polyffi_function_is_linked_in() {
     // passed explicitly through `PolyffiPaths` (rustc still resolves through
     // the environment/probe discovery).
     let paths = PolyffiPaths {
-        libdir: Some(env!("CARGO_MANIFEST_DIR").to_owned()),
+        libdirs: vec![env!("CARGO_MANIFEST_DIR").to_owned()],
         ..PolyffiPaths::default()
     };
 

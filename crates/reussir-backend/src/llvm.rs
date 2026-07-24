@@ -35,9 +35,9 @@ use crate::pipeline::OptLevel;
 pub struct PolyffiPaths {
     /// The `rustc` executable used to compile textures.
     pub rust_path: Option<String>,
-    /// The directory searched for Rust packages (`rustc -L`) — `libreussir_rt`
-    /// and friends.
-    pub libdir: Option<String>,
+    /// The directories searched for Rust packages (one `rustc -L` each) —
+    /// `libreussir_rt` and friends.
+    pub libdirs: Vec<String>,
 }
 
 // Views an optional string as the borrowed MlirStringRef the C API takes; the
@@ -49,6 +49,19 @@ fn opt_string_ref(s: &Option<String>) -> sys::mlir_sys::MlirStringRef {
         data: s.as_ptr().cast(),
         length: s.len(),
     }
+}
+
+// Views a slice of strings as borrowed MlirStringRefs; the referents must
+// outlive every use of the result. An empty slice becomes an empty array,
+// which the C side treats as "fall back to discovery".
+fn string_refs(strings: &[String]) -> Vec<sys::mlir_sys::MlirStringRef> {
+    strings
+        .iter()
+        .map(|s| sys::mlir_sys::MlirStringRef {
+            data: s.as_ptr().cast(),
+            length: s.len(),
+        })
+        .collect()
 }
 
 /// Translates a lowered MLIR `module` to an LLVM IR module created in `context`.
@@ -124,7 +137,7 @@ impl LlvmLowering {
     /// Gathering erases the polyffi ops, so the lowering pipeline's own
     /// `CompilePolymorphicFFIPass` then sees nothing to do.
     ///
-    /// `paths` pins the rustc executable and package directory the texture
+    /// `paths` pins the rustc executable and package directories the texture
     /// compile uses; default it to keep the environment/probe discovery.
     pub fn prepare(
         module: &Module,
@@ -134,12 +147,14 @@ impl LlvmLowering {
     ) -> Result<Self, String> {
         let data_layout =
             CString::new(data_layout).map_err(|_| "data layout contains a NUL byte".to_string())?;
+        let libdirs = string_refs(&paths.libdirs);
         unsafe {
             if !sys::reussirCompilePolymorphicFFI(
                 module.to_raw(),
                 optimized,
                 opt_string_ref(&paths.rust_path),
-                opt_string_ref(&paths.libdir),
+                libdirs.as_ptr(),
+                libdirs.len() as isize,
             ) {
                 return Err("failed to compile polymorphic FFI".into());
             }

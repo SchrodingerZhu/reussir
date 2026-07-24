@@ -1,6 +1,6 @@
 // UNSUPPORTED: darwin
 // The explicit polyffi toolchain flags: `--polyffi-rust-path` and
-// `--polyffi-libdir` pin the rustc executable and the package directory the
+// `--polyffi-libdir` pin the rustc executable and the package directories the
 // texture compile uses, taking precedence over the REUSSIR_RUSTC /
 // REUSSIR_RUSTC_DEPS environment (both unset here, so the flags are
 // load-bearing) and the probe list.
@@ -8,11 +8,18 @@
 // RUN: env -u REUSSIR_RUSTC -u REUSSIR_RUSTC_DEPS %rrc %s -o %t.o --relocation-mode pic \
 // RUN:   --polyffi-rust-path %rustc_path --polyffi-libdir %library_path
 
+// `--polyffi-libdir` is repeatable: every directory is searched (one
+// `rustc -L` each), so a package-free directory alongside the real one is
+// harmless — including listed first.
+// RUN: rm -rf %t.extra && mkdir -p %t.extra
+// RUN: env -u REUSSIR_RUSTC -u REUSSIR_RUSTC_DEPS %rrc %s -o %t.multi.o --relocation-mode pic \
+// RUN:   --polyffi-rust-path %rustc_path --polyffi-libdir %t.extra --polyffi-libdir %library_path
+
 // A missing rustc or a bogus package directory fails in the driver, before
-// the pipeline runs.
+// the pipeline runs — even when another directory in the list is fine.
 // RUN: %not %rrc %s -o %t2.o --polyffi-rust-path %t.no-such-rustc 2>&1 \
 // RUN:   | %FileCheck %s --check-prefix=NO-RUSTC
-// RUN: %not %rrc %s -o %t3.o --polyffi-libdir %t.no-such-dir 2>&1 \
+// RUN: %not %rrc %s -o %t3.o --polyffi-libdir %library_path --polyffi-libdir %t.no-such-dir 2>&1 \
 // RUN:   | %FileCheck %s --check-prefix=NO-LIBDIR
 
 // NO-RUSTC: --polyffi-rust-path

@@ -16,10 +16,12 @@
 #pragma once
 #ifndef REUSSIR_RUSTCOMPILER_H
 #define REUSSIR_RUSTCOMPILER_H
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <memory>
+#include <string>
 
 namespace reussir {
 /// Locate the `rustc` used to compile FFI textures. A non-empty `preferred`
@@ -28,22 +30,25 @@ namespace reussir {
 /// then a list of conventional locations are probed. Empty when nothing is
 /// found.
 llvm::StringRef findRustCompiler(llvm::StringRef preferred = {});
-/// Locate the directory holding the Rust packages (`libreussir_rt` and
-/// friends) FFI textures link against (`rustc -L`). A non-empty `preferred`
-/// directory (an explicit `--polyffi-libdir`) is returned verbatim; otherwise
-/// the `REUSSIR_RUSTC_DEPS` environment variable and then conventional
-/// locations are probed. Empty when nothing is found.
-llvm::StringRef findRustCompilerDeps(llvm::StringRef preferred = {});
+/// Locate the directories holding the Rust packages (`libreussir_rt` and
+/// friends) FFI textures link against (one `rustc -L` each). Non-empty
+/// `preferred` directories (explicit `--polyffi-libdir` flags) are returned
+/// verbatim; otherwise the `REUSSIR_RUSTC_DEPS` environment variable (which
+/// may list several directories separated by the platform's environment path
+/// separator) and then conventional locations are probed. Empty when nothing
+/// is found.
+llvm::SmallVector<std::string>
+findRustCompilerDeps(llvm::ArrayRef<llvm::StringRef> preferred = {});
 std::unique_ptr<llvm::Module>
 compileRustSource(llvm::LLVMContext &context, llvm::StringRef sourceCode,
                   llvm::ArrayRef<llvm::StringRef> additionalArgs = {},
                   llvm::StringRef rustcPath = {},
-                  llvm::StringRef rustcDepsDir = {});
+                  llvm::ArrayRef<llvm::StringRef> rustcDepsDirs = {});
 std::unique_ptr<llvm::MemoryBuffer>
 compileRustSourceToBitcode(llvm::LLVMContext &context,
                            llvm::StringRef sourceCode,
                            llvm::ArrayRef<llvm::StringRef> additionalArgs = {},
                            llvm::StringRef rustcPath = {},
-                           llvm::StringRef rustcDepsDir = {});
+                           llvm::ArrayRef<llvm::StringRef> rustcDepsDirs = {});
 } // namespace reussir
 #endif // REUSSIR_RUSTCOMPILER_H

@@ -245,11 +245,10 @@ def ReussirCompilePolymorphicFFIPass
                         /*default=*/"\"\"",
                         "explicit rustc executable used to compile FFI "
                         "templates (falls back to REUSSIR_RUSTC and probing)">,
-                 Option<"libDir", "libdir", "std::string",
-                        /*default=*/"\"\"",
-                        "directory searched for Rust packages when compiling "
-                        "FFI templates (falls back to REUSSIR_RUSTC_DEPS and "
-                        "probing)">,
+                 ListOption<"libDirs", "libdirs", "std::string",
+                        "directories searched for Rust packages when "
+                        "compiling FFI templates (falls back to "
+                        "REUSSIR_RUSTC_DEPS and probing)">,
   ];
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::func::FuncDialect",

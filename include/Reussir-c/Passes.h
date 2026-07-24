@@ -104,12 +104,15 @@ MlirPass reussirCreateReconcileUnrealizedCastsPass(void);
 //===----------------------------------------------------------------------===//
 
 // Monomorphizes and compiles polymorphic FFI operations in the module. Returns
-// true on success. `rustPath` and `libDir` name the rustc executable and the
-// Rust package search directory explicitly; pass empty string refs to fall
-// back to the REUSSIR_RUSTC / REUSSIR_RUSTC_DEPS environment variables and the
-// built-in probe list.
+// true on success. `rustPath` and the `libDirs` array (of `nLibDirs` entries)
+// name the rustc executable and the Rust package search directories
+// explicitly; pass an empty string ref / an empty array to fall back to the
+// REUSSIR_RUSTC / REUSSIR_RUSTC_DEPS environment variables and the built-in
+// probe list.
 bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
-                                  MlirStringRef rustPath, MlirStringRef libDir);
+                                  MlirStringRef rustPath,
+                                  const MlirStringRef *libDirs,
+                                  intptr_t nLibDirs);
 
 // Gathers the LLVM bitcode modules attached to compiled operations into a
 // single LLVM module owned by `context`. Returns NULL on failure; otherwise the

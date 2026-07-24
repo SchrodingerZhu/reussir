@@ -28,19 +28,26 @@ TEST(RustCompilerTest, CompileSimpleSource) {
 }
 
 TEST(RustCompilerTest, ExplicitPathsOverrideDiscovery) {
-  // An explicit path short-circuits both the environment and the probe list.
+  // Explicit paths short-circuit both the environment and the probe list, and
+  // several package directories survive side by side.
   EXPECT_EQ(findRustCompiler("/explicit/bin/rustc"), "/explicit/bin/rustc");
-  EXPECT_EQ(findRustCompilerDeps("/explicit/lib"), "/explicit/lib");
+  llvm::SmallVector<std::string> explicitDeps =
+      findRustCompilerDeps({"/explicit/lib", "/explicit/other-lib"});
+  ASSERT_EQ(explicitDeps.size(), 2u);
+  EXPECT_EQ(explicitDeps[0], "/explicit/lib");
+  EXPECT_EQ(explicitDeps[1], "/explicit/other-lib");
 
-  // Feeding the discovered locations back as explicit arguments exercises the
-  // override path end to end.
+  // Feeding the discovered locations back as explicit arguments — alongside a
+  // second, package-free directory — exercises the override path end to end.
   llvm::StringRef rustc = findRustCompiler();
-  llvm::StringRef deps = findRustCompilerDeps();
+  llvm::SmallVector<std::string> deps = findRustCompilerDeps();
   ASSERT_FALSE(rustc.empty());
   ASSERT_FALSE(deps.empty());
+  llvm::SmallVector<llvm::StringRef> depDirs(deps.begin(), deps.end());
+  depDirs.push_back(".");
   llvm::LLVMContext context;
   std::unique_ptr<llvm::Module> m =
-      compileRustSource(context, EXAMPLE_SOURCE, {}, rustc, deps);
+      compileRustSource(context, EXAMPLE_SOURCE, {}, rustc, depDirs);
   ASSERT_NE(m, nullptr);
   EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_new"), nullptr);
 }
