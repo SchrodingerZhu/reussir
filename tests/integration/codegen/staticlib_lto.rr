@@ -43,6 +43,28 @@
 // THIN: GLOBALVAL_SUMMARY_BLOCK
 // FAT-NOT: GLOBALVAL_SUMMARY_BLOCK
 
+// A Darwin target's bitcode names its OS `macosx`, not the bare `darwin`
+// form `LLVMGetDefaultTargetTriple` reports (which spells the *kernel*
+// version). A Mach-O object carries its platform in a load command, so the
+// spelling never mattered before; a bitcode member's platform *is* the
+// triple, and Apple's `ld64` rejects `darwin` there:
+//
+//   ld: unknown OS in target triple 'arm64-apple-darwin24.6.0' in 'lib.a(x.bc)'
+//
+// Cross-emitted, so every host guards the macOS artifact.
+// RUN: %rrc %S/staticlib/lib.rr -o %t.mac.a --emit staticlib --lto fat --relocation-mode pic --target-triple arm64-apple-darwin24.6.0
+// RUN: rm -rf %t.xm && mkdir -p %t.xm
+// RUN: cd %t.xm && %llvm-ar x %t.mac.a
+// RUN: %llvm-dis -o - %t.xm/*.0.bc | %FileCheck %s --check-prefix=DARWIN
+
+// DARWIN: target triple = "arm64-apple-macosx{{[0-9.]+}}"
+
+// Native emission is untouched: only a bitcode consumer needs the rewrite.
+// RUN: %rrc %S/staticlib/lib.rr -o %t.mac.ll --emit llvm-ir --relocation-mode pic --target-triple arm64-apple-darwin24.6.0
+// RUN: %FileCheck %s --check-prefix=NATIVE --input-file=%t.mac.ll
+
+// NATIVE: target triple = "arm64-apple-darwin24.6.0"
+
 // `--lto` is about how a library is packed; it has nothing to say about the
 // other emission targets.
 // RUN: %not %rrc %S/staticlib/lib.rr -o %t.o --lto thin 2>&1 | %FileCheck %s --check-prefix=ONLY-STATICLIB

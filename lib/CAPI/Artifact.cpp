@@ -40,6 +40,35 @@ char *toCMessage(const llvm::Twine &message) {
   return LLVMCreateMessage(message.str().c_str());
 }
 
+/// Rewrites a bare Darwin triple (`arm64-apple-darwin24.6.0` — what
+/// `LLVMGetDefaultTargetTriple` reports on macOS, naming the *kernel*
+/// version) to the equivalent `macosx` one.
+///
+/// This matters only for bitcode. A Mach-O object carries its platform in a
+/// load command, so the linker never reads the triple string; a bitcode
+/// member's platform is the triple, and Apple's `ld64` parses it with its
+/// own parser, which knows `macosx` and friends but rejects `darwin`:
+///
+///   ld: unknown OS in target triple 'arm64-apple-darwin24.6.0' in 'lib.a(x.bc)'
+///
+/// Clang's driver never emits the bare form for the same reason. LLVM's own
+/// `Triple` treats the two as one OS, so nothing downstream of this changes
+/// meaning — only the spelling a foreign parser has to accept.
+void canonicalizeDarwinTriple(llvm::Module &m) {
+  llvm::Triple triple = m.getTargetTriple();
+  if (triple.getOS() != llvm::Triple::Darwin)
+    return;
+  llvm::VersionTuple version;
+  if (!triple.getMacOSXVersion(version))
+    return;
+  // Spell it out in full (`macosx15.0.0`, not `macosx15`) — the form clang's
+  // driver produces, and so the one every consumer is known to accept.
+  llvm::VersionTuple full(version.getMajor(), version.getMinor().value_or(0),
+                          version.getSubminor().value_or(0));
+  triple.setOSName("macosx" + full.getAsString());
+  m.setTargetTriple(triple);
+}
+
 /// Renders an `llvm::Error` (consuming it) into that same buffer.
 char *toCMessage(llvm::Error error) {
   std::string text;
@@ -56,6 +85,10 @@ char *reussirWriteLtoBitcode(LLVMModuleRef module, const char *path,
     return toCMessage("bitcode emission requires an LTO mode");
 
   llvm::Module &m = *llvm::unwrap(module);
+  // The module is written and then discarded by the caller, so adjusting its
+  // triple here affects nothing but the bytes about to be serialized.
+  canonicalizeDarwinTriple(m);
+
   std::error_code ec;
   llvm::raw_fd_ostream out(path, ec, llvm::sys::fs::OF_None);
   if (ec)

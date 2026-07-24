@@ -74,6 +74,7 @@ find_llvm_tool(lli_path lli)
 find_llvm_tool(llvm_ar_path llvm-ar)
 find_llvm_tool(llvm_nm_path llvm-nm)
 find_llvm_tool(llvm_bcanalyzer_path llvm-bcanalyzer)
+find_llvm_tool(llvm_dis_path llvm-dis)
 
 # lldb drives the end-to-end debug-info suite (tests/integration/debuginfo):
 # it runs compiled executables under the debugger, with the Reussir formatters
