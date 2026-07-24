@@ -20,8 +20,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-use serde::{Deserialize, Serialize};
-
 use crate::db::BuildDir;
 use crate::manifest::Loaded;
 use crate::tables;
@@ -30,9 +28,22 @@ use crate::tables;
 /// the crate root, and its `mod` declarations discover the rest.
 pub const SRC_DIR: &str = "src";
 
-/// What is recorded for one file of the source graph, under its path (see
+/// The separator a module path is stored under (its written form, `pkg::math`
+/// — see [`tables::SOURCES`]).
+pub const MODULE_SEPARATOR: &str = "::";
+
+/// Split a stored module path back into its segments. An empty column is an
+/// empty path, not a single empty segment.
+pub fn split_module(module: &str) -> Vec<String> {
+    if module.is_empty() {
+        return Vec::new();
+    }
+    module.split(MODULE_SEPARATOR).map(str::to_owned).collect()
+}
+
+/// What is recorded for one file of the source graph (see
 /// [`tables::SOURCES`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRecord {
     /// The file's module path, package name first (`rrc --scan-deps`).
     pub module: Vec<String>,
@@ -41,11 +52,11 @@ pub struct SourceRecord {
     /// compares equal to another such file; the size check still applies.
     pub mtime_ns: u64,
     pub size: u64,
-    /// Blake3 hex digest of the file's contents.
-    pub hash: String,
+    /// Raw Blake3 digest of the file's contents.
+    pub hash: [u8; blake3::OUT_LEN],
 }
 
-/// One file of the graph: its path (the table key) and its record.
+/// One file of the graph: its path and its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFile {
     pub path: String,
@@ -53,14 +64,15 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
-    /// The `{"path": …, "module": …, …}` form `rene inspect` prints.
+    /// The `{"path": …, "module": …, …}` form `rene inspect` prints — where
+    /// the digest becomes hex, the one place it needs to be readable.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "path": self.path,
             "module": self.record.module,
             "mtime_ns": self.record.mtime_ns,
             "size": self.record.size,
-            "hash": self.record.hash,
+            "hash": blake3::Hash::from(self.record.hash).to_hex().to_string(),
         })
     }
 }
@@ -303,7 +315,7 @@ fn record(path: String, module: Vec<String>) -> Result<SourceFile, String> {
             module,
             mtime_ns: mtime_ns(&meta),
             size: meta.len(),
-            hash: blake3::hash(&contents).to_hex().to_string(),
+            hash: *blake3::hash(&contents).as_bytes(),
         },
         path,
     })
@@ -465,6 +477,40 @@ mod tests {
         let src = write(tmp.path(), "src/lib.rr", "contents");
         let file = record(src.display().to_string(), vec!["p".to_owned()]).unwrap();
         assert_eq!(file.record.size, 8);
-        assert_eq!(file.record.hash, blake3::hash(b"contents").to_hex().to_string());
+        assert_eq!(file.record.hash, *blake3::hash(b"contents").as_bytes());
+        // Hex is a rendering, not what the row carries.
+        assert_eq!(
+            file.to_json()["hash"],
+            serde_json::json!(blake3::hash(b"contents").to_hex().to_string())
+        );
+    }
+
+    /// Module paths round-trip through their stored `pkg::math` form.
+    #[test]
+    fn module_paths_round_trip_through_the_stored_column() {
+        for module in [
+            vec![],
+            vec!["p".to_owned()],
+            vec!["p".to_owned(), "math".to_owned(), "ops".to_owned()],
+        ] {
+            assert_eq!(split_module(&module.join(MODULE_SEPARATOR)), module);
+        }
+    }
+
+    /// The graph reads back in scan order even when the paths sort the other
+    /// way — the key is the scan position, not the path.
+    #[test]
+    fn the_recorded_graph_keeps_discovery_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BuildDir::open(&tmp.path().join("build")).unwrap();
+        let files: Vec<SourceFile> = ["zzz.rr", "aaa.rr", "mmm.rr"]
+            .iter()
+            .map(|name| {
+                let path = write(tmp.path(), name, "pub fn e() -> u64 { 0 }");
+                record(path.display().to_string(), vec!["p".to_owned()]).unwrap()
+            })
+            .collect();
+        dir.replace_sources(&files).unwrap();
+        assert_eq!(dir.sources().unwrap(), files);
     }
 }

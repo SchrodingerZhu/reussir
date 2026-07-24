@@ -126,10 +126,10 @@ impl BuildDir {
         txn.commit().map_err(other)
     }
 
-    /// The recorded source graph, in the discovery order the scan stored it
-    /// under (redb iterates keys in order, so the recorded index is what
-    /// restores it). Empty both for a fresh database and for one whose
-    /// sources table was never written.
+    /// The recorded source graph, in discovery order — the scan position is
+    /// the key, so redb's key order restores it with no sorting. Empty both
+    /// for a fresh database and for one whose sources table was never
+    /// written.
     pub fn sources(&self) -> Result<Vec<deps::SourceFile>, DbError> {
         let txn = self.db.begin_read().map_err(other)?;
         let table = match txn.open_table(tables::SOURCES) {
@@ -137,22 +137,21 @@ impl BuildDir {
             Err(TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
             Err(e) => return Err(other(e)),
         };
-        let mut indexed = Vec::new();
+        let mut files = Vec::new();
         for row in table.iter().map_err(other)? {
-            let (key, value) = row.map_err(other)?;
-            let stored: StoredSource = serde_json::from_str(value.value()).map_err(|e| {
-                DbError::Other(format!("corrupt source record for `{}`: {e}", key.value()))
-            })?;
-            indexed.push((
-                stored.index,
-                deps::SourceFile {
-                    path: key.value().to_owned(),
-                    record: stored.record,
+            let (_, value) = row.map_err(other)?;
+            let (path, module, mtime_ns, size, hash) = value.value();
+            files.push(deps::SourceFile {
+                path: path.to_owned(),
+                record: deps::SourceRecord {
+                    module: deps::split_module(module),
+                    mtime_ns,
+                    size,
+                    hash: *hash,
                 },
-            ));
+            });
         }
-        indexed.sort_by_key(|(index, _)| *index);
-        Ok(indexed.into_iter().map(|(_, file)| file).collect())
+        Ok(files)
     }
 
     /// Replace the whole source graph. The table is emptied first: a rebuilt
@@ -164,28 +163,23 @@ impl BuildDir {
             let mut table = txn.open_table(tables::SOURCES).map_err(other)?;
             table.retain(|_, _| false).map_err(other)?;
             for (index, file) in files.iter().enumerate() {
-                let stored = StoredSource {
-                    index,
-                    record: file.record.clone(),
-                };
-                let value = serde_json::to_string(&stored).map_err(other)?;
+                let module = file.record.module.join(deps::MODULE_SEPARATOR);
                 table
-                    .insert(file.path.as_str(), value.as_str())
+                    .insert(
+                        index as u64,
+                        (
+                            file.path.as_str(),
+                            module.as_str(),
+                            file.record.mtime_ns,
+                            file.record.size,
+                            &file.record.hash,
+                        ),
+                    )
                     .map_err(other)?;
             }
         }
         txn.commit().map_err(other)
     }
-}
-
-/// A [`tables::SOURCES`] row: the file's record plus its position in the
-/// scan, so the graph reads back in discovery order rather than the key
-/// order redb iterates.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct StoredSource {
-    index: usize,
-    #[serde(flatten)]
-    record: deps::SourceRecord,
 }
 
 fn other(e: impl std::fmt::Display) -> DbError {
