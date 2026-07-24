@@ -126,10 +126,9 @@ impl BuildDir {
         txn.commit().map_err(other)
     }
 
-    /// The recorded source graph, in discovery order — the scan position is
-    /// the key, so redb's key order restores it with no sorting. Empty both
-    /// for a fresh database and for one whose sources table was never
-    /// written.
+    /// The recorded source graph, in path order (redb iterates its keys, and
+    /// the path is the key). Empty both for a fresh database and for one
+    /// whose sources table was never written.
     pub fn sources(&self) -> Result<Vec<deps::SourceFile>, DbError> {
         let txn = self.db.begin_read().map_err(other)?;
         let table = match txn.open_table(tables::SOURCES) {
@@ -139,10 +138,10 @@ impl BuildDir {
         };
         let mut files = Vec::new();
         for row in table.iter().map_err(other)? {
-            let (_, value) = row.map_err(other)?;
-            let (path, module, mtime_ns, size, hash) = value.value();
+            let (key, value) = row.map_err(other)?;
+            let (module, mtime_ns, size, hash) = value.value();
             files.push(deps::SourceFile {
-                path: path.to_owned(),
+                path: key.value().to_owned(),
                 record: deps::SourceRecord {
                     module: deps::split_module(module),
                     mtime_ns,
@@ -162,13 +161,12 @@ impl BuildDir {
         {
             let mut table = txn.open_table(tables::SOURCES).map_err(other)?;
             table.retain(|_, _| false).map_err(other)?;
-            for (index, file) in files.iter().enumerate() {
+            for file in files {
                 let module = file.record.module.join(deps::MODULE_SEPARATOR);
                 table
                     .insert(
-                        index as u64,
+                        file.path.as_str(),
                         (
-                            file.path.as_str(),
                             module.as_str(),
                             file.record.mtime_ns,
                             file.record.size,

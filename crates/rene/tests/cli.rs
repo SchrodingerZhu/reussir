@@ -358,7 +358,8 @@ fn build_rescans_the_whole_graph_when_a_source_changes() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(fakes.runs("rrc"), 2, "the changed package must be re-scanned");
 
-    // The refreshed table is the new graph, `extra.rr` included…
+    // The refreshed table is the new graph, `extra.rr` included (the record
+    // is a set of files, reported in path order).
     let report = frozen_report(&fakes, &manifest, &root);
     assert_eq!(report["state"], "up-to-date");
     let files: Vec<&str> = report["files"]
@@ -370,8 +371,8 @@ fn build_rescans_the_whole_graph_when_a_source_changes() {
     assert_eq!(
         files,
         [
-            tmp.join("src/lib.rr").display().to_string(),
             tmp.join("src/extra.rr").display().to_string(),
+            tmp.join("src/lib.rr").display().to_string(),
             tmp.join("src/math.rr").display().to_string(),
         ]
     );

@@ -224,7 +224,10 @@ pub fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
 
     tracing::info!(%reason, "scanning the package source graph");
     let root = source_root(loaded);
-    let files = scan(&root, &loaded.manifest.package.name)?;
+    let mut files = scan(&root, &loaded.manifest.package.name)?;
+    // Order by path, the order the table reads back in, so what this returns
+    // does not depend on whether it came from the scan or the record.
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     dir.replace_sources(&files).map_err(|e| e.to_string())?;
     dir.set_status(&[(tables::SOURCES_CONFIG_HASH_KEY, hash.as_str())])
         .map_err(|e| e.to_string())?;
@@ -497,20 +500,25 @@ mod tests {
         }
     }
 
-    /// The graph reads back in scan order even when the paths sort the other
-    /// way — the key is the scan position, not the path.
+    /// Every row round-trips through the table, and the graph reads back in
+    /// path order whatever order it was written in — it is a set of files,
+    /// not a sequence.
     #[test]
-    fn the_recorded_graph_keeps_discovery_order() {
+    fn the_recorded_graph_round_trips_in_path_order() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = BuildDir::open(&tmp.path().join("build")).unwrap();
-        let files: Vec<SourceFile> = ["zzz.rr", "aaa.rr", "mmm.rr"]
+        let written: Vec<SourceFile> = ["zzz.rr", "aaa.rr", "mmm.rr"]
             .iter()
             .map(|name| {
                 let path = write(tmp.path(), name, "pub fn e() -> u64 { 0 }");
                 record(path.display().to_string(), vec!["p".to_owned()]).unwrap()
             })
             .collect();
-        dir.replace_sources(&files).unwrap();
-        assert_eq!(dir.sources().unwrap(), files);
+        dir.replace_sources(&written).unwrap();
+
+        let read = dir.sources().unwrap();
+        let mut expected = written;
+        expected.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(read, expected);
     }
 }

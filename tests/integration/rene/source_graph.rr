@@ -60,13 +60,14 @@
 // RESCANNED: "state": "up-to-date"
 
 // A new module reached from the crate root joins the graph on the next scan.
+// The record is a set of files, reported in path order.
 // RUN: echo "pub fn zero() -> u64 { 0 }" > %t.pkg/src/extra.rr
 // RUN: printf 'mod extra;\n' >> %t.pkg/src/lib.rr
 // RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=GREW
 
+// GREW: "path": "{{.*}}extra.rr"
 // GREW: "path": "{{.*}}lib.rr"
 // GREW: "path": "{{.*}}math.rr"
-// GREW: "path": "{{.*}}extra.rr"
 // GREW: "state": "up-to-date"
 
 // Condition 2: the evaluated manifest changed. Nothing on disk moved, but the
