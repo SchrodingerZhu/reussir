@@ -42,8 +42,8 @@
 #include <mlir/Transforms/Passes.h>
 
 #include "Reussir/Conversion/BasicOpsLowering.h"
-#include "Reussir/Conversion/Passes.h"
 #include "Reussir/Conversion/ConvertToSTD.h"
+#include "Reussir/Conversion/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/Transformation/Passes.h"
@@ -190,9 +190,14 @@ MlirPass reussirCreateReconcileUnrealizedCastsPass(void) {
 
 bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
                                   MlirStringRef rustPath,
-                                  MlirStringRef libDir) {
-  return succeeded(reussir::compilePolymorphicFFI(
-      unwrap(module), optimized, unwrap(rustPath), unwrap(libDir)));
+                                  const MlirStringRef *libDirs,
+                                  intptr_t nLibDirs) {
+  llvm::SmallVector<llvm::StringRef> dirs;
+  dirs.reserve(nLibDirs);
+  for (intptr_t i = 0; i < nLibDirs; ++i)
+    dirs.push_back(unwrap(libDirs[i]));
+  return succeeded(reussir::compilePolymorphicFFI(unwrap(module), optimized,
+                                                  unwrap(rustPath), dirs));
 }
 
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,

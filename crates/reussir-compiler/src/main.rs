@@ -225,11 +225,12 @@ struct Cli {
     polyffi_rust_path: Option<PathBuf>,
 
     /// Directory searched for the Rust packages polymorphic-FFI textures
-    /// link against (`rustc -L`) — `libreussir_rt` and friends. Takes
-    /// precedence over the `REUSSIR_RUSTC_DEPS` environment variable and the
-    /// built-in probe list.
+    /// link against (`rustc -L`) — `libreussir_rt` and friends. Repeatable;
+    /// each directory becomes its own `-L`. Takes precedence over the
+    /// `REUSSIR_RUSTC_DEPS` environment variable (itself a path-separated
+    /// list) and the built-in probe list.
     #[arg(long = "polyffi-libdir", value_name = "DIR")]
-    polyffi_libdir: Option<PathBuf>,
+    polyffi_libdir: Vec<PathBuf>,
 
     /// Let the token-reuse pass reuse tokens across function calls.
     #[arg(long = "reuse-across-call")]
@@ -691,17 +692,20 @@ fn polyffi_paths(cli: &Cli) -> Result<PolyffiPaths, String> {
         .as_deref()
         .map(resolve_rustc)
         .transpose()?;
-    let libdir = match cli.polyffi_libdir.as_deref() {
-        Some(dir) if !dir.is_dir() => {
-            return Err(format!(
-                "--polyffi-libdir `{}` is not a directory",
-                dir.display()
-            ));
-        }
-        Some(dir) => Some(dir.to_string_lossy().into_owned()),
-        None => None,
-    };
-    Ok(PolyffiPaths { rust_path, libdir })
+    let libdirs = cli
+        .polyffi_libdir
+        .iter()
+        .map(|dir| {
+            if !dir.is_dir() {
+                return Err(format!(
+                    "--polyffi-libdir `{}` is not a directory",
+                    dir.display()
+                ));
+            }
+            Ok(dir.to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PolyffiPaths { rust_path, libdirs })
 }
 
 /// A bare `--polyffi-rust-path` name (no separator) searches `PATH`; anything
