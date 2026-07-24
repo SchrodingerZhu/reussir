@@ -286,9 +286,9 @@ fn compiles_to_the_wasm_target() {
     );
 }
 
-/// `--scan-deps` lists the package source graph — `lib.rr` plus everything
-/// reachable through `mod` declarations — as canonical paths in discovery
-/// order, without compiling anything.
+/// `--scan-deps` describes the package source graph — `lib.rr` plus
+/// everything reachable through `mod` declarations — as JSON with canonical
+/// paths and module paths in discovery order, without compiling anything.
 #[test]
 fn scan_deps_lists_the_package_source_graph() {
     let dir = scratch("scan-deps");
@@ -323,10 +323,18 @@ fn scan_deps_lists_the_package_source_graph() {
             .to_string()
     };
     let stdout = String::from_utf8(output.stdout).expect("scan-deps stdout is utf-8");
-    let lines: Vec<&str> = stdout.lines().collect();
+    let graph: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("bad JSON ({e}):\n{stdout}"));
     assert_eq!(
-        lines,
-        [canonical(&lib), canonical(&utils), canonical(&math)],
+        graph,
+        serde_json::json!({
+            "package": "mypkg",
+            "files": [
+                { "path": canonical(&lib), "module": ["mypkg"] },
+                { "path": canonical(&utils), "module": ["mypkg", "utils"] },
+                { "path": canonical(&math), "module": ["mypkg", "utils", "math"] },
+            ],
+        }),
         "stdout:\n{stdout}"
     );
 }
@@ -352,9 +360,12 @@ fn scan_deps_writes_the_listing_to_the_output_file() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty(), "listing must go to -o, not stdout");
-    let listing = read(&out);
+    let graph: serde_json::Value = serde_json::from_str(&read(&out)).expect("bad JSON in -o file");
     let expected = dir.path().join("lib.rr").canonicalize().unwrap();
-    assert_eq!(listing.trim(), expected.display().to_string());
+    assert_eq!(
+        graph["files"][0]["path"],
+        serde_json::json!(expected.display().to_string())
+    );
 }
 
 /// Without package mode there is no source graph to scan.

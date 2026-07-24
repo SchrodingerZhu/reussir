@@ -181,10 +181,11 @@ struct Cli {
     #[arg(long = "package-name")]
     package_name: Option<String>,
 
-    /// Instead of compiling, list every file in the package's source graph —
-    /// `lib.rr` plus everything reachable through `mod` declarations — one
-    /// canonical path per line, in discovery order. Requires package mode;
-    /// the list goes to `-o` (stdout by default).
+    /// Instead of compiling, describe the package's source graph — `lib.rr`
+    /// plus everything reachable through `mod` declarations — as JSON:
+    /// `{"package": …, "files": [{"path": …, "module": […]}]}`, with files in
+    /// discovery order and paths canonical. Requires package mode; the JSON
+    /// goes to `-o` (stdout by default).
     #[arg(long = "scan-deps")]
     scan_deps: bool,
 
@@ -666,8 +667,9 @@ fn load_package_or_render(
 }
 
 /// `--scan-deps`: run package discovery — which parses every file to follow
-/// its `mod` declarations — and list the source graph instead of compiling,
-/// one canonical path per line in discovery order.
+/// its `mod` declarations — and describe the source graph as JSON instead of
+/// compiling: the package name and, in discovery order, every file's
+/// canonical path and module path.
 fn scan_deps(cli: &Cli, package: Option<&(PathBuf, String)>) -> Result<bool, String> {
     let Some((root, pkg_name)) = package else {
         return Err("--scan-deps requires --package-root/--package-name".into());
@@ -681,12 +683,21 @@ fn scan_deps(cli: &Cli, package: Option<&(PathBuf, String)>) -> Result<bool, Str
         Err(msg) if msg.is_empty() => return Ok(false),
         Err(msg) => return Err(msg),
     };
-    let mut list = String::new();
-    for file in &pkg.files {
-        list.push_str(pkg.cache.name(file.file));
-        list.push('\n');
-    }
-    write_text(cli.output.as_deref().unwrap_or(Path::new("-")), &list)?;
+    let files: Vec<serde_json::Value> = pkg
+        .files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "path": pkg.cache.name(file.file),
+                "module": file.module,
+            })
+        })
+        .collect();
+    let graph = serde_json::json!({ "package": pkg_name, "files": files });
+    let mut text = serde_json::to_string_pretty(&graph)
+        .map_err(|e| format!("failed to encode the source graph: {e}"))?;
+    text.push('\n');
+    write_text(cli.output.as_deref().unwrap_or(Path::new("-")), &text)?;
     Ok(true)
 }
 
