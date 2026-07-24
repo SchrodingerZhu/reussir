@@ -1,0 +1,66 @@
+name: Rene Tests
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'crates/rene/**'
+      # rene's build script bundles the reussir-rt source tree (and the
+      # workspace manifest/lock it rewrites against) into the binary, so
+      # changes there change what the tests bake.
+      - 'crates/reussir-rt/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rene-test.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'crates/rene/**'
+      - 'crates/reussir-rt/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rene-test.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (rene)
+    strategy:
+      fail-fast: false
+      matrix:
+        # rene is a plain Rust crate (no LLVM/MLIR build), so testing it on
+        # every platform users run it on is cheap. Windows is left out for
+        # now: the fake-toolchain CLI test is unix-only (#[cfg(unix)] shell
+        # scripts), which would leave Windows covering almost nothing.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-02-15
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy -p rene --all-targets -- -D warnings
+
+      # The fast suite: manifest loading, build-dir locking, the clean
+      # protocol, and the bake driven through fake cargo/rustc scripts.
+      - name: Run tests
+        run: cargo test -p rene
+
+      # The real thing, ignored by default because it is slow and
+      # network-dependent: unpack the bundled runtime and bake reussir-rt
+      # with the host toolchain (crates.io + the pinned mlir-sync git rev).
+      - name: Run host-toolchain bake test
+        run: cargo test -p rene --test cli -- --ignored
