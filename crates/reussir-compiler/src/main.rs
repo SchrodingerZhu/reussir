@@ -165,8 +165,9 @@ impl Stage {
 #[derive(Parser)]
 #[command(name = "rrc", version)]
 struct Cli {
-    /// Input file (`-` reads Reussir source from stdin). Omitted in package
-    /// mode (`--package-root`/`--package-name`).
+    /// Input file (`-` reads Reussir source from stdin). With
+    /// `--package-name`, the input file is the package's crate root; omitted
+    /// with `--package-root`.
     input: Option<PathBuf>,
 
     /// Compile a whole package rooted at this directory: `lib.rr` is the
@@ -176,8 +177,10 @@ struct Cli {
     package_root: Option<PathBuf>,
 
     /// The package's name — the first segment of every item's module path
-    /// (and of its mangled symbols). `core` is reserved for the built-in core
-    /// package.
+    /// (and of its mangled symbols). With an input file, that file becomes
+    /// the package's crate root and its `mod` declarations discover sibling
+    /// files; without one, `--package-root` names the root directory. `core`
+    /// is reserved for the built-in core package.
     #[arg(long = "package-name")]
     package_name: Option<String>,
 
@@ -492,11 +495,39 @@ fn main() -> ExitCode {
     }
 }
 
+/// Where a package compilation's crate root comes from: `lib.rr` under a
+/// `--package-root` directory, or the input file itself when `--package-name`
+/// accompanies a positional input.
+enum PackageRoot {
+    Dir(PathBuf),
+    File(PathBuf),
+}
+
 fn run(cli: &Cli) -> Result<bool, String> {
-    let package = match (&cli.package_root, &cli.package_name) {
-        (Some(root), Some(name)) => Some((root.clone(), name.clone())),
-        (None, None) => None,
-        _ => return Err("--package-root and --package-name must be given together".into()),
+    let package = match (&cli.package_root, &cli.package_name, &cli.input) {
+        (Some(_), None, _) => return Err("--package-root requires --package-name".into()),
+        (Some(_), Some(_), Some(_)) => {
+            return Err("give either an input file or --package-root, not both".into());
+        }
+        (Some(root), Some(name), None) => Some((PackageRoot::Dir(root.clone()), name.clone())),
+        (None, Some(name), Some(input)) => {
+            // The crate root anchors `mod` discovery on disk, so it must be a
+            // real file.
+            if input.as_os_str() == "-" {
+                return Err(
+                    "--package-name roots the package at the input file; stdin has no \
+                     location for `mod` discovery"
+                        .into(),
+                );
+            }
+            Some((PackageRoot::File(input.clone()), name.clone()))
+        }
+        (None, Some(_), None) => {
+            return Err(
+                "--package-name needs a crate root: an input file or --package-root".into(),
+            );
+        }
+        (None, None, _) => None,
     };
 
     // `--scan-deps` stops after discovery: list the package's source graph
@@ -553,16 +584,21 @@ fn run(cli: &Cli) -> Result<bool, String> {
         features: cli.target_features.clone(),
     };
 
-    // Package mode: discover the files from `lib.rr`'s `mod` declarations and
-    // elaborate the whole package as one translation unit.
+    // Package mode: discover the files from the crate root's `mod`
+    // declarations and elaborate the whole package as one translation unit.
     if let Some((root, pkg_name)) = package {
-        if cli.input.is_some() {
-            return Err(
-                "give either an input file or --package-root/--package-name, not both".into(),
-            );
-        }
         if cli.from.is_some_and(|f| f != Stage::Rr) {
             return Err("a package is always Reussir source; --from does not apply".into());
+        }
+        if let PackageRoot::File(input) = &root {
+            // A rooted input also carries an extension; make a non-source one
+            // (`.hir`, `.mir`, …) fail like `--from` instead of parsing as source.
+            if resolve_input_stage(cli, input)? != Stage::Rr {
+                return Err(
+                    "a package is always Reussir source; the crate root must be a `.rr` file"
+                        .into(),
+                );
+            }
         }
         let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
         let pkg = match load_package_or_render(&root, &pkg_name, &interner) {
@@ -641,17 +677,22 @@ fn run(cli: &Cli) -> Result<bool, String> {
     backend(cli, &context, produced, target, opt, reloc, &spec, &name, output)
 }
 
-/// Discover and parse the package, rendering syntax errors through the same
-/// ariadne path as compile diagnostics.
+/// Discover and parse the package from its crate root — `lib.rr` under a
+/// root directory, or the rooting input file itself — rendering syntax errors
+/// through the same ariadne path as compile diagnostics.
 ///
 /// An empty `Err` string signals diagnostics were already printed (a compile
 /// failure, exit 1) rather than a driver error (exit 2).
 fn load_package_or_render(
-    root: &Path,
+    root: &PackageRoot,
     name: &str,
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
 ) -> Result<package::PackageSource, String> {
-    match package::load_package(root, name, interner) {
+    let loaded = match root {
+        PackageRoot::Dir(dir) => package::load_package(dir, name, interner),
+        PackageRoot::File(file) => package::load_package_rooted(file, name, interner),
+    };
+    match loaded {
         Ok(pkg) => Ok(pkg),
         Err(package::PackageError::Message(msg)) => Err(msg),
         Err(package::PackageError::ParseErrors {
@@ -670,13 +711,14 @@ fn load_package_or_render(
 /// its `mod` declarations — and describe the source graph as JSON instead of
 /// compiling: the package name and, in discovery order, every file's
 /// canonical path and module path.
-fn scan_deps(cli: &Cli, package: Option<&(PathBuf, String)>) -> Result<bool, String> {
+fn scan_deps(cli: &Cli, package: Option<&(PackageRoot, String)>) -> Result<bool, String> {
     let Some((root, pkg_name)) = package else {
-        return Err("--scan-deps requires --package-root/--package-name".into());
+        return Err(
+            "--scan-deps requires package mode: --package-root, or an input file rooted \
+             by --package-name"
+                .into(),
+        );
     };
-    if cli.input.is_some() {
-        return Err("give either an input file or --package-root/--package-name, not both".into());
-    }
     let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
     let pkg = match load_package_or_render(root, pkg_name, &interner) {
         Ok(pkg) => pkg,

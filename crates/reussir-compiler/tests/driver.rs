@@ -337,6 +337,25 @@ fn scan_deps_lists_the_package_source_graph() {
         }),
         "stdout:\n{stdout}"
     );
+
+    // Rooting the same package at its lib.rr via `--package-name` (no
+    // `--package-root`) scans the identical graph.
+    let rooted = rrc(&[
+        &lib,
+        Path::new("--package-name"),
+        Path::new("mypkg"),
+        Path::new("--scan-deps"),
+    ]);
+    assert!(
+        rooted.status.success(),
+        "file-rooted scan-deps failed:\n{}",
+        String::from_utf8_lossy(&rooted.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(rooted.stdout).expect("stdout is utf-8"),
+        stdout,
+        "file-rooted scan must match --package-root scan"
+    );
 }
 
 /// `-o` redirects the `--scan-deps` listing into a file.

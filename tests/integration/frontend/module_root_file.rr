@@ -1,0 +1,37 @@
+// `--package-name` with a positional input roots the package at that file:
+// the crate root is `main.rr` (any name works, no `lib.rr` required), its
+// `mod` declarations discover sibling files, and every item lands under the
+// package's module path instead of the anonymous top level.
+
+// RUN: %rrc %S/module_root_file/main.rr --package-name app --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %S/module_root_file/main.rr --package-name app -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/module_root_file/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// CHECK: pub fn #app::entry(v0 (n): u64) -> u64 {
+// CHECK-NEXT: #app::util::add(v0 : u64, 10 : u64) : u64
+// CHECK: pub fn #app::util::add(v0 (a): u64, v1 (b): u64) -> u64 {
+
+// The crate root anchors `mod` discovery on disk, so stdin cannot be one; a
+// package is always Reussir source, so a non-`.rr` crate root is rejected up
+// front; and the remaining flag pairings each get a driver diagnostic.
+
+// RUN: %not %rrc - --package-name app -o %t2.o < %S/module_root_file/util.rr 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=STDIN
+// STDIN: stdin has no location for `mod` discovery
+
+// RUN: %not %rrc %t.no-such.hir --package-name app -o %t3.o 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NON-SOURCE
+// NON-SOURCE: a package is always Reussir source
+
+// RUN: %not %rrc --package-name app -o %t4.o 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NO-ROOT
+// NO-ROOT: --package-name needs a crate root
+
+// RUN: %not %rrc --package-root %S/module_root_file -o %t5.o 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NO-NAME
+// NO-NAME: --package-root requires --package-name
+
+// RUN: %not %rrc %S/module_root_file/main.rr --package-root %S/module_root_file \
+// RUN:   --package-name app -o %t6.o 2>&1 | %FileCheck %s --check-prefix=BOTH
+// BOTH: give either an input file or --package-root, not both
