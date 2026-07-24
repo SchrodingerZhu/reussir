@@ -265,6 +265,9 @@ mod tests {
         // Workspace inheritance must be fully resolved…
         assert!(!manifest.contains("workspace = true"), "{manifest}");
         assert!(manifest.contains("edition = \"2024\""), "{manifest}");
+        // …the crate must be its own workspace root (or an enclosing
+        // workspace — e.g. a user project in one — captures and rejects it)…
+        assert!(manifest.contains("[workspace]"), "{manifest}");
         // …and the nightly-only optimization feature dropped, so the user's
         // stable toolchain can build the runtime. (Prose comments mentioning
         // nightly survive; only the feature string must be gone.)

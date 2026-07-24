@@ -61,7 +61,9 @@ fn append_text(tar: &mut tar::Builder<Vec<u8>>, path: &str, text: &str) {
 
 /// Rewrite the in-workspace `reussir-rt` manifest into a standalone one:
 /// resolve every `workspace = true` inheritance against the workspace
-/// manifest, since the unpacked copy builds outside any workspace.
+/// manifest, and pin an empty `[workspace]` table so the unpacked copy stays
+/// its own workspace root even when the build directory sits inside some
+/// enclosing cargo workspace (a user project often does).
 fn standalone_manifest(crate_toml: &Path, workspace_toml: &Path) -> String {
     let mut doc: DocumentMut = fs::read_to_string(crate_toml)
         .unwrap()
@@ -120,6 +122,11 @@ fn standalone_manifest(crate_toml: &Path, workspace_toml: &Path) -> String {
             features.retain(|f| f.as_str() != Some("nightly"));
         }
     }
+
+    // Cut the crate loose from any workspace it might land under: cargo
+    // walks parent directories for a workspace root, and a foreign root
+    // rejects the crate ("believes it's in a workspace when it's not").
+    doc["workspace"] = toml_edit::Item::Table(toml_edit::Table::new());
 
     doc.to_string()
 }
