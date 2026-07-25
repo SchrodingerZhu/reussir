@@ -215,22 +215,22 @@ config.substitutions.append((r'%reussir_rt_lsan', sh_path(config.reussir_rt_lsan
 config.substitutions.append((r'%reussir_rt_msan', sh_path(config.reussir_rt_msan_path)))
 config.substitutions.append((r'%reussir_rt_tsan', sh_path(config.reussir_rt_tsan_path)))
 
-# rustc resolves the MSVC linker under a vcvars environment (VCINSTALLDIR
-# set) with a bare PATH scan for `link.exe` — which, in a Git-for-Windows
-# shell, finds coreutils' /usr/bin/link first and the link fails with its
-# usage error. Put the directory of the real linker ahead of it, and carry
-# the vcvars variables that scan and the link itself consult across lit's
+# The MSVC linker the launcher link hands to rustc via `-C linker=`,
+# resolved at configure time (see tests/integration/CMakeLists.txt): left to
+# its own discovery under a vcvars environment, rustc degrades to a bare
+# PATH scan for `link.exe` and finds Git-for-Windows' coreutils
+# /usr/bin/link instead. The path contains spaces (Program Files), so the
+# substitution carries its own quoting. Empty — no vcvars at configure —
+# means rustc's registry-based discovery, which is right on a plain dev box.
+_launcher_linker = ''
+if sys.platform == 'win32' and config.msvc_linker_path:
+    _launcher_linker = '-C "linker=%s"' % sh_path(config.msvc_linker_path)
+config.substitutions.append((r'%launcher_linker', _launcher_linker))
+
+# link.exe itself resolves the CRT and system import libraries through the
+# vcvars LIB variable; carry it (and its companions) across lit's
 # environment scrubbing.
 if sys.platform == 'win32':
-    _vc_tools = os.environ.get('VCToolsInstallDir')
-    if _vc_tools:
-        _vc_bin = os.path.join(
-            _vc_tools, 'bin',
-            'Host' + os.environ.get('VSCMD_ARG_HOST_ARCH', 'x64'),
-            os.environ.get('VSCMD_ARG_TGT_ARCH', 'x64'))
-        config.environment['PATH'] = os.pathsep.join(
-            [_vc_bin, config.environment.get('PATH',
-                                             os.environ.get('PATH', ''))])
     for _var in ('VCINSTALLDIR', 'VSINSTALLDIR', 'VCToolsInstallDir',
                  'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH',
                  'WindowsSdkDir', 'WindowsSDKVersion', 'WindowsSdkBinPath',

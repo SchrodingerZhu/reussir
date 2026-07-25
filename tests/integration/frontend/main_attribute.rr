@@ -20,11 +20,14 @@
 // is self-contained, so it needs no rpath either. `%launcher_sys_libs` is
 // what the archive's own code needs beyond what rustc links anyway (the
 // CoreFoundation/Security frameworks on macOS, a few system libraries on
-// Windows), which rustc cannot infer from a *native* archive.
+// Windows), which rustc cannot infer from a *native* archive. And
+// `%launcher_linker` pins the MSVC link.exe on Windows, where rustc's own
+// discovery under a vcvars environment finds Git-for-Windows' coreutils
+// `link` on PATH instead; elsewhere it is empty.
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o --relocation-mode pic
-// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe %launcher_linker -C link-arg=%t.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
 // RUN: %t.exe
 
 // The attribute lowers to an ordinary C-ABI export of the marked function.
@@ -48,7 +51,7 @@
 
 // …and resuming all the way to a running executable gives the same program.
 // RUN: %rrc %t.a.hir -o %t.resumed.o --relocation-mode pic
-// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe %launcher_linker -C link-arg=%t.resumed.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
 // RUN: %t.resumed.exe
 
 // One entry point per program…
