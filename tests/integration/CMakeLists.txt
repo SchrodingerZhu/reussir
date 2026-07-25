@@ -221,13 +221,18 @@ endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# USES_TERMINAL runs lit in ninja's console pool with the real terminal on
+# stdout — lit only enables its colors and progress bar on a TTY, and a
+# piped ninja job never is one.
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
   DEPENDS reussir-opt reussir-rt reussir-translate reussir-llvm-opt
-          reussir-syntax rrc rrepl rene)
+          reussir-syntax rrc rrepl rene
+  USES_TERMINAL)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v --filter "sanitizer/"
-    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate rrc)
+    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate rrc
+    USES_TERMINAL)
 endif()
