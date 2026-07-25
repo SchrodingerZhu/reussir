@@ -1,0 +1,44 @@
+// UNSUPPORTED: windows
+// `rrc --emit dynlib`: a shared library whose export surface is exactly the
+// program's `extern` trampolines. rustc's cdylib machinery localizes every
+// symbol the (empty) shim crate does not export — which is everything — so
+// the driver spells the trampolines to the linker itself: a second version
+// script on ELF — union semantics lld has and GNU bfd rejects, so the link
+// pins the toolchain's bundled rust-lld on Linux — and an
+// `-exported_symbols_list` on Mach-O. That localization is also what keeps
+// the cross-unit linkage surface (`_RC…` symbols made external for
+// `--codegen-units`) out of the dynamic table.
+//
+// Windows spells exports as `/EXPORT:` and consumes the library through an
+// import library; dynlib_windows.rr covers it.
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.so --emit dynlib --relocation-mode pic --codegen-units 2 %rrc_linker
+
+// The trampolines are exported…
+// RUN: %llvm-nm --defined-only --extern-only %t.so | %FileCheck %s --check-prefix=EXPORTS
+// EXPORTS-DAG: fib_ffi
+// EXPORTS-DAG: twice_ffi
+
+// …and the mangled Reussir internals — external in the objects so the two
+// codegen units can call each other — are not.
+// RUN: %llvm-nm --defined-only --extern-only %t.so | %FileCheck %s --check-prefix=HIDDEN
+// HIDDEN-NOT: _RC
+
+// The C driver links against the library by path and runs; a miscompiled or
+// unresolved trampoline fails here.
+// RUN: %cc %S/staticlib/driver.c %t.so -o %t.exe
+// RUN: %t.exe | %FileCheck %s --check-prefix=EXEC
+// EXEC: fib=55 twice=42
+
+// A `#[main]` in a dynamic library is not a contradiction: `__reussir_main`
+// is an ordinary trampoline, exported like any other, for a host that wants
+// to dlopen the program and run it.
+// RUN: %rrc %S/../frontend/main_attribute.rr -o %t.main.so --emit dynlib --relocation-mode pic %rrc_linker
+// RUN: %llvm-nm --defined-only --extern-only %t.main.so | %FileCheck %s --check-prefix=MAIN
+// MAIN: __reussir_main
+
+// The exports come from the frontend's trampoline records, which a
+// backend-stage input no longer carries; refused up front.
+// RUN: %rrc %S/staticlib/lib.rr --emit llvm-ir --relocation-mode pic -o %t.ll
+// RUN: %not %rrc %t.ll -o %t.ll.so --emit dynlib 2>&1 | %FileCheck %s --check-prefix=BACKEND
+// BACKEND: cannot emit `dynlib` from a `llvm-ir` input

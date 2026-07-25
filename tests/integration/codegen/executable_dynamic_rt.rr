@@ -1,0 +1,22 @@
+// REQUIRES: linux
+// `--runtime-linkage dynamic`: the executable records the shared runtime
+// library (by soname, through `-L`/`-l`, not by path) instead of bundling
+// the static archive. Finding it at load time is the deployment's problem,
+// not the driver's — here an rpath supplied through `--link-arg` points at
+// the build tree. Linux-gated: the mechanism is identical on macOS, but the
+// cargo-built dylib's install name bakes the cargo target directory's path,
+// which is a runtime-packaging question this test has no business settling;
+// Windows consumes the DLL through its import library (see
+// dynlib_windows.rr for that side of the toolchain).
+
+// RUN: %rrc %s -o %t.exe --emit executable --relocation-mode pic --runtime-linkage dynamic --link-arg=-Wl,-rpath,%library_path
+// RUN: %t.exe
+
+fn twice(n: u64) -> u64 {
+    n + n
+}
+
+#[main]
+pub fn entry() {
+    let doubled = twice(21);
+}

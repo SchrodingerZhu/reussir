@@ -1,0 +1,66 @@
+// `rrc --emit executable`: the driver finishes the stage chain with a link
+// step — the program's objects, the embedded Rust launcher
+// (crates/reussir-rt/launcher/main.rs, so the program starts under the full
+// Rust runtime), and the runtime's static archive, named by path so no
+// same-named shared library can be picked in its place. rustc drives the
+// link because the launcher *is* Rust, and because rustc already knows each
+// target's linker and system-library baseline. `%rrc_linker` pins MSVC's
+// link.exe on Windows CI and is empty elsewhere.
+//
+// frontend/main_attribute.rr covers the `#[main]` attribute itself and the
+// resumed stage chain; this suite covers the link step.
+
+// RUN: %rrc %s -o %t.exe --emit executable --relocation-mode pic %rrc_linker
+// RUN: %t.exe
+
+// `--codegen-units` stays invisible: the units are linked, not left as
+// `<stem>.<i>.o` siblings, and cross-unit calls resolve inside the link.
+// RUN: %rrc %s -o %t.4.exe --emit executable --relocation-mode pic --codegen-units 4 %rrc_linker
+// RUN: %t.4.exe
+
+// A `.exe` output extension infers the target like any other stage's
+// extension does.
+// RUN: %rrc %s -o %t.inferred.exe --relocation-mode pic %rrc_linker
+// RUN: %t.inferred.exe
+
+// An LLVM-IR input resumes straight into the link — the backend fast path
+// emits the one object and links it the same way.
+// RUN: %rrc %s --emit llvm-ir --relocation-mode pic -o %t.ll
+// RUN: %rrc %t.ll -o %t.ll.exe --emit executable %rrc_linker
+// RUN: %t.ll.exe
+
+// Without a `#[main]` there is nothing to enter: refused before any linker
+// runs, as a driver diagnostic rather than an undefined-symbol error.
+// RUN: %not %rrc %S/staticlib/lib.rr -o %t.nomain.exe --emit executable 2>&1 | %FileCheck %s --check-prefix=NOMAIN
+
+// NOMAIN: an executable needs an entry point
+
+// The link-step knobs mean nothing without a link step; refused up front
+// rather than silently ignored.
+// RUN: %not %rrc %s -o %t.o --link-arg=-lm 2>&1 | %FileCheck %s --check-prefix=LINKARG
+// RUN: %not %rrc %s -o %t.o --runtime-linkage static 2>&1 | %FileCheck %s --check-prefix=RTLINK
+// RUN: %not %rrc %s -o %t.o --linker %rrc 2>&1 | %FileCheck %s --check-prefix=LINKER
+
+// LINKARG: --link-arg applies to `executable` and `dynlib`
+// RTLINK: --runtime-linkage applies to `executable` and `dynlib`
+// LINKER: --linker applies to `executable` and `dynlib`
+
+// Two functions calling across the file, so a partitioned build has
+// something to resolve between units.
+fn fib(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn twice(n: u64) -> u64 {
+    n + n
+}
+
+#[main]
+pub fn entry() {
+    let f = fib(10);
+    let t = twice(f);
+}

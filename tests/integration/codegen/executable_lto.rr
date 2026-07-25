@@ -1,0 +1,39 @@
+// REQUIRES: rustc-lto-link
+// `--lto` through the driver's own link: the codegen units are emitted as
+// bitcode by the matching LTO pre-link pipeline and handed to the linker
+// rustc drives, which optimizes across them. Gated on a probe (lit.cfg.py)
+// that runs this exact pipeline: the linker must consume *this* LLVM's
+// bitcode, which rust-lld does where it is rustc's default, and a system
+// linker without a matching-version LTO plugin does not.
+
+// RUN: %rrc %s -o %t.thin.exe --emit executable --relocation-mode pic --codegen-units 2 --lto thin %rrc_linker
+// RUN: %t.thin.exe
+
+// RUN: %rrc %s -o %t.fat.exe --emit executable --relocation-mode pic --codegen-units 2 --lto fat %rrc_linker
+// RUN: %t.fat.exe
+
+// The dynamic library takes the same path; its exports survive the LTO's
+// internalization because the export list reaches the same linker.
+// RUN: %rrc %S/staticlib/lib.rr -o %t.thin.so --emit dynlib --relocation-mode pic --codegen-units 2 --lto thin %rrc_linker
+// RUN: %cc %S/staticlib/driver.c %t.thin.so -o %t.drv.exe
+// RUN: %t.drv.exe | %FileCheck %s --check-prefix=EXEC
+
+// EXEC: fib=55 twice=42
+
+fn fib(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn twice(n: u64) -> u64 {
+    n + n
+}
+
+#[main]
+pub fn entry() {
+    let f = fib(10);
+    let t = twice(f);
+}

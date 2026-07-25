@@ -46,11 +46,3 @@
 // RUN: %not %rrc %S/staticlib/lib.rr -o - --emit staticlib 2>&1 | %FileCheck %s --check-prefix=STDOUT
 
 // STDOUT: cannot write `staticlib` to stdout
-
-// The two link-requiring targets are recognized, and refused up front rather
-// than after compiling.
-// RUN: %not %rrc %S/staticlib/lib.rr -o %t.exe --emit executable 2>&1 | %FileCheck %s --check-prefix=EXE
-// RUN: %not %rrc %S/staticlib/lib.rr -o %t.dylib --emit dynlib 2>&1 | %FileCheck %s --check-prefix=DYN
-
-// EXE: emitting `executable` is not implemented yet
-// DYN: emitting `dynlib` is not implemented yet

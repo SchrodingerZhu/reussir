@@ -378,7 +378,10 @@ fn scan_deps_writes_the_listing_to_the_output_file() {
         "scan-deps failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty(), "listing must go to -o, not stdout");
+    assert!(
+        output.stdout.is_empty(),
+        "listing must go to -o, not stdout"
+    );
     let graph: serde_json::Value = serde_json::from_str(&read(&out)).expect("bad JSON in -o file");
     let expected = dir.path().join("lib.rr").canonicalize().unwrap();
     assert_eq!(
@@ -534,50 +537,85 @@ fn a_static_library_is_reproducible() {
     assert_eq!(first, second, "two identical builds differ");
 }
 
-/// The link-requiring targets are recognized — by `--emit` and by the output
-/// extension — and refused before any compilation happens.
-#[test]
-fn refuses_the_targets_that_need_a_linker() {
-    let (dir, src) = source("link-products");
-
-    for (args, expected) in [
-        (vec!["--emit", "executable"], "executable"),
-        (vec!["--emit", "dynlib"], "dynlib"),
-    ] {
-        let out = dir.path().join("out.bin");
-        let mut argv: Vec<&Path> = vec![&src, Path::new("-o"), &out];
-        argv.extend(args.iter().map(Path::new));
-        let output = rrc(&argv);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "expected a usage error for {expected}"
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected) && stderr.contains("not implemented yet"),
-            "stderr:\n{stderr}"
-        );
-        assert!(!out.exists(), "{expected} produced a file anyway");
-    }
-
-    // A shared-library extension names the same unimplemented stage.
-    let out = dir.path().join("libprog.so");
-    let output = rrc(&[&src, Path::new("-o"), &out]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("dynlib"),
-        "a `.so` output should resolve to the dynlib stage"
-    );
+/// Like [`rrc`], with the toolchain environment scrubbed, so assertions
+/// about a *missing* toolchain hold no matter what the developer's shell
+/// exports. (The lit suite covers the links that succeed; these tests cover
+/// the driver's own diagnostics, which must not depend on one.)
+fn rrc_without_toolchain(args: &[&Path]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args(args)
+        .env_remove("REUSSIR_RUSTC")
+        .env_remove("REUSSIR_RUSTC_DEPS")
+        .output()
+        .expect("spawn rrc")
 }
 
-/// `--lto` describes how a *library* is packed; it is meaningless for the
-/// other targets, and says so rather than silently doing nothing.
+/// The link step's driver-level diagnostics, all raised before any linker
+/// runs.
 #[test]
-fn rejects_lto_without_a_static_library() {
+fn link_step_driver_diagnostics() {
+    let (dir, src) = source("link-products");
+
+    // `PROGRAM` has no `#[main]`, so there is no entry point to link an
+    // executable around; refused before rustc or the runtime is even looked
+    // up, which is why this needs no toolchain.
+    let out = dir.path().join("prog.exe");
+    let output = rrc(&[
+        &src,
+        Path::new("-o"),
+        &out,
+        Path::new("--emit"),
+        Path::new("executable"),
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("an executable needs an entry point"),
+        "stderr:\n{stderr}"
+    );
+    assert!(!out.exists(), "the refused link produced a file anyway");
+
+    // A shared-library extension resolves to the dynlib stage: the driver
+    // heads for its link step (and, with the toolchain scrubbed, fails
+    // looking for it) instead of emitting the default object.
+    let out = dir.path().join("libprog.so");
+    let output = rrc_without_toolchain(&[&src, Path::new("-o"), &out]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("for the link step"), "stderr:\n{stderr}");
+    assert!(!out.exists(), "the failed link produced a file anyway");
+
+    // The link knobs mean nothing without a link step.
+    for (knob, name) in [
+        ("--link-arg=-lm", "--link-arg"),
+        ("--runtime-linkage=static", "--runtime-linkage"),
+        ("--linker=rustc", "--linker"),
+    ] {
+        let out = dir.path().join("prog.o");
+        let output = rrc(&[&src, Path::new("-o"), &out, Path::new(knob)]);
+        assert_eq!(output.status.code(), Some(2), "{name} with an object");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(name) && stderr.contains("applies to `executable` and `dynlib`"),
+            "stderr:\n{stderr}"
+        );
+    }
+}
+
+/// `--lto` describes how a packaged or linked product is built; it is
+/// meaningless for the plain emission targets, and says so rather than
+/// silently doing nothing.
+#[test]
+fn rejects_lto_without_a_packaged_or_linked_target() {
     let (dir, src) = source("lto-misuse");
     let out = dir.path().join("prog.o");
-    let output = rrc(&[&src, Path::new("-o"), &out, Path::new("--lto"), Path::new("fat")]);
+    let output = rrc(&[
+        &src,
+        Path::new("-o"),
+        &out,
+        Path::new("--lto"),
+        Path::new("fat"),
+    ]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--lto applies to"), "stderr:\n{stderr}");

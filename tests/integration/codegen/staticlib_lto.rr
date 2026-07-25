@@ -65,8 +65,8 @@
 
 // NATIVE: target triple = "arm64-apple-darwin24.6.0"
 
-// `--lto` is about how a library is packed; it has nothing to say about the
-// other emission targets.
-// RUN: %not %rrc %S/staticlib/lib.rr -o %t.o --lto thin 2>&1 | %FileCheck %s --check-prefix=ONLY-STATICLIB
+// `--lto` is about how a packaged or linked product is built; it has nothing
+// to say about the plain emission targets.
+// RUN: %not %rrc %S/staticlib/lib.rr -o %t.o --lto thin 2>&1 | %FileCheck %s --check-prefix=ONLY-PACKAGED
 
-// ONLY-STATICLIB: --lto applies to `--emit staticlib`
+// ONLY-PACKAGED: --lto applies to `staticlib`, `dynlib`, and `executable`
