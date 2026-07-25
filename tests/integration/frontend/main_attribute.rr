@@ -1,12 +1,16 @@
 // `#[main]` names the program's entry point. It is exported under the fixed
 // symbol `__reussir_main`, through the same trampoline path an explicit
-// `extern "C" trampoline` takes, and the runtime's `__reussir_start` is what
-// runs it — so the entry point is reachable from a C `main` today, before the
-// driver learns to link executables itself.
+// `extern "C" trampoline` takes.
+//
+// An executable is then built *around* it: the launcher
+// (crates/reussir-rt/launcher/main.rs) is a real Rust `main`, so rustc emits
+// the C entry that runs `lang_start` and the program starts under the full
+// Rust runtime. Here the link is spelled out by hand; the driver will do it
+// once it learns to emit executables.
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o --relocation-mode pic
-// RUN: %cc %t.o %S/main_attribute/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -L %library_path -l reussir_rt -C link-arg=%rpath_flag
 // RUN: %t.exe
 
 // The attribute lowers to an ordinary C-ABI export of the marked function.

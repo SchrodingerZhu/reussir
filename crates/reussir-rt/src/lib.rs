@@ -18,7 +18,6 @@ pub mod option;
 pub mod panic;
 pub mod rc;
 pub mod region;
-pub mod start;
 pub mod symbols;
 use panic::panic;
 
