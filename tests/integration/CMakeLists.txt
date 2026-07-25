@@ -68,6 +68,13 @@ message(STATUS "not path: ${not_path}")
 find_llvm_tool(opt_path opt)
 find_llvm_tool(llc_path llc)
 find_llvm_tool(lli_path lli)
+# The static-library suite inspects what `rrc --emit staticlib` archived:
+# llvm-ar lists and extracts members, llvm-nm reads the symbol table (over
+# native objects and, under --lto, bitcode).
+find_llvm_tool(llvm_ar_path llvm-ar)
+find_llvm_tool(llvm_nm_path llvm-nm)
+find_llvm_tool(llvm_bcanalyzer_path llvm-bcanalyzer)
+find_llvm_tool(llvm_dis_path llvm-dis)
 
 # lldb drives the end-to-end debug-info suite (tests/integration/debuginfo):
 # it runs compiled executables under the debugger, with the Reussir formatters

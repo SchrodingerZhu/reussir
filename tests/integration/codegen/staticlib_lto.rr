@@ -1,0 +1,72 @@
+// `rrc --emit staticlib --lto <thin|fat>`: the library is packed for
+// link-time optimization. Its members are LLVM bitcode produced by the
+// matching LTO pre-link pipeline rather than finished native code, and the
+// archive's symbol table indexes that bitcode — which is what lets a linker
+// pull members out of it and optimize across them.
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.fat.a --emit staticlib --lto fat --relocation-mode pic --codegen-units 2
+// RUN: %rrc %S/staticlib/lib.rr -o %t.thin.a --emit staticlib --lto thin --relocation-mode pic --codegen-units 2
+
+// Members are bitcode (`.bc`), one per codegen unit.
+// RUN: %llvm-ar t %t.fat.a | %FileCheck %s --check-prefix=MEMBERS
+// RUN: %llvm-ar t %t.thin.a | %FileCheck %s --check-prefix=MEMBERS
+
+// MEMBERS:      {{.*}}.0.bc
+// MEMBERS-NEXT: {{.*}}.1.bc
+// MEMBERS-NOT:  {{.*}}.2.bc
+
+// The symbol table covers them: `llvm-nm` reads the archive's index, so both
+// trampolines being listed means the index was built over bitcode members —
+// the property an LTO link depends on.
+// RUN: %llvm-nm --defined-only %t.fat.a | %FileCheck %s --check-prefix=SYMS
+// RUN: %llvm-nm --defined-only %t.thin.a | %FileCheck %s --check-prefix=SYMS
+
+// SYMS-DAG: fib_ffi
+// SYMS-DAG: twice_ffi
+
+// What the members actually are: extract one and confirm it is bitcode, not
+// an object that merely got a `.bc` name.
+// RUN: rm -rf %t.x && mkdir -p %t.x
+// RUN: cd %t.x && %llvm-ar x %t.thin.a
+// RUN: %llvm-nm --print-file-name %t.x/*.0.bc | %FileCheck %s --check-prefix=BITCODE
+
+// BITCODE: {{.*}}.bc
+
+// ThinLTO needs a module summary index in each member — that is how the
+// linker decides what to import where. Full LTO merges the modules instead
+// and carries no summary.
+// RUN: %llvm-bcanalyzer %t.x/*.0.bc | %FileCheck %s --check-prefix=THIN
+// RUN: rm -rf %t.xf && mkdir -p %t.xf
+// RUN: cd %t.xf && %llvm-ar x %t.fat.a
+// RUN: %llvm-bcanalyzer %t.xf/*.0.bc | %FileCheck %s --check-prefix=FAT
+
+// THIN: GLOBALVAL_SUMMARY_BLOCK
+// FAT-NOT: GLOBALVAL_SUMMARY_BLOCK
+
+// A Darwin target's bitcode names its OS `macosx`, not the bare `darwin`
+// form `LLVMGetDefaultTargetTriple` reports (which spells the *kernel*
+// version). A Mach-O object carries its platform in a load command, so the
+// spelling never mattered before; a bitcode member's platform *is* the
+// triple, and Apple's `ld64` rejects `darwin` there:
+//
+//   ld: unknown OS in target triple 'arm64-apple-darwin24.6.0' in 'lib.a(x.bc)'
+//
+// Cross-emitted, so every host guards the macOS artifact.
+// RUN: %rrc %S/staticlib/lib.rr -o %t.mac.a --emit staticlib --lto fat --relocation-mode pic --target-triple arm64-apple-darwin24.6.0
+// RUN: rm -rf %t.xm && mkdir -p %t.xm
+// RUN: cd %t.xm && %llvm-ar x %t.mac.a
+// RUN: %llvm-dis -o - %t.xm/*.0.bc | %FileCheck %s --check-prefix=DARWIN
+
+// DARWIN: target triple = "arm64-apple-macosx{{[0-9.]+}}"
+
+// Native emission is untouched: only a bitcode consumer needs the rewrite.
+// RUN: %rrc %S/staticlib/lib.rr -o %t.mac.ll --emit llvm-ir --relocation-mode pic --target-triple arm64-apple-darwin24.6.0
+// RUN: %FileCheck %s --check-prefix=NATIVE --input-file=%t.mac.ll
+
+// NATIVE: target triple = "arm64-apple-darwin24.6.0"
+
+// `--lto` is about how a library is packed; it has nothing to say about the
+// other emission targets.
+// RUN: %not %rrc %S/staticlib/lib.rr -o %t.o --lto thin 2>&1 | %FileCheck %s --check-prefix=ONLY-STATICLIB
+
+// ONLY-STATICLIB: --lto applies to `--emit staticlib`

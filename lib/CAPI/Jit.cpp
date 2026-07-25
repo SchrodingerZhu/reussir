@@ -42,7 +42,8 @@
 #endif
 
 void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
-                                   LLVMTargetMachineRef machine) {
+                                   LLVMTargetMachineRef machine,
+                                   ReussirLtoMode lto) {
   if (opt == ReussirJitOptNone || opt == ReussirJitOptTpde)
     return;
 
@@ -152,7 +153,25 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
   // size for time.
   if (opt == ReussirJitOptDefault || opt == ReussirJitOptAggressive)
     reussir::llvmpass::registerLinearRecurrencePipelines(pb);
-  mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
+  // Under LTO the module is only half-compiled here: the pre-link pipeline
+  // canonicalizes and cleans up but leaves the whole-program work (inlining
+  // across modules, global DCE, the second vectorization round) to the link
+  // step, which sees every module at once. Running the per-module pipeline
+  // instead would optimize against a keyhole view and then have the linker
+  // redo it.
+  switch (lto) {
+  case ReussirLtoThin:
+    mpm.addPass(pb.buildThinLTOPreLinkDefaultPipeline(level));
+    break;
+  case ReussirLtoFat:
+    mpm.addPass(pb.buildLTOPreLinkDefaultPipeline(level));
+    break;
+  // `ReussirLtoNone`, and any value outside the enum: compile this module as
+  // the whole world, since nothing downstream will optimize it further.
+  default:
+    mpm.addPass(pb.buildPerModuleDefaultPipeline(level));
+    break;
+  }
   mpm.addPass(reussir::llvmpass::AllocationSimplicationPass());
   mpm.run(m, mam);
 }

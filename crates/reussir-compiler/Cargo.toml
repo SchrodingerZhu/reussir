@@ -34,6 +34,10 @@ palc.workspace = true
 # Encodes the `--scan-deps` source-graph listing (and lets the driver tests
 # parse it back).
 serde_json.workspace = true
+# Scratch directory holding a static library's members until they are
+# archived; they are intermediates, not artifacts, so they never land in the
+# user's output directory.
+tempfile = "3"
 # The lowering and backend pipeline emit `tracing` events; install a subscriber
 # so `-v`/`RUST_LOG` surface them (to stderr, never stdout).
 tracing.workspace = true

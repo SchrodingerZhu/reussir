@@ -21,6 +21,7 @@ use palc::Parser;
 
 use reussir_backend::llvm::{LlvmLowering, PolyffiPaths};
 use reussir_backend::melior::ir::Module;
+use reussir_backend::llvm::LtoMode;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{
     CodegenUnit, LinkagePolicy, LoweringError, Sanitizer, lower_program, lower_unit,
@@ -28,7 +29,7 @@ use reussir_codegen::lower::{
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_compiler::package;
 use reussir_compiler::{
-    OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir,
+    OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir, write_archive,
 };
 use reussir_core::full::mir;
 use reussir_core::full::mono::{MonoInput, monomorphize};
@@ -63,6 +64,36 @@ enum Stage {
     Asm,
     /// A relocatable object file (`.o`).
     Obj,
+    /// A static library archiving the codegen units (`.a`/`.lib`).
+    Staticlib,
+    /// A dynamic library (`.so`/`.dylib`/`.dll`). Not implemented yet.
+    Dynlib,
+    /// A linked executable. Not implemented yet.
+    Executable,
+}
+
+/// Whether the emitted code is packaged for link-time optimization, and how.
+/// Only a static library carries LTO today: its members become bitcode the
+/// linker optimizes across, instead of finished native objects.
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum Lto {
+    /// No LTO: each codegen unit is compiled to native code here.
+    None,
+    /// ThinLTO: bitcode plus a module summary index, so the linker imports
+    /// across modules without merging them.
+    Thin,
+    /// Full ("fat") LTO: bitcode the linker merges into one module.
+    Fat,
+}
+
+impl From<Lto> for LtoMode {
+    fn from(lto: Lto) -> Self {
+        match lto {
+            Lto::None => LtoMode::None,
+            Lto::Thin => LtoMode::Thin,
+            Lto::Fat => LtoMode::Fat,
+        }
+    }
 }
 
 /// CLI surface for [`Sanitizer`]: the kinds a build may declare via
@@ -146,16 +177,26 @@ impl Stage {
             "ll" => Stage::LlvmIr,
             "s" => Stage::Asm,
             "o" => Stage::Obj,
+            // `.lib` is MSVC's static library; a MinGW/Unix `.a` is the same
+            // stage. Dynamic libraries are named per platform.
+            "a" | "lib" => Stage::Staticlib,
+            "so" | "dylib" | "dll" => Stage::Dynlib,
             _ => return None,
         })
     }
 
-    /// The `LLVM`-emitting output kind, for the three terminal stages.
-    fn output_kind(self) -> Option<OutputKind> {
+    /// The artifact each codegen unit is emitted as. For a static library
+    /// that is its *members*: finished objects normally, bitcode under LTO,
+    /// which the archive then collects.
+    fn output_kind(self, lto: Lto) -> Option<OutputKind> {
         match self {
             Stage::LlvmIr => Some(OutputKind::LlvmIr),
             Stage::Asm => Some(OutputKind::Assembly),
             Stage::Obj => Some(OutputKind::Object),
+            Stage::Staticlib => Some(match lto {
+                Lto::None => OutputKind::Object,
+                packaged => OutputKind::Bitcode(packaged.into()),
+            }),
             _ => None,
         }
     }
@@ -198,10 +239,19 @@ struct Cli {
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
 
-    /// Stage to emit: `hir`, `mir`, `mlir`, `mlir-llvm`, `llvm-ir`, `asm`, or
-    /// `obj`. Defaults to the output extension (else `obj`).
+    /// Stage to emit: `hir`, `mir`, `mlir`, `mlir-llvm`, `llvm-ir`, `asm`,
+    /// `obj`, or `staticlib`. Defaults to the output extension (else `obj`).
+    /// `dynlib` and `executable` are recognized but not implemented yet.
     #[arg(short = 't', long = "emit")]
     emit: Option<Stage>,
+
+    /// Package a static library for link-time optimization: `none` (the
+    /// default) archives finished native objects, while `thin` and `fat`
+    /// archive LLVM bitcode built by the matching LTO pre-link pipeline, so
+    /// the linker optimizes across every codegen unit — and across this
+    /// library and its consumers. Applies to `--emit staticlib`.
+    #[arg(long = "lto", value_enum, default_value_t = Lto::None)]
+    lto: Lto,
 
     /// Treat the input as this stage instead of inferring from its extension:
     /// `rr`, `hir`, `mir`, `mlir`, or `llvm-ir`.
@@ -540,9 +590,25 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err("no output file given; pass -o".into());
     };
     let target = resolve_target(cli)?;
-    // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj` go through the
-    // file-based LLVM emitter, so `-o -` would write a file literally named `-`.
-    if output.as_os_str() == "-" && target.output_kind().is_some() {
+    // Linking is not implemented; refuse the two stages that need a linker
+    // before doing any work, rather than compiling and then failing.
+    if matches!(target, Stage::Dynlib | Stage::Executable) {
+        return Err(format!(
+            "emitting `{target}` is not implemented yet: it needs a link step. \
+             Emit `obj` or `staticlib` and link with the C toolchain."
+        ));
+    }
+    if cli.lto != Lto::None && target != Stage::Staticlib {
+        return Err(format!(
+            "--lto applies to `--emit staticlib`, not `{target}`: only a \
+             static library carries the bitcode a link-time optimization \
+             consumes"
+        ));
+    }
+    // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj`/`staticlib`
+    // go through file-based emitters, so `-o -` would write a file literally
+    // named `-`.
+    if output.as_os_str() == "-" && target.output_kind(cli.lto).is_some() {
         return Err(format!(
             "cannot write `{target}` to stdout; give a file path with -o"
         ));
@@ -646,10 +712,16 @@ fn run(cli: &Cli) -> Result<bool, String> {
     // backend straight to the requested artifact.
     if input_stage == Stage::LlvmIr {
         let kind = target
-            .output_kind()
+            .output_kind(cli.lto)
             .ok_or_else(|| format!("cannot emit `{target}` from LLVM IR"))?;
         let machine = TargetMachine::new(&spec, opt, reloc)?;
         let finalized = parse_llvm_ir(&name, source)?;
+        // One module, so a static library here archives a single member.
+        if target == Stage::Staticlib {
+            let mut lib = StaticLib::new(output, cli.lto)?;
+            emit_to_file(finalized, &machine, opt, kind, &lib.next_member())?;
+            return lib.finish(output, machine.triple()).map(|()| true);
+        }
         emit_to_file(finalized, &machine, opt, kind, output)?;
         return Ok(true);
     }
@@ -757,26 +829,91 @@ fn backend(
     name: &str,
     output: &Path,
 ) -> Result<bool, String> {
-    let module = match produced {
+    let (modules, partitioned) = match produced {
         Produced::Text(text) => {
             write_text(output, &text)?;
             return Ok(true);
         }
-        // A partitioned build runs the whole back leg once per unit, writing
-        // `<stem>.<i>.<ext>` siblings of `-o`.
-        Produced::Units(units) => {
-            for (index, module) in units.into_iter().enumerate() {
-                let out = unit_output(output, index);
-                backend_module(cli, context, module, target, opt, reloc, spec, name, &out)?;
-            }
-            return Ok(true);
-        }
-        Produced::Module(module) => module,
+        Produced::Units(units) => (units, true),
+        Produced::Module(module) => (vec![module], false),
     };
 
-    backend_module(
-        cli, context, module, target, opt, reloc, spec, name, output,
-    )
+    // A static library is the one target whose units do not each become a
+    // user-visible file: every unit is emitted into a scratch directory and
+    // the archive is the deliverable. This is also where `--codegen-units`
+    // stops being observable to the consumer — N units or one, the library
+    // exposes the same symbols.
+    if target == Stage::Staticlib {
+        let mut lib = StaticLib::new(output, cli.lto)?;
+        for module in modules {
+            let member = lib.next_member();
+            backend_module(cli, context, module, target, opt, reloc, spec, name, &member)?;
+        }
+        let machine = TargetMachine::new(spec, opt, reloc)?;
+        return lib.finish(output, machine.triple()).map(|()| true);
+    }
+
+    // Otherwise each unit writes its own artifact: `<stem>.<i>.<ext>`
+    // siblings of `-o` when partitioned, `-o` itself for a single module.
+    for (index, module) in modules.into_iter().enumerate() {
+        let out = if partitioned {
+            unit_output(output, index)
+        } else {
+            output.to_owned()
+        };
+        backend_module(cli, context, module, target, opt, reloc, spec, name, &out)?;
+    }
+    Ok(true)
+}
+
+/// The members a static library will archive, in a scratch directory that
+/// lives until the archive is written.
+///
+/// The members are intermediates, not artifacts: naming them after the
+/// library (`libfoo.0.o`) keeps the archive's member names — and so linker
+/// diagnostics — meaningful, while the directory's removal on drop keeps
+/// them out of the user's output directory.
+struct StaticLib {
+    dir: tempfile::TempDir,
+    stem: String,
+    extension: &'static str,
+    members: Vec<PathBuf>,
+}
+
+impl StaticLib {
+    fn new(output: &Path, lto: Lto) -> Result<Self, String> {
+        let dir = tempfile::Builder::new()
+            .prefix("rrc-staticlib-")
+            .tempdir()
+            .map_err(|e| format!("cannot create a scratch directory: {e}"))?;
+        let stem = output
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "lib".to_owned());
+        Ok(StaticLib {
+            dir,
+            stem,
+            extension: if lto == Lto::None { "o" } else { "bc" },
+            members: Vec::new(),
+        })
+    }
+
+    /// Reserve and return the path of the next member.
+    fn next_member(&mut self) -> PathBuf {
+        let path = self.dir.path().join(format!(
+            "{}.{}.{}",
+            self.stem,
+            self.members.len(),
+            self.extension
+        ));
+        self.members.push(path.clone());
+        path
+    }
+
+    /// Archive the members into `output`, then drop the scratch directory.
+    fn finish(self, output: &Path, triple: &str) -> Result<(), String> {
+        write_archive(output, &self.members, triple)
+    }
 }
 
 /// The back leg for one module, writing to `output` (per-unit paths in a
@@ -909,8 +1046,8 @@ fn backend_module(
         .finish(&module)
         .map_err(|e| format!("{name}: {e}"))?;
     let kind = target
-        .output_kind()
-        .expect("llvm-ir/asm/obj target past the mlir-llvm stage");
+        .output_kind(cli.lto)
+        .expect("llvm-ir/asm/obj/staticlib target past the mlir-llvm stage");
     emit_to_file(finalized, &machine, opt, kind, output)?;
     Ok(true)
 }

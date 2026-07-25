@@ -1,0 +1,17 @@
+// The library the static-library tests archive. Two independent exported
+// functions, so `--codegen-units N` has something to scatter across members.
+
+pub fn fib(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+pub fn twice(n: u64) -> u64 {
+    n + n
+}
+
+extern "C" trampoline "fib_ffi" = fib;
+extern "C" trampoline "twice_ffi" = twice;

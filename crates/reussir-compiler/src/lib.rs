@@ -14,7 +14,7 @@
 pub mod package;
 
 use std::ffi::{CString, c_char};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use llvm_sys::core::{
     LLVMContextCreate, LLVMContextDispose, LLVMCreateMemoryBufferWithMemoryRangeCopy,
@@ -36,7 +36,7 @@ use llvm_sys::target_machine::{
     LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
 };
 
-use reussir_backend::llvm::{Finalized, run_backend_llvm_pipeline};
+use reussir_backend::llvm::{Finalized, LtoMode, run_backend_llvm_pipeline};
 use reussir_backend::pipeline::OptLevel;
 
 /// What `reussir-compiler` writes out.
@@ -48,6 +48,9 @@ pub enum OutputKind {
     Assembly,
     /// LLVM IR text (`.ll`).
     LlvmIr,
+    /// LLVM bitcode for the given LTO mode (`.bc`) — what a static library's
+    /// members are under `--lto`, so the link step can optimize across them.
+    Bitcode(LtoMode),
 }
 
 /// Position-independence of the emitted code.
@@ -272,6 +275,9 @@ pub fn parse_llvm_ir(name: &str, source: &str) -> Result<Finalized, String> {
 
 /// Runs the backend LLVM pass pipeline over a [`Finalized`] module, emits the
 /// requested artifact for `machine`, and disposes the module and its context.
+///
+/// The artifact decides the pipeline: emitting bitcode for an LTO mode runs
+/// that mode's pre-link pipeline, since the link step will do the rest.
 pub fn emit_to_file(
     finalized: Finalized,
     machine: &TargetMachine,
@@ -279,17 +285,54 @@ pub fn emit_to_file(
     kind: OutputKind,
     out_path: &Path,
 ) -> Result<(), String> {
+    let lto = match kind {
+        OutputKind::Bitcode(mode) => mode,
+        _ => LtoMode::None,
+    };
     unsafe {
         // Stamp the target before the pass pipeline runs: the module's triple
         // and data layout feed the pipeline's queries, and the machine feeds
         // the TargetTransformInfo the cost-driven passes (vectorization)
         // decide against.
         stamp_target(finalized.module, machine);
-        run_backend_llvm_pipeline(finalized.module, opt, machine.machine);
+        run_backend_llvm_pipeline(finalized.module, opt, machine.machine, lto);
         let result = emit(finalized.module, machine, kind, out_path);
         LLVMDisposeModule(finalized.module);
         LLVMContextDispose(finalized.context);
         result
+    }
+}
+
+/// Writes a static library at `path` over `members`, in order, with a symbol
+/// table indexing each — native objects and LLVM bitcode alike, so an
+/// LTO-mode library resolves through the linker's plugin. `triple` selects
+/// the archive flavor so a cross-compiled library is written in the target's
+/// format.
+pub fn write_archive(path: &Path, members: &[PathBuf], triple: &str) -> Result<(), String> {
+    let member_paths = members
+        .iter()
+        .map(|member| {
+            CString::new(member.as_os_str().to_string_lossy().as_bytes())
+                .map_err(|_| format!("member path `{}` contains a NUL byte", member.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let pointers: Vec<*const c_char> = member_paths.iter().map(|m| m.as_ptr()).collect();
+    let out = CString::new(path.as_os_str().to_string_lossy().as_bytes())
+        .map_err(|_| "output path contains a NUL byte".to_string())?;
+    let triple = CString::new(triple).map_err(|_| "target triple contains a NUL byte")?;
+    unsafe {
+        let err = reussir_backend_sys::reussirWriteArchive(
+            out.as_ptr(),
+            pointers.as_ptr(),
+            pointers.len(),
+            triple.as_ptr(),
+        );
+        if err.is_null() {
+            return Ok(());
+        }
+        let msg = c_str(err);
+        LLVMDisposeMessage(err);
+        Err(format!("failed to write {}: {msg}", path.display()))
     }
 }
 
@@ -323,10 +366,28 @@ unsafe fn emit(
                 .map_err(|e| format!("failed to write {}: {e}", out_path.display()));
         }
 
+        // Bitcode likewise bypasses the target machine: the *linker* runs
+        // instruction selection, once, over the merged module.
+        if let OutputKind::Bitcode(mode) = kind {
+            let path = CString::new(out_path.as_os_str().to_string_lossy().as_bytes())
+                .map_err(|_| "output path contains a NUL byte".to_string())?;
+            let err = reussir_backend_sys::reussirWriteLtoBitcode(
+                llvm_module as reussir_backend_sys::LLVMModuleRef,
+                path.as_ptr(),
+                mode.as_c_int(),
+            );
+            if err.is_null() {
+                return Ok(());
+            }
+            let msg = c_str(err);
+            LLVMDisposeMessage(err);
+            return Err(msg);
+        }
+
         let file_type = match kind {
             OutputKind::Object => LLVMCodeGenFileType::LLVMObjectFile,
             OutputKind::Assembly => LLVMCodeGenFileType::LLVMAssemblyFile,
-            OutputKind::LlvmIr => unreachable!("handled above"),
+            OutputKind::LlvmIr | OutputKind::Bitcode(_) => unreachable!("handled above"),
         };
         let path = CString::new(out_path.as_os_str().to_string_lossy().as_bytes())
             .map_err(|_| "output path contains a NUL byte".to_string())?;

@@ -63,6 +63,10 @@ config.substitutions.append((r'%rustc_path', sh_path(config.environment['REUSSIR
 config.substitutions.append((r'%llc', sh_path(config.llc_path)))
 config.substitutions.append((r'%extra_sys_libs', sh_path(config.extra_sys_libs)))
 config.substitutions.append((r'%lli', sh_path(config.lli_path)))
+config.substitutions.append((r'%llvm-ar', sh_path(config.llvm_ar_path)))
+config.substitutions.append((r'%llvm-nm', sh_path(config.llvm_nm_path)))
+config.substitutions.append((r'%llvm-bcanalyzer', sh_path(config.llvm_bcanalyzer_path)))
+config.substitutions.append((r'%llvm-dis', sh_path(config.llvm_dis_path)))
 # The debug-info rescan suite (debuginfo/): %lldb is a batch, init-free lldb
 # with the Reussir data formatters (tool/lldb/reussir_formatters.py)
 # preloaded, so tests can drive a compiled executable and FileCheck the
@@ -126,6 +130,41 @@ _openmp_flags = _probe_openmp()
 if _openmp_flags:
     config.available_features.add('openmp')
     config.substitutions.append((r'%openmp_flags', _openmp_flags))
+
+# LTO linking: `rrc --emit staticlib --lto ...` archives bitcode, which only a
+# linker carrying the LTO plugin can consume (lld and ld64 do; a plain ld.bfd
+# without LLVMgold does not). Probe by linking a trivial program through each
+# candidate flag set; the first that works becomes %lto_link_flags, and
+# failing them all leaves the `lto-link` feature off so the LTO end-to-end
+# test is unsupported rather than broken. The archive-packing checks in
+# staticlib_lto.rr do not link, and run either way.
+def _probe_lto_link():
+    import subprocess
+    import tempfile
+    if not config.cc_path:
+        return None
+    for flags in ('-flto=thin -fuse-ld=lld', '-flto=thin', '-flto'):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'lto.c')
+            exe = os.path.join(tmp, 'lto')
+            with open(src, 'w') as f:
+                f.write('int main(void) { return 0; }\n')
+            try:
+                if subprocess.run([config.cc_path, *flags.split(), src, '-o', exe],
+                                  capture_output=True, timeout=120).returncode != 0:
+                    continue
+                if subprocess.run([exe], capture_output=True,
+                                  timeout=60).returncode != 0:
+                    continue
+            except Exception:
+                continue
+            return flags
+    return None
+
+_lto_link_flags = _probe_lto_link()
+if _lto_link_flags:
+    config.available_features.add('lto-link')
+    config.substitutions.append((r'%lto_link_flags', _lto_link_flags))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
