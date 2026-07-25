@@ -1,0 +1,2 @@
+#[main(fast)]
+pub fn a() {}

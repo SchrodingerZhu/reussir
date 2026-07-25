@@ -113,6 +113,33 @@ endif()
 
 set(cc_runtime_flags "")
 
+# The launcher link (frontend/main_attribute.rr) has rustc drive the MSVC
+# linker. rustc's own discovery, under a vcvars environment, degrades to a
+# bare PATH scan for `link.exe` — and the CI shells carry Git-for-Windows'
+# coreutils /usr/bin/link ahead of MSVC, which then rejects the link line.
+# Resolve the real linker here, where the vcvars variables are dependable,
+# and hand it to rustc explicitly; when there is no vcvars environment
+# (a plain dev box), leave it to rustc's registry-based discovery.
+set(REUSSIR_MSVC_LINKER_PATH "")
+if(WIN32 AND DEFINED ENV{VCToolsInstallDir})
+  file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}" _vc_tools_dir)
+  set(_vc_host "$ENV{VSCMD_ARG_HOST_ARCH}")
+  set(_vc_tgt "$ENV{VSCMD_ARG_TGT_ARCH}")
+  if(NOT _vc_host)
+    set(_vc_host x64)
+  endif()
+  if(NOT _vc_tgt)
+    set(_vc_tgt x64)
+  endif()
+  find_program(reussir_msvc_linker link.exe
+    HINTS "${_vc_tools_dir}/bin/Host${_vc_host}/${_vc_tgt}"
+    NO_DEFAULT_PATH)
+  if(reussir_msvc_linker)
+    set(REUSSIR_MSVC_LINKER_PATH "${reussir_msvc_linker}")
+    message(STATUS "MSVC linker for rustc-driven links: ${REUSSIR_MSVC_LINKER_PATH}")
+  endif()
+endif()
+
 if (WIN32)
   set(extra_sys_libs "-Wl,/nodefaultlib:libucrt -Wl,/defaultlib:ucrt -lntdll -lws2_32 -ladvapi32 -lbcrypt -luserenv")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")

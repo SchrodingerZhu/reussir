@@ -1030,7 +1030,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let anchor =
                             self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
                         let is_import = self.validate_ffi_function(&func, ffi, span);
-                        functions.push((func, span, scope, anchor, is_import));
+                        let is_main = self.validate_main_attr(&attrs, &func, span);
+                        functions.push((func, span, scope, anchor, is_import, is_main));
                     }
                     surface::StmtKind::ExternTrampoline(t) => {
                         self.validate_transform_anchor(&attrs, None);
@@ -1098,7 +1099,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect();
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span, scope, _, is_import)| {
+            .map(|(func, span, scope, _, is_import, _)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
                 self.scan_function(func, *is_import, *span)
@@ -1107,8 +1108,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(&function_defs)
-            .filter_map(|((_, _, _, anchor, _), def)| if *anchor { *def } else { None })
+            .filter_map(|((_, _, _, anchor, _, _), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
+        // `#[main]`: export the entry point under the symbol the runtime's
+        // `__reussir_start` is handed. Registered here, once the scan has
+        // assigned DefIds, and through the same trampoline machinery an
+        // explicit `extern "C" trampoline` uses — so the entry point is a
+        // C-ABI export like any other, and monomorphization roots it.
+        let mains: Vec<(DefId, Option<Span>)> = functions
+            .iter()
+            .zip(&function_defs)
+            .filter_map(|((_, span, _, _, _, is_main), def)| {
+                (*is_main).then(|| Some(((*def)?, *span))).flatten()
+            })
+            .collect();
+        self.register_main_entry(&mains);
         let record_defs: Vec<DefId> = records
             .iter()
             .zip(record_defs)
@@ -1166,7 +1180,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span, _, _, _), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _, _, _, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
@@ -1245,6 +1259,91 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         }
         spec
+    }
+
+    /// The symbol a `#[main]` function is exported under — what the runtime's
+    /// `__reussir_start` is handed to run the program.
+    pub const MAIN_SYMBOL: &'static str = "__reussir_main";
+
+    /// Recognize `#[main]` on a function and check it can be an entry point:
+    /// it must have a body, take no parameters, and be non-generic, since the
+    /// runtime calls it as a bare `extern "C" fn()`. Reports and yields false
+    /// when it cannot.
+    fn validate_main_attr(
+        &mut self,
+        attrs: &[surface::Attribute],
+        func: &surface::Function,
+        span: Option<Span>,
+    ) -> bool {
+        let mut seen = false;
+        for attr in attrs {
+            if self.sym(attr.name) != "main" {
+                continue;
+            }
+            let at = Some(attr.span);
+            if seen {
+                self.error(at, "`#[main]` may only be specified once per item");
+                continue;
+            }
+            seen = true;
+            if !attr.args.is_empty() || !attr.values.is_empty() {
+                self.error(at, "malformed `#[main]`: it takes no arguments");
+            }
+        }
+        if !seen {
+            return false;
+        }
+
+        let mut valid = true;
+        if func.body.is_none() {
+            self.error(span, "`#[main]` needs a function body: it is the program's entry point");
+            valid = false;
+        }
+        if !func.generics.is_empty() {
+            self.error(
+                span,
+                "`#[main]` cannot be generic: the entry point is called with no type information",
+            );
+            valid = false;
+        }
+        if !func.params.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`#[main]` takes no parameters, but this one takes {}; \
+                     the runtime calls the entry point with no arguments",
+                    func.params.len()
+                ),
+            );
+            valid = false;
+        }
+        valid
+    }
+
+    /// Register the program's entry point: at most one `#[main]`, exported as
+    /// [`Self::MAIN_SYMBOL`] through the ordinary trampoline path.
+    fn register_main_entry(&mut self, mains: &[(DefId, Option<Span>)]) {
+        let Some(((target, _), rest)) = mains.split_first() else {
+            return;
+        };
+        for (_, span) in rest {
+            self.error(
+                *span,
+                "a program can have only one `#[main]` function; another is already declared",
+            );
+        }
+        // The trampoline is the *only* record of the entry point, and that is
+        // deliberate: it is what the HIR and MIR dumps carry, so a build that
+        // re-enters from one of them (`rrc prog.hir -o prog.o`) sees the same
+        // entry point a build from source does. A side-channel field here
+        // would be lost across that boundary — silently, and only for
+        // resumed builds.
+        self.trampolines.push(TrampolineRoot {
+            name: Self::MAIN_SYMBOL.to_owned(),
+            abi: "C".to_owned(),
+            target: *target,
+            ty_args: Vec::new(),
+        });
     }
 
     /// Reject an `#[ffi(...)]` attribute on an item kind that takes none.

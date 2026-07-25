@@ -1,0 +1,79 @@
+// `#[main]` names the program's entry point. It is exported under the fixed
+// symbol `__reussir_main`, through the same trampoline path an explicit
+// `extern "C" trampoline` takes.
+//
+// An executable is then built *around* it: the launcher
+// (crates/reussir-rt/launcher/main.rs) is a real Rust `main`, so rustc emits
+// the C entry that runs `lang_start` and the program starts under the full
+// Rust runtime. Here the link is spelled out by hand; the driver will do it
+// once it learns to emit executables.
+//
+// The runtime is linked *statically*. A Rust dylib re-exports the std it was
+// built against, so linking one only works when the launcher was compiled by
+// the very same rustc; where they disagree, the mismatch surfaces as a
+// missing std symbol at load time rather than at link time. The static
+// archive carries no such dependency — but it must be named by path
+// (%launcher_rt_archive), not `-l static=reussir_rt`: rustc lowers the
+// latter to a bare `-lreussir_rt` on ELF and Mach-O, and the linker then
+// takes the dylib sitting in the same directory, dylib problem and all.
+// With the object and the archive both explicit link inputs the executable
+// is self-contained, so it needs no rpath either. `%launcher_sys_libs` is
+// what the archive's own code needs beyond what rustc links anyway (the
+// CoreFoundation/Security frameworks on macOS, a few system libraries on
+// Windows), which rustc cannot infer from a *native* archive. And
+// `%launcher_linker` pins the MSVC link.exe on Windows, where rustc's own
+// discovery under a vcvars environment finds Git-for-Windows' coreutils
+// `link` on PATH instead; elsewhere it is empty.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe %launcher_linker -C link-arg=%t.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
+// RUN: %t.exe
+
+// The attribute lowers to an ordinary C-ABI export of the marked function.
+// CHECK: extern "C" trampoline "__reussir_main" = #entry;
+// CHECK: pub fn #entry() -> () {
+
+// That export is the *only* record of the entry point, which is what keeps
+// the stage chain re-entrant: the entry point survives into the HIR and MIR
+// dumps, so a build resumed from one of them is the build from source. Were
+// it tracked beside the IR instead, a resumed build would quietly lose it.
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.a.hir
+// RUN: %rrc %t.a.hir --emit hir --no-source-locations -o %t.b.hir
+// RUN: diff %t.a.hir %t.b.hir
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.direct.mir
+// RUN: %rrc %t.a.hir --emit mir --no-source-locations -o %t.via.mir
+// RUN: diff %t.direct.mir %t.via.mir
+// RUN: %FileCheck %s --check-prefix=CHECK --input-file=%t.a.hir
+// RUN: %FileCheck %s --check-prefix=RESUMED --input-file=%t.direct.mir
+
+// RESUMED: extern "C" trampoline "__reussir_main" =
+
+// …and resuming all the way to a running executable gives the same program.
+// RUN: %rrc %t.a.hir -o %t.resumed.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe %launcher_linker -C link-arg=%t.resumed.o -C link-arg=%launcher_rt_archive %launcher_sys_libs
+// RUN: %t.resumed.exe
+
+// One entry point per program…
+// RUN: %not %rrc %S/main_attribute/two_mains.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=TWO
+// TWO: only one `#[main]`
+
+// …it cannot be generic (nothing supplies type arguments at startup)…
+// RUN: %not %rrc %S/main_attribute/generic.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=GENERIC
+// GENERIC: `#[main]` cannot be generic
+
+// …and it takes no parameters, because that is how the runtime calls it.
+// RUN: %not %rrc %S/main_attribute/params.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=PARAMS
+// PARAMS: `#[main]` takes no parameters
+
+// RUN: %not %rrc %S/main_attribute/malformed.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=MALFORMED
+// MALFORMED: malformed `#[main]`
+
+fn twice(n: u64) -> u64 {
+    n + n
+}
+
+#[main]
+pub fn entry() {
+    let doubled = twice(21);
+}

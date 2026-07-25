@@ -1,0 +1,5 @@
+#[main]
+pub fn a() {}
+
+#[main]
+pub fn b() {}
