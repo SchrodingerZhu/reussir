@@ -166,6 +166,30 @@ if _lto_link_flags:
     config.available_features.add('lto-link')
     config.substitutions.append((r'%lto_link_flags', _lto_link_flags))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
+# The main-attribute suite links a Reussir object and the runtime into an
+# executable with the staged rustc. The runtime must be its *static* archive,
+# and the archive must be named by path: rustc lowers `-l static=reussir_rt`
+# to a bare `-lreussir_rt` on ELF and Mach-O, and the linker then prefers the
+# shared library sitting in the same directory — on macOS the executable ends
+# up importing even std symbols from libreussir_rt.dylib and dies at load
+# time when its std does not match the launcher's.
+_launcher_rt_archive = (
+    'reussir_rt.lib' if sys.platform == 'win32' else 'libreussir_rt.a')
+config.substitutions.append((r'%launcher_rt_archive',
+                             sh_path(os.path.join(config.library_path,
+                                                  _launcher_rt_archive))))
+# What the archive's own code needs beyond what rustc links anyway — spelled
+# as rustc `-l` flags. rustc cannot see inside a native archive: on macOS the
+# frameworks its crates use must be named by hand. COFF objects carry
+# embedded defaultlib directives for some of their imports but not all of
+# the runtime's, so the Windows list stays explicit too; ELF needs nothing.
+if sys.platform == 'darwin':
+    _launcher_sys_libs = '-l framework=Security -l framework=CoreFoundation'
+elif sys.platform == 'win32':
+    _launcher_sys_libs = '-l ntdll -l ws2_32 -l advapi32 -l bcrypt -l userenv'
+else:
+    _launcher_sys_libs = ''
+config.substitutions.append((r'%launcher_sys_libs', _launcher_sys_libs))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
 # point it at the staged driver rather than whatever `rrc` a PATH lookup finds.
@@ -190,6 +214,30 @@ config.substitutions.append((r'%reussir_rt_asan', sh_path(config.reussir_rt_asan
 config.substitutions.append((r'%reussir_rt_lsan', sh_path(config.reussir_rt_lsan_path)))
 config.substitutions.append((r'%reussir_rt_msan', sh_path(config.reussir_rt_msan_path)))
 config.substitutions.append((r'%reussir_rt_tsan', sh_path(config.reussir_rt_tsan_path)))
+
+# rustc resolves the MSVC linker under a vcvars environment (VCINSTALLDIR
+# set) with a bare PATH scan for `link.exe` — which, in a Git-for-Windows
+# shell, finds coreutils' /usr/bin/link first and the link fails with its
+# usage error. Put the directory of the real linker ahead of it, and carry
+# the vcvars variables that scan and the link itself consult across lit's
+# environment scrubbing.
+if sys.platform == 'win32':
+    _vc_tools = os.environ.get('VCToolsInstallDir')
+    if _vc_tools:
+        _vc_bin = os.path.join(
+            _vc_tools, 'bin',
+            'Host' + os.environ.get('VSCMD_ARG_HOST_ARCH', 'x64'),
+            os.environ.get('VSCMD_ARG_TGT_ARCH', 'x64'))
+        config.environment['PATH'] = os.pathsep.join(
+            [_vc_bin, config.environment.get('PATH',
+                                             os.environ.get('PATH', ''))])
+    for _var in ('VCINSTALLDIR', 'VSINSTALLDIR', 'VCToolsInstallDir',
+                 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH',
+                 'WindowsSdkDir', 'WindowsSDKVersion', 'WindowsSdkBinPath',
+                 'UniversalCRTSdkDir', 'UCRTVersion',
+                 'LIB', 'INCLUDE', 'LIBPATH'):
+        if _var in os.environ:
+            config.environment[_var] = os.environ[_var]
 
 # TODO: should we support macos?
 if sys.platform == 'win32':
