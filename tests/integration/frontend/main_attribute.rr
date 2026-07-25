@@ -5,9 +5,20 @@
 // An executable is then built *around* it: the launcher
 // (crates/reussir-rt/launcher/main.rs) is a real Rust `main`, so rustc emits
 // the C entry that runs `lang_start` and the program starts under the full
-// Rust runtime. main_attribute_link.rr does that end to end.
+// Rust runtime. Here the link is spelled out by hand; the driver will do it
+// once it learns to emit executables.
+//
+// The runtime is linked *statically*. A Rust dylib re-exports the std it was
+// built against, so linking one only works when the launcher was compiled by
+// the very same rustc; the staged driver and the cargo-built runtime dylib
+// need not agree, and where they do not, the mismatch surfaces as a missing
+// std symbol at load time rather than at link time. The static library
+// carries no such dependency.
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -L %library_path -l static=reussir_rt
+// RUN: %t.exe
 
 // The attribute lowers to an ordinary C-ABI export of the marked function.
 // CHECK: extern "C" trampoline "__reussir_main" = #entry;
@@ -28,9 +39,10 @@
 
 // RESUMED: extern "C" trampoline "__reussir_main" =
 
-// Resuming to an object works the same way; main_attribute_link.rr takes it
-// the rest of the way to a running program.
+// …and resuming all the way to a running executable gives the same program.
 // RUN: %rrc %t.a.hir -o %t.resumed.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -L %library_path -l static=reussir_rt
+// RUN: %t.resumed.exe
 
 // One entry point per program…
 // RUN: %not %rrc %S/main_attribute/two_mains.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=TWO
