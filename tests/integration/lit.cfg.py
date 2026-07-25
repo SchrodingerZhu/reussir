@@ -24,6 +24,20 @@ for _var, _value in os.environ.items():
     if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH'):
         config.environment[_var] = _value
 
+# The runtime dylib links libstd dynamically, and nothing stages libstd next
+# to it anymore: put the cargo target directory and the toolchain's own
+# libdir on the platform's dynamic-loader path, so linked test executables
+# (and the JIT loading the runtime dylib) resolve both libreussir_rt and its
+# libstd. An executable rpath cannot do this on Linux — DT_RUNPATH does not
+# apply to the dylib's own NEEDED entries.
+_loader_var = {'win32': 'PATH', 'darwin': 'DYLD_LIBRARY_PATH'}.get(
+    sys.platform, 'LD_LIBRARY_PATH')
+_loader_dirs = [d for d in (config.library_path, config.rust_libdir) if d]
+_loader_prev = config.environment.get(_loader_var, os.environ.get(_loader_var, ''))
+if _loader_prev:
+    _loader_dirs.append(_loader_prev)
+config.environment[_loader_var] = os.pathsep.join(_loader_dirs)
+
 def sh_path(path):
     return path.replace('\\', '/') if isinstance(path, str) else path
 
@@ -56,7 +70,7 @@ config.substitutions.append((r'%linkage_check_prefixes', linkage_check_prefixes)
 config.substitutions.append((r'%not', sh_path(config.not_path)))
 config.substitutions.append((r'%opt', sh_path(config.opt_path)))
 config.substitutions.append((r'%library_path', sh_path(config.library_path)))
-# The rustc the build provisioned for polyffi texture compiles — the same
+# The developer toolchain's rustc, as resolved at configure time — the same
 # value REUSSIR_RUSTC is set to; exposed so tests can exercise the explicit
 # --polyffi-rust-path/--polyffi-libdir flags without the environment.
 config.substitutions.append((r'%rustc_path', sh_path(config.environment['REUSSIR_RUSTC'])))

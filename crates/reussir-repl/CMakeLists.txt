@@ -46,13 +46,6 @@ add_custom_target(rrepl
     USES_TERMINAL
 )
 
-# Order-only dependency on reussir-rt: rrepl's cargo build shares the
-# ${CMAKE_BINARY_DIR}/target directory with the runtime's, and building them
-# concurrently races the prefer-dynamic libstd the runtime dylib links (and
-# that reussir-rt-install stages into build/lib). Serialize the two so `check`
-# can depend on rrepl without corrupting the runtime.
-add_dependencies(rrepl reussir-rt)
-
 add_custom_target(rrepl-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}
         cargo test --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
