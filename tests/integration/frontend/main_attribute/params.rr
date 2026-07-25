@@ -1,0 +1,2 @@
+#[main]
+pub fn a(n: u64) {}

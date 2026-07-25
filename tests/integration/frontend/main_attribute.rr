@@ -1,0 +1,38 @@
+// `#[main]` names the program's entry point. It is exported under the fixed
+// symbol `__reussir_main`, through the same trampoline path an explicit
+// `extern "C" trampoline` takes, and the runtime's `__reussir_start` is what
+// runs it — so the entry point is reachable from a C `main` today, before the
+// driver learns to link executables itself.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/main_attribute/driver.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// The attribute lowers to an ordinary C-ABI export of the marked function.
+// CHECK: extern "C" trampoline "__reussir_main" = #entry;
+// CHECK: pub fn #entry() -> () {
+
+// One entry point per program…
+// RUN: %not %rrc %S/main_attribute/two_mains.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=TWO
+// TWO: only one `#[main]`
+
+// …it cannot be generic (nothing supplies type arguments at startup)…
+// RUN: %not %rrc %S/main_attribute/generic.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=GENERIC
+// GENERIC: `#[main]` cannot be generic
+
+// …and it takes no parameters, because that is how the runtime calls it.
+// RUN: %not %rrc %S/main_attribute/params.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=PARAMS
+// PARAMS: `#[main]` takes no parameters
+
+// RUN: %not %rrc %S/main_attribute/malformed.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=MALFORMED
+// MALFORMED: malformed `#[main]`
+
+fn twice(n: u64) -> u64 {
+    n + n
+}
+
+#[main]
+pub fn entry() {
+    let doubled = twice(21);
+}
