@@ -1,0 +1,27 @@
+// REQUIRES: linux
+// The `#[main]` export, linked into a running executable: the launcher
+// (crates/reussir-rt/launcher/main.rs) compiled as a Rust `bin`, with the
+// program's object and the runtime.
+//
+// Linux only, because the link line here is written by hand and getting one
+// right on every platform is exactly the job `--emit executable` is about to
+// take over — the driver will know each target's runtime library name and
+// system dependencies, and this test will collapse into a call to it. The
+// attribute itself, its diagnostics, and its survival across the stage chain
+// are covered platform-independently by main_attribute.rr.
+//
+// The runtime is linked *statically*: a Rust dylib re-exports the std it was
+// built against, so linking one only works when the launcher was compiled by
+// the very same rustc. The staged driver and the cargo-built runtime dylib
+// need not agree, and where they do not the mismatch surfaces as a missing
+// std symbol at load time rather than at link time.
+
+// RUN: %rrc %S/main_attribute.rr -o %t.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -L %library_path -l static=reussir_rt
+// RUN: %t.exe
+
+// Resumed from a HIR dump, the same program comes out.
+// RUN: %rrc %S/main_attribute.rr --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir -o %t.resumed.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -L %library_path -l static=reussir_rt
+// RUN: %t.resumed.exe
