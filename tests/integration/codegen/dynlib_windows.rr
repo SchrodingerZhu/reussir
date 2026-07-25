@@ -1,0 +1,12 @@
+// REQUIRES: windows
+// `rrc --emit dynlib` on Windows: the exports are spelled as `/EXPORT:`
+// (COFF exports nothing by default), which also makes link.exe grow the
+// import library a consumer links against. The explicit `/IMPLIB:` pins that
+// library's path for the test; the DLL itself is found at run time because
+// it sits in the same directory as the test executable.
+
+// RUN: %rrc %S/staticlib/lib.rr -o %t.dll --emit dynlib --relocation-mode pic --codegen-units 2 --link-arg=/IMPLIB:%t.lib %rrc_linker
+// RUN: %cc %S/staticlib/driver.c %t.lib -o %t.exe
+// RUN: %t.exe | %FileCheck %s
+
+// CHECK: fib=55 twice=42

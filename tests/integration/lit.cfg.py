@@ -166,30 +166,20 @@ if _lto_link_flags:
     config.available_features.add('lto-link')
     config.substitutions.append((r'%lto_link_flags', _lto_link_flags))
 config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
-# The main-attribute suite links a Reussir object and the runtime into an
-# executable with the staged rustc. The runtime must be its *static* archive,
-# and the archive must be named by path: rustc lowers `-l static=reussir_rt`
-# to a bare `-lreussir_rt` on ELF and Mach-O, and the linker then prefers the
-# shared library sitting in the same directory — on macOS the executable ends
-# up importing even std symbols from libreussir_rt.dylib and dies at load
-# time when its std does not match the launcher's.
-_launcher_rt_archive = (
-    'reussir_rt.lib' if sys.platform == 'win32' else 'libreussir_rt.a')
-config.substitutions.append((r'%launcher_rt_archive',
-                             sh_path(os.path.join(config.library_path,
-                                                  _launcher_rt_archive))))
-# What the archive's own code needs beyond what rustc links anyway — spelled
-# as rustc `-l` flags. rustc cannot see inside a native archive: on macOS the
-# frameworks its crates use must be named by hand. COFF objects carry
-# embedded defaultlib directives for some of their imports but not all of
-# the runtime's, so the Windows list stays explicit too; ELF needs nothing.
-if sys.platform == 'darwin':
-    _launcher_sys_libs = '-l framework=Security -l framework=CoreFoundation'
-elif sys.platform == 'win32':
-    _launcher_sys_libs = '-l ntdll -l ws2_32 -l advapi32 -l bcrypt -l userenv'
-else:
-    _launcher_sys_libs = ''
-config.substitutions.append((r'%launcher_sys_libs', _launcher_sys_libs))
+# The MSVC linker `rrc`'s link step should drive, as a driver flag, resolved
+# at configure time (see tests/integration/CMakeLists.txt): left to its own
+# discovery under a vcvars environment, rustc degrades to a bare PATH scan
+# for `link.exe` and finds Git-for-Windows' coreutils /usr/bin/link instead.
+# The path contains spaces (Program Files), so the substitution carries its
+# own quoting. Empty — no vcvars at configure, or not Windows — means rustc's
+# registry-based discovery, which is right on a plain dev box.
+#
+# Appended before `%rrc`, which is its prefix: lit applies substitutions in
+# list order, and the later `%rrc` would otherwise rewrite this one's name.
+_rrc_linker = ''
+if sys.platform == 'win32' and config.msvc_linker_path:
+    _rrc_linker = '--linker "%s"' % sh_path(config.msvc_linker_path)
+config.substitutions.append((r'%rrc_linker', _rrc_linker))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
 # point it at the staged driver rather than whatever `rrc` a PATH lookup finds.
@@ -215,18 +205,6 @@ config.substitutions.append((r'%reussir_rt_lsan', sh_path(config.reussir_rt_lsan
 config.substitutions.append((r'%reussir_rt_msan', sh_path(config.reussir_rt_msan_path)))
 config.substitutions.append((r'%reussir_rt_tsan', sh_path(config.reussir_rt_tsan_path)))
 
-# The MSVC linker the launcher link hands to rustc via `-C linker=`,
-# resolved at configure time (see tests/integration/CMakeLists.txt): left to
-# its own discovery under a vcvars environment, rustc degrades to a bare
-# PATH scan for `link.exe` and finds Git-for-Windows' coreutils
-# /usr/bin/link instead. The path contains spaces (Program Files), so the
-# substitution carries its own quoting. Empty — no vcvars at configure —
-# means rustc's registry-based discovery, which is right on a plain dev box.
-_launcher_linker = ''
-if sys.platform == 'win32' and config.msvc_linker_path:
-    _launcher_linker = '-C "linker=%s"' % sh_path(config.msvc_linker_path)
-config.substitutions.append((r'%launcher_linker', _launcher_linker))
-
 # link.exe itself resolves the CRT and system import libraries through the
 # vcvars LIB variable; carry it (and its companions) across lit's
 # environment scrubbing.
@@ -238,6 +216,49 @@ if sys.platform == 'win32':
                  'LIB', 'INCLUDE', 'LIBPATH'):
         if _var in os.environ:
             config.environment[_var] = os.environ[_var]
+
+# `rrc --emit executable --lto …` needs the linker *rustc* drives to consume
+# this LLVM's bitcode: rust-lld does on the targets where it is rustc's
+# default, but a system linker without a matching-version LTO plugin (an old
+# ld64, MSVC's link.exe, aarch64-linux's bfd) fails on the first member.
+# Probe with the real pipeline; failing leaves `rustc-lto-link` off and the
+# LTO link tests unsupported rather than broken.
+def _probe_rustc_lto_link():
+    import subprocess
+    import tempfile
+    rrc = sh_path(config.reussir_rrc_path)
+    if not rrc or not os.path.exists(rrc):
+        return False
+    env = dict(os.environ)
+    for var in ('REUSSIR_RUSTC', 'REUSSIR_RUSTC_DEPS'):
+        if var in config.environment:
+            env[var] = config.environment[var]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        src = os.path.join(tmp, 'probe.rr')
+        exe = os.path.join(tmp, 'probe.exe')
+        with open(src, 'w') as f:
+            f.write('fn twice(n: u64) -> u64 { n + n }\n'
+                    '#[main]\n'
+                    'pub fn entry() {\n'
+                    '    let doubled = twice(21);\n'
+                    '}\n')
+        cmd = [rrc, src, '-o', exe, '--emit', 'executable',
+               '--relocation-mode', 'pic', '--lto', 'thin']
+        if sys.platform == 'win32' and config.msvc_linker_path:
+            cmd += ['--linker', config.msvc_linker_path]
+        try:
+            if subprocess.run(cmd, env=env, capture_output=True,
+                              timeout=300).returncode != 0:
+                return False
+            if subprocess.run([exe], capture_output=True,
+                              timeout=60).returncode != 0:
+                return False
+        except Exception:
+            return False
+    return True
+
+if _probe_rustc_lto_link():
+    config.available_features.add('rustc-lto-link')
 
 # TODO: should we support macos?
 if sys.platform == 'win32':

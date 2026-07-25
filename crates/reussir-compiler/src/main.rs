@@ -19,9 +19,9 @@ use std::process::ExitCode;
 
 use palc::Parser;
 
+use reussir_backend::llvm::LtoMode;
 use reussir_backend::llvm::{LlvmLowering, PolyffiPaths};
 use reussir_backend::melior::ir::Module;
-use reussir_backend::llvm::LtoMode;
 use reussir_backend::pipeline::{self, Anchor, LoweringOptions, NullaryVariantEncoding, OptLevel};
 use reussir_codegen::lower::{
     CodegenUnit, LinkagePolicy, LoweringError, Sanitizer, lower_program, lower_unit,
@@ -66,15 +66,18 @@ enum Stage {
     Obj,
     /// A static library archiving the codegen units (`.a`/`.lib`).
     Staticlib,
-    /// A dynamic library (`.so`/`.dylib`/`.dll`). Not implemented yet.
+    /// A linked dynamic library (`.so`/`.dylib`/`.dll`) exporting the
+    /// program's `extern` trampolines.
     Dynlib,
-    /// A linked executable. Not implemented yet.
+    /// A linked executable (`.exe` on Windows), entered through the program's
+    /// `#[main]` function.
     Executable,
 }
 
 /// Whether the emitted code is packaged for link-time optimization, and how.
-/// Only a static library carries LTO today: its members become bitcode the
-/// linker optimizes across, instead of finished native objects.
+/// A static library's members become bitcode the consumer's linker optimizes
+/// across, instead of finished native objects; for the two linked targets the
+/// driver's own link step hands that bitcode to the linker.
 #[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
 enum Lto {
     /// No LTO: each codegen unit is compiled to native code here.
@@ -84,6 +87,20 @@ enum Lto {
     Thin,
     /// Full ("fat") LTO: bitcode the linker merges into one module.
     Fat,
+}
+
+/// How a linked target (`--emit executable`/`dynlib`) carries the Reussir
+/// runtime.
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum RuntimeLinkage {
+    /// Bundle the runtime's static archive into the product. Self-contained —
+    /// the result has no load-time dependency on a Reussir library — and the
+    /// default.
+    Static,
+    /// Link against the shared runtime library. One runtime per process no
+    /// matter how many Reussir products load into it, but the library must be
+    /// found at load time (rpath or the platform's search path).
+    Dynamic,
 }
 
 impl From<Lto> for LtoMode {
@@ -181,24 +198,32 @@ impl Stage {
             // stage. Dynamic libraries are named per platform.
             "a" | "lib" => Stage::Staticlib,
             "so" | "dylib" | "dll" => Stage::Dynlib,
+            "exe" => Stage::Executable,
             _ => return None,
         })
     }
 
-    /// The artifact each codegen unit is emitted as. For a static library
-    /// that is its *members*: finished objects normally, bitcode under LTO,
-    /// which the archive then collects.
+    /// The artifact each codegen unit is emitted as. For a static library and
+    /// the two linked targets that is their *intermediates*: finished objects
+    /// normally, bitcode under LTO — which the archive then collects, or the
+    /// link step hands to the linker.
     fn output_kind(self, lto: Lto) -> Option<OutputKind> {
         match self {
             Stage::LlvmIr => Some(OutputKind::LlvmIr),
             Stage::Asm => Some(OutputKind::Assembly),
             Stage::Obj => Some(OutputKind::Object),
-            Stage::Staticlib => Some(match lto {
+            Stage::Staticlib | Stage::Dynlib | Stage::Executable => Some(match lto {
                 Lto::None => OutputKind::Object,
                 packaged => OutputKind::Bitcode(packaged.into()),
             }),
             _ => None,
         }
+    }
+
+    /// Whether this stage is a linked product — the two targets the driver
+    /// finishes with a link step rather than a file emitter.
+    fn is_linked(self) -> bool {
+        matches!(self, Stage::Dynlib | Stage::Executable)
     }
 }
 
@@ -240,18 +265,39 @@ struct Cli {
     output: Option<PathBuf>,
 
     /// Stage to emit: `hir`, `mir`, `mlir`, `mlir-llvm`, `llvm-ir`, `asm`,
-    /// `obj`, or `staticlib`. Defaults to the output extension (else `obj`).
-    /// `dynlib` and `executable` are recognized but not implemented yet.
+    /// `obj`, `staticlib`, `dynlib`, or `executable`. Defaults to the output
+    /// extension (else `obj`).
     #[arg(short = 't', long = "emit")]
     emit: Option<Stage>,
 
-    /// Package a static library for link-time optimization: `none` (the
-    /// default) archives finished native objects, while `thin` and `fat`
-    /// archive LLVM bitcode built by the matching LTO pre-link pipeline, so
-    /// the linker optimizes across every codegen unit — and across this
-    /// library and its consumers. Applies to `--emit staticlib`.
+    /// Build with link-time optimization: `none` (the default) emits finished
+    /// native objects, while `thin` and `fat` emit LLVM bitcode built by the
+    /// matching LTO pre-link pipeline, so the linker optimizes across every
+    /// codegen unit. For `staticlib` the bitcode is archived for the
+    /// consumer's linker; for `dynlib` and `executable` the driver's own link
+    /// step hands it to the linker, which must carry the LTO plugin.
     #[arg(long = "lto", value_enum, default_value_t = Lto::None)]
     lto: Lto,
+
+    /// How a linked target carries the Reussir runtime: `static` (the
+    /// default) bundles the runtime archive into the product; `dynamic` links
+    /// the shared runtime library, which must then be found at load time.
+    /// Applies to `--emit executable` and `--emit dynlib`.
+    #[arg(long = "runtime-linkage", value_enum)]
+    runtime_linkage: Option<RuntimeLinkage>,
+
+    /// The linker rustc drives for the link step, passed as `-C linker=`.
+    /// Useful where rustc's own discovery resolves the wrong tool — a vcvars
+    /// shell whose PATH carries a coreutils `link` ahead of MSVC's. Applies
+    /// to `--emit executable` and `--emit dynlib`.
+    #[arg(long = "linker", value_name = "PATH")]
+    linker: Option<PathBuf>,
+
+    /// Extra argument for the link step, passed through as `-C link-arg=`
+    /// (repeatable; appended after the driver's own link inputs). Applies to
+    /// `--emit executable` and `--emit dynlib`.
+    #[arg(long = "link-arg", value_name = "ARG")]
+    link_arg: Vec<String>,
 
     /// Treat the input as this stage instead of inferring from its extension:
     /// `rr`, `hir`, `mir`, `mlir`, or `llvm-ir`.
@@ -494,11 +540,18 @@ fn write_text(path: &Path, text: &str) -> Result<(), String> {
 /// What the front (arena-scoped) leg produces: a text dump for `hir`/`mir`, or an
 /// MLIR module for `mlir` and anything past it. The module borrows the MLIR
 /// context, not the type arena, so it outlives the [`in_arena`] scope.
+/// The C-ABI export surface the front leg collected: the program's exported
+/// (non-import) trampoline symbols, `#[main]`'s `__reussir_main` among them.
+/// `None` when the input entered past MIR (`.mlir`/`.ll`), where the surface
+/// is no longer recorded — the link step then cannot name a dynamic library's
+/// exports, and skips the executable's entry-point pre-check.
+type ExportSurface = Option<Vec<String>>;
+
 enum Produced<'c> {
     Text(String),
-    Module(Module<'c>),
+    Module(Module<'c>, ExportSurface),
     /// One module per codegen unit (`--codegen-units` > 1), in unit order.
-    Units(Vec<Module<'c>>),
+    Units(Vec<Module<'c>>, ExportSurface),
 }
 
 /// Install a `tracing` subscriber writing to **stderr** (so it never corrupts a
@@ -590,24 +643,34 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err("no output file given; pass -o".into());
     };
     let target = resolve_target(cli)?;
-    // Linking is not implemented; refuse the two stages that need a linker
-    // before doing any work, rather than compiling and then failing.
-    if matches!(target, Stage::Dynlib | Stage::Executable) {
+    if cli.lto != Lto::None && target != Stage::Staticlib && !target.is_linked() {
         return Err(format!(
-            "emitting `{target}` is not implemented yet: it needs a link step. \
-             Emit `obj` or `staticlib` and link with the C toolchain."
+            "--lto applies to `staticlib`, `dynlib`, and `executable`, not \
+             `{target}`: only a packaged or linked target consumes the \
+             bitcode it produces"
         ));
     }
-    if cli.lto != Lto::None && target != Stage::Staticlib {
-        return Err(format!(
-            "--lto applies to `--emit staticlib`, not `{target}`: only a \
-             static library carries the bitcode a link-time optimization \
-             consumes"
-        ));
+    // The link-step knobs mean nothing without a link step; refuse them up
+    // front rather than silently ignoring them.
+    if !target.is_linked() {
+        if cli.runtime_linkage.is_some() {
+            return Err(format!(
+                "--runtime-linkage applies to `executable` and `dynlib`, not `{target}`"
+            ));
+        }
+        if cli.linker.is_some() {
+            return Err(format!(
+                "--linker applies to `executable` and `dynlib`, not `{target}`"
+            ));
+        }
+        if !cli.link_arg.is_empty() {
+            return Err(format!(
+                "--link-arg applies to `executable` and `dynlib`, not `{target}`"
+            ));
+        }
     }
-    // Only the text dumps stream to stdout; `llvm-ir`/`asm`/`obj`/`staticlib`
-    // go through file-based emitters, so `-o -` would write a file literally
-    // named `-`.
+    // Only the text dumps stream to stdout; the file-emitting and linked
+    // targets would write a file literally named `-`.
     if output.as_os_str() == "-" && target.output_kind(cli.lto).is_some() {
         return Err(format!(
             "cannot write `{target}` to stdout; give a file path with -o"
@@ -687,7 +750,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
                     return Ok(false);
                 }
             };
-        return backend(cli, &context, produced, target, opt, reloc, &spec, &name, output);
+        return backend(
+            cli, &context, produced, target, opt, reloc, &spec, &name, output,
+        );
     }
 
     let Some(input) = &cli.input else {
@@ -708,6 +773,16 @@ fn run(cli: &Cli) -> Result<bool, String> {
             "--codegen-units applies while lowering to MLIR; a `{input_stage}` input is already a single unit"
         ));
     }
+    // A dynamic library's exports are the trampolines the *frontend* records;
+    // a backend-stage input no longer carries them, and exporting every
+    // external symbol instead would leak the cross-unit linkage surface.
+    if target == Stage::Dynlib && matches!(input_stage, Stage::Mlir | Stage::LlvmIr) {
+        return Err(format!(
+            "cannot emit `dynlib` from a `{input_stage}` input: the export surface \
+             (the program's trampolines) is only recorded up to `mir`; resume from \
+             source, `hir`, or `mir`"
+        ));
+    }
     // A `.ll` input skips the whole MLIR front: parse the IR and run the LLVM
     // backend straight to the requested artifact.
     if input_stage == Stage::LlvmIr {
@@ -716,11 +791,15 @@ fn run(cli: &Cli) -> Result<bool, String> {
             .ok_or_else(|| format!("cannot emit `{target}` from LLVM IR"))?;
         let machine = TargetMachine::new(&spec, opt, reloc)?;
         let finalized = parse_llvm_ir(&name, source)?;
-        // One module, so a static library here archives a single member.
-        if target == Stage::Staticlib {
-            let mut lib = StaticLib::new(output, cli.lto)?;
+        // One module, so a static library here archives a single member, and
+        // an executable links a single object.
+        if target == Stage::Staticlib || target.is_linked() {
+            let mut lib = ScratchMembers::new(output, cli.lto)?;
             emit_to_file(finalized, &machine, opt, kind, &lib.next_member())?;
-            return lib.finish(output, machine.triple()).map(|()| true);
+            if target == Stage::Staticlib {
+                return lib.finish(output, machine.triple()).map(|()| true);
+            }
+            return link_product(cli, target, machine.triple(), None, &lib, output).map(|()| true);
         }
         emit_to_file(finalized, &machine, opt, kind, output)?;
         return Ok(true);
@@ -734,7 +813,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
     // input parses directly; source/`.hir`/`.mir` run the frontend in the arena.
     let produced = match input_stage {
         Stage::Mlir => Module::parse(&context, source)
-            .map(Produced::Module)
+            .map(|module| Produced::Module(module, None))
             .ok_or_else(|| format!("{name}: failed to parse MLIR module"))?,
         _ => match in_arena(|tcx| frontend(&context, tcx, input_stage, target, &sources, cli)) {
             Ok(produced) => produced,
@@ -746,7 +825,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         },
     };
-    backend(cli, &context, produced, target, opt, reloc, &spec, &name, output)
+    backend(
+        cli, &context, produced, target, opt, reloc, &spec, &name, output,
+    )
 }
 
 /// Discover and parse the package from its crate root — `lib.rr` under a
@@ -773,7 +854,8 @@ fn load_package_or_render(
             errors,
         }) => {
             let color = std::io::stderr().is_terminal();
-            let _ = diagnostics::render_errors(&cache, file, &errors, color, std::io::stderr().lock());
+            let _ =
+                diagnostics::render_errors(&cache, file, &errors, color, std::io::stderr().lock());
             Err(String::new())
         }
     }
@@ -829,28 +911,42 @@ fn backend(
     name: &str,
     output: &Path,
 ) -> Result<bool, String> {
-    let (modules, partitioned) = match produced {
+    let (modules, partitioned, exports) = match produced {
         Produced::Text(text) => {
             write_text(output, &text)?;
             return Ok(true);
         }
-        Produced::Units(units) => (units, true),
-        Produced::Module(module) => (vec![module], false),
+        Produced::Units(units, exports) => (units, true, exports),
+        Produced::Module(module, exports) => (vec![module], false, exports),
     };
 
-    // A static library is the one target whose units do not each become a
-    // user-visible file: every unit is emitted into a scratch directory and
-    // the archive is the deliverable. This is also where `--codegen-units`
-    // stops being observable to the consumer — N units or one, the library
-    // exposes the same symbols.
-    if target == Stage::Staticlib {
-        let mut lib = StaticLib::new(output, cli.lto)?;
+    // A static library and the linked targets are the ones whose units do not
+    // each become a user-visible file: every unit is emitted into a scratch
+    // directory, and the archive — or the linked product — is the
+    // deliverable. This is also where `--codegen-units` stops being
+    // observable to the consumer — N units or one, the result exposes the
+    // same symbols.
+    if target == Stage::Staticlib || target.is_linked() {
+        let mut lib = ScratchMembers::new(output, cli.lto)?;
         for module in modules {
             let member = lib.next_member();
-            backend_module(cli, context, module, target, opt, reloc, spec, name, &member)?;
+            backend_module(
+                cli, context, module, target, opt, reloc, spec, name, &member,
+            )?;
         }
         let machine = TargetMachine::new(spec, opt, reloc)?;
-        return lib.finish(output, machine.triple()).map(|()| true);
+        if target == Stage::Staticlib {
+            return lib.finish(output, machine.triple()).map(|()| true);
+        }
+        return link_product(
+            cli,
+            target,
+            machine.triple(),
+            exports.as_deref(),
+            &lib,
+            output,
+        )
+        .map(|()| true);
     }
 
     // Otherwise each unit writes its own artifact: `<stem>.<i>.<ext>`
@@ -866,36 +962,42 @@ fn backend(
     Ok(true)
 }
 
-/// The members a static library will archive, in a scratch directory that
-/// lives until the archive is written.
+/// The per-unit intermediates a packaged or linked target consumes — archive
+/// members or link inputs — in a scratch directory that lives until the
+/// deliverable is written.
 ///
 /// The members are intermediates, not artifacts: naming them after the
-/// library (`libfoo.0.o`) keeps the archive's member names — and so linker
+/// product (`libfoo.0.o`) keeps the archive's member names — and so linker
 /// diagnostics — meaningful, while the directory's removal on drop keeps
 /// them out of the user's output directory.
-struct StaticLib {
+struct ScratchMembers {
     dir: tempfile::TempDir,
     stem: String,
     extension: &'static str,
     members: Vec<PathBuf>,
 }
 
-impl StaticLib {
+impl ScratchMembers {
     fn new(output: &Path, lto: Lto) -> Result<Self, String> {
         let dir = tempfile::Builder::new()
-            .prefix("rrc-staticlib-")
+            .prefix("rrc-scratch-")
             .tempdir()
             .map_err(|e| format!("cannot create a scratch directory: {e}"))?;
         let stem = output
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "lib".to_owned());
-        Ok(StaticLib {
+        Ok(ScratchMembers {
             dir,
             stem,
             extension: if lto == Lto::None { "o" } else { "bc" },
             members: Vec::new(),
         })
+    }
+
+    /// The scratch directory itself, for the link step's generated sources.
+    fn dir(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Reserve and return the path of the next member.
@@ -914,6 +1016,255 @@ impl StaticLib {
     fn finish(self, output: &Path, triple: &str) -> Result<(), String> {
         write_archive(output, &self.members, triple)
     }
+}
+
+/// The launcher a Reussir executable is built around, embedded at compile
+/// time: a real Rust `bin` whose `main` calls `__reussir_main`, so rustc
+/// emits the C entry that runs `lang_start` and the program starts under the
+/// full Rust runtime. See the file's own docs for why nothing less will do.
+const LAUNCHER_SOURCE: &str = include_str!("../../reussir-rt/launcher/main.rs");
+
+/// Link `--emit executable`/`dynlib`: compile the embedded launcher (or an
+/// empty cdylib shim) with rustc, handing it the program's objects, the
+/// runtime, and the platform's system libraries — the link line
+/// `tests/integration/frontend/main_attribute.rr` used to spell by hand.
+///
+/// rustc rather than a C toolchain because the launcher *is* Rust — that is
+/// how the program gets the real Rust runtime — and because rustc already
+/// knows each target's linker and system-library baseline.
+fn link_product(
+    cli: &Cli,
+    target: Stage,
+    triple: &str,
+    exports: Option<&[String]>,
+    scratch: &ScratchMembers,
+    output: &Path,
+) -> Result<(), String> {
+    let msvc = triple.contains("-windows") && triple.contains("msvc");
+    let apple = triple.contains("-apple");
+
+    // An executable needs the entry point; say so up front when the frontend
+    // recorded the surface, rather than as a linker's undefined-symbol error.
+    // (`None` — a backend-stage input — leaves the check to the linker.)
+    let main_symbol = reussir_core::semi::Elaborator::MAIN_SYMBOL;
+    if target == Stage::Executable
+        && let Some(exports) = exports
+        && !exports.iter().any(|e| e == main_symbol)
+    {
+        return Err(format!(
+            "an executable needs an entry point: no function is marked `#[main]` \
+             (and no trampoline exports `{main_symbol}`)"
+        ));
+    }
+
+    let rustc = resolve_link_rustc(cli)?;
+    let libdirs = runtime_libdirs(cli)?;
+    let linkage = cli.runtime_linkage.unwrap_or(RuntimeLinkage::Static);
+
+    let mut cmd = std::process::Command::new(&rustc);
+    cmd.arg("--edition").arg("2024");
+    match target {
+        Stage::Executable => {
+            let launcher = scratch.dir().join("launcher.rs");
+            std::fs::write(&launcher, LAUNCHER_SOURCE)
+                .map_err(|e| format!("cannot write the launcher source: {e}"))?;
+            cmd.arg(launcher);
+        }
+        Stage::Dynlib => {
+            // The shim gives rustc a crate to build the shared library
+            // around; every symbol of substance arrives through the link
+            // inputs below.
+            let shim = scratch.dir().join("shim.rs");
+            std::fs::write(&shim, "")
+                .map_err(|e| format!("cannot write the cdylib shim source: {e}"))?;
+            cmd.arg(shim).arg("--crate-type").arg("cdylib");
+        }
+        _ => unreachable!("link_product only links executable/dynlib"),
+    }
+    cmd.arg("-o").arg(output);
+    if let Some(linker) = &cli.linker {
+        if !linker.is_file() {
+            return Err(format!("--linker `{}` does not exist", linker.display()));
+        }
+        cmd.arg(format!("-Clinker={}", linker.display()));
+    }
+    for member in &scratch.members {
+        cmd.arg(format!("-Clink-arg={}", member.display()));
+    }
+
+    // The runtime. The static archive is named by *path*, not `-l static=`:
+    // rustc lowers the latter to a bare `-l` on ELF and Mach-O, and the
+    // linker then prefers a shared library sitting in the same directory
+    // (see main_attribute.rr's history for the load-time failure that buys).
+    match linkage {
+        RuntimeLinkage::Static => {
+            let archive = if msvc {
+                "reussir_rt.lib"
+            } else {
+                "libreussir_rt.a"
+            };
+            cmd.arg(format!(
+                "-Clink-arg={}",
+                find_in_libdirs(&libdirs, archive)?.display()
+            ));
+            // What the archive's own code needs beyond what rustc links
+            // anyway — invisible to rustc inside a *native* archive. (The
+            // shared runtime records its own dependencies.)
+            let sys_libs: &[&str] = if apple {
+                &["framework=Security", "framework=CoreFoundation"]
+            } else if msvc {
+                &["ntdll", "ws2_32", "advapi32", "bcrypt", "userenv"]
+            } else {
+                &[]
+            };
+            for lib in sys_libs {
+                cmd.arg("-l").arg(lib);
+            }
+        }
+        RuntimeLinkage::Dynamic => {
+            if msvc {
+                // The DLL is linked through its import library, whose
+                // `reussir_rt.dll.lib` name `-l dylib=` would not find (it
+                // would find the *static* `reussir_rt.lib` instead).
+                cmd.arg(format!(
+                    "-Clink-arg={}",
+                    find_in_libdirs(&libdirs, "reussir_rt.dll.lib")?.display()
+                ));
+            } else {
+                let shared = if apple {
+                    "libreussir_rt.dylib"
+                } else {
+                    "libreussir_rt.so"
+                };
+                // Presence check only — the link itself goes through `-L`/`-l`
+                // so the product records the library's soname, not a path.
+                find_in_libdirs(&libdirs, shared)?;
+                for dir in &libdirs {
+                    cmd.arg("-L").arg(dir);
+                }
+                cmd.arg("-l").arg("dylib=reussir_rt");
+            }
+        }
+    }
+
+    // A dynamic library's exports: rustc's cdylib machinery localizes
+    // everything the *crate* does not export — which is everything here, the
+    // shim being empty — so the trampoline surface is spelled to the linker
+    // directly, in each platform's dialect.
+    if target == Stage::Dynlib {
+        let Some(exports) = exports else {
+            unreachable!("dynlib from a backend-stage input is refused up front");
+        };
+        if msvc {
+            // COFF exports nothing by default; /EXPORT also grows the
+            // import library the consumer links.
+            for export in exports {
+                cmd.arg(format!("-Clink-arg=/EXPORT:{export}"));
+            }
+        } else if apple {
+            // ld64 takes the union of every -exported_symbols_list given.
+            let list = scratch.dir().join("exports.list");
+            let text: String = exports.iter().map(|e| format!("_{e}\n")).collect();
+            std::fs::write(&list, text)
+                .map_err(|e| format!("cannot write the export list: {e}"))?;
+            cmd.arg(format!(
+                "-Clink-arg=-Wl,-exported_symbols_list,{}",
+                list.display()
+            ));
+        } else if !exports.is_empty() {
+            // A second version script unions with the `local: *` one rustc
+            // passes (lld semantics — rustc's default linker on ELF).
+            let script = scratch.dir().join("exports.ver");
+            let mut text = String::from("{ global:\n");
+            for export in exports {
+                text.push_str("  ");
+                text.push_str(export);
+                text.push_str(";\n");
+            }
+            text.push_str("};\n");
+            std::fs::write(&script, text)
+                .map_err(|e| format!("cannot write the export version script: {e}"))?;
+            cmd.arg(format!(
+                "-Clink-arg=-Wl,--version-script={}",
+                script.display()
+            ));
+        }
+    }
+
+    for arg in &cli.link_arg {
+        cmd.arg(format!("-Clink-arg={arg}"));
+    }
+
+    // rustc's diagnostics stream straight through to stderr.
+    let status = cmd
+        .status()
+        .map_err(|e| format!("cannot run `{rustc}` for the link step: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "linking `{}` failed: `{rustc}` exited with {status}",
+            output.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The rustc driving the link step: `--polyffi-rust-path`, then the
+/// `REUSSIR_RUSTC` environment variable, then `rustc` on `PATH` — the same
+/// order the polyffi texture compiles resolve in.
+fn resolve_link_rustc(cli: &Cli) -> Result<String, String> {
+    if let Some(path) = &cli.polyffi_rust_path {
+        return resolve_rustc(path);
+    }
+    if let Some(env) = std::env::var_os("REUSSIR_RUSTC") {
+        let path = PathBuf::from(&env);
+        if !path.is_file() {
+            return Err(format!("REUSSIR_RUSTC `{}` does not exist", path.display()));
+        }
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    resolve_rustc(Path::new("rustc")).map_err(|_| {
+        "cannot find `rustc` for the link step: pass --polyffi-rust-path or set \
+         REUSSIR_RUSTC"
+            .to_owned()
+    })
+}
+
+/// The directories searched for the runtime library: `--polyffi-libdir`, then
+/// the path-separated `REUSSIR_RUSTC_DEPS` environment variable.
+fn runtime_libdirs(cli: &Cli) -> Result<Vec<PathBuf>, String> {
+    if !cli.polyffi_libdir.is_empty() {
+        return Ok(cli.polyffi_libdir.clone());
+    }
+    if let Some(env) = std::env::var_os("REUSSIR_RUSTC_DEPS") {
+        let dirs: Vec<PathBuf> = std::env::split_paths(&env).collect();
+        if !dirs.is_empty() {
+            return Ok(dirs);
+        }
+    }
+    Err(
+        "cannot locate the Reussir runtime for the link step: pass --polyffi-libdir \
+         or set REUSSIR_RUSTC_DEPS"
+            .to_owned(),
+    )
+}
+
+/// The first libdir containing `name`, or an error naming everywhere it
+/// looked.
+fn find_in_libdirs(libdirs: &[PathBuf], name: &str) -> Result<PathBuf, String> {
+    for dir in libdirs {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "cannot find `{name}` in {}",
+        libdirs
+            .iter()
+            .map(|d| format!("`{}`", d.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// The back leg for one module, writing to `output` (per-unit paths in a
@@ -1047,7 +1398,7 @@ fn backend_module(
         .map_err(|e| format!("{name}: {e}"))?;
     let kind = target
         .output_kind(cli.lto)
-        .expect("llvm-ir/asm/obj/staticlib target past the mlir-llvm stage");
+        .expect("file-emitting or linked target past the mlir-llvm stage");
     emit_to_file(finalized, &machine, opt, kind, output)?;
     Ok(true)
 }
@@ -1357,6 +1708,15 @@ fn finish_mir<'c, 'tcx>(
     }
     // Names feed variable/function debug info; only meaningful with `-g`.
     let names = cli.debug.then_some(resolver);
+    // The link step's view of the program: its exported trampolines — the
+    // dynamic library's export surface, and where `#[main]`'s
+    // `__reussir_main` shows up for the executable's entry-point check.
+    let exports: Vec<String> = program
+        .trampolines
+        .iter()
+        .filter(|t| !t.import)
+        .map(|t| program.symbol(t.export).to_owned())
+        .collect();
     // AOT linkage: internal / linkonce_odr definitions per the policy; the
     // trampolines and pub functions stay the object's external ABI surface.
     let linkage = LinkagePolicy::aot_for_triple(cli.target_triple.as_deref());
@@ -1384,12 +1744,12 @@ fn finish_mir<'c, 'tcx>(
             )?;
             units.push(module);
         }
-        return Ok(Produced::Units(units));
+        return Ok(Produced::Units(units, Some(exports)));
     }
     let module = lower_or_render(
         lower_program(context, tcx, program, sources, names, linkage, &sanitizers),
         sources,
         name,
     )?;
-    Ok(Produced::Module(module))
+    Ok(Produced::Module(module, Some(exports)))
 }
