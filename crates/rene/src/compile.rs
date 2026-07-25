@@ -1,0 +1,302 @@
+//! Compiling the package's declared targets through `rrc`.
+//!
+//! One `rrc` invocation per (target, profile): the package rooted at
+//! `src/lib.rr`, the profile's knobs as flags, `--emit` from the target's
+//! kind, and the baked runtime's libdirs for polyffi and the link step.
+//! Artifacts land in `<build-dir>/<profile>/`, named per platform
+//! (`demo`/`demo.exe`, `libdemo.so`/`libdemo.dylib`/`demo.dll`,
+//! `libdemo.a`/`demo.lib`).
+//!
+//! Each product's build is recorded in the status database under
+//! [`tables::product_key`] with the fingerprint it was built from — the
+//! evaluated-config hash (which covers targets and profiles), the source
+//! graph's content digests, the toolchain, and the CLI overrides. A build
+//! whose fingerprint matches and whose artifact still exists reruns nothing.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde::{Deserialize, Serialize};
+
+use crate::db::BuildDir;
+use crate::deps::{self, Prepared};
+use crate::manifest::{Loaded, Profile, TargetKind};
+use crate::rt::RtArtifacts;
+use crate::tables;
+
+/// What the CLI resolved for this build: the profile in force and the
+/// selection/override flags.
+pub struct Options {
+    /// The profile's name — the artifacts' directory under the build dir,
+    /// and half of each product's status key.
+    pub profile_name: String,
+    /// The resolved profile (built-in refined by the manifest's).
+    pub profile: Profile,
+    /// `--target` filters; empty means every declared target.
+    pub targets: Vec<String>,
+    /// `rene build --linker`, overriding the profile's.
+    pub linker: Option<PathBuf>,
+}
+
+/// A built (or reused) product.
+pub struct Product {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// One product's recorded build (JSON under [`tables::product_key`]).
+#[derive(Serialize, Deserialize)]
+pub struct ProductRecord {
+    pub fingerprint: String,
+    pub path: PathBuf,
+}
+
+/// Build the selected targets, reusing whatever the record proves current.
+pub fn build(
+    dir: &BuildDir,
+    loaded: &Loaded,
+    sources: &Prepared,
+    rt: &RtArtifacts,
+    opts: &Options,
+) -> Result<Vec<Product>, String> {
+    let manifest = &loaded.manifest;
+    let selected: Vec<&str> = if opts.targets.is_empty() {
+        manifest.targets.keys().map(String::as_str).collect()
+    } else {
+        for name in &opts.targets {
+            if !manifest.targets.contains_key(name) {
+                return Err(format!(
+                    "no target named `{name}`: the manifest declares {}",
+                    manifest
+                        .targets
+                        .keys()
+                        .map(|t| format!("`{t}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        opts.targets.iter().map(String::as_str).collect()
+    };
+
+    let out_dir = dir.root().join(&opts.profile_name);
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("cannot create `{}`: {e}", out_dir.display()))?;
+    let fingerprint = fingerprint(loaded, sources, rt, opts);
+
+    let mut products = Vec::with_capacity(selected.len());
+    for name in selected {
+        let kind = manifest.targets[name].kind;
+        let path = out_dir.join(artifact_file(
+            name,
+            kind,
+            opts.profile.target_triple.as_deref(),
+        ));
+        let key = tables::product_key(&opts.profile_name, name);
+        if product_is_current(dir, &key, &fingerprint, &path)? {
+            tracing::info!(target = name, "up to date");
+            products.push(Product {
+                name: name.to_owned(),
+                path,
+            });
+            continue;
+        }
+
+        tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+        compile(loaded, rt, opts, kind, &path)?;
+
+        let record = ProductRecord {
+            fingerprint: fingerprint.clone(),
+            path: path.clone(),
+        };
+        let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+        dir.set_status(&[(key.as_str(), record.as_str())])
+            .map_err(|e| e.to_string())?;
+        products.push(Product {
+            name: name.to_owned(),
+            path,
+        });
+    }
+    Ok(products)
+}
+
+/// One `rrc` run for one target.
+fn compile(
+    loaded: &Loaded,
+    rt: &RtArtifacts,
+    opts: &Options,
+    kind: TargetKind,
+    out: &Path,
+) -> Result<(), String> {
+    let rrc = deps::resolve_rrc();
+    let mut cmd = Command::new(&rrc);
+    cmd.arg("--package-root")
+        .arg(deps::source_root(loaded))
+        .arg("--package-name")
+        .arg(&loaded.manifest.package.name)
+        .arg("--emit")
+        .arg(kind.emit())
+        .arg("-o")
+        .arg(out);
+    for libdir in rt.libdirs() {
+        cmd.arg("--polyffi-libdir").arg(libdir);
+    }
+    // The toolchain that baked the runtime is the one the link step and the
+    // polyffi texture compiles must agree with.
+    cmd.env("REUSSIR_RUSTC", &rt.rustc);
+    profile_args(&mut cmd, &opts.profile, kind, opts.linker.as_deref());
+
+    // rrc's diagnostics stream straight through to the user.
+    let status = cmd
+        .status()
+        .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "compiling `{}` failed (see rrc's diagnostics above)",
+            out.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The profile, spelled as `rrc` flags.
+fn profile_args(cmd: &mut Command, profile: &Profile, kind: TargetKind, linker: Option<&Path>) {
+    if let Some(opt) = &profile.opt {
+        cmd.arg("-O").arg(opt);
+    }
+    if profile.debug == Some(true) {
+        cmd.arg("-g");
+    }
+    if let Some(lto) = &profile.lto
+        && lto != "none"
+    {
+        cmd.arg("--lto").arg(lto);
+    }
+    // Every declared kind is a link product or archived into one; PIC is the
+    // working default, with the profile the override.
+    let reloc = profile.relocation_mode.as_deref().unwrap_or("pic");
+    cmd.arg("--relocation-mode").arg(reloc);
+    if let Some(units) = profile.codegen_units {
+        cmd.arg("--codegen-units").arg(units.to_string());
+    }
+    for sanitizer in &profile.sanitizers {
+        cmd.arg("--sanitizer").arg(sanitizer);
+    }
+    if let Some(encoding) = &profile.nullary_variant_encoding {
+        cmd.arg("--nullary-variant-encoding").arg(encoding);
+    }
+    if let Some(triple) = &profile.target_triple {
+        cmd.arg("--target-triple").arg(triple);
+    }
+    if let Some(cpu) = &profile.target_cpu {
+        cmd.arg("--target-cpu").arg(cpu);
+    }
+    if let Some(features) = &profile.target_features {
+        cmd.arg("--target-features").arg(features);
+    }
+    if profile.reuse_across_call == Some(true) {
+        cmd.arg("--reuse-across-call");
+    }
+    if profile.closure_wpd == Some(false) {
+        cmd.arg("--no-closure-wpd");
+    }
+    if profile.pack_record_members == Some(false) {
+        cmd.arg("--no-pack-record-members");
+    }
+    // The link-only knobs go to the linked kinds alone, so one profile can
+    // serve targets of every kind without tripping rrc's strictness.
+    if kind.is_linked() {
+        if let Some(linkage) = &profile.runtime_linkage {
+            cmd.arg("--runtime-linkage").arg(linkage);
+        }
+        if let Some(linker) = linker.or(profile.linker.as_deref()) {
+            cmd.arg("--linker").arg(linker);
+        }
+        for arg in &profile.link_args {
+            cmd.arg(format!("--link-arg={arg}"));
+        }
+    }
+    cmd.args(&profile.extra_flags);
+}
+
+/// Everything a product's freshness hangs on, digested: the evaluated
+/// manifest (targets and profiles included), the profile *name* (two names
+/// may resolve to equal knobs but build into different directories), every
+/// source file's content digest, the toolchain, and the CLI linker override.
+/// The source-graph paths are covered through the config hash + digests; the
+/// artifact's own existence is checked separately.
+fn fingerprint(loaded: &Loaded, sources: &Prepared, rt: &RtArtifacts, opts: &Options) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(deps::config_hash(&loaded.dump).as_bytes());
+    hasher.update(opts.profile_name.as_bytes());
+    for file in &sources.files {
+        hasher.update(file.path.as_bytes());
+        hasher.update(&file.record.hash);
+    }
+    hasher.update(rt.rustc_version.as_bytes());
+    hasher.update(rt.staticlib.display().to_string().as_bytes());
+    if let Some(linker) = &opts.linker {
+        hasher.update(linker.display().to_string().as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Is the recorded build of this product still the one this build would do?
+fn product_is_current(
+    dir: &BuildDir,
+    key: &str,
+    fingerprint: &str,
+    path: &Path,
+) -> Result<bool, String> {
+    let Some(record) = dir.status(key).map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    let Ok(record) = serde_json::from_str::<ProductRecord>(&record) else {
+        // An older rene may have written a different shape; just rebuild.
+        return Ok(false);
+    };
+    Ok(record.fingerprint == fingerprint && record.path == path && path.is_file())
+}
+
+/// The artifact's file name for `name`, per the target platform — the
+/// profile's `target_triple` when set, the host otherwise.
+fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
+    let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
+    let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));
+    match kind {
+        TargetKind::Executable if windows => format!("{name}.exe"),
+        TargetKind::Executable => name.to_owned(),
+        TargetKind::Dynlib if windows => format!("{name}.dll"),
+        TargetKind::Dynlib if apple => format!("lib{name}.dylib"),
+        TargetKind::Dynlib => format!("lib{name}.so"),
+        TargetKind::Staticlib if windows => format!("{name}.lib"),
+        TargetKind::Staticlib => format!("lib{name}.a"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_names_follow_the_target_platform() {
+        let linux = Some("x86_64-unknown-linux-gnu");
+        let mac = Some("aarch64-apple-darwin");
+        let win = Some("x86_64-pc-windows-msvc");
+        for (kind, expect) in [
+            (TargetKind::Executable, ["demo", "demo", "demo.exe"]),
+            (
+                TargetKind::Dynlib,
+                ["libdemo.so", "libdemo.dylib", "demo.dll"],
+            ),
+            (
+                TargetKind::Staticlib,
+                ["libdemo.a", "libdemo.a", "demo.lib"],
+            ),
+        ] {
+            assert_eq!(artifact_file("demo", kind, linux), expect[0]);
+            assert_eq!(artifact_file("demo", kind, mac), expect[1]);
+            assert_eq!(artifact_file("demo", kind, win), expect[2]);
+        }
+    }
+}

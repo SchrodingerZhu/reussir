@@ -1,0 +1,46 @@
+// UNSUPPORTED: windows
+// `rene build`, end to end: the manifest declares the targets, the profile
+// picks the knobs, and rene drives the real `rrc` — package scan, runtime
+// bake, compile, link — to a running executable. The runtime is baked with
+// the host toolchain inside the test's build directory: slow once, then
+// shared by every RUN line below through the one `--build-dir`.
+//
+// Windows-gated off for now: the bake runs cargo → rustc → link.exe inside
+// lit's environment, where rustc's linker discovery finds Git-for-Windows'
+// coreutils `link` (the very thing `rrc --linker` pins for the driver-level
+// links, which codegen/executable.rr covers on Windows). Teaching the bake
+// the same pinning is a follow-up.
+
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir > %t.listing
+// RUN: %FileCheck %s --check-prefix=LISTING < %t.listing
+
+// Stdout is the artifact listing: the one declared target, under the
+// default profile's directory.
+// LISTING: {{[/\\]}}dev{{[/\\]}}demo
+// LISTING-NOT: {{.}}
+
+// The built executable runs.
+// RUN: %t.bdir/dev/demo%exe_ext
+
+// An unchanged package rebuilds nothing — the product record and the source
+// graph both hold — and the listing is the same artifact.
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir 2>%t.fresh.log > %t.fresh.listing
+// RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
+// RUN: diff %t.listing %t.fresh.listing
+
+// FRESH: up to date
+
+// A profile builds into its own directory with its own knobs (`release`
+// here also refines the built-in with the manifest's `codegen_units = 2`,
+// exercising the multi-unit link under rene).
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile release | %FileCheck %s --check-prefix=RELEASE
+// RUN: %t.bdir/release/demo%exe_ext
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}demo
+
+// An undeclared profile or target is refused by name, before any work.
+// RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile bogus 2>&1 | %FileCheck %s --check-prefix=NOPROFILE
+// RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --target bogus 2>&1 | %FileCheck %s --check-prefix=NOTARGET
+
+// NOPROFILE: no profile named `bogus`
+// NOTARGET: no target named `bogus`

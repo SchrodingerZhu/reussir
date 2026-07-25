@@ -274,6 +274,10 @@ def _probe_rustc_lto_link():
 if _probe_rustc_lto_link():
     config.available_features.add('rustc-lto-link')
 
+# Executables' platform suffix, for running artifacts whose name a tool
+# derived (`rene build`'s `<profile>/<target>`), not a RUN line's `-o`.
+config.substitutions.append((r'%exe_ext', '.exe' if sys.platform == 'win32' else ''))
+
 # TODO: should we support macos?
 if sys.platform == 'win32':
     config.available_features.add('windows')

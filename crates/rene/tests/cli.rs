@@ -64,7 +64,11 @@ fn build_fails_cleanly_without_a_manifest() {
     let tmp = tempfile::tempdir().unwrap();
     let out = run(rene(&["build"]).current_dir(tmp.path()));
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("rene.ncl"), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("rene.ncl"),
+        "stderr: {}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -183,18 +187,27 @@ impl Fakes {
              printf '{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"reussir-rt\"},\"filenames\":[\"%s\",\"%s\"]}\\n' \"$rlib\" \"$staticlib\"\n"
                 .to_owned(),
         );
-        // Stands in for `rrc --scan-deps`: counts invocations and reports the
-        // package root's `.rr` files as the source graph, crate root first —
-        // the same JSON shape rrc emits, so a file added to the package shows
-        // up in the next scan.
+        // Stands in for `rrc`. A `--scan-deps` invocation counts itself and
+        // reports the package root's `.rr` files as the source graph, crate
+        // root first — the same JSON shape rrc emits, so a file added to the
+        // package shows up in the next scan. Anything else is a compile:
+        // it logs the full argv (plus the REUSSIR_RUSTC rene handed it) and
+        // fabricates the `-o` artifact.
         let rrc = script(
             "fake-rrc",
-            "echo run >> \"$(dirname \"$0\")/rrc-runs\"\n\
-             root=\"\"; prev=\"\"\n\
+            "root=\"\"; out=\"\"; prev=\"\"; scan=no\n\
              for arg in \"$@\"; do\n\
                [ \"$prev\" = \"--package-root\" ] && root=\"$arg\"\n\
+               [ \"$prev\" = \"-o\" ] && out=\"$arg\"\n\
+               [ \"$arg\" = \"--scan-deps\" ] && scan=yes\n\
                prev=\"$arg\"\n\
              done\n\
+             if [ \"$scan\" = no ]; then\n\
+               echo \"$* rustc=$REUSSIR_RUSTC\" >> \"$(dirname \"$0\")/rrc-compiles\"\n\
+               echo compiled > \"$out\"\n\
+               exit 0\n\
+             fi\n\
+             echo run >> \"$(dirname \"$0\")/rrc-runs\"\n\
              printf '{\"package\":\"pkg\",\"files\":[{\"path\":\"%s\",\"module\":[\"pkg\"]}' \"$root/lib.rr\"\n\
              for f in \"$root\"/*.rr; do\n\
                case \"$f\" in */lib.rr) continue;; esac\n\
@@ -220,6 +233,14 @@ impl Fakes {
         match std::fs::read_to_string(self.dir.join(format!("{tool}-runs"))) {
             Ok(log) => log.lines().count(),
             Err(_) => 0,
+        }
+    }
+
+    /// The compile invocations the fake `rrc` served, one argv line each.
+    fn compiles(&self) -> Vec<String> {
+        match std::fs::read_to_string(self.dir.join("rrc-compiles")) {
+            Ok(log) => log.lines().map(str::to_owned).collect(),
+            Err(_) => Vec::new(),
         }
     }
 
@@ -356,7 +377,11 @@ fn build_rescans_the_whole_graph_when_a_source_changes() {
 
     let out = fakes.rene(&["build"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert_eq!(fakes.runs("rrc"), 2, "the changed package must be re-scanned");
+    assert_eq!(
+        fakes.runs("rrc"),
+        2,
+        "the changed package must be re-scanned"
+    );
 
     // The refreshed table is the new graph, `extra.rr` included (the record
     // is a set of files, reported in path order).
@@ -432,7 +457,11 @@ fn build_rescans_when_the_config_checksum_changes() {
     assert_ne!(before["config_hash"], after["config_hash"]);
 
     assert!(fakes.rene(&["build"], &manifest, &root).status.success());
-    assert_eq!(fakes.runs("rrc"), 2, "a changed config must force a re-scan");
+    assert_eq!(
+        fakes.runs("rrc"),
+        2,
+        "a changed config must force a re-scan"
+    );
     assert_eq!(
         frozen_report(&fakes, &manifest, &root)["state"],
         "up-to-date"
@@ -497,6 +526,151 @@ fn inspect_frozen_neither_scans_nor_creates_a_build_directory() {
     assert_eq!(report["files"].as_array().unwrap().len(), 0);
     assert_eq!(fakes.runs("rrc"), 0);
     assert!(!root.exists(), "--frozen created `{}`", root.display());
+}
+
+/// (Re)write the scratch package's manifest with targets of every kind and a
+/// `release` profile refining the built-in.
+#[cfg(unix)]
+fn write_targets_manifest(dir: &Path) -> PathBuf {
+    let path = dir.join("rene.ncl");
+    std::fs::write(
+        &path,
+        r#"
+        {
+          package = { name = "demo", version = "0.1.0" },
+          targets = {
+            demo = { kind = 'executable },
+            shared = { kind = 'dynlib },
+            archive = { kind = 'staticlib },
+          },
+          profiles = {
+            release = { lto = "thin", codegen_units = 2, link_args = ["-lm"] },
+          },
+        }
+        "#,
+    )
+    .unwrap();
+    path
+}
+
+/// The whole flag surface, through the fakes: every declared target compiles
+/// with the profile's knobs spelled as rrc flags, the link-only knobs go to
+/// the linked kinds alone, artifacts land under `<build-dir>/<profile>/`,
+/// and stdout lists them in declaration order.
+#[cfg(unix)]
+#[test]
+fn build_compiles_the_declared_targets_with_the_profile_knobs() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    package(&tmp, "demo");
+    let manifest = write_targets_manifest(&tmp);
+    let fakes = Fakes::new(&tmp);
+
+    let out = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    // Stdout lists the artifacts, BTreeMap (declaration-name) order.
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let release = root.join("release");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            release.join("libarchive.a").display().to_string(),
+            release.join("demo").display().to_string(),
+            release.join("libshared.so").display().to_string(),
+        ]
+    );
+    for line in stdout.lines() {
+        assert!(Path::new(line).is_file(), "no artifact at {line}");
+    }
+
+    let compiles = fakes.compiles();
+    assert_eq!(compiles.len(), 3, "{compiles:#?}");
+    for line in &compiles {
+        // The package, the profile's codegen knobs (the built-in's opt
+        // refined by the manifest's lto/units), the PIC default, the baked
+        // libdirs, and the toolchain rene pinned for the child.
+        assert!(line.contains("--package-name demo"), "{line}");
+        assert!(line.contains("-O aggressive"), "{line}");
+        assert!(line.contains("--lto thin"), "{line}");
+        assert!(line.contains("--codegen-units 2"), "{line}");
+        assert!(line.contains("--relocation-mode pic"), "{line}");
+        assert!(line.contains("--polyffi-libdir"), "{line}");
+        assert!(
+            line.contains(&format!("rustc={}", fakes.rustc.display())),
+            "{line}"
+        );
+    }
+    let of_kind = |kind: &str| {
+        compiles
+            .iter()
+            .find(|l| l.contains(&format!("--emit {kind}")))
+            .unwrap_or_else(|| panic!("no {kind} compile in {compiles:#?}"))
+    };
+    // Link-only knobs reach the linked kinds and never the archive.
+    assert!(of_kind("executable").contains("--link-arg=-lm"));
+    assert!(of_kind("dynlib").contains("--link-arg=-lm"));
+    assert!(!of_kind("staticlib").contains("--link-arg"));
+
+    // A second build finds every product current: no new compiles, same
+    // listing.
+    let again = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
+    assert!(again.status.success(), "stderr: {}", stderr(&again));
+    assert_eq!(String::from_utf8(again.stdout).unwrap(), stdout);
+    assert_eq!(fakes.compiles().len(), 3, "a fresh build re-compiled");
+
+    // A source edit re-fingerprints every product of the profile.
+    std::fs::write(
+        tmp.join("src/math.rr"),
+        "pub fn add(a: u64, b: u64) -> u64 { b + a }\n",
+    )
+    .unwrap();
+    let rebuilt = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
+    assert!(rebuilt.status.success(), "stderr: {}", stderr(&rebuilt));
+    assert_eq!(fakes.compiles().len(), 6, "the edit must rebuild");
+}
+
+/// `--target` narrows the build; unknown target and profile names are
+/// refused with their names.
+#[cfg(unix)]
+#[test]
+fn build_selects_targets_and_refuses_unknown_names() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    package(&tmp, "demo");
+    let manifest = write_targets_manifest(&tmp);
+    let fakes = Fakes::new(&tmp);
+
+    let out = fakes.rene(&["build", "--target", "demo"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [root.join("dev").join("demo").display().to_string()]
+    );
+    let compiles = fakes.compiles();
+    assert_eq!(compiles.len(), 1, "{compiles:#?}");
+    // The dev built-in: unoptimized, debug info on.
+    assert!(compiles[0].contains("-O none"), "{}", compiles[0]);
+    assert!(compiles[0].contains("-g"), "{}", compiles[0]);
+
+    let out = fakes.rene(&["build", "--target", "bogus"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no target named `bogus`"),
+        "stderr: {}",
+        stderr(&out)
+    );
+
+    let out = fakes.rene(&["build", "--profile", "bogus"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no profile named `bogus`"),
+        "stderr: {}",
+        stderr(&out)
+    );
 }
 
 /// A package without a source root is a configuration error, named as such.

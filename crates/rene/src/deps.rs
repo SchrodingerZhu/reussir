@@ -277,7 +277,7 @@ pub fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
 
 /// The `rrc` executable: `REUSSIR_RRC` if set (the override rene's runtime
 /// bake uses for `cargo`/`rustc` too), else `rrc` through `PATH`.
-fn resolve_rrc() -> PathBuf {
+pub(crate) fn resolve_rrc() -> PathBuf {
     std::env::var_os("REUSSIR_RRC").map_or_else(|| PathBuf::from("rrc"), PathBuf::from)
 }
 

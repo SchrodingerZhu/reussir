@@ -4,10 +4,12 @@
 //! directory's lock (the status database), records the package's source graph
 //! (re-scanning it through `rrc --scan-deps` only when something moved), bakes
 //! the bundled `reussir-rt` runtime with the user's Rust toolchain if needed,
-//! and prints the library directories to pass to `rrc --polyffi-libdir`.
-//! `rene inspect` reports that source graph as JSON; `rene clean` deletes the
-//! build directory unless another instance holds it. Compiling the package
-//! itself comes in a later stage.
+//! and compiles the manifest's declared `targets` under the selected
+//! `--profile`, printing the artifact paths. A package declaring no targets
+//! stops after the bake and prints the library directories to pass to
+//! `rrc --polyffi-libdir` by hand. `rene inspect` reports the source graph as
+//! JSON; `rene clean` deletes the build directory unless another instance
+//! holds it.
 //!
 //! Progress goes to stderr via `tracing`; stdout carries only the final
 //! machine-readable listing. Exit 0 on success, 1 on a failed command, 2 on
@@ -19,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{deps, manifest, rt};
+use rene::{compile, deps, manifest, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -57,11 +59,29 @@ enum Command {
 }
 
 /// Build the current package: bake the bundled reussir-rt runtime if needed,
-/// then print the library directories to pass to rrc.
+/// then compile the manifest's declared targets under the selected profile.
+/// A package declaring no targets stops after the bake and prints the
+/// library directories to pass to rrc by hand.
 #[derive(palc::Args)]
 struct BuildArgs {
     #[command(flatten)]
     location: Location,
+
+    /// The build profile: a built-in (`dev`, `release`) or one the manifest
+    /// declares under `profiles`. Artifacts land in
+    /// `<build-dir>/<profile>/`.
+    #[arg(long, default_value = "dev")]
+    profile: String,
+
+    /// Build only this declared target (repeatable). Default: all of them.
+    #[arg(long = "target")]
+    targets: Vec<String>,
+
+    /// The linker rrc's link step hands to rustc (`rrc --linker`),
+    /// overriding the profile's. Useful where rustc's own discovery resolves
+    /// the wrong tool.
+    #[arg(long)]
+    linker: Option<PathBuf>,
 }
 
 /// Delete the build directory, unless another rene is using it.
@@ -105,7 +125,7 @@ fn main() -> ExitCode {
     };
     init_tracing(cli.verbose);
     let result = match cli.command {
-        Command::Build(args) => build(&args.location),
+        Command::Build(args) => build(&args),
         Command::Clean(args) => clean(&args.location),
         Command::Inspect(args) => inspect(&args.location, args.frozen),
     };
@@ -161,14 +181,19 @@ fn locate_manifest(flag: &Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-fn build(location: &Location) -> Result<(), String> {
+fn build(args: &BuildArgs) -> Result<(), String> {
+    let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
     tracing::info!(
         package = %loaded.manifest.package.name,
         manifest = %loaded.path.display(),
+        profile = %args.profile,
         "building"
     );
+    // Resolve the profile before any work: an unknown name is a usage
+    // problem, not something to discover after a runtime bake.
+    let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
@@ -178,18 +203,40 @@ fn build(location: &Location) -> Result<(), String> {
         return Err(pending_clean(&root));
     }
     // The source graph first: it is cheap, it fails fast on a broken package,
-    // and a build that finds nothing moved has nothing to do beyond reporting
-    // the (already baked) runtime.
+    // and a build that finds nothing moved skips straight to the freshness
+    // checks below.
     let sources = deps::prepare(&dir, &loaded)?;
     let artifacts = rt::prepare(&dir)?;
-    if !sources.rescanned() {
-        tracing::info!(files = sources.files.len(), "nothing to do");
+
+    // No declared targets: stop after the bake, reporting the libdirs for
+    // whoever drives rrc by hand — the pre-target workflow, kept working.
+    if loaded.manifest.targets.is_empty() {
+        if !sources.rescanned() {
+            tracing::info!(files = sources.files.len(), "nothing to do");
+        }
+        tracing::info!("no targets declared; pass these directories to `rrc --polyffi-libdir`:");
+        for libdir in artifacts.libdirs() {
+            println!("{}", libdir.display());
+        }
+        return Ok(());
     }
 
-    tracing::info!("TODO: compiling the package is not implemented yet");
-    tracing::info!("pass these directories to `rrc --polyffi-libdir`:");
-    for libdir in artifacts.libdirs() {
-        println!("{}", libdir.display());
+    let products = compile::build(
+        &dir,
+        &loaded,
+        &sources,
+        &artifacts,
+        &compile::Options {
+            profile_name: args.profile.clone(),
+            profile,
+            targets: args.targets.clone(),
+            linker: args.linker.clone(),
+        },
+    )?;
+    // Stdout carries the artifact listing, one path per target, in the
+    // order they were declared (or selected).
+    for product in &products {
+        println!("{}", product.path.display());
     }
     Ok(())
 }

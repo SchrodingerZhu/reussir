@@ -40,7 +40,11 @@ pub fn unpack(dest: &Path) -> std::io::Result<()> {
 /// need. Stored as JSON under [`tables::RT_ARTIFACTS_KEY`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RtArtifacts {
-    /// `rustc --version` of the toolchain that baked the runtime.
+    /// The rustc that baked the runtime — also the one `rrc`'s link step and
+    /// polyffi texture compiles must use (`REUSSIR_RUSTC`), so the runtime
+    /// and everything linked against it agree on one toolchain.
+    pub rustc: PathBuf,
+    /// `rustc --version` of that toolchain.
     pub rustc_version: String,
     /// The toolchain's target libdir (`rustc --print target-libdir`) — the
     /// "detected rust lib" directory polyffi links the standard library from.
@@ -151,6 +155,7 @@ pub fn prepare(dir: &BuildDir) -> Result<RtArtifacts, String> {
         }
     };
     let artifacts = RtArtifacts {
+        rustc: toolchain.rustc,
         rustc_version: toolchain.version,
         rust_libdir: toolchain.rust_libdir,
         deps_dir,
@@ -201,7 +206,11 @@ fn fresh_bake(
 /// Returns the runtime's (rlib, staticlib).
 fn cargo_build(toolchain: &Toolchain, src_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let mut child = Command::new(&toolchain.cargo)
-        .args(["build", "--release", "--message-format=json-render-diagnostics"])
+        .args([
+            "build",
+            "--release",
+            "--message-format=json-render-diagnostics",
+        ])
         .current_dir(src_dir)
         // Pin the rustc cargo delegates to, so the recorded version and
         // libdir describe the compiler that actually built the artifacts.
@@ -246,9 +255,7 @@ fn cargo_build(toolchain: &Toolchain, src_dir: &Path) -> Result<(PathBuf, PathBu
     }
     match (rlib, staticlib) {
         (Some(rlib), Some(staticlib)) => Ok((rlib, staticlib)),
-        _ => Err(
-            "cargo succeeded but did not report the runtime's rlib and staticlib".to_owned(),
-        ),
+        _ => Err("cargo succeeded but did not report the runtime's rlib and staticlib".to_owned()),
     }
 }
 

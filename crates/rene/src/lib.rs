@@ -4,11 +4,12 @@
 //! evaluating to the package description (name, dependencies, …) — and a
 //! `src/` tree whose `lib.rr` is the crate root. Builds run in a build
 //! directory (`reussir-build/` by default) whose status lives in a redb
-//! database: the baked bundled `reussir-rt` runtime ([`rt`]) and the
-//! package's source graph as `rrc --scan-deps` reported it ([`deps`]).
-//! Compiling the package itself, dependency resolution, and project
-//! scaffolding come later.
+//! database: the baked bundled `reussir-rt` runtime ([`rt`]), the package's
+//! source graph as `rrc --scan-deps` reported it ([`deps`]), and the built
+//! products of the manifest's declared targets ([`compile`]). Dependency
+//! resolution and project scaffolding come later.
 
+pub mod compile;
 pub mod db;
 pub mod deps;
 pub mod manifest;
