@@ -17,6 +17,26 @@
 // CHECK: extern "C" trampoline "__reussir_main" = #entry;
 // CHECK: pub fn #entry() -> () {
 
+// That export is the *only* record of the entry point, which is what keeps
+// the stage chain re-entrant: the entry point survives into the HIR and MIR
+// dumps, so a build resumed from one of them is the build from source. Were
+// it tracked beside the IR instead, a resumed build would quietly lose it.
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.a.hir
+// RUN: %rrc %t.a.hir --emit hir --no-source-locations -o %t.b.hir
+// RUN: diff %t.a.hir %t.b.hir
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.direct.mir
+// RUN: %rrc %t.a.hir --emit mir --no-source-locations -o %t.via.mir
+// RUN: diff %t.direct.mir %t.via.mir
+// RUN: %FileCheck %s --check-prefix=CHECK --input-file=%t.a.hir
+// RUN: %FileCheck %s --check-prefix=RESUMED --input-file=%t.direct.mir
+
+// RESUMED: extern "C" trampoline "__reussir_main" =
+
+// …and resuming all the way to a running executable gives the same program.
+// RUN: %rrc %t.a.hir -o %t.resumed.o --relocation-mode pic
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -L %library_path -l reussir_rt -C link-arg=%rpath_flag
+// RUN: %t.resumed.exe
+
 // One entry point per program…
 // RUN: %not %rrc %S/main_attribute/two_mains.rr --emit hir -o - 2>&1 | %FileCheck %s --check-prefix=TWO
 // TWO: only one `#[main]`

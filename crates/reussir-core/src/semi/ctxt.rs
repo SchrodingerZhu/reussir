@@ -329,10 +329,6 @@ pub struct Elaborator<'a, 'tcx> {
     pub trampolines: Vec<TrampolineRoot<'tcx>>,
     /// Functions explicitly marked with `#[transform_anchor]`, in source order.
     pub transform_anchors: Vec<DefId>,
-    /// The function marked `#[main]`, if any — the program's entry point. It
-    /// is also exported as a trampoline under [`Elaborator::MAIN_SYMBOL`],
-    /// which is what the runtime's `__reussir_start` is handed.
-    pub main_entry: Option<DefId>,
     /// Inline transform scripts, in source order.
     pub transform_scripts: Vec<TransformScript>,
     /// Foreign source blocks (`extern "rust" [{ ... }];`), in source order.
@@ -418,7 +414,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             trait_names,
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
-            main_entry: None,
             transform_scripts: Vec::new(),
             ffi_preludes: Vec::new(),
             ffi_imports: FxHashMap::default(),
@@ -1306,13 +1301,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 "a program can have only one `#[main]` function; another is already declared",
             );
         }
+        // The trampoline is the *only* record of the entry point, and that is
+        // deliberate: it is what the HIR and MIR dumps carry, so a build that
+        // re-enters from one of them (`rrc prog.hir -o prog.o`) sees the same
+        // entry point a build from source does. A side-channel field here
+        // would be lost across that boundary — silently, and only for
+        // resumed builds.
         self.trampolines.push(TrampolineRoot {
             name: Self::MAIN_SYMBOL.to_owned(),
             abi: "C".to_owned(),
             target: *target,
             ty_args: Vec::new(),
         });
-        self.main_entry = Some(*target);
     }
 
     /// Reject an `#[ffi(...)]` attribute on an item kind that takes none.
