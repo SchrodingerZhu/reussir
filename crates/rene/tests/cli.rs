@@ -570,15 +570,22 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     let out = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    // Stdout lists the artifacts, BTreeMap (declaration-name) order.
+    // Stdout lists the artifacts, BTreeMap (declaration-name) order, named
+    // for the host platform (these tests are unix-only, so the split is
+    // Apple vs ELF).
     let stdout = String::from_utf8(out.stdout).unwrap();
     let release = root.join("release");
+    let dylib = if cfg!(target_vendor = "apple") {
+        "libshared.dylib"
+    } else {
+        "libshared.so"
+    };
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),
         [
             release.join("libarchive.a").display().to_string(),
             release.join("demo").display().to_string(),
-            release.join("libshared.so").display().to_string(),
+            release.join(dylib).display().to_string(),
         ]
     );
     for line in stdout.lines() {
