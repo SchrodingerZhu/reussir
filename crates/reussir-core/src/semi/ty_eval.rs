@@ -103,13 +103,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let path = expanded.as_ref().unwrap_or(path);
         let key = path.basename;
 
-        // Built-in cell type constructors are roots and never
-        // module-qualified. `Cell<T>` is the plain get/set cell; `RefCell<T>`
-        // the exclusive flavor with guarded read-modify-write; `Atomic<T>`,
-        // `Mutex<T>`, `FlatLock<T>`, and `RwLock<T>` are the synchronization
-        // kinds (thread-safety design §4), each with its own element bound
-        // checked by [`Elaborator::report_cell_wf`].
-        if path.segments.is_empty()
+        // The prelude builtin type formers live in `core::intrinsic::cell`
+        // (the cell kinds — the synchronization kinds are just special
+        // cells) and `core::intrinsic::nullable` (`Nullable`); their bare
+        // names are default-imported as a prelude, so a bare spelling
+        // resolves here unless a user record of the same name shadows it —
+        // the same precedence a real import would have. The canonical
+        // qualified spelling always names the builtin (`core` is reserved).
+        let bare_unshadowed =
+            path.segments.is_empty() && self.defs.resolve_record(key).is_none();
+
+        // The cell type constructors: `Cell<T>` is the plain get/set cell;
+        // `RefCell<T>` the exclusive flavor with guarded read-modify-write;
+        // `Atomic<T>`, `Mutex<T>`, `FlatLock<T>`, and `RwLock<T>` are the
+        // synchronization kinds (thread-safety design §4), each with its own
+        // element bound checked by [`Elaborator::report_cell_wf`].
+        if (bare_unshadowed || self.is_core_intrinsic_prefix(&path.segments, "cell"))
             && let Some(kind) = crate::semi::ty::CellKind::parse(self.sym(key))
         {
             let name = kind.surface_name();
@@ -135,8 +144,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
-        // The built-in nullable type (a root builtin: never module-qualified).
-        if path.segments.is_empty() && self.sym(key) == "Nullable" {
+        // The built-in nullable type, `core::intrinsic::nullable::Nullable`.
+        if (bare_unshadowed || self.is_core_intrinsic_prefix(&path.segments, "nullable"))
+            && self.sym(key) == "Nullable"
+        {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
@@ -165,12 +176,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
-        // The built-in atomic-rc coloring (a root builtin: never
-        // module-qualified). `Arc<X>` is the shared rc box `X` — a `[shared]`
-        // record, an array, or a closure — whose refcount is adjusted
-        // atomically, so the value may cross threads; everything but the rc
-        // discipline is `X`'s own.
-        if path.segments.is_empty() && self.sym(key) == "Arc" {
+        // The built-in atomic-rc coloring, `core::intrinsic::arc::Arc`.
+        // `Arc<X>` is the shared rc box `X` — a `[shared]` record, an array,
+        // or a closure — whose refcount is adjusted atomically, so the value
+        // may cross threads; everything but the rc discipline is `X`'s own.
+        if (bare_unshadowed || self.is_core_intrinsic_prefix(&path.segments, "arc"))
+            && self.sym(key) == "Arc"
+        {
             return match args {
                 [inner] => {
                     let inner = self.eval_type(inner);
@@ -203,6 +215,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     self.tcx.mk(TyKind::Bottom)
                 }
             };
+        }
+
+        // Nothing else under the reserved `core` package names a type.
+        if path.segments.first().map(|&k| self.sym(k)) == Some("core") {
+            let shown = self.path_display(path);
+            self.error(
+                Some(span),
+                format!("the built-in `core` package has no type `{shown}`"),
+            );
+            return self.tcx.mk(TyKind::Bottom);
         }
 
         // A user record, resolved to its def — bare in the current module, or
