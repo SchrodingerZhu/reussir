@@ -1173,7 +1173,19 @@ fn link_product(
             ));
         } else if !exports.is_empty() {
             // A second version script unions with the `local: *` one rustc
-            // passes (lld semantics — rustc's default linker on ELF).
+            // passes. That union semantics is lld's: GNU bfd rejects the
+            // second script outright ("anonymous version tag cannot be
+            // combined with other version tags"), and bfd is what `cc` picks
+            // on the Linux targets where lld is not yet rustc's default
+            // (aarch64). Pin the toolchain's own bundled rust-lld for this
+            // link — the same linker the x86_64 default resolves to.
+            if triple.contains("-linux") {
+                cmd.arg("-Clinker-features=+lld");
+                // `+linker` (opting *in* to the bundled lld) is still
+                // nightly-gated; the workspace pins a nightly toolchain.
+                cmd.arg("-Zunstable-options");
+                cmd.arg("-Clink-self-contained=+linker");
+            }
             let script = scratch.dir().join("exports.ver");
             let mut text = String::from("{ global:\n");
             for export in exports {

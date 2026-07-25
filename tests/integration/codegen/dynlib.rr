@@ -3,7 +3,8 @@
 // program's `extern` trampolines. rustc's cdylib machinery localizes every
 // symbol the (empty) shim crate does not export — which is everything — so
 // the driver spells the trampolines to the linker itself: a second version
-// script on ELF (lld unions it with rustc's `local: *` one), an
+// script on ELF — union semantics lld has and GNU bfd rejects, so the link
+// pins the toolchain's bundled rust-lld on Linux — and an
 // `-exported_symbols_list` on Mach-O. That localization is also what keeps
 // the cross-unit linkage surface (`_RC…` symbols made external for
 // `--codegen-units`) out of the dynamic table.
