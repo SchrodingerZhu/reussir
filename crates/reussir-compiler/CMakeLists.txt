@@ -38,7 +38,7 @@ add_custom_target(rrc-build
         cargo build --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    DEPENDS ReussirCAPI MLIRReussir reussir-rt
+    DEPENDS ReussirCAPI MLIRReussir
     COMMENT "Building rrc with cargo (${REUSSIR_COMPILER_CARGO_PROFILE} profile)"
     USES_TERMINAL
 )
@@ -60,7 +60,7 @@ add_custom_target(rrc-test
         cargo test --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    DEPENDS ReussirCAPI MLIRReussir reussir-rt
+    DEPENDS ReussirCAPI MLIRReussir
     COMMENT "Testing rrc with cargo"
     USES_TERMINAL
 )

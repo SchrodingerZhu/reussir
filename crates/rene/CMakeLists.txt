@@ -33,12 +33,6 @@ add_custom_target(rene-build
     USES_TERMINAL
 )
 
-# rene's build script packs the reussir-rt source tree into the binary, and
-# its cargo build shares ${CMAKE_BINARY_DIR}/target with the runtime's own.
-# Order the two so they never race that directory (the same reason rrepl
-# carries this dependency).
-add_dependencies(rene-build reussir-rt)
-
 # Stage the binary next to the other lit tools so `%rene` resolves it.
 add_custom_target(rene-install ALL
     COMMAND ${CMAKE_COMMAND} -E copy

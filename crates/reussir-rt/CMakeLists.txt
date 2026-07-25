@@ -1,4 +1,9 @@
-# Determine build profile based on CMAKE_BUILD_TYPE
+# The in-repo runtime build for the dev/test flow. Shipped compilers no
+# longer stage a runtime or a Rust toolchain from here: `rene` bakes the
+# bundled reussir-rt source with the user's own toolchain
+# (crates/rene/src/rt.rs). The lit suites and unit tests point straight at
+# the cargo-managed target directory this file builds into.
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CARGO_PROFILE "dev")
     set(CARGO_PROFILE_DIR "debug")
@@ -6,6 +11,44 @@ else()
     set(CARGO_PROFILE "release")
     set(CARGO_PROFILE_DIR "release")
 endif()
+
+# The runtime builds into its own managed target directory, not the shared
+# ${CMAKE_BINARY_DIR}/target: reussir-jit builds reussir-rt there too, with
+# default features off, and the dylib crate type makes cargo drop the
+# metadata hash from the artifact names — the two feature variants would
+# clobber each other's libreussir_rt.rlib. A dedicated directory keeps the
+# uplifted dylib/staticlib and the deps/ tree (polyffi's `rustc -L`)
+# coherent, whatever else builds concurrently.
+set(REUSSIR_RT_TARGET_DIR ${CMAKE_BINARY_DIR}/target-rt/${CARGO_PROFILE_DIR})
+set(REUSSIR_RT_TARGET_DIR "${REUSSIR_RT_TARGET_DIR}" PARENT_SCOPE)
+
+# The developer toolchain, resolved once: the test suites pin rrc's polyffi
+# compiles to it (REUSSIR_RUSTC), and its target libdir is where the runtime
+# dylib's dynamically linked libstd lives at link and load time. Going
+# through PATH respects rustup shims, so rust-toolchain.toml still selects
+# the pinned toolchain.
+find_program(REUSSIR_RUSTC_PATH rustc REQUIRED)
+execute_process(
+    COMMAND ${REUSSIR_RUSTC_PATH} --print target-libdir
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE REUSSIR_RUST_LIBDIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE rustc_libdir_result)
+if(NOT rustc_libdir_result EQUAL 0)
+    message(FATAL_ERROR
+        "Failed to run '${REUSSIR_RUSTC_PATH} --print target-libdir'. "
+        "Ensure rustc is installed and in PATH.")
+endif()
+set(REUSSIR_RUST_LIBDIR "${REUSSIR_RUST_LIBDIR}" PARENT_SCOPE)
+
+add_custom_target(reussir-rt ALL
+    COMMAND ${CMAKE_COMMAND} -E env
+        CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target-rt
+        RUSTFLAGS=-Awarnings
+        cargo build --locked --profile ${CARGO_PROFILE} --quiet
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Building reussir-rt with cargo (${CARGO_PROFILE} profile)"
+)
 
 if(WIN32)
     set(REUSSIR_RT_OUTPUT_DIR ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
@@ -24,47 +67,11 @@ else()
     set(REUSSIR_RT_SHARED_EXT so)
 endif()
 
-# Custom target to build the default runtime with cargo.
-add_custom_target(reussir-rt-build ALL
-    COMMAND ${CMAKE_COMMAND} -E env
-        CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
-        RUSTFLAGS=-Awarnings
-        cargo build --locked --profile ${CARGO_PROFILE} --quiet
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Building reussir-rt library with cargo (${CARGO_PROFILE} profile)"
-)
-
-# The default runtime install still copies the full deps directory because the
-# existing build and test flow expects the auxiliary Rust artifacts there.
-add_custom_target(reussir-rt-install ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_BINARY_DIR}/target/${CARGO_PROFILE_DIR}/deps
-        ${REUSSIR_RT_OUTPUT_DIR}
-    COMMENT "Installing reussir-rt libraries"
-    DEPENDS reussir-rt-build
-)
-add_dependencies(reussir-rt-install reussir-rt-build)
-
-# Read rust-toolchain.toml to get the channel
-file(READ "${CMAKE_SOURCE_DIR}/rust-toolchain.toml" RUST_TOOLCHAIN_CONTENT)
-string(REGEX MATCH "channel = \"([^\"]+)\"" _ ${RUST_TOOLCHAIN_CONTENT})
-set(RUST_CHANNEL ${CMAKE_MATCH_1})
-
-if(NOT RUST_CHANNEL)
-    message(FATAL_ERROR "Could not parse channel from rust-toolchain.toml")
-endif()
-
-message(STATUS "Target Rust channel: ${RUST_CHANNEL}")
-
-# Define where we want the local toolchain to live (intermediate step)
-set(LOCAL_RUSTUP_HOME "${CMAKE_BINARY_DIR}/.rustup")
-set(LOCAL_CARGO_HOME "${CMAKE_BINARY_DIR}/.cargo")
-
-# Detect the host triple from rustc -vV.
-# This is needed to construct the correct toolchain path and to install
-# the correct toolchain variant.
+# Detect the host triple from rustc -vV; the sanitized runtime builds pass it
+# explicitly so the per-target cargo environment variables apply.
 execute_process(
-    COMMAND rustc -vV
+    COMMAND ${REUSSIR_RUSTC_PATH} -vV
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE RUSTC_VERSION_INFO
     RESULT_VARIABLE RUSTC_RESULT
 )
@@ -83,67 +90,6 @@ endif()
 string(REPLACE "-" "_" RUST_CARGO_TARGET_ENV ${RUST_HOST_TRIPLE})
 string(TOUPPER "${RUST_CARGO_TARGET_ENV}" RUST_CARGO_TARGET_ENV)
 
-set(INSTALLED_TOOLCHAIN_PATH "${LOCAL_RUSTUP_HOME}/toolchains/${RUST_CHANNEL}-${RUST_HOST_TRIPLE}")
-set(RUST_HOST_LIBRARY_DIR "${INSTALLED_TOOLCHAIN_PATH}/lib/rustlib/${RUST_HOST_TRIPLE}/lib")
-set(REUSSIR_RUNTIME_NEEDS_BUILD_STD OFF)
-foreach(sanitizer IN LISTS REUSSIR_RUNTIME_SANITIZERS)
-    string(TOLOWER "${sanitizer}" sanitizer)
-    if(sanitizer STREQUAL "memory" OR sanitizer STREQUAL "thread")
-        set(REUSSIR_RUNTIME_NEEDS_BUILD_STD ON)
-    endif()
-endforeach()
-
-set(RUST_SOURCE_PATH "${INSTALLED_TOOLCHAIN_PATH}/lib/rustlib/src/rust/library")
-set(RUSTUP_COMPONENT_ARGS "")
-if(REUSSIR_RUNTIME_NEEDS_BUILD_STD)
-    list(APPEND RUSTUP_COMPONENT_ARGS --component rust-src)
-endif()
-
-# Reuse the cached toolchain when it is already present in the build tree to
-# avoid forcing network access during incremental builds.
-if(EXISTS "${INSTALLED_TOOLCHAIN_PATH}/bin/rustc" AND
-   (NOT REUSSIR_RUNTIME_NEEDS_BUILD_STD OR EXISTS "${RUST_SOURCE_PATH}"))
-    message(STATUS "Using cached Rust toolchain ${RUST_CHANNEL}-${RUST_HOST_TRIPLE} from ${INSTALLED_TOOLCHAIN_PATH}")
-    add_custom_target(reussir-rust-toolchain-fetch)
-else()
-    # We need to install the toolchain.
-    # We use a custom command/target to ensure it's there.
-    # Note: We install the specific toolchain variant matching the host triple
-    # to ensure the installed path matches what we'll look for during copy.
-    add_custom_target(reussir-rust-toolchain-fetch
-        COMMAND ${CMAKE_COMMAND} -E env
-            RUSTUP_HOME=${LOCAL_RUSTUP_HOME}
-            CARGO_HOME=${LOCAL_CARGO_HOME}
-            rustup toolchain install ${RUST_CHANNEL}-${RUST_HOST_TRIPLE} --profile minimal --no-self-update ${RUSTUP_COMPONENT_ARGS}
-        COMMENT "Ensuring Rust toolchain ${RUST_CHANNEL}-${RUST_HOST_TRIPLE} is installed in ${LOCAL_RUSTUP_HOME}"
-        USES_TERMINAL
-    )
-endif()
-
-add_custom_target(reussir-rust-install ALL
-    # Copy bin
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${INSTALLED_TOOLCHAIN_PATH}/bin"
-        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-    # Copy lib
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${INSTALLED_TOOLCHAIN_PATH}/lib"
-        "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
-    # Stage host Rust dylibs where the test executables' rpath can find them.
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${RUST_HOST_LIBRARY_DIR}"
-        "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
-    COMMENT "Installing rust libraries and tools from ${INSTALLED_TOOLCHAIN_PATH}"
-    DEPENDS reussir-rt-build reussir-rust-toolchain-fetch
-)
-add_dependencies(reussir-rust-install reussir-rt-build reussir-rust-toolchain-fetch)
-
-# Main reussir-rt target that depends on the complete build process
-add_custom_target(reussir-rt ALL
-    DEPENDS reussir-rt-install reussir-rust-install
-)
-add_dependencies(reussir-rt reussir-rt-install reussir-rust-install)
-
 set(REUSSIR_SUPPORTED_RUNTIME_SANITIZERS address leak memory thread)
 set(REUSSIR_SANITIZED_RUNTIME_TARGETS "")
 set(REUSSIR_RT_ASAN_LIBRARY "")
@@ -151,6 +97,9 @@ set(REUSSIR_RT_LSAN_LIBRARY "")
 set(REUSSIR_RT_MSAN_LIBRARY "")
 set(REUSSIR_RT_TSAN_LIBRARY "")
 
+# The sanitized variants need a nightly toolchain (-Zsanitizer), and the
+# memory/thread ones additionally the rust-src component (-Zbuild-std). Both
+# come from the developer toolchain now; nothing is fetched here.
 function(add_reussir_sanitized_runtime sanitizer suffix output_var)
     string(TOLOWER "${sanitizer}" sanitizer)
     set(target_dir "${CMAKE_BINARY_DIR}/target-${suffix}")
@@ -182,9 +131,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
             cargo build ${cargo_extra_args} --locked --target ${RUST_HOST_TRIPLE} --profile ${CARGO_PROFILE} --quiet --no-default-features
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Building sanitized runtime ${output_lib}"
-        DEPENDS reussir-rust-toolchain-fetch
     )
-    add_dependencies(reussir-rt-${suffix}-build reussir-rust-toolchain-fetch)
 
     add_custom_target(reussir-rt-${suffix}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${REUSSIR_RT_OUTPUT_DIR}/sanitizers"

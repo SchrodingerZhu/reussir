@@ -78,11 +78,6 @@
           '';
         };
 
-        # Rust channel string from rust-toolchain.toml (e.g. "nightly-2026-02-15").
-        # Used in the shellHook to pre-populate the local rustup toolchain directory.
-        rustChannel =
-          (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
-
         # System header flags for the clang-scan-deps workaround.
         #
         # cmake 3.28+ with C++23 uses clang-scan-deps (the raw binary, not the
@@ -180,6 +175,7 @@
             llvmPkgs.llvm           # llvm tools (llvm-ar, opt, …)
             llvmPkgs.mlir           # mlir-opt, mlir-translate, etc.
             llvmPkgs.tblgen         # mlir-tblgen, llvm-tblgen (needed by cmake & mlir-sys)
+            llvmPkgs.lldb
 
             # Rust toolchain (nightly-2026-02-15 as pinned in rust-toolchain.toml)
             rustToolchain
@@ -196,6 +192,7 @@
             # zlib / libxml2 are LLVM link-time deps on some targets
             pkgs.zlib
             pkgs.libxml2
+            pkgs.gdb
           ];
 
           # libomp: the OpenMP e2e lit tests probe `clang -fopenmp` and are
@@ -258,23 +255,6 @@
             # -L paths), so the probe binary finds libomp.so only through
             # LD_LIBRARY_PATH.
             export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${llvmPkgs.openmp}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            # crates/reussir-rt/CMakeLists.txt sets LOCAL_RUSTUP_HOME = build/.rustup
-            # and then tries to run `rustup toolchain install <channel>-<host-triple>`
-            # there if build/.rustup/toolchains/<channel>-<host-triple>/bin/rustc is
-            # absent.  In the Nix dev shell, fenix provides the toolchain as a store
-            # path (not a live rustup installation), so the install command would fail.
-            #
-            # Pre-create the expected directory structure by symlinking the fenix
-            # toolchain store path, so cmake's EXISTS check passes and the install
-            # step becomes a no-op.
-            _rust_host=$(rustc -vV 2>/dev/null | awk '/^host:/{print $2}')
-            _toolchain_dir="build/.rustup/toolchains/${rustChannel}-$_rust_host"
-            if [ -n "$_rust_host" ] && [ ! -e "$_toolchain_dir" ]; then
-              mkdir -p "build/.rustup/toolchains"
-              ln -sfn "${rustToolchain}" "$_toolchain_dir"
-            fi
-            unset _rust_host _toolchain_dir
 
             # Write CMakeUserPresets.json (user-local, gitignored) so that
             # `cmake --preset nix-dev` just works with no extra flags.

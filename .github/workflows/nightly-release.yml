@@ -101,20 +101,17 @@ jobs:
           PREFIX="reussir-nightly-${DATE}-linux-${ARCH}-llvm${LLVM_VER}"
           mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
 
-          # Copy binaries
-          for bin in reussir-opt reussir-translate rrc reussir-syntax \
-                     rustc cargo rustdoc; do
+          # Copy binaries. No Rust toolchain and no prebuilt runtime ship
+          # anymore: rene carries the reussir-rt source bundle and bakes it
+          # with the user's own rust/cargo on first use.
+          for bin in reussir-opt reussir-translate rrc rene reussir-syntax; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
           # Copy shared libraries
-          cp -a build/lib/libreussir_rt.so "${PREFIX}/lib/" 2>/dev/null || true
           cp -a build/lib/libMLIRReussirBridge* "${PREFIX}/lib/" 2>/dev/null || true
           # Exclude static libs
           rm -f "${PREFIX}"/lib/libMLIRReussir*.a
-          cp -a build/lib/libLLVM*rust*.so* "${PREFIX}/lib/" 2>/dev/null || true
-          cp -a build/lib/librustc_driver*.so "${PREFIX}/lib/" 2>/dev/null || true
-          cp -a build/lib/rustlib "${PREFIX}/lib/"
 
           # Copy system LLVM/MLIR shared libraries
           LLVM_LIB="/usr/lib/llvm-${LLVM_VER}/lib"
@@ -230,20 +227,17 @@ jobs:
           PREFIX="reussir-nightly-${DATE}-macos-${ARCH}-llvm${LLVM_VER}"
           mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
 
-          # Copy binaries
-          for bin in reussir-opt reussir-translate rrc reussir-syntax \
-                     rustc cargo rustdoc; do
+          # Copy binaries. No Rust toolchain and no prebuilt runtime ship
+          # anymore: rene carries the reussir-rt source bundle and bakes it
+          # with the user's own rust/cargo on first use.
+          for bin in reussir-opt reussir-translate rrc rene reussir-syntax; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
           # Copy shared libraries
-          cp -a build/lib/libreussir_rt.dylib "${PREFIX}/lib/" 2>/dev/null || true
           cp -a build/lib/libMLIRReussirBridge* "${PREFIX}/lib/" 2>/dev/null || true
           # Exclude static libs
           rm -f "${PREFIX}"/lib/libMLIRReussir*.a
-          cp -a build/lib/libLLVM*rust*.dylib* "${PREFIX}/lib/" 2>/dev/null || true
-          cp -a build/lib/librustc_driver*.dylib "${PREFIX}/lib/" 2>/dev/null || true
-          cp -a build/lib/rustlib "${PREFIX}/lib/"
 
           # Copy system LLVM/MLIR shared libraries
           cp -a "${LLVM_PREFIX}/lib"/libMLIR*.dylib "${PREFIX}/lib/"
@@ -526,21 +520,19 @@ jobs:
           $prefix = "reussir-nightly-$date-windows-x64-msvc-llvm$llvmMajor"
           New-Item -ItemType Directory -Force -Path "$prefix\bin", "$prefix\lib" | Out-Null
 
-          foreach ($bin in @("reussir-opt", "reussir-translate", "rrc", "reussir-syntax", "rustc", "cargo", "rustdoc")) {
+          # No Rust toolchain and no prebuilt runtime ship anymore: rene
+          # carries the reussir-rt source bundle and bakes it with the user's
+          # own rust/cargo on first use.
+          foreach ($bin in @("reussir-opt", "reussir-translate", "rrc", "rene", "reussir-syntax")) {
             Copy-Item "build\bin\$bin.exe" "$prefix\bin\" -ErrorAction SilentlyContinue
           }
 
-          Copy-Item "build\bin\reussir_rt.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
           Copy-Item "build\bin\MLIRReussirBridge*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-          Copy-Item "build\bin\LLVM*rust*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-          Copy-Item "build\bin\rustc_driver*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
 
           Copy-Item "$env:LLVM_PREFIX\bin\MLIR*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
           Copy-Item "$env:LLVM_PREFIX\bin\LLVM*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
           Copy-Item "$env:LLVM_PREFIX\bin\libMLIR*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
           Copy-Item "$env:LLVM_PREFIX\bin\libLLVM*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-
-          Copy-Item "build\lib\rustlib" "$prefix\lib\" -Recurse -ErrorAction SilentlyContinue
 
           $strip = "$env:LLVM_PREFIX\bin\llvm-strip.exe"
           $stripInputs = @("$prefix\bin\reussir-opt.exe", "$prefix\bin\reussir-translate.exe") | Where-Object { Test-Path $_ }
@@ -607,3 +599,5 @@ jobs:
             - Windows x64 (MSVC LLVM via conda-forge)
 
             **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`. Libraries are bundled with correct rpaths — no need to set `LD_LIBRARY_PATH`.
+
+            Compiling programs requires a Rust toolchain (`rustc`/`cargo`) on `PATH`: the bundled `rene` bakes the `reussir-rt` runtime from its embedded source with your toolchain on first use — no toolchain or prebuilt runtime ships in this archive.

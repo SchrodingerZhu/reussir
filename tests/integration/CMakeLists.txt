@@ -140,27 +140,39 @@ if(WIN32 AND DEFINED ENV{VCToolsInstallDir})
   endif()
 endif()
 
+# The runtime artifacts live in the cargo-managed target directory the
+# reussir-rt build fills (crates/reussir-rt/CMakeLists.txt). Its deps/
+# subdirectory carries everything the suites need in one place — the runtime
+# dylib/staticlib the link lines take, and the rlib tree polyffi's `rustc -L`
+# resolves `extern crate reussir_rt` from — the same content the old flow
+# copied into the build tree. Nothing is staged anymore; the runtime dylib
+# links libstd dynamically, so link lines also need the toolchain's own
+# libdir (rpath-link at link time; lit puts it on the platform library path
+# for RUN lines, see lit.cfg.py).
+set(REUSSIR_RT_DEPS_DIR ${REUSSIR_RT_TARGET_DIR}/deps)
 if (WIN32)
   set(extra_sys_libs "-Wl,/nodefaultlib:libucrt -Wl,/defaultlib:ucrt -lntdll -lws2_32 -ladvapi32 -lbcrypt -luserenv")
   if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     # Rust MSVC targets use DLL CRT imports; keep lit-linked test drivers matched.
     set(cc_runtime_flags "-fms-runtime-lib=dll")
   endif()
-  set(REUSSIR_LIBRARY_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
-  set(REUSSIR_RT_LIBRARY_PATH ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir_rt.dll)
+  set(REUSSIR_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR})
+  set(REUSSIR_RT_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR}/reussir_rt.dll)
   set(rpath_flag "")
 elseif(APPLE)
   set(extra_sys_libs "-framework Security -framework CoreFoundation")
-  set(REUSSIR_LIBRARY_PATH ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
-  set(REUSSIR_RT_LIBRARY_PATH ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libreussir_rt.dylib)
-  set(rpath_flag "-Wl,-rpath,${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+  set(REUSSIR_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR})
+  set(REUSSIR_RT_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR}/libreussir_rt.dylib)
+  set(rpath_flag "-Wl,-rpath,${REUSSIR_RT_DEPS_DIR} -Wl,-rpath,${REUSSIR_RUST_LIBDIR}")
 else()
-  set(REUSSIR_LIBRARY_PATH ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
-  set(REUSSIR_RT_LIBRARY_PATH ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libreussir_rt.so)
-  set(rpath_flag "-Wl,-rpath,${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+  set(REUSSIR_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR})
+  set(REUSSIR_RT_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR}/libreussir_rt.so)
+  set(rpath_flag "-Wl,-rpath,${REUSSIR_RT_DEPS_DIR} -Wl,-rpath-link,${REUSSIR_RUST_LIBDIR}")
 endif()
 
-set(rustc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rustc${CMAKE_EXECUTABLE_SUFFIX})
+# The developer toolchain's rustc, resolved by crates/reussir-rt (a PATH
+# lookup respecting rustup shims) — no toolchain is staged into build/bin.
+set(rustc_path ${REUSSIR_RUSTC_PATH})
 set(reussir_rrc_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rrc${CMAKE_EXECUTABLE_SUFFIX})
 # The package manager (`crates/rene`), driving rrc for the rene/ suite.
 set(rene_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rene${CMAKE_EXECUTABLE_SUFFIX})
@@ -209,16 +221,18 @@ endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-# `rrepl` carries an order-only dependency on reussir-rt (see
-# crates/reussir-repl/CMakeLists.txt), so it is safe to depend on here: it
-# builds after the runtime, not concurrently, and enables the repl-rs suite.
+# USES_TERMINAL runs lit in ninja's console pool with the real terminal on
+# stdout — lit only enables its colors and progress bar on a TTY, and a
+# piped ninja job never is one.
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
   DEPENDS reussir-opt reussir-rt reussir-translate reussir-llvm-opt
-          reussir-syntax rrc rrepl rene)
+          reussir-syntax rrc rrepl rene
+  USES_TERMINAL)
 
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v --filter "sanitizer/"
-    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate rrc)
+    DEPENDS reussir-opt reussir-rt reussir-rt-sanitizers reussir-translate rrc
+    USES_TERMINAL)
 endif()
