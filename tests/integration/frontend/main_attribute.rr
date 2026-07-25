@@ -21,11 +21,13 @@
 // links fine and then dies looking for std. `%extra_sys_libs` covers what
 // the runtime's own dependencies need — the CoreFoundation/Security
 // frameworks on macOS — which rustc cannot infer for a *native* static
-// library.
+// library. It is quoted because it expands to several words, and `-C
+// link-args=` takes one: unquoted, the shell hands rustc a bare `-framework`
+// and it rejects it outright.
 
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s -o %t.o --relocation-mode pic
-// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -L %library_path -l static=reussir_rt -C link-arg=%rpath_flag -C link-args=%extra_sys_libs
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.exe -C link-arg=%t.o -L %library_path -l static=reussir_rt -C link-arg=%rpath_flag -C link-args="%extra_sys_libs"
 // RUN: %t.exe
 
 // The attribute lowers to an ordinary C-ABI export of the marked function.
@@ -49,7 +51,7 @@
 
 // …and resuming all the way to a running executable gives the same program.
 // RUN: %rrc %t.a.hir -o %t.resumed.o --relocation-mode pic
-// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -L %library_path -l static=reussir_rt -C link-arg=%rpath_flag -C link-args=%extra_sys_libs
+// RUN: %rustc_path --edition 2024 %S/../../../crates/reussir-rt/launcher/main.rs -o %t.resumed.exe -C link-arg=%t.resumed.o -L %library_path -l static=reussir_rt -C link-arg=%rpath_flag -C link-args="%extra_sys_libs"
 // RUN: %t.resumed.exe
 
 // One entry point per program…
