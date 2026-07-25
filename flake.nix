@@ -175,6 +175,7 @@
             llvmPkgs.llvm           # llvm tools (llvm-ar, opt, …)
             llvmPkgs.mlir           # mlir-opt, mlir-translate, etc.
             llvmPkgs.tblgen         # mlir-tblgen, llvm-tblgen (needed by cmake & mlir-sys)
+            llvmPkgs.lldb
 
             # Rust toolchain (nightly-2026-02-15 as pinned in rust-toolchain.toml)
             rustToolchain
@@ -191,6 +192,7 @@
             # zlib / libxml2 are LLVM link-time deps on some targets
             pkgs.zlib
             pkgs.libxml2
+            pkgs.gdb
           ];
 
           # libomp: the OpenMP e2e lit tests probe `clang -fopenmp` and are
