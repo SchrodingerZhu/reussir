@@ -1,11 +1,12 @@
 // RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
 
-// Arc is a root builtin type constructor.
+// Arc is a prelude builtin type constructor, canonically
+// `core::intrinsic::arc::Arc`; both spellings check their arity.
 // CHECK-DAG: `Arc` takes exactly one type argument
 fn missing_type(a: Arc) -> i64 { 0 }
 
-// CHECK-DAG: record name `Arc` is reserved for the builtin type
-struct Arc { value: i64 }
+// CHECK-DAG: `Arc` takes exactly one type argument
+fn missing_type_qualified(a: core::intrinsic::arc::Arc) -> i64 { 0 }
 
 // Only a shared rc box — a [shared] record, an array, or a closure — can be
 // arc-colored.

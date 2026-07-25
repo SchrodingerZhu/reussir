@@ -1,0 +1,71 @@
+// The prelude builtin type formers and their canonical `core::intrinsic`
+// homes: `cell::{Cell, RefCell, Atomic, Mutex, FlatLock, RwLock}`,
+// `arc::Arc`, and `nullable::Nullable`. The bare names are default-imported
+// as a prelude; the canonical paths resolve directly and through `import`
+// aliases; and a user record of the same name shadows the bare prelude name
+// while the canonical path keeps naming the builtin.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o
+
+import core::intrinsic::cell;
+import core::intrinsic::cell::RefCell as XCell;
+import core::intrinsic::nullable::Nullable as Opt;
+import core::intrinsic::arc::Arc as SharedRc;
+
+struct [shared] Data { value: i64 }
+struct RcBox { value: i64 }
+
+// The canonical qualified spellings name the same types as the prelude.
+// CHECK: pub fn #qualified(v0 (c): Cell<i64>, v1 (r): RefCell<i64>) -> i64
+pub fn qualified(
+    c: core::intrinsic::cell::Cell<i64>,
+    r: core::intrinsic::cell::RefCell<i64>
+) -> i64 {
+    cell::get(c) + cell::get(r)
+}
+
+// An `import` alias of a canonical type path spells the builtin.
+// CHECK: pub fn #aliased(v0 (r): RefCell<i64>) -> Cell<i64>
+pub fn aliased(r: XCell<i64>) -> core::intrinsic::cell::Cell<i64> {
+    cell::alloc(cell::get(r))
+}
+
+// Arc, canonically `core::intrinsic::arc::Arc`, in type and ctor position.
+// CHECK: pub fn #arced() -> Arc<#Data>
+// CHECK: NonNull(#Data{42 : i64} : Arc<#Data>) : Nullable<Arc<#Data>>
+pub fn arced() -> core::intrinsic::arc::Arc<Data> {
+    let a = SharedRc<Data> { value: 21 };
+    let n = Opt::NonNull { SharedRc<Data> { value: 42 } };
+    match n {
+        Opt::NonNull(b) => b,
+        Opt::Null => a
+    }
+}
+
+// The qualified nullable spelling, in type and ctor position.
+// CHECK: pub fn #wrapped(v0 (v): i64) -> Nullable<#RcBox>
+pub fn wrapped(v: i64) -> core::intrinsic::nullable::Nullable<RcBox> {
+    core::intrinsic::nullable::Nullable::NonNull { RcBox { value: v } }
+}
+
+// A user record shadows the bare prelude name — the same precedence a real
+// import has — while the canonical path still names the builtin.
+struct [value] Mutex { value: i64 }
+
+// CHECK: pub fn #shadowed(v0 (m): #Mutex, v1 (b): Mutex<i64>) -> i64
+pub fn shadowed(m: Mutex, b: core::intrinsic::cell::Mutex<i64>) -> i64 {
+    m.value + cell::get(b)
+}
+
+// A user enum named `Nullable` shadows the prelude's constructors and
+// patterns, not just the type name.
+enum Nullable { A, B }
+
+// CHECK: pub fn #shadow_enum() -> i32
+pub fn shadow_enum() -> i32 {
+    match Nullable::A {
+        Nullable::A => 0,
+        Nullable::B => 1
+    }
+}

@@ -2,18 +2,20 @@
 
 import core::intrinsic::cell;
 
-// Cell and RefCell are root builtin type constructors.
+// Cell and RefCell are prelude builtin type constructors, canonically
+// `core::intrinsic::cell::…`; both spellings check their arity.
 // CHECK-DAG: `Cell` takes exactly one type argument
 fn missing_type(c: Cell) -> i64 { 0 }
 
 // CHECK-DAG: `RefCell` takes exactly one type argument
 fn missing_ref_type(c: RefCell) -> i64 { 0 }
 
-// CHECK-DAG: record name `Cell` is reserved for the builtin type
-struct Cell { value: i64 }
+// CHECK-DAG: `Mutex` takes exactly one type argument
+fn missing_qualified(c: core::intrinsic::cell::Mutex) -> i64 { 0 }
 
-// CHECK-DAG: record name `RefCell` is reserved for the builtin type
-struct RefCell { value: i64 }
+// Nothing else under the reserved `core` package names a type.
+// CHECK-DAG: the built-in `core` package has no type `core::intrinsic::cell::Box`
+fn not_a_cell(c: core::intrinsic::cell::Box) -> i64 { 0 }
 
 // A mutable `[field]` link must still point at a regional record, not a Cell.
 // CHECK-DAG: a `[field]` link element must be a regional record

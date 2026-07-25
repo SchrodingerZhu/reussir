@@ -338,8 +338,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             None => ctor,
         };
         // The built-in nullable constructors, by the same qualifier convention
-        // as [`Elaborator::infer_ctor`] on the expression side.
-        if ctor.path.segments.last().map(|k| self.sym(*k)) == Some("Nullable") {
+        // as [`Elaborator::infer_ctor`] on the expression side: the canonical
+        // `core::intrinsic::nullable::Nullable::…`, or the prelude's bare
+        // `Nullable::…` when no user record shadows the name.
+        if ctor.path.segments.last().map(|k| self.sym(*k)) == Some("Nullable")
+            && self.ctor_qualifier_prelude_applies(&ctor.path, "nullable")
+        {
             return self.check_nullable_pat(ctor, span, ty);
         }
         let TyKind::Record { def, args, .. } = ty.kind() else {

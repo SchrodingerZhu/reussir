@@ -739,6 +739,37 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
+    /// Whether `prefix` spells the canonical `core::intrinsic::<family>`
+    /// module of a prelude builtin. The package name `core` is reserved, so
+    /// the qualified spelling can never collide with user code.
+    pub(super) fn is_core_intrinsic_prefix(&self, prefix: &[TokenKey], family: &str) -> bool {
+        prefix.len() == 3
+            && self.sym(prefix[0]) == "core"
+            && self.sym(prefix[1]) == "intrinsic"
+            && self.sym(prefix[2]) == family
+    }
+
+    /// Whether a constructor path whose *qualifier* names a prelude builtin
+    /// (`Nullable::…`, `Arc::Variant`) targets that builtin: the canonical
+    /// `core::intrinsic::<family>::<Name>::…` spelling, or the prelude's
+    /// bare `<Name>::…` when no user record shadows the name (a shadowing
+    /// definition or import dispatches through ordinary enum resolution
+    /// instead).
+    pub(super) fn ctor_qualifier_prelude_applies(
+        &self,
+        path: &surface::Path,
+        family: &str,
+    ) -> bool {
+        let Some((_, prefix)) = path.segments.split_last() else {
+            return false;
+        };
+        if prefix.is_empty() {
+            self.resolve_ctor_qualifier(path).is_none()
+        } else {
+            self.is_core_intrinsic_prefix(prefix, family)
+        }
+    }
+
     /// Enter `def`'s declaration scope: reports attribute to `file`, and
     /// bare/relative references resolve against the item's own module (its
     /// qualified path minus the item name).
@@ -1339,16 +1370,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         let name = rec.name;
-        if matches!(self.sym(name), "Cell" | "RefCell" | "Arc") {
-            self.error(
-                span,
-                format!(
-                    "record name `{}` is reserved for the builtin type",
-                    self.sym(name)
-                ),
-            );
-            return None;
-        }
         let Some(def) = self.defs.declare_record(name) else {
             self.error(
                 span,

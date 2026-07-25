@@ -1652,19 +1652,30 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);
         let qualifier = path.segments.last().copied();
-        // The built-in nullable constructors.
-        if qualifier.map(|k| self.sym(k)) == Some("Nullable") {
+        // The built-in nullable constructors, canonically
+        // `core::intrinsic::nullable::Nullable::…` and prelude-imported as bare
+        // `Nullable::…`; a user record named `Nullable` shadows the bare form.
+        if qualifier.map(|k| self.sym(k)) == Some("Nullable")
+            && self.ctor_qualifier_prelude_applies(path, "nullable")
+        {
             return self.infer_nullable(self.sym(path.basename), args, span);
         }
-        // The built-in arc-coloring constructors (a root builtin, never
-        // module-qualified): `Arc<Inner>{…}` builds the `[shared]` struct
-        // `Inner` behind an atomically counted box, `Arc<Enum<…>>::Variant{…}`
-        // the enum flavor. `Arc<X>` is a specially colored version of `X`, so
-        // the constructor is the inner record's own, at the arc'd type.
-        if path.segments.is_empty() && self.sym(path.basename) == "Arc" {
+        // The built-in arc-coloring constructors, canonically
+        // `core::intrinsic::arc::Arc` and prelude-imported as bare `Arc`:
+        // `Arc<Inner>{…}` builds the `[shared]` struct `Inner` behind an
+        // atomically counted box, `Arc<Enum<…>>::Variant{…}` the enum flavor.
+        // `Arc<X>` is a specially colored version of `X`, so the constructor
+        // is the inner record's own, at the arc'd type. A user record named
+        // `Arc` shadows the bare form like any other prelude name.
+        if self.sym(path.basename) == "Arc"
+            && (path.segments.is_empty() && self.defs.resolve_record(path.basename).is_none()
+                || self.is_core_intrinsic_prefix(&path.segments, "arc"))
+        {
             return self.infer_arc_ctor(ty_args, None, args, span);
         }
-        if path.segments.len() == 1 && self.sym(path.segments[0]) == "Arc" {
+        if qualifier.map(|k| self.sym(k)) == Some("Arc")
+            && self.ctor_qualifier_prelude_applies(path, "arc")
+        {
             return self.infer_arc_ctor(ty_args, Some(path.basename), args, span);
         }
         if let Some(enum_key) = qualifier {
