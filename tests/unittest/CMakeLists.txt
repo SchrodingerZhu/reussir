@@ -40,10 +40,17 @@ target_include_directories(reussir-ut
 
 add_dependencies(reussir-ut reussir-rt)
 
-# Register with CTest. The RustCompiler tests invoke rustc and resolve
-# `extern crate reussir_rt` against the runtime's deps directory; with no
-# toolchain or runtime staged into the build tree anymore, both come in
-# through the environment (the same variables the lit suite sets).
-gtest_discover_tests(reussir-ut
-  PROPERTIES ENVIRONMENT
-    "REUSSIR_RUSTC=${REUSSIR_RUSTC_PATH};REUSSIR_RUSTC_DEPS=${REUSSIR_RT_TARGET_DIR}/deps")
+# The RustCompiler tests invoke rustc and resolve `extern crate reussir_rt`
+# against the runtime's deps directory. With no toolchain or runtime staged
+# into the build tree anymore, hand the tests the configure-time paths as
+# compile definitions; they prime REUSSIR_RUSTC / REUSSIR_RUSTC_DEPS from
+# them when the caller's environment does not already say otherwise.
+# (A ctest ENVIRONMENT property cannot carry both variables: list values do
+# not survive gtest_discover_tests' property forwarding.)
+target_compile_definitions(reussir-ut
+  PRIVATE
+    REUSSIR_UT_RUSTC="${REUSSIR_RUSTC_PATH}"
+    REUSSIR_UT_RUSTC_DEPS="${REUSSIR_RT_TARGET_DIR}/deps")
+
+# Register with CTest
+gtest_discover_tests(reussir-ut)

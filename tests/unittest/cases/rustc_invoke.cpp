@@ -1,8 +1,31 @@
 #include "Reussir/RustCompiler.h"
+#include <cstdlib>
 #include <gtest/gtest.h>
 #include <llvm/IR/LLVMContext.h>
 
 namespace reussir {
+namespace {
+// The build tree stages neither a toolchain nor runtime artifacts the
+// probe list could find, so default the discovery environment to the
+// configure-time paths (tests/unittest/CMakeLists.txt). An environment the
+// caller already set — the lit suite's, or a developer pinning their own
+// toolchain — is left alone.
+void setDefaultEnv(const char *name, const char *value) {
+  if (std::getenv(name))
+    return;
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, /*overwrite=*/0);
+#endif
+}
+
+void primeRustDiscoveryEnv() {
+  setDefaultEnv("REUSSIR_RUSTC", REUSSIR_UT_RUSTC);
+  setDefaultEnv("REUSSIR_RUSTC_DEPS", REUSSIR_UT_RUSTC_DEPS);
+}
+} // namespace
+
 constexpr llvm::StringRef EXAMPLE_SOURCE = R"(
 extern crate reussir_rt as rt;
 use rt::collections::vec::Vec;
@@ -19,6 +42,7 @@ pub unsafe extern "C" fn __reussir_extern_Vec_f64_drop(_ : Vec<f64>) {
 }
 )";
 TEST(RustCompilerTest, CompileSimpleSource) {
+  primeRustDiscoveryEnv();
   llvm::LLVMContext context;
   std::unique_ptr<llvm::Module> m = compileRustSource(context, EXAMPLE_SOURCE);
   ASSERT_NE(m, nullptr);
@@ -28,6 +52,7 @@ TEST(RustCompilerTest, CompileSimpleSource) {
 }
 
 TEST(RustCompilerTest, ExplicitPathsOverrideDiscovery) {
+  primeRustDiscoveryEnv();
   // Explicit paths short-circuit both the environment and the probe list, and
   // several package directories survive side by side.
   EXPECT_EQ(findRustCompiler("/explicit/bin/rustc"), "/explicit/bin/rustc");
