@@ -1177,14 +1177,18 @@ fn link_product(
             // second script outright ("anonymous version tag cannot be
             // combined with other version tags"), and bfd is what `cc` picks
             // on the Linux targets where lld is not yet rustc's default
-            // (aarch64). Pin the toolchain's own bundled rust-lld for this
-            // link — the same linker the x86_64 default resolves to.
+            // (aarch64). Steer this link to the toolchain's bundled rust-lld
+            // — the same linker the x86_64 default resolves to — through the
+            // stable `cc` arguments rustc's own switch expands to, since the
+            // rustc driving the link need not be a nightly (`rene` hands rrc
+            // whatever toolchain its environment resolves, and the opt-in
+            // `-Clink-self-contained=+linker` is nightly-gated). A rustc
+            // shipped without the component falls back to a system lld.
             if triple.contains("-linux") {
-                cmd.arg("-Clinker-features=+lld");
-                // `+linker` (opting *in* to the bundled lld) is still
-                // nightly-gated; the workspace pins a nightly toolchain.
-                cmd.arg("-Zunstable-options");
-                cmd.arg("-Clink-self-contained=+linker");
+                if let Some(gcc_ld) = bundled_lld_dir(&rustc) {
+                    cmd.arg(format!("-Clink-arg=-B{}", gcc_ld.display()));
+                }
+                cmd.arg("-Clink-arg=-fuse-ld=lld");
             }
             let script = scratch.dir().join("exports.ver");
             let mut text = String::from("{ global:\n");
@@ -1218,6 +1222,22 @@ fn link_product(
         ));
     }
     Ok(())
+}
+
+/// The directory of the toolchain's bundled rust-lld shims (`gcc-ld`, next
+/// to the target libdir), asked of the rustc driving the link. `None` when
+/// that distribution ships no rust-lld component.
+fn bundled_lld_dir(rustc: &str) -> Option<PathBuf> {
+    let out = std::process::Command::new(rustc)
+        .args(["--print", "target-libdir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let libdir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let dir = libdir.parent()?.join("bin").join("gcc-ld");
+    dir.is_dir().then_some(dir)
 }
 
 /// The rustc driving the link step: `--polyffi-rust-path`, then the
