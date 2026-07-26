@@ -130,6 +130,16 @@ fn run(cli: &Cli) -> Result<bool, String> {
         (None, None, _) => None,
     };
 
+    // Extern package paths root at package names, so only a package can
+    // consume them (mirrors --emit rri, which only a package can produce).
+    if package.is_none() && !(cli.externs.is_empty() && cli.extern_srcs.is_empty()) {
+        return Err(
+            "--extern requires package mode: --package-root, or an input file rooted \
+             by --package-name"
+                .into(),
+        );
+    }
+
     // `--scan-deps` stops after discovery: list the package's source graph
     // instead of compiling.
     if cli.scan_deps {
@@ -246,8 +256,9 @@ fn run(cli: &Cli) -> Result<bool, String> {
         if cli.disable_backend_multithreading {
             context.enable_multi_threading(false);
         }
-        let produced =
-            match in_arena(|tcx| frontend_package(&context, tcx, target, &pkg, &interner, cli)) {
+        let produced = match in_arena(|tcx| {
+            frontend_package(&context, tcx, target, &pkg, &pkg_name, &interner, cli)
+        }) {
                 Ok(produced) => produced,
                 Err(msg) => {
                     if !msg.is_empty() {

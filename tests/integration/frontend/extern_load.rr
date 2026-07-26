@@ -1,0 +1,51 @@
+// Loading dependency package interfaces: `--extern name=path.rri` parses the
+// interface into the compilation and gates its header (format, package name,
+// reserved names). Consumption — resolution against the loaded defs, then
+// cross-package monomorphization — lands separately; this pins the loading
+// contract itself. The dep interface is emitted from this very file: the two
+// roles differ only by package name.
+
+// RUN: %rrc %s --package-name dep --emit rri -o %t.rri
+// RUN: %rrc %s --package-name dep --emit hir --no-source-locations -o %t.hir
+
+// Loading succeeds and the consumer compiles as usual.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s
+
+// The header's package must match the flag's name.
+// RUN: %not %rrc %s --package-name app --extern other=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=MISMATCH
+// MISMATCH: describes package `dep`, but was loaded as `--extern other=...`
+
+// A plain HIR dump is not an interface.
+// RUN: %not %rrc %s --package-name app --extern dep=%t.hir --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PLAIN
+// PLAIN: plain HIR dump, not a package interface
+
+// `core` and the compiling package's own name are reserved.
+// RUN: %not %rrc %s --package-name app --extern core=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=CORE
+// CORE: `core` is the builtin package
+// RUN: %not %rrc %s --package-name dep --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=SHADOW
+// SHADOW: shadows the package being compiled
+
+// Extern names are unique, a source root must name a declared extern, and
+// only a package can consume interfaces.
+// RUN: %not %rrc %s --package-name app --extern dep=%t.rri --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=DUP
+// DUP: `--extern dep=...` given twice
+// RUN: %not %rrc %s --package-name app --extern dep=%t.rri --extern-src other=%S --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NOSRC
+// NOSRC: `--extern-src other=...` names no `--extern other=...`
+// RUN: %not %rrc %s --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NOPKG
+// NOPKG: --extern requires package mode
+
+pub fn id<T : Num>(x: T) -> T { x }
+
+fn helper(x: i64) -> i64 { x + 1 }
+
+pub fn entry(x: i64) -> i64 { helper(x) }
+
+// CHECK: pub fn #app::entry

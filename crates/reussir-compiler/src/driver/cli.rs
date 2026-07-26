@@ -108,6 +108,20 @@ pub(crate) struct Cli {
     #[arg(long = "target-features")]
     pub(crate) target_features: Option<String>,
 
+    /// A dependency package interface: `NAME=PATH` loads the `.rri` at PATH
+    /// under the package name NAME (which must match the interface's own
+    /// header). Repeatable; names must be distinct, and neither `core` nor
+    /// this compilation's package name. See `docs/design/rri.md`.
+    #[arg(long = "extern", value_name = "NAME=PATH")]
+    pub(crate) externs: Vec<crate::externs::ExternPair>,
+
+    /// The source root a loaded interface's package-root-relative file table
+    /// re-anchors onto: `NAME=DIR` applies to the `--extern` of the same
+    /// NAME. Without it that interface's files load as unfetchable virtual
+    /// files (locations degrade to name-only).
+    #[arg(long = "extern-src", value_name = "NAME=DIR")]
+    pub(crate) extern_srcs: Vec<crate::externs::ExternPair>,
+
     /// `rustc` used to compile polymorphic-FFI textures. A bare name resolves
     /// through `PATH` (the host-toolchain workflow: `--polyffi-rust-path
     /// rustc`); takes precedence over the `REUSSIR_RUSTC` environment

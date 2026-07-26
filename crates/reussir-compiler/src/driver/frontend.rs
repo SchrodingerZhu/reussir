@@ -38,10 +38,17 @@ pub(crate) fn frontend_package<'c, 'tcx>(
     tcx: &TyCtxt<'tcx>,
     target: Stage,
     pkg: &package::PackageSource,
+    pkg_name: &str,
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
     cli: &Cli,
 ) -> Result<Produced<'c>, String> {
     use reussir_core::semi::{PackageFile, elaborate_package};
+
+    // Dependency interfaces load and gate first — their tables must exist
+    // before any consumer resolution runs. Loaded-but-unconsumed for now:
+    // resolution and monomorphization pick these up in the next commits.
+    let extern_specs = crate::externs::join_specs(&cli.externs, &cli.extern_srcs)?;
+    let _externs = crate::externs::load(tcx, &extern_specs, Some(pkg_name))?;
 
     let name = pkg.cache.name(FileId::ROOT);
     let programs: Vec<surface::Program> = pkg
