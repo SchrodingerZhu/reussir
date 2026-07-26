@@ -37,7 +37,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
     context: &'c reussir_backend::melior::Context,
     tcx: &TyCtxt<'tcx>,
     target: Stage,
-    pkg: &package::PackageSource,
+    pkg: &mut package::PackageSource,
     pkg_name: &str,
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
     cli: &Cli,
@@ -45,12 +45,25 @@ pub(crate) fn frontend_package<'c, 'tcx>(
     use reussir_core::semi::{ExternPackage, PackageFile, elaborate_package_with_externs};
 
     // Dependency interfaces load and gate first — their tables must exist
-    // before any consumer resolution runs. Diagnostics stay on the consumer's
-    // cache: no report carries an extern file id yet (extern bodies are never
-    // re-checked here); rendering against `LoadedExtern::sources()` lands
-    // with cross-package monomorphization.
+    // before any consumer resolution runs.
     let extern_specs = crate::externs::join_specs(&cli.externs, &cli.extern_srcs)?;
     let externs = crate::externs::load(tcx, &extern_specs, Some(pkg_name))?;
+
+    // Extern sources join the consumer's cache only when the pipeline runs
+    // into monomorphization: that is where reports and debug locations can
+    // land inside imported bodies. The text-dump targets (`hir`, `rri`) print
+    // the consumer's file table verbatim, so growing the cache there would
+    // leak consumer-anchored dependency paths into the artifact (breaking the
+    // rri's byte-stability across checkouts).
+    let extern_files: Vec<Vec<FileId>> = if target > Stage::Rri {
+        externs
+            .iter()
+            .map(|ext| ext.register_sources(&mut pkg.cache))
+            .collect()
+    } else {
+        externs.iter().map(|_| Vec::new()).collect()
+    };
+    let pkg: &package::PackageSource = pkg;
 
     let name = pkg.cache.name(FileId::ROOT);
     let programs: Vec<surface::Program> = pkg
@@ -75,9 +88,11 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         .collect();
     let extern_pkgs: Vec<ExternPackage<'_, 'tcx>> = externs
         .iter()
-        .map(|ext| ExternPackage {
+        .zip(&extern_files)
+        .map(|(ext, files)| ExternPackage {
             name: &ext.name,
             parsed: &ext.parsed,
+            files,
         })
         .collect();
     let elab = elaborate_package_with_externs(tcx, &files, interner, &mut keys, &extern_pkgs);

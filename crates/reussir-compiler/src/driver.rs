@@ -246,7 +246,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         }
         let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-        let pkg = match load_package_or_render(&root, &pkg_name, &interner) {
+        let mut pkg = match load_package_or_render(&root, &pkg_name, &interner) {
             Ok(pkg) => pkg,
             Err(msg) if msg.is_empty() => return Ok(false),
             Err(msg) => return Err(msg),
@@ -257,7 +257,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             context.enable_multi_threading(false);
         }
         let produced = match in_arena(|tcx| {
-            frontend_package(&context, tcx, target, &pkg, &pkg_name, &interner, cli)
+            frontend_package(&context, tcx, target, &mut pkg, &pkg_name, &interner, cli)
         }) {
                 Ok(produced) => produced,
                 Err(msg) => {
