@@ -32,6 +32,11 @@ use crate::utils::string::StringToken;
 
 use super::mono::{MonoInput, for_each_expr};
 
+/// The `.rri` format integer, bumped on any change to the textual grammar or
+/// its meaning. The header's `producer` string (the exact producing rrc
+/// version) gates the rest while the format is unstable.
+pub const RRI_FORMAT: u32 = 1;
+
 /// The defs and ancillary facts an `.rri` interface ships. All sets are over
 /// the producing elaboration's ids; emission resolves them back through the
 /// same tables it prints.
@@ -196,6 +201,57 @@ mod tests {
             assert_eq!(names(&closure.protos), ["deep", "ground", "helper"]);
             assert_eq!(names(&closure.records), ["Internal", "Nested"]);
             assert_eq!(closure.strings.len(), 1, "{:?}", closure.strings);
+
+            // The printed interface: header first, closure only, prototypes
+            // bodyless, functions in path order — and it re-enters through
+            // the ordinary HIR parser with the header surfaced.
+            let strings: Vec<_> = elab
+                .strings
+                .entries()
+                .into_iter()
+                .filter(|(t, _)| closure.strings.contains(t))
+                .collect();
+            let text = crate::semi::hir::print::Printer::new(&elab.defs, elab.resolver)
+                .with_interface(crate::semi::hir::print::InterfaceEmit {
+                    format: RRI_FORMAT,
+                    package: "demo",
+                    producer: "rrc-test",
+                    bodies: &closure.bodies,
+                    protos: &closure.protos,
+                    records: &closure.records,
+                    file_root: None,
+                })
+                .program(&elab.elaborated, &strings, &elab.records, &[]);
+            assert!(
+                text.starts_with("interface 1 package \"demo\" producer \"rrc-test\";"),
+                "{text}"
+            );
+            assert!(text.contains("fn #deep(v0 (x): i64) -> i64;"), "{text}");
+            assert!(text.contains("pub fn #ground(v0 (x): i64) -> i64;"), "{text}");
+            assert!(!text.contains("unreachable_helper"), "{text}");
+            assert!(!text.contains("from_ground"), "{text}");
+            let api = text.find("fn #api").expect("api printed");
+            let mid = text.find("fn #mid").expect("mid printed");
+            assert!(api < mid, "functions not in path order:\n{text}");
+
+            let parsed =
+                crate::semi::hir::build::parse_program(tcx, &text).expect("interface re-parses");
+            let header = parsed.header.expect("header surfaced");
+            assert_eq!(header.format, RRI_FORMAT);
+            assert_eq!(header.package, "demo");
+            assert_eq!(header.producer, "rrc-test");
+            assert_eq!(parsed.funcs.len(), 5);
+            let body_of = |name: &str| {
+                parsed
+                    .funcs
+                    .iter()
+                    .find(|f| parsed.defs.path(f.def).display(&parsed.names) == name)
+                    .unwrap_or_else(|| panic!("{name} missing"))
+                    .body
+                    .is_some()
+            };
+            assert!(body_of("api") && body_of("mid"));
+            assert!(!body_of("deep") && !body_of("ground") && !body_of("helper"));
         });
     }
 }

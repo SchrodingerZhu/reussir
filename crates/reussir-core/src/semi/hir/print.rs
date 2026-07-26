@@ -47,6 +47,31 @@ pub struct Printer<'a> {
     transform_scripts: &'a [TransformScript],
     ffi_preludes: &'a [FfiPrelude],
     ffi_imports: Option<&'a rustc_hash::FxHashMap<DefId, FfiImport>>,
+    interface: Option<InterfaceEmit<'a>>,
+}
+
+/// The `.rri` interface mode of the printer: emit the versioned header first,
+/// restrict the printed items to the export closure, print [`protos`] as
+/// bodyless prototypes, sort functions by qualified path, and relativize the
+/// file table. The sets come from `full::interface::export_closure`; the
+/// caller also filters what it passes to [`Printer::program`] (strings, ffi
+/// metadata, transform metadata) — this struct only governs what the printer
+/// itself selects.
+///
+/// [`protos`]: InterfaceEmit::protos
+pub struct InterfaceEmit<'a> {
+    pub format: u32,
+    pub package: &'a str,
+    pub producer: &'a str,
+    /// Functions printed whole (signature and body / `ffi` body).
+    pub bodies: &'a rustc_hash::FxHashSet<DefId>,
+    /// Functions printed as bodyless prototypes, whatever body they carry.
+    pub protos: &'a rustc_hash::FxHashSet<DefId>,
+    /// Records printed; everything else is dropped.
+    pub records: &'a rustc_hash::FxHashSet<DefId>,
+    /// Strip this prefix from file-table paths and normalize separators to
+    /// `/`, so the emitted interface is stable across checkouts and hosts.
+    pub file_root: Option<&'a std::path::Path>,
 }
 
 impl<'a> Printer<'a> {
@@ -59,6 +84,7 @@ impl<'a> Printer<'a> {
             transform_scripts: &[],
             ffi_preludes: &[],
             ffi_imports: None,
+            interface: None,
         }
     }
 
@@ -76,6 +102,7 @@ impl<'a> Printer<'a> {
             transform_scripts: &[],
             ffi_preludes: &[],
             ffi_imports: None,
+            interface: None,
         }
     }
 
@@ -102,6 +129,12 @@ impl<'a> Printer<'a> {
         self
     }
 
+    /// Render the next program as an `.rri` interface (see [`InterfaceEmit`]).
+    pub fn with_interface(mut self, interface: InterfaceEmit<'a>) -> Self {
+        self.interface = Some(interface);
+        self
+    }
+
     /// Render the resumable Semi output: record declarations, trampoline roots,
     /// then the elaborated functions. Records are emitted in `DefId` order for
     /// determinism.
@@ -113,12 +146,20 @@ impl<'a> Printer<'a> {
         trampolines: &[TrampolineRoot<'_>],
     ) -> String {
         let mut items: Vec<Doc<'static>> = Vec::new();
+        if let Some(i) = &self.interface {
+            items.push(text(format!(
+                "interface {} package {:?} producer {:?};",
+                i.format, i.package, i.producer
+            )));
+        }
         if let Some(cache) = self.sources {
-            items.extend(
-                cache
-                    .ids()
-                    .map(|id| text(format!("{} = {:?};", id.index(), cache.name(id)))),
-            );
+            items.extend(cache.ids().map(|id| {
+                text(format!(
+                    "{} = {:?};",
+                    id.index(),
+                    self.file_display(cache.name(id))
+                ))
+            }));
         }
         items.extend(
             strings
@@ -126,6 +167,9 @@ impl<'a> Printer<'a> {
                 .map(|(token, payload)| string_decl(*token, payload)),
         );
         let mut recs: Vec<&Record<'_>> = records.values().collect();
+        if let Some(i) = &self.interface {
+            recs.retain(|r| i.records.contains(&r.def));
+        }
         // Sort by qualified path (phase-canonical: identical across the original
         // elaboration and a reparse, unlike the session-local `DefId`).
         recs.sort_by_key(|r| self.path(r.def));
@@ -145,7 +189,14 @@ impl<'a> Printer<'a> {
                 .iter()
                 .map(|prelude| self.ffi_prelude(prelude)),
         );
-        items.extend(funcs.iter().map(|function| self.function(function)));
+        let mut fns: Vec<&Function<'_>> = funcs.iter().collect();
+        if let Some(i) = &self.interface {
+            // The export closure, in path order: declaration order would leak
+            // (and churn with) the private layout of the source files.
+            fns.retain(|f| i.bodies.contains(&f.def) || i.protos.contains(&f.def));
+            fns.sort_by_key(|f| self.path(f.def));
+        }
+        items.extend(fns.into_iter().map(|function| self.function(function)));
 
         let mut doc = Doc::Null;
         for (i, item) in items.into_iter().enumerate() {
@@ -161,6 +212,24 @@ impl<'a> Printer<'a> {
 
     fn path(&self, def: DefId) -> String {
         self.defs.path(def).display(self.resolver)
+    }
+
+    /// A file-table entry's display name. In interface mode paths are
+    /// package-root-relative with `/` separators, so the emitted `.rri` is
+    /// identical across checkouts and hosts; a name outside the root (or a
+    /// virtual `<bracketed>` one) is kept as-is.
+    fn file_display(&self, name: &str) -> String {
+        let Some(root) = self.interface.as_ref().and_then(|i| i.file_root) else {
+            return name.to_owned();
+        };
+        match std::path::Path::new(name).strip_prefix(root) {
+            Ok(rel) => rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/"),
+            Err(_) => name.to_owned(),
+        }
     }
 
     /// `<$0, regional $1>` — a generic binder list, shared by records and
@@ -310,14 +379,22 @@ impl<'a> Printer<'a> {
             + self.ty(f.return_ty)
             + self.item_loc(f.file, f.span);
 
+        // An interface prototype prints bodyless whatever it carries: the
+        // body (and any `ffi` texture) stays home, only the signature — and
+        // through it the externally-linkable symbol — crosses.
+        let proto = self
+            .interface
+            .as_ref()
+            .is_some_and(|i| i.protos.contains(&f.def));
         match &f.body {
-            Some(body) => {
+            Some(body) if !proto => {
                 sig + text(" {") + indent(hardline() + self.expr(body)) + hardline() + text("}")
             }
-            None => match self.ffi_imports.and_then(|m| m.get(&f.def)) {
+            None if !proto => match self.ffi_imports.and_then(|m| m.get(&f.def)) {
                 Some(import) => sig + text(format!(" = ffi {:?};", import.body)),
                 None => sig + text(";"),
             },
+            _ => sig + text(";"),
         }
     }
 

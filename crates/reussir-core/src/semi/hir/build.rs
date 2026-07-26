@@ -36,6 +36,11 @@ use crate::utils::string::StringToken;
 /// the record declarations, and the trampoline roots — so it can be fed to
 /// [`crate::full::mono::monomorphize`] via a `MonoInput`.
 pub struct Parsed<'tcx> {
+    /// The `.rri` interface header when the dump is a package interface;
+    /// `None` for a plain HIR program. Gating (format/producer/package
+    /// checks, and rejecting a header where a program is expected) is the
+    /// caller's job.
+    pub header: Option<raw::InterfaceHeader>,
     pub funcs: Vec<Function<'tcx>>,
     pub transform_anchors: Vec<DefId>,
     pub transform_scripts: Vec<TransformScript>,
@@ -163,6 +168,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         .collect();
     let trampolines = raw.trampolines.iter().map(|t| b.trampoline(t)).collect();
     Ok(Parsed {
+        header: raw.header.clone(),
         funcs,
         transform_anchors,
         transform_scripts,

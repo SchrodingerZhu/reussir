@@ -14,7 +14,22 @@ use crate::semi::ty::CellKind;
 
 grammar<'input>;
 
-pub Program: raw::Program = <items:Item*> => raw::Program::from_items(items);
+pub Program: raw::Program = <h:Header?> <items:Item*> => {
+    let mut p = raw::Program::from_items(items);
+    p.header = h;
+    p
+};
+
+/// The `.rri` interface header, required first in an interface dump and
+/// absent from a plain HIR program:
+/// `interface 1 package "demo" producer "rrc 0.1.0";`.
+Header: raw::InterfaceHeader =
+    "interface" <format:"int"> "package" <package:"quoted"> "producer" <producer:"quoted"> ";"
+    => raw::InterfaceHeader {
+        format: raw::small_u32(&format),
+        package: unescape_debug_str(package).into_owned(),
+        producer: unescape_debug_str(producer).into_owned(),
+    };
 
 Item: raw::Item = {
     <f:FileDecl> => raw::Item::File(f),
@@ -187,6 +202,9 @@ Name: &'input str = {
     "ffi" => "ffi",
     "texture" => "texture",
     "glue" => "glue",
+    "interface" => "interface",
+    "package" => "package",
+    "producer" => "producer",
 };
 
 Body: raw::FuncBody = {
@@ -408,6 +426,9 @@ extern {
         "glue" => Token::Glue,
         "transform" => Token::Transform,
         "transform_anchor" => Token::TransformAnchor,
+        "interface" => Token::Interface,
+        "package" => Token::Package,
+        "producer" => Token::Producer,
         "quoted" => Token::Quoted(<Cow<'input, str>>),
         "let" => Token::Let,
         "if" => Token::If,
