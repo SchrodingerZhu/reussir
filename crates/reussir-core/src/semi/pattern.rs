@@ -368,6 +368,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     d
                 }
                 None => {
+                    if let Some(msg) = self.extern_private_ctor_msg(&ctor.path) {
+                        self.error(span, msg);
+                        return Pat::Wild;
+                    }
                     let hint = self.record_suggestion(seg);
                     self.error(span, format!("unknown enum `{}`{hint}", self.sym(seg)));
                     return Pat::Wild;

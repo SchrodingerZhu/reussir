@@ -3,6 +3,7 @@
 use reussir_syntax::kind::TokenKey;
 
 use crate::semi::infer::Instantiation;
+use crate::semi::resolve::DefKind;
 use crate::semi::traits::{Obligation, TraitId, TraitRef};
 use crate::semi::ty::CellKind;
 use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyKind};
@@ -599,6 +600,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return done;
         }
         let Some(def) = self.resolve_function_ref(&fc.name) else {
+            // A hit on a *private* item of a loaded extern package reports
+            // access, not absence.
+            if let Some(msg) = self.extern_private_msg(&fc.name, DefKind::Function) {
+                self.error(span, msg);
+                return self.poison(span);
+            }
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
             } else {
@@ -1697,6 +1704,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 );
             }
             let Some(def) = self.resolve_record_ref(path) else {
+                // Either the qualifier (`dep::Enum::Variant`) or the record
+                // itself (`dep::Struct{…}`) may be the private extern hit.
+                if let Some(msg) = self
+                    .extern_private_ctor_msg(path)
+                    .or_else(|| self.extern_private_msg(path, DefKind::Record))
+                {
+                    self.error(span, msg);
+                    return self.poison(span);
+                }
                 let hint = self.record_suggestion(enum_key);
                 let shown = self.path_display(path);
                 self.error(span, format!("unknown constructor `{shown}`{hint}"));
@@ -1738,6 +1754,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.poison(span);
         };
         let Some(def) = self.resolve_record_ref(&ipath) else {
+            if let Some(msg) = self.extern_private_msg(&ipath, DefKind::Record) {
+                self.error(span, msg);
+                return self.poison(span);
+            }
             let shown = self.path_display(&ipath);
             self.error(span, format!("unknown record `{shown}`"));
             return self.poison(span);

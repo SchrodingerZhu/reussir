@@ -23,6 +23,7 @@ pub mod ty;
 // The elaboration passes.
 pub mod check;
 pub mod ctxt;
+pub mod externs;
 pub mod fulfill;
 pub mod hir;
 pub mod pattern;
@@ -34,7 +35,9 @@ pub use ctxt::{
     Checkpoint, DefaultCap, Elaborator, PackageFile, Report, Severity, TransformScript,
     render_reports, render_reports_to,
 };
+pub use externs::ExternPackage;
 
+use reussir_syntax::Interner;
 use reussir_syntax::kind::{Resolver, TokenKey};
 
 use crate::surface;
@@ -64,6 +67,26 @@ pub fn elaborate_package<'a, 'tcx>(
     resolver: &'a dyn Resolver<TokenKey>,
 ) -> Elaborator<'a, 'tcx> {
     let mut elab = Elaborator::new(tcx, resolver);
+    elab.run_package(files);
+    elab
+}
+
+/// [`elaborate_package`] against loaded dependency interfaces: every extern
+/// package's items are declared first (the declare-only twin of the
+/// in-package scan, see [`externs`]), so consumer references `dep::item`
+/// resolve during the same run — `pub` items only. `interner` must back
+/// `resolver`: extern paths re-intern into the consumer's key space.
+pub fn elaborate_package_with_externs<'a, 'tcx>(
+    tcx: &'a TyCtxt<'tcx>,
+    files: &[PackageFile<'_>],
+    resolver: &'a dyn Resolver<TokenKey>,
+    interner: &mut impl Interner<TokenKey>,
+    externs: &[ExternPackage<'_, 'tcx>],
+) -> Elaborator<'a, 'tcx> {
+    let mut elab = Elaborator::new(tcx, resolver);
+    for ext in externs {
+        elab.declare_extern_package(interner, ext);
+    }
     elab.run_package(files);
     elab
 }

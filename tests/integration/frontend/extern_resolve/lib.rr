@@ -1,0 +1,30 @@
+// The dependency fixture for extern-head resolution: a `pub` generic whose
+// body reaches a private ground helper over a private record (both ship in
+// the interface — the body whole, the helper as a prototype), a `pub`
+// ground, and a `pub` record surface a prototype mentions.
+
+pub struct Point {
+    x: i64,
+    y: i64,
+}
+
+struct Hidden {
+    v: i64,
+}
+
+fn private_helper(h: Hidden) -> i64 {
+    h.v
+}
+
+pub fn api<T : Num>(x: T) -> T {
+    private_helper(Hidden { v: 1 });
+    x
+}
+
+pub fn ground(x: i64) -> i64 {
+    x + 1
+}
+
+pub fn origin() -> Point {
+    Point { x: 0, y: 0 }
+}

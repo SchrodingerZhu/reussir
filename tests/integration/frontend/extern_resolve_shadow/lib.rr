@@ -1,0 +1,13 @@
+// A consumer with a local module named like the loaded extern: the extern
+// head owns `dep::…` exclusively (the reference below misses), while the
+// local module stays reachable through `root::dep::…`.
+
+mod dep;
+
+fn go(x: i64) -> i64 {
+    dep::local(x)
+}
+
+fn ok(x: i64) -> i64 {
+    root::dep::local(x)
+}

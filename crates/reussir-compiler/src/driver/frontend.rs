@@ -42,13 +42,15 @@ pub(crate) fn frontend_package<'c, 'tcx>(
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
     cli: &Cli,
 ) -> Result<Produced<'c>, String> {
-    use reussir_core::semi::{PackageFile, elaborate_package};
+    use reussir_core::semi::{ExternPackage, PackageFile, elaborate_package_with_externs};
 
     // Dependency interfaces load and gate first — their tables must exist
-    // before any consumer resolution runs. Loaded-but-unconsumed for now:
-    // resolution and monomorphization pick these up in the next commits.
+    // before any consumer resolution runs. Diagnostics stay on the consumer's
+    // cache: no report carries an extern file id yet (extern bodies are never
+    // re-checked here); rendering against `LoadedExtern::sources()` lands
+    // with cross-package monomorphization.
     let extern_specs = crate::externs::join_specs(&cli.externs, &cli.extern_srcs)?;
-    let _externs = crate::externs::load(tcx, &extern_specs, Some(pkg_name))?;
+    let externs = crate::externs::load(tcx, &extern_specs, Some(pkg_name))?;
 
     let name = pkg.cache.name(FileId::ROOT);
     let programs: Vec<surface::Program> = pkg
@@ -71,7 +73,14 @@ pub(crate) fn frontend_package<'c, 'tcx>(
             program,
         })
         .collect();
-    let elab = elaborate_package(tcx, &files, interner);
+    let extern_pkgs: Vec<ExternPackage<'_, 'tcx>> = externs
+        .iter()
+        .map(|ext| ExternPackage {
+            name: &ext.name,
+            parsed: &ext.parsed,
+        })
+        .collect();
+    let elab = elaborate_package_with_externs(tcx, &files, interner, &mut keys, &extern_pkgs);
     if render_reports(&pkg.cache, &elab.reports) {
         return Err(String::new());
     }
@@ -84,7 +93,10 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
         .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports);
         let strings = elab.strings.entries();
-        let text = printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+        // The dump describes the consumer package: extern-imported records
+        // are filtered out (extern bodies never joined `elaborated`).
+        let records = elab.local_records();
+        let text = printer.program(&elab.elaborated, &strings, &records, &elab.trampolines);
         return Ok(Produced::Text(text));
     }
     if target == Stage::Rri {
