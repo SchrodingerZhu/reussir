@@ -307,6 +307,9 @@ pub(crate) fn frontend<'c, 'tcx>(
                 ffi_imports: &parsed.ffi_imports,
                 ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
+                // A plain `.hir` re-entry is a closed world; interfaces load
+                // via `--extern` (package mode) only.
+                externs: Default::default(),
             };
             let (full, reports) = monomorphize(&input);
             match &dump_sources {

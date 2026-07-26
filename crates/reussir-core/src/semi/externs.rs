@@ -10,9 +10,9 @@
 //! cross-package identity), re-allocates generics in the elaborator's global
 //! table, and rebuilds every type over the mapped defs. Prototypes and
 //! records land in the same `functions`/`records` tables the checker reads;
-//! bodies, strings, and ffi textures land in the `extern_*` side tables held
-//! for cross-package monomorphization (a later commit) so they stay out of
-//! the consumer's printed program and export surface. Resolution reaches the
+//! bodies, strings, and ffi textures land in the `extern_*` side tables
+//! cross-package monomorphization consumes (`MonoInput::externs`) so they
+//! stay out of the consumer's printed program and export surface. Resolution reaches the
 //! declared items only through the package head, gated on `pub`
 //! (`ctxt::resolve_extern`).
 

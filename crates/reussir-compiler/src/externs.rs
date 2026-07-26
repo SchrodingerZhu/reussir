@@ -2,10 +2,10 @@
 //!
 //! An `.rri` is a textual HIR document reduced to the export closure behind
 //! a versioned header (`docs/design/rri.md`). This module owns the consumer
-//! side of the contract's first leg: parsing the `--extern`/`--extern-src`
-//! spellings and gating the header (format, package name, reserved names)
-//! before anything is offered to resolution. What the loaded tables *feed*
-//! (elaboration, monomorphization) arrives in later commits.
+//! side of the contract: parsing the `--extern`/`--extern-src` spellings,
+//! gating the header (format, package name, reserved names) before anything
+//! is offered to resolution, and re-anchoring the interface's file table
+//! into the consumer's source cache so imported spans render and debug.
 
 use std::path::PathBuf;
 

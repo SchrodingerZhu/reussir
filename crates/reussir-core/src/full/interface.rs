@@ -63,6 +63,10 @@ pub struct ExportClosure {
 /// compiled here and only the symbol crosses). Walking a body classifies each
 /// call target the same way and collects the types and strings it mentions;
 /// the record set then closes over field types.
+///
+/// Only `elaborated` — this package's own items — seeds or joins the closure:
+/// imported functions (`MonoInput::externs`) are a dependency's surface, and
+/// a consumer never re-exports its dependency.
 pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
     let by_def: rustc_hash::FxHashMap<DefId, &crate::semi::hir::Function<'_>> =
         input.elaborated.iter().map(|f| (f.def, f)).collect();
