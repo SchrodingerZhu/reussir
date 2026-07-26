@@ -14,9 +14,10 @@
 // RUN: %FileCheck %s --check-prefix=LISTING < %t.listing
 
 // Stdout is the artifact listing: the one declared target, under the
-// default profile's directory.
+// default profile's directory. (Single-line-ness is pinned by the exact
+// stdout assertions in crates/rene/tests/cli.rs; a `NOT: {{.}}` here trips
+// over the CRLF line endings Windows' python filecheck keeps.)
 // LISTING: {{[/\\]}}dev{{[/\\]}}demo
-// LISTING-NOT: {{.}}
 
 // The built executable runs.
 // RUN: %t.bdir/dev/demo%exe_ext

@@ -18,6 +18,9 @@ fn demo_manifest() -> PathBuf {
 
 /// A scratch package the test may mutate: a manifest plus a two-file source
 /// graph (`src/lib.rr` declaring `mod math;`). Returns the manifest path.
+/// (Unix-gated with its callers, the fake-toolchain tests; on Windows it
+/// would be dead code under `-D warnings`.)
+#[cfg(unix)]
 fn package(dir: &Path, name: &str) -> PathBuf {
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -35,6 +38,7 @@ fn package(dir: &Path, name: &str) -> PathBuf {
 }
 
 /// (Re)write the scratch package's manifest.
+#[cfg(unix)]
 fn write_manifest(dir: &Path, name: &str, version: &str) -> PathBuf {
     let path = dir.join("rene.ncl");
     std::fs::write(
