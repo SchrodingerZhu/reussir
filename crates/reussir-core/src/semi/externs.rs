@@ -171,11 +171,19 @@ impl<'tcx> Elaborator<'_, 'tcx> {
     }
 
     /// Re-allocate an extern item's generic binder in the global table. The
-    /// interface does not serialize trait bounds (the producer already
-    /// enforced them on its own bodies), so extern binders re-allocate
-    /// unbounded: consumer-side obligations arise only from the consumer's
-    /// own expressions until bounds join the interface format with the trait
-    /// system.
+    /// interface does not serialize trait bounds yet, so extern binders
+    /// re-allocate unbounded: consumer-side obligations arise only from the
+    /// consumer's own expressions.
+    ///
+    /// TODO(#451, cross-package mono): this is a soundness gap for the
+    /// *builtin* traits (Num/Integral/FloatingPoint/PtrLike/Sync) — a local
+    /// call of `api<T: Num>` discharges the obligation at the call site, but
+    /// an imported prototype arrives unbounded, so the violation only
+    /// surfaces later inside monomorphization, far from the user's mistake.
+    /// Builtin bounds must join the interface format before cross-package
+    /// monomorphization ships. When they do: bounds serialize as qualified
+    /// *paths* (the shape user-defined traits will need), not bare names,
+    /// and the format stays at version 1 — nothing is released yet.
     fn remap_generics(
         &mut self,
         binder: &[(TokenKey, GenericId)],
