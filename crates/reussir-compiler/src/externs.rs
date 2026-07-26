@@ -86,6 +86,53 @@ pub struct LoadedExtern<'tcx> {
     pub parsed: Parsed<'tcx>,
 }
 
+impl LoadedExtern<'_> {
+    /// The interface's file table, re-anchored. An `.rri` records its files
+    /// package-root-relative on purpose (byte-stability across checkouts);
+    /// this is DWARF's `comp_dir` split, and the source root is the base
+    /// directory the environment supplies: with one, entries join onto it,
+    /// so diagnostics and the DWARF of locally emitted instances point at
+    /// the producing package's real sources. Without one, entries become
+    /// unfetchable virtual names carrying the package — locations degrade
+    /// to name-only, and never resolve against the consumer's own tree.
+    pub fn re_anchored_files(&self) -> Vec<String> {
+        self.parsed
+            .files
+            .iter()
+            .map(|rel| {
+                if rel.starts_with('<') {
+                    // Already virtual at the producer; keep verbatim.
+                    rel.clone()
+                } else if let Some(root) = &self.src_root {
+                    root.join(rel).display().to_string()
+                } else {
+                    format!("<{}/{rel}>", self.name)
+                }
+            })
+            .collect()
+    }
+
+    /// A source cache over the re-anchored table — real paths registered for
+    /// lazy loading, virtual entries name-only — so spans inside imported
+    /// items keep resolving in consumer diagnostics. `None` when the
+    /// interface was printed without locations.
+    pub fn sources(&self) -> Option<reussir_syntax::source::SourceCache> {
+        let files = self.re_anchored_files();
+        if files.is_empty() {
+            return None;
+        }
+        let mut cache = reussir_syntax::source::SourceCache::new();
+        for name in &files {
+            if name.starts_with('<') {
+                cache.add_unavailable(name);
+            } else {
+                cache.add_lazy_file(name);
+            }
+        }
+        Some(cache)
+    }
+}
+
 /// Load every interface, gating each header: it must be present (a plain
 /// HIR dump is not an interface), carry the supported format, and describe
 /// the package the flag named. `core` and the compiling package's own name
@@ -160,6 +207,36 @@ mod tests {
         assert!("dep".parse::<ExternPair>().is_err());
         assert!("=x".parse::<ExternPair>().is_err());
         assert!("dep=".parse::<ExternPair>().is_err());
+    }
+
+    #[test]
+    fn file_tables_re_anchor_onto_the_source_root() {
+        reussir_core::in_arena(|tcx| {
+            let text = "interface 1 package \"dep\" producer \"t\";\n\
+                        0 = \"src/lib.rr\";\n\
+                        1 = \"<prelude>\";\n";
+            let parsed = build::parse_program(tcx, text).unwrap();
+            let mut ext = LoadedExtern {
+                name: "dep".into(),
+                src_root: None,
+                parsed,
+            };
+            // No root: unfetchable virtual names carrying the package;
+            // producer-virtual entries pass through.
+            assert_eq!(ext.re_anchored_files(), ["<dep/src/lib.rr>", "<prelude>"]);
+            ext.src_root = Some(PathBuf::from("/vendor/dep"));
+            let files = ext.re_anchored_files();
+            assert_eq!(
+                files[0],
+                std::path::Path::new("/vendor/dep")
+                    .join("src/lib.rr")
+                    .display()
+                    .to_string()
+            );
+            assert_eq!(files[1], "<prelude>");
+            let cache = ext.sources().expect("table is non-empty");
+            assert_eq!(cache.len(), 2);
+        });
     }
 
     #[test]
