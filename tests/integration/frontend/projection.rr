@@ -35,14 +35,14 @@
 // CHECK-NEXT: proj(v0 : RcBox::<RcBox::<RcBox::<u32>>>, 0, 0, 0) : u32
 // CHECK-NEXT: }
 
-struct [value] Point {
+pub struct [value] Point {
     x : u64,
     y : u64
 }
-struct [value] Box<T> {
+pub struct [value] Box<T> {
     val : T
 }
-struct [shared] RcBox<T> {
+pub struct [shared] RcBox<T> {
     val : T
 }
 

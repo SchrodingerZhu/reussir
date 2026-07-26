@@ -15,6 +15,10 @@ pub use crate::full::mir::raw::{
 /// declarations and trampoline roots mono needs, plus the elaborated functions.
 #[derive(Clone, Debug)]
 pub struct Program {
+    /// The `.rri` interface header, when the dump is a package interface
+    /// rather than a plain HIR program: `interface 1 package "demo"
+    /// producer "rrc …";`, always the first item.
+    pub header: Option<InterfaceHeader>,
     pub files: Vec<FileEntry>,
     pub strings: Vec<StringEntry>,
     pub records: Vec<Record>,
@@ -22,6 +26,16 @@ pub struct Program {
     pub transforms: Vec<Transform>,
     pub ffi_preludes: Vec<FfiPrelude>,
     pub funcs: Vec<Func>,
+}
+
+/// The `.rri` header: format integer, the package the interface describes,
+/// and the exact producing-compiler version string. Both strings gate loading
+/// (see `docs/design/rri.md`); the parser only carries them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterfaceHeader {
+    pub format: u32,
+    pub package: String,
+    pub producer: String,
 }
 
 /// One top-level item, as the grammar yields them before partitioning.
@@ -39,6 +53,7 @@ pub enum Item {
 impl Program {
     pub fn from_items(items: Vec<Item>) -> Program {
         let mut p = Program {
+            header: None,
             files: Vec::new(),
             strings: Vec::new(),
             records: Vec::new(),
@@ -77,6 +92,7 @@ pub struct FfiPrelude {
 /// them) so the resumed HIR resolves ground record layouts identically.
 #[derive(Clone, Debug)]
 pub struct Record {
+    pub is_pub: bool,
     pub default_cap: DefaultCap,
     /// `#[repr(fixed)]`: uniform max-arm box sizing for an enum. Only ever set
     /// for enums (`struct` is always `false`).

@@ -31,6 +31,7 @@ use reussir_compiler::package;
 use reussir_compiler::{
     OutputKind, RelocMode, TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir, write_archive,
 };
+use reussir_core::full::interface;
 use reussir_core::full::mir;
 use reussir_core::full::mono::{MonoInput, monomorphize};
 use reussir_core::semi::hir;
@@ -52,6 +53,12 @@ enum Stage {
     Rr,
     /// Elaborated, still-polymorphic HIR (`.hir`).
     Hir,
+    /// The package interface (`.rri`): the HIR reduced to the export closure
+    /// behind a versioned header — what a foreign package needs to
+    /// type-check against this one and monomorphize its generics locally.
+    /// Emit-only, and only from a package: a plain dump carries no
+    /// authoritative package name for the header. See `docs/design/rri.md`.
+    Rri,
     /// Monomorphized ground MIR (`.mir`).
     Mir,
     /// The Reussir MLIR dialect, before the lowering pipeline (`.mlir`).
@@ -188,6 +195,7 @@ impl Stage {
         Some(match path.extension().and_then(|e| e.to_str())? {
             "rr" => Stage::Rr,
             "hir" => Stage::Hir,
+            "rri" => Stage::Rri,
             "mir" => Stage::Mir,
             "mlir" => Stage::Mlir,
             "mlir-llvm" => Stage::MlirLlvm,
@@ -643,6 +651,15 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err("no output file given; pass -o".into());
     };
     let target = resolve_target(cli)?;
+    // The interface header names the package it describes; only package mode
+    // has that name authoritatively (a plain file or dump does not).
+    if target == Stage::Rri && package.is_none() {
+        return Err(
+            "--emit rri describes a package interface; compile a package \
+             (--package-root, or an input file with --package-name)"
+                .into(),
+        );
+    }
     if cli.lto != Lto::None && target != Stage::Staticlib && !target.is_linked() {
         return Err(format!(
             "--lto applies to `staticlib`, `dynlib`, and `executable`, not \
@@ -1497,6 +1514,72 @@ fn frontend_package<'c, 'tcx>(
         let text = printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         return Ok(Produced::Text(text));
     }
+    if target == Stage::Rri {
+        let closure = interface::export_closure(&elab.mono_input());
+        // The ancillary tables travel only as far as the closure reaches:
+        // strings the shipped bodies reference, ffi textures of shipped
+        // functions (with the preludes of their files), transform scripts
+        // only when a shipped body is anchored. Trampolines never ship —
+        // they are this package's own link surface and mono roots.
+        let strings: Vec<_> = elab
+            .strings
+            .entries()
+            .into_iter()
+            .filter(|(token, _)| closure.strings.contains(token))
+            .collect();
+        let ffi_imports: rustc_hash::FxHashMap<_, _> = elab
+            .ffi_imports
+            .iter()
+            .filter(|(def, _)| closure.bodies.contains(def))
+            .map(|(def, import)| (*def, import.clone()))
+            .collect();
+        let ffi_files: rustc_hash::FxHashSet<FileId> =
+            ffi_imports.values().map(|import| import.file).collect();
+        let ffi_preludes: Vec<_> = elab
+            .ffi_preludes
+            .iter()
+            .filter(|prelude| ffi_files.contains(&prelude.file))
+            .cloned()
+            .collect();
+        let anchors: Vec<_> = elab
+            .transform_anchors
+            .iter()
+            .copied()
+            .filter(|def| closure.bodies.contains(def))
+            .collect();
+        let scripts: Vec<_> = if anchors.is_empty() {
+            Vec::new()
+        } else {
+            elab.transform_scripts.clone()
+        };
+        // The source cache stores canonical paths (package discovery dedups
+        // through them), so the root must be canonicalized the same way for
+        // the prefix strip to hold.
+        let file_root = match (&cli.package_root, &cli.input) {
+            (Some(root), _) => Some(root.clone()),
+            (None, Some(input)) => input.parent().map(Path::to_path_buf),
+            _ => None,
+        }
+        .map(|root| root.canonicalize().unwrap_or(root));
+        let printer = if cli.no_source_locations {
+            hir::print::Printer::new(&elab.defs, elab.resolver)
+        } else {
+            hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
+        }
+        .with_transform_metadata(&anchors, &scripts)
+        .with_ffi_metadata(&ffi_preludes, &ffi_imports)
+        .with_interface(hir::print::InterfaceEmit {
+            format: interface::RRI_FORMAT,
+            package: cli.package_name.as_deref().unwrap_or_default(),
+            producer: concat!("rrc ", env!("CARGO_PKG_VERSION")),
+            bodies: &closure.bodies,
+            protos: &closure.protos,
+            records: &closure.records,
+            file_root: file_root.as_deref(),
+        });
+        let text = printer.program(&elab.elaborated, &strings, &elab.records, &[]);
+        return Ok(Produced::Text(text));
+    }
     let (full, reports) = monomorphize(&elab.mono_input());
     if render_reports(&pkg.cache, &reports) {
         return Err(String::new());
@@ -1580,6 +1663,16 @@ fn frontend<'c, 'tcx>(
         Stage::Hir => {
             let parsed =
                 hir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
+            // An interface is not a resumable program: its prototypes have no
+            // bodies to compile and its mono roots stayed home. Loading one
+            // is `--extern`'s job (a later PR), not pipeline re-entry.
+            if parsed.header.is_some() {
+                return Err(format!(
+                    "{name}: this is a package interface (`.rri`), not a plain HIR \
+                     program; an interface describes another package's exports and \
+                     cannot re-enter the pipeline"
+                ));
+            }
             // The dump's file table names the original sources. Rebuild the
             // same dense ids, but delay opening paths until diagnostics or
             // debug locations actually need source text. An old, table-less

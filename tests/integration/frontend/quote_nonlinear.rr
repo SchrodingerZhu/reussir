@@ -6,12 +6,12 @@
 // RUN:   --reussir-trmc-recursion-analysis | %FileCheck %s --check-prefix=CHECK-TRMC
 // RUN: %FileCheck %s --check-prefix=CHECK-LLVM < %t.reuse.ll
 
-enum Term {
+pub enum Term {
     Var(i64),
     App(Term, Term)
 }
 
-enum Value {
+pub enum Value {
     VVar(i64),
     VApp(Value, Value)
 }

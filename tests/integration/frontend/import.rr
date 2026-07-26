@@ -13,7 +13,7 @@ import core::intrinsic::array as arr;
 import core::intrinsic::math::sqrt as rt;
 import List as L;
 
-enum List<T> { Nil, Cons(T, List<T>) }
+pub enum List<T> { Nil, Cons(T, List<T>) }
 
 // CHECK: fn #hypot(v0 (x): f64, v1 (y): f64) -> f64 {
 // CHECK: intrinsic#math#sqrt#0

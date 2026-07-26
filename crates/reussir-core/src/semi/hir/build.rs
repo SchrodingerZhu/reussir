@@ -36,6 +36,11 @@ use crate::utils::string::StringToken;
 /// the record declarations, and the trampoline roots — so it can be fed to
 /// [`crate::full::mono::monomorphize`] via a `MonoInput`.
 pub struct Parsed<'tcx> {
+    /// The `.rri` interface header when the dump is a package interface;
+    /// `None` for a plain HIR program. Gating (format/producer/package
+    /// checks, and rejecting a header where a program is expected) is the
+    /// caller's job.
+    pub header: Option<raw::InterfaceHeader>,
     pub funcs: Vec<Function<'tcx>>,
     pub transform_anchors: Vec<DefId>,
     pub transform_scripts: Vec<TransformScript>,
@@ -163,6 +168,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         .collect();
     let trampolines = raw.trampolines.iter().map(|t| b.trampoline(t)).collect();
     Ok(Parsed {
+        header: raw.header.clone(),
         funcs,
         transform_anchors,
         transform_scripts,
@@ -284,6 +290,11 @@ impl<'tcx> Builder<'_, 'tcx> {
         let record = Record {
             def,
             name,
+            visibility: if r.is_pub {
+                crate::surface::Visibility::Public
+            } else {
+                crate::surface::Visibility::Private
+            },
             ty_params,
             kind,
             default_cap,
@@ -808,7 +819,7 @@ mod tests {
     #[test]
     fn locations_survive_the_textual_round_trip() {
         roundtrip_with_locations(
-            "struct Pair { a: i64, b: i64 }\n\
+            "pub struct Pair { a: i64, b: i64 }\n\
              pub fn f(n: i64) -> i64 { let p = Pair { a: n, b: 1 }; p.a + p.b }",
         );
     }
@@ -816,7 +827,7 @@ mod tests {
     #[test]
     fn locations_survive_for_control_flow_and_matches() {
         roundtrip_with_locations(
-            "enum Opt { None, Some(i64) }\n\
+            "pub enum Opt { None, Some(i64) }\n\
              pub fn g(o: Opt) -> i64 { match o { Opt::None => 0, Opt::Some(x) => { let y = x; y } } }",
         );
     }
@@ -895,8 +906,8 @@ mod tests {
     fn roundtrips_arcs() {
         roundtrip(
             r#"
-            struct Data { value: i64 }
-            enum Opt<T> { None, Some(T) }
+            pub struct Data { value: i64 }
+            pub enum Opt<T> { None, Some(T) }
             pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
                 a
             }
@@ -978,8 +989,57 @@ mod tests {
     #[test]
     fn roundtrips_a_match() {
         roundtrip(
-            "enum Opt { None, Some(i32) } \
+            "pub enum Opt { None, Some(i32) } \
              pub fn unwrap(o: Opt) -> i32 { match o { Opt::None => 0, Opt::Some(x) => x } }",
+        );
+    }
+
+    /// Record visibility survives the textual trip: `pub` prints on the
+    /// record head and parses back to `Public`; an unmarked record stays
+    /// `Private`. The marker is what lets a package interface (`--emit rri`)
+    /// distinguish nameable surface records from private ones shipped only
+    /// for layout.
+    #[test]
+    fn record_visibility_roundtrips() {
+        use reussir_syntax::kind::Resolver as _;
+        with_tcx(|tcx| {
+            let source = "pub struct Data { value: i64 } \
+                          struct Hidden { value: i64 } \
+                          pub fn get(d: Data) -> i64 { d.value } \
+                          fn peek(h: Hidden) -> i64 { h.value }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+
+            let strings = elab.strings.entries();
+            let text = Printer::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &strings,
+                &elab.records,
+                &elab.trampolines,
+            );
+            assert!(text.contains("pub [shared] struct #Data"), "{text}");
+            assert!(text.contains("\n[shared] struct #Hidden"), "{text}");
+
+            let parsed = parse_program(tcx, &text).expect("re-parse");
+            let vis_of = |name: &str| {
+                parsed
+                    .records
+                    .values()
+                    .find(|r| parsed.names.resolve(r.name) == name)
+                    .expect("record present")
+                    .visibility
+            };
+            assert_eq!(vis_of("Data"), surface::Visibility::Public);
+            assert_eq!(vis_of("Hidden"), surface::Visibility::Private);
+        });
+        roundtrip(
+            "pub struct Data { value: i64 } \
+             struct Hidden { value: i64 } \
+             pub fn get(d: Data) -> i64 { d.value } \
+             fn peek(h: Hidden) -> i64 { h.value }",
         );
     }
 
@@ -987,7 +1047,7 @@ mod tests {
     fn roundtrips_a_nullable_match() {
         roundtrip(
             r#"
-            struct RcBox<T> { value: T }
+            pub struct RcBox<T> { value: T }
 
             pub fn unwrap_or(n: Nullable<RcBox<i32>>, d: i32) -> i32 {
                 match n {
@@ -1005,7 +1065,7 @@ mod tests {
         // whose adjacent indices lex as one float-shaped token — the grammar
         // must split it back (regression: this used to fail to re-parse).
         roundtrip(
-            "enum L { C(i32, L), N } \
+            "pub enum L { C(i32, L), N } \
              pub fn two(l: L) -> i32 { \
              match l { L::C(x, L::C(y, N)) => x + y, L::C(x, t) => x, L::N => 0 } }",
         );
@@ -1029,7 +1089,7 @@ mod tests {
         // A generic `[flex]`-bound function (so `regional_generics` is non-empty)
         // and a turbofished regional call.
         roundtrip(
-            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
+            "pub struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );

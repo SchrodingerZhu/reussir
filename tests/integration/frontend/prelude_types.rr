@@ -13,8 +13,8 @@ import core::intrinsic::cell::RefCell as XCell;
 import core::intrinsic::nullable::Nullable as Opt;
 import core::intrinsic::arc::Arc as SharedRc;
 
-struct [shared] Data { value: i64 }
-struct RcBox { value: i64 }
+pub struct [shared] Data { value: i64 }
+pub struct RcBox { value: i64 }
 
 // The canonical qualified spellings name the same types as the prelude.
 // CHECK: pub fn #qualified(v0 (c): Cell<i64>, v1 (r): RefCell<i64>) -> i64
@@ -51,7 +51,7 @@ pub fn wrapped(v: i64) -> core::intrinsic::nullable::Nullable<RcBox> {
 
 // A user record shadows the bare prelude name — the same precedence a real
 // import has — while the canonical path still names the builtin.
-struct [value] Mutex { value: i64 }
+pub struct [value] Mutex { value: i64 }
 
 // CHECK: pub fn #shadowed(v0 (m): #Mutex, v1 (b): Mutex<i64>) -> i64
 pub fn shadowed(m: Mutex, b: core::intrinsic::cell::Mutex<i64>) -> i64 {
@@ -60,7 +60,7 @@ pub fn shadowed(m: Mutex, b: core::intrinsic::cell::Mutex<i64>) -> i64 {
 
 // A user enum named `Nullable` shadows the prelude's constructors and
 // patterns, not just the type name.
-enum Nullable { A, B }
+pub enum Nullable { A, B }
 
 // CHECK: pub fn #shadow_enum() -> i32
 pub fn shadow_enum() -> i32 {

@@ -158,6 +158,48 @@ mod tests {
         );
     }
 
+    /// The private-in-public discipline reaches through every structural
+    /// former — closure types, arrays are ruled out by `Plain` elements, but
+    /// `Arc`, `Cell`, `Nullable`, and record arguments all wrap a nominal —
+    /// and fires once per offender per surface. A fully-`pub` surface and a
+    /// private surface over private records both stay silent.
+    #[test]
+    fn rejects_private_records_in_public_surfaces() {
+        let reports = reports_of(
+            "struct Hidden { value: i64 }\n\
+             pub struct Wrap<T> { inner: T }\n\
+             pub fn through_arc(a: Arc<Hidden>) -> i64 { 0 }\n\
+             pub fn through_args(w: Wrap<Hidden>) -> i64 { 0 }\n\
+             pub fn through_closure(f: Hidden -> i64) -> i64 { 0 }\n\
+             pub struct Leaky { h: Hidden }\n\
+             fn private_surface(h: Hidden) -> Hidden { h }\n\
+             pub fn clean(w: Wrap<i64>) -> i64 { 0 }",
+        );
+        let offending: Vec<&str> = reports
+            .iter()
+            .filter(|r| r.message.contains("private record `Hidden`"))
+            .map(|r| r.message.as_str())
+            .collect();
+        for expected in [
+            "`pub fn through_arc`",
+            "`pub fn through_args`",
+            "`pub fn through_closure`",
+            "`pub` record `Leaky`",
+        ] {
+            assert!(
+                offending.iter().any(|m| m.contains(expected)),
+                "missing {expected:?}: {offending:#?}"
+            );
+        }
+        assert_eq!(offending.len(), 4, "{offending:#?}");
+        assert!(
+            !reports
+                .iter()
+                .any(|r| r.message.contains("private_surface") || r.message.contains("clean")),
+            "{reports:#?}"
+        );
+    }
+
     #[test]
     fn rejects_invalid_transform_anchors() {
         let reports = reports_of(

@@ -178,6 +178,11 @@ pub struct Variant<'tcx> {
 pub struct Record<'tcx> {
     pub def: DefId,
     pub name: TokenKey,
+    /// Whether consumer source outside the defining package may name this
+    /// record. Inside a package nothing is hidden (the whole package is one
+    /// unit); the marker governs the package interface (`--emit rri`) and the
+    /// private-in-public discipline on `pub` surfaces.
+    pub visibility: surface::Visibility,
     pub ty_params: Vec<(TokenKey, GenericId)>,
     pub kind: surface::RecordKind,
     pub default_cap: DefaultCap,
@@ -217,6 +222,52 @@ pub struct FuncProto<'tcx> {
     pub span: Option<Span>,
     /// The file the function is declared in (spans index it).
     pub file: FileId,
+}
+
+/// Collects the private records `ty`'s structure mentions — nominal heads and
+/// their arguments, through every structural former — for the
+/// private-in-public check. Deduplicated so each offender reports once per
+/// surface.
+fn collect_private_records<'tcx>(
+    records: &FxHashMap<DefId, Record<'tcx>>,
+    ty: Ty<'tcx>,
+    out: &mut Vec<DefId>,
+) {
+    match *ty.kind() {
+        TyKind::Record { def, args, .. } => {
+            if records
+                .get(&def)
+                .is_some_and(|r| r.visibility == surface::Visibility::Private)
+                && !out.contains(&def)
+            {
+                out.push(def);
+            }
+            for &a in args {
+                collect_private_records(records, a, out);
+            }
+        }
+        TyKind::Closure { params, ret } => {
+            for &p in params {
+                collect_private_records(records, p, out);
+            }
+            collect_private_records(records, ret, out);
+        }
+        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => {
+            collect_private_records(records, elem, out);
+        }
+        TyKind::Nullable(inner) | TyKind::Arc(inner) => {
+            collect_private_records(records, inner, out);
+        }
+        TyKind::Int(_)
+        | TyKind::Fp(_)
+        | TyKind::Bool
+        | TyKind::Str
+        | TyKind::Char
+        | TyKind::Unit
+        | TyKind::Generic(_)
+        | TyKind::Hole(_)
+        | TyKind::Bottom => {}
+    }
 }
 
 /// Records the generic at the head of a `[flex]`-annotated type (peeling
@@ -471,6 +522,29 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// tied to the parse, not to `self`, so it composes with `&mut self` calls.
     pub fn sym(&self, key: TokenKey) -> &'a str {
         self.resolver.resolve(key)
+    }
+
+    /// The private-in-public discipline, scoped to records: the declared
+    /// surface of a `pub` item — a `pub` function's signature, a `pub`
+    /// record's fields — may only mention `pub` records. Within a package
+    /// nothing is hidden, but the package interface (`--emit rri`) ships
+    /// exactly the `pub` surface as nameable, so a private record there would
+    /// be unusable at every foreign point of use.
+    fn check_private_in_public(&mut self, tys: &[Ty<'tcx>], item: &str, span: Option<Span>) {
+        let mut private = Vec::new();
+        for &t in tys {
+            collect_private_records(&self.records, t, &mut private);
+        }
+        for def in private {
+            let path = self.defs.path(def).display(self.resolver);
+            self.error(
+                span,
+                format!(
+                    "private record `{path}` in the public interface of {item}; \
+                     mark the record `pub` or make the item private"
+                ),
+            );
+        }
     }
 
     /// Render `ty` the way the surface spells it, for diagnostics: `i32`,
@@ -1146,7 +1220,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let Some(rec) = self.records.get(&def) else {
                 continue;
             };
-            let (span, file) = (rec.span, rec.file);
+            let (span, file, vis, name) = (rec.span, rec.file, rec.visibility, rec.name);
             let member_tys: Vec<Ty<'tcx>> = match &rec.fields {
                 Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
                 Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
@@ -1156,15 +1230,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(RecordFields::Opaque) | None => Vec::new(),
             };
             self.set_current_file(file);
-            for t in member_tys {
+            for &t in &member_tys {
                 self.sweep_arc_wf(t, span);
+            }
+            if vis == surface::Visibility::Public {
+                let item = format!("`pub` record `{}`", self.sym(name));
+                self.check_private_in_public(&member_tys, &item, span);
             }
         }
         for def in function_defs.iter().flatten() {
             let Some(proto) = self.functions.get(def) else {
                 continue;
             };
-            let (span, file) = (proto.span, proto.file);
+            let (span, file, vis, name) = (proto.span, proto.file, proto.visibility, proto.name);
             let tys: Vec<Ty<'tcx>> = proto
                 .params
                 .iter()
@@ -1172,8 +1250,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 .chain([proto.return_ty])
                 .collect();
             self.set_current_file(file);
-            for t in tys {
+            for &t in &tys {
                 self.sweep_arc_wf(t, span);
+            }
+            if vis == surface::Visibility::Public {
+                let item = format!("`pub fn {}`", self.sym(name));
+                self.check_private_in_public(&tys, &item, span);
             }
         }
         self.records_complete = true;
@@ -1479,6 +1561,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let record = Record {
             def,
             name,
+            visibility: rec.visibility,
             ty_params,
             kind: rec.kind,
             default_cap,

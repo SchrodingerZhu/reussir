@@ -52,6 +52,12 @@ pub enum Token<'a> {
     Transform,
     #[token("transform_anchor")]
     TransformAnchor,
+    #[token("interface")]
+    Interface,
+    #[token("package")]
+    Package,
+    #[token("producer")]
+    Producer,
     #[token("let")]
     Let,
     #[token("in")]

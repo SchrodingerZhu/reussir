@@ -6,14 +6,14 @@
 // via in-order traversal. Tested standalone with a manually constructed
 // fixed tree before being used with the full make-tree port.
 
-enum [value] Color { Red, Black }
+pub enum [value] Color { Red, Black }
 
-enum Tree {
+pub enum Tree {
     Branch(Color, Tree, i32, Tree),
     Leaf
 }
 
-enum List {
+pub enum List {
     Nil,
     Cons(i32, List)
 }

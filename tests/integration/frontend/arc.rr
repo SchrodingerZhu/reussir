@@ -7,7 +7,7 @@
 // RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
 // RUN: %rrc %s --emit mlir-llvm --no-source-locations -Onone -o - | %FileCheck %s --check-prefix=LLVM
 
-struct [shared] Data {
+pub struct [shared] Data {
     value: i64
 }
 
@@ -36,7 +36,7 @@ pub fn call_passthrough(a: Arc<Data>) -> Arc<Data> {
     passthrough(a)
 }
 
-enum Opt<T> {
+pub enum Opt<T> {
     None,
     Some(T)
 }
@@ -44,7 +44,7 @@ enum Opt<T> {
 // §3.3 SCC promotion: the recursive enum arcs as a whole spine. The
 // declaration stays bare — one record serves both colorings — while the
 // arc'd constructor demands an arc'd tail and the reads bind it promoted.
-enum List<T> {
+pub enum List<T> {
     Nil,
     Cons(T, List<T>)
 }

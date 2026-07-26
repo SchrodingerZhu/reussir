@@ -31,6 +31,9 @@ reussir-codegen = { path = "../reussir-codegen" }
 reussir-core = { path = "../reussir-core" }
 reussir-syntax = { path = "../reussir-syntax" }
 palc.workspace = true
+# The interface emission filters the ffi/prelude tables with the same hashers
+# reussir-core's public types use.
+rustc-hash.workspace = true
 # Encodes the `--scan-deps` source-graph listing (and lets the driver tests
 # parse it back).
 serde_json.workspace = true

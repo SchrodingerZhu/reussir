@@ -11,8 +11,8 @@
 // RUN: %cc %t.o %S/regional_member_projection.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
 
-struct [regional] Inner { v: u64 }
-struct [regional] Outer { inner: Inner, tag: u64 }
+pub struct [regional] Inner { v: u64 }
+pub struct [regional] Outer { inner: Inner, tag: u64 }
 
 fn mk_inner(v: u64) -> Inner {
     regional { Inner { v: v } }

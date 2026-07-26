@@ -134,123 +134,112 @@ pub struct Instance<'tcx> {
 /// are not seeds: their code is compiled here and only their (already
 /// external) symbol crosses the boundary.
 pub fn mono_exports(input: &MonoInput<'_, '_>) -> FxHashSet<DefId> {
+    // Derived from the interface export closure — the prototypes it ships are
+    // exactly the ground functions foreign instantiations can reach, and the
+    // private ones among them are the symbols that must not go `internal`.
+    // One traversal, so the linkage promise and the `.rri` contents cannot
+    // drift.
     let by_def: FxHashMap<DefId, &Function<'_>> =
         input.elaborated.iter().map(|f| (f.def, f)).collect();
-    let mut exports = FxHashSet::default();
-    let mut visited = FxHashSet::default();
-    let mut queue: VecDeque<DefId> = input
-        .elaborated
-        .iter()
-        .filter(|f| f.visibility == crate::surface::Visibility::Public && !f.generics.is_empty())
-        .map(|f| f.def)
-        .collect();
-    visited.extend(queue.iter().copied());
-    while let Some(def) = queue.pop_front() {
-        let Some(body) = by_def.get(&def).and_then(|f| f.body.as_ref()) else {
-            continue;
-        };
-        for_each_call_target(body, &mut |target| {
-            let Some(callee) = by_def.get(&target) else {
-                return;
-            };
-            if callee.generics.is_empty() {
-                if callee.visibility == crate::surface::Visibility::Private {
-                    exports.insert(target);
-                }
-            } else if visited.insert(target) {
-                queue.push_back(target);
-            }
-        });
-    }
-    exports
+    super::interface::export_closure(input)
+        .protos
+        .into_iter()
+        .filter(|def| {
+            by_def
+                .get(def)
+                .is_some_and(|f| f.visibility == crate::surface::Visibility::Private)
+        })
+        .collect()
 }
 
-/// Walk `expr` (including closure bodies and match arms), reporting the
-/// target of every direct function call.
-fn for_each_call_target(expr: &Expr<'_>, f: &mut impl FnMut(DefId)) {
+/// Visit every expression node under `expr` — through closure bodies, match
+/// arm bodies, and guards — in pre-order. The single canonical body walk:
+/// derive per-fact walkers (call targets, mentioned types, string literals)
+/// from it instead of re-encoding the `ExprKind` shape.
+pub(crate) fn for_each_expr<'e, 'tcx>(expr: &'e Expr<'tcx>, f: &mut impl FnMut(&'e Expr<'tcx>)) {
     use ExprKind::*;
+    f(expr);
     match &expr.kind {
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
         | Poison => {}
         Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => {
-            for_each_call_target(e, f);
+            for_each_expr(e, f);
         }
         Arith(a, _, b) | Cmp(a, _, b) | Assign(a, _, b) => {
-            for_each_call_target(a, f);
-            for_each_call_target(b, f);
+            for_each_expr(a, f);
+            for_each_expr(b, f);
         }
         If(c, t, e) => {
-            for_each_call_target(c, f);
-            for_each_call_target(t, f);
-            for_each_call_target(e, f);
+            for_each_expr(c, f);
+            for_each_expr(t, f);
+            for_each_expr(e, f);
         }
         Match(scrutinee, tree) => {
-            for_each_call_target(scrutinee, f);
-            tree_call_targets(tree, f);
+            for_each_expr(scrutinee, f);
+            tree_exprs(tree, f);
         }
-        Let { value, .. } => for_each_call_target(value, f),
-        Seq(es) => es.iter().for_each(|e| for_each_call_target(e, f)),
-        FuncCall { target, args, .. } => {
-            f(*target);
-            args.iter().for_each(|e| for_each_call_target(e, f));
+        Let { value, .. } => for_each_expr(value, f),
+        Seq(es) => es.iter().for_each(|e| for_each_expr(e, f)),
+        FuncCall { args, .. } => {
+            args.iter().for_each(|e| for_each_expr(e, f));
         }
         // Compound/variant targets name records, not functions; only their
-        // arguments can call.
+        // arguments contain expressions.
         CompoundCall { args, .. }
         | VariantCall { args, .. }
         | Intrinsic { args, .. }
         | ArrayOp { args, .. } => {
-            args.iter().for_each(|e| for_each_call_target(e, f));
+            args.iter().for_each(|e| for_each_expr(e, f));
         }
         NullableCall(inner) => {
             if let Some(e) = inner {
-                for_each_call_target(e, f);
+                for_each_expr(e, f);
             }
         }
-        Closure(c) => for_each_call_target(&c.body, f),
+        Closure(c) => for_each_expr(&c.body, f),
         ClosureCall { target, args } => {
-            for_each_call_target(target, f);
-            args.iter().for_each(|e| for_each_call_target(e, f));
+            for_each_expr(target, f);
+            args.iter().for_each(|e| for_each_expr(e, f));
         }
     }
 }
 
-fn tree_call_targets(tree: &DecisionTree<'_>, f: &mut impl FnMut(DefId)) {
+fn tree_exprs<'e, 'tcx>(tree: &'e DecisionTree<'tcx>, f: &mut impl FnMut(&'e Expr<'tcx>)) {
     use DecisionTree::*;
     match tree {
         Uncovered | Unreachable => {}
-        Leaf { body, .. } => for_each_call_target(body, f),
+        Leaf { body, .. } => for_each_expr(body, f),
         Guard {
             guard,
             success,
             failure,
             ..
         } => {
-            for_each_call_target(guard, f);
-            tree_call_targets(success, f);
-            tree_call_targets(failure, f);
+            for_each_expr(guard, f);
+            tree_exprs(success, f);
+            tree_exprs(failure, f);
         }
         Switch { cases, .. } => match cases {
             SwitchCases::Int { cases, default } => {
-                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
-                tree_call_targets(default, f);
+                cases.iter().for_each(|(_, t)| tree_exprs(t, f));
+                tree_exprs(default, f);
             }
             SwitchCases::Bool { if_true, if_false } => {
-                tree_call_targets(if_true, f);
-                tree_call_targets(if_false, f);
+                tree_exprs(if_true, f);
+                tree_exprs(if_false, f);
             }
             SwitchCases::Char { cases, default } => {
-                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
-                tree_call_targets(default, f);
+                cases.iter().for_each(|(_, t)| tree_exprs(t, f));
+                tree_exprs(default, f);
             }
-            SwitchCases::Ctor(trees) => trees.iter().for_each(|t| tree_call_targets(t, f)),
+            SwitchCases::Ctor(trees) => trees.iter().for_each(|t| tree_exprs(t, f)),
             SwitchCases::String { cases, default } => {
-                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
-                tree_call_targets(default, f);
+                cases.iter().for_each(|(_, t)| tree_exprs(t, f));
+                tree_exprs(default, f);
             }
             SwitchCases::Nullable { non_null, null } => {
-                tree_call_targets(non_null, f);
-                tree_call_targets(null, f);
+                tree_exprs(non_null, f);
+                tree_exprs(null, f);
             }
         },
     }
@@ -1758,7 +1747,7 @@ mod tests {
         use crate::semi::hir::build::parse_program;
         use crate::semi::hir::print::Printer as HirPrinter;
 
-        let source = "struct Pair { a: i32, b: i32 } \
+        let source = "pub struct Pair { a: i32, b: i32 } \
                       fn id<T>(x: T) -> T { x } \
                       pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }";
         with_tcx(|tcx| {
@@ -1824,8 +1813,8 @@ mod tests {
         use crate::semi::hir::print::Printer as HirPrinter;
 
         let source = r#"
-            struct Pair { a: i32, b: i32 }
-            struct Point { x: i32, y: i32 }
+            pub struct Pair { a: i32, b: i32 }
+            pub struct Point { x: i32, y: i32 }
 
             fn id<T>(x: T) -> T { x }
             fn sum(p: Pair) -> i32 { p.a + p.b }

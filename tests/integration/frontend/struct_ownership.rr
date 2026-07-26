@@ -1,13 +1,13 @@
 // RUN: %rrc %s --emit mlir -o %t.mlir
 // RUN: %FileCheck %s --check-prefix=CHECK-MLIR < %t.mlir
 
-struct [value] ValueBox<T> {
+pub struct [value] ValueBox<T> {
     x : T,
     y : T,
     z : i32
 }
 
-struct RcBox {
+pub struct RcBox {
     data : i64
 }
 
