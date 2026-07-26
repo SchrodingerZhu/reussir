@@ -141,17 +141,23 @@ a `pub` caller but never nameable.
 
 ## Driver wiring
 
-- `Stage::Rri`, ordered as a sibling leaf of `Hir`; `is_input()` is false
+- `Stage::Rri`, ordered between `Hir` and `Mir`; `is_input()` is false
   (consumption is `--extern`, a different axis than pipeline re-entry — an
-  rri is not a completable program: it has no mono roots).
-- Emission hooks at the existing `target == Stage::Hir` branches in
-  `frontend` / `frontend_package`: full elaboration in hand, compute the
-  closure, print the filtered slices. Also accepted from a `.hir` *input*
-  (the parsed dump carries everything the closure needs). Refused from
-  `.mir` onward — no generic bodies left to witness reachability, the same
-  reason #467 does not serialize `mono_exported`.
-- `--emit rri`, extension `.rri`, `-o` respected; default output name
-  `<package>.rri`. No other new flags in this PR.
+  rri is not a completable program: it has no mono roots). The ordering
+  makes `.mir`-and-later inputs refuse it through the existing
+  pipeline-runs-forward check — no generic bodies left to witness
+  reachability, the same reason #467 does not serialize `mono_exported`.
+- Emission hooks at the existing `target == Stage::Hir` branch in
+  `frontend_package`: full elaboration in hand, compute the closure, print
+  the filtered slices. **Package mode only**: the header names the package
+  it describes, and only `--package-root`/`--package-name` carry that name
+  authoritatively — a bare file or a plain `.hir` dump does not (and
+  `--package-name` on a `.hir` input already means "treat as package
+  source"), so both are refused.
+- A plain-`.hir` re-entry that finds an interface header is refused: the
+  prototypes have no bodies to compile and the mono roots stayed home.
+- `--emit rri`, extension `.rri`, `-o` respected (including `-o -`). No
+  other new flags in this PR.
 - v1 emits rri in its own invocation. A combined `--emit staticlib` +
   side-interface flag (rustc's `--emit metadata,link` shape) would save one
   elaboration per dependency; deferred until rene wiring shows it matters.

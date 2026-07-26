@@ -620,3 +620,94 @@ fn rejects_lto_without_a_packaged_or_linked_target() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--lto applies to"), "stderr:\n{stderr}");
 }
+
+/// `--emit rri` renders the package interface: header first, the export
+/// closure only (prototypes bodyless, generics whole), and the artifact is
+/// package-mode only — a bare file has no authoritative package name, and an
+/// interface cannot re-enter the pipeline as a plain HIR dump.
+#[test]
+fn emits_a_package_interface() {
+    let dir = scratch("rri");
+    std::fs::write(
+        dir.path().join("lib.rr"),
+        "mod util;\n\
+         struct Secret { v: i64 }\n\
+         fn hidden(s: Secret) -> i64 { s.v }\n\
+         pub fn api<T : Num>(x: T) -> i64 { util::mul(hidden(Secret { v: 2 }), 3) }\n\
+         fn stays_home(x: i64) -> i64 { x }\n",
+    )
+    .expect("write lib.rr");
+    std::fs::write(
+        dir.path().join("util.rr"),
+        "pub fn mul(a: i64, b: i64) -> i64 { a * b }\n",
+    )
+    .expect("write util.rr");
+
+    let out = dir.path().join("demo.rri");
+    let output = rrc(&[
+        Path::new("--package-root"),
+        dir.path(),
+        Path::new("--package-name"),
+        Path::new("demo"),
+        Path::new("--emit"),
+        Path::new("rri"),
+        Path::new("-o"),
+        &out,
+    ]);
+    assert!(
+        output.status.success(),
+        "rri emission failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rri = read(&out);
+    assert!(
+        rri.starts_with(&format!(
+            "interface 1 package \"demo\" producer \"rrc {}\";",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{rri}"
+    );
+    // The generic ships whole; the grounds it reaches are bodyless
+    // prototypes; the unreachable private function is absent.
+    assert!(rri.contains("pub fn #demo::api<$0>(v0 (x): $0) -> i64 in 0"), "{rri}");
+    assert!(rri.contains("fn #demo::hidden(v0 (s): #demo::Secret) -> i64 in 0"), "{rri}");
+    assert!(rri.contains("pub fn #demo::util::mul(v0 (a): i64, v1 (b): i64) -> i64 in 1"), "{rri}");
+    assert!(!rri.contains("stays_home"), "{rri}");
+    // The file table is package-root-relative.
+    assert!(rri.contains("0 = \"lib.rr\";"), "{rri}");
+    assert!(rri.contains("1 = \"util.rr\";"), "{rri}");
+
+    // Package-mode only.
+    let single = rrc(&[
+        &dir.path().join("util.rr"),
+        Path::new("--emit"),
+        Path::new("rri"),
+        Path::new("-o"),
+        &dir.path().join("single.rri"),
+    ]);
+    assert_eq!(single.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&single.stderr).contains("describes a package interface"),
+        "{}",
+        String::from_utf8_lossy(&single.stderr)
+    );
+
+    // Not a pipeline re-entry point: the extension refuses up front, and the
+    // header is rejected even when smuggled in as `.hir`.
+    let smuggled = dir.path().join("demo.hir");
+    std::fs::copy(&out, &smuggled).expect("copy interface");
+    let reenter = rrc(&[
+        &smuggled,
+        Path::new("--emit"),
+        Path::new("mir"),
+        Path::new("-o"),
+        Path::new("-"),
+    ]);
+    // Frontend rejections exit 1 (like a parse error), not 2 (CLI misuse).
+    assert_eq!(reenter.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&reenter.stderr).contains("package interface"),
+        "{}",
+        String::from_utf8_lossy(&reenter.stderr)
+    );
+}

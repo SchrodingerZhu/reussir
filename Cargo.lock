@@ -2432,6 +2432,7 @@ dependencies = [
  "reussir-codegen",
  "reussir-core",
  "reussir-syntax",
+ "rustc-hash",
  "serde_json",
  "tempfile",
  "tracing",
