@@ -212,9 +212,11 @@ mod tests {
     #[test]
     fn file_tables_re_anchor_onto_the_source_root() {
         reussir_core::in_arena(|tcx| {
-            let text = "interface 1 package \"dep\" producer \"t\";\n\
-                        0 = \"src/lib.rr\";\n\
-                        1 = \"<prelude>\";\n";
+            let text = r#"
+                interface 1 package "dep" producer "t";
+                0 = "src/lib.rr";
+                1 = "<prelude>";
+            "#;
             let parsed = build::parse_program(tcx, text).unwrap();
             let mut ext = LoadedExtern {
                 name: "dep".into(),
