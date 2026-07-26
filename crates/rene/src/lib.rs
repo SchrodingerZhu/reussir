@@ -13,6 +13,7 @@ pub mod compile;
 pub mod db;
 pub mod deps;
 pub mod manifest;
+pub mod plan;
 pub mod resolve;
 pub mod rt;
 pub mod tables;

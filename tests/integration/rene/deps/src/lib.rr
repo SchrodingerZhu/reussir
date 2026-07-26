@@ -1,0 +1,4 @@
+#[main]
+pub fn entry() -> () {
+    ()
+}

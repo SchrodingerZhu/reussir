@@ -1,0 +1,3 @@
+pub fn entry() -> u64 {
+    0
+}

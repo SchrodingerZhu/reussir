@@ -29,7 +29,7 @@ pub struct Node {
     pub version: SemanticVersion,
     /// The evaluated manifest.
     pub loaded: Loaded,
-    /// Dependency names, in declaration order.
+    /// Dependency names, in name order (the manifest map is sorted).
     pub dependencies: Vec<String>,
 }
 

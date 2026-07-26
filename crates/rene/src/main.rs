@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, manifest, resolve, rt};
+use rene::{compile, deps, manifest, plan, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -104,6 +104,28 @@ struct InspectArgs {
     /// none. `state` still says whether the record can be trusted.
     #[arg(long)]
     frozen: bool,
+
+    /// Add a `resolution` section: every package of the transitive
+    /// dependency graph pinned to its solved version (the pubgrub
+    /// feasibility check must pass).
+    #[arg(long)]
+    solved: bool,
+
+    /// Add a `graph` section: the transitive dependency graph — each
+    /// package's directory, declared version, constraints, and edges.
+    #[arg(long)]
+    graph: bool,
+
+    /// Add a `plan` section: for every package in dependency-first order,
+    /// the `rrc` commands the cross-package build will run (interfaces and
+    /// archives for dependencies, the declared targets for the root).
+    /// Bake-decided paths appear as `<placeholders>`.
+    #[arg(long)]
+    commands: bool,
+
+    /// The profile the `plan` section renders against.
+    #[arg(long, default_value = "dev")]
+    profile: String,
 }
 
 fn main() -> ExitCode {
@@ -138,7 +160,7 @@ fn main() -> ExitCode {
         match cli.command {
             Command::Build(args) => build(&args).await,
             Command::Clean(args) => clean(&args.location),
-            Command::Inspect(args) => inspect(&args.location, args.frozen).await,
+            Command::Inspect(args) => inspect(&args).await,
         }
     });
     match result {
@@ -156,7 +178,15 @@ fn main() -> ExitCode {
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "info" }));
+        // pubgrub narrates every solver step at INFO; that is solver
+        // debugging, not build progress, so it stays behind RUST_LOG.
+        .unwrap_or_else(|_| {
+            EnvFilter::new(if verbose {
+                "debug,pubgrub=warn"
+            } else {
+                "info,pubgrub=warn"
+            })
+        });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -272,7 +302,9 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
 /// default a stale record is refreshed first (the same scan `build` runs, but
 /// without the runtime bake), so the report describes the package as it is
 /// now; `--frozen` reports what is on record and never writes.
-async fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
+async fn inspect(args: &InspectArgs) -> Result<(), String> {
+    let location = &args.location;
+    let frozen = args.frozen;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
     let root = resolve_build_dir(location)?;
@@ -300,7 +332,7 @@ async fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
         (deps::Staleness::UpToDate, prepared.files)
     };
 
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "package": loaded.manifest.package.name,
         "manifest": loaded.path.display().to_string(),
         "build_dir": root.display().to_string(),
@@ -309,6 +341,58 @@ async fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
         "reason": state.to_string(),
         "files": files.iter().map(deps::SourceFile::to_json).collect::<Vec<_>>(),
     });
+    // The dependency-graph sections, on demand. One load serves all three;
+    // `--solved` additionally requires the feasibility check to hold.
+    if args.solved || args.graph || args.commands {
+        let graph = resolve::load_graph(&loaded)?;
+        if args.solved {
+            let solution = resolve::check(&graph)?;
+            report["resolution"] = solution
+                .pinned
+                .iter()
+                .map(|(name, version)| (name.clone(), version.to_string().into()))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+                .into();
+        }
+        if args.graph {
+            report["graph"] = serde_json::json!({
+                "root": graph.root,
+                "nodes": graph
+                    .nodes
+                    .iter()
+                    .map(|(name, node)| {
+                        (name.clone(), serde_json::json!({
+                            "dir": node.dir.display().to_string(),
+                            "version": node.version.to_string(),
+                            "dependencies": node
+                                .dependencies
+                                .iter()
+                                .map(|dep| serde_json::json!({
+                                    "package": dep,
+                                    "constraint": node.loaded.manifest.dependencies[dep]
+                                        .version
+                                        .as_deref()
+                                        .unwrap_or("*"),
+                                }))
+                                .collect::<Vec<_>>(),
+                        }))
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            });
+        }
+        if args.commands {
+            let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+            report["plan"] = plan::render(
+                &graph,
+                &plan::Options {
+                    profile_name: &args.profile,
+                    profile: &profile,
+                    linker: None,
+                    build_dir: &root,
+                },
+            );
+        }
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?

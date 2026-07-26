@@ -176,62 +176,81 @@ fn profile_args(
     kind: TargetKind,
     linker: Option<&Path>,
 ) {
+    cmd.args(profile_flags(profile, kind, linker));
+}
+
+/// The `rrc` flags a profile expands to, as plain strings — shared by the
+/// real invocation above and the planned-command dump ([`crate::plan`]).
+pub(crate) fn profile_flags(
+    profile: &Profile,
+    kind: TargetKind,
+    linker: Option<&Path>,
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    fn push(args: &mut Vec<String>, flag: &str, value: &str) {
+        args.push(flag.to_owned());
+        args.push(value.to_owned());
+    }
     if let Some(opt) = &profile.opt {
-        cmd.arg("-O").arg(opt);
+        push(&mut args, "-O", opt);
     }
     if profile.debug == Some(true) {
-        cmd.arg("-g");
+        args.push("-g".to_owned());
     }
     if let Some(lto) = &profile.lto
         && lto != "none"
     {
-        cmd.arg("--lto").arg(lto);
+        push(&mut args, "--lto", lto);
     }
     // Every declared kind is a link product or archived into one; PIC is the
     // working default, with the profile the override.
-    let reloc = profile.relocation_mode.as_deref().unwrap_or("pic");
-    cmd.arg("--relocation-mode").arg(reloc);
+    push(
+        &mut args,
+        "--relocation-mode",
+        profile.relocation_mode.as_deref().unwrap_or("pic"),
+    );
     if let Some(units) = profile.codegen_units {
-        cmd.arg("--codegen-units").arg(units.to_string());
+        push(&mut args, "--codegen-units", &units.to_string());
     }
     for sanitizer in &profile.sanitizers {
-        cmd.arg("--sanitizer").arg(sanitizer);
+        push(&mut args, "--sanitizer", sanitizer);
     }
     if let Some(encoding) = &profile.nullary_variant_encoding {
-        cmd.arg("--nullary-variant-encoding").arg(encoding);
+        push(&mut args, "--nullary-variant-encoding", encoding);
     }
     if let Some(triple) = &profile.target_triple {
-        cmd.arg("--target-triple").arg(triple);
+        push(&mut args, "--target-triple", triple);
     }
     if let Some(cpu) = &profile.target_cpu {
-        cmd.arg("--target-cpu").arg(cpu);
+        push(&mut args, "--target-cpu", cpu);
     }
     if let Some(features) = &profile.target_features {
-        cmd.arg("--target-features").arg(features);
+        push(&mut args, "--target-features", features);
     }
     if profile.reuse_across_call == Some(true) {
-        cmd.arg("--reuse-across-call");
+        args.push("--reuse-across-call".to_owned());
     }
     if profile.closure_wpd == Some(false) {
-        cmd.arg("--no-closure-wpd");
+        args.push("--no-closure-wpd".to_owned());
     }
     if profile.pack_record_members == Some(false) {
-        cmd.arg("--no-pack-record-members");
+        args.push("--no-pack-record-members".to_owned());
     }
     // The link-only knobs go to the linked kinds alone, so one profile can
     // serve targets of every kind without tripping rrc's strictness.
     if kind.is_linked() {
         if let Some(linkage) = &profile.runtime_linkage {
-            cmd.arg("--runtime-linkage").arg(linkage);
+            push(&mut args, "--runtime-linkage", linkage);
         }
         if let Some(linker) = linker.or(profile.linker.as_deref()) {
-            cmd.arg("--linker").arg(linker);
+            push(&mut args, "--linker", &linker.display().to_string());
         }
         for arg in &profile.link_args {
-            cmd.arg(format!("--link-arg={arg}"));
+            args.push(format!("--link-arg={arg}"));
         }
     }
-    cmd.args(&profile.extra_flags);
+    args.extend(profile.extra_flags.iter().cloned());
+    args
 }
 
 /// Everything a product's freshness hangs on, digested: the evaluated
@@ -275,7 +294,7 @@ fn product_is_current(
 
 /// The artifact's file name for `name`, per the target platform — the
 /// profile's `target_triple` when set, the host otherwise.
-fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
+pub(crate) fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
     let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
     let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));
     match kind {
