@@ -120,12 +120,149 @@ pub struct Instance<'tcx> {
     pub ty_args: &'tcx [Ty<'tcx>],
 }
 
+/// The private ground functions whose symbols must stay externally linkable:
+/// everything reachable from a generic body that a *foreign* compilation may
+/// instantiate.
+///
+/// A `pub` generic's body is compiled wherever it is instantiated — under a
+/// package HIR index, in another package's objects entirely. Any ground call
+/// inside such a body then resolves at link time against *this* package's
+/// artifacts, so an `internal` callee would leave the foreign instance with an
+/// unresolvable symbol. The set is seeded with every `pub` generic body and
+/// closed transitively through the (private) generics those bodies call —
+/// their bodies travel and instantiate the same way. Ground `pub` functions
+/// are not seeds: their code is compiled here and only their (already
+/// external) symbol crosses the boundary.
+pub fn mono_exports(input: &MonoInput<'_, '_>) -> FxHashSet<DefId> {
+    let by_def: FxHashMap<DefId, &Function<'_>> =
+        input.elaborated.iter().map(|f| (f.def, f)).collect();
+    let mut exports = FxHashSet::default();
+    let mut visited = FxHashSet::default();
+    let mut queue: VecDeque<DefId> = input
+        .elaborated
+        .iter()
+        .filter(|f| f.visibility == crate::surface::Visibility::Public && !f.generics.is_empty())
+        .map(|f| f.def)
+        .collect();
+    visited.extend(queue.iter().copied());
+    while let Some(def) = queue.pop_front() {
+        let Some(body) = by_def.get(&def).and_then(|f| f.body.as_ref()) else {
+            continue;
+        };
+        for_each_call_target(body, &mut |target| {
+            let Some(callee) = by_def.get(&target) else {
+                return;
+            };
+            if callee.generics.is_empty() {
+                if callee.visibility == crate::surface::Visibility::Private {
+                    exports.insert(target);
+                }
+            } else if visited.insert(target) {
+                queue.push_back(target);
+            }
+        });
+    }
+    exports
+}
+
+/// Walk `expr` (including closure bodies and match arms), reporting the
+/// target of every direct function call.
+fn for_each_call_target(expr: &Expr<'_>, f: &mut impl FnMut(DefId)) {
+    use ExprKind::*;
+    match &expr.kind {
+        GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
+        | Poison => {}
+        Negate(e) | Not(e) | Cast(e, _) | RegionRun(e) | Proj(e, _) => {
+            for_each_call_target(e, f);
+        }
+        Arith(a, _, b) | Cmp(a, _, b) | Assign(a, _, b) => {
+            for_each_call_target(a, f);
+            for_each_call_target(b, f);
+        }
+        If(c, t, e) => {
+            for_each_call_target(c, f);
+            for_each_call_target(t, f);
+            for_each_call_target(e, f);
+        }
+        Match(scrutinee, tree) => {
+            for_each_call_target(scrutinee, f);
+            tree_call_targets(tree, f);
+        }
+        Let { value, .. } => for_each_call_target(value, f),
+        Seq(es) => es.iter().for_each(|e| for_each_call_target(e, f)),
+        FuncCall { target, args, .. } => {
+            f(*target);
+            args.iter().for_each(|e| for_each_call_target(e, f));
+        }
+        // Compound/variant targets name records, not functions; only their
+        // arguments can call.
+        CompoundCall { args, .. }
+        | VariantCall { args, .. }
+        | Intrinsic { args, .. }
+        | ArrayOp { args, .. } => {
+            args.iter().for_each(|e| for_each_call_target(e, f));
+        }
+        NullableCall(inner) => {
+            if let Some(e) = inner {
+                for_each_call_target(e, f);
+            }
+        }
+        Closure(c) => for_each_call_target(&c.body, f),
+        ClosureCall { target, args } => {
+            for_each_call_target(target, f);
+            args.iter().for_each(|e| for_each_call_target(e, f));
+        }
+    }
+}
+
+fn tree_call_targets(tree: &DecisionTree<'_>, f: &mut impl FnMut(DefId)) {
+    use DecisionTree::*;
+    match tree {
+        Uncovered | Unreachable => {}
+        Leaf { body, .. } => for_each_call_target(body, f),
+        Guard {
+            guard,
+            success,
+            failure,
+            ..
+        } => {
+            for_each_call_target(guard, f);
+            tree_call_targets(success, f);
+            tree_call_targets(failure, f);
+        }
+        Switch { cases, .. } => match cases {
+            SwitchCases::Int { cases, default } => {
+                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
+                tree_call_targets(default, f);
+            }
+            SwitchCases::Bool { if_true, if_false } => {
+                tree_call_targets(if_true, f);
+                tree_call_targets(if_false, f);
+            }
+            SwitchCases::Char { cases, default } => {
+                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
+                tree_call_targets(default, f);
+            }
+            SwitchCases::Ctor(trees) => trees.iter().for_each(|t| tree_call_targets(t, f)),
+            SwitchCases::String { cases, default } => {
+                cases.iter().for_each(|(_, t)| tree_call_targets(t, f));
+                tree_call_targets(default, f);
+            }
+            SwitchCases::Nullable { non_null, null } => {
+                tree_call_targets(non_null, f);
+                tree_call_targets(null, f);
+            }
+        },
+    }
+}
+
 /// Monomorphize an elaborated program into its ground Full MIR, alongside any
 /// diagnostics raised by the call-boundary regional check.
 pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
     let tcx: &'a TyCtxt<'tcx> = input.tcx;
     let by_def: FxHashMap<DefId, &Function<'tcx>> =
         input.elaborated.iter().map(|f| (f.def, f)).collect();
+    let exports = mono_exports(input);
 
     let mut driver = Driver {
         tcx,
@@ -310,6 +447,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             symbol,
             transform_anchor: input.transform_anchors.contains(&func.def),
             visibility: func.visibility,
+            mono_exported: exports.contains(&func.def),
             is_regional: func.is_regional,
             params,
             return_ty,
@@ -1492,6 +1630,45 @@ mod tests {
             let (_, reports) = monomorphize(&elab.mono_input());
             reports.into_iter().map(|r| r.message).collect()
         })
+    }
+
+    /// The mono-export set: private ground functions reachable from `pub`
+    /// generic bodies — transitively through private generics — and nothing
+    /// else. `pub` ground bodies do not seed (their code never leaves this
+    /// package), and unreachable privates stay unexported.
+    #[test]
+    fn mono_exports_reach_through_generic_bodies() {
+        let source = "
+            fn deep(x: i64) -> i64 { x + 1 }
+            fn mid<T : Num>(x: T) -> i64 { deep(2) }
+            fn from_ground(x: i64) -> i64 { x + 3 }
+            fn unreachable_helper(x: i64) -> i64 { x + 4 }
+            pub fn api<T : Num>(x: T) -> i64 { mid(x) }
+            pub fn ground(x: i64) -> i64 { from_ground(x) }
+        ";
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono reports: {reports:#?}");
+            let exported: Vec<&str> = full
+                .functions
+                .iter()
+                .filter(|f| f.mono_exported)
+                .map(|f| full.symbol(f.symbol))
+                .collect();
+            // `deep` crosses the boundary: `api<T>` → `mid<T>` → `deep`.
+            // `from_ground` does not (`pub` ground bodies stay home), and the
+            // unreachable helper stays plain private.
+            assert_eq!(exported, ["_RC4deep"], "{:?}", symbols(&full));
+        });
     }
 
     /// Literals are arbitrary-precision end to end: extremes that the old

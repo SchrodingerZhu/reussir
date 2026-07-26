@@ -3,11 +3,15 @@
 
 // AOT linkage policy (rustc-style):
 // - private non-generic functions are `internal` — free to discard, inline,
-//   and call directly;
-// - monomorphized generic instances (`_RI…` symbols) are `linkonce_odr`:
-//   any other compilation unit may emit the identical instance (a future
+//   and call directly — unless they are reachable from a `pub` generic's
+//   body: such a body is compiled wherever it is instantiated (a downstream
+//   package, through the HIR index), so its ground callees' symbols must
+//   survive for the cross-package link (`mono_export`);
+// - monomorphized generic instances (`_RI…` symbols) are `weak_odr`:
+//   any other compilation unit may emit the identical instance (a sibling
 //   codegen unit, or a downstream package instantiating through a pub
-//   generic), and the linker keeps one;
+//   generic), and the linker keeps one — `weak_odr`, not `linkonce_odr`,
+//   because the defining unit may hold no reference of its own;
 // - `pub` non-generic functions and extern trampolines are strong external —
 //   the object's ABI surface.
 // The JIT/REPL keeps everything external instead (ORC resolves previously
@@ -25,14 +29,27 @@ pub fn entry(x: i64) -> i64 {
     helper(x) + double(x)
 }
 
+// A pub generic whose body calls a private ground function: `shift` must
+// stay externally linkable — a foreign instantiation of `scale` calls it.
+fn shift(x: i64) -> i64 {
+    x + 3
+}
+
+pub fn scale<T : Num>(x: T) -> i64 {
+    shift(1)
+}
+
 extern "C" trampoline "entry_ffi" = entry;
 
 // The generic instance is mergeable across compilation units when the
 // object format can carry the required COMDAT; COFF stays strong for now.
-// CHECK-DEDUP-DAG: define linkonce_odr i64 @_RIC6doublexE(i64 %0)
+// CHECK-DEDUP-DAG: define weak_odr i64 @_RIC6doublexE(i64 %0)
 // CHECK-COFF-DAG: define i64 @_RIC6doublexE(i64 %0)
-// The private helper is internal.
+// The private helper is internal: only pub *generic* bodies escape the
+// package, and `helper` is reachable only from the ground `entry`.
 // CHECK-DAG: define internal i64 @_RC6helper(i64 %0)
+// The mono-exported private helper keeps its external symbol.
+// CHECK-DAG: define i64 @_RC5shift(i64 %0)
 // The pub function and the trampoline are the strong external ABI surface.
 // CHECK-DAG: define i64 @_RC5entry(i64 %0)
 // CHECK-DAG: define i64 @entry_ffi(i64 %0)

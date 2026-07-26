@@ -90,12 +90,15 @@ pub enum LinkagePolicy {
     /// Every definition keeps external linkage (the pre-policy behavior).
     Jit,
     /// Ahead-of-time linkage, mirroring rustc's model:
-    /// - monomorphized generic instances (`_RI…` symbols) are `linkonce_odr`
+    /// - monomorphized generic instances (`_RI…` symbols) are `weak_odr`
     ///   when `dedup_instances` holds — any other compilation unit may emit
-    ///   the same instance and the linker keeps one — and plain external
-    ///   otherwise (COFF, where `linkonce_odr` definitions need comdat
-    ///   support we do not emit yet);
-    /// - private non-generic functions are `internal`;
+    ///   the same instance and the linker keeps one; `weak_odr` rather than
+    ///   `linkonce_odr` because the instance's home unit may not reference
+    ///   it itself — and plain external otherwise (COFF, where weak
+    ///   definitions need comdat support we do not emit yet);
+    /// - private non-generic functions are `internal`, unless marked
+    ///   `mono_export` (reachable from a generic body a foreign package may
+    ///   instantiate, so the symbol must survive for cross-package links);
     /// - `pub` non-generic functions and trampolines stay strong external —
     ///   they are the object's ABI surface.
     Aot { dedup_instances: bool },

@@ -85,6 +85,15 @@ pub struct Function<'tcx> {
     pub symbol: Symbol,
     pub transform_anchor: bool,
     pub visibility: Visibility,
+    /// The symbol must stay externally linkable even when private: the
+    /// function is reachable from a generic body another compilation may
+    /// instantiate (see [`super::mono::mono_exports`]), so a foreign
+    /// object's instance can call it across the link. In-memory only —
+    /// computed by one traversal of the HIR bodies (elaborated or loaded
+    /// from a textual dump), never serialized; a program re-entered from
+    /// textual MIR has no generic bodies left to witness reachability and
+    /// defaults to `false`.
+    pub mono_exported: bool,
     pub is_regional: bool,
     pub params: Vec<Param<'tcx>>,
     pub return_ty: Ty<'tcx>,

@@ -441,7 +441,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         }
         if !emit_body
             || func.body.is_none()
-            || (func.visibility == Visibility::Private && !self.unit.is_split())
+            || (func.visibility == Visibility::Private
+                && !func.mono_exported
+                && !self.unit.is_split())
         {
             attributes.push((
                 Identifier::new(self.context, "sym_visibility"),
@@ -582,15 +584,25 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     // Another compilation unit may instantiate the same
                     // generic — emit the definition as mergeable. This holds
                     // for private generics too: a pub generic caller can force
-                    // their instantiation from downstream units. Partitioned
-                    // builds keep this: the home unit's `linkonce_odr`
-                    // definition satisfies the other units' external
-                    // declarations.
-                    dedup_instances.then_some("linkonce_odr")
-                } else if func.visibility == Visibility::Private && !self.unit.is_split() {
+                    // their instantiation from downstream units. `weak_odr`
+                    // rather than `linkonce_odr`: the home unit of a
+                    // partitioned build may hold no reference of its own to
+                    // the instance (only sibling units do), and a
+                    // `linkonce_odr` definition with no local use is fair
+                    // game for GlobalDCE — the definition must survive to
+                    // satisfy the other units' external declarations.
+                    dedup_instances.then_some("weak_odr")
+                } else if func.visibility == Visibility::Private
+                    && !func.mono_exported
+                    && !self.unit.is_split()
+                {
                     // Mirrors the `sym_visibility` promotion above: in a
                     // partitioned build any other unit may call this symbol,
-                    // so the definition must stay externally linkable.
+                    // so the definition must stay externally linkable. A
+                    // `mono_export` function keeps its external symbol even
+                    // in a single unit: a foreign package instantiating a
+                    // generic body of this package calls it across the link
+                    // (see `mir::Function::mono_exported`).
                     Some("internal")
                 } else {
                     None
