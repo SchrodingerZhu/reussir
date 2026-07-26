@@ -17,8 +17,16 @@ fn hidden(s: Secret) -> i64 {
     s.v
 }
 
+fn baz(x: i64) -> i64 {
+    x
+}
+
+fn bar(x: i64) -> i64 {
+    baz(x)
+}
+
 fn scale_impl<T : Num>(x: T, k: i64) -> i64 {
-    util::mul(k, hidden(Secret { v: 2 }))
+    util::mul(k, hidden(Secret { v: 2 })) + bar(k)
 }
 
 pub fn scale<T : Num>(x: T) -> i64 {

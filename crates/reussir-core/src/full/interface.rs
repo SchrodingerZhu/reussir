@@ -160,8 +160,12 @@ mod tests {
     /// generics and the generics they call ship bodies; grounds the shipped
     /// bodies call — and `pub` grounds themselves — ship prototypes; records
     /// reach through prototype signatures and close over fields; strings ride
-    /// with the bodies. `pub` ground bodies are not walked (their private
-    /// callees stay home), and the unreachable helper ships nowhere.
+    /// with the bodies. Ground bodies are never walked, so the closure stops
+    /// at the ground boundary: `api` → `bar` ships `bar` as a prototype, but
+    /// `baz` — reached only from `bar`'s body, which is compiled here — stays
+    /// home (and, through the derived `mono_exports`, may stay `internal`).
+    /// Same for a `pub` ground's private callee, and the unreachable helper
+    /// ships nowhere.
     #[test]
     fn export_closure_selects_the_shippable_surface() {
         let source = "
@@ -173,9 +177,11 @@ mod tests {
                 let s = \"tag\";
                 deep(2) + helper(Nested { i: Internal { value: 3 } })
             }
+            fn baz(x: i64) -> i64 { x + 5 }
+            fn bar(x: i64) -> i64 { baz(x) }
             fn from_ground(x: i64) -> i64 { x + 3 }
             fn unreachable_helper(x: i64) -> i64 { x + 4 }
-            pub fn api<T : Num>(x: T) -> i64 { mid(x) }
+            pub fn api<T : Num>(x: T) -> i64 { mid(x) + bar(1) }
             pub fn ground(x: i64) -> i64 { from_ground(x) }
         ";
         with_tcx(|tcx| {
@@ -198,7 +204,7 @@ mod tests {
                 v
             };
             assert_eq!(names(&closure.bodies), ["api", "mid"]);
-            assert_eq!(names(&closure.protos), ["deep", "ground", "helper"]);
+            assert_eq!(names(&closure.protos), ["bar", "deep", "ground", "helper"]);
             assert_eq!(names(&closure.records), ["Internal", "Nested"]);
             assert_eq!(closure.strings.len(), 1, "{:?}", closure.strings);
 
@@ -240,7 +246,7 @@ mod tests {
             assert_eq!(header.format, RRI_FORMAT);
             assert_eq!(header.package, "demo");
             assert_eq!(header.producer, "rrc-test");
-            assert_eq!(parsed.funcs.len(), 5);
+            assert_eq!(parsed.funcs.len(), 6);
             let body_of = |name: &str| {
                 parsed
                     .funcs
@@ -252,6 +258,7 @@ mod tests {
             };
             assert!(body_of("api") && body_of("mid"));
             assert!(!body_of("deep") && !body_of("ground") && !body_of("helper"));
+            assert!(!body_of("bar"), "ground bodies never ship");
         });
     }
 }

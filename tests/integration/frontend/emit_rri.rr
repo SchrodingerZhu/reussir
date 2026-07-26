@@ -20,6 +20,7 @@
 
 // Ground functions — private or `pub`, same-module or cross-module — are
 // bodyless prototypes, in path order.
+// CHECK: fn #demo::bar(v0 (x): i64) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}];
 // CHECK: fn #demo::hidden(v0 (s): #demo::Secret) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}];
 // CHECK: pub fn #demo::origin() -> #demo::Point in 0 [{{[0-9]+}}..{{[0-9]+}}];
 
@@ -30,8 +31,12 @@
 // CHECK: pub fn #demo::util::mul(v0 (a): i64, v1 (b): i64) -> i64 in 1 [{{[0-9]+}}..{{[0-9]+}}];
 
 // A private function nothing exported reaches stays home — checked over the
-// whole artifact (its path would sort between the prototypes above).
+// whole artifact (its path would sort between the prototypes above). And the
+// closure stops at the ground boundary: `scale_impl` → `bar` ships `bar` as
+// a prototype, but `baz` — reached only from `bar`'s body, which is compiled
+// in this package — stays hidden entirely.
 // ABSENT-NOT: never_exported
+// ABSENT-NOT: baz
 
 // The emission is deterministic: two runs, one artifact.
 // RUN: %rrc --package-root %S/emit_rri --package-name demo --emit rri -o %t.a.rri
