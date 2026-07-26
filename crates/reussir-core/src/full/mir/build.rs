@@ -279,6 +279,10 @@ impl<'tcx> Builder<'_, 'tcx> {
             } else {
                 crate::surface::Visibility::Private
             },
+            // Not serialized: the set is recomputed from HIR bodies wherever
+            // they exist (elaboration, or a loaded .hir); a re-entered .mir
+            // has no generic bodies left to witness reachability.
+            mono_exported: false,
             is_regional: f.regional,
             params,
             return_ty,

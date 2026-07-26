@@ -391,6 +391,7 @@ impl<'a, 'tcx> MirBuilder<'a, 'tcx> {
             symbol,
             transform_anchor: false,
             visibility: Visibility::Private,
+            mono_exported: false,
             is_regional: false,
             params,
             return_ty: ret,
