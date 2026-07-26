@@ -27,6 +27,9 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 # (imports, contracts, merging), not a static data file.
 nickel-lang.workspace = true
 palc.workspace = true
+# The version solver, run as a feasibility check over the local path-
+# dependency graph (one available version per package today).
+pubgrub = "0.4"
 # The build-status store; its exclusive file lock is also the build-dir lock.
 redb.workspace = true
 serde.workspace = true

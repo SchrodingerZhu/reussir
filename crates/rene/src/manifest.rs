@@ -17,7 +17,7 @@ use serde::Deserialize;
 pub const MANIFEST_FILE: &str = "rene.ncl";
 
 /// The interpreted portion of an evaluated manifest.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub package: Package,
     /// Dependencies by name. First stage: file-system paths only.
@@ -35,7 +35,7 @@ pub struct Manifest {
     pub profiles: BTreeMap<String, Profile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Package {
     /// The package's name — becomes `rrc --package-name`, the first segment
     /// of every item's module path.
@@ -45,7 +45,7 @@ pub struct Package {
 
 /// One declared dependency. Unknown fields are rejected — a typo'd
 /// constraint that silently vanished would change what resolution accepts.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {
     /// Directory of the dependency package, relative to the manifest's
@@ -98,7 +98,7 @@ impl TargetKind {
 
 /// A declared build product. Unknown fields are rejected: a typo here would
 /// otherwise silently change what gets built.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub kind: TargetKind,
@@ -226,7 +226,7 @@ pub fn resolve_profile(manifest: &Manifest, name: &str) -> Result<Profile, Strin
 }
 
 /// A successfully loaded manifest.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Loaded {
     /// The manifest file the package was loaded from.
     pub path: PathBuf,

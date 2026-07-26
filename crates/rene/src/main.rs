@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, manifest, rt};
+use rene::{compile, deps, manifest, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -206,6 +206,17 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // Resolve the profile before any work: an unknown name is a usage
     // problem, not something to discover after a runtime bake.
     let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+    // Dependency resolution, before any expensive work too: load the
+    // transitive path graph and let pubgrub verify the constraints hold
+    // together (each package exists in exactly one version today, so this is
+    // a feasibility check; see `resolve`).
+    if !loaded.manifest.dependencies.is_empty() {
+        let graph = resolve::load_graph(&loaded)?;
+        let solution = resolve::check(&graph)?;
+        for (name, version) in &solution.pinned {
+            tracing::info!(package = %name, %version, "resolved");
+        }
+    }
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
