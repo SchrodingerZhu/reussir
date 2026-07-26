@@ -66,6 +66,13 @@ pub struct Names {
 }
 
 impl Names {
+    /// Every interned string, densely indexed by key — the extern declare
+    /// pass re-interns the whole table into the consumer's interner (see
+    /// [`crate::semi::externs`]).
+    pub fn entries(&self) -> &[String] {
+        &self.strings
+    }
+
     fn intern(&mut self, s: &str) -> TokenKey {
         if let Some(&k) = self.map.get(s) {
             return k;

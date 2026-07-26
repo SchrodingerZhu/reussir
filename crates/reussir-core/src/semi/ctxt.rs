@@ -3,10 +3,10 @@
 
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::{FileId, SourceCache};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::semi::infer::InferCtxt;
-use crate::semi::resolve::DefTable;
+use crate::semi::resolve::{DefKind, DefTable};
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::traits::{TraitDb, TraitId};
 use crate::semi::ty::{DefId, Flexivity, GenericId, HoleId, Ty, TyCtxt, TyKind};
@@ -393,6 +393,28 @@ pub struct Elaborator<'a, 'tcx> {
     pub imports: Vec<ImportBinding>,
     pub generics: Vec<GenericInfo>,
     pub strings: StringUniqifier,
+    /// Heads of loaded extern packages ([`Elaborator::declare_extern_package`]):
+    /// a reference path led by one resolves in that package's table only —
+    /// never module-relatively — so an extern head and a local module cannot
+    /// shadow one another.
+    pub extern_heads: FxHashSet<TokenKey>,
+    /// Extern-owned defs and the package head that owns each. The `pub` gate
+    /// keys on this, and the HIR dump excludes these
+    /// ([`Elaborator::local_records`]) — the dump describes the consumer
+    /// package only.
+    pub extern_defs: FxHashMap<DefId, TokenKey>,
+    /// Extern functions remapped into the consumer's spaces — generic bodies
+    /// to instantiate, ground prototypes to declare against — held for
+    /// cross-package monomorphization (a later commit). Never part of the
+    /// printed program or the export surface.
+    pub extern_functions: Vec<Function<'tcx>>,
+    /// String literals referenced by extern bodies. Tokens are
+    /// content-addressed (BLAKE3), so entries carry over without remapping.
+    pub extern_strings: Vec<(crate::utils::string::StringToken, String)>,
+    /// Foreign bodies of extern `#[ffi(import)]` functions, keyed by their
+    /// consumer defs, with the preludes of their files.
+    pub extern_ffi_imports: FxHashMap<DefId, FfiImport>,
+    pub extern_ffi_preludes: Vec<FfiPrelude>,
     pub elaborated: Vec<Function<'tcx>>,
     pub reports: Vec<Report>,
     /// The file whose items are currently being processed; stamped onto every
@@ -473,6 +495,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             functions: FxHashMap::default(),
             generics: Vec::new(),
             strings: StringUniqifier::new(),
+            extern_heads: FxHashSet::default(),
+            extern_defs: FxHashMap::default(),
+            extern_functions: Vec::new(),
+            extern_strings: Vec::new(),
+            extern_ffi_imports: FxHashMap::default(),
+            extern_ffi_preludes: Vec::new(),
             elaborated: Vec::new(),
             reports: Vec::new(),
             current_file: FileId::ROOT,
@@ -682,6 +710,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return;
         }
+        // Extern package heads are reserved the same way: a binding shadowing
+        // one would silently reroute every `dep::…` reference in the file.
+        if self.extern_heads.contains(&name) {
+            self.error(
+                Some(decl.name.span()),
+                format!("`{shown}` names a loaded extern package and cannot be bound by an import"),
+            );
+            return;
+        }
         if self
             .imports
             .iter()
@@ -769,10 +806,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Resolve a type reference: bare names in the current module (falling
     /// back to the crate root), qualified paths per the module-relative rules
     /// (see [`DefTable::resolve_record_path`]). The path is first expanded
-    /// through the file's `import` bindings ([`Self::expand_path`]).
+    /// through the file's `import` bindings ([`Self::expand_path`]); one led
+    /// by an extern package head resolves in that package's table only
+    /// ([`Self::resolve_extern`]).
     pub(super) fn resolve_record_ref(&self, path: &surface::Path) -> Option<DefId> {
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);
+        if self.extern_head(path).is_some() {
+            return self.resolve_extern(path, DefKind::Record);
+        }
         if path.segments.is_empty() {
             self.defs.resolve_record(path.basename)
         } else {
@@ -785,6 +827,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     pub(super) fn resolve_function_ref(&self, path: &surface::Path) -> Option<DefId> {
         let expanded = self.expand_path(path);
         let path = expanded.as_ref().unwrap_or(path);
+        if self.extern_head(path).is_some() {
+            return self.resolve_extern(path, DefKind::Function);
+        }
         if path.segments.is_empty() {
             self.defs.resolve_function(path.basename)
         } else {
@@ -808,9 +853,99 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 basename: enum_name,
                 segments: mods.iter().copied().collect(),
             };
+            if self.extern_head(&mods_path).is_some() {
+                return self.resolve_extern(&mods_path, DefKind::Record);
+            }
             self.defs
                 .resolve_record_path(&self.classify_segs(&mods_path), enum_name)
         }
+    }
+
+    // ----- extern-package resolution -----
+
+    /// The path's first segment when it names a loaded extern package.
+    fn extern_head(&self, path: &surface::Path) -> Option<TokenKey> {
+        path.segments
+            .first()
+            .copied()
+            .filter(|k| self.extern_heads.contains(k))
+    }
+
+    /// Resolve a reference into a loaded extern package: the path is looked
+    /// up **absolute** in that package's namespace — the module-relative and
+    /// root-relative fallbacks never apply. Only `pub` items resolve; a
+    /// private hit yields `None` here and the targeted diagnostic through
+    /// [`Self::extern_private_msg`] on the caller's failure path.
+    fn resolve_extern(&self, path: &surface::Path, kind: DefKind) -> Option<DefId> {
+        let def = self.lookup_extern(path, kind)?;
+        (self.item_visibility(def)? == surface::Visibility::Public).then_some(def)
+    }
+
+    /// Exact-path lookup for an extern-headed reference (no access check).
+    fn lookup_extern(&self, path: &surface::Path, kind: DefKind) -> Option<DefId> {
+        let key: Vec<TokenKey> = path
+            .segments
+            .iter()
+            .copied()
+            .chain([path.basename])
+            .collect();
+        match kind {
+            DefKind::Record => self.defs.lookup_record(&key),
+            DefKind::Function => self.defs.lookup_function(&key),
+        }
+    }
+
+    /// A declared item's visibility, from whichever table holds it. `None`
+    /// for a def with no item entry (a path-only handle).
+    fn item_visibility(&self, def: DefId) -> Option<surface::Visibility> {
+        match self.defs.info(def).kind {
+            DefKind::Record => self.records.get(&def).map(|r| r.visibility),
+            DefKind::Function => self.functions.get(&def).map(|f| f.visibility),
+        }
+    }
+
+    /// The access-control diagnostic for a failed reference that names a
+    /// *private* item of a loaded extern package; `None` for every other
+    /// failure, so the caller keeps its ordinary not-found report and a
+    /// private hit stays distinguishable from a missing one.
+    pub(super) fn extern_private_msg(&self, path: &surface::Path, kind: DefKind) -> Option<String> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
+        let head = self.extern_head(path)?;
+        let def = self.lookup_extern(path, kind)?;
+        if self.item_visibility(def)? == surface::Visibility::Public {
+            return None;
+        }
+        let what = match kind {
+            DefKind::Record => "record",
+            DefKind::Function => "function",
+        };
+        Some(format!(
+            "{what} `{}` in package `{}` is private",
+            self.sym(path.basename),
+            self.sym(head)
+        ))
+    }
+
+    /// [`Self::extern_private_msg`] over a constructor path's *qualifier*
+    /// (`dep::Enum::Variant` names the record `dep::Enum`).
+    pub(super) fn extern_private_ctor_msg(&self, path: &surface::Path) -> Option<String> {
+        let (&enum_name, mods) = path.segments.split_last()?;
+        let qualifier = surface::Path {
+            basename: enum_name,
+            segments: mods.iter().copied().collect(),
+        };
+        self.extern_private_msg(&qualifier, DefKind::Record)
+    }
+
+    /// The consumer package's own records — extern-imported ones excluded —
+    /// for printing: the HIR/rri dumps describe this package only.
+    pub fn local_records(&self) -> FxHashMap<DefId, Record<'tcx>> {
+        self.records
+            .iter()
+            .filter(|(def, _)| !self.extern_defs.contains_key(def))
+            .map(|(def, rec)| (*def, rec.clone()))
+            .collect()
     }
 
     /// Whether `prefix` spells the canonical `core::intrinsic::<family>`

@@ -1,0 +1,75 @@
+// Extern-head resolution and access control: consumer references through a
+// loaded interface's package head resolve to its `pub` items only, print as
+// `#dep::…` call targets, and never join the consumer's own dump items. A
+// private hit is access control ("is private"), distinct from not-found, and
+// the extern head neither shadows nor is shadowed by a local module.
+
+// RUN: %rrc --package-root %S/extern_resolve --package-name dep --emit rri -o %t.rri
+
+// `pub` function calls (generic and ground) and the `pub` record resolve;
+// the dump's items stay the consumer's own.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s --check-prefix=OWN
+
+// A private function resolves to access control, not absence …
+// RUN: echo 'fn f(x: i64) -> i64 { dep::private_helper(x) }' > %t.private.rr
+// RUN: %not %rrc %t.private.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PRIVATE
+// PRIVATE: function `private_helper` in package `dep` is private
+
+// … a private record likewise …
+// RUN: echo 'fn g() -> i64 { dep::Hidden { v: 1 }; 0 }' > %t.hidden.rr
+// RUN: %not %rrc %t.hidden.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=HIDDEN
+// HIDDEN: record `Hidden` in package `dep` is private
+
+// … and a missing item stays not-found.
+// RUN: echo 'fn h(x: i64) -> i64 { dep::nope(x) }' > %t.nope.rr
+// RUN: %not %rrc %t.nope.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NOPE
+// NOPE: unknown function `dep::nope`
+
+// A type error against an extern signature reports like any local one: the
+// caret lands in the consumer's source with the `dep::`-qualified call on
+// the rendered line, checked against the imported prototype's real types.
+// RUN: echo 'fn bad(x: bool) -> i64 { dep::ground(x) }' > %t.bad.rr
+// RUN: %not %rrc %t.bad.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=MISMATCH
+// MISMATCH: type mismatch: expected `i64`, found `bool`
+// MISMATCH: dep::ground(x)
+
+// The extern head owns its paths exclusively: a local module named `dep`
+// misses on `dep::…` but stays reachable through `root::dep::…` (which must
+// produce no diagnostic of its own).
+// RUN: %not %rrc --package-root %S/extern_resolve_shadow --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=SHADOW
+// SHADOW: unknown function `dep::local`
+// SHADOW-NOT: unknown function `root::dep::local`
+
+pub fn call_api(x: i64) -> i64 {
+    dep::api(x)
+}
+
+pub fn call_ground(x: i64) -> i64 {
+    dep::ground(x)
+}
+
+pub fn use_point(x: i64) -> i64 {
+    let p = dep::Point { x: x, y: 1 };
+    p.x + p.y
+}
+
+// Calls print as fully-qualified extern paths.
+// CHECK: pub fn #app::call_api
+// CHECK: #dep::api::<i64>
+// CHECK: pub fn #app::call_ground
+// CHECK: #dep::ground
+// CHECK: pub fn #app::use_point
+// CHECK: #dep::Point
+
+// No extern definitions leak into the consumer's dump: the imported record
+// and the shipped bodies/prototypes stay out of the printed program.
+// OWN-NOT: struct #dep::
+// OWN-NOT: fn #dep::

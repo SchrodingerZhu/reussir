@@ -12,6 +12,7 @@
 //! the [`Finalized`] module to [`emit_to_file`].
 
 pub mod driver;
+pub mod externs;
 pub mod package;
 
 use std::ffi::{CString, c_char};

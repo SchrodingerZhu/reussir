@@ -40,6 +40,7 @@
 //! monomorphization.
 
 use crate::semi::infer::Instantiation;
+use crate::semi::resolve::DefKind;
 use crate::semi::traits::sync::{SyncEnv, SyncVerdict, wf_arc};
 use crate::semi::ty::{DefId, Flexivity, FpTy, IntTy, Ty, TyKind};
 use crate::surface::{self, FpType, IntegralType, TypeKind};
@@ -305,6 +306,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         key: reussir_syntax::kind::TokenKey,
     ) -> Ty<'tcx> {
         let Some(def) = self.resolve_record_ref(path) else {
+            // A private record of a loaded extern package reports access,
+            // not absence.
+            if let Some(msg) = self.extern_private_msg(path, DefKind::Record) {
+                self.error(Some(span), msg);
+                return self.tcx.mk(TyKind::Bottom);
+            }
             let hint = if path.segments.is_empty() {
                 self.record_suggestion(key)
             } else {
