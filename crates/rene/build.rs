@@ -20,7 +20,10 @@ fn main() {
     let workspace_toml = workspace_dir.join("Cargo.toml");
     let workspace_lock = workspace_dir.join("Cargo.lock");
 
-    println!("cargo::rerun-if-changed={}", rt_dir.join("Cargo.toml").display());
+    println!(
+        "cargo::rerun-if-changed={}",
+        rt_dir.join("Cargo.toml").display()
+    );
     println!("cargo::rerun-if-changed={}", rt_dir.join("src").display());
     println!("cargo::rerun-if-changed={}", workspace_toml.display());
     println!("cargo::rerun-if-changed={}", workspace_lock.display());
@@ -91,7 +94,10 @@ fn standalone_manifest(crate_toml: &Path, workspace_toml: &Path) -> String {
         }
     }
 
-    if let Some(deps) = doc.get_mut("dependencies").and_then(Item::as_table_like_mut) {
+    if let Some(deps) = doc
+        .get_mut("dependencies")
+        .and_then(Item::as_table_like_mut)
+    {
         let names: Vec<String> = deps.iter().map(|(k, _)| k.to_owned()).collect();
         for name in names {
             let spec = deps.get(&name).unwrap();

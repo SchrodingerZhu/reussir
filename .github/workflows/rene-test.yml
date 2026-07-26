@@ -34,10 +34,13 @@ jobs:
       fail-fast: false
       matrix:
         # rene is a plain Rust crate (no LLVM/MLIR build), so testing it on
-        # every platform users run it on is cheap. Windows is left out for
-        # now: the fake-toolchain CLI test is unix-only (#[cfg(unix)] shell
-        # scripts), which would leave Windows covering almost nothing.
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        # every platform users run it on is cheap. On Windows the
+        # fake-toolchain CLI tests sit out (#[cfg(unix)] shell scripts), but
+        # the crate must build and its unit and locking tests hold there —
+        # and the real Windows e2e (rene/build.rr, driving the bake and the
+        # rrc links with the pinned MSVC linker) runs under the MSVC full
+        # pipeline, not here.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
 
     runs-on: ${{ matrix.os }}
 

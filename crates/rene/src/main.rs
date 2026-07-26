@@ -206,7 +206,10 @@ fn build(args: &BuildArgs) -> Result<(), String> {
     // and a build that finds nothing moved skips straight to the freshness
     // checks below.
     let sources = deps::prepare(&dir, &loaded)?;
-    let artifacts = rt::prepare(&dir)?;
+    // The bake links the runtime dylib with the same linker pinning the
+    // driver-level links get: the CLI override first, then the profile's.
+    let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
+    let artifacts = rt::prepare(&dir, bake_linker.as_deref())?;
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
