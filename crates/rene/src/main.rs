@@ -124,11 +124,23 @@ fn main() -> ExitCode {
         },
     };
     init_tracing(cli.verbose);
-    let result = match cli.command {
-        Command::Build(args) => build(&args),
-        Command::Clean(args) => clean(&args.location),
-        Command::Inspect(args) => inspect(&args.location, args.frozen),
+    // One completion-based runtime (io_uring/IOCP) drives the whole command:
+    // child processes and file reads await on it, and independent work —
+    // digests, target compiles — runs concurrently on the single thread.
+    let runtime = match compio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("error: cannot start the async runtime: {err}");
+            return ExitCode::FAILURE;
+        }
     };
+    let result = runtime.block_on(async {
+        match cli.command {
+            Command::Build(args) => build(&args).await,
+            Command::Clean(args) => clean(&args.location),
+            Command::Inspect(args) => inspect(&args.location, args.frozen).await,
+        }
+    });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -181,7 +193,7 @@ fn locate_manifest(flag: &Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-fn build(args: &BuildArgs) -> Result<(), String> {
+async fn build(args: &BuildArgs) -> Result<(), String> {
     let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
@@ -205,11 +217,11 @@ fn build(args: &BuildArgs) -> Result<(), String> {
     // The source graph first: it is cheap, it fails fast on a broken package,
     // and a build that finds nothing moved skips straight to the freshness
     // checks below.
-    let sources = deps::prepare(&dir, &loaded)?;
+    let sources = deps::prepare(&dir, &loaded).await?;
     // The bake links the runtime dylib with the same linker pinning the
     // driver-level links get: the CLI override first, then the profile's.
     let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
-    let artifacts = rt::prepare(&dir, bake_linker.as_deref())?;
+    let artifacts = rt::prepare(&dir, bake_linker.as_deref()).await?;
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
@@ -235,7 +247,8 @@ fn build(args: &BuildArgs) -> Result<(), String> {
             targets: args.targets.clone(),
             linker: args.linker.clone(),
         },
-    )?;
+    )
+    .await?;
     // Stdout carries the artifact listing, one path per target, in the
     // order they were declared (or selected).
     for product in &products {
@@ -248,7 +261,7 @@ fn build(args: &BuildArgs) -> Result<(), String> {
 /// default a stale record is refreshed first (the same scan `build` runs, but
 /// without the runtime bake), so the report describes the package as it is
 /// now; `--frozen` reports what is on record and never writes.
-fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
+async fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
     let root = resolve_build_dir(location)?;
@@ -269,7 +282,7 @@ fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
         if dir.is_cleaning().map_err(|e| e.to_string())? {
             return Err(pending_clean(&root));
         }
-        let prepared = deps::prepare(&dir, &loaded)?;
+        let prepared = deps::prepare(&dir, &loaded).await?;
         // After a refresh the record is by construction current; report that
         // rather than the reason it was rebuilt (which the log already
         // carries).

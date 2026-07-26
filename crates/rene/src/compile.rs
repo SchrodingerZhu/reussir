@@ -14,7 +14,6 @@
 //! whose fingerprint matches and whose artifact still exists reruns nothing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +51,10 @@ pub struct ProductRecord {
 }
 
 /// Build the selected targets, reusing whatever the record proves current.
-pub fn build(
+/// The stale ones compile concurrently — independent `rrc` processes over
+/// the same baked runtime — and are recorded in declared order once all of
+/// them succeed.
+pub async fn build(
     dir: &BuildDir,
     loaded: &Loaded,
     sources: &Prepared,
@@ -84,7 +86,9 @@ pub fn build(
         .map_err(|e| format!("cannot create `{}`: {e}", out_dir.display()))?;
     let fingerprint = fingerprint(loaded, sources, rt, opts);
 
-    let mut products = Vec::with_capacity(selected.len());
+    // Partition into current and stale first, so the stale ones can run
+    // concurrently while the listing keeps the declared order.
+    let mut plan = Vec::with_capacity(selected.len());
     for name in selected {
         let kind = manifest.targets[name].kind;
         let path = out_dir.join(artifact_file(
@@ -93,25 +97,30 @@ pub fn build(
             opts.profile.target_triple.as_deref(),
         ));
         let key = tables::product_key(&opts.profile_name, name);
-        if product_is_current(dir, &key, &fingerprint, &path)? {
+        let current = product_is_current(dir, &key, &fingerprint, &path)?;
+        if current {
             tracing::info!(target = name, "up to date");
-            products.push(Product {
-                name: name.to_owned(),
-                path,
-            });
-            continue;
         }
-
-        tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
-        compile(loaded, rt, opts, kind, &path)?;
-
-        let record = ProductRecord {
-            fingerprint: fingerprint.clone(),
-            path: path.clone(),
-        };
-        let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
-        dir.set_status(&[(key.as_str(), record.as_str())])
-            .map_err(|e| e.to_string())?;
+        plan.push((name, kind, path, key, current));
+    }
+    futures_util::future::try_join_all(plan.iter().filter(|(_, _, _, _, current)| !current).map(
+        |(name, kind, path, _, _)| async move {
+            tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+            compile(loaded, rt, opts, *kind, path).await
+        },
+    ))
+    .await?;
+    let mut products = Vec::with_capacity(plan.len());
+    for (name, _, path, key, current) in plan {
+        if !current {
+            let record = ProductRecord {
+                fingerprint: fingerprint.clone(),
+                path: path.clone(),
+            };
+            let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+            dir.set_status(&[(key.as_str(), record.as_str())])
+                .map_err(|e| e.to_string())?;
+        }
         products.push(Product {
             name: name.to_owned(),
             path,
@@ -121,7 +130,7 @@ pub fn build(
 }
 
 /// One `rrc` run for one target.
-fn compile(
+async fn compile(
     loaded: &Loaded,
     rt: &RtArtifacts,
     opts: &Options,
@@ -129,7 +138,7 @@ fn compile(
     out: &Path,
 ) -> Result<(), String> {
     let rrc = deps::resolve_rrc();
-    let mut cmd = Command::new(&rrc);
+    let mut cmd = compio::process::Command::new(&rrc);
     cmd.arg("--package-root")
         .arg(deps::source_root(loaded))
         .arg("--package-name")
@@ -149,6 +158,7 @@ fn compile(
     // rrc's diagnostics stream straight through to the user.
     let status = cmd
         .status()
+        .await
         .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
     if !status.success() {
         return Err(format!(
@@ -160,7 +170,12 @@ fn compile(
 }
 
 /// The profile, spelled as `rrc` flags.
-fn profile_args(cmd: &mut Command, profile: &Profile, kind: TargetKind, linker: Option<&Path>) {
+fn profile_args(
+    cmd: &mut compio::process::Command,
+    profile: &Profile,
+    kind: TargetKind,
+    linker: Option<&Path>,
+) {
     if let Some(opt) = &profile.opt {
         cmd.arg("-O").arg(opt);
     }

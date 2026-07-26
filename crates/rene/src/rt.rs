@@ -10,9 +10,8 @@
 //! static library final executables link. The result is recorded in the
 //! status database and reused until the bundle hash or the toolchain changes.
 
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +80,7 @@ impl Toolchain {
     /// honors), then cargo's own `CARGO`/`RUSTC`, then `PATH` — which
     /// respects rustup shims, so a `rust-toolchain.toml` in the user's
     /// project still picks the toolchain naturally.
-    fn resolve() -> Result<Self, String> {
+    async fn resolve() -> Result<Self, String> {
         let pick = |specific: &str, generic: &str, default: &str| {
             std::env::var_os(specific)
                 .or_else(|| std::env::var_os(generic))
@@ -89,7 +88,7 @@ impl Toolchain {
         };
         let cargo = pick("REUSSIR_CARGO", "CARGO", "cargo");
         let rustc = pick("REUSSIR_RUSTC", "RUSTC", "rustc");
-        let verbose_version = capture(&rustc, &["-vV"])?;
+        let verbose_version = capture(&rustc, &["-vV"]).await?;
         let version = verbose_version
             .lines()
             .next()
@@ -106,7 +105,8 @@ impl Toolchain {
             })?
             .trim()
             .to_owned();
-        let rust_libdir = PathBuf::from(capture(&rustc, &["--print", "target-libdir"])?);
+        let rust_libdir =
+            PathBuf::from(capture(&rustc, &["--print", "target-libdir"]).await?);
         Ok(Toolchain {
             cargo,
             rustc,
@@ -117,10 +117,15 @@ impl Toolchain {
     }
 }
 
-fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new(program)
+async fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
+    let out = compio::process::Command::new(program)
         .args(args)
+        .stdout(Stdio::piped())
+        .expect("pipe stdout")
+        .stderr(Stdio::piped())
+        .expect("pipe stderr")
         .output()
+        .await
         .map_err(|e| format!("cannot run `{} {}`: {e}", program.display(), args.join(" ")))?;
     if !out.status.success() {
         return Err(format!(
@@ -144,8 +149,8 @@ fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
 /// whose PATH carries a coreutils `link` ahead of MSVC's). It is not part of
 /// the bake's freshness: whichever working linker linked the runtime, the
 /// artifacts are equivalent.
-pub fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifacts, String> {
-    let toolchain = Toolchain::resolve()?;
+pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifacts, String> {
+    let toolchain = Toolchain::resolve().await?;
     let hash = bundle_hash();
 
     if let Some(cached) = fresh_bake(dir, &toolchain, &hash)? {
@@ -168,7 +173,7 @@ pub fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifacts, Str
         rustc = %toolchain.version,
         "building reussir-rt (once per toolchain or runtime change)"
     );
-    let (rlib, staticlib) = cargo_build(&toolchain, &src_dir, linker)?;
+    let (rlib, staticlib) = cargo_build(&toolchain, &src_dir, linker).await?;
 
     // Cargo may report the uplifted rlib (`target/release/lib….rlib`) rather
     // than the hashed copy in `deps/`; polyffi's `rustc -L` needs `deps/`,
@@ -228,15 +233,16 @@ fn fresh_bake(
     Ok(valid.then_some(artifacts))
 }
 
-/// Run `cargo build --release` in `src_dir`, following the JSON message
-/// stream for progress and artifact locations (no directory guessing).
-/// Returns the runtime's (rlib, staticlib).
-fn cargo_build(
+/// Run `cargo build --release` in `src_dir`, reading the JSON message
+/// stream for the artifact locations (no directory guessing). The stream is
+/// parsed once cargo exits — live progress reaches the user through the
+/// inherited stderr regardless. Returns the runtime's (rlib, staticlib).
+async fn cargo_build(
     toolchain: &Toolchain,
     src_dir: &Path,
     linker: Option<&Path>,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let mut cmd = Command::new(&toolchain.cargo);
+    let mut cmd = compio::process::Command::new(&toolchain.cargo);
     cmd.args([
         "build",
         "--release",
@@ -256,19 +262,20 @@ fn cargo_build(
         );
         cmd.env(key, linker);
     }
-    let mut child = cmd
+    // Diagnostics and cargo's own progress stream to the user unchanged
+    // (stderr inherits by default under compio).
+    let out = cmd
         .stdout(Stdio::piped())
-        // Diagnostics and cargo's own progress stream to the user unchanged.
-        .stderr(Stdio::inherit())
-        .spawn()
+        .expect("pipe stdout")
+        .output()
+        .await
         .map_err(|e| format!("cannot run `{}`: {e}", toolchain.cargo.display()))?;
 
     let mut rlib = None;
     let mut staticlib = None;
-    let stdout = std::io::BufReader::new(child.stdout.take().expect("stdout is piped"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
     for line in stdout.lines() {
-        let line = line.map_err(|e| format!("lost cargo's output stream: {e}"))?;
-        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         if msg["reason"] != "compiler-artifact" {
@@ -289,10 +296,7 @@ fn cargo_build(
             }
         }
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("cannot wait for cargo: {e}"))?;
-    if !status.success() {
+    if !out.status.success() {
         return Err("building reussir-rt failed (see cargo's output above)".to_owned());
     }
     match (rlib, staticlib) {
