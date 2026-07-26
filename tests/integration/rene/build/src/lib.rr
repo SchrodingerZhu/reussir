@@ -1,0 +1,6 @@
+mod math;
+
+#[main]
+pub fn entry() {
+    let doubled = math::twice(21);
+}

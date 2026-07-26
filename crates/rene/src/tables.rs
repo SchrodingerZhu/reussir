@@ -45,6 +45,15 @@ pub const RT_SOURCE_HASH_KEY: &str = "rt.source-hash";
 /// toolchain identity plus the paths `build` reports to the user.
 pub const RT_ARTIFACTS_KEY: &str = "rt.artifacts";
 
+/// The status key of one built product's record, a JSON
+/// [`crate::compile::ProductRecord`]: the fingerprint it was built under and
+/// where the artifact landed. Records of targets that leave the manifest
+/// simply go stale in place — nothing reads them again, and a config change
+/// re-fingerprints the rest.
+pub fn product_key(profile: &str, target: &str) -> String {
+    format!("product.{profile}.{target}")
+}
+
 /// Teardown marker (JSON `true`), set by `clean` while it still holds the
 /// lock, right before it deletes the directory. A database carrying it is a
 /// directory whose deletion is in flight or was interrupted: `build` refuses
