@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 const PROGRAM: &str = r#"
-    enum List<T> { Nil, Cons(T, List<T>) }
+    pub enum List<T> { Nil, Cons(T, List<T>) }
     pub fn sum(list: List<i64>) -> i64 {
         match list {
             List::Nil => 0,

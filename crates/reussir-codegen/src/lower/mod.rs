@@ -798,8 +798,8 @@ transform [{
         // Exercises every kind of debug type emitted: scalars, a `[value]` record
         // (with named members), a `[shared]` record (boxed), and a `let` local.
         let src = r#"
-            struct [value] Point { x: i64, y: f64 }
-            struct [shared] Boxed { n: i64 }
+            pub struct [value] Point { x: i64, y: f64 }
+            pub struct [shared] Boxed { n: i64 }
             fn proj(p: Point) -> i64 { let q = p.x; q }
             fn unbox(b: Boxed) -> i64 { b.n }
             pub fn entry(a: i64, b: f64) -> i64 {
@@ -858,8 +858,8 @@ transform [{
         // the shared one is additionally a boxed type. Case names ride along as
         // member names.
         let src = r#"
-            enum [value] Tag { A, B(i64) }
-            enum List { Nil, Cons(i64, List) }
+            pub enum [value] Tag { A, B(i64) }
+            pub enum List { Nil, Cons(i64, List) }
             fn use_tag(t: Tag) -> i64 { 0 }
             fn use_list(l: List) -> i64 { 0 }
             pub fn entry(n: i64) -> i64 { use_tag(Tag::B{n}) + use_list(List::Nil) }
@@ -1013,7 +1013,7 @@ transform [{
         // A `[value]` record is a by-value aggregate: construction lowers to
         // `reussir.record.compound` and field access to `reussir.record.extract`.
         let src = r#"
-            struct [value] Point { x: i64, y: i64 }
+            pub struct [value] Point { x: i64, y: i64 }
             pub fn dot(a: Point, b: Point) -> i64 { a.x * b.x + a.y * b.y }
             pub fn mk(x: i64, y: i64) -> Point { Point { x: x, y: y } }
             extern "C" trampoline "dot_ffi" = dot;
@@ -1035,8 +1035,8 @@ transform [{
         // projecting it out loads the inner pointer and retains it (`rc.inc`),
         // while the consumed outer box is released (`rc.dec`).
         let src = r#"
-            struct [shared] Inner { n: i64 }
-            struct [shared] Outer { inner: Inner }
+            pub struct [shared] Inner { n: i64 }
+            pub struct [shared] Outer { inner: Inner }
             fn mk_inner(n: i64) -> Inner { Inner { n: n } }
             fn mk_outer(i: Inner) -> Outer { Outer { inner: i } }
             fn inner_of(o: Outer) -> Inner { o.inner }
@@ -1060,8 +1060,8 @@ transform [{
         // shared records: borrow the outer box, project + load the inner `rc` link,
         // borrow that, then project the scalar — so the walk emits two `rc.borrow`s.
         let src = r#"
-            struct [shared] Inner { n: i64 }
-            struct [shared] Outer { inner: Inner }
+            pub struct [shared] Inner { n: i64 }
+            pub struct [shared] Outer { inner: Inner }
             pub fn deep(o: Outer) -> i64 { o.inner.n }
         "#;
         let mlir = lower_source(src);
@@ -1082,7 +1082,7 @@ transform [{
         // before its members, so the self-reference on the field resolves to the
         // in-progress handle instead of recursing forever.
         let src = r#"
-            struct [shared] Node { next: Node }
+            pub struct [shared] Node { next: Node }
             pub fn forward(n: Node) -> Node { n }
         "#;
         let mlir = lower_source(src);
@@ -1096,7 +1096,7 @@ transform [{
         // An owned `[shared]` parameter that the body never uses is dead on entry,
         // so the ownership analysis releases it immediately with `rc.dec`.
         let src = r#"
-            struct [shared] Box { v: i64 }
+            pub struct [shared] Box { v: i64 }
             pub fn ignore(b: Box, fallback: i64) -> i64 { fallback }
         "#;
         let mlir = lower_source(src);
@@ -1110,7 +1110,7 @@ transform [{
         // `record.variant [tag]` then tags into the variant record. A fieldless
         // case builds an empty payload compound. No `rc` is involved.
         let src = r#"
-            enum [value] Shape { Dot, Segment(i64, i64) }
+            pub enum [value] Shape { Dot, Segment(i64, i64) }
             pub fn dot() -> Shape { Shape::Dot }
             pub fn segment(x: i64, y: i64) -> Shape { Shape::Segment{x, y} }
         "#;
@@ -1131,7 +1131,7 @@ transform [{
         // record type lowers finitely (the self-reference resolves to the
         // in-progress handle).
         let src = r#"
-            enum IntList { Nil, Cons(i64, IntList) }
+            pub enum IntList { Nil, Cons(i64, IntList) }
             pub fn one(x: i64) -> IntList { IntList::Cons{x, IntList::Nil} }
         "#;
         let mlir = lower_source(src);
@@ -1154,7 +1154,7 @@ transform [{
         // (`rc.create … region`); a `region-run` scope (`reussir.region.run`)
         // establishes that region and threads it into the regional call.
         let src = r#"
-            struct [regional] TestCell { v: i64 }
+            pub struct [regional] TestCell { v: i64 }
             regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> TestCell { regional { make(n) } }
         "#;
@@ -1180,7 +1180,7 @@ transform [{
         // `region.run` into an allocation scope, attach the box vtable, and
         // freeze the flex result on the way out.
         let src = r#"
-            struct [regional] TestCell { v: i64 }
+            pub struct [regional] TestCell { v: i64 }
             regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> TestCell { regional { make(n) } }
         "#;
@@ -1212,7 +1212,7 @@ transform [{
         // (`reussir.ref.project`), and loads the scalar field (`reussir.ref.load`)
         // — the result leaves the region as a plain `i64`, so nothing escapes.
         let src = r#"
-            struct [regional] TestCell { v: i64 }
+            pub struct [regional] TestCell { v: i64 }
             regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> i64 { regional { make(n).v } }
         "#;
@@ -1232,7 +1232,7 @@ transform [{
         // `field`-capability reference, builds the `Nullable::NonNull{..}` value
         // (`reussir.nullable.create`), and stores it (`reussir.ref.store`).
         let src = r#"
-            struct [regional] TestCell { v: i64, next: [field] TestCell }
+            pub struct [regional] TestCell { v: i64, next: [field] TestCell }
             regional fn set(c: [flex] TestCell, x: [flex] TestCell) -> i64 {
                 c->next := Nullable::NonNull{x};
                 c.v
@@ -1256,8 +1256,8 @@ transform [{
         // it out of a *bare* (normal) container hands out the atomic rc with
         // no arc context involved.
         let src = r#"
-            struct Inner { v: i64 }
-            struct Holder { h: Arc<Inner> }
+            pub struct Inner { v: i64 }
+            pub struct Holder { h: Arc<Inner> }
             pub fn get(x: Holder) -> Arc<Inner> { x.h }
         "#;
         let mlir = lower_source(src);
@@ -1277,7 +1277,7 @@ transform [{
         // the box's own atomic kind derives the interior discipline (atomic
         // create, atomic borrow).
         let src = r#"
-            enum List<T> { Nil, Cons(T, List<T>) }
+            pub enum List<T> { Nil, Cons(T, List<T>) }
             pub fn make() -> Arc<List<i64>> {
                 Arc<List<i64>>::Cons{1, Arc<List<i64>>::Nil}
             }
@@ -1299,7 +1299,7 @@ transform [{
         // counted box: the constructor creates `!reussir.rc<…, atomic>` and a
         // read borrows it at a matching `shared atomic` reference.
         let src = r#"
-            struct Data { value: i64 }
+            pub struct Data { value: i64 }
             pub fn make(v: i64) -> Arc<Data> { Arc<Data> { value: v } }
             pub fn read(a: Arc<Data>) -> i64 { a.value }
         "#;
@@ -1317,7 +1317,7 @@ transform [{
         // directly lowered textual MIR). Strip the reports and drive lowering
         // directly to exercise it.
         let src = r#"
-            struct [value] Pair { a: i64 }
+            pub struct [value] Pair { a: i64 }
             fn id<T>(x: T) -> T { x }
             pub fn bad(x: Arc<Pair>) -> Arc<Pair> { id(x) }
         "#;
@@ -1372,7 +1372,7 @@ transform [{
         // inline (non-pointer) type, which cannot sit behind a `nullable`. Lower
         // it to an explicit error rather than a malformed `nullable<record<…>>`.
         let src = r#"
-            struct [value] Pair { a: i64 }
+            pub struct [value] Pair { a: i64 }
             fn wrap(p: Pair) -> Nullable<Pair> { Nullable::NonNull{ p } }
         "#;
         let context = crate::testing::context();
@@ -1402,7 +1402,7 @@ transform [{
         // `[field]` construction (null + record-with-nullable-member layout) and
         // assignment together, all the way through the lowering pipeline.
         let src = r#"
-            struct [regional] TestCell { v: i64, next: [field] TestCell }
+            pub struct [regional] TestCell { v: i64, next: [field] TestCell }
             regional fn loop_back(seed: i64) -> i64 {
                 let c = TestCell { v: seed, next: Nullable::Null };
                 c->next := Nullable::NonNull{c};
@@ -1496,7 +1496,7 @@ transform [{
         // transfers ownership (no `dup`): `c` is simply dropped once after the
         // last one.
         let src = r#"
-            struct [regional] TestCell { v: i64 }
+            pub struct [regional] TestCell { v: i64 }
             regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             pub fn run(n: i64) -> i64 {
                 let c = regional { make(n) };
@@ -1540,7 +1540,7 @@ transform [{
         // pointer (the managed-rc path), then each callee consumes its own
         // reference. Passing `c` to `take` twice forces exactly this.
         let src = r#"
-            struct [regional] TestCell { v: i64 }
+            pub struct [regional] TestCell { v: i64 }
             regional fn make(x: i64) -> [flex] TestCell { TestCell { v: x } }
             fn take(c: TestCell) -> i64 { c.v }
             pub fn run(n: i64) -> i64 {
@@ -1654,7 +1654,7 @@ transform [{
         // the `Cons` arm projects/loads its fields out of the case-payload
         // reference, and each arm terminates with `reussir.scf.yield`.
         let src = r#"
-            enum List<T> { Nil, Cons(T, List<T>) }
+            pub enum List<T> { Nil, Cons(T, List<T>) }
             pub fn sum(list: List<i64>) -> i64 {
                 match list {
                     List::Nil => 0,
@@ -1681,7 +1681,7 @@ transform [{
         // expands during ConvertToSTD to an `scf.index_switch` and thence to LLVM
         // control flow, and the reference projections lower to GEP/load.
         let src = r#"
-            enum List<T> { Nil, Cons(T, List<T>) }
+            pub enum List<T> { Nil, Cons(T, List<T>) }
             pub fn sum(list: List<i64>) -> i64 {
                 match list {
                     List::Nil => 0,

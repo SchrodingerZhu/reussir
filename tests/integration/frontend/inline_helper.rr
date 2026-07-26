@@ -8,7 +8,7 @@
 // resolves no `func.call` sites and inlines nothing — while reussir-opt,
 // which registers all extensions, still inlines. Guard the rrc pipeline.
 
-enum Nat {
+pub enum Nat {
     Zero,
     Succ(Nat)
 }

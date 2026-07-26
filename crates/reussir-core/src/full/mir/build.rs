@@ -841,8 +841,8 @@ mod tests {
     fn roundtrips_arcs() {
         roundtrip(
             r#"
-            struct Data { value: i64 }
-            enum Opt<T> { None, Some(T) }
+            pub struct Data { value: i64 }
+            pub enum Opt<T> { None, Some(T) }
             fn generic<T>(a: T) -> T { a }
             pub fn use_arc(a: Arc<Data>) -> Arc<Data> {
                 generic(a)
@@ -900,7 +900,7 @@ mod tests {
         // Exercises `@Pair{..}` constructors, the `Pair` record type, and
         // `proj(.., 0)`.
         roundtrip(
-            "struct Pair { a: i32, b: i32 } \
+            "pub struct Pair { a: i32, b: i32 } \
              pub fn mk(x: i32, y: i32) -> Pair { Pair { a: x, b: y } } \
              pub fn fst(p: Pair) -> i32 { p.a }",
         );
@@ -911,7 +911,7 @@ mod tests {
         // Exercises a turbofished, capability-prefixed record type:
         // `[flex] TestCell::<i32>`.
         roundtrip(
-            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
+            "pub struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn id(c: [flex] TestCell<i32>) -> i32 { 0 }",
         );
     }
@@ -922,7 +922,7 @@ mod tests {
         // a pattern binding (`v1=scrut.0`), and a leaf body. Each variant prints
         // with its mangled payload symbol (`@_RNv… Name(..)`), which must re-parse.
         roundtrip(
-            "enum Opt { None, Some(i32) } \
+            "pub enum Opt { None, Some(i32) } \
              pub fn unwrap(o: Opt) -> i32 { \
              match o { Opt::None => 0, Opt::Some(x) => x } }",
         );
@@ -934,7 +934,7 @@ mod tests {
         // carry the type arguments on the record (`Opt<i32>::Some` →
         // `_RNvI…lE…`), and the `@sym Name(..)` form must survive print → parse.
         roundtrip(
-            "enum Opt<T> { None, Some(T) } \
+            "pub enum Opt<T> { None, Some(T) } \
              pub fn wrap(x: i32) -> Opt<i32> { Opt::Some{x} }",
         );
     }
@@ -965,7 +965,7 @@ mod tests {
     fn roundtrips_regional_generics() {
         // Mono'd regional record type + flex capability in a signature.
         roundtrip(
-            "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
+            "pub struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );

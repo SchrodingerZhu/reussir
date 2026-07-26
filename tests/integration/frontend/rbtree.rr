@@ -6,17 +6,17 @@
 // build a red-black tree by inserting keys [n-1 .. 0], then
 // expose an FFI that returns the in-order list [0 .. n-1].
 
-enum [value] Color {
+pub enum [value] Color {
     Red,
     Black
 }
 
-enum Tree {
+pub enum Tree {
     Branch(Color, Tree, i32, bool, Tree),
     Leaf
 }
 
-enum List {
+pub enum List {
     Nil,
     Cons(i32, List)
 }

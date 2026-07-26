@@ -335,6 +335,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Record {
                 def,
                 name,
+                // Session infrastructure, never part of a package interface;
+                // `Public` keeps it clear of the private-in-public check.
+                visibility: surface::Visibility::Public,
                 ty_params: vec![(ty_param, generic)],
                 kind: surface::RecordKind::StructKind,
                 default_cap: DefaultCap::Shared,

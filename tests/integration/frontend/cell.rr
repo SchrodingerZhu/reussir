@@ -11,11 +11,11 @@
 
 import core::intrinsic::cell;
 
-struct [shared] Boxed {
+pub struct [shared] Boxed {
     value: i64
 }
 
-struct [value] Holder {
+pub struct [value] Holder {
     cell: Cell<Boxed>
 }
 

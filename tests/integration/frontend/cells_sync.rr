@@ -9,7 +9,7 @@
 
 import core::intrinsic::cell;
 
-struct [shared] Data {
+pub struct [shared] Data {
     value: i64
 }
 

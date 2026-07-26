@@ -1,0 +1,38 @@
+// The private-in-public discipline: the declared surface of a `pub` item —
+// a `pub` function's signature, a `pub` record's fields — may only mention
+// `pub` records. Within a package nothing is hidden; the rule keeps the
+// package interface (`--emit rri`) shippable with every surface type
+// nameable at the foreign point of use.
+
+// RUN: %not %rrc %s --emit hir -o %t.hir 2>&1 | %FileCheck %s
+
+// A private record is fine on a private surface, and anywhere inside bodies.
+struct Hidden {
+    value: i64,
+}
+
+fn private_ok(h: Hidden) -> i64 {
+    h.value
+}
+
+// A `pub` record whose fields mention it is not.
+// CHECK: private record `Hidden` in the public interface of `pub` record `Leaky`
+pub struct Leaky {
+    inner: Hidden,
+}
+
+// Nor is a `pub` function whose signature does — even buried in a
+// structural former (`Nullable`, `Arc`, closures, arrays, cells).
+// CHECK: private record `Hidden` in the public interface of `pub fn expose`
+pub fn expose(n: Nullable<Hidden>) -> i64 {
+    match n {
+        Nullable::NonNull(h) => private_ok(h),
+        Nullable::Null => 0
+    }
+}
+
+// A `pub` generic calling private helpers over private records is allowed:
+// bodies are not surface. (This is exactly the shape the rri ships whole.)
+pub fn scale<T>(x: T) -> T {
+    x
+}

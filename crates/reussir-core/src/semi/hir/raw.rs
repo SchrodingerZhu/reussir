@@ -77,6 +77,7 @@ pub struct FfiPrelude {
 /// them) so the resumed HIR resolves ground record layouts identically.
 #[derive(Clone, Debug)]
 pub struct Record {
+    pub is_pub: bool,
     pub default_cap: DefaultCap,
     /// `#[repr(fixed)]`: uniform max-arm box sizing for an enum. Only ever set
     /// for enums (`struct` is always `false`).

@@ -188,6 +188,10 @@ impl<'a> Printer<'a> {
     }
 
     fn record(&self, r: &Record<'_>) -> Doc<'static> {
+        let vis = match r.visibility {
+            Visibility::Public => "pub ",
+            Visibility::Private => "",
+        };
         let cap = match r.default_cap {
             DefaultCap::Value => "[value] ",
             DefaultCap::Shared => "[shared] ",
@@ -200,7 +204,7 @@ impl<'a> Printer<'a> {
             RecordKind::EnumKind if r.repr_fixed => "enum fixed #",
             RecordKind::EnumKind => "enum #",
         };
-        let head = text(format!("{cap}{kind}{}", self.path(r.def)))
+        let head = text(format!("{vis}{cap}{kind}{}", self.path(r.def)))
             + self.generics_binder(&r.ty_params, &r.regional_generics)
             + self.item_loc(r.file, r.span);
         head + text(" { ") + self.record_body(r) + text(" };")

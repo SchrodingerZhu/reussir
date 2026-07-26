@@ -18,7 +18,7 @@
 
 import core::intrinsic::cell;
 
-enum Map {
+pub enum Map {
     Tip,
     Node(i64, i64, Map, Map)
 }
@@ -60,7 +60,7 @@ extern "C" trampoline "make_stats_ffi" = make_stats;
 // value (two pointers, no heap box) and the C driver consumes each handle
 // exactly once. Threading `keep` forward turns one reference into N + 1 with
 // no leak and no over-release.
-struct [value] Pair {
+pub struct [value] Pair {
     keep: Mutex<Arc<Map>>,
     extra: Mutex<Arc<Map>>
 }

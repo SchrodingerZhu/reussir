@@ -42,9 +42,10 @@ Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::
 ItemLoc: (u32, Option<raw::Span>) = "in" <f:"int"> <sp:Span?> => (raw::small_u32(&f), sp);
 
 RecordDecl: raw::Record = {
-    <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
+        is_pub: p.is_some(),
         default_cap,
         repr_fixed: false,
         kind: raw::RecordKind::Struct,
@@ -55,9 +56,10 @@ RecordDecl: raw::Record = {
         body: raw::RecordBody::Compound(ms),
     },
     // An opaque `#[ffi]` record: `[shared] struct #Vec<$0> { ffi "path" };`.
-    <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" "ffi" <rust:"quoted"> "}" ";"
     => raw::Record {
+        is_pub: p.is_some(),
         default_cap,
         repr_fixed: false,
         kind: raw::RecordKind::Struct,
@@ -68,9 +70,10 @@ RecordDecl: raw::Record = {
         body: raw::RecordBody::Opaque(unescape_debug_str(rust).into_owned()),
     },
     // Only an enum may carry the `fixed` marker (`#[repr(fixed)]`).
-    <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <p:"pub"?> <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <vs:Comma<Variant>> "}" ";"
     => raw::Record {
+        is_pub: p.is_some(),
         default_cap,
         repr_fixed: fixed.is_some(),
         kind: raw::RecordKind::Enum,

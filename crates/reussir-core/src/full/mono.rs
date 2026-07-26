@@ -1758,7 +1758,7 @@ mod tests {
         use crate::semi::hir::build::parse_program;
         use crate::semi::hir::print::Printer as HirPrinter;
 
-        let source = "struct Pair { a: i32, b: i32 } \
+        let source = "pub struct Pair { a: i32, b: i32 } \
                       fn id<T>(x: T) -> T { x } \
                       pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }";
         with_tcx(|tcx| {
@@ -1824,8 +1824,8 @@ mod tests {
         use crate::semi::hir::print::Printer as HirPrinter;
 
         let source = r#"
-            struct Pair { a: i32, b: i32 }
-            struct Point { x: i32, y: i32 }
+            pub struct Pair { a: i32, b: i32 }
+            pub struct Point { x: i32, y: i32 }
 
             fn id<T>(x: T) -> T { x }
             fn sum(p: Pair) -> i32 { p.a + p.b }
