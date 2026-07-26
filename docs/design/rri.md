@@ -169,6 +169,20 @@ Recorded here so the format cannot paint them into a corner:
 - `--extern name=path.rri`: header gate (format int + producer string +
   package name), `parse_program` into the shared `TyCtxt`, defs offered to
   resolution under visibility.
+- **Re-anchoring the file table** (debug-info fidelity): the rri's paths are
+  package-root-relative on purpose — byte-stability across checkouts is what
+  rene fingerprints — but a consumer that monomorphizes a loaded body emits
+  that instance's locations, and a bare `lib.rr` resolved against the
+  *consumer's* build context would detach the debug info to the wrong place.
+  This is DWARF's `comp_dir` split: relative names in the artifact, base
+  directory supplied by the environment. `--extern` therefore carries a
+  per-extern source root alongside the interface path (rene supplies it for
+  free — its path dependencies know each dep's package root); the loader
+  joins file-table entries onto it before building the consumer-side source
+  cache, so diagnostics and the DWARF of locally-emitted instances point at
+  the producing package's real sources. With no root given, entries load as
+  unfetchable virtual files — locations degrade to name-only, never resolve
+  against the consumer's cwd.
 - `MonoInput` gains the loaded functions/records/strings/ffi/transform
   tables; the one mono change is bodyless-ground handling (declaration, not
   definition root).
