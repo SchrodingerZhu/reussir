@@ -175,15 +175,18 @@ impl<'tcx> Elaborator<'_, 'tcx> {
     /// re-allocate unbounded: consumer-side obligations arise only from the
     /// consumer's own expressions.
     ///
-    /// TODO(#451, cross-package mono): this is a soundness gap for the
-    /// *builtin* traits (Num/Integral/FloatingPoint/PtrLike/Sync) — a local
-    /// call of `api<T: Num>` discharges the obligation at the call site, but
-    /// an imported prototype arrives unbounded, so the violation only
-    /// surfaces later inside monomorphization, far from the user's mistake.
-    /// Builtin bounds must join the interface format before cross-package
-    /// monomorphization ships. When they do: bounds serialize as qualified
-    /// *paths* (the shape user-defined traits will need), not bare names,
-    /// and the format stays at version 1 — nothing is released yet.
+    /// This is safe for the builtin traits: shipped bodies are *elaborated*
+    /// HIR (trait machinery consumed at the producer — `x + x` under
+    /// `T : Num` ships as `Arith`), so a bad instantiation cannot
+    /// miscompile; it grounds into an operation monomorphization rejects
+    /// with a spanned report. What is lost is only diagnostic placement —
+    /// the error fires inside the imported body instead of at the
+    /// consumer's call site.
+    ///
+    /// TODO(#451, trait system): revisit when real traits define what a
+    /// bound is. When bounds join the interface, they serialize as
+    /// qualified *paths* (the shape user-defined traits need), not bare
+    /// names, and the format stays at version 1 — nothing is released yet.
     fn remap_generics(
         &mut self,
         binder: &[(TokenKey, GenericId)],
