@@ -18,6 +18,9 @@ fn demo_manifest() -> PathBuf {
 
 /// A scratch package the test may mutate: a manifest plus a two-file source
 /// graph (`src/lib.rr` declaring `mod math;`). Returns the manifest path.
+/// (Unix-gated with its callers, the fake-toolchain tests; on Windows it
+/// would be dead code under `-D warnings`.)
+#[cfg(unix)]
 fn package(dir: &Path, name: &str) -> PathBuf {
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -35,6 +38,7 @@ fn package(dir: &Path, name: &str) -> PathBuf {
 }
 
 /// (Re)write the scratch package's manifest.
+#[cfg(unix)]
 fn write_manifest(dir: &Path, name: &str, version: &str) -> PathBuf {
     let path = dir.join("rene.ncl");
     std::fs::write(
@@ -169,17 +173,21 @@ impl Fakes {
             format!(
                 "case \"$1\" in\n\
                  --version) echo 'rustc 9.9.9 (fake)';;\n\
+                 -vV) printf 'rustc 9.9.9 (fake)\\nhost: x86_64-unknown-fake\\n';;\n\
                  --print) echo '{}';;\n\
                  esac\n",
                 libdir.display()
             ),
         );
-        // Counts invocations, fabricates the artifacts, and reports them the
-        // way `--message-format=json` does. Runs with cwd = the unpacked
-        // source dir.
+        // Counts invocations, records the linker rene pinned through cargo's
+        // target-specific environment (keyed by the fake host triple above),
+        // fabricates the artifacts, and reports them the way
+        // `--message-format=json` does. Runs with cwd = the unpacked source
+        // dir.
         let cargo = script(
             "fake-cargo",
             "echo run >> \"$(dirname \"$0\")/cargo-runs\"\n\
+             echo \"linker=$CARGO_TARGET_X86_64_UNKNOWN_FAKE_LINKER\" >> \"$(dirname \"$0\")/cargo-env\"\n\
              mkdir -p target/release/deps\n\
              rlib=\"$PWD/target/release/deps/libreussir_rt-0000.rlib\"\n\
              staticlib=\"$PWD/target/release/libreussir_rt.a\"\n\
@@ -636,6 +644,42 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     let rebuilt = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(rebuilt.status.success(), "stderr: {}", stderr(&rebuilt));
     assert_eq!(fakes.compiles().len(), 6, "the edit must rebuild");
+}
+
+/// `--linker` pins one linker end to end: cargo's target-specific
+/// environment for the runtime bake, and `rrc --linker` for the driver-level
+/// links — the Windows story, where rustc's own discovery under a vcvars
+/// shell resolves coreutils' `link` instead of MSVC's.
+#[cfg(unix)]
+#[test]
+fn build_pins_the_linker_through_the_bake_and_the_compiles() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    package(&tmp, "demo");
+    let manifest = write_targets_manifest(&tmp);
+    let fakes = Fakes::new(&tmp);
+    // Any existing file serves as "the linker" — nothing executes it here.
+    let linker = fakes.rustc.display().to_string();
+
+    let out = fakes.rene(&["build", "--linker", &linker], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    // The bake saw it through CARGO_TARGET_<HOST>_LINKER…
+    let cargo_env = std::fs::read_to_string(tmp.join("cargo-env")).unwrap();
+    assert_eq!(cargo_env.trim(), format!("linker={linker}"));
+
+    // …and every linked compile got `--linker`; the archive did not.
+    let compiles = fakes.compiles();
+    assert_eq!(compiles.len(), 3, "{compiles:#?}");
+    for line in &compiles {
+        let linked = !line.contains("--emit staticlib");
+        assert_eq!(
+            line.contains(&format!("--linker {linker}")),
+            linked,
+            "{line}"
+        );
+    }
 }
 
 /// `--target` narrows the build; unknown target and profile names are

@@ -1,30 +1,30 @@
-// UNSUPPORTED: windows
 // `rene build`, end to end: the manifest declares the targets, the profile
 // picks the knobs, and rene drives the real `rrc` — package scan, runtime
 // bake, compile, link — to a running executable. The runtime is baked with
 // the host toolchain inside the test's build directory: slow once, then
 // shared by every RUN line below through the one `--build-dir`.
 //
-// Windows-gated off for now: the bake runs cargo → rustc → link.exe inside
-// lit's environment, where rustc's linker discovery finds Git-for-Windows'
-// coreutils `link` (the very thing `rrc --linker` pins for the driver-level
-// links, which codegen/executable.rr covers on Windows). Teaching the bake
-// the same pinning is a follow-up.
+// `%rrc_linker` pins MSVC's link.exe on Windows and is empty elsewhere.
+// rene threads it end to end: through cargo's target-specific environment
+// for the bake's own links, and as `rrc --linker` for the driver-level ones
+// — both places where rustc's discovery, under a vcvars shell whose PATH
+// carries Git-for-Windows' coreutils `link`, would resolve the wrong tool.
 
-// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir > %t.listing
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir %rrc_linker > %t.listing
 // RUN: %FileCheck %s --check-prefix=LISTING < %t.listing
 
 // Stdout is the artifact listing: the one declared target, under the
-// default profile's directory.
+// default profile's directory. (Single-line-ness is pinned by the exact
+// stdout assertions in crates/rene/tests/cli.rs; a `NOT: {{.}}` here trips
+// over the CRLF line endings Windows' python filecheck keeps.)
 // LISTING: {{[/\\]}}dev{{[/\\]}}demo
-// LISTING-NOT: {{.}}
 
 // The built executable runs.
 // RUN: %t.bdir/dev/demo%exe_ext
 
 // An unchanged package rebuilds nothing — the product record and the source
 // graph both hold — and the listing is the same artifact.
-// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir 2>%t.fresh.log > %t.fresh.listing
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir %rrc_linker 2>%t.fresh.log > %t.fresh.listing
 // RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
 // RUN: diff %t.listing %t.fresh.listing
 
@@ -33,7 +33,7 @@
 // A profile builds into its own directory with its own knobs (`release`
 // here also refines the built-in with the manifest's `codegen_units = 2`,
 // exercising the multi-unit link under rene).
-// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile release | %FileCheck %s --check-prefix=RELEASE
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
 // RUN: %t.bdir/release/demo%exe_ext
 
 // RELEASE: {{[/\\]}}release{{[/\\]}}demo

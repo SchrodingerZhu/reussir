@@ -70,6 +70,9 @@ struct Toolchain {
     cargo: PathBuf,
     rustc: PathBuf,
     version: String,
+    /// The host triple `rustc -vV` reports — the target the bake builds for,
+    /// and so the key of cargo's target-specific configuration.
+    host: String,
     rust_libdir: PathBuf,
 }
 
@@ -86,12 +89,29 @@ impl Toolchain {
         };
         let cargo = pick("REUSSIR_CARGO", "CARGO", "cargo");
         let rustc = pick("REUSSIR_RUSTC", "RUSTC", "rustc");
-        let version = capture(&rustc, &["--version"])?;
+        let verbose_version = capture(&rustc, &["-vV"])?;
+        let version = verbose_version
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let host = verbose_version
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .ok_or_else(|| {
+                format!(
+                    "`{} -vV` reported no `host:` line:\n{verbose_version}",
+                    rustc.display()
+                )
+            })?
+            .trim()
+            .to_owned();
         let rust_libdir = PathBuf::from(capture(&rustc, &["--print", "target-libdir"])?);
         Ok(Toolchain {
             cargo,
             rustc,
             version,
+            host,
             rust_libdir,
         })
     }
@@ -117,7 +137,14 @@ fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
 /// the bundle and toolchain are unchanged. The caller holds the build
 /// directory's lock (it *is* the open [`BuildDir`]), so no other instance can
 /// race the extract/build/record sequence.
-pub fn prepare(dir: &BuildDir) -> Result<RtArtifacts, String> {
+///
+/// `linker`, when given, is pinned for the bake's own links (the runtime
+/// dylib) — the same pinning `rrc --linker` gives the driver-level links,
+/// needed where rustc's discovery resolves the wrong tool (a vcvars shell
+/// whose PATH carries a coreutils `link` ahead of MSVC's). It is not part of
+/// the bake's freshness: whichever working linker linked the runtime, the
+/// artifacts are equivalent.
+pub fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifacts, String> {
     let toolchain = Toolchain::resolve()?;
     let hash = bundle_hash();
 
@@ -141,7 +168,7 @@ pub fn prepare(dir: &BuildDir) -> Result<RtArtifacts, String> {
         rustc = %toolchain.version,
         "building reussir-rt (once per toolchain or runtime change)"
     );
-    let (rlib, staticlib) = cargo_build(&toolchain, &src_dir)?;
+    let (rlib, staticlib) = cargo_build(&toolchain, &src_dir, linker)?;
 
     // Cargo may report the uplifted rlib (`target/release/lib….rlib`) rather
     // than the hashed copy in `deps/`; polyffi's `rustc -L` needs `deps/`,
@@ -204,17 +231,32 @@ fn fresh_bake(
 /// Run `cargo build --release` in `src_dir`, following the JSON message
 /// stream for progress and artifact locations (no directory guessing).
 /// Returns the runtime's (rlib, staticlib).
-fn cargo_build(toolchain: &Toolchain, src_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
-    let mut child = Command::new(&toolchain.cargo)
-        .args([
-            "build",
-            "--release",
-            "--message-format=json-render-diagnostics",
-        ])
-        .current_dir(src_dir)
-        // Pin the rustc cargo delegates to, so the recorded version and
-        // libdir describe the compiler that actually built the artifacts.
-        .env("RUSTC", &toolchain.rustc)
+fn cargo_build(
+    toolchain: &Toolchain,
+    src_dir: &Path,
+    linker: Option<&Path>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let mut cmd = Command::new(&toolchain.cargo);
+    cmd.args([
+        "build",
+        "--release",
+        "--message-format=json-render-diagnostics",
+    ])
+    .current_dir(src_dir)
+    // Pin the rustc cargo delegates to, so the recorded version and
+    // libdir describe the compiler that actually built the artifacts.
+    .env("RUSTC", &toolchain.rustc);
+    if let Some(linker) = linker {
+        // Cargo's target-specific linker configuration, as an environment
+        // variable: `CARGO_TARGET_<HOST>_LINKER`. Unlike RUSTFLAGS this
+        // composes with whatever the user's environment already carries.
+        let key = format!(
+            "CARGO_TARGET_{}_LINKER",
+            toolchain.host.to_uppercase().replace('-', "_")
+        );
+        cmd.env(key, linker);
+    }
+    let mut child = cmd
         .stdout(Stdio::piped())
         // Diagnostics and cargo's own progress stream to the user unchanged.
         .stderr(Stdio::inherit())

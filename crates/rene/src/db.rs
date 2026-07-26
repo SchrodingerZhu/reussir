@@ -57,9 +57,8 @@ impl std::error::Error for DbError {}
 impl BuildDir {
     /// Create/open the build directory rooted at `root` and take its lock.
     pub fn open(root: &Path) -> Result<Self, DbError> {
-        std::fs::create_dir_all(root).map_err(|e| {
-            DbError::Other(format!("cannot create `{}`: {e}", root.display()))
-        })?;
+        std::fs::create_dir_all(root)
+            .map_err(|e| DbError::Other(format!("cannot create `{}`: {e}", root.display())))?;
         let path = root.join(DB_FILE);
         let db = Database::create(&path).map_err(|e| match e {
             DatabaseError::DatabaseAlreadyOpen => DbError::InUse(path.clone()),
@@ -219,9 +218,8 @@ pub fn clean(root: &Path) -> Result<CleanOutcome, DbError> {
             Err(e) => tracing::warn!("ignoring unreadable `{}`: {e}", path.display()),
         }
     }
-    std::fs::remove_dir_all(root).map_err(|e| {
-        DbError::Other(format!("cannot remove `{}`: {e}", root.display()))
-    })?;
+    std::fs::remove_dir_all(root)
+        .map_err(|e| DbError::Other(format!("cannot remove `{}`: {e}", root.display())))?;
     Ok(CleanOutcome::Removed)
 }
 
@@ -244,10 +242,7 @@ mod tests {
     fn the_database_lock_is_exclusive() {
         let tmp = tempfile::tempdir().unwrap();
         let held = BuildDir::open(tmp.path()).unwrap();
-        assert!(matches!(
-            BuildDir::open(tmp.path()),
-            Err(DbError::InUse(_))
-        ));
+        assert!(matches!(BuildDir::open(tmp.path()), Err(DbError::InUse(_))));
         drop(held);
         BuildDir::open(tmp.path()).unwrap();
     }
