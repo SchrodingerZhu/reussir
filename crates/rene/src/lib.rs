@@ -15,6 +15,7 @@ pub mod deps;
 pub mod fresh;
 pub mod manifest;
 pub mod plan;
+pub mod pool;
 pub mod resolve;
 pub mod rt;
 pub mod tables;

@@ -20,7 +20,7 @@ blake3.workspace = true
 # The async runtime: completion-based (io_uring/IOCP), driving the child
 # processes (rrc, cargo, rustc) and the source-digest reads. 0.18 pinned:
 # 0.19's executor needs a `cfg_select!` newer than the pinned toolchain.
-compio = { version = "0.18", features = ["fs", "io", "macros", "process"] }
+compio = { version = "0.18", features = ["dispatcher", "fs", "io", "macros", "process", "time"] }
 # `try_join_all` for the concurrent stages (digests, target compiles).
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # Evaluates the `rene.ncl` manifest; the manifest is a full Nickel program
@@ -46,6 +46,9 @@ tracing.workspace = true
 # stdout — stdout carries machine-readable output like the libdir listing).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zstd.workspace = true
+# The `-j` admission semaphore: process concurrency is bounded separately
+# from the pool's worker threads (see `pool`).
+async-lock = "3"
 
 [build-dependencies]
 # Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its

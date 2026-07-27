@@ -82,6 +82,11 @@ struct BuildArgs {
     /// the wrong tool.
     #[arg(long)]
     linker: Option<PathBuf>,
+
+    /// How many compile processes may run at once (default: the machine's
+    /// available parallelism).
+    #[arg(short = 'j', long = "jobs")]
+    jobs: Option<std::num::NonZeroUsize>,
 }
 
 /// Delete the build directory, unless another rene is using it.
@@ -302,6 +307,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
                     )
                 })
                 .unwrap_or_default(),
+            jobs: args.jobs,
         },
     )
     .await?;
