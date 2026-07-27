@@ -400,6 +400,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
         }
         if args.commands {
             let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+            let bake = fresh::recorded_bake(held.as_ref())?;
             let states = fresh::states(
                 &graph,
                 &fresh::Context {
@@ -417,6 +418,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                     linker: None,
                     build_dir: &root,
                 },
+                bake.as_ref(),
                 Some(&states),
             );
         }

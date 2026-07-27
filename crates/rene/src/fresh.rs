@@ -127,16 +127,21 @@ pub struct Context<'a> {
     pub build_dir: &'a Path,
 }
 
+/// The recorded runtime bake, if any — the toolchain identity freshness
+/// compares against, and the real paths the plan dump expands its
+/// placeholders with.
+pub fn recorded_bake(dir: Option<&BuildDir>) -> Result<Option<RtArtifacts>, String> {
+    let Some(dir) = dir else { return Ok(None) };
+    Ok(dir
+        .status(tables::RT_ARTIFACTS_KEY)
+        .map_err(|e| e.to_string())?
+        .and_then(|record| serde_json::from_str(&record).ok()))
+}
+
 /// The freshness of every node of the graph, keyed by package name.
 pub fn states(graph: &Graph, ctx: &Context<'_>) -> Result<BTreeMap<String, State>, String> {
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
-    let bake: Option<RtArtifacts> = match ctx.dir {
-        Some(dir) => dir
-            .status(tables::RT_ARTIFACTS_KEY)
-            .map_err(|e| e.to_string())?
-            .and_then(|record| serde_json::from_str(&record).ok()),
-        None => None,
-    };
+    let bake = recorded_bake(ctx.dir)?;
     let cones = plan::transitive_deps(graph);
     let mut states: BTreeMap<String, State> = BTreeMap::new();
     for name in plan::topological(graph) {

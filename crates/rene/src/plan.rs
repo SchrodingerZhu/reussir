@@ -10,8 +10,10 @@
 //! Nothing here executes; the dump is the orchestration contract — lit pins
 //! it, and the cross-package build implements it.
 //!
-//! Paths the runtime bake decides at build time (the pinned rustc, the
-//! polyffi library directories) appear as `<placeholders>`, keeping the plan
+//! Paths the runtime bake decides (the pinned rustc, the polyffi library
+//! directories) expand from the recorded bake when one exists — the dump is
+//! then directly executable — and appear as `<placeholders>` in a build
+//! directory nothing was ever baked in, keeping the plan renderable and
 //! deterministic without baking.
 
 use std::collections::BTreeMap;
@@ -21,6 +23,7 @@ use crate::compile;
 use crate::fresh;
 use crate::manifest::{Profile, TargetKind};
 use crate::resolve::Graph;
+use crate::rt::RtArtifacts;
 
 /// What the plan is rendered against.
 pub struct Options<'a> {
@@ -42,6 +45,7 @@ const BAKED_RUSTC: &str = "<baked-rustc>";
 pub fn render(
     graph: &Graph,
     opts: &Options,
+    bake: Option<&RtArtifacts>,
     states: Option<&BTreeMap<String, fresh::State>>,
 ) -> serde_json::Value {
     let profile_dir = opts.build_dir.join(opts.profile_name);
@@ -76,7 +80,7 @@ pub fn render(
                         ));
                         let mut argv = package_args(node, &out, decl.kind.emit());
                         argv.extend(compile::profile_flags(opts.profile, decl.kind, opts.linker));
-                        argv.extend(polyffi_args());
+                        argv.extend(polyffi_args(bake));
                         argv.extend(externs.iter().cloned());
                         if decl.kind.is_linked() {
                             // The dependency archives, `--link-lib` in
@@ -106,7 +110,7 @@ pub fn render(
                     TargetKind::Staticlib,
                     opts.linker,
                 ));
-                staticlib.extend(polyffi_args());
+                staticlib.extend(polyffi_args(bake));
                 staticlib.extend(externs.iter().cloned());
                 vec![
                     serde_json::json!({ "emit": "rri", "argv": interface }),
@@ -127,9 +131,12 @@ pub fn render(
         })
         .collect();
 
+    let rustc = bake.map_or(BAKED_RUSTC.to_owned(), |bake| {
+        bake.rustc.display().to_string()
+    });
     serde_json::json!({
         "profile": opts.profile_name,
-        "env": { "REUSSIR_RUSTC": BAKED_RUSTC },
+        "env": { "REUSSIR_RUSTC": rustc },
         "nodes": nodes,
     })
 }
@@ -167,12 +174,19 @@ fn extern_args(graph: &Graph, deps: &[String], deps_dir: &Path) -> Vec<String> {
     args
 }
 
-fn polyffi_args() -> Vec<String> {
+fn polyffi_args(bake: Option<&RtArtifacts>) -> Vec<String> {
+    let (rust_libdir, rt_deps) = match bake {
+        Some(bake) => (
+            bake.rust_libdir.display().to_string(),
+            bake.deps_dir.display().to_string(),
+        ),
+        None => (RUST_LIBDIR.to_owned(), RT_DEPS_DIR.to_owned()),
+    };
     vec![
         "--polyffi-libdir".to_owned(),
-        RUST_LIBDIR.to_owned(),
+        rust_libdir,
         "--polyffi-libdir".to_owned(),
-        RT_DEPS_DIR.to_owned(),
+        rt_deps,
     ]
 }
 
