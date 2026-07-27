@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::compile;
+use crate::fresh;
 use crate::manifest::{Profile, TargetKind};
 use crate::resolve::Graph;
 
@@ -35,8 +36,13 @@ const RT_DEPS_DIR: &str = "<rt-deps-dir>";
 const BAKED_RUSTC: &str = "<baked-rustc>";
 
 /// Render the plan as JSON: `nodes` in dependency-first order (each node's
-/// dependencies precede it), each with the commands that build it.
-pub fn render(graph: &Graph, opts: &Options) -> serde_json::Value {
+/// dependencies precede it), each with the commands that build it and —
+/// when the caller ran the freshness check — its `state`/`reason`.
+pub fn render(
+    graph: &Graph,
+    opts: &Options,
+    states: Option<&BTreeMap<String, fresh::State>>,
+) -> serde_json::Value {
     let profile_dir = opts.build_dir.join(opts.profile_name);
     let deps_dir = profile_dir.join("deps");
     let order = topological(graph);
@@ -99,12 +105,17 @@ pub fn render(graph: &Graph, opts: &Options) -> serde_json::Value {
                     serde_json::json!({ "emit": "staticlib", "argv": staticlib }),
                 ]
             };
-            serde_json::json!({
+            let mut rendered = serde_json::json!({
                 "package": name,
                 "version": node.version.to_string(),
                 "dir": node.dir.display().to_string(),
                 "commands": commands,
-            })
+            });
+            if let Some(state) = states.and_then(|states| states.get(name.as_str())) {
+                rendered["state"] = state.tag().into();
+                rendered["reason"] = state.to_string().into();
+            }
+            rendered
         })
         .collect();
 
@@ -157,13 +168,13 @@ fn polyffi_args() -> Vec<String> {
     ]
 }
 
-fn archive_path(deps_dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn archive_path(deps_dir: &Path, name: &str) -> PathBuf {
     deps_dir.join(compile::artifact_file(name, TargetKind::Staticlib, None))
 }
 
 /// Dependency-first order: every node appears after all of its dependencies
 /// (post-order DFS from the root, name-sorted siblings from the BTreeMap).
-fn topological(graph: &Graph) -> Vec<String> {
+pub(crate) fn topological(graph: &Graph) -> Vec<String> {
     let mut order = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     fn visit(
@@ -188,7 +199,7 @@ fn topological(graph: &Graph) -> Vec<String> {
 /// each compile: a dependency's interface may ship generic bodies that reach
 /// its own dependencies, so the consumer needs the full downward cone in
 /// scope.
-fn transitive_deps(graph: &Graph) -> BTreeMap<String, Vec<String>> {
+pub(crate) fn transitive_deps(graph: &Graph) -> BTreeMap<String, Vec<String>> {
     let mut memo: BTreeMap<String, Vec<String>> = BTreeMap::new();
     fn cone(graph: &Graph, name: &str, memo: &mut BTreeMap<String, Vec<String>>) -> Vec<String> {
         if let Some(done) = memo.get(name) {

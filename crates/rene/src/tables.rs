@@ -54,6 +54,21 @@ pub fn product_key(profile: &str, target: &str) -> String {
     format!("product.{profile}.{target}")
 }
 
+/// The status key of one built dependency's record, a JSON
+/// [`crate::fresh::DepRecord`]: the components its freshness is judged
+/// from, and where its interface and archive landed.
+pub fn dep_product_key(profile: &str, name: &str) -> String {
+    format!("product.{profile}.dep.{name}")
+}
+
+/// The status key of one dependency's recorded source graph, a JSON
+/// `Vec<`[`crate::deps::SourceFile`]`>` — the per-dependency counterpart of
+/// the root's [`SOURCES`] table, compact because dependencies are read-only
+/// inputs scanned wholesale.
+pub fn dep_sources_key(name: &str) -> String {
+    format!("sources.dep.{name}")
+}
+
 /// Teardown marker (JSON `true`), set by `clean` while it still holds the
 /// lock, right before it deletes the directory. A database carrying it is a
 /// directory whose deletion is in flight or was interrupted: `build` refuses

@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, manifest, plan, resolve, rt};
+use rene::{compile, deps, fresh, manifest, plan, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -240,13 +240,16 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // transitive path graph and let pubgrub verify the constraints hold
     // together (each package exists in exactly one version today, so this is
     // a feasibility check; see `resolve`).
-    if !loaded.manifest.dependencies.is_empty() {
+    let graph = if loaded.manifest.dependencies.is_empty() {
+        None
+    } else {
         let graph = resolve::load_graph(&loaded)?;
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
             tracing::info!(package = %name, %version, "resolved");
         }
-    }
+        Some(graph)
+    };
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
@@ -287,6 +290,18 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
             profile,
             targets: args.targets.clone(),
             linker: args.linker.clone(),
+            // The cone's artifact digests enter the fingerprint, so a
+            // product consuming a changed upstream artifact re-fingerprints
+            // (an absent one digests to a sentinel — see `fresh`).
+            upstream: graph
+                .as_ref()
+                .map(|graph| {
+                    rene::fresh::root_upstream_digests(
+                        graph,
+                        &root.join(&args.profile).join("deps"),
+                    )
+                })
+                .unwrap_or_default(),
         },
     )
     .await?;
@@ -310,15 +325,18 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
     let root = resolve_build_dir(location)?;
     let hash = deps::config_hash(&loaded.dump);
 
-    let (state, files) = if frozen {
+    // The handle is held for the section rendering below: freshness reads
+    // the same records a build would.
+    let (state, files, held) = if frozen {
         match BuildDir::open_existing(&root).map_err(|e| e.to_string())? {
-            Some(dir) => (
-                deps::staleness(&dir, &hash)?,
-                dir.sources().map_err(|e| e.to_string())?,
-            ),
+            Some(dir) => {
+                let state = deps::staleness(&dir, &hash)?;
+                let files = dir.sources().map_err(|e| e.to_string())?;
+                (state, files, Some(dir))
+            }
             // No build directory at all: nothing has been recorded, and
             // `--frozen` must not create one to say so.
-            None => (deps::Staleness::Uninitialized, Vec::new()),
+            None => (deps::Staleness::Uninitialized, Vec::new(), None),
         }
     } else {
         let dir = BuildDir::open(&root).map_err(|e| e.to_string())?;
@@ -329,7 +347,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
         // After a refresh the record is by construction current; report that
         // rather than the reason it was rebuilt (which the log already
         // carries).
-        (deps::Staleness::UpToDate, prepared.files)
+        (deps::Staleness::UpToDate, prepared.files, Some(dir))
     };
 
     let mut report = serde_json::json!({
@@ -382,6 +400,15 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
         }
         if args.commands {
             let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+            let states = fresh::states(
+                &graph,
+                &fresh::Context {
+                    dir: held.as_ref(),
+                    profile_name: &args.profile,
+                    profile: &profile,
+                    build_dir: &root,
+                },
+            )?;
             report["plan"] = plan::render(
                 &graph,
                 &plan::Options {
@@ -390,6 +417,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                     linker: None,
                     build_dir: &root,
                 },
+                Some(&states),
             );
         }
     }

@@ -35,6 +35,10 @@ pub struct Options {
     pub targets: Vec<String>,
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<PathBuf>,
+    /// The dependency cone's artifact digests
+    /// ([`crate::fresh::upstream_digests`]) — part of the fingerprint, so a
+    /// changed upstream artifact re-fingerprints every product consuming it.
+    pub upstream: std::collections::BTreeMap<String, String>,
 }
 
 /// A built (or reused) product.
@@ -84,7 +88,7 @@ pub async fn build(
     let out_dir = dir.root().join(&opts.profile_name);
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create `{}`: {e}", out_dir.display()))?;
-    let fingerprint = fingerprint(loaded, sources, rt, opts);
+    let fingerprint = fingerprint(loaded, &sources.files, rt, opts);
 
     // Partition into current and stale first, so the stale ones can run
     // concurrently while the listing keeps the declared order.
@@ -259,13 +263,22 @@ pub(crate) fn profile_flags(
 /// source file's content digest, the toolchain, and the CLI linker override.
 /// The source-graph paths are covered through the config hash + digests; the
 /// artifact's own existence is checked separately.
-fn fingerprint(loaded: &Loaded, sources: &Prepared, rt: &RtArtifacts, opts: &Options) -> String {
+pub(crate) fn fingerprint(
+    loaded: &Loaded,
+    files: &[deps::SourceFile],
+    rt: &RtArtifacts,
+    opts: &Options,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(deps::config_hash(&loaded.dump).as_bytes());
     hasher.update(opts.profile_name.as_bytes());
-    for file in &sources.files {
+    for file in files {
         hasher.update(file.path.as_bytes());
         hasher.update(&file.record.hash);
+    }
+    for (name, digest) in &opts.upstream {
+        hasher.update(name.as_bytes());
+        hasher.update(digest.as_bytes());
     }
     hasher.update(rt.rustc_version.as_bytes());
     hasher.update(rt.staticlib.display().to_string().as_bytes());
@@ -276,7 +289,7 @@ fn fingerprint(loaded: &Loaded, sources: &Prepared, rt: &RtArtifacts, opts: &Opt
 }
 
 /// Is the recorded build of this product still the one this build would do?
-fn product_is_current(
+pub(crate) fn product_is_current(
     dir: &BuildDir,
     key: &str,
     fingerprint: &str,

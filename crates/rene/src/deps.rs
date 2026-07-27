@@ -43,7 +43,7 @@ pub fn split_module(module: &str) -> Vec<String> {
 
 /// What is recorded for one file of the source graph (see
 /// [`tables::SOURCES`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceRecord {
     /// The file's module path, package name first (`rrc --scan-deps`).
     pub module: Vec<String>,
@@ -57,7 +57,7 @@ pub struct SourceRecord {
 }
 
 /// One file of the graph: its path and its record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceFile {
     pub path: String,
     pub record: SourceRecord,
@@ -171,27 +171,28 @@ pub fn staleness(dir: &BuildDir, config_hash: &str) -> Result<Staleness, String>
     if recorded_config != config_hash {
         return Ok(Staleness::ConfigChanged);
     }
-    for file in files {
-        let Ok(meta) = std::fs::metadata(&file.path) else {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Missing,
-            });
-        };
-        if mtime_ns(&meta) != file.record.mtime_ns {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Mtime,
-            });
-        }
-        if meta.len() != file.record.size {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Size,
-            });
-        }
+    if let Some((path, change)) = changed_file(&files) {
+        return Ok(Staleness::FileChanged { path, change });
     }
     Ok(Staleness::UpToDate)
+}
+
+/// The first recorded file that no longer matches the disk — missing, or a
+/// different mtime or size. Reads no contents (same contract as
+/// [`staleness`]); shared with the per-dependency freshness check.
+pub fn changed_file(files: &[SourceFile]) -> Option<(String, FileChange)> {
+    for file in files {
+        let Ok(meta) = std::fs::metadata(&file.path) else {
+            return Some((file.path.clone(), FileChange::Missing));
+        };
+        if mtime_ns(&meta) != file.record.mtime_ns {
+            return Some((file.path.clone(), FileChange::Mtime));
+        }
+        if meta.len() != file.record.size {
+            return Some((file.path.clone(), FileChange::Size));
+        }
+    }
+    None
 }
 
 /// The outcome of [`prepare`]: the graph in force, and how it was obtained.

@@ -3,8 +3,10 @@
 // its declared version; `--graph` dumps the nodes, constraints, and edges;
 // `--commands` renders the build plan — for every package in
 // dependency-first order, the `rrc` invocations the cross-package build will
-// run, with bake-decided paths as `<placeholders>`. All of it is pure
-// manifest work: `--frozen` keeps it free of rrc, the bake, and any writes.
+// run, with bake-decided paths as `<placeholders>`, and each node's
+// freshness `state` (all `uninitialized` here: nothing was ever built). All
+// of it is pure manifest work: `--frozen` keeps it free of rrc, the bake,
+// and any writes.
 //
 // The fixture graph: app 0.1.0 → util ^1.2 (at 1.2.9) → logs 0.3 (at
 // 0.3.4), with app also depending on logs unconstrained.
@@ -43,7 +45,9 @@
 // CHECK: "emit": "rri"
 // CHECK: "emit": "staticlib"
 // CHECK: "package": "logs"
-// CHECK: "version": "0.3.4"
+// CHECK-NEXT: "reason": "never built",
+// CHECK-NEXT: "state": "uninitialized",
+// CHECK-NEXT: "version": "0.3.4"
 
 // util's compiles see logs' interface and sources, and the profile knobs
 // with the bake-decided paths as placeholders.
@@ -85,6 +89,8 @@
 // CHECK-NEXT: "dynlib",
 // CHECK: "target": "shared"
 // CHECK: "package": "app"
+// CHECK-NEXT: "reason": "never built",
+// CHECK-NEXT: "state": "uninitialized",
 
 // The solved pins, one per package (`resolution` sorts after `plan`).
 // CHECK: "resolution": {
