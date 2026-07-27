@@ -81,6 +81,7 @@ config.substitutions.append((r'%llvm-ar', sh_path(config.llvm_ar_path)))
 config.substitutions.append((r'%llvm-nm', sh_path(config.llvm_nm_path)))
 config.substitutions.append((r'%llvm-bcanalyzer', sh_path(config.llvm_bcanalyzer_path)))
 config.substitutions.append((r'%llvm-dis', sh_path(config.llvm_dis_path)))
+config.substitutions.append((r'%llvm-readobj', sh_path(config.llvm_readobj_path)))
 # The debug-info rescan suite (debuginfo/): %lldb is a batch, init-free lldb
 # with the Reussir data formatters (tool/lldb/reussir_formatters.py)
 # preloaded, so tests can drive a compiled executable and FileCheck the

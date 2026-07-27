@@ -41,10 +41,14 @@ pub fn scale<T : Num>(x: T) -> i64 {
 
 extern "C" trampoline "entry_ffi" = entry;
 
-// The generic instance is mergeable across compilation units when the
-// object format can carry the required COMDAT; COFF stays strong for now.
+// The generic instance is mergeable across compilation units on every
+// format. ELF and Mach-O bind the weak symbol natively; COFF has no weak
+// binding, so there the backend additionally wraps the definition in a
+// `comdat any` section keyed by its own symbol (see coff_comdat.rr for the
+// cross-triple coverage of that seam).
 // CHECK-DEDUP-DAG: define weak_odr i64 @_RIC6doublexE(i64 %0)
-// CHECK-COFF-DAG: define i64 @_RIC6doublexE(i64 %0)
+// CHECK-COFF-DAG: $_RIC6doublexE = comdat any
+// CHECK-COFF-DAG: define weak_odr i64 @_RIC6doublexE(i64 %0) comdat
 // The private helper is internal: only pub *generic* bodies escape the
 // package, and `helper` is reachable only from the ground `entry`.
 // CHECK-DAG: define internal i64 @_RC6helper(i64 %0)
