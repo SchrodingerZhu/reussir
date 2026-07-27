@@ -1,0 +1,85 @@
+// Summary statistics over whatever numbers arrive on stdin: pull the
+// samples out of `vecio`'s opaque vector into a cons-list, merge-sort it
+// with a closure comparator, and report count, extremes, mean, and median,
+// then a four-bucket histogram of the value range. Bucketing is threshold
+// comparison against the sorted list's ends — no casts, just the ordered
+// data the sort already paid for.
+
+mod sort;
+
+fn drain(v: vecio::Vec<f64>, i: i64, n: i64) -> sort::Samples {
+    if i >= n {
+        sort::Samples::Nil
+    } else {
+        sort::Samples::Cons{vecio::at(v, i), drain(v, i + 1, n)}
+    }
+}
+
+// Which of the four equal-width buckets between `lo` and `hi` holds `x`.
+fn bucket_of(x: f64, lo: f64, hi: f64) -> i64 {
+    let width = (hi - lo) / 4.0;
+    if x < lo + width {
+        0
+    } else {
+        if x < lo + width * 2.0 {
+            1
+        } else {
+            if x < lo + width * 3.0 {
+                2
+            } else {
+                3
+            }
+        }
+    }
+}
+
+fn bucket_hits(xs: sort::Samples, which: i64, lo: f64, hi: f64) -> i64 {
+    match xs {
+        sort::Samples::Nil => 0,
+        sort::Samples::Cons(x, rest) =>
+            if bucket_of(x, lo, hi) == which {
+                1 + bucket_hits(rest, which, lo, hi)
+            } else {
+                bucket_hits(rest, which, lo, hi)
+            }
+    }
+}
+
+fn print_histogram(xs: sort::Samples, which: i64, lo: f64, hi: f64) -> i64 {
+    if which >= 4 {
+        0
+    } else {
+        vecio::print_bucket(which, bucket_hits(xs, which, lo, hi));
+        print_histogram(xs, which + 1, lo, hi)
+    }
+}
+
+fn median_of(sorted: sort::Samples, n: i64) -> f64 {
+    if n % 2 == 1 {
+        sort::nth(sorted, n / 2)
+    } else {
+        (sort::nth(sorted, n / 2 - 1) + sort::nth(sorted, n / 2)) / 2.0
+    }
+}
+
+#[main]
+pub fn entry() {
+    let samples = vecio::read_samples();
+    let n = vecio::count(samples);
+    if n == 0 {
+        vecio::print_empty();
+    } else {
+        let xs = drain(samples, 0, n);
+        let sorted = sort::sort(xs, |a: f64, b: f64| a <= b);
+        let lo = sort::nth(sorted, 0);
+        let hi = sort::nth(sorted, n - 1);
+        vecio::print_summary(
+            n,
+            lo,
+            hi,
+            sort::sum(sorted) / (n as f64),
+            median_of(sorted, n)
+        );
+        let printed = print_histogram(sorted, 0, lo, hi);
+    }
+}

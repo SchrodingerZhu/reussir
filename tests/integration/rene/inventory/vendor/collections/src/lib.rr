@@ -1,0 +1,62 @@
+// Generic containers for the inventory build: a cons list with a
+// closure-driven left fold, and a plain binary search tree keyed by `i64`
+// whose insertion takes a combine closure — the map never overwrites, it
+// merges, and the caller decides what merging means. In-order folds give
+// consumers sorted traversal for free.
+
+pub enum List<T> {
+    Cons(T, List<T>),
+    Nil
+}
+
+pub fn foldl<T, A>(f: (A, T) -> A, acc: A, xs: List<T>) -> A {
+    match xs {
+        List::Nil => acc,
+        List::Cons(x, rest) => foldl(f, f(acc, x), rest)
+    }
+}
+
+pub fn length<T>(xs: List<T>) -> i64 {
+    match xs {
+        List::Nil => 0,
+        List::Cons(_, rest) => 1 + length(rest)
+    }
+}
+
+pub enum Map<V> {
+    Node(Map<V>, i64, V, Map<V>),
+    Leaf
+}
+
+// Insert `value` at `key`; an existing entry is merged through `combine`
+// (existing value first, incoming second).
+pub fn insert_with<V>(m: Map<V>, key: i64, value: V, combine: (V, V) -> V) -> Map<V> {
+    match m {
+        Map::Leaf => Map::Node{Map::Leaf, key, value, Map::Leaf},
+        Map::Node(l, k, v, r) =>
+            if key < k {
+                Map::Node{insert_with(l, key, value, combine), k, v, r}
+            } else {
+                if key > k {
+                    Map::Node{l, k, v, insert_with(r, key, value, combine)}
+                } else {
+                    Map::Node{l, k, combine(v, value), r}
+                }
+            }
+    }
+}
+
+pub fn size<V>(m: Map<V>) -> i64 {
+    match m {
+        Map::Leaf => 0,
+        Map::Node(l, _, _, r) => size(l) + 1 + size(r)
+    }
+}
+
+// Fold entries in ascending key order.
+pub fn fold_inorder<V, A>(m: Map<V>, acc: A, f: (A, i64, V) -> A) -> A {
+    match m {
+        Map::Leaf => acc,
+        Map::Node(l, k, v, r) => fold_inorder(r, f(fold_inorder(l, acc, f), k, v), f)
+    }
+}

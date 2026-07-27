@@ -1,0 +1,50 @@
+// Console I/O for the interpreter, entirely through polyffi: `Text` is the
+// program's input held opaquely as the runtime's copy-on-write byte
+// vector, `read_all` slurps stdin once, and the byte-level accessors
+// (`len`, `code_at`) are what the lexer walks — byte codes as `i64`, `-1`
+// past the end. The report functions own every message string on the Rust
+// side, so nothing string-shaped ever crosses the boundary.
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+    use std::io::Read;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec::<u8>")]
+pub struct Text;
+
+#[ffi(import)]
+pub fn read_all() -> Text [{
+    {
+        let mut buf = std::vec::Vec::new();
+        std::io::stdin().read_to_end(&mut buf).ok();
+        let mut text = RVec::new();
+        for byte in buf {
+            text = text.push(byte);
+        }
+        text
+    }
+}];
+
+#[ffi(import)]
+pub fn len(t: Text) -> i64 [{ t.len() as i64 }];
+
+#[ffi(import)]
+pub fn code_at(t: Text, pos: i64) -> i64 [{
+    t.get(pos as usize).map(|b| b as i64).unwrap_or(-1)
+}];
+
+#[ffi(import)]
+pub fn print_value(v: i64) [{ println!("= {v}") }];
+
+#[ffi(import)]
+pub fn print_bound(v: i64) [{ println!("bind {v}") }];
+
+#[ffi(import)]
+pub fn print_parse_error() [{ println!("parse error") }];
+
+#[ffi(import)]
+pub fn print_div_zero() [{ println!("division by zero") }];
+
+#[ffi(import)]
+pub fn print_unbound() [{ println!("unbound variable") }];

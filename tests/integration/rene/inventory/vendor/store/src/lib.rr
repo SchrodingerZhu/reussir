@@ -1,0 +1,54 @@
+// The domain layer: `Item` is what the stock map stores, transactions are
+// folded into it through `collections`' closure-parameterized generics,
+// and a line's value goes through `pricing`'s imported discount rule. The
+// merge closures are where the domain lives — restocks add quantity and
+// take the incoming price, sales subtract and keep the price on record.
+
+pub struct Item {
+    qty: i64,
+    unit_cents: i64
+}
+
+pub enum Txn {
+    // sku, quantity, unit price in cents
+    Restock(i64, i64, i64),
+    // sku, quantity
+    Sale(i64, i64)
+}
+
+fn apply_txn(stock: collections::Map<Item>, t: Txn) -> collections::Map<Item> {
+    match t {
+        Txn::Restock(sku, qty, cents) =>
+            collections::insert_with(
+                stock,
+                sku,
+                Item { qty: qty, unit_cents: cents },
+                |old: Item, incoming: Item|
+                    Item { qty: old.qty + incoming.qty, unit_cents: incoming.unit_cents }
+            ),
+        // A sale of a sku never stocked leaves a negative entry — the
+        // report shows the oversell rather than hiding it.
+        Txn::Sale(sku, qty) =>
+            collections::insert_with(
+                stock,
+                sku,
+                Item { qty: 0 - qty, unit_cents: 0 },
+                |old: Item, sold: Item|
+                    Item { qty: old.qty + sold.qty, unit_cents: old.unit_cents }
+            )
+    }
+}
+
+pub fn apply_all(txns: collections::List<Txn>, stock: collections::Map<Item>) -> collections::Map<Item> {
+    collections::foldl(
+        |m: collections::Map<Item>, t: Txn| apply_txn(m, t),
+        stock,
+        txns
+    )
+}
+
+// A line's value: quantity times unit price, with the ten-percent volume
+// discount the pricing rule applies from ten units up.
+pub fn line_value(item: Item) -> i64 {
+    pricing::volume_discount(item.qty * item.unit_cents, item.qty, 10, 100)
+}

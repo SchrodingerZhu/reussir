@@ -1,0 +1,47 @@
+// An inventory report as a four-dependency `rene build`: generic
+// containers (`collections`), the domain layer folding transactions into a
+// BST stock map (`store`), and two polyffi packages in one link —
+// `console` owns the report's format strings, `pricing` the money math.
+// The polyffi surface is deliberately varied: unit-returning prints, a
+// four-parameter import crossing packed, and a generic `scale` whose `i64`
+// instance is emitted by both the store layer and the app — the duplicate
+// textures must collapse to one definition at link, same as the
+// `collections` fold instances both consumers monomorphize.
+
+// The dependency cone is pure manifest work first: four packages, every
+// constraint satisfied by the declared versions, `store` pulling
+// `collections` and `pricing` from the app's vendor tree by relative path.
+// RUN: %rene inspect --manifest-path %S/inventory/rene.ncl --build-dir %t.bdir --frozen --solved | %FileCheck %s --check-prefix=SOLVED
+
+// SOLVED: "resolution": {
+// SOLVED-NEXT: "collections": "1.4.2"
+// SOLVED-NEXT: "console": "0.3.1"
+// SOLVED-NEXT: "inventory": "0.1.0"
+// SOLVED-NEXT: "pricing": "2.0.0"
+// SOLVED-NEXT: "store": "1.0.3"
+
+// RUN: %rene build --manifest-path %S/inventory/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}inventory
+
+// RUN: %t.bdir/dev/inventory%exe_ext | %FileCheck %s
+
+// The report: rows in sku order out of the BST's in-order fold, the
+// warnings, then the totals — sku 17 crosses the ten-unit threshold so its
+// line carries the volume discount (10 x 2.50 discounted to 22.50), and
+// the oversold sku 9999 shows its negative quantity rather than hiding it.
+// CHECK:      inventory report (4 skus)
+// CHECK-NEXT: sku 0017: 10 x 2.50
+// CHECK-NEXT: sku 0504: 2 x 75.00
+// CHECK-NEXT: sku 1002: 6 x 13.50
+// CHECK-NEXT: sku 9999: -1 x 0.00
+// CHECK-NEXT: low stock: sku 0504 (2 left)
+// CHECK-NEXT: low stock: sku 9999 (-1 left)
+// CHECK-NEXT: total 253.50
+// CHECK-NEXT: with tax 273.78
+
+// The optimized build is the same report.
+// RUN: %rene build --manifest-path %S/inventory/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RUN: %t.bdir/release/inventory%exe_ext | %FileCheck %s
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}inventory

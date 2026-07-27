@@ -1,0 +1,79 @@
+// The evaluator: an association-list environment mapping names (byte
+// lists) to values, and an `Out` that carries either the value or the
+// reason there is none. Errors propagate outward through the match arms —
+// the first failing subexpression decides the line's report.
+
+import root::lexer;
+import root::parser;
+
+pub enum Env {
+    Bind(lexer::Chars, i64, Env),
+    Nil
+}
+
+pub enum Out {
+    Val(i64),
+    DivZero,
+    Unbound
+}
+
+fn chars_eq(a: lexer::Chars, b: lexer::Chars) -> bool {
+    match a {
+        lexer::Chars::CNil =>
+            match b {
+                lexer::Chars::CNil => true,
+                _ => false
+            },
+        lexer::Chars::CCons(c, a1) =>
+            match b {
+                lexer::Chars::CCons(d, b1) => c == d && chars_eq(a1, b1),
+                _ => false
+            }
+    }
+}
+
+fn lookup(env: Env, name: lexer::Chars) -> Out {
+    match env {
+        Env::Nil => Out::Unbound,
+        Env::Bind(key, value, rest) =>
+            if chars_eq(key, name) {
+                Out::Val{value}
+            } else {
+                lookup(rest, name)
+            }
+    }
+}
+
+fn apply(op: i64, a: i64, b: i64) -> Out {
+    match op {
+        43 => Out::Val{a + b},
+        45 => Out::Val{a - b},
+        42 => Out::Val{a * b},
+        // The remaining operators divide; a zero divisor is the error, not
+        // a trap.
+        _ if b == 0 => Out::DivZero,
+        47 => Out::Val{a / b},
+        _ => Out::Val{a % b}
+    }
+}
+
+pub fn eval(env: Env, e: parser::Expr) -> Out {
+    match e {
+        parser::Expr::Lit(v) => Out::Val{v},
+        parser::Expr::Var(name) => lookup(env, name),
+        parser::Expr::Neg(inner) =>
+            match eval(env, inner) {
+                Out::Val(v) => Out::Val{0 - v},
+                err => err
+            },
+        parser::Expr::Bin(op, l, r) =>
+            match eval(env, l) {
+                Out::Val(a) =>
+                    match eval(env, r) {
+                        Out::Val(b) => apply(op, a, b),
+                        err => err
+                    },
+                err => err
+            }
+    }
+}

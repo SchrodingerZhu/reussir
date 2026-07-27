@@ -1,0 +1,68 @@
+// The report: a day's transaction log folded into a stock map, then three
+// in-order passes over it — the rows, the low-stock warnings, the total —
+// and a tax line through `pricing::scale`. The app instantiates
+// `collections`' folds and `pricing`'s generic scale itself, at the same
+// ground types the store layer uses; the duplicated instances are the
+// link's problem, not ours.
+
+fn transactions() -> collections::List<store::Txn> {
+    collections::List::Cons{
+        store::Txn::Restock{1002, 5, 1299},
+        collections::List::Cons{
+            store::Txn::Restock{17, 12, 250},
+            collections::List::Cons{
+                store::Txn::Sale{1002, 3},
+                collections::List::Cons{
+                    store::Txn::Restock{504, 2, 7500},
+                    collections::List::Cons{
+                        store::Txn::Sale{17, 2},
+                        collections::List::Cons{
+                            store::Txn::Restock{1002, 4, 1350},
+                            collections::List::Cons{
+                                store::Txn::Sale{9999, 1},
+                                collections::List::Nil
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[main]
+pub fn entry() {
+    let stock = store::apply_all(transactions(), collections::Map::Leaf);
+
+    console::print_header(collections::size(stock));
+
+    // The rows, in sku order — the BST's in-order fold is the sort.
+    let rows = collections::fold_inorder(
+        stock,
+        0,
+        |acc: i64, sku: i64, item: store::Item| {
+            console::print_row(sku, item.qty, item.unit_cents);
+            acc + 1
+        }
+    );
+
+    let warned = collections::fold_inorder(
+        stock,
+        0,
+        |acc: i64, sku: i64, item: store::Item|
+            if item.qty < 3 {
+                console::print_low_stock(sku, item.qty);
+                acc + 1
+            } else {
+                acc
+            }
+    );
+
+    let total = collections::fold_inorder(
+        stock,
+        0,
+        |acc: i64, sku: i64, item: store::Item| acc + store::line_value(item)
+    );
+    console::print_total(total);
+    console::print_taxed(pricing::scale<i64>(total, 108, 100));
+}

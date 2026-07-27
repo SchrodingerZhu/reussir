@@ -1,0 +1,38 @@
+// A line-calculator interpreter as a realistic two-package `rene build`:
+// the app package carries a lexer, a recursive-descent parser, and an
+// evaluator split across modules (`mod lexer/parser/eval`, `root::`/bare
+// package paths across files), and every byte of console traffic goes
+// through the `textio` dependency — a pure polyffi package whose `Text` is
+// the runtime's rc string held opaquely. The interpreter itself exercises
+// the data-structure pipeline end to end: token cons-lists, an AST, an
+// association-list environment threaded through persistent `let` bindings,
+// and per-line error recovery (parse errors, division by zero, unbound
+// variables) that resynchronizes at the next newline.
+
+// RUN: %rene build --manifest-path %S/calc/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}calc
+
+// RUN: %t.bdir/dev/calc%exe_ext < %S/calc/example.in | %FileCheck %s
+
+// The session, line by line: two bindings, arithmetic against them, a
+// rebinding expression, then one of each error — all reported in input
+// order, each recovered at its newline.
+// CHECK:      bind 19
+// CHECK-NEXT: bind 12
+// CHECK-NEXT: = 228
+// CHECK-NEXT: = 200
+// CHECK-NEXT: bind 235
+// CHECK-NEXT: = 35
+// CHECK-NEXT: division by zero
+// CHECK-NEXT: parse error
+// CHECK-NEXT: unbound variable
+// CHECK-NEXT: = -220
+
+// The release profile (aggressive optimization, and a two-unit link from
+// the manifest's `codegen_units`) is the same interpreter: identical
+// session transcript from the identical input.
+// RUN: %rene build --manifest-path %S/calc/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RUN: %t.bdir/release/calc%exe_ext < %S/calc/example.in | %FileCheck %s
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}calc

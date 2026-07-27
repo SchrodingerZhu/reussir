@@ -1,0 +1,70 @@
+// The ordered half of the pipeline: a float cons-list, a bottom-up merge
+// sort parameterized by a `lte` closure, and the positional reads the
+// median needs. Splitting alternates elements — no length bookkeeping —
+// and every arm rebuilds cells the match just took apart, which is
+// exactly the shape the compiler's reuse analysis is for.
+
+pub enum Samples {
+    Cons(f64, Samples),
+    Nil
+}
+
+pub fn length(xs: Samples) -> i64 {
+    match xs {
+        Samples::Nil => 0,
+        Samples::Cons(_, rest) => 1 + length(rest)
+    }
+}
+
+pub fn nth(xs: Samples, i: i64) -> f64 {
+    match xs {
+        Samples::Nil => 0.0,
+        Samples::Cons(x, rest) => if i <= 0 { x } else { nth(rest, i - 1) }
+    }
+}
+
+pub fn sum(xs: Samples) -> f64 {
+    match xs {
+        Samples::Nil => 0.0,
+        Samples::Cons(x, rest) => x + sum(rest)
+    }
+}
+
+// Every other element, starting with the head.
+fn evens(xs: Samples) -> Samples {
+    match xs {
+        Samples::Cons(x, Samples::Cons(_, rest)) => Samples::Cons{x, evens(rest)},
+        other => other
+    }
+}
+
+fn odds(xs: Samples) -> Samples {
+    match xs {
+        Samples::Cons(_, rest) => evens(rest),
+        Samples::Nil => Samples::Nil
+    }
+}
+
+fn merge(a: Samples, b: Samples, lte: (f64, f64) -> bool) -> Samples {
+    match a {
+        Samples::Nil => b,
+        Samples::Cons(x, a1) =>
+            match b {
+                Samples::Nil => Samples::Cons{x, a1},
+                Samples::Cons(y, b1) =>
+                    if lte(x, y) {
+                        Samples::Cons{x, merge(a1, Samples::Cons{y, b1}, lte)}
+                    } else {
+                        Samples::Cons{y, merge(Samples::Cons{x, a1}, b1, lte)}
+                    }
+            }
+    }
+}
+
+pub fn sort(xs: Samples, lte: (f64, f64) -> bool) -> Samples {
+    match xs {
+        Samples::Nil => Samples::Nil,
+        Samples::Cons(x, Samples::Nil) => Samples::Cons{x, Samples::Nil},
+        whole => merge(sort(evens(whole), lte), sort(odds(whole), lte), lte)
+    }
+}

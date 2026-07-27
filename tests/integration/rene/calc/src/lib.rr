@@ -1,0 +1,133 @@
+// A line calculator: read the whole program from stdin, lex it once, then
+// interpret line by line against a persistent environment. `let name =
+// expr` lines extend the environment and report `bind <v>`; expression
+// lines report `= <v>`; a line that fails to parse or evaluate reports its
+// error and the driver resynchronizes at the next newline, so one bad line
+// never takes the session down. A line evaluates only after its whole
+// shape is validated — trailing garbage is a parse error, not a report
+// followed by one.
+
+mod lexer;
+mod parser;
+mod eval;
+
+// Print one evaluation outcome; the value returned makes the report an
+// ordinary expression statement.
+fn report(o: eval::Out) -> i64 {
+    match o {
+        eval::Out::Val(v) => {
+            textio::print_value(v);
+            v
+        },
+        eval::Out::DivZero => {
+            textio::print_div_zero();
+            0
+        },
+        eval::Out::Unbound => {
+            textio::print_unbound();
+            0
+        }
+    }
+}
+
+// Drop tokens up to and including the next newline — the resynchronization
+// point after an error. `End` is preserved so the driver still terminates.
+fn skip_line(ts: lexer::Toks) -> lexer::Toks {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Newline, rest) => rest,
+        lexer::Toks::Cons(lexer::Tok::End, rest) => lexer::Toks::Cons{lexer::Tok::End, rest},
+        lexer::Toks::Cons(_, rest) => skip_line(rest),
+        lexer::Toks::Nil => lexer::Toks::Nil
+    }
+}
+
+// Evaluate a validated binding: success reports and extends the
+// environment, an error reports and leaves it unchanged.
+fn bind_commit(name: lexer::Chars, e: parser::Expr, env: eval::Env) -> eval::Env {
+    match eval::eval(env, e) {
+        eval::Out::Val(v) => {
+            textio::print_bound(v);
+            eval::Env::Bind{name, v, env}
+        },
+        err => {
+            report(err);
+            env
+        }
+    }
+}
+
+// `let <ident> = <expr>`, already past the keyword.
+fn bind_line(ts: lexer::Toks, env: eval::Env, count: i64) -> i64 {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Ident(name), lexer::Toks::Cons(lexer::Tok::Assign, r)) =>
+            match parser::parse_expr(r) {
+                parser::Parsed::POk(e, lexer::Toks::Cons(lexer::Tok::Newline, r1)) =>
+                    run(r1, bind_commit(name, e, env), count + 1),
+                parser::Parsed::POk(e, lexer::Toks::Cons(lexer::Tok::End, _)) => {
+                    bind_commit(name, e, env);
+                    count + 1
+                },
+                parser::Parsed::POk(e, lexer::Toks::Nil) => {
+                    bind_commit(name, e, env);
+                    count + 1
+                },
+                parser::Parsed::POk(e, r1) => {
+                    textio::print_parse_error();
+                    run(skip_line(r1), env, count + 1)
+                },
+                parser::Parsed::PErr => {
+                    textio::print_parse_error();
+                    run(skip_line(r), env, count + 1)
+                }
+            },
+        rest => {
+            textio::print_parse_error();
+            run(skip_line(rest), env, count + 1)
+        }
+    }
+}
+
+fn expr_line(ts: lexer::Toks, env: eval::Env, count: i64) -> i64 {
+    match parser::parse_expr(ts) {
+        parser::Parsed::POk(e, lexer::Toks::Cons(lexer::Tok::Newline, r)) => {
+            report(eval::eval(env, e));
+            run(r, env, count + 1)
+        },
+        parser::Parsed::POk(e, lexer::Toks::Cons(lexer::Tok::End, _)) => {
+            report(eval::eval(env, e));
+            count + 1
+        },
+        parser::Parsed::POk(e, lexer::Toks::Nil) => {
+            report(eval::eval(env, e));
+            count + 1
+        },
+        parser::Parsed::POk(e, r) => {
+            textio::print_parse_error();
+            run(skip_line(r), env, count + 1)
+        },
+        parser::Parsed::PErr => {
+            textio::print_parse_error();
+            run(skip_line(ts), env, count + 1)
+        }
+    }
+}
+
+fn run(ts: lexer::Toks, env: eval::Env, count: i64) -> i64 {
+    match ts {
+        lexer::Toks::Nil => count,
+        lexer::Toks::Cons(t, rest) =>
+            match t {
+                lexer::Tok::End => count,
+                lexer::Tok::Newline => run(rest, env, count),
+                lexer::Tok::KwLet => bind_line(rest, env, count),
+                other => expr_line(lexer::Toks::Cons{other, rest}, env, count)
+            }
+    }
+}
+
+#[main]
+pub fn entry() {
+    let text = textio::read_all();
+    let toks = lexer::lex(text, 0, textio::len(text));
+    let lines = run(toks, eval::Env::Nil, 0);
+}
