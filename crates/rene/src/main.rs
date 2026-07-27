@@ -259,7 +259,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     if graph.nodes.len() > 1 {
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
-            tracing::info!(package = %name, %version, "resolved");
+            tracing::debug!(package = %name, %version, "resolved");
         }
     }
 
@@ -283,7 +283,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // whoever drives rrc by hand — the pre-target workflow, kept working.
     if loaded.manifest.targets.is_empty() {
         if !sources.rescanned() {
-            tracing::info!(files = sources.files.len(), "nothing to do");
+            tracing::debug!(files = sources.files.len(), "nothing to do");
         }
         tracing::info!("no targets declared; pass these directories to `rrc --polyffi-libdir`:");
         for libdir in artifacts.libdirs() {
@@ -316,7 +316,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     )
     .await?;
     if graph.nodes.len() > 1 {
-        tracing::info!(
+        tracing::debug!(
             built,
             fresh = graph.nodes.len() - 1 - built,
             "dependencies ready"

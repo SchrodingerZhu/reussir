@@ -23,8 +23,10 @@
 // RUN: %t.bdir/dev/demo%exe_ext
 
 // An unchanged package rebuilds nothing — the product record and the source
-// graph both hold — and the listing is the same artifact.
-// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir %rrc_linker 2>%t.fresh.log > %t.fresh.listing
+// graph both hold — and the listing is the same artifact. (`-v`: the
+// freshness narration lives at DEBUG so the default build keeps the
+// progress bars clean.)
+// RUN: %rene -v build --manifest-path %S/build/rene.ncl --build-dir %t.bdir %rrc_linker 2>%t.fresh.log > %t.fresh.listing
 // RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
 // RUN: diff %t.listing %t.fresh.listing
 

@@ -112,7 +112,7 @@ pub async fn build(
         let key = tables::product_key(&opts.profile_name, name);
         let current = product_is_current(dir, &key, &fingerprint, &path)?;
         if current {
-            tracing::info!(target = name, "up to date");
+            tracing::debug!(target = name, "up to date");
         }
         plan.push((name, kind, path, key, current));
     }
@@ -139,7 +139,7 @@ pub async fn build(
         if *current {
             continue;
         }
-        tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+        tracing::debug!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
         let command = planned
             .remove(*name)
             .ok_or_else(|| format!("target `{name}` missing from the plan"))?;

@@ -154,7 +154,7 @@ pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifact
     let hash = bundle_hash();
 
     if let Some(cached) = fresh_bake(dir, &toolchain, &hash)? {
-        tracing::info!("reussir-rt is up to date");
+        tracing::debug!("reussir-rt is up to date");
         return Ok(cached);
     }
 
@@ -165,7 +165,7 @@ pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifact
         std::fs::remove_dir_all(&src_dir)
             .map_err(|e| format!("cannot clear `{}`: {e}", src_dir.display()))?;
     }
-    tracing::info!(dest = %src_dir.display(), "extracting bundled reussir-rt source");
+    tracing::debug!(dest = %src_dir.display(), "extracting bundled reussir-rt source");
     unpack(dir.root()).map_err(|e| format!("cannot unpack the runtime bundle: {e}"))?;
 
     tracing::info!(
@@ -200,7 +200,7 @@ pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifact
         (tables::RT_ARTIFACTS_KEY, record.as_str()),
     ])
     .map_err(|e| e.to_string())?;
-    tracing::info!(staticlib = %artifacts.staticlib.display(), "reussir-rt ready");
+    tracing::debug!(staticlib = %artifacts.staticlib.display(), "reussir-rt ready");
     Ok(artifacts)
 }
 

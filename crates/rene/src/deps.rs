@@ -216,14 +216,14 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String
     let hash = config_hash(&loaded.dump);
     let reason = staleness(dir, &hash)?;
     if reason.is_up_to_date() {
-        tracing::info!("package sources are up to date");
+        tracing::debug!("package sources are up to date");
         return Ok(Prepared {
             files: dir.sources().map_err(|e| e.to_string())?,
             reason,
         });
     }
 
-    tracing::info!(%reason, "scanning the package source graph");
+    tracing::debug!(%reason, "scanning the package source graph");
     let root = source_root(loaded);
     let mut files = scan(&root, &loaded.manifest.package.name).await?;
     // Order by path, the order the table reads back in, so what this returns
@@ -232,7 +232,7 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String
     dir.replace_sources(&files).map_err(|e| e.to_string())?;
     dir.set_status(&[(tables::SOURCES_CONFIG_HASH_KEY, hash.as_str())])
         .map_err(|e| e.to_string())?;
-    tracing::info!(files = files.len(), "recorded the source graph");
+    tracing::debug!(files = files.len(), "recorded the source graph");
     Ok(Prepared { files, reason })
 }
 

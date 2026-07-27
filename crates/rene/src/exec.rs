@@ -147,10 +147,10 @@ async fn build_node(
     // check is exact: current means nothing to do at all.
     let state = fresh::node_state(graph, name, &ctx)?;
     if state.is_current() {
-        tracing::info!(package = name, "up to date");
+        tracing::debug!(package = name, "up to date");
         return Ok(false);
     }
-    tracing::info!(package = name, reason = %state, "building");
+    tracing::debug!(package = name, reason = %state, "building");
 
     let bar = progress.add(
         ProgressBar::new_spinner().with_message(format!("{name}: scanning sources")),
@@ -180,6 +180,6 @@ async fn build_node(
     fresh::record_dep(graph, name, &ctx, rt, &sources)?;
     bar.finish_and_clear();
     progress.remove(&bar);
-    tracing::info!(package = name, "built");
+    tracing::debug!(package = name, "built");
     Ok(true)
 }

@@ -24,7 +24,7 @@
 
 // A second build proves everything current — dependencies and targets —
 // and lists the same artifacts.
-// RUN: %rene build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir %rrc_linker 2> %t.fresh.log > %t.fresh.listing
+// RUN: %rene -v build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir %rrc_linker 2> %t.fresh.log > %t.fresh.listing
 // RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
 // RUN: diff %t.listing %t.fresh.listing
 

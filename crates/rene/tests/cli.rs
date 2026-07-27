@@ -334,7 +334,8 @@ fn build_is_a_no_op_when_no_source_changed() {
     assert_eq!(fakes.runs("rrc"), 1, "the first build must scan");
 
     for _ in 0..2 {
-        let out = fakes.rene(&["build"], &manifest, &root);
+        // `-v`: the freshness narration lives at DEBUG now.
+        let out = fakes.rene(&["-v", "build"], &manifest, &root);
         assert!(out.status.success(), "stderr: {}", stderr(&out));
         assert!(
             stderr(&out).contains("up to date"),
