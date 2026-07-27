@@ -76,20 +76,28 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
 // conversion is the one client that reaches ffi_object payloads, and going
 // through these helpers keeps the `-g` path independent of interface
 // dispatch (which has proven fragile for this type under MSVC linking).
+// The check spells the registered type name rather than `isa`: a TypeID
+// that fails to unify across the MSVC link would break `isa` the same way
+// it breaks the interface lookup, while the registered name is a plain
+// string held by the type's uniqued storage.
+bool isFFIObjectType(mlir::Type type) {
+  return type.getAbstractType().getName() == FFIObjectType::name;
+}
+
 mlir::Type ffiObjectHeaderType(mlir::Type type) {
   return mlir::IntegerType::get(type.getContext(), 32);
 }
 
 uint64_t dbgTypeSizeInBits(const mlir::DataLayout &dataLayout,
                            mlir::Type type) {
-  if (llvm::isa<FFIObjectType>(type))
+  if (isFFIObjectType(type))
     return dataLayout.getTypeSizeInBits(ffiObjectHeaderType(type));
   return dataLayout.getTypeSizeInBits(type);
 }
 
 uint64_t dbgTypeABIAlignment(const mlir::DataLayout &dataLayout,
                              mlir::Type type) {
-  if (llvm::isa<FFIObjectType>(type))
+  if (isFFIObjectType(type))
     return dataLayout.getTypeABIAlignment(ffiObjectHeaderType(type));
   return dataLayout.getTypeABIAlignment(type);
 }
