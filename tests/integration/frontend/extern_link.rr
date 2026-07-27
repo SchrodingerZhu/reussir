@@ -14,18 +14,22 @@
 // The dependency's archive carries the mono-exported private helper as a
 // strong external definition; the consumer's side of the link only ever
 // declares it.
-// RUN: %llvm-nm %t.dep.a | %FileCheck %s --check-prefix=DEP
-// DEP: T _RNvC3dep6helper
+// Symbols are selected by nm's defined/undefined filters rather than the
+// T/U/W letters, and the platform prefix stays flexible — Mach-O mangles
+// with a leading underscore. The instance's weak_odr linkage itself is
+// pinned by extern_mono.rr's IR check.
+// RUN: %llvm-nm --defined-only %t.dep.a | %FileCheck %s --check-prefix=DEP
+// DEP: {{_?}}_RNvC3dep6helper
 
-// The consumer's own object: the imported generic's instance is a weak
-// (`weak_odr`) definition, the dependency's ground code stays undefined
-// until the archive joins.
+// The consumer's own object: the imported generic's instance is defined
+// locally, the dependency's ground code stays undefined until the archive
+// joins.
 // RUN: %rrc %s --package-name app --extern dep=%t.rri --emit obj --relocation-mode pic -o %t.o
-// RUN: %llvm-nm %t.o | %FileCheck %s %linkage_check_prefixes
-// CHECK-DEDUP-DAG: W _RINvC3dep5twicexE
-// CHECK-COFF-DAG: T _RINvC3dep5twicexE
-// CHECK-DAG: U _RNvC3dep6ground
-// CHECK-DAG: U _RNvC3dep6helper
+// RUN: %llvm-nm --defined-only %t.o | %FileCheck %s --check-prefix=DEF
+// DEF: {{_?}}_RINvC3dep5twicexE
+// RUN: %llvm-nm --undefined-only %t.o | %FileCheck %s --check-prefix=UNDEF
+// UNDEF-DAG: {{_?}}_RNvC3dep6ground
+// UNDEF-DAG: {{_?}}_RNvC3dep6helper
 
 // The entry exercises the instantiated generic (which itself calls the
 // dependency-private helper) and the declared ground function; a resolved
