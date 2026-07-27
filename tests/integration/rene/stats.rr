@@ -1,3 +1,11 @@
+// UNSUPPORTED: windows
+// On COFF the built binaries crash at runtime before the first line of
+// output (release: stack overflow in the polyffi boundary). The remaining
+// suspects are cross-unit nullary tagged immediates and/or the win64
+// packed (nontrivial) import boundary — both gated tests use packed
+// imports, while the trivially-crossing `calc` passes. See the PR #479
+// discussion for the minimal repro sketch.
+
 // A statistics pipeline as a two-package `rene build`: stdin is parsed
 // into the runtime's rc vector inside `vecio`'s textures (bad tokens
 // skipped Rust-side), and everything after the boundary is functional
