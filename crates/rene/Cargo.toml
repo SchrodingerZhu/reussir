@@ -46,6 +46,9 @@ tracing.workspace = true
 # stdout — stdout carries machine-readable output like the libdir listing).
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 zstd.workspace = true
+# The `-j` admission semaphore: process concurrency is bounded separately
+# from the pool's worker threads (see `pool`).
+async-lock = "3"
 
 [build-dependencies]
 # Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its

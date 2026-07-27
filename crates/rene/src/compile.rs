@@ -112,12 +112,9 @@ pub async fn build(
         }
         plan.push((name, kind, path, key, current));
     }
-    // The pool is sized to the work, not the machine: each worker carries
-    // its own runtime (an io_uring/IOCP instance), so width beyond the
-    // number of stale compiles would only reserve kernel resources idly.
     let stale = plan.iter().filter(|(_, _, _, _, current)| !current).count();
     if stale > 0 {
-        let pool = Pool::new(opts.jobs, stale)?;
+        let pool = Pool::new(opts.jobs)?;
         let workers = &pool;
         futures_util::future::try_join_all(
             plan.iter().filter(|(_, _, _, _, current)| !current).map(
