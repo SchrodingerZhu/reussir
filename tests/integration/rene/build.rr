@@ -38,6 +38,17 @@
 
 // RELEASE: {{[/\\]}}release{{[/\\]}}demo
 
+// After a build the runtime bake is on record, so the plan dump's
+// bake-decided values — the pinned rustc, the polyffi library directories —
+// print expanded rather than as `<placeholders>`.
+// RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands | %FileCheck %s --check-prefix=PLAN
+
+// PLAN: "REUSSIR_RUSTC": "{{[^<].*}}"
+// PLAN: "--polyffi-libdir",
+// PLAN-NEXT: "{{[^<].*}}",
+// PLAN-NEXT: "--polyffi-libdir",
+// PLAN-NEXT: "{{[^<].*}}"
+
 // An undeclared profile or target is refused by name, before any work.
 // RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile bogus 2>&1 | %FileCheck %s --check-prefix=NOPROFILE
 // RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --target bogus 2>&1 | %FileCheck %s --check-prefix=NOTARGET
