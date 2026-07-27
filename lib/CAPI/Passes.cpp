@@ -28,6 +28,8 @@
 // Complete mlir::DialectVersion before MLIR C API headers reach
 // BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
 // forward declared.
+#include <mutex>
+
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Pass.h>
@@ -154,9 +156,36 @@ MlirPass reussirCreateTokenReusePass(bool reuseAcrossCall) {
 //===----------------------------------------------------------------------===//
 
 MlirPass reussirCreateDefaultInlinerPass(void) {
+  // The `default-pipeline` option below resolves through the textual pass
+  // registry at use time; the driver (unlike `reussir-opt`) registers no
+  // upstream passes, so the canonicalizer must be registered here or the
+  // callable optimization silently runs empty.
+  static std::once_flag canonicalizerRegistered;
+  std::call_once(canonicalizerRegistered,
+                 [] { mlir::registerCanonicalizerPass(); });
   llvm::StringMap<mlir::OpPassManager> pipelines;
-  return wrapOwned(mlir::createInlinerPass(
-      pipelines, addCanonicalizerWithoutRegionSimplification));
+  std::unique_ptr<mlir::Pass> pass = mlir::createInlinerPass(
+      pipelines, addCanonicalizerWithoutRegionSimplification);
+  // Within a recursive SCC the inliner re-inlines the call sites each
+  // round of inlining just created, so the default four iterations grow a
+  // mutually recursive call graph geometrically in its fanout — an
+  // interpreter-shaped program inflates a few thousand ops into millions
+  // and compilation stalls for minutes. One iteration keeps the ordinary
+  // bottom-up inlining across SCCs (every non-recursive call still
+  // inlines) and unrolls recursion a single level — the posture LLVM's own
+  // inliner takes. The option string also restates the default pipeline:
+  // `InlinerPass::initializeOptions` rebuilds the callable optimizer from
+  // `default-pipeline`, which would otherwise reset to a plain
+  // canonicalize and re-enable the region simplification disabled above.
+  if (mlir::failed(pass->initializeOptions(
+          "max-iterations=1 "
+          "default-pipeline=canonicalize{region-simplify=disabled}",
+          [](const llvm::Twine &msg) {
+            llvm::report_fatal_error(msg);
+            return mlir::failure();
+          })))
+    llvm::report_fatal_error("cannot configure the default inliner pass");
+  return wrapOwned(std::move(pass));
 }
 MlirPass reussirCreateTransformInterpreterPass(MlirStringRef entryPoint) {
   mlir::transform::InterpreterPassOptions options;
