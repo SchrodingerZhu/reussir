@@ -38,7 +38,9 @@
 // RUN: %not %rrc %t.bad.rr --package-name app --extern dep=%t.rri --extern-src dep=%S/extern_mono_dep --emit mir -o - 2>&1 \
 // RUN:   | %FileCheck %s --check-prefix=FLEX
 // FLEX: requires a regional record
-// FLEX: extern_mono_dep{{/|\\\\}}lib.rr
+// The caret prints the raw re-anchored path — a single separator, unlike
+// the escaped file-table strings the MIR checks match.
+// FLEX: extern_mono_dep{{[/\\]}}lib.rr
 // FLEX: pub regional fn flexy
 
 pub fn use_twice(n: i64) -> i64 {
