@@ -124,6 +124,9 @@ pub struct Context<'a> {
     pub dir: Option<&'a BuildDir>,
     pub profile_name: &'a str,
     pub profile: &'a Profile,
+    /// The `--linker` override the compared build ran (or would run) with —
+    /// part of the root products' fingerprints.
+    pub linker: Option<&'a Path>,
     pub build_dir: &'a Path,
 }
 
@@ -136,6 +139,18 @@ pub fn recorded_bake(dir: Option<&BuildDir>) -> Result<Option<RtArtifacts>, Stri
         .status(tables::RT_ARTIFACTS_KEY)
         .map_err(|e| e.to_string())?
         .and_then(|record| serde_json::from_str(&record).ok()))
+}
+
+/// One node's local freshness — no upstream-stale propagation, so at
+/// execution time (when the cone is final) the answer is exact.
+pub fn node_state(graph: &Graph, name: &str, ctx: &Context<'_>) -> Result<State, String> {
+    let bake = recorded_bake(ctx.dir)?;
+    let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
+    if name == graph.root {
+        root_state(graph, ctx, bake.as_ref())
+    } else {
+        dep_state(graph, name, ctx, bake.as_ref(), &deps_dir)
+    }
 }
 
 /// The freshness of every node of the graph, keyed by package name.
@@ -259,7 +274,7 @@ fn root_state(
             profile_name: ctx.profile_name.to_owned(),
             profile: ctx.profile.clone(),
             targets: Vec::new(),
-            linker: None,
+            linker: ctx.linker.map(Path::to_path_buf),
             upstream,
             jobs: None,
         },
@@ -437,6 +452,7 @@ mod tests {
             dir: Some(&f.dir),
             profile_name: "dev",
             profile,
+            linker: None,
             build_dir: &f.build_dir,
         }
     }

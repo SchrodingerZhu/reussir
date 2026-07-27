@@ -1,0 +1,36 @@
+// The executed cross-package build, end to end: `rene build` resolves the
+// graph (app 0.1.0 → util 1.2.9 → logs 0.3.4), bakes the runtime, then runs
+// the plan's commands through the ready-queue pipeline — each dependency
+// compiles (interface + archive) the moment its own dependencies finish,
+// the root's targets compile against the cone (`--extern`) and link the
+// archives (`--link-lib`) — and the executable runs: `app` instantiates
+// `util::twice` (a generic crossing the interface), calls `util::ground`
+// (whose body reaches `logs` transitively), and `logs::level` directly.
+//
+// `%rrc_linker` pins MSVC's link.exe on Windows, as in build.rr.
+
+// RUN: %rene build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir %rrc_linker -j 2 > %t.listing 2> %t.log
+// RUN: %FileCheck %s --check-prefix=LISTING < %t.listing
+// RUN: %t.bdir/dev/demo%exe_ext
+
+// The listing carries the root's products, declared order.
+// LISTING: {{[/\\]}}dev{{[/\\]}}demo
+// LISTING: shared
+
+// The dependencies' interfaces and archives landed in `<profile>/deps/`.
+// RUN: ls %t.bdir/dev/deps | %FileCheck %s --check-prefix=DEPS
+// DEPS-DAG: logs.rri
+// DEPS-DAG: util.rri
+
+// A second build proves everything current — dependencies and targets —
+// and lists the same artifacts.
+// RUN: %rene -v build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir %rrc_linker 2> %t.fresh.log > %t.fresh.listing
+// RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
+// RUN: diff %t.listing %t.fresh.listing
+
+// FRESH: dependencies ready built=0 fresh=2
+
+// The plan dump agrees: every node current, by name.
+// RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --commands %rrc_linker | %FileCheck %s --check-prefix=STATE
+
+// STATE-COUNT-3: "state": "current"

@@ -149,12 +149,16 @@ async fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
 /// whose PATH carries a coreutils `link` ahead of MSVC's). It is not part of
 /// the bake's freshness: whichever working linker linked the runtime, the
 /// artifacts are equivalent.
-pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifacts, String> {
+pub async fn prepare(
+    dir: &BuildDir,
+    linker: Option<&Path>,
+    progress: &indicatif::MultiProgress,
+) -> Result<RtArtifacts, String> {
     let toolchain = Toolchain::resolve().await?;
     let hash = bundle_hash();
 
     if let Some(cached) = fresh_bake(dir, &toolchain, &hash)? {
-        tracing::info!("reussir-rt is up to date");
+        tracing::debug!("reussir-rt is up to date");
         return Ok(cached);
     }
 
@@ -165,15 +169,26 @@ pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifact
         std::fs::remove_dir_all(&src_dir)
             .map_err(|e| format!("cannot clear `{}`: {e}", src_dir.display()))?;
     }
-    tracing::info!(dest = %src_dir.display(), "extracting bundled reussir-rt source");
+    tracing::debug!(dest = %src_dir.display(), "extracting bundled reussir-rt source");
     unpack(dir.root()).map_err(|e| format!("cannot unpack the runtime bundle: {e}"))?;
 
-    tracing::info!(
+    tracing::debug!(
         cargo = %toolchain.cargo.display(),
         rustc = %toolchain.version,
-        "building reussir-rt (once per toolchain or runtime change)"
+        "building reussir-rt"
     );
-    let (rlib, staticlib) = cargo_build(&toolchain, &src_dir, linker).await?;
+    // The bake is the build's one slow cold step (a real cargo build, with
+    // the network on a fresh directory); a spinner carries that while
+    // cargo's own output is captured — and replayed if the bake fails.
+    let bar = progress.add(
+        indicatif::ProgressBar::new_spinner()
+            .with_message("baking reussir-rt (once per toolchain or runtime change)"),
+    );
+    bar.enable_steady_tick(std::time::Duration::from_millis(120));
+    let result = cargo_build(&toolchain, &src_dir, linker).await;
+    bar.finish_and_clear();
+    progress.remove(&bar);
+    let (rlib, staticlib) = result?;
 
     // Cargo may report the uplifted rlib (`target/release/lib….rlib`) rather
     // than the hashed copy in `deps/`; polyffi's `rustc -L` needs `deps/`,
@@ -200,7 +215,7 @@ pub async fn prepare(dir: &BuildDir, linker: Option<&Path>) -> Result<RtArtifact
         (tables::RT_ARTIFACTS_KEY, record.as_str()),
     ])
     .map_err(|e| e.to_string())?;
-    tracing::info!(staticlib = %artifacts.staticlib.display(), "reussir-rt ready");
+    tracing::debug!(staticlib = %artifacts.staticlib.display(), "reussir-rt ready");
     Ok(artifacts)
 }
 
@@ -262,11 +277,14 @@ async fn cargo_build(
         );
         cmd.env(key, linker);
     }
-    // Diagnostics and cargo's own progress stream to the user unchanged
-    // (stderr inherits by default under compio).
+    // Both streams are captured: the JSON messages on stdout carry the
+    // artifact locations, and cargo's human progress on stderr stays out of
+    // the progress bars — replayed below only if the bake fails.
     let out = cmd
         .stdout(Stdio::piped())
         .expect("pipe stdout")
+        .stderr(Stdio::piped())
+        .expect("pipe stderr")
         .output()
         .await
         .map_err(|e| format!("cannot run `{}`: {e}", toolchain.cargo.display()))?;
@@ -297,7 +315,10 @@ async fn cargo_build(
         }
     }
     if !out.status.success() {
-        return Err("building reussir-rt failed (see cargo's output above)".to_owned());
+        return Err(format!(
+            "building reussir-rt failed:\n{}",
+            String::from_utf8_lossy(&out.stderr).trim_end()
+        ));
     }
     match (rlib, staticlib) {
         (Some(rlib), Some(staticlib)) => Ok((rlib, staticlib)),

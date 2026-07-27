@@ -49,6 +49,7 @@ zstd.workspace = true
 # The `-j` admission semaphore: process concurrency is bounded separately
 # from the pool's worker threads (see `pool`).
 async-lock = "3"
+indicatif = "0.18.6"
 
 [build-dependencies]
 # Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its

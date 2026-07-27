@@ -1,0 +1,13 @@
+// The release-profile demo: plain recursive Fibonacci, its console done
+// entirely through polyffi — `read_input` pulls n from stdin and
+// `print_result` writes the answer, both `#[ffi(import)]` Rust textures
+// compiled against the baked runtime rene provides. One `rene build`, one
+// pipe, no C driver.
+
+// RUN: %rene build --manifest-path %S/fib/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: release{{[/\\]}}fib
+
+// RUN: echo 24 | %t.bdir/release/fib%exe_ext | %FileCheck %s
+
+// CHECK: fib(24) = 46368

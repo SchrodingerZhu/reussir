@@ -22,7 +22,9 @@ use std::ffi::OsString;
 use crate::db::BuildDir;
 use crate::deps::{self, Prepared};
 use crate::manifest::{Loaded, Profile, TargetKind};
+use crate::plan;
 use crate::pool::Pool;
+use crate::resolve::Graph;
 use crate::rt::RtArtifacts;
 use crate::tables;
 
@@ -69,6 +71,8 @@ pub async fn build(
     sources: &Prepared,
     rt: &RtArtifacts,
     opts: &Options,
+    graph: &Graph,
+    pool: &Pool,
 ) -> Result<Vec<Product>, String> {
     let manifest = &loaded.manifest;
     let selected: Vec<&str> = if opts.targets.is_empty() {
@@ -108,26 +112,45 @@ pub async fn build(
         let key = tables::product_key(&opts.profile_name, name);
         let current = product_is_current(dir, &key, &fingerprint, &path)?;
         if current {
-            tracing::info!(target = name, "up to date");
+            tracing::debug!(target = name, "up to date");
         }
         plan.push((name, kind, path, key, current));
     }
-    let stale = plan.iter().filter(|(_, _, _, _, current)| !current).count();
-    if stale > 0 {
-        let pool = Pool::new(opts.jobs)?;
-        let workers = &pool;
-        futures_util::future::try_join_all(
-            plan.iter().filter(|(_, _, _, _, current)| !current).map(
-                |(name, kind, path, _, _)| {
-                    tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
-                    let invocation = rrc_invocation(loaded, rt, opts, *kind, path);
-                    async move { workers.run(move || invocation.run()).await? }
-                },
-            ),
+    // The root's commands come from the same synthesis the dump prints
+    // (and the dependency pipeline runs): what `inspect --commands` shows
+    // is what happens here.
+    let mut planned: std::collections::BTreeMap<String, plan::PlannedCommand> =
+        plan::node_commands(
+            graph,
+            &graph.root,
+            &plan::Options {
+                profile_name: &opts.profile_name,
+                profile: &opts.profile,
+                linker: opts.linker.as_deref(),
+                build_dir: dir.root(),
+            },
+            Some(rt),
         )
-        .await?;
-        pool.shutdown().await?;
+        .into_iter()
+        .filter_map(|command| Some((command.target.clone()?, command)))
+        .collect();
+    let mut invocations = Vec::new();
+    for (name, kind, path, _, current) in &plan {
+        if *current {
+            continue;
+        }
+        tracing::debug!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+        let command = planned
+            .remove(*name)
+            .ok_or_else(|| format!("target `{name}` missing from the plan"))?;
+        invocations.push(Invocation::from_planned(command, &rt.rustc));
     }
+    futures_util::future::try_join_all(
+        invocations
+            .into_iter()
+            .map(|invocation| async move { pool.run(move || invocation.run()).await? }),
+    )
+    .await?;
     let mut products = Vec::with_capacity(plan.len());
     for (name, _, path, key, current) in plan {
         if !current {
@@ -158,6 +181,19 @@ pub(crate) struct Invocation {
 }
 
 impl Invocation {
+    /// An `rrc` invocation from a planned command: the real program
+    /// resolved, the baking toolchain pinned through `REUSSIR_RUSTC`.
+    pub(crate) fn from_planned(command: plan::PlannedCommand, rustc: &Path) -> Invocation {
+        Invocation {
+            program: deps::resolve_rrc(),
+            args: command.args.into_iter().map(OsString::from).collect(),
+            // The toolchain that baked the runtime is the one the link step
+            // and the polyffi texture compiles must agree with.
+            envs: vec![("REUSSIR_RUSTC", rustc.into())],
+            out: command.out,
+        }
+    }
+
     /// Spawn and await the process (on whichever runtime polls this).
     /// rrc's diagnostics stream straight through to the user.
     pub(crate) async fn run(self) -> Result<(), String> {
@@ -180,44 +216,6 @@ impl Invocation {
     }
 }
 
-/// One target's `rrc` invocation.
-fn rrc_invocation(
-    loaded: &Loaded,
-    rt: &RtArtifacts,
-    opts: &Options,
-    kind: TargetKind,
-    out: &Path,
-) -> Invocation {
-    let mut args: Vec<OsString> = vec![
-        "--package-root".into(),
-        deps::source_root(loaded).into(),
-        "--package-name".into(),
-        (&loaded.manifest.package.name).into(),
-        "--emit".into(),
-        kind.emit().into(),
-        "-o".into(),
-        out.into(),
-    ];
-    for libdir in rt.libdirs() {
-        args.push("--polyffi-libdir".into());
-        args.push(libdir.into());
-    }
-    args.extend(
-        profile_flags(&opts.profile, kind, opts.linker.as_deref())
-            .into_iter()
-            .map(OsString::from),
-    );
-    Invocation {
-        program: deps::resolve_rrc(),
-        args,
-        // The toolchain that baked the runtime is the one the link step and
-        // the polyffi texture compiles must agree with.
-        envs: vec![("REUSSIR_RUSTC", rt.rustc.clone().into())],
-        out: out.to_owned(),
-    }
-}
-
-/// The profile, spelled as `rrc` flags.
 /// The `rrc` flags a profile expands to, as plain strings — shared by the
 /// real invocation above and the planned-command dump ([`crate::plan`]).
 pub(crate) fn profile_flags(

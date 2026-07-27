@@ -38,7 +38,9 @@
 // SCAN:      "state": "up-to-date"
 
 // Nothing moved, so the record stands and a second run re-scans nothing.
-// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl 2>&1 >/dev/null | %FileCheck %s --check-prefix=NOOP
+// (`-v`: the freshness narration lives at DEBUG so default runs keep the
+// progress bars clean.)
+// RUN: %rene -v inspect --manifest-path %t.pkg/rene.ncl 2>&1 >/dev/null | %FileCheck %s --check-prefix=NOOP
 // RUN: %rene inspect --frozen --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=CACHED
 
 // NOOP: package sources are up to date

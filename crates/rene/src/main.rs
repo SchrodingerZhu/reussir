@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, fresh, manifest, plan, resolve, rt};
+use rene::{compile, deps, exec, fresh, manifest, plan, pool, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -131,6 +131,12 @@ struct InspectArgs {
     /// The profile the `plan` section renders against.
     #[arg(long, default_value = "dev")]
     profile: String,
+
+    /// The linker override the compared build ran with (`rene build
+    /// --linker`): part of the root products' fingerprints, so freshness
+    /// must judge against the same value.
+    #[arg(long)]
+    linker: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -194,6 +200,9 @@ fn init_tracing(verbose: bool) {
         });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        // Plain text off-terminal: CI logs and FileCheck'd stderr must not
+        // carry ANSI escapes.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -232,7 +241,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
-    tracing::info!(
+    tracing::debug!(
         package = %loaded.manifest.package.name,
         manifest = %loaded.path.display(),
         profile = %args.profile,
@@ -244,17 +253,15 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // Dependency resolution, before any expensive work too: load the
     // transitive path graph and let pubgrub verify the constraints hold
     // together (each package exists in exactly one version today, so this is
-    // a feasibility check; see `resolve`).
-    let graph = if loaded.manifest.dependencies.is_empty() {
-        None
-    } else {
-        let graph = resolve::load_graph(&loaded)?;
+    // a feasibility check; see `resolve`). A dependency-less package is a
+    // one-node graph through the same machinery.
+    let graph = resolve::load_graph(&loaded)?;
+    if graph.nodes.len() > 1 {
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
-            tracing::info!(package = %name, %version, "resolved");
+            tracing::debug!(package = %name, %version, "resolved");
         }
-        Some(graph)
-    };
+    }
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
@@ -269,20 +276,53 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     let sources = deps::prepare(&dir, &loaded).await?;
     // The bake links the runtime dylib with the same linker pinning the
     // driver-level links get: the CLI override first, then the profile's.
+    // The progress surface exists from here on: the bake's spinner first,
+    // the pipeline's bars after.
+    let progress = indicatif::MultiProgress::new();
     let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
-    let artifacts = rt::prepare(&dir, bake_linker.as_deref()).await?;
+    let artifacts = rt::prepare(&dir, bake_linker.as_deref(), &progress).await?;
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
     if loaded.manifest.targets.is_empty() {
         if !sources.rescanned() {
-            tracing::info!(files = sources.files.len(), "nothing to do");
+            tracing::debug!(files = sources.files.len(), "nothing to do");
         }
         tracing::info!("no targets declared; pass these directories to `rrc --polyffi-libdir`:");
         for libdir in artifacts.libdirs() {
             println!("{}", libdir.display());
         }
         return Ok(());
+    }
+
+    // One pool for the whole build: `-j` admission over a few event-loop
+    // workers.
+    let pool = pool::Pool::new(args.jobs)?;
+
+    // The dependency pipeline: every node of the graph but the root, each
+    // dispatched the moment its last dependency finishes, each freshness-
+    // checked, compiled (interface + archive), and recorded.
+    let built = exec::build_deps(
+        &dir,
+        &graph,
+        &artifacts,
+        &exec::Options {
+            profile_name: &args.profile,
+            profile: &profile,
+            linker: args.linker.as_deref(),
+            jobs: args.jobs,
+            build_dir: &root,
+        },
+        &pool,
+        &progress,
+    )
+    .await?;
+    if graph.nodes.len() > 1 {
+        tracing::debug!(
+            built,
+            fresh = graph.nodes.len() - 1 - built,
+            "dependencies ready"
+        );
     }
 
     let products = compile::build(
@@ -296,21 +336,20 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
             targets: args.targets.clone(),
             linker: args.linker.clone(),
             // The cone's artifact digests enter the fingerprint, so a
-            // product consuming a changed upstream artifact re-fingerprints
-            // (an absent one digests to a sentinel — see `fresh`).
-            upstream: graph
-                .as_ref()
-                .map(|graph| {
-                    rene::fresh::root_upstream_digests(
-                        graph,
-                        &root.join(&args.profile).join("deps"),
-                    )
-                })
-                .unwrap_or_default(),
+            // product consuming a changed upstream artifact re-fingerprints.
+            // Computed *after* the dependency pipeline: it hashes the final
+            // artifacts the targets will consume.
+            upstream: rene::fresh::root_upstream_digests(
+                &graph,
+                &root.join(&args.profile).join("deps"),
+            ),
             jobs: args.jobs,
         },
+        &graph,
+        &pool,
     )
     .await?;
+    pool.shutdown().await?;
     // Stdout carries the artifact listing, one path per target, in the
     // order they were declared (or selected).
     for product in &products {
@@ -413,6 +452,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                     dir: held.as_ref(),
                     profile_name: &args.profile,
                     profile: &profile,
+                    linker: args.linker.as_deref(),
                     build_dir: &root,
                 },
             )?;
@@ -421,7 +461,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                 &plan::Options {
                     profile_name: &args.profile,
                     profile: &profile,
-                    linker: None,
+                    linker: args.linker.as_deref(),
                     build_dir: &root,
                 },
                 bake.as_ref(),
