@@ -15,11 +15,15 @@
 
 #include "Reussir-c/Passes.h"
 
+#include <llvm/IR/Comdat.h>
 #include <llvm/IR/DataLayout.h>
+#include <llvm/IR/GlobalObject.h>
+#include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/CBindingWrapping.h>
 #include <llvm/Support/Error.h>
+#include <llvm/TargetParser/Triple.h>
 
 // Complete mlir::DialectVersion before MLIR C API headers reach
 // BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
@@ -210,6 +214,39 @@ LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
 
 void reussirFixupVariantDebugInfo(LLVMModuleRef module) {
   reussir::fixupVariantDebugInfo(*llvm::unwrap(module));
+}
+
+void reussirAttachCoffComdats(LLVMModuleRef module) {
+  llvm::Module &m = *llvm::unwrap(module);
+  // COFF only: Mach-O rejects comdats outright (hard LLVM error), and ELF
+  // weak binding dedups without them.
+  if (!m.getTargetTriple().isOSBinFormatCOFF())
+    return;
+  auto attach = [&m](llvm::GlobalObject &go) {
+    // A comdat is only valid on a definition, and an existing one (e.g. from
+    // linked-in rustc bitcode) already carries the right selection kind.
+    if (go.isDeclaration() || go.hasComdat())
+      return;
+    switch (go.getLinkage()) {
+    case llvm::GlobalValue::WeakODRLinkage:
+    case llvm::GlobalValue::LinkOnceODRLinkage:
+    case llvm::GlobalValue::WeakAnyLinkage:
+    case llvm::GlobalValue::LinkOnceAnyLinkage: {
+      // COFF requires the comdat symbol to be the section's own leader, so
+      // the comdat must be keyed by the symbol's exact name.
+      llvm::Comdat *comdat = m.getOrInsertComdat(go.getName());
+      comdat->setSelectionKind(llvm::Comdat::Any);
+      go.setComdat(comdat);
+      break;
+    }
+    default:
+      break;
+    }
+  };
+  for (llvm::Function &f : m.functions())
+    attach(f);
+  for (llvm::GlobalVariable &g : m.globals())
+    attach(g);
 }
 
 int reussirHasTPDE(void) {
