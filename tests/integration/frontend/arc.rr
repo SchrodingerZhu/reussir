@@ -25,7 +25,7 @@ pub fn maybe(n: Nullable<Arc<Data>>) -> Nullable<Arc<Data>> {
 
 // A generic inner is deferred to the instantiation check; the instance
 // grounds `Arc<$0>` at `Arc<Data>`.
-// HIR: fn #passthrough<[[G:\$[0-9]+]]>(v0 (a): Arc<[[G]]>) -> Arc<[[G]]>
+// HIR: fn #passthrough<[[G:\$[0-9]+]] (T)>(v0 (a): Arc<[[G]]>) -> Arc<[[G]]>
 // MIR-DAG: fn @_RIC11passthroughC4DataE(v0 (a): Arc<Data>) -> Arc<Data>
 fn passthrough<T>(a: Arc<T>) -> Arc<T> {
     a

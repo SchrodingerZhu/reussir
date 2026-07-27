@@ -5,4 +5,4 @@ enum List<T> {
     Cons(T, List<T>)
 }
 
-// CHECK: [shared] enum #List<$0> { Nil(), Cons($0, #List::<$0>) };
+// CHECK: [shared] enum #List<$0 (T)> { Nil(), Cons($0, #List::<$0>) };

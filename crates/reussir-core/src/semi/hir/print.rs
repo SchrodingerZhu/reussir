@@ -16,6 +16,7 @@ use pprint::{Doc, Printer as PpPrinter, hardline, indent, pprint};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::SourceCache;
 
+use crate::ir_lex::spell_name;
 use crate::semi::ctxt::{
     DefaultCap, FfiImport, FfiPrelude, Record, RecordFields, TrampolineRoot, TransformScript,
 };
@@ -232,8 +233,11 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// `<$0, regional $1>` — a generic binder list, shared by records and
-    /// functions; `regional` marks a generic in `regional_generics`.
+    /// `<$0 (T), regional $1 (U)>` — a generic binder list, shared by
+    /// records and functions; `regional` marks a generic in
+    /// `regional_generics`. The source name rides along like a parameter's
+    /// debug name: `[:T:]` placeholders in foreign bodies resolve against
+    /// it when an imported generic instantiates in a consumer package.
     fn generics_binder(
         &self,
         params: &[(TokenKey, GenericId)],
@@ -244,13 +248,17 @@ impl<'a> Printer<'a> {
         }
         let parts: Vec<Doc<'static>> = params
             .iter()
-            .map(|(_, g)| {
+            .map(|(name, g)| {
                 let r = if regional.contains(g) {
                     "regional "
                 } else {
                     ""
                 };
-                text(format!("{r}${}", g.0))
+                text(format!(
+                    "{r}${} ({})",
+                    g.0,
+                    spell_name(self.resolver.resolve(*name))
+                ))
             })
             .collect();
         text("<") + comma_sep(parts) + text(">")
@@ -303,7 +311,7 @@ impl<'a> Printer<'a> {
                     .iter()
                     .map(|v| {
                         let fields = v.fields.iter().map(|&t| self.ty(t)).collect();
-                        text(format!("{}(", self.resolver.resolve(v.name)))
+                        text(format!("{}(", spell_name(self.resolver.resolve(v.name))))
                             + comma_sep(fields)
                             + text(")")
                     })
@@ -369,7 +377,11 @@ impl<'a> Printer<'a> {
             .params
             .iter()
             .map(|(name, var, ty)| {
-                text(format!("v{} ({}): ", var.0, self.resolver.resolve(*name))) + self.ty(*ty)
+                text(format!(
+                    "v{} ({}): ",
+                    var.0,
+                    spell_name(self.resolver.resolve(*name))
+                )) + self.ty(*ty)
             })
             .collect();
         sig = sig
@@ -520,7 +532,7 @@ impl<'a> Printer<'a> {
                     + self.span_doc(e.span)
                     + text(" ")
                     + var(*v)
-                    + text(format!(" ({}", self.resolver.resolve(*name)))
+                    + text(format!(" ({}", spell_name(self.resolver.resolve(*name))))
                     + self.span_doc(*name_span)
                     + text(") = ")
                     + self.value(value)

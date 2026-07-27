@@ -47,13 +47,13 @@ fn foo() -> DLLink<i32> {
 
 // Full elaboration checks
 
-// CHECK: [regional] struct #DLLink<$0> { "val": $0, "next": field Nullable<[regional] #DLLink::<$0>>, "prev": field Nullable<[regional] #DLLink::<$0>> };
+// CHECK: [regional] struct #DLLink<$0 (T)> { "val": $0, "next": field Nullable<[regional] #DLLink::<$0>>, "prev": field Nullable<[regional] #DLLink::<$0>> };
 // CHECK-EMPTY:
-// CHECK-NEXT: regional fn #new<$1>(v0 (val): $1) -> [flex] #DLLink::<$1> {
+// CHECK-NEXT: regional fn #new<$1 (T)>(v0 (val): $1) -> [flex] #DLLink::<$1> {
 // CHECK-NEXT:     #DLLink::<$1>{v0 : $1, Null : Nullable<[flex] #DLLink::<$1>>, Null : Nullable<[flex] #DLLink::<$1>>} : [flex] #DLLink::<$1>
 // CHECK-NEXT: }
 // CHECK-EMPTY:
-// CHECK-NEXT: regional fn #push_back_assuming_tail<$2>(v0 (cursor): [flex] #DLLink::<$2>, v1 (elem): $2) -> () {
+// CHECK-NEXT: regional fn #push_back_assuming_tail<$2 (T)>(v0 (cursor): [flex] #DLLink::<$2>, v1 (elem): $2) -> () {
 // CHECK-NEXT:     let v2 (new_node) = regional #new::<$2>(v1 : $2) : [flex] #DLLink::<$2>;
 // CHECK-NEXT:     assign(v2 : [flex] #DLLink::<$2>, 2, NonNull(v0 : [flex] #DLLink::<$2>) : Nullable<[flex] #DLLink::<$2>>) : ();
 // CHECK-NEXT:     assign(v0 : [flex] #DLLink::<$2>, 1, NonNull(v2 : [flex] #DLLink::<$2>) : Nullable<[flex] #DLLink::<$2>>) : ()

@@ -14,7 +14,7 @@ fn bar() -> Option<i32> {
     Option::None{}
 }
 
-// CHECK: [shared] enum #Option<$0> { Some($0), None() };
+// CHECK: [shared] enum #Option<$0 (T)> { Some($0), None() };
 // CHECK-EMPTY:
 // CHECK-NEXT: fn #foo() -> #Option::<i32> {
 // CHECK-NEXT:     #Option::<i32>#1() : #Option::<i32>

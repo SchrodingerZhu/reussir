@@ -93,7 +93,7 @@ Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
 /// An enum variant: its mangled payload symbol, source name, and ordered field
 /// types.
 Variant: raw::Variant =
-    "@" <symbol:Sym> <name:Name> "(" <fs:Comma<Ty>> ")"
+    "@" <symbol:Sym> <name:DebugName> "(" <fs:Comma<Ty>> ")"
         => raw::Variant { symbol, name: name.into(), fields: fs };
 
 /// A symbol body (after `@`).
@@ -107,6 +107,16 @@ Name: &'input str = {
     "ffi" => "ffi",
     "texture" => "texture",
     "glue" => "glue",
+};
+
+/// A user debug name (parameter and let names, variant names). A name that
+/// collides with any IR keyword (a parameter named `value`, a variant named
+/// `Null`, …) or is not identifier-shaped arrives quoted — see the
+/// printer's `spell_name`. Type-path segments keep plain [`Name`]: allowing
+/// `quoted` there would clash with quoted member names in record layouts.
+DebugName: Cow<'input, str> = {
+    <name:Name> => Cow::Borrowed(name),
+    <q:"quoted"> => unescape_debug_str(q),
 };
 
 Func: raw::Func =
@@ -130,7 +140,7 @@ Body: Option<raw::Expr> = {
 };
 
 Param: raw::Param =
-    <var:"var"> "(" <name:Name> ")" ":" <ty:Ty>
+    <var:"var"> "(" <name:DebugName> ")" ":" <ty:Ty>
     => raw::Param { var, name: name.into(), ty };
 
 // ----- types -----
@@ -212,7 +222,7 @@ Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
 /// block (a `Seq`) are the two structural exceptions.
 Expr: raw::Expr = {
     <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
-    "let" <sp:Span?> <var:"var"> "(" <name:Name> ")" "=" <value:Expr>
+    "let" <sp:Span?> <var:"var"> "(" <name:DebugName> ")" "=" <value:Expr>
         => raw::Expr::new(raw::Kind::Let { var, name: name.into(), value }, raw::Ty::Unit)
             .with_span(sp),
     "{" <b:Block> "}" => b,

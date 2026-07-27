@@ -24,7 +24,7 @@ fn map_to_none(x : Option<i32>) -> Option<i32> {
     }
 }
 
-// CHECK: [shared] enum #Option<$0> { Some($0), None() };
+// CHECK: [shared] enum #Option<$0 (T)> { Some($0), None() };
 // CHECK-EMPTY:
 // CHECK-NEXT: fn #is_some(v0 (x): #Option::<i32>) -> bool {
 // CHECK-NEXT:     match v0 : #Option::<i32> {

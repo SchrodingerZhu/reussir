@@ -234,7 +234,13 @@ impl<'tcx> Builder<'_, 'tcx> {
     fn generics(&mut self, gs: &[raw::Generic]) -> (Vec<(TokenKey, GenericId)>, Vec<GenericId>) {
         let ty_params = gs
             .iter()
-            .map(|g| (self.names.intern(&format!("${}", g.id)), GenericId(g.id)))
+            .map(|g| {
+                let key = match &g.name {
+                    Some(name) => self.names.intern(name),
+                    None => self.names.intern(&format!("${}", g.id)),
+                };
+                (key, GenericId(g.id))
+            })
             .collect();
         let regional = gs
             .iter()

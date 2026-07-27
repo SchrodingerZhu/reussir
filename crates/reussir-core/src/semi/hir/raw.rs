@@ -190,10 +190,15 @@ pub enum FuncBody {
 
 /// A generic parameter binder: its id and whether it sits at a `[flex]` position
 /// (and so must be instantiated regionally).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Generic {
     pub id: u32,
     pub regional: bool,
+    /// The binder's source name (`$0 (T)`), carried so `[:T:]` placeholders
+    /// in foreign bodies still resolve when an imported generic
+    /// `#[ffi(import)]` instantiates in a consumer package. Absent in older
+    /// dumps; the rebuild then falls back to the positional `$n` spelling.
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
