@@ -10,9 +10,12 @@
 //!
 //! # Roots
 //!
-//! Every non-generic function (emitted even if uncalled — whole-program DCE is
-//! the backend's job) plus every trampoline target. Generic functions are
-//! emitted once per distinct instantiation discovered from a reachable body.
+//! Every **local** non-generic function (emitted even if uncalled —
+//! whole-program DCE is the backend's job) plus every trampoline target.
+//! Generic functions are emitted once per distinct instantiation discovered
+//! from a reachable body. Imported functions ([`MonoExterns`]) are never
+//! roots: they are reached only through calls, instantiating from their
+//! shipped bodies or lowering to declarations from their prototypes.
 //!
 //! # Worklist
 //!
@@ -91,6 +94,36 @@ pub struct MonoInput<'a, 'tcx> {
     pub ffi_imports: &'a FxHashMap<DefId, FfiImport>,
     pub ffi_preludes: &'a [FfiPrelude],
     pub strings: Vec<(StringToken, String)>,
+    /// The dependency-interface tables (`--extern`); empty defaults for a
+    /// single-package compilation.
+    pub externs: MonoExterns<'a, 'tcx>,
+}
+
+/// What loaded dependency interfaces contribute to monomorphization: the
+/// remapped extern tables an [`Elaborator`] collected via
+/// `declare_extern_package`.
+///
+/// Imported functions join instantiation lookup (`by_def`) but are **never
+/// roots** — a ground import compiles in its own package and only its symbol
+/// crosses the boundary — and never seed the export closure
+/// ([`super::interface::export_closure`] walks `elaborated` only: a consumer
+/// does not re-export its dependency). An enqueued instance whose imported
+/// function carries a body instantiates here exactly like a local one (its
+/// `_RI` symbol dedups `weak_odr` against any other emitter); a bodyless
+/// prototype lowers to a `mir::Function` declaration the link resolves
+/// against the dependency's artifact.
+#[derive(Default)]
+pub struct MonoExterns<'a, 'tcx> {
+    pub functions: &'a [Function<'tcx>],
+    /// String literals imported bodies reference. Tokens are
+    /// content-addressed, so they merge into the program's table by token.
+    pub strings: &'a [(StringToken, String)],
+    /// Foreign bodies of imported `#[ffi(import)]` functions, keyed by their
+    /// consumer defs; their textures render per instance like local ones.
+    pub ffi_imports: Option<&'a FxHashMap<DefId, FfiImport>>,
+    /// Preludes of the imported ffi bodies' files (file ids already remapped
+    /// into the consumer's cache, so the per-file pairing holds).
+    pub ffi_preludes: &'a [FfiPrelude],
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -108,6 +141,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ffi_imports: &self.ffi_imports,
             ffi_preludes: &self.ffi_preludes,
             strings: self.strings.entries(),
+            externs: MonoExterns {
+                functions: &self.extern_functions,
+                strings: &self.extern_strings,
+                ffi_imports: Some(&self.extern_ffi_imports),
+                ffi_preludes: &self.extern_ffi_preludes,
+            },
         }
     }
 }
@@ -249,8 +288,14 @@ fn tree_exprs<'e, 'tcx>(tree: &'e DecisionTree<'tcx>, f: &mut impl FnMut(&'e Exp
 /// diagnostics raised by the call-boundary regional check.
 pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx>, Vec<Report>) {
     let tcx: &'a TyCtxt<'tcx> = input.tcx;
-    let by_def: FxHashMap<DefId, &Function<'tcx>> =
-        input.elaborated.iter().map(|f| (f.def, f)).collect();
+    // Instantiation looks up local *and* imported functions; only locals are
+    // seeded as roots below.
+    let by_def: FxHashMap<DefId, &Function<'tcx>> = input
+        .elaborated
+        .iter()
+        .chain(input.externs.functions)
+        .map(|f| (f.def, f))
+        .collect();
     let exports = mono_exports(input);
 
     let mut driver = Driver {
@@ -260,6 +305,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         symbols: Rodeo::default(),
         queue: VecDeque::new(),
         seen: FxHashSet::default(),
+        origins: FxHashMap::default(),
         records: FxHashSet::default(),
         record_defs: input.records,
         reported_arcs: FxHashSet::default(),
@@ -268,14 +314,16 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         ids: mir::ExprIdGen::default(),
     };
 
-    // Seed roots: every non-generic function, then every trampoline target.
+    // Seed roots: every *local* non-generic function, then every trampoline
+    // target. Imported grounds must not seed — their definitions live in the
+    // dependency's artifact and only calls reach them (as declarations).
     for f in input.elaborated {
         if f.generics.is_empty() {
-            driver.enqueue(f.def, tcx.intern_tys(&[]));
+            driver.enqueue(f.def, tcx.intern_tys(&[]), f.span);
         }
     }
     for t in input.trampolines {
-        driver.enqueue(t.target, tcx.intern_tys(&t.ty_args));
+        driver.enqueue(t.target, tcx.intern_tys(&t.ty_args), None);
     }
 
     // FFI accumulators. `ffi_mangler` is a second (stateless) mangler the
@@ -292,7 +340,27 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     let mut functions = Vec::new();
     while let Some(inst) = driver.queue.pop_front() {
         let Some(func) = by_def.get(&inst.def) else {
-            // No body/prototype recorded (e.g. an item that failed to elaborate).
+            // Neither a local definition nor an imported body/prototype: with
+            // externs in play a silent skip would manufacture an undefined
+            // symbol at link time, so report at the discovering call site. A
+            // stale or incomplete dependency interface is the expected cause;
+            // an item that failed to elaborate never reaches mono (the driver
+            // stops on elaboration errors).
+            let (file, span) = driver
+                .origins
+                .get(&inst)
+                .copied()
+                .unwrap_or((FileId::ROOT, None));
+            driver.cur_file = file;
+            let path = input.defs.path(inst.def).display(input.resolver);
+            driver.error(
+                span,
+                format!(
+                    "no body or prototype recorded for `{path}`: the definition is \
+                     neither in this package nor in a loaded dependency interface \
+                     (is a stale `.rri` being passed via `--extern`?)"
+                ),
+            );
             continue;
         };
         driver.cur_file = func.file;
@@ -336,10 +404,18 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
 
         let symbol = driver.symbol_of(inst.def, inst.ty_args);
 
-        // An `#[ffi(import)]` instance: render its boundary wrapper texture
-        // and register the import trampoline. The function itself stays a
-        // bodyless declaration under `symbol` (emitted below as usual).
-        if let Some(fimport) = input.ffi_imports.get(&inst.def) {
+        // An `#[ffi(import)]` instance (local or imported — a polyffi texture
+        // inside a shipped body compiles in the consumer's pipeline): render
+        // its boundary wrapper texture and register the import trampoline.
+        // The function itself stays a bodyless declaration under `symbol`
+        // (emitted below as usual).
+        let ffi_import = input.ffi_imports.get(&inst.def).or_else(|| {
+            input
+                .externs
+                .ffi_imports
+                .and_then(|imports| imports.get(&inst.def))
+        });
+        if let Some(fimport) = ffi_import {
             let fctx = FfiCtx {
                 records: input.records,
                 instance_symbol: &instance_symbol,
@@ -396,9 +472,12 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                 }
                 let body_text =
                     ffi_render::substitute_placeholders(&fimport.body, &placeholders);
+                // File ids are one space (externs remap at declaration), so
+                // the per-file prelude pairing holds across both tables.
                 let preludes: Vec<&str> = input
                     .ffi_preludes
                     .iter()
+                    .chain(input.externs.ffi_preludes)
                     .filter(|p| p.file == fimport.file)
                     .map(|p| p.body.as_str())
                     .collect();
@@ -594,6 +673,18 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     ffi_imports_out.sort_by_cached_key(|f| driver.symbols.resolve(&f.symbol.0).to_owned());
     ffi_textures.sort_by_cached_key(|t| driver.symbols.resolve(&t.anchor.0).to_owned());
 
+    // Imported bodies' `GlobalStr` tokens must resolve in the program's
+    // table. Tokens are content-addressed, so a literal both sides use is
+    // one entry.
+    let mut string_literals = input.strings.clone();
+    let mut seen_strings: FxHashSet<StringToken> =
+        string_literals.iter().map(|(token, _)| *token).collect();
+    for (token, text) in input.externs.strings {
+        if seen_strings.insert(*token) {
+            string_literals.push((*token, text.clone()));
+        }
+    }
+
     let Driver {
         symbols, reports, ..
     } = driver;
@@ -602,7 +693,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             functions,
             records,
             trampolines,
-            string_literals: input.strings.clone(),
+            string_literals,
             transform_scripts: input.transform_scripts.to_vec(),
             ffi_imports: ffi_imports_out,
             ffi_textures,
@@ -827,6 +918,10 @@ struct Driver<'a, 'tcx> {
     queue: VecDeque<Instance<'tcx>>,
     /// Function instances already enqueued (so each is emitted once).
     seen: FxHashSet<Instance<'tcx>>,
+    /// Where each instance was first demanded — the discovering call's file
+    /// and span — so an instantiation target with no recorded body or
+    /// prototype reports at its call site.
+    origins: FxHashMap<Instance<'tcx>, (FileId, Option<Span>)>,
     /// Ground record instances whose layout is needed (keyed flex-independently).
     records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])>,
     /// Record definitions (for their default capability) — the deferred `Arc`
@@ -872,10 +967,13 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         });
     }
 
-    /// Enqueue a function instance if it has not been seen.
-    fn enqueue(&mut self, def: DefId, ty_args: &'tcx [Ty<'tcx>]) {
+    /// Enqueue a function instance if it has not been seen, recording the
+    /// demanding site (`span` in [`cur_file`](Self::cur_file)) for the
+    /// missing-definition diagnostic.
+    fn enqueue(&mut self, def: DefId, ty_args: &'tcx [Ty<'tcx>], span: Option<Span>) {
         let inst = Instance { def, ty_args };
         if self.seen.insert(inst) {
+            self.origins.insert(inst, (self.cur_file, span));
             // Bound the queue by type-argument depth. The queue is the only thing
             // that grows, and polymorphic recursion makes each instance one level
             // deeper than the last, so an unbounded chain trips this rather than
@@ -1248,7 +1346,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         let ty = subst_ty(self.tcx, e.ty, subst);
         self.note_records(ty);
         self.check_arc_inners(ty, e.span);
-        let kind = self.lower_kind(&e.kind, subst);
+        let kind = self.lower_kind(&e.kind, subst, e.span);
         self.check_literal_range(&kind, ty, e.span);
         mir::Expr {
             id: self.ids.fresh(),
@@ -1301,7 +1399,12 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         }
     }
 
-    fn lower_kind(&mut self, kind: &ExprKind<'tcx>, subst: &Subst<'tcx>) -> mir::ExprKind<'tcx> {
+    fn lower_kind(
+        &mut self,
+        kind: &ExprKind<'tcx>,
+        subst: &Subst<'tcx>,
+        span: Option<Span>,
+    ) -> mir::ExprKind<'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
@@ -1365,7 +1468,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 regional,
             } => {
                 let ty_args = self.ground_args(ty_args, subst);
-                self.enqueue(*target, ty_args);
+                self.enqueue(*target, ty_args, span);
                 let callee = self.symbol_of(*target, ty_args);
                 M::Call {
                     callee,
@@ -1781,6 +1884,7 @@ mod tests {
                 ffi_imports: &parsed.ffi_imports,
                 ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
+                externs: MonoExterns::default(),
             };
             let (mir1, r1) = monomorphize(&input);
             assert!(r1.is_empty(), "{r1:#?}");
@@ -1888,6 +1992,7 @@ mod tests {
                 ffi_imports: &hir.ffi_imports,
                 ffi_preludes: &hir.ffi_preludes,
                 strings: hir.strings.clone(),
+                externs: MonoExterns::default(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
             assert!(r_resumed.is_empty(), "resumed mono reports: {r_resumed:#?}");
@@ -2405,6 +2510,320 @@ mod tests {
                 "expected a `[field]` regionality diagnostic, got {reports:#?}"
             );
         });
+    }
+
+    // ----- cross-package monomorphization -----
+
+    /// Elaborate `dep_src` as package `dep`, reduce it to its export closure,
+    /// print the interface, re-parse, and declare it into a consumer
+    /// elaborating `app_src` as package `app` — the round trip `--extern`
+    /// performs — then monomorphize the consumer. `edit` mutates the printed
+    /// interface text in between (identity for the well-formed cases).
+    fn mono_with_dep(
+        dep_src: &str,
+        app_src: &str,
+        edit: impl Fn(String) -> String,
+        f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>, &mir::Program<'tcx>, &[Report]),
+    ) {
+        use std::sync::Arc;
+
+        use reussir_syntax::Interner as _;
+        use reussir_syntax::source::FileId;
+
+        use crate::full::interface::{RRI_FORMAT, export_closure};
+        use crate::semi::externs::ExternPackage;
+        use crate::semi::hir::print::{InterfaceEmit, Printer as HirPrinter};
+        use crate::semi::{PackageFile, elaborate_package};
+
+        with_tcx(|tcx| {
+            let dep_interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut dep_keys = dep_interner.clone();
+            let dep = dep_keys.get_or_intern("dep");
+            let parse = reussir_syntax::parse_with_interner(dep_src, dep_interner.clone());
+            assert!(parse.ok(), "dep parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let files = [PackageFile {
+                file: FileId::ROOT,
+                module: vec![dep],
+                program: &prog,
+            }];
+            let dep_elab = elaborate_package(tcx, &files, &dep_interner);
+            assert!(
+                !dep_elab.has_errors(),
+                "dep elab errors: {:#?}",
+                dep_elab.reports
+            );
+            let closure = export_closure(&dep_elab.mono_input());
+            let strings: Vec<_> = dep_elab
+                .strings
+                .entries()
+                .into_iter()
+                .filter(|(token, _)| closure.strings.contains(token))
+                .collect();
+            let text = HirPrinter::new(&dep_elab.defs, dep_elab.resolver)
+                .with_interface(InterfaceEmit {
+                    format: RRI_FORMAT,
+                    package: "dep",
+                    producer: "t",
+                    bodies: &closure.bodies,
+                    protos: &closure.protos,
+                    records: &closure.records,
+                    file_root: None,
+                })
+                .program(&dep_elab.elaborated, &strings, &dep_elab.records, &[]);
+            let text = edit(text);
+            let parsed = crate::semi::hir::build::parse_program(tcx, &text)
+                .expect("interface re-parses");
+
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let app = keys.get_or_intern("app");
+            let parse = reussir_syntax::parse_with_interner(app_src, interner.clone());
+            assert!(parse.ok(), "app parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let files = [PackageFile {
+                file: FileId::ROOT,
+                module: vec![app],
+                program: &prog,
+            }];
+            let mut elab = Elaborator::new(tcx, &interner);
+            elab.declare_extern_package(
+                &mut keys,
+                &ExternPackage {
+                    name: "dep",
+                    parsed: &parsed,
+                    files: &[],
+                },
+            );
+            elab.run_package(&files);
+            assert!(!elab.has_errors(), "app elab errors: {:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            f(&elab, &full, &reports);
+        });
+    }
+
+    /// The printed text of one function item (`fn @sym… {…}` / `fn @sym…;`)
+    /// out of a whole-program MIR dump.
+    fn mir_item(program_text: &str, symbol: &str) -> String {
+        let needle = format!("fn @{symbol}(");
+        program_text
+            .split("\n\n")
+            .find(|item| item.contains(&needle))
+            .unwrap_or_else(|| panic!("`{symbol}` not in:\n{program_text}"))
+            .to_owned()
+    }
+
+    /// An imported generic instantiates in the consumer byte-for-byte like
+    /// the same instantiation made inside the dependency: same `_RI` symbol
+    /// (path-based v0 mangling), same lowered body, callee resolved to the
+    /// dependency's ground helper — which itself lowers to a bodyless
+    /// declaration (its definition lives in the dep's artifact).
+    #[test]
+    fn imported_generic_instantiates_like_the_dep_itself() {
+        use crate::full::mir::print::Printer as MirPrinter;
+
+        const DEP: &str = "fn helper(x: i64) -> i64 { x + 1 }\n\
+                           pub fn twice<T : Num>(x: T) -> T { helper(0); x + x }";
+
+        // The dependency's own instantiation of `twice<i64>`.
+        let dep_side = with_tcx(|tcx| {
+            use std::sync::Arc;
+
+            use reussir_syntax::Interner as _;
+            use reussir_syntax::source::FileId;
+
+            use crate::semi::{PackageFile, elaborate_package};
+
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let dep = keys.get_or_intern("dep");
+            let src = format!("{DEP}\npub fn local_use(n: i64) -> i64 {{ twice(n) }}");
+            let parse = reussir_syntax::parse_with_interner(&src, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let files = [PackageFile {
+                file: FileId::ROOT,
+                module: vec![dep],
+                program: &prog,
+            }];
+            let elab = elaborate_package(tcx, &files, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "{reports:#?}");
+            let text = MirPrinter::new(&elab.defs, elab.resolver).program(&full);
+            mir_item(&text, "_RINvC3dep5twicexE")
+        });
+
+        mono_with_dep(
+            DEP,
+            "pub fn use_it(n: i64) -> i64 { dep::twice(n) }",
+            |text| text,
+            |elab, full, reports| {
+                assert!(reports.is_empty(), "{reports:#?}");
+                let text = MirPrinter::new(&elab.defs, elab.resolver).program(full);
+                let instance = mir_item(&text, "_RINvC3dep5twicexE");
+                assert_eq!(
+                    instance, dep_side,
+                    "the consumer's instance must match the dep's own"
+                );
+                assert!(
+                    instance.contains('{'),
+                    "the instance is a definition:\n{instance}"
+                );
+                // The private ground callee crossed as a prototype only.
+                let helper = mir_item(&text, "_RNvC3dep6helper");
+                assert!(helper.trim_end().ends_with(';'), "a declaration:\n{helper}");
+                // The consumer's own root calls the instance by symbol.
+                let user = mir_item(&text, "_RNvC3app6use_it");
+                assert!(user.contains("_RINvC3dep5twicexE"), "{user}");
+            },
+        );
+    }
+
+    /// An imported ground `pub` function lowers to a declaration when called
+    /// and is not emitted at all otherwise: imported functions are never mono
+    /// roots (the dependency compiled their bodies; a consumer root would
+    /// re-emit a definition it does not have).
+    #[test]
+    fn imported_grounds_declare_when_called_and_never_root() {
+        mono_with_dep(
+            "pub fn ground(x: i64) -> i64 { x + 1 }\n\
+             pub fn unused(x: i64) -> i64 { x + 2 }",
+            "pub fn go(n: i64) -> i64 { dep::ground(n) }",
+            |text| text,
+            |_, full, reports| {
+                assert!(reports.is_empty(), "{reports:#?}");
+                let called = full
+                    .functions
+                    .iter()
+                    .find(|f| full.symbol(f.symbol) == "_RNvC3dep6ground")
+                    .expect("called import declared");
+                assert!(called.body.is_none(), "declaration, not definition");
+                assert!(
+                    !symbols(full).iter().any(|s| s.contains("unused")),
+                    "uncalled imports must not seed: {:?}",
+                    symbols(full)
+                );
+            },
+        );
+    }
+
+    /// Imported items never join the consumer's export surface: the closure
+    /// seeds from the consumer's own items only, and no dep-derived MIR
+    /// function is `mono_exported`.
+    #[test]
+    fn imported_functions_never_seed_exports() {
+        mono_with_dep(
+            "fn helper(x: i64) -> i64 { x }\n\
+             pub fn api<T : Num>(x: T) -> T { helper(0); x }",
+            "fn local_helper(x: i64) -> i64 { x }\n\
+             pub fn wrap<T : Num>(x: T) -> T { local_helper(0); dep::api(x) }",
+            |text| text,
+            |elab, full, reports| {
+                assert!(reports.is_empty(), "{reports:#?}");
+                let closure = crate::full::interface::export_closure(&elab.mono_input());
+                for def in closure.bodies.iter().chain(&closure.protos) {
+                    let path = elab.defs.path(*def).display(elab.resolver);
+                    assert!(
+                        path.starts_with("app::"),
+                        "a consumer does not re-export its dependency: {path}"
+                    );
+                }
+                for f in &full.functions {
+                    if full.symbol(f.symbol).contains("dep") {
+                        assert!(
+                            !f.mono_exported,
+                            "{} must not be mono-exported",
+                            full.symbol(f.symbol)
+                        );
+                    }
+                }
+                // The consumer's own reachable private ground still exports.
+                let local = full
+                    .functions
+                    .iter()
+                    .find(|f| full.symbol(f.symbol) == "_RNvC3app12local_helper")
+                    .expect("local helper emitted");
+                assert!(local.mono_exported);
+            },
+        );
+    }
+
+    /// Strings referenced by imported bodies merge into the program table by
+    /// their content-addressed token — shared literals collapse to one entry.
+    #[test]
+    fn extern_strings_merge_by_token() {
+        mono_with_dep(
+            "pub fn tagged<T : Num>(x: T) -> i64 { let s = \"from-dep\"; 0 }",
+            "pub fn go(n: i64) -> i64 { let t = \"from-dep\"; dep::tagged(n) }",
+            |text| text,
+            |_, full, reports| {
+                assert!(reports.is_empty(), "{reports:#?}");
+                let hits = full
+                    .string_literals
+                    .iter()
+                    .filter(|(_, payload)| payload == "from-dep")
+                    .count();
+                assert_eq!(hits, 1, "{:?}", full.string_literals);
+            },
+        );
+    }
+
+    /// A record reachable only through an imported body still resolves a
+    /// ground layout (the `note_records` path reads the shared record table,
+    /// which holds imported records).
+    #[test]
+    fn records_used_only_by_imported_bodies_get_layouts() {
+        mono_with_dep(
+            "struct Hidden { v: i64 }\n\
+             pub fn boxed<T : Num>(x: T) -> i64 { let h = Hidden { v: 1 }; h.v }",
+            "pub fn go(n: i64) -> i64 { dep::boxed(n) }",
+            |text| text,
+            |_, full, reports| {
+                assert!(reports.is_empty(), "{reports:#?}");
+                let hidden = full
+                    .records
+                    .iter()
+                    .find(|r| full.symbol(r.symbol) == "_RNvC3dep6Hidden")
+                    .expect("imported record instance collected");
+                let mir::RecordLayout::Compound(members) = hidden.layout else {
+                    panic!("compound layout expected, got {:?}", hidden.layout);
+                };
+                assert_eq!(members.len(), 1, "fields resolved, not defaulted");
+            },
+        );
+    }
+
+    /// An instantiation target that is neither local nor imported is a
+    /// reported error, not a silent skip: with externs in play the skip would
+    /// manufacture an undefined symbol at link time. Simulated by stripping a
+    /// shipped generic out of the interface (a stale/incomplete `.rri`).
+    #[test]
+    fn unknown_instantiation_target_reports() {
+        mono_with_dep(
+            "fn helper<T>(x: T) -> T { x }\n\
+             pub fn api<T>(x: T) -> T { helper(x) }",
+            "pub fn go(n: i64) -> i64 { dep::api(n) }",
+            |text| {
+                // Drop the `helper` item wholesale (items are separated by
+                // blank lines), leaving `api`'s shipped body calling a def
+                // the interface no longer carries.
+                text.split("\n\n")
+                    .filter(|item| !item.starts_with("fn #dep::helper"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            },
+            |_, _, reports| {
+                assert!(
+                    reports.iter().any(|r| {
+                        r.message
+                            .contains("no body or prototype recorded for `dep::helper`")
+                            && r.message.contains("stale")
+                    }),
+                    "{reports:#?}"
+                );
+            },
+        );
     }
 
     #[test]

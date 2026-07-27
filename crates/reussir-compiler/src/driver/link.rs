@@ -142,6 +142,14 @@ pub(crate) fn link_product(
     for member in &scratch.members {
         cmd.arg(format!("-Clink-arg={}", member.display()));
     }
+    // Dependency staticlibs (`--link-lib`), after this compilation's own
+    // members: declared extern symbols — dependency ground functions, and
+    // the mono-exported private helpers their shipped bodies reach —
+    // resolve here. Named by path like the runtime archive below, and for
+    // the same reason.
+    for lib in &cli.link_libs {
+        cmd.arg(format!("-Clink-arg={}", lib.display()));
+    }
 
     // The runtime. The static archive is named by *path*, not `-l static=`:
     // rustc lowers the latter to a bare `-l` on ELF and Mach-O, and the

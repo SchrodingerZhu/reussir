@@ -404,9 +404,11 @@ pub struct Elaborator<'a, 'tcx> {
     /// package only.
     pub extern_defs: FxHashMap<DefId, TokenKey>,
     /// Extern functions remapped into the consumer's spaces — generic bodies
-    /// to instantiate, ground prototypes to declare against — held for
-    /// cross-package monomorphization (a later commit). Never part of the
-    /// printed program or the export surface.
+    /// to instantiate, ground prototypes to declare against — consumed by
+    /// cross-package monomorphization ([`MonoInput::externs`]). Never part
+    /// of the printed program or the export surface.
+    ///
+    /// [`MonoInput::externs`]: crate::full::mono::MonoInput::externs
     pub extern_functions: Vec<Function<'tcx>>,
     /// String literals referenced by extern bodies. Tokens are
     /// content-addressed (BLAKE3), so entries carry over without remapping.

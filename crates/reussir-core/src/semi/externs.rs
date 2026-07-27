@@ -10,14 +10,15 @@
 //! cross-package identity), re-allocates generics in the elaborator's global
 //! table, and rebuilds every type over the mapped defs. Prototypes and
 //! records land in the same `functions`/`records` tables the checker reads;
-//! bodies, strings, and ffi textures land in the `extern_*` side tables held
-//! for cross-package monomorphization (a later commit) so they stay out of
-//! the consumer's printed program and export surface. Resolution reaches the
+//! bodies, strings, and ffi textures land in the `extern_*` side tables
+//! cross-package monomorphization consumes (`MonoInput::externs`) so they
+//! stay out of the consumer's printed program and export surface. Resolution reaches the
 //! declared items only through the package head, gated on `pub`
 //! (`ctxt::resolve_extern`).
 
 use reussir_syntax::Interner;
 use reussir_syntax::kind::{InternKey, TokenKey};
+use reussir_syntax::source::FileId;
 use rustc_hash::FxHashMap;
 
 use crate::semi::ctxt::{Elaborator, FuncProto, Record, RecordFields, Variant};
@@ -32,6 +33,17 @@ use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt, TyKind};
 pub struct ExternPackage<'p, 'tcx> {
     pub name: &'p str,
     pub parsed: &'p Parsed<'tcx>,
+    /// Consumer-cache [`FileId`] per entry of the interface's own file table
+    /// (dense, indexed by producer file index). The driver appends the
+    /// extern's re-anchored file table to the consumer's source cache and
+    /// passes the resulting ids here, so every declared item's `file` lands
+    /// in the consumer's id space — reports raised inside an imported body
+    /// (cross-package monomorphization) and the debug locations of locally
+    /// emitted instances then resolve against the dependency's sources.
+    /// Empty when extern locations can never render (text-dump targets stop
+    /// before monomorphization); file fields then keep producer-relative ids
+    /// nothing reads.
+    pub files: &'p [FileId],
 }
 
 impl<'tcx> Elaborator<'_, 'tcx> {
@@ -47,6 +59,11 @@ impl<'tcx> Elaborator<'_, 'tcx> {
         let head = interner.get_or_intern(ext.name);
         self.extern_heads.insert(head);
         let parsed = ext.parsed;
+        // Producer-relative file ids → consumer-cache ids (spans are byte
+        // offsets into the same content, so they carry over untouched). An
+        // id outside the map (no map given, or a table-less interface) stays
+        // as-is: nothing renders it.
+        let file_of = |old: FileId| ext.files.get(old.index()).copied().unwrap_or(old);
 
         // One consumer key per producer key, densely indexed, so the remap
         // below never threads the interner.
@@ -105,12 +122,8 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                 ffi: rec.ffi.clone(),
                 fields: rec.fields.as_ref().map(|f| remap.fields(f)),
                 regional_generics: remap.generic_ids(&rec.regional_generics),
-                // Spans index the extern package's own file table; nothing
-                // renders them yet (extern items are never re-checked here).
-                // Re-anchoring onto `--extern-src` lands with cross-package
-                // monomorphization diagnostics.
                 span: rec.span,
-                file: rec.file,
+                file: file_of(rec.file),
             };
             self.records.entry(def).or_insert(record);
         }
@@ -139,7 +152,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                 is_regional: func.is_regional,
                 body: func.body.as_ref().map(|b| remap.expr(b)),
                 span: func.span,
-                file: func.file,
+                file: file_of(func.file),
             };
             self.functions.entry(def).or_insert_with(|| FuncProto {
                 def,
@@ -158,14 +171,21 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                 file: function.file,
             });
             if let Some(import) = parsed.ffi_imports.get(&func.def) {
-                self.extern_ffi_imports.insert(def, import.clone());
+                let mut import = import.clone();
+                import.file = file_of(import.file);
+                self.extern_ffi_imports.insert(def, import);
             }
             self.extern_functions.push(function);
         }
 
         self.extern_strings.extend(parsed.strings.iter().cloned());
+        // Preludes pair with imports by file, so both sides remap together.
         self.extern_ffi_preludes
-            .extend(parsed.ffi_preludes.iter().cloned());
+            .extend(parsed.ffi_preludes.iter().map(|prelude| {
+                let mut prelude = prelude.clone();
+                prelude.file = file_of(prelude.file);
+                prelude
+            }));
         // Transform metadata of shipped bodies is not carried yet —
         // cross-package monomorphization decides its shape (deferred).
     }
@@ -549,6 +569,7 @@ mod tests {
                 &ExternPackage {
                     name: "dep",
                     parsed: &parsed,
+                    files: &[],
                 },
             );
             elab.run_package(&files);
@@ -674,6 +695,99 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// Declaring with a file map rewrites every imported item's `file` —
+    /// functions (with and without bodies), prototypes, records, ffi imports
+    /// and their preludes — into the consumer's cache id space; spans stay
+    /// (byte offsets into the same content). Without a map (text-dump
+    /// targets), ids pass through untouched.
+    #[test]
+    fn extern_item_files_remap_into_the_consumer_cache() {
+        use reussir_syntax::source::SourceCache;
+
+        let dep_src = "extern \"rust\" [{ use reussir_rt::collections::vec::Vec as RVec; }];\n\
+                       #[ffi(rust = \"::reussir_rt::collections::vec::Vec\")]\n\
+                       pub struct Vec<T>;\n\
+                       #[ffi(import)]\n\
+                       pub fn new<T>() -> Vec<T> [{ RVec::new() }];\n\
+                       pub struct Point { x: i64, y: i64 }\n\
+                       fn helper(p: Point) -> i64 { p.x }\n\
+                       pub fn api<T : Num>(x: T) -> T { helper(Point { x: 1, y: 2 }); x }\n\
+                       pub fn ground(x: i64) -> i64 { x + 1 }";
+        with_tcx(|tcx| {
+            // Elaborate the dep and print it in sources form, so the parsed
+            // interface carries a file table and per-item `in <id>` files.
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let dep = keys.get_or_intern("dep");
+            let parse = reussir_syntax::parse_with_interner(dep_src, interner.clone());
+            assert!(parse.ok(), "dep parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let files = [PackageFile {
+                file: FileId::ROOT,
+                module: vec![dep],
+                program: &prog,
+            }];
+            let elab = elaborate_package(tcx, &files, &interner);
+            assert!(!elab.has_errors(), "dep elab errors: {:#?}", elab.reports);
+            let cache = SourceCache::single("lib.rr", dep_src);
+            let strings = elab.strings.entries();
+            let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            let parsed = crate::semi::hir::build::parse_program(tcx, &text).expect("re-parse");
+            assert_eq!(parsed.files, ["lib.rr"], "table travels");
+
+            let with_declared = |files: &[FileId], check: &dyn Fn(&Elaborator)| {
+                let interner = Arc::new(reussir_syntax::new_threaded_interner());
+                let mut keys = interner.clone();
+                let mut elab = Elaborator::new(tcx, &interner);
+                elab.declare_extern_package(
+                    &mut keys,
+                    &ExternPackage {
+                        name: "dep",
+                        parsed: &parsed,
+                        files,
+                    },
+                );
+                check(&elab);
+            };
+
+            // The consumer's cache already holds its own files, so the dep's
+            // single entry lands at some later id.
+            let mapped = FileId::from_index(7);
+            with_declared(&[mapped], &|consumer| {
+                for func in &consumer.extern_functions {
+                    assert_eq!(func.file, mapped, "function files remap");
+                    assert!(func.span.is_some(), "spans survive the remap");
+                }
+                for proto in consumer.functions.values() {
+                    assert_eq!(proto.file, mapped, "prototype files remap");
+                }
+                for record in consumer.records.values() {
+                    assert_eq!(record.file, mapped, "record files remap");
+                }
+                assert!(
+                    !consumer.extern_ffi_imports.is_empty(),
+                    "ffi import carried"
+                );
+                for import in consumer.extern_ffi_imports.values() {
+                    assert_eq!(import.file, mapped, "ffi import files remap");
+                }
+                assert!(!consumer.extern_ffi_preludes.is_empty(), "prelude carried");
+                for prelude in &consumer.extern_ffi_preludes {
+                    assert_eq!(prelude.file, mapped, "prelude files remap");
+                }
+            });
+
+            // No map: ids pass through (nothing renders them).
+            with_declared(&[], &|untouched| {
+                for func in &untouched.extern_functions {
+                    assert_eq!(func.file, FileId::ROOT);
+                }
+            });
+        });
     }
 
     #[test]

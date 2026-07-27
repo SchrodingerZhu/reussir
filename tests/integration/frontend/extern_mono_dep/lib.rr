@@ -1,0 +1,21 @@
+// The dependency behind extern_mono.rr: a pub generic whose body calls a
+// private ground helper (the helper crosses as a prototype), a pub ground,
+// and a pub generic with a regional (`[flex]`) constraint that only a
+// mono-time instantiation can violate.
+
+fn helper(x: i64) -> i64 {
+    x + 1
+}
+
+pub fn twice<T : Num>(x: T) -> T {
+    helper(0);
+    x + x
+}
+
+pub fn ground(x: i64) -> i64 {
+    helper(x)
+}
+
+pub regional fn flexy<T>(bar: [flex] T) -> i64 {
+    0
+}

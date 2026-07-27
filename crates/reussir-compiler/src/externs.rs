@@ -2,10 +2,10 @@
 //!
 //! An `.rri` is a textual HIR document reduced to the export closure behind
 //! a versioned header (`docs/design/rri.md`). This module owns the consumer
-//! side of the contract's first leg: parsing the `--extern`/`--extern-src`
-//! spellings and gating the header (format, package name, reserved names)
-//! before anything is offered to resolution. What the loaded tables *feed*
-//! (elaboration, monomorphization) arrives in later commits.
+//! side of the contract: parsing the `--extern`/`--extern-src` spellings,
+//! gating the header (format, package name, reserved names) before anything
+//! is offered to resolution, and re-anchoring the interface's file table
+//! into the consumer's source cache so imported spans render and debug.
 
 use std::path::PathBuf;
 
@@ -112,24 +112,26 @@ impl LoadedExtern<'_> {
             .collect()
     }
 
-    /// A source cache over the re-anchored table — real paths registered for
-    /// lazy loading, virtual entries name-only — so spans inside imported
-    /// items keep resolving in consumer diagnostics. `None` when the
-    /// interface was printed without locations.
-    pub fn sources(&self) -> Option<reussir_syntax::source::SourceCache> {
-        let files = self.re_anchored_files();
-        if files.is_empty() {
-            return None;
-        }
-        let mut cache = reussir_syntax::source::SourceCache::new();
-        for name in &files {
-            if name.starts_with('<') {
-                cache.add_unavailable(name);
-            } else {
-                cache.add_lazy_file(name);
-            }
-        }
-        Some(cache)
+    /// Append the re-anchored table to `cache` — real paths registered for
+    /// lazy loading, virtual entries name-only — returning the consumer-cache
+    /// id of each producer file index. The returned map feeds
+    /// `ExternPackage::files`, so spans inside imported items resolve in
+    /// consumer diagnostics and instance debug info. Empty when the interface
+    /// was printed without locations.
+    pub fn register_sources(
+        &self,
+        cache: &mut reussir_syntax::source::SourceCache,
+    ) -> Vec<reussir_syntax::source::FileId> {
+        self.re_anchored_files()
+            .iter()
+            .map(|name| {
+                if name.starts_with('<') {
+                    cache.add_unavailable(name)
+                } else {
+                    cache.add_lazy_file(name)
+                }
+            })
+            .collect()
     }
 }
 
@@ -236,8 +238,14 @@ mod tests {
                     .to_string()
             );
             assert_eq!(files[1], "<prelude>");
-            let cache = ext.sources().expect("table is non-empty");
-            assert_eq!(cache.len(), 2);
+            // Registration appends after the consumer's own entries and
+            // returns the producer-index → consumer-id map.
+            let mut cache = reussir_syntax::source::SourceCache::single("lib.rr", "");
+            let ids = ext.register_sources(&mut cache);
+            assert_eq!(ids.len(), 2);
+            assert_eq!(ids[0].index(), 1);
+            assert_eq!(ids[1].index(), 2);
+            assert!(!cache.is_available(ids[1]), "virtual entries stay name-only");
         });
     }
 

@@ -77,6 +77,13 @@ pub(crate) struct Cli {
     #[arg(long = "linker", value_name = "PATH")]
     pub(crate) linker: Option<PathBuf>,
 
+    /// A dependency's static library, joined into the link by path (after
+    /// this compilation's own members): the archive the declared symbols of
+    /// a package loaded via `--extern` resolve against. Repeatable, in
+    /// dependency order.
+    #[arg(long = "link-lib", value_name = "PATH")]
+    pub(crate) link_libs: Vec<PathBuf>,
+
     /// Extra argument for the link step, passed through as `-C link-arg=`
     /// (repeatable; appended after the driver's own link inputs). Applies to
     /// `--emit executable` and `--emit dynlib`.

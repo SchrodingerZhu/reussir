@@ -1,0 +1,48 @@
+// Cross-package monomorphization: an imported generic instantiates in the
+// consumer's compilation from its shipped body; imported ground functions
+// (pub, and the private helper the instantiated body calls) lower to
+// declarations the link later resolves against the dependency's artifact;
+// and a mono-time diagnostic raised inside an imported body carets into the
+// dependency's re-anchored sources (`--extern-src`).
+
+// RUN: %rrc --package-root %S/extern_mono_dep --package-name dep --emit rri -o %t.rri
+
+// The instance is a definition, the ground imports are declarations, and the
+// re-anchored dep source joins the consumer's file table.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --extern-src dep=%S/extern_mono_dep --emit mir -o - \
+// RUN:   | %FileCheck %s --check-prefix=MIR
+// MIR-DAG: = "{{.*}}extern_mono_dep{{/|\\\\}}lib.rr";
+// MIR-DAG: pub fn @_RINvC3dep5twicexE(v0 (x): i64) -> i64 in {{[0-9]+}} {
+// MIR-DAG: fn @_RNvC3dep6helper(v0 (x): i64) -> i64 in {{[0-9]+}};
+// MIR-DAG: pub fn @_RNvC3dep6ground(v0 (x): i64) -> i64 in {{[0-9]+}};
+// MIR-DAG: pub fn @_RNvC3app9use_twice(v0 (n): i64) -> i64 in {{[0-9]+}} {
+
+// The consumer-emitted instance carries the mergeable instance linkage
+// (`weak_odr` where the object format dedups) — any other package emitting
+// the same instance collapses to one definition at link; the imported
+// grounds stay external declarations.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit llvm-ir -O none -o %t.ll
+// RUN: %FileCheck %s %linkage_check_prefixes < %t.ll
+// CHECK-DEDUP-DAG: define weak_odr i64 @_RINvC3dep5twicexE(i64 %0)
+// CHECK-COFF-DAG: define i64 @_RINvC3dep5twicexE(i64 %0)
+// CHECK-DAG: declare i64 @_RNvC3dep6helper(i64
+// CHECK-DAG: declare i64 @_RNvC3dep6ground(i64
+// CHECK-DAG: define i64 @_RNvC3app9use_twice(i64 %0)
+
+// A bad instantiation of an imported generic reports into the dependency's
+// own source: `flexy`'s `[flex] T` demands a regional record, and the caret
+// lands on its declaration in the re-anchored dep file.
+// RUN: echo 'fn go() -> i64 { regional { dep::flexy<i64>(0) } }' > %t.bad.rr
+// RUN: %not %rrc %t.bad.rr --package-name app --extern dep=%t.rri --extern-src dep=%S/extern_mono_dep --emit mir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=FLEX
+// FLEX: requires a regional record
+// FLEX: extern_mono_dep{{/|\\\\}}lib.rr
+// FLEX: pub regional fn flexy
+
+pub fn use_twice(n: i64) -> i64 {
+    dep::twice(n)
+}
+
+pub fn use_ground(n: i64) -> i64 {
+    dep::ground(n)
+}
