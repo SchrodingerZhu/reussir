@@ -657,11 +657,17 @@ def ReussirViewType
   }];
 }
 
-def ReussirFFIObjectType : ReussirType<"FFIObject", "ffi_object", []> {
+def ReussirFFIObjectType : ReussirType<"FFIObject", "ffi_object",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir FFIObject Object Type";
   let description = [{
     `reussir.ffi_object` is a special opaque type that is always
     behind a RC pointer. Its dec operation, however, is handled by an FFI call.
+
+    Layout queries see only what the FFI contract guarantees: the `u32`
+    refcount the foreign `Rc` wrapper pins at offset 0. The payload behind
+    the header stays opaque — debug info describing a boxed variable is the
+    client, and it renders the box as that visible header.
   }];
   let parameters = (ins "::mlir::StringAttr":$ffiName,
       "::mlir::FlatSymbolRefAttr":$cleanupHook);

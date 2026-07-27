@@ -1025,6 +1025,35 @@ void RcType::print(mlir::AsmPrinter &printer) const {
 REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 
 //===----------------------------------------------------------------------===//
+// FFIObjectType DataLayoutInterface
+//===----------------------------------------------------------------------===//
+// An `ffi_object` is an opaque foreign payload; the only layout fact the FFI
+// contract pins is the `u32` refcount at offset 0 of the box. Layout queries
+// (debug info describing a boxed variable is the client) see exactly that
+// visible header — the payload behind it stays opaque.
+llvm::TypeSize
+FFIObjectType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                                 mlir::DataLayoutEntryListRef params) const {
+  auto headerTy = mlir::IntegerType::get(getContext(), 32);
+  return dataLayout.getTypeSizeInBits(headerTy);
+}
+
+uint64_t
+FFIObjectType::getABIAlignment(const mlir::DataLayout &dataLayout,
+                               mlir::DataLayoutEntryListRef params) const {
+  auto headerTy = mlir::IntegerType::get(getContext(), 32);
+  return dataLayout.getTypeABIAlignment(headerTy);
+}
+
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t FFIObjectType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout,
+        mlir::DataLayoutEntryListRef params) const {
+      auto headerTy = mlir::IntegerType::get(getContext(), 32);
+      return dataLayout.getTypePreferredAlignment(headerTy);
+    })
+
+//===----------------------------------------------------------------------===//
 // Reussir Cell Type Parse/Print
 //===----------------------------------------------------------------------===//
 mlir::Type CellType::parse(mlir::AsmParser &parser) {
