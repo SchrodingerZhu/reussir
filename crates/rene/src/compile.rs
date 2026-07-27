@@ -17,9 +17,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use std::ffi::OsString;
+
 use crate::db::BuildDir;
 use crate::deps::{self, Prepared};
 use crate::manifest::{Loaded, Profile, TargetKind};
+use crate::pool::Pool;
 use crate::rt::RtArtifacts;
 use crate::tables;
 
@@ -39,6 +42,8 @@ pub struct Options {
     /// ([`crate::fresh::upstream_digests`]) — part of the fingerprint, so a
     /// changed upstream artifact re-fingerprints every product consuming it.
     pub upstream: std::collections::BTreeMap<String, String>,
+    /// `rene build -j`: the bound on concurrent compile processes.
+    pub jobs: Option<std::num::NonZeroUsize>,
 }
 
 /// A built (or reused) product.
@@ -55,9 +60,9 @@ pub struct ProductRecord {
 }
 
 /// Build the selected targets, reusing whatever the record proves current.
-/// The stale ones compile concurrently — independent `rrc` processes over
-/// the same baked runtime — and are recorded in declared order once all of
-/// them succeed.
+/// The stale ones compile on the process pool — independent `rrc` processes
+/// over the same baked runtime, at most `-j` of them at once — and are
+/// recorded in declared order once all of them succeed.
 pub async fn build(
     dir: &BuildDir,
     loaded: &Loaded,
@@ -107,13 +112,25 @@ pub async fn build(
         }
         plan.push((name, kind, path, key, current));
     }
-    futures_util::future::try_join_all(plan.iter().filter(|(_, _, _, _, current)| !current).map(
-        |(name, kind, path, _, _)| async move {
-            tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
-            compile(loaded, rt, opts, *kind, path).await
-        },
-    ))
-    .await?;
+    // The pool is sized to the work, not the machine: each worker carries
+    // its own runtime (an io_uring/IOCP instance), so width beyond the
+    // number of stale compiles would only reserve kernel resources idly.
+    let stale = plan.iter().filter(|(_, _, _, _, current)| !current).count();
+    if stale > 0 {
+        let pool = Pool::new(opts.jobs, stale)?;
+        let workers = &pool;
+        futures_util::future::try_join_all(
+            plan.iter().filter(|(_, _, _, _, current)| !current).map(
+                |(name, kind, path, _, _)| {
+                    tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+                    let invocation = rrc_invocation(loaded, rt, opts, *kind, path);
+                    async move { workers.run(move || invocation.run()).await? }
+                },
+            ),
+        )
+        .await?;
+        pool.shutdown().await?;
+    }
     let mut products = Vec::with_capacity(plan.len());
     for (name, _, path, key, current) in plan {
         if !current {
@@ -133,56 +150,77 @@ pub async fn build(
     Ok(products)
 }
 
-/// One `rrc` run for one target.
-async fn compile(
+/// One `rrc` compile as owned data — everything a pool worker needs to
+/// spawn it, detached from the borrows of the planning pass.
+pub(crate) struct Invocation {
+    program: PathBuf,
+    args: Vec<OsString>,
+    envs: Vec<(&'static str, OsString)>,
+    /// What the failure message names.
+    out: PathBuf,
+}
+
+impl Invocation {
+    /// Spawn and await the process (on whichever runtime polls this).
+    /// rrc's diagnostics stream straight through to the user.
+    pub(crate) async fn run(self) -> Result<(), String> {
+        let mut cmd = compio::process::Command::new(&self.program);
+        cmd.args(&self.args);
+        for (key, value) in &self.envs {
+            cmd.env(key, value);
+        }
+        let status = cmd
+            .status()
+            .await
+            .map_err(|e| format!("cannot run `{}`: {e}", self.program.display()))?;
+        if !status.success() {
+            return Err(format!(
+                "compiling `{}` failed (see rrc's diagnostics above)",
+                self.out.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One target's `rrc` invocation.
+fn rrc_invocation(
     loaded: &Loaded,
     rt: &RtArtifacts,
     opts: &Options,
     kind: TargetKind,
     out: &Path,
-) -> Result<(), String> {
-    let rrc = deps::resolve_rrc();
-    let mut cmd = compio::process::Command::new(&rrc);
-    cmd.arg("--package-root")
-        .arg(deps::source_root(loaded))
-        .arg("--package-name")
-        .arg(&loaded.manifest.package.name)
-        .arg("--emit")
-        .arg(kind.emit())
-        .arg("-o")
-        .arg(out);
+) -> Invocation {
+    let mut args: Vec<OsString> = vec![
+        "--package-root".into(),
+        deps::source_root(loaded).into(),
+        "--package-name".into(),
+        (&loaded.manifest.package.name).into(),
+        "--emit".into(),
+        kind.emit().into(),
+        "-o".into(),
+        out.into(),
+    ];
     for libdir in rt.libdirs() {
-        cmd.arg("--polyffi-libdir").arg(libdir);
+        args.push("--polyffi-libdir".into());
+        args.push(libdir.into());
     }
-    // The toolchain that baked the runtime is the one the link step and the
-    // polyffi texture compiles must agree with.
-    cmd.env("REUSSIR_RUSTC", &rt.rustc);
-    profile_args(&mut cmd, &opts.profile, kind, opts.linker.as_deref());
-
-    // rrc's diagnostics stream straight through to the user.
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
-    if !status.success() {
-        return Err(format!(
-            "compiling `{}` failed (see rrc's diagnostics above)",
-            out.display()
-        ));
+    args.extend(
+        profile_flags(&opts.profile, kind, opts.linker.as_deref())
+            .into_iter()
+            .map(OsString::from),
+    );
+    Invocation {
+        program: deps::resolve_rrc(),
+        args,
+        // The toolchain that baked the runtime is the one the link step and
+        // the polyffi texture compiles must agree with.
+        envs: vec![("REUSSIR_RUSTC", rt.rustc.clone().into())],
+        out: out.to_owned(),
     }
-    Ok(())
 }
 
 /// The profile, spelled as `rrc` flags.
-fn profile_args(
-    cmd: &mut compio::process::Command,
-    profile: &Profile,
-    kind: TargetKind,
-    linker: Option<&Path>,
-) {
-    cmd.args(profile_flags(profile, kind, linker));
-}
-
 /// The `rrc` flags a profile expands to, as plain strings — shared by the
 /// real invocation above and the planned-command dump ([`crate::plan`]).
 pub(crate) fn profile_flags(

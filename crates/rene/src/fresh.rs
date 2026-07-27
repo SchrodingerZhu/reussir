@@ -261,6 +261,7 @@ fn root_state(
             targets: Vec::new(),
             linker: None,
             upstream,
+            jobs: None,
         },
     );
     let out_dir = ctx.build_dir.join(ctx.profile_name);
