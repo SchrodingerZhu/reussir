@@ -5,7 +5,8 @@
 //! dependency emits its interface (`--emit rri`) and its archive
 //! (`--emit staticlib`) into `<build-dir>/<profile>/deps/`, and the root's
 //! declared targets compile against them (`--extern` / `--extern-src` for
-//! elaboration and diagnostics re-anchoring, the archives linked by path).
+//! elaboration and diagnostics re-anchoring, the archives joined into the
+//! link with `--link-lib`).
 //! Nothing here executes; the dump is the orchestration contract — lit pins
 //! it, and the cross-package build implements it.
 //!
@@ -47,6 +48,14 @@ pub fn render(
     let deps_dir = profile_dir.join("deps");
     let order = topological(graph);
     let transitive = transitive_deps(graph);
+    // Archives joined in dependency order: dependents before dependencies
+    // (the reverse of the build order, root excluded).
+    let link_order: Vec<String> = order
+        .iter()
+        .rev()
+        .filter(|name| **name != graph.root)
+        .cloned()
+        .collect();
 
     let nodes: Vec<serde_json::Value> = order
         .iter()
@@ -70,14 +79,13 @@ pub fn render(
                         argv.extend(polyffi_args());
                         argv.extend(externs.iter().cloned());
                         if decl.kind.is_linked() {
-                            // The dependency archives, linked by explicit
-                            // path — the same convention rrc itself uses for
-                            // the runtime archive.
-                            for dep in &transitive[name.as_str()] {
-                                argv.push(format!(
-                                    "--link-arg={}",
-                                    archive_path(&deps_dir, dep).display()
-                                ));
+                            // The dependency archives, `--link-lib` in
+                            // dependency order — dependents before their
+                            // dependencies, the order a linker's left-to-
+                            // right archive scan resolves across.
+                            for dep in &link_order {
+                                argv.push("--link-lib".to_owned());
+                                argv.push(archive_path(&deps_dir, dep).display().to_string());
                             }
                         }
                         serde_json::json!({

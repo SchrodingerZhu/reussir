@@ -68,8 +68,9 @@
 // CHECK: "package": "util"
 
 // The root: its declared targets, the whole downward cone in scope, and the
-// dependency archives linked by explicit path (the same convention rrc uses
-// for the runtime archive).
+// dependency archives joined with `--link-lib` in dependency order —
+// dependents before dependencies (util references logs), the order a
+// linker's left-to-right archive scan resolves across.
 // CHECK: "--package-name",
 // CHECK-NEXT: "app",
 // CHECK-NEXT: "--emit",
@@ -82,8 +83,10 @@
 // CHECK-NEXT: "util={{.*}}util.rri",
 // CHECK-NEXT: "--extern-src",
 // CHECK-NEXT: "util={{.*}}src",
-// CHECK-NEXT: "--link-arg={{.*}}{{(lib)?}}logs.{{(a|lib)}}",
-// CHECK-NEXT: "--link-arg={{.*}}{{(lib)?}}util.{{(a|lib)}}"
+// CHECK-NEXT: "--link-lib",
+// CHECK-NEXT: "{{.*}}{{(lib)?}}util.{{(a|lib)}}",
+// CHECK-NEXT: "--link-lib",
+// CHECK-NEXT: "{{.*}}{{(lib)?}}logs.{{(a|lib)}}"
 // CHECK: "target": "demo"
 // CHECK: "--emit",
 // CHECK-NEXT: "dynlib",
