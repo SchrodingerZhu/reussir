@@ -17,14 +17,16 @@
 // MIR-DAG: pub fn @_RNvC3dep6ground(v0 (x): i64) -> i64 in {{[0-9]+}};
 // MIR-DAG: pub fn @_RNvC3app9use_twice(v0 (n): i64) -> i64 in {{[0-9]+}} {
 
-// The consumer-emitted instance carries the mergeable instance linkage
-// (`weak_odr` where the object format dedups) — any other package emitting
-// the same instance collapses to one definition at link; the imported
-// grounds stay external declarations.
+// The consumer-emitted instance carries the mergeable instance linkage —
+// any other package emitting the same instance collapses to one definition
+// at link: `weak_odr` bound natively on ELF/Mach-O, `weak_odr` + a comdat
+// group on COFF (same as linkage.rr pins for the in-package instances).
+// The imported grounds stay external declarations.
 // RUN: %rrc %s --package-name app --extern dep=%t.rri --emit llvm-ir -O none -o %t.ll
 // RUN: %FileCheck %s %linkage_check_prefixes < %t.ll
 // CHECK-DEDUP-DAG: define weak_odr i64 @_RINvC3dep5twicexE(i64 %0)
-// CHECK-COFF-DAG: define i64 @_RINvC3dep5twicexE(i64 %0)
+// CHECK-COFF-DAG: $_RINvC3dep5twicexE = comdat any
+// CHECK-COFF-DAG: define weak_odr i64 @_RINvC3dep5twicexE(i64 %0) comdat
 // CHECK-DAG: declare i64 @_RNvC3dep6helper(i64
 // CHECK-DAG: declare i64 @_RNvC3dep6ground(i64
 // CHECK-DAG: define i64 @_RNvC3app9use_twice(i64 %0)
