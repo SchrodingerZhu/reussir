@@ -39,6 +39,96 @@ const RUST_LIBDIR: &str = "<rust-libdir>";
 const RT_DEPS_DIR: &str = "<rt-deps-dir>";
 const BAKED_RUSTC: &str = "<baked-rustc>";
 
+/// One planned `rrc` invocation for a node — the shared synthesis behind
+/// both the dump ([`render`]) and the executed build ([`crate::exec`]), so
+/// the two cannot drift: what `inspect --commands` prints is what runs.
+pub(crate) struct PlannedCommand {
+    /// The `--emit` stage (`rri`, `staticlib`, or a root target's kind).
+    pub(crate) emit: &'static str,
+    /// The root target this builds, if it is a root command.
+    pub(crate) target: Option<String>,
+    /// The artifact the command writes.
+    pub(crate) out: PathBuf,
+    /// Full argv minus the leading program.
+    pub(crate) args: Vec<String>,
+}
+
+/// The commands that build one node of the graph, in execution order.
+pub(crate) fn node_commands(
+    graph: &Graph,
+    name: &str,
+    opts: &Options,
+    bake: Option<&RtArtifacts>,
+) -> Vec<PlannedCommand> {
+    let profile_dir = opts.build_dir.join(opts.profile_name);
+    let deps_dir = profile_dir.join("deps");
+    let node = &graph.nodes[name];
+    let transitive = transitive_deps(graph);
+    let externs = extern_args(graph, &transitive[name], &deps_dir);
+    if name == graph.root {
+        // Archives joined in dependency order: dependents before
+        // dependencies (the reverse of the build order, root excluded).
+        let mut link_order = topological(graph);
+        link_order.reverse();
+        link_order.retain(|n| *n != graph.root);
+        node.loaded
+            .manifest
+            .targets
+            .iter()
+            .map(|(target, decl)| {
+                let out = profile_dir.join(compile::artifact_file(
+                    target,
+                    decl.kind,
+                    opts.profile.target_triple.as_deref(),
+                ));
+                let mut args = package_args(node, &out, decl.kind.emit());
+                args.extend(compile::profile_flags(opts.profile, decl.kind, opts.linker));
+                args.extend(polyffi_args(bake));
+                args.extend(externs.iter().cloned());
+                if decl.kind.is_linked() {
+                    for dep in &link_order {
+                        args.push("--link-lib".to_owned());
+                        args.push(archive_path(&deps_dir, dep).display().to_string());
+                    }
+                }
+                PlannedCommand {
+                    emit: decl.kind.emit(),
+                    target: Some(target.clone()),
+                    out,
+                    args,
+                }
+            })
+            .collect()
+    } else {
+        let rri = deps_dir.join(format!("{name}.rri"));
+        let mut interface = package_args(node, &rri, "rri");
+        interface.extend(externs.iter().cloned());
+        let archive = archive_path(&deps_dir, name);
+        let mut staticlib = package_args(node, &archive, "staticlib");
+        staticlib.extend(compile::profile_flags(
+            opts.profile,
+            TargetKind::Staticlib,
+            opts.linker,
+        ));
+        staticlib.extend(polyffi_args(bake));
+        staticlib.extend(externs.iter().cloned());
+        vec![
+            PlannedCommand {
+                emit: "rri",
+                target: None,
+                out: rri,
+                args: interface,
+            },
+            PlannedCommand {
+                emit: "staticlib",
+                target: None,
+                out: archive,
+                args: staticlib,
+            },
+        ]
+    }
+}
+
 /// Render the plan as JSON: `nodes` in dependency-first order (each node's
 /// dependencies precede it), each with the commands that build it and —
 /// when the caller ran the freshness check — its `state`/`reason`.
@@ -48,75 +138,25 @@ pub fn render(
     bake: Option<&RtArtifacts>,
     states: Option<&BTreeMap<String, fresh::State>>,
 ) -> serde_json::Value {
-    let profile_dir = opts.build_dir.join(opts.profile_name);
-    let deps_dir = profile_dir.join("deps");
-    let order = topological(graph);
-    let transitive = transitive_deps(graph);
-    // Archives joined in dependency order: dependents before dependencies
-    // (the reverse of the build order, root excluded).
-    let link_order: Vec<String> = order
-        .iter()
-        .rev()
-        .filter(|name| **name != graph.root)
-        .cloned()
-        .collect();
-
-    let nodes: Vec<serde_json::Value> = order
+    let nodes: Vec<serde_json::Value> = topological(graph)
         .iter()
         .map(|name| {
             let node = &graph.nodes[name.as_str()];
-            let is_root = *name == graph.root;
-            let externs = extern_args(graph, &transitive[name.as_str()], &deps_dir);
-            let commands: Vec<serde_json::Value> = if is_root {
-                node.loaded
-                    .manifest
-                    .targets
-                    .iter()
-                    .map(|(target, decl)| {
-                        let out = profile_dir.join(compile::artifact_file(
-                            target,
-                            decl.kind,
-                            opts.profile.target_triple.as_deref(),
-                        ));
-                        let mut argv = package_args(node, &out, decl.kind.emit());
-                        argv.extend(compile::profile_flags(opts.profile, decl.kind, opts.linker));
-                        argv.extend(polyffi_args(bake));
-                        argv.extend(externs.iter().cloned());
-                        if decl.kind.is_linked() {
-                            // The dependency archives, `--link-lib` in
-                            // dependency order — dependents before their
-                            // dependencies, the order a linker's left-to-
-                            // right archive scan resolves across.
-                            for dep in &link_order {
-                                argv.push("--link-lib".to_owned());
-                                argv.push(archive_path(&deps_dir, dep).display().to_string());
-                            }
-                        }
-                        serde_json::json!({
+            let commands: Vec<serde_json::Value> = node_commands(graph, name, opts, bake)
+                .into_iter()
+                .map(|command| {
+                    let mut argv = vec!["rrc".to_owned()];
+                    argv.extend(command.args);
+                    match command.target {
+                        Some(target) => serde_json::json!({
                             "target": target,
-                            "emit": decl.kind.emit(),
+                            "emit": command.emit,
                             "argv": argv,
-                        })
-                    })
-                    .collect()
-            } else {
-                let rri = deps_dir.join(format!("{name}.rri"));
-                let mut interface = package_args(node, &rri, "rri");
-                interface.extend(externs.iter().cloned());
-                let archive = archive_path(&deps_dir, name);
-                let mut staticlib = package_args(node, &archive, "staticlib");
-                staticlib.extend(compile::profile_flags(
-                    opts.profile,
-                    TargetKind::Staticlib,
-                    opts.linker,
-                ));
-                staticlib.extend(polyffi_args(bake));
-                staticlib.extend(externs.iter().cloned());
-                vec![
-                    serde_json::json!({ "emit": "rri", "argv": interface }),
-                    serde_json::json!({ "emit": "staticlib", "argv": staticlib }),
-                ]
-            };
+                        }),
+                        None => serde_json::json!({ "emit": command.emit, "argv": argv }),
+                    }
+                })
+                .collect();
             let mut rendered = serde_json::json!({
                 "package": name,
                 "version": node.version.to_string(),
