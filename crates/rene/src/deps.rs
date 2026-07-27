@@ -17,7 +17,7 @@
 //! must stay read-free.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Stdio;
 use std::time::UNIX_EPOCH;
 
 use crate::db::BuildDir;
@@ -43,7 +43,7 @@ pub fn split_module(module: &str) -> Vec<String> {
 
 /// What is recorded for one file of the source graph (see
 /// [`tables::SOURCES`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceRecord {
     /// The file's module path, package name first (`rrc --scan-deps`).
     pub module: Vec<String>,
@@ -57,7 +57,7 @@ pub struct SourceRecord {
 }
 
 /// One file of the graph: its path and its record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceFile {
     pub path: String,
     pub record: SourceRecord,
@@ -171,27 +171,28 @@ pub fn staleness(dir: &BuildDir, config_hash: &str) -> Result<Staleness, String>
     if recorded_config != config_hash {
         return Ok(Staleness::ConfigChanged);
     }
-    for file in files {
-        let Ok(meta) = std::fs::metadata(&file.path) else {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Missing,
-            });
-        };
-        if mtime_ns(&meta) != file.record.mtime_ns {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Mtime,
-            });
-        }
-        if meta.len() != file.record.size {
-            return Ok(Staleness::FileChanged {
-                path: file.path,
-                change: FileChange::Size,
-            });
-        }
+    if let Some((path, change)) = changed_file(&files) {
+        return Ok(Staleness::FileChanged { path, change });
     }
     Ok(Staleness::UpToDate)
+}
+
+/// The first recorded file that no longer matches the disk — missing, or a
+/// different mtime or size. Reads no contents (same contract as
+/// [`staleness`]); shared with the per-dependency freshness check.
+pub fn changed_file(files: &[SourceFile]) -> Option<(String, FileChange)> {
+    for file in files {
+        let Ok(meta) = std::fs::metadata(&file.path) else {
+            return Some((file.path.clone(), FileChange::Missing));
+        };
+        if mtime_ns(&meta) != file.record.mtime_ns {
+            return Some((file.path.clone(), FileChange::Mtime));
+        }
+        if meta.len() != file.record.size {
+            return Some((file.path.clone(), FileChange::Size));
+        }
+    }
+    None
 }
 
 /// The outcome of [`prepare`]: the graph in force, and how it was obtained.
@@ -211,7 +212,7 @@ impl Prepared {
 /// Bring the recorded source graph up to date, re-scanning through `rrc` when
 /// it cannot be trusted. A run where every recorded file still matches does
 /// nothing at all — no subprocess, no write.
-pub fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
+pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
     let hash = config_hash(&loaded.dump);
     let reason = staleness(dir, &hash)?;
     if reason.is_up_to_date() {
@@ -224,7 +225,7 @@ pub fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
 
     tracing::info!(%reason, "scanning the package source graph");
     let root = source_root(loaded);
-    let mut files = scan(&root, &loaded.manifest.package.name)?;
+    let mut files = scan(&root, &loaded.manifest.package.name).await?;
     // Order by path, the order the table reads back in, so what this returns
     // does not depend on whether it came from the scan or the record.
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -237,7 +238,7 @@ pub fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
 
 /// Ask `rrc --scan-deps` for the package's source graph and stat every file
 /// it names.
-pub fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
+pub async fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
     let rrc = resolve_rrc();
     if !root.is_dir() {
         return Err(format!(
@@ -248,13 +249,18 @@ pub fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
         ));
     }
     tracing::debug!(rrc = %rrc.display(), root = %root.display(), "scanning dependencies");
-    let out = Command::new(&rrc)
+    let out = compio::process::Command::new(&rrc)
         .arg("--package-root")
         .arg(root)
         .arg("--package-name")
         .arg(package)
         .arg("--scan-deps")
+        // compio inherits stdio unless told otherwise; the graph arrives on
+        // stdout while rrc's diagnostics stream through on stderr.
+        .stdout(Stdio::piped())
+        .expect("pipe stdout")
         .output()
+        .await
         .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
     if !out.status.success() {
         // rrc has already rendered its diagnostics to stderr; pass them on
@@ -269,10 +275,14 @@ pub fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
     }
     let stdout = String::from_utf8(out.stdout)
         .map_err(|e| format!("`{} --scan-deps` printed invalid UTF-8: {e}", rrc.display()))?;
-    parse_scan(&stdout)?
-        .into_iter()
-        .map(|(path, module)| record(path, module))
-        .collect()
+    // Every scanned file is stat'ed, read, and hashed concurrently — the
+    // digests are the scan's real cost on a large package.
+    futures_util::future::try_join_all(
+        parse_scan(&stdout)?
+            .into_iter()
+            .map(|(path, module)| record(path, module)),
+    )
+    .await
 }
 
 /// The `rrc` executable: `REUSSIR_RRC` if set (the override rene's runtime
@@ -310,9 +320,11 @@ fn parse_scan(stdout: &str) -> Result<Vec<(String, Vec<String>)>, String> {
 }
 
 /// Stat and hash one scanned file.
-fn record(path: String, module: Vec<String>) -> Result<SourceFile, String> {
+async fn record(path: String, module: Vec<String>) -> Result<SourceFile, String> {
     let meta = std::fs::metadata(&path).map_err(|e| format!("cannot stat `{path}`: {e}"))?;
-    let contents = std::fs::read(&path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let contents = compio::fs::read(&path)
+        .await
+        .map_err(|e| format!("cannot read `{path}`: {e}"))?;
     Ok(SourceFile {
         record: SourceRecord {
             module,
@@ -338,6 +350,14 @@ fn mtime_ns(meta: &std::fs::Metadata) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// Drive an async fixture from a sync test.
+    fn block_on<T>(fut: impl Future<Output = T>) -> T {
+        compio::runtime::Runtime::new()
+            .expect("compio runtime")
+            .block_on(fut)
+    }
+    use std::future::Future;
+
     use super::*;
 
     fn write(dir: &Path, rel: &str, contents: &str) -> PathBuf {
@@ -349,7 +369,7 @@ mod tests {
 
     /// A recorded graph of one file, as a scan would leave it.
     fn record_one(dir: &BuildDir, path: &Path, config: &str) {
-        let file = record(path.display().to_string(), vec!["p".to_owned()]).unwrap();
+        let file = block_on(record(path.display().to_string(), vec!["p".to_owned()])).unwrap();
         dir.replace_sources(std::slice::from_ref(&file)).unwrap();
         dir.set_status(&[(tables::SOURCES_CONFIG_HASH_KEY, config)])
             .unwrap();
@@ -432,7 +452,7 @@ mod tests {
         let src = write(tmp.path(), "src/lib.rr", "pub fn e() -> u64 { 0 }");
         let dir = BuildDir::open(&tmp.path().join("build")).unwrap();
 
-        let mut file = record(src.display().to_string(), vec!["p".to_owned()]).unwrap();
+        let mut file = block_on(record(src.display().to_string(), vec!["p".to_owned()])).unwrap();
         // Pretend the recording saw a shorter file at this very mtime.
         file.record.size -= 1;
         dir.replace_sources(std::slice::from_ref(&file)).unwrap();
@@ -478,7 +498,7 @@ mod tests {
     fn a_record_carries_the_blake3_digest_of_the_contents() {
         let tmp = tempfile::tempdir().unwrap();
         let src = write(tmp.path(), "src/lib.rr", "contents");
-        let file = record(src.display().to_string(), vec!["p".to_owned()]).unwrap();
+        let file = block_on(record(src.display().to_string(), vec!["p".to_owned()])).unwrap();
         assert_eq!(file.record.size, 8);
         assert_eq!(file.record.hash, *blake3::hash(b"contents").as_bytes());
         // Hex is a rendering, not what the row carries.
@@ -511,7 +531,7 @@ mod tests {
             .iter()
             .map(|name| {
                 let path = write(tmp.path(), name, "pub fn e() -> u64 { 0 }");
-                record(path.display().to_string(), vec!["p".to_owned()]).unwrap()
+                block_on(record(path.display().to_string(), vec!["p".to_owned()])).unwrap()
             })
             .collect();
         dir.replace_sources(&written).unwrap();

@@ -1,0 +1,108 @@
+// The dependency-graph views of `rene inspect`: `--solved` runs the pubgrub
+// feasibility check and pins every package of the transitive path graph to
+// its declared version; `--graph` dumps the nodes, constraints, and edges;
+// `--commands` renders the build plan — for every package in
+// dependency-first order, the `rrc` invocations the cross-package build will
+// run, with bake-decided paths as `<placeholders>`, and each node's
+// freshness `state` (all `uninitialized` here: nothing was ever built). All
+// of it is pure manifest work: `--frozen` keeps it free of rrc, the bake,
+// and any writes.
+//
+// The fixture graph: app 0.1.0 → util ^1.2 (at 1.2.9) → logs 0.3 (at
+// 0.3.4), with app also depending on logs unconstrained.
+
+// RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --solved --graph --commands | %FileCheck %s
+
+// Top-level keys arrive alphabetically; `graph` first.
+// CHECK: "graph": {
+// CHECK: "app": {
+// CHECK: "constraint": "*",
+// CHECK-NEXT: "package": "logs"
+// CHECK: "constraint": "^1.2",
+// CHECK-NEXT: "package": "util"
+// CHECK: "logs": {
+// CHECK: "version": "0.3.4"
+// CHECK: "util": {
+// CHECK: "constraint": "0.3",
+// CHECK-NEXT: "package": "logs"
+// CHECK: "version": "1.2.9"
+// CHECK: "root": "app"
+
+// The plan: dependency-first (logs, then util, then the root), each
+// dependency emitting its interface and its archive into
+// `<profile>/deps/`, the root's targets compiling against them. A node's
+// JSON keys sort alphabetically, so its commands precede its `package` tag.
+// CHECK: "plan": {
+// CHECK: "REUSSIR_RUSTC": "<baked-rustc>"
+
+// logs first: no dependencies, so no externs on its interface.
+// CHECK: "--package-name",
+// CHECK-NEXT: "logs",
+// CHECK-NEXT: "--emit",
+// CHECK-NEXT: "rri",
+// CHECK-NEXT: "-o",
+// CHECK-NEXT: "{{.*}}{{[/\\]+}}dev{{[/\\]+}}deps{{[/\\]+}}logs.rri"
+// CHECK: "emit": "rri"
+// CHECK: "emit": "staticlib"
+// CHECK: "package": "logs"
+// CHECK-NEXT: "reason": "never built",
+// CHECK-NEXT: "state": "uninitialized",
+// CHECK-NEXT: "version": "0.3.4"
+
+// util's compiles see logs' interface and sources, and the profile knobs
+// with the bake-decided paths as placeholders.
+// CHECK: "--package-name",
+// CHECK-NEXT: "util",
+// CHECK-NEXT: "--emit",
+// CHECK-NEXT: "rri",
+// CHECK-NEXT: "-o",
+// CHECK-NEXT: "{{.*}}util.rri",
+// CHECK-NEXT: "--extern",
+// CHECK-NEXT: "logs={{.*}}logs.rri",
+// CHECK-NEXT: "--extern-src",
+// CHECK-NEXT: "logs={{.*}}vendor{{[/\\]+}}logs{{[/\\]+}}src"
+// CHECK: "--polyffi-libdir",
+// CHECK-NEXT: "<rust-libdir>",
+// CHECK-NEXT: "--polyffi-libdir",
+// CHECK-NEXT: "<rt-deps-dir>",
+// CHECK: "package": "util"
+
+// The root: its declared targets, the whole downward cone in scope, and the
+// dependency archives linked by explicit path (the same convention rrc uses
+// for the runtime archive).
+// CHECK: "--package-name",
+// CHECK-NEXT: "app",
+// CHECK-NEXT: "--emit",
+// CHECK-NEXT: "executable",
+// CHECK: "--extern",
+// CHECK-NEXT: "logs={{.*}}logs.rri",
+// CHECK-NEXT: "--extern-src",
+// CHECK-NEXT: "logs={{.*}}src",
+// CHECK-NEXT: "--extern",
+// CHECK-NEXT: "util={{.*}}util.rri",
+// CHECK-NEXT: "--extern-src",
+// CHECK-NEXT: "util={{.*}}src",
+// CHECK-NEXT: "--link-arg={{.*}}{{(lib)?}}logs.{{(a|lib)}}",
+// CHECK-NEXT: "--link-arg={{.*}}{{(lib)?}}util.{{(a|lib)}}"
+// CHECK: "target": "demo"
+// CHECK: "--emit",
+// CHECK-NEXT: "dynlib",
+// CHECK: "target": "shared"
+// CHECK: "package": "app"
+// CHECK-NEXT: "reason": "never built",
+// CHECK-NEXT: "state": "uninitialized",
+
+// The solved pins, one per package (`resolution` sorts after `plan`).
+// CHECK: "resolution": {
+// CHECK-NEXT: "app": "0.1.0",
+// CHECK-NEXT: "logs": "0.3.4",
+// CHECK-NEXT: "util": "1.2.9"
+
+// The check really is a check: a constraint no declared version satisfies
+// fails resolution with pubgrub's derivation, on inspect and build alike —
+// before any expensive work.
+// RUN: %not %rene inspect --manifest-path %S/conflict/rene.ncl --build-dir %t.cdir --frozen --solved 2>&1 | %FileCheck %s --check-prefix=CONFLICT
+// RUN: %not %rene build --manifest-path %S/conflict/rene.ncl --build-dir %t.cdir 2>&1 | %FileCheck %s --check-prefix=CONFLICT
+
+// CONFLICT: dependency resolution failed
+// CONFLICT: util

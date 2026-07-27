@@ -17,7 +17,7 @@ use serde::Deserialize;
 pub const MANIFEST_FILE: &str = "rene.ncl";
 
 /// The interpreted portion of an evaluated manifest.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub package: Package,
     /// Dependencies by name. First stage: file-system paths only.
@@ -35,7 +35,7 @@ pub struct Manifest {
     pub profiles: BTreeMap<String, Profile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Package {
     /// The package's name — becomes `rrc --package-name`, the first segment
     /// of every item's module path.
@@ -43,11 +43,31 @@ pub struct Package {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+/// One declared dependency. Unknown fields are rejected — a typo'd
+/// constraint that silently vanished would change what resolution accepts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Dependency {
     /// Directory of the dependency package, relative to the manifest's
-    /// directory unless absolute.
-    pub path: PathBuf,
+    /// directory unless absolute. The only *source* supported today; a
+    /// dependency giving no path is reserved for remote registries and is
+    /// rejected at load with that explanation.
+    pub path: Option<PathBuf>,
+    /// The version constraint the resolved dependency must satisfy:
+    /// `"1.2.3"` (exact), `"^1.2.3"` (compatible), `"1.2"`/`"1"` (prefix),
+    /// or `"*"` (any, the default when absent). Checked by resolution
+    /// against the dependency package's declared `package.version`.
+    pub version: Option<String>,
+}
+
+impl Dependency {
+    /// The dependency's source directory. The load-time validation
+    /// guarantees this for every manifest that got past [`load`].
+    pub fn path(&self) -> &Path {
+        self.path
+            .as_deref()
+            .expect("validated at load: only path dependencies exist today")
+    }
 }
 
 /// What a target builds — the three link products `rrc` emits.
@@ -78,7 +98,7 @@ impl TargetKind {
 
 /// A declared build product. Unknown fields are rejected: a typo here would
 /// otherwise silently change what gets built.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub kind: TargetKind,
@@ -206,7 +226,7 @@ pub fn resolve_profile(manifest: &Manifest, name: &str) -> Result<Profile, Strin
 }
 
 /// A successfully loaded manifest.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Loaded {
     /// The manifest file the package was loaded from.
     pub path: PathBuf,
@@ -281,6 +301,15 @@ pub fn load(path: &Path) -> Result<Loaded, ManifestError> {
     let manifest: Manifest = expr
         .to_serde()
         .map_err(|e| ManifestError::Schema(e.to_string()))?;
+    for (name, dep) in &manifest.dependencies {
+        if dep.path.is_none() {
+            return Err(ManifestError::Schema(format!(
+                "dependency `{name}` gives no `path`; only local path \
+                 dependencies are supported today (a bare version constraint \
+                 will later select a registry release)"
+            )));
+        }
+    }
 
     // Nickel exports compact JSON; re-render pretty for the dump.
     let dump = serde_json::from_str::<serde_json::Value>(&json)
@@ -341,7 +370,7 @@ mod tests {
             let base = "my" in
             {
               package = { name = "%{base}lib" },
-              dependencies.utils = { path = "../utils" },
+              dependencies.utils = { path = "../utils", version = "^0.2" },
               future-field = { anything = [1, 2, 3] },
             }
             "#,
@@ -351,10 +380,40 @@ mod tests {
         assert_eq!(loaded.manifest.package.name, "mylib");
         assert_eq!(loaded.manifest.package.version, None);
         assert_eq!(
-            loaded.manifest.dependencies["utils"].path,
-            PathBuf::from("../utils")
+            loaded.manifest.dependencies["utils"].path(),
+            Path::new("../utils")
+        );
+        assert_eq!(
+            loaded.manifest.dependencies["utils"].version.as_deref(),
+            Some("^0.2")
         );
         assert!(loaded.dump.contains("future-field"));
+    }
+
+    /// A bare version constraint names a registry release; until remote
+    /// sources exist that is refused with the reason, not a panic later.
+    #[test]
+    fn a_dependency_without_a_path_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_manifest(
+            tmp.path(),
+            r#"{ package.name = "app", dependencies.utils = { version = "^1.0" } }"#,
+        );
+        let err = load(&path).unwrap_err().to_string();
+        assert!(err.contains("dependency `utils` gives no `path`"), "{err}");
+        assert!(err.contains("registry release"), "{err}");
+    }
+
+    /// A typo'd constraint field must not silently vanish.
+    #[test]
+    fn a_dependency_with_unknown_fields_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_manifest(
+            tmp.path(),
+            r#"{ package.name = "app", dependencies.utils = { path = "../u", verison = "1" } }"#,
+        );
+        let err = load(&path).unwrap_err().to_string();
+        assert!(err.contains("verison"), "{err}");
     }
 
     #[test]

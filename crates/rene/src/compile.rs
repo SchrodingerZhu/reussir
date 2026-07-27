@@ -14,7 +14,6 @@
 //! whose fingerprint matches and whose artifact still exists reruns nothing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +35,10 @@ pub struct Options {
     pub targets: Vec<String>,
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<PathBuf>,
+    /// The dependency cone's artifact digests
+    /// ([`crate::fresh::upstream_digests`]) — part of the fingerprint, so a
+    /// changed upstream artifact re-fingerprints every product consuming it.
+    pub upstream: std::collections::BTreeMap<String, String>,
 }
 
 /// A built (or reused) product.
@@ -52,7 +55,10 @@ pub struct ProductRecord {
 }
 
 /// Build the selected targets, reusing whatever the record proves current.
-pub fn build(
+/// The stale ones compile concurrently — independent `rrc` processes over
+/// the same baked runtime — and are recorded in declared order once all of
+/// them succeed.
+pub async fn build(
     dir: &BuildDir,
     loaded: &Loaded,
     sources: &Prepared,
@@ -82,9 +88,11 @@ pub fn build(
     let out_dir = dir.root().join(&opts.profile_name);
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create `{}`: {e}", out_dir.display()))?;
-    let fingerprint = fingerprint(loaded, sources, rt, opts);
+    let fingerprint = fingerprint(loaded, &sources.files, rt, opts);
 
-    let mut products = Vec::with_capacity(selected.len());
+    // Partition into current and stale first, so the stale ones can run
+    // concurrently while the listing keeps the declared order.
+    let mut plan = Vec::with_capacity(selected.len());
     for name in selected {
         let kind = manifest.targets[name].kind;
         let path = out_dir.join(artifact_file(
@@ -93,25 +101,30 @@ pub fn build(
             opts.profile.target_triple.as_deref(),
         ));
         let key = tables::product_key(&opts.profile_name, name);
-        if product_is_current(dir, &key, &fingerprint, &path)? {
+        let current = product_is_current(dir, &key, &fingerprint, &path)?;
+        if current {
             tracing::info!(target = name, "up to date");
-            products.push(Product {
-                name: name.to_owned(),
-                path,
-            });
-            continue;
         }
-
-        tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
-        compile(loaded, rt, opts, kind, &path)?;
-
-        let record = ProductRecord {
-            fingerprint: fingerprint.clone(),
-            path: path.clone(),
-        };
-        let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
-        dir.set_status(&[(key.as_str(), record.as_str())])
-            .map_err(|e| e.to_string())?;
+        plan.push((name, kind, path, key, current));
+    }
+    futures_util::future::try_join_all(plan.iter().filter(|(_, _, _, _, current)| !current).map(
+        |(name, kind, path, _, _)| async move {
+            tracing::info!(target = name, kind = kind.emit(), out = %path.display(), "compiling");
+            compile(loaded, rt, opts, *kind, path).await
+        },
+    ))
+    .await?;
+    let mut products = Vec::with_capacity(plan.len());
+    for (name, _, path, key, current) in plan {
+        if !current {
+            let record = ProductRecord {
+                fingerprint: fingerprint.clone(),
+                path: path.clone(),
+            };
+            let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+            dir.set_status(&[(key.as_str(), record.as_str())])
+                .map_err(|e| e.to_string())?;
+        }
         products.push(Product {
             name: name.to_owned(),
             path,
@@ -121,7 +134,7 @@ pub fn build(
 }
 
 /// One `rrc` run for one target.
-fn compile(
+async fn compile(
     loaded: &Loaded,
     rt: &RtArtifacts,
     opts: &Options,
@@ -129,7 +142,7 @@ fn compile(
     out: &Path,
 ) -> Result<(), String> {
     let rrc = deps::resolve_rrc();
-    let mut cmd = Command::new(&rrc);
+    let mut cmd = compio::process::Command::new(&rrc);
     cmd.arg("--package-root")
         .arg(deps::source_root(loaded))
         .arg("--package-name")
@@ -149,6 +162,7 @@ fn compile(
     // rrc's diagnostics stream straight through to the user.
     let status = cmd
         .status()
+        .await
         .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
     if !status.success() {
         return Err(format!(
@@ -160,63 +174,87 @@ fn compile(
 }
 
 /// The profile, spelled as `rrc` flags.
-fn profile_args(cmd: &mut Command, profile: &Profile, kind: TargetKind, linker: Option<&Path>) {
+fn profile_args(
+    cmd: &mut compio::process::Command,
+    profile: &Profile,
+    kind: TargetKind,
+    linker: Option<&Path>,
+) {
+    cmd.args(profile_flags(profile, kind, linker));
+}
+
+/// The `rrc` flags a profile expands to, as plain strings — shared by the
+/// real invocation above and the planned-command dump ([`crate::plan`]).
+pub(crate) fn profile_flags(
+    profile: &Profile,
+    kind: TargetKind,
+    linker: Option<&Path>,
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    fn push(args: &mut Vec<String>, flag: &str, value: &str) {
+        args.push(flag.to_owned());
+        args.push(value.to_owned());
+    }
     if let Some(opt) = &profile.opt {
-        cmd.arg("-O").arg(opt);
+        push(&mut args, "-O", opt);
     }
     if profile.debug == Some(true) {
-        cmd.arg("-g");
+        args.push("-g".to_owned());
     }
     if let Some(lto) = &profile.lto
         && lto != "none"
     {
-        cmd.arg("--lto").arg(lto);
+        push(&mut args, "--lto", lto);
     }
     // Every declared kind is a link product or archived into one; PIC is the
     // working default, with the profile the override.
-    let reloc = profile.relocation_mode.as_deref().unwrap_or("pic");
-    cmd.arg("--relocation-mode").arg(reloc);
+    push(
+        &mut args,
+        "--relocation-mode",
+        profile.relocation_mode.as_deref().unwrap_or("pic"),
+    );
     if let Some(units) = profile.codegen_units {
-        cmd.arg("--codegen-units").arg(units.to_string());
+        push(&mut args, "--codegen-units", &units.to_string());
     }
     for sanitizer in &profile.sanitizers {
-        cmd.arg("--sanitizer").arg(sanitizer);
+        push(&mut args, "--sanitizer", sanitizer);
     }
     if let Some(encoding) = &profile.nullary_variant_encoding {
-        cmd.arg("--nullary-variant-encoding").arg(encoding);
+        push(&mut args, "--nullary-variant-encoding", encoding);
     }
     if let Some(triple) = &profile.target_triple {
-        cmd.arg("--target-triple").arg(triple);
+        push(&mut args, "--target-triple", triple);
     }
     if let Some(cpu) = &profile.target_cpu {
-        cmd.arg("--target-cpu").arg(cpu);
+        push(&mut args, "--target-cpu", cpu);
     }
     if let Some(features) = &profile.target_features {
-        cmd.arg("--target-features").arg(features);
+        push(&mut args, "--target-features", features);
     }
     if profile.reuse_across_call == Some(true) {
-        cmd.arg("--reuse-across-call");
+        args.push("--reuse-across-call".to_owned());
     }
     if profile.closure_wpd == Some(false) {
-        cmd.arg("--no-closure-wpd");
+        args.push("--no-closure-wpd".to_owned());
     }
     if profile.pack_record_members == Some(false) {
-        cmd.arg("--no-pack-record-members");
+        args.push("--no-pack-record-members".to_owned());
     }
     // The link-only knobs go to the linked kinds alone, so one profile can
     // serve targets of every kind without tripping rrc's strictness.
     if kind.is_linked() {
         if let Some(linkage) = &profile.runtime_linkage {
-            cmd.arg("--runtime-linkage").arg(linkage);
+            push(&mut args, "--runtime-linkage", linkage);
         }
         if let Some(linker) = linker.or(profile.linker.as_deref()) {
-            cmd.arg("--linker").arg(linker);
+            push(&mut args, "--linker", &linker.display().to_string());
         }
         for arg in &profile.link_args {
-            cmd.arg(format!("--link-arg={arg}"));
+            args.push(format!("--link-arg={arg}"));
         }
     }
-    cmd.args(&profile.extra_flags);
+    args.extend(profile.extra_flags.iter().cloned());
+    args
 }
 
 /// Everything a product's freshness hangs on, digested: the evaluated
@@ -225,13 +263,22 @@ fn profile_args(cmd: &mut Command, profile: &Profile, kind: TargetKind, linker: 
 /// source file's content digest, the toolchain, and the CLI linker override.
 /// The source-graph paths are covered through the config hash + digests; the
 /// artifact's own existence is checked separately.
-fn fingerprint(loaded: &Loaded, sources: &Prepared, rt: &RtArtifacts, opts: &Options) -> String {
+pub(crate) fn fingerprint(
+    loaded: &Loaded,
+    files: &[deps::SourceFile],
+    rt: &RtArtifacts,
+    opts: &Options,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(deps::config_hash(&loaded.dump).as_bytes());
     hasher.update(opts.profile_name.as_bytes());
-    for file in &sources.files {
+    for file in files {
         hasher.update(file.path.as_bytes());
         hasher.update(&file.record.hash);
+    }
+    for (name, digest) in &opts.upstream {
+        hasher.update(name.as_bytes());
+        hasher.update(digest.as_bytes());
     }
     hasher.update(rt.rustc_version.as_bytes());
     hasher.update(rt.staticlib.display().to_string().as_bytes());
@@ -242,7 +289,7 @@ fn fingerprint(loaded: &Loaded, sources: &Prepared, rt: &RtArtifacts, opts: &Opt
 }
 
 /// Is the recorded build of this product still the one this build would do?
-fn product_is_current(
+pub(crate) fn product_is_current(
     dir: &BuildDir,
     key: &str,
     fingerprint: &str,
@@ -260,7 +307,7 @@ fn product_is_current(
 
 /// The artifact's file name for `name`, per the target platform — the
 /// profile's `target_triple` when set, the host otherwise.
-fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
+pub(crate) fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
     let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
     let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));
     match kind {

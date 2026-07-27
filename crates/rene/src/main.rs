@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, manifest, rt};
+use rene::{compile, deps, fresh, manifest, plan, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -104,6 +104,28 @@ struct InspectArgs {
     /// none. `state` still says whether the record can be trusted.
     #[arg(long)]
     frozen: bool,
+
+    /// Add a `resolution` section: every package of the transitive
+    /// dependency graph pinned to its solved version (the pubgrub
+    /// feasibility check must pass).
+    #[arg(long)]
+    solved: bool,
+
+    /// Add a `graph` section: the transitive dependency graph — each
+    /// package's directory, declared version, constraints, and edges.
+    #[arg(long)]
+    graph: bool,
+
+    /// Add a `plan` section: for every package in dependency-first order,
+    /// the `rrc` commands the cross-package build will run (interfaces and
+    /// archives for dependencies, the declared targets for the root).
+    /// Bake-decided paths appear as `<placeholders>`.
+    #[arg(long)]
+    commands: bool,
+
+    /// The profile the `plan` section renders against.
+    #[arg(long, default_value = "dev")]
+    profile: String,
 }
 
 fn main() -> ExitCode {
@@ -124,11 +146,23 @@ fn main() -> ExitCode {
         },
     };
     init_tracing(cli.verbose);
-    let result = match cli.command {
-        Command::Build(args) => build(&args),
-        Command::Clean(args) => clean(&args.location),
-        Command::Inspect(args) => inspect(&args.location, args.frozen),
+    // One completion-based runtime (io_uring/IOCP) drives the whole command:
+    // child processes and file reads await on it, and independent work —
+    // digests, target compiles — runs concurrently on the single thread.
+    let runtime = match compio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("error: cannot start the async runtime: {err}");
+            return ExitCode::FAILURE;
+        }
     };
+    let result = runtime.block_on(async {
+        match cli.command {
+            Command::Build(args) => build(&args).await,
+            Command::Clean(args) => clean(&args.location),
+            Command::Inspect(args) => inspect(&args).await,
+        }
+    });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -144,7 +178,15 @@ fn main() -> ExitCode {
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "info" }));
+        // pubgrub narrates every solver step at INFO; that is solver
+        // debugging, not build progress, so it stays behind RUST_LOG.
+        .unwrap_or_else(|_| {
+            EnvFilter::new(if verbose {
+                "debug,pubgrub=warn"
+            } else {
+                "info,pubgrub=warn"
+            })
+        });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -181,7 +223,7 @@ fn locate_manifest(flag: &Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-fn build(args: &BuildArgs) -> Result<(), String> {
+async fn build(args: &BuildArgs) -> Result<(), String> {
     let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
@@ -194,6 +236,20 @@ fn build(args: &BuildArgs) -> Result<(), String> {
     // Resolve the profile before any work: an unknown name is a usage
     // problem, not something to discover after a runtime bake.
     let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+    // Dependency resolution, before any expensive work too: load the
+    // transitive path graph and let pubgrub verify the constraints hold
+    // together (each package exists in exactly one version today, so this is
+    // a feasibility check; see `resolve`).
+    let graph = if loaded.manifest.dependencies.is_empty() {
+        None
+    } else {
+        let graph = resolve::load_graph(&loaded)?;
+        let solution = resolve::check(&graph)?;
+        for (name, version) in &solution.pinned {
+            tracing::info!(package = %name, %version, "resolved");
+        }
+        Some(graph)
+    };
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
@@ -205,11 +261,11 @@ fn build(args: &BuildArgs) -> Result<(), String> {
     // The source graph first: it is cheap, it fails fast on a broken package,
     // and a build that finds nothing moved skips straight to the freshness
     // checks below.
-    let sources = deps::prepare(&dir, &loaded)?;
+    let sources = deps::prepare(&dir, &loaded).await?;
     // The bake links the runtime dylib with the same linker pinning the
     // driver-level links get: the CLI override first, then the profile's.
     let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
-    let artifacts = rt::prepare(&dir, bake_linker.as_deref())?;
+    let artifacts = rt::prepare(&dir, bake_linker.as_deref()).await?;
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
@@ -234,8 +290,21 @@ fn build(args: &BuildArgs) -> Result<(), String> {
             profile,
             targets: args.targets.clone(),
             linker: args.linker.clone(),
+            // The cone's artifact digests enter the fingerprint, so a
+            // product consuming a changed upstream artifact re-fingerprints
+            // (an absent one digests to a sentinel — see `fresh`).
+            upstream: graph
+                .as_ref()
+                .map(|graph| {
+                    rene::fresh::root_upstream_digests(
+                        graph,
+                        &root.join(&args.profile).join("deps"),
+                    )
+                })
+                .unwrap_or_default(),
         },
-    )?;
+    )
+    .await?;
     // Stdout carries the artifact listing, one path per target, in the
     // order they were declared (or selected).
     for product in &products {
@@ -248,35 +317,40 @@ fn build(args: &BuildArgs) -> Result<(), String> {
 /// default a stale record is refreshed first (the same scan `build` runs, but
 /// without the runtime bake), so the report describes the package as it is
 /// now; `--frozen` reports what is on record and never writes.
-fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
+async fn inspect(args: &InspectArgs) -> Result<(), String> {
+    let location = &args.location;
+    let frozen = args.frozen;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
     let root = resolve_build_dir(location)?;
     let hash = deps::config_hash(&loaded.dump);
 
-    let (state, files) = if frozen {
+    // The handle is held for the section rendering below: freshness reads
+    // the same records a build would.
+    let (state, files, held) = if frozen {
         match BuildDir::open_existing(&root).map_err(|e| e.to_string())? {
-            Some(dir) => (
-                deps::staleness(&dir, &hash)?,
-                dir.sources().map_err(|e| e.to_string())?,
-            ),
+            Some(dir) => {
+                let state = deps::staleness(&dir, &hash)?;
+                let files = dir.sources().map_err(|e| e.to_string())?;
+                (state, files, Some(dir))
+            }
             // No build directory at all: nothing has been recorded, and
             // `--frozen` must not create one to say so.
-            None => (deps::Staleness::Uninitialized, Vec::new()),
+            None => (deps::Staleness::Uninitialized, Vec::new(), None),
         }
     } else {
         let dir = BuildDir::open(&root).map_err(|e| e.to_string())?;
         if dir.is_cleaning().map_err(|e| e.to_string())? {
             return Err(pending_clean(&root));
         }
-        let prepared = deps::prepare(&dir, &loaded)?;
+        let prepared = deps::prepare(&dir, &loaded).await?;
         // After a refresh the record is by construction current; report that
         // rather than the reason it was rebuilt (which the log already
         // carries).
-        (deps::Staleness::UpToDate, prepared.files)
+        (deps::Staleness::UpToDate, prepared.files, Some(dir))
     };
 
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "package": loaded.manifest.package.name,
         "manifest": loaded.path.display().to_string(),
         "build_dir": root.display().to_string(),
@@ -285,6 +359,68 @@ fn inspect(location: &Location, frozen: bool) -> Result<(), String> {
         "reason": state.to_string(),
         "files": files.iter().map(deps::SourceFile::to_json).collect::<Vec<_>>(),
     });
+    // The dependency-graph sections, on demand. One load serves all three;
+    // `--solved` additionally requires the feasibility check to hold.
+    if args.solved || args.graph || args.commands {
+        let graph = resolve::load_graph(&loaded)?;
+        if args.solved {
+            let solution = resolve::check(&graph)?;
+            report["resolution"] = solution
+                .pinned
+                .iter()
+                .map(|(name, version)| (name.clone(), version.to_string().into()))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+                .into();
+        }
+        if args.graph {
+            report["graph"] = serde_json::json!({
+                "root": graph.root,
+                "nodes": graph
+                    .nodes
+                    .iter()
+                    .map(|(name, node)| {
+                        (name.clone(), serde_json::json!({
+                            "dir": node.dir.display().to_string(),
+                            "version": node.version.to_string(),
+                            "dependencies": node
+                                .dependencies
+                                .iter()
+                                .map(|dep| serde_json::json!({
+                                    "package": dep,
+                                    "constraint": node.loaded.manifest.dependencies[dep]
+                                        .version
+                                        .as_deref()
+                                        .unwrap_or("*"),
+                                }))
+                                .collect::<Vec<_>>(),
+                        }))
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            });
+        }
+        if args.commands {
+            let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
+            let states = fresh::states(
+                &graph,
+                &fresh::Context {
+                    dir: held.as_ref(),
+                    profile_name: &args.profile,
+                    profile: &profile,
+                    build_dir: &root,
+                },
+            )?;
+            report["plan"] = plan::render(
+                &graph,
+                &plan::Options {
+                    profile_name: &args.profile,
+                    profile: &profile,
+                    linker: None,
+                    build_dir: &root,
+                },
+                Some(&states),
+            );
+        }
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
