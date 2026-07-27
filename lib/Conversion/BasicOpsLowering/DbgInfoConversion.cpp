@@ -68,6 +68,27 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
       .Default([](auto attr) { return mlir::Type{}; });
 }
 
+// Layout queries over an underlying type that may be an opaque
+// `ffi_object`: answer with its visible header (the u32 refcount the FFI
+// contract pins at offset 0) without consulting the data layout. The type
+// implements `DataLayoutTypeInterface` with the same answers, but this
+// conversion is the one client that reaches ffi_object payloads, and going
+// through these helpers keeps the `-g` path independent of interface
+// dispatch (which has proven fragile for this type under MSVC linking).
+uint64_t dbgTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                           mlir::Type type) {
+  if (llvm::isa<FFIObjectType>(type))
+    return 32;
+  return dataLayout.getTypeSizeInBits(type);
+}
+
+uint64_t dbgTypeABIAlignment(const mlir::DataLayout &dataLayout,
+                             mlir::Type type) {
+  if (llvm::isa<FFIObjectType>(type))
+    return 4;
+  return dataLayout.getTypeABIAlignment(type);
+}
+
 // Whether `boxed` wraps a fused-header variant record (`{i32 count-slot,
 // i32 tag, payload}` — see TypeConverter). Such a record's debug composite
 // describes the TAG-FIRST VIEW (base at the tag, 4 bytes into the record):
@@ -90,7 +111,7 @@ uint64_t boxedViewOffset(const mlir::DataLayout &dataLayout,
                          mlir::MLIRContext *ctx, DBGBoxedTypeAttr boxed,
                          mlir::Type payloadTy) {
   uint64_t indexSize = dataLayout.getTypeSize(mlir::IndexType::get(ctx));
-  uint64_t payloadAlign = dataLayout.getTypeABIAlignment(payloadTy);
+  uint64_t payloadAlign = dbgTypeABIAlignment(dataLayout, payloadTy);
   if (boxedFusedVariant(boxed)) {
     uint64_t recordStart =
         boxed.getRegional() ? llvm::alignTo(3 * indexSize, payloadAlign) : 0;
@@ -214,9 +235,9 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 if (!payloadUnderlying)
                   return std::nullopt;
                 uint64_t payloadBits =
-                    dataLayout.getTypeSizeInBits(payloadUnderlying);
+                    dbgTypeSizeInBits(dataLayout, payloadUnderlying);
                 uint64_t payloadAlignBytes =
-                    dataLayout.getTypeABIAlignment(payloadUnderlying);
+                    dbgTypeABIAlignment(dataLayout, payloadUnderlying);
                 uint64_t valueOffBytes =
                     boxedViewOffset(dataLayout, ctx, boxed, payloadUnderlying);
                 uint64_t valueBits =
@@ -252,14 +273,14 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               if (!underlying)
                 return std::nullopt;
               return std::make_tuple(
-                  diType, dataLayout.getTypeSizeInBits(underlying),
-                  dataLayout.getTypeABIAlignment(underlying) * 8);
+                  diType, dbgTypeSizeInBits(dataLayout, underlying),
+                  dbgTypeABIAlignment(dataLayout, underlying) * 8);
             };
 
             auto sizeInBits =
-                dataLayout.getTypeSizeInBits(recAttr.getUnderlyingType());
+                dbgTypeSizeInBits(dataLayout, recAttr.getUnderlyingType());
             auto alignInBits =
-                dataLayout.getTypeABIAlignment(recAttr.getUnderlyingType()) * 8;
+                dbgTypeABIAlignment(dataLayout, recAttr.getUnderlyingType()) * 8;
 
             // Physical field offsets (bits) for `count` fields with the given
             // sizes/alignments, starting at `baseBits`. Compound records are
@@ -547,7 +568,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   return nullptr;
                 auto scope = funcScope ? funcScope : diFile;
                 auto alignInBits =
-                    dataLayout.getTypeABIAlignment(underlyingTy) * 8;
+                    dbgTypeABIAlignment(dataLayout, underlyingTy) * 8;
                 // Extract line/column from the operation's location
                 // Note: 5th parameter is 'arg' (argument number), not column.
                 // For local variables (not function parameters), arg should be
@@ -570,7 +591,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   return nullptr;
                 auto scope = funcScope ? funcScope : diFile;
                 auto alignInBits =
-                    dataLayout.getTypeABIAlignment(underlyingTy) * 8;
+                    dbgTypeABIAlignment(dataLayout, underlyingTy) * 8;
                 // For function arguments, use the 1-based arg index
                 auto [line, col] = extractLineCol(loc);
                 (void)col;
