@@ -480,12 +480,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         // subprogram attribute. A body-less declaration gets neither — its home
         // unit describes it (a declaration must not carry a DISubprogram
         // definition).
-        let func_loc = if emit_body {
+        let func_loc = if emit_body && func.body.is_some() {
             if let Some(args) = self.dbg_func_args_attr(func) {
                 attributes.push(args);
             }
             self.subprogram_location(func)
         } else {
+            // A body-less function is a declaration wherever it lowers — an
+            // extern prototype has no home unit at all — and a declaration
+            // must not carry a DISubprogram definition.
             self.location(func.body.and_then(|b| b.span))
         };
 
