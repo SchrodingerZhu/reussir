@@ -69,23 +69,28 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
 }
 
 // Layout queries over an underlying type that may be an opaque
-// `ffi_object`: answer with its visible header (the u32 refcount the FFI
-// contract pins at offset 0) without consulting the data layout. The type
-// implements `DataLayoutTypeInterface` with the same answers, but this
+// `ffi_object`: only its header is visible (the u32 refcount the FFI
+// contract pins at offset 0 of the box), so answer with the header type's
+// layout rather than querying the opaque type itself. The type implements
+// `DataLayoutTypeInterface` with the same header-derived answers, but this
 // conversion is the one client that reaches ffi_object payloads, and going
 // through these helpers keeps the `-g` path independent of interface
 // dispatch (which has proven fragile for this type under MSVC linking).
+mlir::Type ffiObjectHeaderType(mlir::Type type) {
+  return mlir::IntegerType::get(type.getContext(), 32);
+}
+
 uint64_t dbgTypeSizeInBits(const mlir::DataLayout &dataLayout,
                            mlir::Type type) {
   if (llvm::isa<FFIObjectType>(type))
-    return 32;
+    return dataLayout.getTypeSizeInBits(ffiObjectHeaderType(type));
   return dataLayout.getTypeSizeInBits(type);
 }
 
 uint64_t dbgTypeABIAlignment(const mlir::DataLayout &dataLayout,
                              mlir::Type type) {
   if (llvm::isa<FFIObjectType>(type))
-    return 4;
+    return dataLayout.getTypeABIAlignment(ffiObjectHeaderType(type));
   return dataLayout.getTypeABIAlignment(type);
 }
 
