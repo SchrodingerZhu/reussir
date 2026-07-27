@@ -17,6 +17,8 @@
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 
+#include <cstdlib>
+
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/TypeSwitch.h>
@@ -80,8 +82,23 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
 // that fails to unify across the MSVC link would break `isa` the same way
 // it breaks the interface lookup, while the registered name is a plain
 // string held by the type's uniqued storage.
+// `REUSSIR_DL_TRACE`: narrate the ffi_object layout decisions to stderr —
+// the platform-portable way to locate a missing-data-layout abort whose
+// stack a CI host does not surface (`tests/integration/frontend/
+// ffi_debug.rr` runs with it on).
+bool dlTraceEnabled() {
+  static bool enabled = std::getenv("REUSSIR_DL_TRACE") != nullptr;
+  return enabled;
+}
+
 bool isFFIObjectType(mlir::Type type) {
-  return type.getAbstractType().getName() == FFIObjectType::name;
+  bool named = type.getAbstractType().getName() == FFIObjectType::name;
+  if (!named && dlTraceEnabled() &&
+      type.getAbstractType().getName().contains("ffi_object"))
+    llvm::errs() << "REUSSIR_DL_TRACE: dbg helper name-match MISSED an "
+                    "ffi_object-named type: "
+                 << type << "\n";
+  return named;
 }
 
 mlir::Type ffiObjectHeaderType(mlir::Type type) {
@@ -90,15 +107,22 @@ mlir::Type ffiObjectHeaderType(mlir::Type type) {
 
 uint64_t dbgTypeSizeInBits(const mlir::DataLayout &dataLayout,
                            mlir::Type type) {
-  if (isFFIObjectType(type))
+  if (isFFIObjectType(type)) {
+    if (dlTraceEnabled())
+      llvm::errs() << "REUSSIR_DL_TRACE: dbg size intercept: " << type << "\n";
     return dataLayout.getTypeSizeInBits(ffiObjectHeaderType(type));
+  }
   return dataLayout.getTypeSizeInBits(type);
 }
 
 uint64_t dbgTypeABIAlignment(const mlir::DataLayout &dataLayout,
                              mlir::Type type) {
-  if (isFFIObjectType(type))
+  if (isFFIObjectType(type)) {
+    if (dlTraceEnabled())
+      llvm::errs() << "REUSSIR_DL_TRACE: dbg align intercept: " << type
+                   << "\n";
     return dataLayout.getTypeABIAlignment(ffiObjectHeaderType(type));
+  }
   return dataLayout.getTypeABIAlignment(type);
 }
 
@@ -838,7 +862,11 @@ struct DebugInfoConversionPass
     : public impl::ReussirDebugInfoConversionPassBase<DebugInfoConversionPass> {
   using Base::Base;
   void runOnOperation() override {
+    if (dlTraceEnabled())
+      llvm::errs() << "REUSSIR_DL_TRACE: dbg-info conversion begin\n";
     lowerFusedDBGAttributeInLocations(getOperation());
+    if (dlTraceEnabled())
+      llvm::errs() << "REUSSIR_DL_TRACE: dbg-info conversion end\n";
   }
 };
 } // namespace

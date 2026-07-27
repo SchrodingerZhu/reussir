@@ -7,7 +7,10 @@
 // Regression: ffi_object provided no data layout at all, and any `-g`
 // build using an opaque type (e.g. `rene`'s default dev profile) crashed.
 
-// RUN: %rrc %s -o %t.o --relocation-mode pic -g
+// The trace narrates the ffi_object layout decisions, so a failure on a
+// platform that hides the abort stack still shows where the query came
+// from.
+// RUN: env REUSSIR_DL_TRACE=1 %rrc %s -o %t.o --relocation-mode pic -g
 // RUN: %rrc %s --emit llvm-ir --relocation-mode pic -g -o %t.ll
 // RUN: %FileCheck %s < %t.ll
 
