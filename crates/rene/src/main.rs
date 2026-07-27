@@ -241,7 +241,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
-    tracing::info!(
+    tracing::debug!(
         package = %loaded.manifest.package.name,
         manifest = %loaded.path.display(),
         profile = %args.profile,
@@ -276,8 +276,11 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     let sources = deps::prepare(&dir, &loaded).await?;
     // The bake links the runtime dylib with the same linker pinning the
     // driver-level links get: the CLI override first, then the profile's.
+    // The progress surface exists from here on: the bake's spinner first,
+    // the pipeline's bars after.
+    let progress = indicatif::MultiProgress::new();
     let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
-    let artifacts = rt::prepare(&dir, bake_linker.as_deref()).await?;
+    let artifacts = rt::prepare(&dir, bake_linker.as_deref(), &progress).await?;
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
@@ -293,9 +296,8 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     }
 
     // One pool for the whole build: `-j` admission over a few event-loop
-    // workers; one progress surface (hidden off-terminal).
+    // workers.
     let pool = pool::Pool::new(args.jobs)?;
-    let progress = indicatif::MultiProgress::new();
 
     // The dependency pipeline: every node of the graph but the root, each
     // dispatched the moment its last dependency finishes, each freshness-
