@@ -229,6 +229,15 @@ impl LlvmLowering {
                 LLVMDisposeModule(main);
                 return Err("failed to link polymorphic-FFI modules into the main module".into());
             }
+            // Every ODR definition now exists in one module (codegen'd
+            // instances, the dialect's drop/acquire glue, linked FFI bitcode),
+            // so this is the one seam where the COFF comdat invariant can be
+            // enforced for all of them: COFF has no weak symbol binding, and a
+            // weak-for-linker definition without a comdat lowers to the
+            // fragile `.weak.<sym>.default` fallback that fails the link when
+            // two objects carry the same instance. No-op off COFF (Mach-O
+            // rejects comdats; ELF weak binding needs none).
+            sys::reussirAttachCoffComdats(main as sys::LLVMModuleRef);
             // Hand the context off to `Finalized`; null it so our `Drop` is inert.
             let context = std::mem::replace(&mut self.context, std::ptr::null_mut());
             Ok(Finalized {
@@ -261,4 +270,97 @@ impl Drop for LlvmLowering {
 pub struct Finalized {
     pub context: LLVMContextRef,
     pub module: LLVMModuleRef,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CStr;
+
+    use llvm_sys::LLVMLinkage;
+    use llvm_sys::core::{
+        LLVMAddFunction, LLVMAppendBasicBlockInContext, LLVMBuildRetVoid, LLVMContextCreate,
+        LLVMContextDispose, LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMDisposeMessage,
+        LLVMDisposeModule, LLVMFunctionType, LLVMModuleCreateWithNameInContext,
+        LLVMPositionBuilderAtEnd, LLVMPrintModuleToString, LLVMSetLinkage, LLVMSetTarget,
+        LLVMVoidTypeInContext,
+    };
+
+    use reussir_backend_sys as sys;
+
+    /// Builds a module for `triple` holding one defined function per linkage,
+    /// runs the comdat attachment over it, and returns the printed IR.
+    unsafe fn attach_and_print(triple: &CStr, linkages: &[(&CStr, LLVMLinkage)]) -> String {
+        unsafe {
+            let context = LLVMContextCreate();
+            // Not named after the feature: the assertions substring-match the
+            // printed IR for `comdat`, and the module name is printed too.
+            let module = LLVMModuleCreateWithNameInContext(c"seam-test".as_ptr(), context);
+            LLVMSetTarget(module, triple.as_ptr());
+            let void = LLVMVoidTypeInContext(context);
+            let fn_ty = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
+            let builder = LLVMCreateBuilderInContext(context);
+            for &(name, linkage) in linkages {
+                let f = LLVMAddFunction(module, name.as_ptr(), fn_ty);
+                LLVMSetLinkage(f, linkage);
+                // Comdats are only legal on definitions, so give each a body.
+                let bb = LLVMAppendBasicBlockInContext(context, f, c"entry".as_ptr());
+                LLVMPositionBuilderAtEnd(builder, bb);
+                LLVMBuildRetVoid(builder);
+            }
+            LLVMDisposeBuilder(builder);
+            sys::reussirAttachCoffComdats(module as sys::LLVMModuleRef);
+            let printed = LLVMPrintModuleToString(module);
+            let ir = CStr::from_ptr(printed).to_string_lossy().into_owned();
+            LLVMDisposeMessage(printed);
+            LLVMDisposeModule(module);
+            LLVMContextDispose(context);
+            ir
+        }
+    }
+
+    const WEAK_FOR_LINKER: [(&CStr, LLVMLinkage); 4] = [
+        (c"wo", LLVMLinkage::LLVMWeakODRLinkage),
+        (c"lo", LLVMLinkage::LLVMLinkOnceODRLinkage),
+        (c"wa", LLVMLinkage::LLVMWeakAnyLinkage),
+        (c"la", LLVMLinkage::LLVMLinkOnceAnyLinkage),
+    ];
+
+    #[test]
+    fn coff_weak_for_linker_definitions_get_comdat_any() {
+        let mut cases = WEAK_FOR_LINKER.to_vec();
+        cases.push((c"strong", LLVMLinkage::LLVMExternalLinkage));
+        cases.push((c"local", LLVMLinkage::LLVMInternalLinkage));
+        let ir = unsafe { attach_and_print(c"x86_64-pc-windows-msvc", &cases) };
+        for (name, _) in &WEAK_FOR_LINKER {
+            let name = name.to_str().unwrap();
+            // The comdat is keyed by the symbol's own name (a COFF
+            // requirement), which LLVM prints as a bare `comdat` token.
+            assert!(
+                ir.contains(&format!("${name} = comdat any")),
+                "missing comdat for {name}: {ir}"
+            );
+            assert!(
+                ir.contains(&format!("@{name}() comdat")),
+                "definition of {name} not attached to its comdat: {ir}"
+            );
+        }
+        // Strong and internal definitions are not ODR-mergeable; comdat'ing
+        // them would change their link semantics.
+        assert!(!ir.contains("$strong"), "strong external comdat'd: {ir}");
+        assert!(!ir.contains("$local"), "internal comdat'd: {ir}");
+    }
+
+    #[test]
+    fn non_coff_formats_stay_comdat_free() {
+        // Mach-O rejects comdats outright (hard LLVM error at emission); ELF
+        // binds weak symbols natively and must stay byte-identical.
+        for triple in [c"aarch64-apple-darwin", c"x86_64-unknown-linux-gnu"] {
+            let ir = unsafe { attach_and_print(triple, &WEAK_FOR_LINKER) };
+            assert!(
+                !ir.contains("comdat"),
+                "comdat leaked into {}: {ir}",
+                triple.to_string_lossy()
+            );
+        }
+    }
 }

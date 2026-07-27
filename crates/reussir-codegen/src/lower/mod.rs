@@ -94,8 +94,11 @@ pub enum LinkagePolicy {
     ///   when `dedup_instances` holds — any other compilation unit may emit
     ///   the same instance and the linker keeps one; `weak_odr` rather than
     ///   `linkonce_odr` because the instance's home unit may not reference
-    ///   it itself — and plain external otherwise (COFF, where weak
-    ///   definitions need comdat support we do not emit yet);
+    ///   it itself. The mechanism carrying the merge is per-format: ELF and
+    ///   Mach-O bind weak symbols natively, while on COFF the backend
+    ///   attaches `comdat any` to every weak-for-linker definition once the
+    ///   final `llvm::Module` exists (`reussirAttachCoffComdats`, called
+    ///   from `LlvmLowering::finish`);
     /// - private non-generic functions are `internal`, unless marked
     ///   `mono_export` (reachable from a generic body a foreign package may
     ///   instantiate, so the symbol must survive for cross-package links);
@@ -106,13 +109,15 @@ pub enum LinkagePolicy {
 
 impl LinkagePolicy {
     /// The AOT policy for a target triple (`None` = native host).
-    pub fn aot_for_triple(triple: Option<&str>) -> Self {
-        let coff = match triple {
-            Some(t) => t.contains("windows") || t.contains("uefi"),
-            None => cfg!(windows),
-        };
+    ///
+    /// Currently target-independent: instances dedup on every format, since
+    /// the COFF gap (no weak symbol binding) is closed downstream by the
+    /// backend's comdat attachment on the final `llvm::Module`. The triple
+    /// stays in the signature as the seam any future per-target policy
+    /// hangs off.
+    pub fn aot_for_triple(_triple: Option<&str>) -> Self {
         LinkagePolicy::Aot {
-            dedup_instances: !coff,
+            dedup_instances: true,
         }
     }
 }

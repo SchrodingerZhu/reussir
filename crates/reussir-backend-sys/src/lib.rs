@@ -208,6 +208,15 @@ unsafe extern "C" {
     /// active case. Operates in place; a no-op when `module` has no debug info.
     pub fn reussirFixupVariantDebugInfo(module: LLVMModuleRef);
 
+    /// On COFF targets, attaches a `comdat any` (keyed by the symbol's own
+    /// name, as COFF requires) to every function and global variable defined
+    /// with weak-for-linker linkage (`weak`/`weak_odr`/`linkonce`/
+    /// `linkonce_odr`) that does not already carry one — COFF has no weak
+    /// symbol binding, so without a COMDAT section identical ODR definitions
+    /// in two objects fail the link. Run on the final module, after every
+    /// definition exists. A no-op for every other object format.
+    pub fn reussirAttachCoffComdats(module: LLVMModuleRef);
+
     /// Reports whether TPDE support was compiled into the backend.
     pub fn reussirHasTPDE() -> c_int;
 

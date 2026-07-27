@@ -127,6 +127,18 @@ LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
 // when there is no debug info.
 void reussirFixupVariantDebugInfo(LLVMModuleRef module);
 
+// On COFF targets, attaches a `comdat any` (keyed by the symbol's own name, as
+// COFF requires) to every function and global variable defined with
+// weak-for-linker linkage (`weak`/`weak_odr`/`linkonce`/`linkonce_odr`) that
+// does not already carry one. COFF has no weak symbol binding: without a
+// COMDAT section LLVM lowers such definitions to the fragile
+// `.weak.<sym>.default` weak-external fallback and identical definitions in
+// two objects fail the link. Run it on the final llvm::Module, after every
+// definition (monomorphized instances, drop/acquire glue, linked-in FFI
+// bitcode) exists. A no-op for every other object format — Mach-O rejects
+// comdats outright, ELF weak binding dedups without them.
+void reussirAttachCoffComdats(LLVMModuleRef module);
+
 // Reports whether TPDE support was compiled into the backend.
 int reussirHasTPDE(void);
 

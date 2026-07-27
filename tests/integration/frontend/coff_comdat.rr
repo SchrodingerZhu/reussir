@@ -1,0 +1,59 @@
+// Cross-triple coverage of the backend's COFF comdat seam
+// (`reussirAttachCoffComdats`, run on the final llvm::Module in
+// `LlvmLowering::finish`), independent of the host object format —
+// linkage.rr pins the same policy under the host triple.
+//
+// COFF has no weak symbol binding: a `weak_odr`/`linkonce_odr` definition
+// without a COMDAT section lowers to the fragile `.weak.<sym>.default`
+// weak-external fallback, and two objects carrying the same monomorphized
+// instance fail the link. So on COFF every weak-for-linker definition —
+// codegen's `_RI…` instances and the dialect's outlined drop/acquire glue
+// alike — must sit in a `comdat any` keyed by its own symbol. Mach-O must
+// carry none (comdats are a hard LLVM error there; weak binding is native).
+
+// RUN: %rrc %s --emit llvm-ir -O none --target-triple x86_64-pc-windows-msvc -o %t.coff.ll
+// RUN: %FileCheck %s --check-prefix=COFF < %t.coff.ll
+// RUN: %rrc %s --emit llvm-ir -O none --target-triple aarch64-apple-darwin -o %t.macho.ll
+// RUN: %FileCheck %s --check-prefix=MACHO < %t.macho.ll
+
+// The comdat must survive into the object: its section carries
+// IMAGE_SCN_LNK_COMDAT.
+// RUN: %rrc %s --emit obj -O none --target-triple x86_64-pc-windows-msvc -o %t.coff.obj
+// RUN: %llvm-readobj --sections %t.coff.obj | %FileCheck %s --check-prefix=SECTIONS
+
+// A generic whose instance any other compilation unit may also emit.
+fn dup<T : Num>(x: T) -> T {
+    x + x
+}
+
+pub fn use_dup(x: i64) -> i64 {
+    dup(x)
+}
+
+// A recursive enum forces the outlined `linkonce_odr` drop glue
+// (`createDtorIfNotExists`), the other ODR emission path.
+pub struct Leaf { data : i64 }
+
+pub enum Tree {
+    Tip,
+    Node(Tree, Leaf, Tree),
+}
+
+pub fn consume(t : Tree) -> i64 {
+    dup(2)
+}
+
+// COFF-DAG: $_RIC3dupxE = comdat any
+// COFF-DAG: $_RINvNvC4core9intrinsic13drop_in_placeC4TreeE = comdat any
+// COFF-DAG: define weak_odr i64 @_RIC3dupxE(i64 %0) comdat
+// COFF-DAG: define linkonce_odr void @_RINvNvC4core9intrinsic13drop_in_placeC4TreeE(ptr noalias noundef nonnull %0) #0 comdat
+
+// Mach-O: same mergeable linkage, natively weak-bound, and not a single
+// comdat anywhere in the module.
+// MACHO-NOT: comdat
+// MACHO: define linkonce_odr void @_RINvNvC4core9intrinsic13drop_in_placeC4TreeE(ptr noalias noundef nonnull %0) #0 {
+// MACHO-NOT: comdat
+// MACHO: define weak_odr i64 @_RIC3dupxE(i64 %0) {
+// MACHO-NOT: comdat
+
+// SECTIONS: IMAGE_SCN_LNK_COMDAT
