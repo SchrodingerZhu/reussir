@@ -138,6 +138,18 @@ pub fn recorded_bake(dir: Option<&BuildDir>) -> Result<Option<RtArtifacts>, Stri
         .and_then(|record| serde_json::from_str(&record).ok()))
 }
 
+/// One node's local freshness — no upstream-stale propagation, so at
+/// execution time (when the cone is final) the answer is exact.
+pub fn node_state(graph: &Graph, name: &str, ctx: &Context<'_>) -> Result<State, String> {
+    let bake = recorded_bake(ctx.dir)?;
+    let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
+    if name == graph.root {
+        root_state(graph, ctx, bake.as_ref())
+    } else {
+        dep_state(graph, name, ctx, bake.as_ref(), &deps_dir)
+    }
+}
+
 /// The freshness of every node of the graph, keyed by package name.
 pub fn states(graph: &Graph, ctx: &Context<'_>) -> Result<BTreeMap<String, State>, String> {
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");

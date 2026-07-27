@@ -781,3 +781,117 @@ fn build_bakes_the_runtime_with_the_host_toolchain() {
         libdirs[1].display()
     );
 }
+
+/// The cross-package pipeline under the fake toolchain: the dependency's
+/// interface and archive compile before the root's targets, the root sees
+/// the cone (`--extern`/`--extern-src`) and links the archive
+/// (`--link-lib`), records make the second build a no-op, and a touched
+/// dependency source rebuilds it.
+#[cfg(unix)]
+#[test]
+fn build_runs_the_dependency_pipeline() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+
+    // The root package, depending on `util` by path.
+    std::fs::create_dir_all(tmp.join("src")).unwrap();
+    std::fs::write(
+        tmp.join("src/lib.rr"),
+        "pub fn entry(n: u64) -> u64 { n }\n",
+    )
+    .unwrap();
+    let manifest = tmp.join("rene.ncl");
+    std::fs::write(
+        &manifest,
+        "{ package = { name = \"app\", version = \"0.1.0\" },\n\
+         \x20 dependencies.util = { path = \"vendor/util\", version = \"^1.0\" },\n\
+         \x20 targets.demo = { kind = 'executable } }\n",
+    )
+    .unwrap();
+    let util = tmp.join("vendor/util");
+    std::fs::create_dir_all(util.join("src")).unwrap();
+    std::fs::write(
+        util.join("src/lib.rr"),
+        "pub fn twice(n: u64) -> u64 { n + n }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        util.join("rene.ncl"),
+        "{ package = { name = \"util\", version = \"1.2.0\" } }\n",
+    )
+    .unwrap();
+
+    let fakes = Fakes::new(&tmp);
+    let out = fakes.rene(&["build"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    let compiles = fakes.compiles();
+    // Dependency interface, dependency archive, root target — in order.
+    assert_eq!(compiles.len(), 3, "{compiles:#?}");
+    assert!(compiles[0].contains("--package-name util"), "{compiles:#?}");
+    assert!(compiles[0].contains("--emit rri"), "{compiles:#?}");
+    assert!(compiles[1].contains("--package-name util"), "{compiles:#?}");
+    assert!(compiles[1].contains("--emit staticlib"), "{compiles:#?}");
+    assert!(compiles[2].contains("--package-name app"), "{compiles:#?}");
+    assert!(compiles[2].contains("--emit executable"), "{compiles:#?}");
+    // The root sees the dependency's interface and sources, and links its
+    // archive.
+    let deps_dir = root.join("dev").join("deps");
+    assert!(
+        compiles[2].contains(&format!(
+            "--extern util={}",
+            deps_dir.join("util.rri").display()
+        )),
+        "{compiles:#?}"
+    );
+    assert!(
+        compiles[2].contains(&format!(
+            "--extern-src util={}",
+            util.join("src").display()
+        )),
+        "{compiles:#?}"
+    );
+    assert!(
+        compiles[2].contains(&format!(
+            "--link-lib {}",
+            deps_dir.join("libutil.a").display()
+        )),
+        "{compiles:#?}"
+    );
+    // The dependency's compiles never see link flags or their own extern.
+    assert!(!compiles[0].contains("--link-lib"), "{compiles:#?}");
+    assert!(!compiles[1].contains("--extern"), "{compiles:#?}");
+
+    // Everything is recorded: the second build compiles nothing.
+    let out = fakes.rene(&["build"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(
+        fakes.compiles().len(),
+        3,
+        "stderr: {}\n{:#?}",
+        stderr(&out),
+        fakes.compiles()
+    );
+
+    // A touched dependency source re-runs its two compiles. The root's
+    // target does NOT re-run: the fake fabricates byte-identical artifacts,
+    // and the root's fingerprint hashes upstream *content* — the early
+    // cutoff, demonstrated. (With a real compiler the archive's bytes would
+    // change and the root would relink.)
+    std::fs::write(
+        util.join("src/lib.rr"),
+        "pub fn twice(n: u64) -> u64 { n * 2 }\n",
+    )
+    .unwrap();
+    let out = fakes.rene(&["build"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let after = fakes.compiles();
+    assert_eq!(after.len(), 5, "{after:#?}");
+    assert!(after[3].contains("--emit rri"), "{after:#?}");
+    assert!(after[4].contains("--emit staticlib"), "{after:#?}");
+    assert!(
+        after[3..].iter().all(|line| !line.contains("--package-name app")),
+        "the root re-ran despite identical upstream bytes: {after:#?}"
+    );
+}

@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, fresh, manifest, plan, resolve, rt};
+use rene::{compile, deps, exec, fresh, manifest, plan, pool, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -194,6 +194,9 @@ fn init_tracing(verbose: bool) {
         });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        // Plain text off-terminal: CI logs and FileCheck'd stderr must not
+        // carry ANSI escapes.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -244,17 +247,15 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // Dependency resolution, before any expensive work too: load the
     // transitive path graph and let pubgrub verify the constraints hold
     // together (each package exists in exactly one version today, so this is
-    // a feasibility check; see `resolve`).
-    let graph = if loaded.manifest.dependencies.is_empty() {
-        None
-    } else {
-        let graph = resolve::load_graph(&loaded)?;
+    // a feasibility check; see `resolve`). A dependency-less package is a
+    // one-node graph through the same machinery.
+    let graph = resolve::load_graph(&loaded)?;
+    if graph.nodes.len() > 1 {
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
             tracing::info!(package = %name, %version, "resolved");
         }
-        Some(graph)
-    };
+    }
 
     let root = resolve_build_dir(location)?;
     // Opening the status database takes the build directory's lock; hold it
@@ -285,6 +286,37 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
         return Ok(());
     }
 
+    // One pool for the whole build: `-j` admission over a few event-loop
+    // workers; one progress surface (hidden off-terminal).
+    let pool = pool::Pool::new(args.jobs)?;
+    let progress = indicatif::MultiProgress::new();
+
+    // The dependency pipeline: every node of the graph but the root, each
+    // dispatched the moment its last dependency finishes, each freshness-
+    // checked, compiled (interface + archive), and recorded.
+    let built = exec::build_deps(
+        &dir,
+        &graph,
+        &artifacts,
+        &exec::Options {
+            profile_name: &args.profile,
+            profile: &profile,
+            linker: args.linker.as_deref(),
+            jobs: args.jobs,
+            build_dir: &root,
+        },
+        &pool,
+        &progress,
+    )
+    .await?;
+    if graph.nodes.len() > 1 {
+        tracing::info!(
+            built,
+            fresh = graph.nodes.len() - 1 - built,
+            "dependencies ready"
+        );
+    }
+
     let products = compile::build(
         &dir,
         &loaded,
@@ -296,21 +328,20 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
             targets: args.targets.clone(),
             linker: args.linker.clone(),
             // The cone's artifact digests enter the fingerprint, so a
-            // product consuming a changed upstream artifact re-fingerprints
-            // (an absent one digests to a sentinel — see `fresh`).
-            upstream: graph
-                .as_ref()
-                .map(|graph| {
-                    rene::fresh::root_upstream_digests(
-                        graph,
-                        &root.join(&args.profile).join("deps"),
-                    )
-                })
-                .unwrap_or_default(),
+            // product consuming a changed upstream artifact re-fingerprints.
+            // Computed *after* the dependency pipeline: it hashes the final
+            // artifacts the targets will consume.
+            upstream: rene::fresh::root_upstream_digests(
+                &graph,
+                &root.join(&args.profile).join("deps"),
+            ),
             jobs: args.jobs,
         },
+        &graph,
+        &pool,
     )
     .await?;
+    pool.shutdown().await?;
     // Stdout carries the artifact listing, one path per target, in the
     // order they were declared (or selected).
     for product in &products {

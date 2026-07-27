@@ -184,7 +184,6 @@ pub fn render(
 /// The invocation prefix shared by every command of a package.
 fn package_args(node: &crate::resolve::Node, out: &Path, emit: &str) -> Vec<String> {
     vec![
-        "rrc".to_owned(),
         "--package-root".to_owned(),
         node.dir.join("src").display().to_string(),
         "--package-name".to_owned(),

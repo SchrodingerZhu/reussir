@@ -1,4 +1,8 @@
 #[main]
-pub fn entry() -> () {
-    ()
+pub fn entry() {
+    let n: u64 = 21;
+    let doubled = util::twice(n);
+    let grounded = util::ground(doubled);
+    let base = logs::level();
+    let total = grounded + base;
 }

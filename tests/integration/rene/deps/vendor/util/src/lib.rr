@@ -1,3 +1,12 @@
-pub fn twice(n: u64) -> u64 {
-    n + n
+fn helper(x: u64) -> u64 {
+    x + 1
+}
+
+pub fn twice<T : Num>(x: T) -> T {
+    helper(0);
+    x + x
+}
+
+pub fn ground(x: u64) -> u64 {
+    helper(x) + logs::level()
 }
