@@ -31,6 +31,6 @@
 // FRESH: dependencies ready built=0 fresh=2
 
 // The plan dump agrees: every node current, by name.
-// RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --commands | %FileCheck %s --check-prefix=STATE
+// RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --commands %rrc_linker | %FileCheck %s --check-prefix=STATE
 
 // STATE-COUNT-3: "state": "current"

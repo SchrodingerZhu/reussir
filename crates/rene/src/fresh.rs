@@ -124,6 +124,9 @@ pub struct Context<'a> {
     pub dir: Option<&'a BuildDir>,
     pub profile_name: &'a str,
     pub profile: &'a Profile,
+    /// The `--linker` override the compared build ran (or would run) with —
+    /// part of the root products' fingerprints.
+    pub linker: Option<&'a Path>,
     pub build_dir: &'a Path,
 }
 
@@ -271,7 +274,7 @@ fn root_state(
             profile_name: ctx.profile_name.to_owned(),
             profile: ctx.profile.clone(),
             targets: Vec::new(),
-            linker: None,
+            linker: ctx.linker.map(Path::to_path_buf),
             upstream,
             jobs: None,
         },
@@ -449,6 +452,7 @@ mod tests {
             dir: Some(&f.dir),
             profile_name: "dev",
             profile,
+            linker: None,
             build_dir: &f.build_dir,
         }
     }

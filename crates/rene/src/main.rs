@@ -131,6 +131,12 @@ struct InspectArgs {
     /// The profile the `plan` section renders against.
     #[arg(long, default_value = "dev")]
     profile: String,
+
+    /// The linker override the compared build ran with (`rene build
+    /// --linker`): part of the root products' fingerprints, so freshness
+    /// must judge against the same value.
+    #[arg(long)]
+    linker: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -444,6 +450,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                     dir: held.as_ref(),
                     profile_name: &args.profile,
                     profile: &profile,
+                    linker: args.linker.as_deref(),
                     build_dir: &root,
                 },
             )?;
@@ -452,7 +459,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                 &plan::Options {
                     profile_name: &args.profile,
                     profile: &profile,
-                    linker: None,
+                    linker: args.linker.as_deref(),
                     build_dir: &root,
                 },
                 bake.as_ref(),

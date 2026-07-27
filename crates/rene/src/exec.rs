@@ -140,6 +140,7 @@ async fn build_node(
         dir: Some(dir),
         profile_name: opts.profile_name,
         profile: opts.profile,
+        linker: opts.linker,
         build_dir: opts.build_dir,
     };
     // At this point the node's upstream artifacts are final, so the local

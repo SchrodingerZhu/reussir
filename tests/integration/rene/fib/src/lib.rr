@@ -1,0 +1,34 @@
+// Plain recursive Fibonacci behind a polyffi console: input read from
+// stdin and the result printed through `#[ffi(import)]` Rust textures —
+// no C driver, the whole loop is Reussir + the runtime.
+
+#[ffi(import)]
+fn read_input() -> u64 [{
+    {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok();
+        line.trim().parse().unwrap_or(10)
+    }
+}];
+
+#[ffi(import)]
+fn print_result(n: u64, value: u64) -> u64 [{
+    {
+        println!("fib({n}) = {value}");
+        value
+    }
+}];
+
+fn fib(n: u64) -> u64 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+#[main]
+pub fn entry() {
+    let n = read_input();
+    let value = print_result(n, fib(n));
+}
