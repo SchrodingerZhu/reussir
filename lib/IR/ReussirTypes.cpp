@@ -37,7 +37,6 @@
 #include <mlir/IR/OpImplementation.h>
 #include <mlir/IR/Types.h>
 #include <mlir/Interfaces/DataLayoutInterfaces.h>
-#include <cstdlib>
 #include <optional>
 #include <tuple>
 
@@ -1035,9 +1034,6 @@ REUSSIR_POINTER_LIKE_DATA_LAYOUT_INTERFACE(NullableType);
 llvm::TypeSize
 FFIObjectType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                                  mlir::DataLayoutEntryListRef params) const {
-  if (std::getenv("REUSSIR_DL_TRACE"))
-    llvm::errs() << "REUSSIR_DL_TRACE: ffi_object iface size: " << *this
-                 << "\n";
   auto headerTy = mlir::IntegerType::get(getContext(), 32);
   return dataLayout.getTypeSizeInBits(headerTy);
 }
@@ -1045,9 +1041,6 @@ FFIObjectType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 uint64_t
 FFIObjectType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                mlir::DataLayoutEntryListRef params) const {
-  if (std::getenv("REUSSIR_DL_TRACE"))
-    llvm::errs() << "REUSSIR_DL_TRACE: ffi_object iface align: " << *this
-                 << "\n";
   auto headerTy = mlir::IntegerType::get(getContext(), 32);
   return dataLayout.getTypeABIAlignment(headerTy);
 }
@@ -1287,9 +1280,6 @@ void RcBoxType::print(mlir::AsmPrinter &printer) const {
 llvm::TypeSize
 RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                              mlir::DataLayoutEntryListRef params) const {
-  if (std::getenv("REUSSIR_DL_TRACE") && llvm::isa<FFIObjectType>(getEleTy()))
-    llvm::errs() << "REUSSIR_DL_TRACE: rc_box size over ffi element: "
-                 << *this << "\n";
   // A box whose element carries a fused header IS the element: the refcount
   // overlays the element's leading count slot.
   if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
@@ -1313,9 +1303,6 @@ RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
 
 uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                     mlir::DataLayoutEntryListRef params) const {
-  if (std::getenv("REUSSIR_DL_TRACE") && llvm::isa<FFIObjectType>(getEleTy()))
-    llvm::errs() << "REUSSIR_DL_TRACE: rc_box align over ffi element: "
-                 << *this << "\n";
   if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
       recordTy && recordTy.hasFusedHeader() && !isRegional())
     return dataLayout.getTypeABIAlignment(recordTy);

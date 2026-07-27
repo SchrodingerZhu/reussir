@@ -17,8 +17,6 @@
 #include "Reussir/IR/ReussirAttrs.h"
 #include "Reussir/IR/ReussirOps.h"
 
-#include <cstdlib>
-
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/TypeSwitch.h>
@@ -70,62 +68,6 @@ mlir::Type getUnderlyingTypeFromDbgAttr(mlir::Attribute dbgAttr) {
       .Default([](auto attr) { return mlir::Type{}; });
 }
 
-// Layout queries over an underlying type that may be an opaque
-// `ffi_object`: only its header is visible (the u32 refcount the FFI
-// contract pins at offset 0 of the box), so answer with the header type's
-// layout rather than querying the opaque type itself. The type implements
-// `DataLayoutTypeInterface` with the same header-derived answers, but this
-// conversion is the one client that reaches ffi_object payloads, and going
-// through these helpers keeps the `-g` path independent of interface
-// dispatch (which has proven fragile for this type under MSVC linking).
-// The check spells the registered type name rather than `isa`: a TypeID
-// that fails to unify across the MSVC link would break `isa` the same way
-// it breaks the interface lookup, while the registered name is a plain
-// string held by the type's uniqued storage.
-// `REUSSIR_DL_TRACE`: narrate the ffi_object layout decisions to stderr —
-// the platform-portable way to locate a missing-data-layout abort whose
-// stack a CI host does not surface (`tests/integration/frontend/
-// ffi_debug.rr` runs with it on).
-bool dlTraceEnabled() {
-  static bool enabled = std::getenv("REUSSIR_DL_TRACE") != nullptr;
-  return enabled;
-}
-
-bool isFFIObjectType(mlir::Type type) {
-  bool named = type.getAbstractType().getName() == FFIObjectType::name;
-  if (!named && dlTraceEnabled() &&
-      type.getAbstractType().getName().contains("ffi_object"))
-    llvm::errs() << "REUSSIR_DL_TRACE: dbg helper name-match MISSED an "
-                    "ffi_object-named type: "
-                 << type << "\n";
-  return named;
-}
-
-mlir::Type ffiObjectHeaderType(mlir::Type type) {
-  return mlir::IntegerType::get(type.getContext(), 32);
-}
-
-uint64_t dbgTypeSizeInBits(const mlir::DataLayout &dataLayout,
-                           mlir::Type type) {
-  if (isFFIObjectType(type)) {
-    if (dlTraceEnabled())
-      llvm::errs() << "REUSSIR_DL_TRACE: dbg size intercept: " << type << "\n";
-    return dataLayout.getTypeSizeInBits(ffiObjectHeaderType(type));
-  }
-  return dataLayout.getTypeSizeInBits(type);
-}
-
-uint64_t dbgTypeABIAlignment(const mlir::DataLayout &dataLayout,
-                             mlir::Type type) {
-  if (isFFIObjectType(type)) {
-    if (dlTraceEnabled())
-      llvm::errs() << "REUSSIR_DL_TRACE: dbg align intercept: " << type
-                   << "\n";
-    return dataLayout.getTypeABIAlignment(ffiObjectHeaderType(type));
-  }
-  return dataLayout.getTypeABIAlignment(type);
-}
-
 // Whether `boxed` wraps a fused-header variant record (`{i32 count-slot,
 // i32 tag, payload}` — see TypeConverter). Such a record's debug composite
 // describes the TAG-FIRST VIEW (base at the tag, 4 bytes into the record):
@@ -148,7 +90,7 @@ uint64_t boxedViewOffset(const mlir::DataLayout &dataLayout,
                          mlir::MLIRContext *ctx, DBGBoxedTypeAttr boxed,
                          mlir::Type payloadTy) {
   uint64_t indexSize = dataLayout.getTypeSize(mlir::IndexType::get(ctx));
-  uint64_t payloadAlign = dbgTypeABIAlignment(dataLayout, payloadTy);
+  uint64_t payloadAlign = dataLayout.getTypeABIAlignment(payloadTy);
   if (boxedFusedVariant(boxed)) {
     uint64_t recordStart =
         boxed.getRegional() ? llvm::alignTo(3 * indexSize, payloadAlign) : 0;
@@ -272,9 +214,9 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 if (!payloadUnderlying)
                   return std::nullopt;
                 uint64_t payloadBits =
-                    dbgTypeSizeInBits(dataLayout, payloadUnderlying);
+                    dataLayout.getTypeSizeInBits(payloadUnderlying);
                 uint64_t payloadAlignBytes =
-                    dbgTypeABIAlignment(dataLayout, payloadUnderlying);
+                    dataLayout.getTypeABIAlignment(payloadUnderlying);
                 uint64_t valueOffBytes =
                     boxedViewOffset(dataLayout, ctx, boxed, payloadUnderlying);
                 uint64_t valueBits =
@@ -310,14 +252,14 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
               if (!underlying)
                 return std::nullopt;
               return std::make_tuple(
-                  diType, dbgTypeSizeInBits(dataLayout, underlying),
-                  dbgTypeABIAlignment(dataLayout, underlying) * 8);
+                  diType, dataLayout.getTypeSizeInBits(underlying),
+                  dataLayout.getTypeABIAlignment(underlying) * 8);
             };
 
             auto sizeInBits =
-                dbgTypeSizeInBits(dataLayout, recAttr.getUnderlyingType());
+                dataLayout.getTypeSizeInBits(recAttr.getUnderlyingType());
             auto alignInBits =
-                dbgTypeABIAlignment(dataLayout, recAttr.getUnderlyingType()) * 8;
+                dataLayout.getTypeABIAlignment(recAttr.getUnderlyingType()) * 8;
 
             // Physical field offsets (bits) for `count` fields with the given
             // sizes/alignments, starting at `baseBits`. Compound records are
@@ -605,7 +547,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   return nullptr;
                 auto scope = funcScope ? funcScope : diFile;
                 auto alignInBits =
-                    dbgTypeABIAlignment(dataLayout, underlyingTy) * 8;
+                    dataLayout.getTypeABIAlignment(underlyingTy) * 8;
                 // Extract line/column from the operation's location
                 // Note: 5th parameter is 'arg' (argument number), not column.
                 // For local variables (not function parameters), arg should be
@@ -628,7 +570,7 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   return nullptr;
                 auto scope = funcScope ? funcScope : diFile;
                 auto alignInBits =
-                    dbgTypeABIAlignment(dataLayout, underlyingTy) * 8;
+                    dataLayout.getTypeABIAlignment(underlyingTy) * 8;
                 // For function arguments, use the 1-based arg index
                 auto [line, col] = extractLineCol(loc);
                 (void)col;
@@ -862,11 +804,7 @@ struct DebugInfoConversionPass
     : public impl::ReussirDebugInfoConversionPassBase<DebugInfoConversionPass> {
   using Base::Base;
   void runOnOperation() override {
-    if (dlTraceEnabled())
-      llvm::errs() << "REUSSIR_DL_TRACE: dbg-info conversion begin\n";
     lowerFusedDBGAttributeInLocations(getOperation());
-    if (dlTraceEnabled())
-      llvm::errs() << "REUSSIR_DL_TRACE: dbg-info conversion end\n";
   }
 };
 } // namespace
