@@ -1,0 +1,49 @@
+// UNSUPPORTED: darwin
+// End-to-end polymorphic FFI over the runtime's copy-on-write string:
+// build a Rust `String` from Reussir one `char` at a time, measure it on
+// the Rust side (consuming and dropping the string there), and export the
+// result. The exact `Vec` shape (`ffi_vec_e2e.rr`) with the other exposed
+// collection, pinning that `collections::string::String` crosses the
+// boundary the same way `collections::vec::Vec` does.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_string_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_string_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+// The dev-profile shape: `-g` over a program whose every value is this
+// opaque record (the layout-query path `ffi_debug.rr` pins, with the
+// string instance).
+// RUN: %rrc %s -o %t.g.o --relocation-mode pic -g
+// RUN: %cc %t.g.o %S/ffi_string_e2e.c -o %t.g.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.g.exe
+
+extern "rust" [{
+    use reussir_rt::collections::string::String as RString;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::string::String")]
+pub struct Text;
+
+#[ffi(import)]
+pub fn new() -> Text [{ RString::new() }];
+
+#[ffi(import)]
+pub fn push(s: Text, ch: char) -> Text [{ RString::push(s, ch) }];
+
+#[ffi(import)]
+pub fn total_bytes(s: Text) -> i64 [{
+    // A multi-byte scalar counts by its UTF-8 length: "aé" is three bytes.
+    s.as_str().len() as i64
+}];
+
+pub fn main() -> i64 {
+    let s = new();
+    let s = push(s, 'a');
+    let s = push(s, 'é');
+    total_bytes(s)
+}
+
+extern "C" trampoline "reussir_main" = main;
