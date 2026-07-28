@@ -159,6 +159,8 @@ struct Render<'a> {
     sources: Option<&'a SourceCache>,
 }
 
+use crate::ir_lex::spell_name;
+
 impl Render<'_> {
     fn sym(&self, s: mir::Symbol) -> &str {
         self.symbols.resolve(&s.0)
@@ -200,7 +202,11 @@ impl Render<'_> {
                     .map(|v| {
                         let fields: Vec<Doc<'static>> =
                             v.fields.iter().map(|&t| self.ty(t)).collect();
-                        text(format!("@{} {}(", self.sym(v.symbol), self.sym(v.name)))
+                        text(format!(
+                            "@{} {}(",
+                            self.sym(v.symbol),
+                            spell_name(self.sym(v.name))
+                        ))
                             + comma_sep(fields)
                             + text(")")
                     })
@@ -254,7 +260,7 @@ impl Render<'_> {
                 text(format!(
                     "v{} ({}): ",
                     p.var.0,
-                    self.resolver.resolve(p.name)
+                    spell_name(self.resolver.resolve(p.name))
                 )) + self.ty(p.ty)
             })
             .collect();
@@ -381,7 +387,7 @@ impl Render<'_> {
                     + self.span_doc(e.span)
                     + text(" ")
                     + var(v)
-                    + text(format!(" ({}) = ", self.resolver.resolve(name)))
+                    + text(format!(" ({}) = ", spell_name(self.resolver.resolve(name))))
                     + self.value(value)
             }
             mir::ExprKind::Seq(_) => text("{ ") + self.expr(e) + text(" }"),

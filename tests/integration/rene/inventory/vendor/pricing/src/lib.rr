@@ -1,0 +1,20 @@
+// Money math as polyffi imports. `scale` is generic — each ground instance
+// renders its own texture, with `[:T:]` spelling the instance's Rust type
+// in the casts; both the store layer and the app instantiate it at `i64`,
+// so the duplicate instance dedupes at link. `volume_discount`'s four
+// parameters make it a nontrivial boundary: the arguments cross packed in
+// a struct rather than in registers.
+
+#[ffi(import)]
+pub fn scale<T>(x: T, num: i64, den: i64) -> T [{
+    (x * (num as [:T:])) / (den as [:T:])
+}];
+
+#[ffi(import)]
+pub fn volume_discount(cents: i64, qty: i64, rate_num: i64, rate_den: i64) -> i64 [{
+    if qty >= 10 {
+        cents - cents * rate_num / rate_den
+    } else {
+        cents
+    }
+}];

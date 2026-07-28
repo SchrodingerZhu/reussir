@@ -297,7 +297,9 @@ pub fn emit_to_file(
         // the TargetTransformInfo the cost-driven passes (vectorization)
         // decide against.
         stamp_target(finalized.module, machine);
+        tracing::debug!(?opt, "running the LLVM pass pipeline");
         run_backend_llvm_pipeline(finalized.module, opt, machine.machine, lto);
+        tracing::debug!("running LLVM codegen");
         let result = emit(finalized.module, machine, kind, out_path);
         LLVMDisposeModule(finalized.module);
         LLVMContextDispose(finalized.context);

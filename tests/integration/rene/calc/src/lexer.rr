@@ -1,0 +1,119 @@
+// The token layer: a walk over the `Text`'s byte codes producing a plain
+// cons-list of tokens. Identifiers keep their bytes as a `Chars` list — the
+// only name representation the interpreter has — and `let` is recognized by
+// matching that list, so the keyword check is an ordinary pattern match.
+
+pub enum Tok {
+    Num(i64),
+    Ident(Chars),
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    LParen,
+    RParen,
+    KwLet,
+    Assign,
+    Newline,
+    Bad,
+    End
+}
+
+pub enum Toks {
+    Cons(Tok, Toks),
+    Nil
+}
+
+pub enum Chars {
+    CCons(i64, Chars),
+    CNil
+}
+
+// A scan step's result: the value scanned and the position after it.
+struct [value] Scan {
+    value: i64,
+    next: i64
+}
+
+fn is_digit(c: i64) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn is_ident_start(c: i64) -> bool {
+    (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+}
+
+fn is_ident_char(c: i64) -> bool {
+    is_ident_start(c) || is_digit(c)
+}
+
+fn scan_num(t: textio::Text, pos: i64, n: i64, acc: i64) -> Scan {
+    if pos < n && is_digit(textio::code_at(t, pos)) {
+        scan_num(t, pos + 1, n, acc * 10 + (textio::code_at(t, pos) - 48))
+    } else {
+        Scan { value: acc, next: pos }
+    }
+}
+
+fn ident_end(t: textio::Text, pos: i64, n: i64) -> i64 {
+    if pos < n && is_ident_char(textio::code_at(t, pos)) {
+        ident_end(t, pos + 1, n)
+    } else {
+        pos
+    }
+}
+
+fn ident_chars(t: textio::Text, pos: i64, end: i64) -> Chars {
+    if pos >= end {
+        Chars::CNil
+    } else {
+        Chars::CCons{textio::code_at(t, pos), ident_chars(t, pos + 1, end)}
+    }
+}
+
+// `let`, as bytes.
+fn is_kw_let(cs: Chars) -> bool {
+    match cs {
+        Chars::CCons(108, Chars::CCons(101, Chars::CCons(116, Chars::CNil))) => true,
+        _ => false
+    }
+}
+
+fn classify(cs: Chars) -> Tok {
+    if is_kw_let(cs) {
+        Tok::KwLet
+    } else {
+        Tok::Ident{cs}
+    }
+}
+
+pub fn lex(t: textio::Text, pos: i64, n: i64) -> Toks {
+    if pos >= n {
+        Toks::Cons{Tok::End, Toks::Nil}
+    } else {
+        match textio::code_at(t, pos) {
+            32 => lex(t, pos + 1, n),
+            9 => lex(t, pos + 1, n),
+            13 => lex(t, pos + 1, n),
+            10 => Toks::Cons{Tok::Newline, lex(t, pos + 1, n)},
+            43 => Toks::Cons{Tok::Plus, lex(t, pos + 1, n)},
+            45 => Toks::Cons{Tok::Minus, lex(t, pos + 1, n)},
+            42 => Toks::Cons{Tok::Star, lex(t, pos + 1, n)},
+            47 => Toks::Cons{Tok::Slash, lex(t, pos + 1, n)},
+            37 => Toks::Cons{Tok::Percent, lex(t, pos + 1, n)},
+            40 => Toks::Cons{Tok::LParen, lex(t, pos + 1, n)},
+            41 => Toks::Cons{Tok::RParen, lex(t, pos + 1, n)},
+            61 => Toks::Cons{Tok::Assign, lex(t, pos + 1, n)},
+            c if is_digit(c) => {
+                let s = scan_num(t, pos, n, 0);
+                Toks::Cons{Tok::Num{s.value}, lex(t, s.next, n)}
+            },
+            c if is_ident_start(c) => {
+                let end = ident_end(t, pos + 1, n);
+                Toks::Cons{classify(ident_chars(t, pos, end)), lex(t, end, n)}
+            },
+            _ => Toks::Cons{Tok::Bad, lex(t, pos + 1, n)}
+        }
+    }
+}

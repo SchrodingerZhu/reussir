@@ -20,7 +20,7 @@ pub fn empty2(list : List<i32>) -> bool {
     }
 }
 
-// CHECK:      [shared] enum #List<$0> { Nil(), Cons($0, #List::<$0>) };
+// CHECK:      [shared] enum #List<$0 (T)> { Nil(), Cons($0, #List::<$0>) };
 // CHECK:      pub fn #empty1(v0 (list): #List::<i32>) -> bool {
 // CHECK-NEXT:     match v0 : #List::<i32> {
 // CHECK-NEXT:         switch scrut {

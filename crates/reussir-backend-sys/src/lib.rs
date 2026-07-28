@@ -155,6 +155,11 @@ unsafe extern "C" {
 
     pub fn reussirCreateDefaultInlinerPass() -> MlirPass;
 
+    /// Attaches a stderr per-pass progress logger (`[mlir-pass] begin/end`
+    /// lines) to the pass manager, for locating a wedged pass from a captured
+    /// log alone. Diagnostic/verbose runs only.
+    pub fn reussirPassManagerAttachPhaseLogger(pm: mlir_sys::MlirPassManager);
+
     /// The upstream transform-dialect interpreter, applying the transform
     /// named sequence `entry_point` to the payload module. The entry point is
     /// resolved first in the payload module itself, then in the context's

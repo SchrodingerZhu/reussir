@@ -1,0 +1,11 @@
+let price = 19
+let qty = 12
+
+price * qty
+(price + 1) * (qty - 2)
+let total = price * qty + 7
+total % 100
+total / (qty - 12)
+9 @ 3
+missing + 1
+-total + 5 * (2 + 1)

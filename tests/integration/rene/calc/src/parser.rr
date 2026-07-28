@@ -1,0 +1,94 @@
+// Recursive-descent over the token list, one precedence level per pair of
+// functions: a `parse_*` that parses the first operand and a `*_rest` that
+// folds the left-associative tail. Results thread the unconsumed tokens
+// through `Parsed`; any shape that fits no rule collapses to `PErr` and the
+// driver resynchronizes at the next line.
+
+import root::lexer;
+
+pub enum Expr {
+    Lit(i64),
+    Var(lexer::Chars),
+    Neg(Expr),
+    // The operator is the ASCII code of its token: 43 `+`, 45 `-`, 42 `*`,
+    // 47 `/`, 37 `%`.
+    Bin(i64, Expr, Expr)
+}
+
+pub enum Parsed {
+    POk(Expr, lexer::Toks),
+    PErr
+}
+
+pub fn parse_expr(ts: lexer::Toks) -> Parsed {
+    match parse_mul(ts) {
+        Parsed::POk(lhs, rest) => add_rest(lhs, rest),
+        Parsed::PErr => Parsed::PErr
+    }
+}
+
+fn add_rest(lhs: Expr, ts: lexer::Toks) -> Parsed {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Plus, rest) => bin_step(43, lhs, rest, true),
+        lexer::Toks::Cons(lexer::Tok::Minus, rest) => bin_step(45, lhs, rest, true),
+        rest => Parsed::POk{lhs, rest}
+    }
+}
+
+fn mul_rest(lhs: Expr, ts: lexer::Toks) -> Parsed {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Star, rest) => bin_step(42, lhs, rest, false),
+        lexer::Toks::Cons(lexer::Tok::Slash, rest) => bin_step(47, lhs, rest, false),
+        lexer::Toks::Cons(lexer::Tok::Percent, rest) => bin_step(37, lhs, rest, false),
+        rest => Parsed::POk{lhs, rest}
+    }
+}
+
+// One left-fold step shared by both levels: parse the next operand, wrap,
+// and continue folding at the level `additive` picks.
+fn bin_step(op: i64, lhs: Expr, ts: lexer::Toks, additive: bool) -> Parsed {
+    match parse_unary(ts) {
+        Parsed::POk(rhs, rest) =>
+            if additive {
+                match mul_rest(rhs, rest) {
+                    Parsed::POk(rhs1, rest1) => add_rest(Expr::Bin{op, lhs, rhs1}, rest1),
+                    Parsed::PErr => Parsed::PErr
+                }
+            } else {
+                mul_rest(Expr::Bin{op, lhs, rhs}, rest)
+            },
+        Parsed::PErr => Parsed::PErr
+    }
+}
+
+fn parse_mul(ts: lexer::Toks) -> Parsed {
+    match parse_unary(ts) {
+        Parsed::POk(lhs, rest) => mul_rest(lhs, rest),
+        Parsed::PErr => Parsed::PErr
+    }
+}
+
+fn parse_unary(ts: lexer::Toks) -> Parsed {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Minus, rest) =>
+            match parse_unary(rest) {
+                Parsed::POk(e, rest1) => Parsed::POk{Expr::Neg{e}, rest1},
+                Parsed::PErr => Parsed::PErr
+            },
+        rest => parse_atom(rest)
+    }
+}
+
+fn parse_atom(ts: lexer::Toks) -> Parsed {
+    match ts {
+        lexer::Toks::Cons(lexer::Tok::Num(v), rest) => Parsed::POk{Expr::Lit{v}, rest},
+        lexer::Toks::Cons(lexer::Tok::Ident(name), rest) => Parsed::POk{Expr::Var{name}, rest},
+        lexer::Toks::Cons(lexer::Tok::LParen, rest) =>
+            match parse_expr(rest) {
+                Parsed::POk(e, lexer::Toks::Cons(lexer::Tok::RParen, rest1)) =>
+                    Parsed::POk{e, rest1},
+                _ => Parsed::PErr
+            },
+        _ => Parsed::PErr
+    }
+}

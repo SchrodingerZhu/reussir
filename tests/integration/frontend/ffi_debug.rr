@@ -1,0 +1,39 @@
+// UNSUPPORTED: darwin
+// Debug info over opaque FFI records: an `ffi_object` payload answers
+// layout queries with its visible header (the `u32` refcount the FFI
+// contract pins at offset 0), so `-g` compiles of programs holding opaque
+// values — every variable here is rc'd `ffi_object` — succeed rather than
+// dying in the data-layout query the debug-info conversion makes.
+// Regression: ffi_object provided no data layout at all, and any `-g`
+// build using an opaque type (e.g. `rene`'s default dev profile) crashed.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic -g
+// RUN: %rrc %s --emit llvm-ir --relocation-mode pic -g -o %t.ll
+// RUN: %FileCheck %s < %t.ll
+
+// The compile unit and the variable's pointer type survive into the IR.
+// CHECK-DAG: !DICompileUnit
+// CHECK-DAG: !DILocalVariable(name: "v"
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn len<T>(v: Vec<T>) -> u64 [{ v.len() as u64 }];
+
+pub fn main() -> u64 {
+    let v = push(new<i64>(), 42);
+    len(v)
+}
+
+extern "C" trampoline "reussir_main" = main;

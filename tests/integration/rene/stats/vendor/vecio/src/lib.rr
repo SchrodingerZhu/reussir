@@ -1,0 +1,53 @@
+// The pipeline's I/O: `Vec` is the runtime's copy-on-write rc vector held
+// opaquely. `read_samples` parses all of stdin in one texture — anything
+// that isn't a number is skipped, not an error — and the accessors hand
+// the floats over one at a time. `print_summary` carries five fields, so
+// it crosses the boundary packed in a struct rather than in registers.
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+    use std::io::Read;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn read_samples() -> Vec<f64> [{
+    {
+        let mut buf = std::string::String::new();
+        std::io::stdin().read_to_string(&mut buf).ok();
+        let mut samples = RVec::new();
+        for token in buf.split_whitespace() {
+            if let Ok(x) = token.parse::<f64>() {
+                samples = samples.push(x);
+            }
+        }
+        samples
+    }
+}];
+
+#[ffi(import)]
+pub fn count<T>(v: Vec<T>) -> i64 [{ v.len() as i64 }];
+
+#[ffi(import)]
+pub fn at(v: Vec<f64>, i: i64) -> f64 [{ v.get(i as usize).unwrap_or(0.0) }];
+
+#[ffi(import)]
+pub fn print_summary(n: i64, min: f64, max: f64, mean: f64, median: f64) [{
+    {
+        println!("n {n}");
+        println!("min {min:.2}");
+        println!("max {max:.2}");
+        println!("mean {mean:.2}");
+        println!("median {median:.2}");
+    }
+}];
+
+#[ffi(import)]
+pub fn print_bucket(idx: i64, hits: i64) [{
+    println!("bucket {idx}: {}", "#".repeat(hits.max(0) as usize))
+}];
+
+#[ffi(import)]
+pub fn print_empty() [{ println!("no samples") }];

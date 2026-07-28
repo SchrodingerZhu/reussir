@@ -172,9 +172,14 @@ mlir::LLVM::GlobalOp tagDummyBox(mlir::ModuleOp module, mlir::Location loc,
         mlir::RankedTensorType::get({2}, countTy),
         llvm::ArrayRef<llvm::APInt>{llvm::APInt(32, refCount),
                                     llvm::APInt(32, tag)});
+    // ODR, not internal: a tagged immediate is *the dummy's address*, and
+    // dispatch recognizes nullary arms by comparing against it. Immediates
+    // cross compilation units (a consumer builds `Leaf` and hands it to a
+    // dependency's shipped instance), so every unit must agree on one
+    // definition per tag or a foreign unit's immediate reads as a real box.
     global = mlir::LLVM::GlobalOp::create(
         builder, loc, arrTy,
-        /*isConstant=*/false, mlir::LLVM::Linkage::Internal, name, init);
+        /*isConstant=*/false, mlir::LLVM::Linkage::LinkonceODR, name, init);
   }
   return global;
 }

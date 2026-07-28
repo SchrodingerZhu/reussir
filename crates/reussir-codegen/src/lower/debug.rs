@@ -198,6 +198,17 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     /// full type and the debugger can descend it.
     fn dbg_record(&self, ty: Ty<'tcx>, underlying: Type<'c>) -> Option<Attribute<'c>> {
         let rec = self.tys.record_of(ty)?;
+        // An opaque `#[ffi]` record's payload is foreign — only the box
+        // header (the u32 refcount the FFI contract pins at offset 0) is
+        // visible. Build its debug composite over that header type rather
+        // than the `ffi_object` type itself: an opaque type inside a debug
+        // attribute would make every later layout query on the attribute
+        // reach a type that cannot answer.
+        let underlying = if matches!(rec.layout, mir::RecordLayout::Opaque { .. }) {
+            reussir_backend::melior::ir::r#type::IntegerType::new(self.context, 32).into()
+        } else {
+            underlying
+        };
         let name = StringAttribute::new(self.context, self.program.symbol(rec.symbol));
         let is_variant = matches!(rec.layout, mir::RecordLayout::Variant(_));
         // Recursion guard: a record already being expanded reappears as an empty

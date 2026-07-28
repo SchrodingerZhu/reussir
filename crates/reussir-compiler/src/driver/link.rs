@@ -112,21 +112,40 @@ pub(crate) fn link_product(
     let libdirs = runtime_libdirs(cli)?;
     let linkage = cli.runtime_linkage.unwrap_or(RuntimeLinkage::Static);
 
+    // Under static runtime linkage the launcher (or shim) crate *depends on*
+    // the runtime rlib rather than swallowing the staticlib archive whole:
+    // the `extern crate` line makes rustc link `libreussir_rt.rlib` like any
+    // dependency, so the product gets exactly one set of the `__rust_*`
+    // allocator shims — the ones rustc synthesizes for the crate it is
+    // building. The staticlib carries its own copy of those shims in the
+    // same codegen unit as the runtime's `__reussir_*` entry points, so any
+    // program that allocates would pull that member and collide with the
+    // launcher's.
+    const RUNTIME_EXTERN: &str =
+        "\n// Static runtime linkage: pull the runtime rlib into the link.\n\
+         extern crate reussir_rt;\n";
+    let runtime_extern = if linkage == RuntimeLinkage::Static {
+        RUNTIME_EXTERN
+    } else {
+        ""
+    };
+
     let mut cmd = std::process::Command::new(&rustc);
     cmd.arg("--edition").arg("2024");
     match target {
         Stage::Executable => {
             let launcher = scratch.dir().join("launcher.rs");
-            std::fs::write(&launcher, LAUNCHER_SOURCE)
+            std::fs::write(&launcher, format!("{LAUNCHER_SOURCE}{runtime_extern}"))
                 .map_err(|e| format!("cannot write the launcher source: {e}"))?;
             cmd.arg(launcher);
         }
         Stage::Dynlib => {
             // The shim gives rustc a crate to build the shared library
             // around; every symbol of substance arrives through the link
-            // inputs below.
+            // inputs below (plus the runtime dependency under static
+            // linkage).
             let shim = scratch.dir().join("shim.rs");
-            std::fs::write(&shim, "")
+            std::fs::write(&shim, runtime_extern)
                 .map_err(|e| format!("cannot write the cdylib shim source: {e}"))?;
             cmd.arg(shim).arg("--crate-type").arg("cdylib");
         }
@@ -151,33 +170,18 @@ pub(crate) fn link_product(
         cmd.arg(format!("-Clink-arg={}", lib.display()));
     }
 
-    // The runtime. The static archive is named by *path*, not `-l static=`:
-    // rustc lowers the latter to a bare `-l` on ELF and Mach-O, and the
-    // linker then prefers a shared library sitting in the same directory
-    // (see main_attribute.rr's history for the load-time failure that buys).
+    // The runtime.
     match linkage {
         RuntimeLinkage::Static => {
-            let archive = if msvc {
-                "reussir_rt.lib"
-            } else {
-                "libreussir_rt.a"
-            };
-            cmd.arg(format!(
-                "-Clink-arg={}",
-                find_in_libdirs(&libdirs, archive)?.display()
-            ));
-            // What the archive's own code needs beyond what rustc links
-            // anyway — invisible to rustc inside a *native* archive. (The
-            // shared runtime records its own dependencies.)
-            let sys_libs: &[&str] = if apple {
-                &["framework=Security", "framework=CoreFoundation"]
-            } else if msvc {
-                &["ntdll", "ws2_32", "advapi32", "bcrypt", "userenv"]
-            } else {
-                &[]
-            };
-            for lib in sys_libs {
-                cmd.arg("-l").arg(lib);
+            // The rlib, by explicit path — its `.a` sibling sits in the same
+            // directory, so a bare `--extern reussir_rt` search would be
+            // ambiguous. Transitive dependency rlibs resolve through
+            // `-L dependency=`, which considers only rlibs (the same
+            // directory holds the runtime's whole baked dependency graph).
+            let rlib = find_in_libdirs(&libdirs, "libreussir_rt.rlib")?;
+            cmd.arg(format!("--extern=reussir_rt={}", rlib.display()));
+            for dir in &libdirs {
+                cmd.arg("-L").arg(format!("dependency={}", dir.display()));
             }
         }
         RuntimeLinkage::Dynamic => {
@@ -271,6 +275,7 @@ pub(crate) fn link_product(
     }
 
     // rustc's diagnostics stream straight through to stderr.
+    tracing::debug!(rustc = %rustc, "linking through rustc");
     let status = cmd
         .status()
         .map_err(|e| format!("cannot run `{rustc}` for the link step: {e}"))?;
@@ -280,6 +285,7 @@ pub(crate) fn link_product(
             output.display()
         ));
     }
+    tracing::debug!(output = %output.display(), "linked");
     Ok(())
 }
 

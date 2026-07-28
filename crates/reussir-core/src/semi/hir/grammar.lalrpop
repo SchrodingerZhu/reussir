@@ -113,7 +113,7 @@ Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
 
 /// An enum variant: its source name and ordered field types.
 Variant: raw::Variant =
-    <name:Name> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
+    <name:DebugName> "(" <fs:Comma<Ty>> ")" => raw::Variant { name: name.into(), fields: fs };
 
 TrampDecl: raw::Tramp =
     "extern" <abi:"quoted"> "trampoline" <name:"quoted"> "=" "#" <target:PathArgs> ";"
@@ -190,8 +190,11 @@ PathArgsTail: (String, Vec<raw::Ty>) = {
     "::" "<" <tys:CommaPlus<Ty>> ">" => (String::new(), tys),
 };
 
-Generic: raw::Generic = <r:"regional"?> <g:"generic">
-    => raw::Generic { id: g, regional: r.is_some() };
+/// A generic binder: `$0 (T)` — positional id plus its source name, which
+/// foreign bodies reference through `[:T:]` placeholders. The name is
+/// optional for compatibility with dumps that predate it.
+Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")")?>
+    => raw::Generic { id: g, regional: r.is_some(), name: name.map(|n| n.into_owned()) };
 
 /// Source identifiers remain legal when they spell a transform directive.
 Name: &'input str = {
@@ -207,6 +210,16 @@ Name: &'input str = {
     "producer" => "producer",
 };
 
+/// A user debug name (parameter, let, and variant names). A name that
+/// collides with any IR keyword (a parameter named `value`, a variant named
+/// `Null`, …) or is not identifier-shaped arrives quoted — see the
+/// printer's `spell_name`. Path segments keep plain [`Name`]: allowing
+/// `quoted` there would be ambiguous with other quoted positions.
+DebugName: Cow<'input, str> = {
+    <name:Name> => Cow::Borrowed(name),
+    <q:"quoted"> => unescape_debug_str(q),
+};
+
 Body: raw::FuncBody = {
     "{" <b:Block> "}" => raw::FuncBody::Expr(b),
     ";" => raw::FuncBody::None,
@@ -214,7 +227,7 @@ Body: raw::FuncBody = {
     "=" "ffi" <b:"quoted"> ";" => raw::FuncBody::Ffi(unescape_debug_str(b).into_owned()),
 };
 
-Param: raw::Param = <var:"var"> "(" <name:Name> ")" ":" <ty:Ty>
+Param: raw::Param = <var:"var"> "(" <name:DebugName> ")" ":" <ty:Ty>
     => raw::Param { var, name: name.into(), ty };
 
 // ----- types -----
@@ -275,7 +288,7 @@ Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
 /// block (a `Seq`) are the structural exceptions whose type is not printed.
 Expr: raw::Expr = {
     <a:Atom> ":" <t:Ty> <sp:Span?> => raw::Expr::new(a, t).with_span(sp),
-    "let" <sp:Span?> <var:"var"> "(" <name:Name> <nsp:Span?> ")" "=" <value:Expr>
+    "let" <sp:Span?> <var:"var"> "(" <name:DebugName> <nsp:Span?> ")" "=" <value:Expr>
         => raw::Expr::new(
             raw::Kind::Let { var, name: name.into(), name_span: nsp, value },
             raw::Ty::Unit,

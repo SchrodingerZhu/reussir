@@ -336,3 +336,20 @@ pub fn lex(input: &str) -> impl Iterator<Item = Result<(usize, Token<'_>, usize)
         Err(()) => Err(LexError { span }),
     })
 }
+
+/// A user debug name in an identifier position (parameter and let names,
+/// variant names), as the IR printers spell it: bare when this lexer reads
+/// it back as exactly one plain identifier, quoted otherwise — a name that
+/// collides with an IR keyword (a parameter named `value`, a variant named
+/// `Null`) or is not identifier-shaped. The grammars' `DebugName` accepts
+/// both spellings, so names round-trip whatever they are.
+pub(crate) fn spell_name(name: &str) -> Cow<'_, str> {
+    let mut lexer = <Token as logos::Logos>::lexer(name);
+    let bare = matches!(lexer.next(), Some(Ok(Token::Ident(s))) if s == name)
+        && lexer.next().is_none();
+    if bare {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("{name:?}"))
+    }
+}

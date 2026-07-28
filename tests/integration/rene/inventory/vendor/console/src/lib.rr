@@ -1,0 +1,26 @@
+// The report's console: imported print functions whose bodies own the
+// format strings. Money is fixed-point cents split Rust-side; the sku is
+// zero-padded to the catalog's four digits.
+
+#[ffi(import)]
+pub fn print_header(skus: i64) [{ println!("inventory report ({skus} skus)") }];
+
+#[ffi(import)]
+pub fn print_row(sku: i64, qty: i64, cents: i64) [{
+    println!("sku {sku:04}: {qty} x {}.{:02}", cents / 100, cents % 100)
+}];
+
+#[ffi(import)]
+pub fn print_low_stock(sku: i64, qty: i64) [{
+    println!("low stock: sku {sku:04} ({qty} left)")
+}];
+
+#[ffi(import)]
+pub fn print_total(cents: i64) [{
+    println!("total {}.{:02}", cents / 100, cents % 100)
+}];
+
+#[ffi(import)]
+pub fn print_taxed(cents: i64) [{
+    println!("with tax {}.{:02}", cents / 100, cents % 100)
+}];

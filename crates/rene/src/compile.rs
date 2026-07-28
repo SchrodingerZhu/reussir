@@ -199,6 +199,12 @@ impl Invocation {
     pub(crate) async fn run(self) -> Result<(), String> {
         let mut cmd = compio::process::Command::new(&self.program);
         cmd.args(&self.args);
+        // A verbose `rene` runs a verbose `rrc`: the child's DEBUG phase
+        // events land on the same stderr, so a wedged compile names the
+        // phase it wedged in rather than just the package.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            cmd.arg("-v");
+        }
         for (key, value) in &self.envs {
             cmd.env(key, value);
         }

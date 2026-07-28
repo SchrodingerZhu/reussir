@@ -54,6 +54,12 @@ MlirPass reussirCreateRcCreateSinkPass(void);
 /// `tbi` (top-byte tag, requires hardware top-byte-ignore, aarch64), true =
 /// `immortal` (plain dummy address with an immortal refcount, any target).
 MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
+
+/// Attaches a stderr per-pass progress logger to `pm`: every pass execution
+/// prints `[mlir-pass] begin/end <pass> on <op>` lines, so a wedged or
+/// pathological pass can be located from a captured log alone (the last
+/// `begin` without an `end` names it). Intended for verbose/diagnostic runs.
+void reussirPassManagerAttachPhaseLogger(MlirPassManager pm);
 MlirPass reussirCreateRcDispatchFusionPass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);

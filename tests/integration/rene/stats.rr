@@ -1,0 +1,39 @@
+// A statistics pipeline as a two-package `rene build`: stdin is parsed
+// into the runtime's rc vector inside `vecio`'s textures (bad tokens
+// skipped Rust-side), and everything after the boundary is functional
+// Reussir — a closure-compared merge sort over a cons-list, the summary,
+// and a histogram bucketed by threshold comparison. The release profile is
+// the interesting build: three codegen units plus reuse-across-call, with
+// the polyffi bitcode linked into the split module set.
+
+// RUN: %rene build --manifest-path %S/stats/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}stats
+
+// RUN: %t.bdir/dev/stats%exe_ext < %S/stats/example.in | %FileCheck %s
+
+// Eight parseable samples (the `oops` token is dropped by the reader):
+// sorted range 4 to 120.25, an exact mean, the even-count median averaged
+// from the two middle samples, and a range histogram with the low bucket
+// holding five of the eight.
+// CHECK:      n 8
+// CHECK-NEXT: min 4.00
+// CHECK-NEXT: max 120.25
+// CHECK-NEXT: mean 40.00
+// CHECK-NEXT: median 19.75
+// CHECK-NEXT: bucket 0: #####
+// CHECK-NEXT: bucket 1: #
+// CHECK-NEXT: bucket 2: #
+// CHECK-NEXT: bucket 3: #
+
+// No input is a report, not a crash.
+// RUN: echo | %t.bdir/dev/stats%exe_ext | %FileCheck %s --check-prefix=EMPTY
+
+// EMPTY: no samples
+
+// The split, optimized build (three codegen units, reuse-across-call) is
+// the same pipeline.
+// RUN: %rene build --manifest-path %S/stats/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RUN: %t.bdir/release/stats%exe_ext < %S/stats/example.in | %FileCheck %s
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}stats
