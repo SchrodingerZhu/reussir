@@ -447,7 +447,10 @@ pub fn lower_unit<'c, 'tcx>(
         body.append_operation(lowerer.ffi_drop_hook_decl(record, drop_hook)?);
     }
     embed_inline_transforms(context, &mut module, &program.transform_scripts)?;
-    tracing::debug!(mlir = %module.as_operation(), "lowered program to MLIR");
+    // TRACE, not DEBUG: this dumps the whole module, and `-v` (DEBUG) is
+    // the level CI failure reports capture — the full IR would bury the
+    // per-phase progress lines there. `RUST_LOG=trace` still gets the dump.
+    tracing::trace!(mlir = %module.as_operation(), "lowered program to MLIR");
     Ok(module)
 }
 
