@@ -48,7 +48,13 @@ pub fn context() -> Context {
     // lowering), matching mlir-opt: eagerly loading every available dialect
     // would pull in ones (complex, gpu, ...) whose ConvertToLLVM promise the
     // pass would then check without the conversion ever needing them.
-    let context = Context::new_with_registry(&registry, /* threading */ true);
+    // `REUSSIR_MLIR_NO_THREADING` (any value) runs the context — and with it
+    // the pass manager's parallel adaptors and the inliner's parallel SCC
+    // optimization — single-threaded. A diagnostic escape hatch: a wedge that
+    // disappears under it implicates the thread pool, and it lets a CI job
+    // test that with an env flip instead of a rebuild.
+    let threading = std::env::var_os("REUSSIR_MLIR_NO_THREADING").is_none();
+    let context = Context::new_with_registry(&registry, threading);
     // Load the dialects used to build IR eagerly so ops and types can be
     // constructed directly through the API (e.g. [`dialect`] op builders and
     // [`dialect::ty`] type constructors): building goes through each dialect's
