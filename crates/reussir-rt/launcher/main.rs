@@ -15,11 +15,20 @@
 unsafe extern "C" {
     /// The program's entry point: the `#[main]` function's export.
     fn __reussir_main();
+    /// The runtime's last-chance crash reporter (a no-op off Windows): a
+    /// fatal exception in generated code prints its code, faulting
+    /// module+offset, and backtrace to stderr instead of killing the process
+    /// silently.
+    fn __reussir_install_crash_reporter();
 }
 
 fn main() {
     // Safety: the driver only builds this launcher for a program that has a
-    // `#[main]` function, whose object it links in alongside; the symbol is
-    // resolved at link time or the link fails.
-    unsafe { __reussir_main() }
+    // `#[main]` function, whose object it links in alongside; the symbols are
+    // resolved at link time (the reporter from the runtime) or the link
+    // fails.
+    unsafe {
+        __reussir_install_crash_reporter();
+        __reussir_main()
+    }
 }
