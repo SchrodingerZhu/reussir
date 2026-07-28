@@ -12,6 +12,7 @@
 pub mod compile;
 pub mod db;
 pub mod deps;
+mod diag;
 pub mod exec;
 pub mod fresh;
 pub mod manifest;
