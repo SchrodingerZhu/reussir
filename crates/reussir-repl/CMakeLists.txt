@@ -6,7 +6,7 @@
 #
 # Like reussir-backend / reussir-jit / reussir-codegen, these targets are NOT
 # part of the default `ALL` build. Invoke them explicitly:
-#   ninja -C build rrepl         # compile the crate + binary
+#   ninja -C build rrepl         # compile the crate + stage the binary
 #   ninja -C build rrepl-test    # run the crate's tests
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -36,7 +36,9 @@ set(REUSSIR_REPL_CARGO_ENV
     REUSSIR_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/include
     RUSTFLAGS=-Awarnings)
 
-add_custom_target(rrepl
+set(REUSSIR_RREPL_BIN rrepl${CMAKE_EXECUTABLE_SUFFIX})
+
+add_custom_target(rrepl-build
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}
         cargo build --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
         --package reussir-repl --quiet
@@ -45,6 +47,20 @@ add_custom_target(rrepl
     COMMENT "Building rrepl with cargo (${REUSSIR_REPL_CARGO_PROFILE} profile)"
     USES_TERMINAL
 )
+
+# Stage the built binary next to the other tools (rrc, rene) so consumers
+# that collect the toolchain from a single bin/ directory — the release
+# packaging in particular — pick it up. Lit keeps resolving `%rrepl` through
+# REUSSIR_RREPL_BINARY, the cargo output path.
+add_custom_target(rrepl-install
+    COMMAND ${CMAKE_COMMAND} -E copy
+        ${REUSSIR_RREPL_BINARY}
+        ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${REUSSIR_RREPL_BIN}
+    DEPENDS rrepl-build
+    COMMENT "Installing rrepl executable"
+)
+
+add_custom_target(rrepl DEPENDS rrepl-build rrepl-install)
 
 add_custom_target(rrepl-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}

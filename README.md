@@ -176,8 +176,8 @@ cmake --build build --target rrc
 cmake --build build --target rrepl
 ```
 
-Built binaries are placed under `build/bin/` (`rrepl` under
-`build/target/<profile>/`), and runtime libraries are copied under `build/lib/`.
+Built binaries are placed under `build/bin/`, and runtime libraries are
+copied under `build/lib/`.
 
 ### 4. Typical local workflows
 
@@ -197,7 +197,7 @@ Run the REPL:
 
 ```bash
 cmake --build build --target rrepl
-build/target/release/rrepl
+build/bin/rrepl
 ```
 
 ## Testing

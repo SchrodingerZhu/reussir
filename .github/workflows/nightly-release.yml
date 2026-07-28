@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev patchelf
+          sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
           sudo pip install lit --break-system-packages
 
       - name: Install LLVM ${{ matrix.llvm-version }}
@@ -93,55 +93,41 @@ jobs:
       - name: Run Integration Tests
         run: cmake --build build --target check
 
+      - name: Stage rrepl
+        run: cmake --build build --target rrepl
+
       - name: Package
         run: |
           DATE=$(date +%Y-%m-%d)
-          LLVM_VER=${{ matrix.llvm-version }}
           ARCH=$(uname -m)
-          PREFIX="reussir-nightly-${DATE}-linux-${ARCH}-llvm${LLVM_VER}"
-          mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
+          PREFIX="reussir-nightly-${DATE}-linux-${ARCH}"
+          mkdir -p "${PREFIX}/bin"
 
-          # Copy binaries. No Rust toolchain and no prebuilt runtime ship
-          # anymore: rene carries the reussir-rt source bundle and bakes it
+          # Only the user-facing toolchain ships: rrc and rrepl link
+          # LLVM/MLIR and the Reussir backend statically, and rene links no
+          # native code at all — so there are no bundled shared libraries and
+          # no rpath fixups. No Rust toolchain and no prebuilt runtime ship
+          # either: rene carries the reussir-rt source bundle and bakes it
           # with the user's own rust/cargo on first use.
-          for bin in reussir-opt reussir-translate rrc rene reussir-syntax; do
+          for bin in rrc rene rrepl; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
-          # Copy shared libraries
-          cp -a build/lib/libMLIRReussirBridge* "${PREFIX}/lib/" 2>/dev/null || true
-          # Exclude static libs
-          rm -f "${PREFIX}"/lib/libMLIRReussir*.a
+          # The statically linked C++ archives are built RelWithDebInfo;
+          # drop their debug info.
+          strip --strip-debug "${PREFIX}"/bin/*
 
-          # Copy system LLVM/MLIR shared libraries
-          LLVM_LIB="/usr/lib/llvm-${LLVM_VER}/lib"
-          cp -a "${LLVM_LIB}"/libMLIR.so* "${PREFIX}/lib/"
-          cp -a "${LLVM_LIB}"/libLLVM.so* "${PREFIX}/lib/"
-          # Also copy libMLIR C-API style libs if present
-          cp -a "${LLVM_LIB}"/libMLIR-${LLVM_VER}*.so* "${PREFIX}/lib/" 2>/dev/null || true
-          cp -a "${LLVM_LIB}"/libLLVM-${LLVM_VER}*.so* "${PREFIX}/lib/" 2>/dev/null || true
-
-          # On Ubuntu, libLLVM.so.XX.Y is a relative symlink into the
-          # multiarch directory (../../x86_64-linux-gnu/...) which dangles
-          # once extracted outside /usr/lib/llvm-XX/lib.  Replace any such
-          # dangling symlinks with the actual library file.
-          for f in "${PREFIX}"/lib/lib{LLVM,MLIR}*.so*; do
-            if [ -L "$f" ] && [ ! -e "$f" ]; then
-              orig="${LLVM_LIB}/$(basename "$f")"
-              rm "$f"
-              cp -L "$orig" "$f"
+          # Verify the binaries really are self-contained: nothing may
+          # resolve to an LLVM/MLIR shared library, and each must start from
+          # a bare environment.
+          for bin in rrc rene rrepl; do
+            echo "--- ldd ${bin}"
+            ldd "${PREFIX}/bin/${bin}"
+            if ldd "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR|not found'; then
+              echo "::error::${bin} has unexpected dynamic dependencies"
+              exit 1
             fi
-          done
-
-          # Strip debug info from C++ binaries
-          strip --strip-debug "${PREFIX}"/bin/reussir-opt "${PREFIX}"/bin/reussir-translate 2>/dev/null || true
-
-          # Patch RPATHs for relocatable package
-          for f in "${PREFIX}"/bin/*; do
-            [ -f "$f" ] && patchelf --set-rpath '$ORIGIN/../lib' "$f" 2>/dev/null || true
-          done
-          for f in "${PREFIX}"/lib/*.so*; do
-            [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f" 2>/dev/null || true
+            env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
           done
 
           XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
@@ -219,51 +205,43 @@ jobs:
           export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
           cmake --build build --target check
 
+      - name: Stage rrepl
+        run: cmake --build build --target rrepl
+
       - name: Package
         run: |
           DATE=$(date +%Y-%m-%d)
-          LLVM_VER=$("${LLVM_PREFIX}/bin/llvm-config" --version | cut -d. -f1)
           ARCH=$(uname -m)
-          PREFIX="reussir-nightly-${DATE}-macos-${ARCH}-llvm${LLVM_VER}"
-          mkdir -p "${PREFIX}/bin" "${PREFIX}/lib"
+          PREFIX="reussir-nightly-${DATE}-macos-${ARCH}"
+          mkdir -p "${PREFIX}/bin"
 
-          # Copy binaries. No Rust toolchain and no prebuilt runtime ship
-          # anymore: rene carries the reussir-rt source bundle and bakes it
-          # with the user's own rust/cargo on first use.
-          for bin in reussir-opt reussir-translate rrc rene reussir-syntax; do
+          # Only the user-facing toolchain ships: rrc and rrepl link
+          # LLVM/MLIR and the Reussir backend statically, and rene links no
+          # native code at all — so there are no bundled dylibs and no
+          # install_name_tool fixups. No Rust toolchain and no prebuilt
+          # runtime ship either: rene carries the reussir-rt source bundle
+          # and bakes it with the user's own rust/cargo on first use.
+          for bin in rrc rene rrepl; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
-          # Copy shared libraries
-          cp -a build/lib/libMLIRReussirBridge* "${PREFIX}/lib/" 2>/dev/null || true
-          # Exclude static libs
-          rm -f "${PREFIX}"/lib/libMLIRReussir*.a
+          # The statically linked C++ archives are built RelWithDebInfo;
+          # drop their debug info. Stripping invalidates the ad-hoc (linker)
+          # signature on arm64, so re-sign afterwards.
+          strip -x "${PREFIX}"/bin/*
+          codesign --force --sign - "${PREFIX}"/bin/*
 
-          # Copy system LLVM/MLIR shared libraries
-          cp -a "${LLVM_PREFIX}/lib"/libMLIR*.dylib "${PREFIX}/lib/"
-          cp -a "${LLVM_PREFIX}/lib"/libLLVM*.dylib "${PREFIX}/lib/"
-
-          # Strip debug info
-          strip -x "${PREFIX}"/bin/reussir-opt "${PREFIX}"/bin/reussir-translate 2>/dev/null || true
-
-          # Patch rpaths for relocatable package
-          for f in "${PREFIX}"/bin/*; do
-            [ -f "$f" ] || continue
-            # Add relative rpath
-            install_name_tool -add_rpath @executable_path/../lib "$f" 2>/dev/null || true
-            # Rewrite references to system LLVM libs
-            for lib in $(otool -L "$f" | grep "${LLVM_PREFIX}/lib" | awk '{print $1}'); do
-              base=$(basename "$lib")
-              install_name_tool -change "$lib" "@rpath/${base}" "$f" 2>/dev/null || true
-            done
-          done
-          for f in "${PREFIX}"/lib/*.dylib; do
-            [ -f "$f" ] || continue
-            install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true
-            for lib in $(otool -L "$f" | grep "${LLVM_PREFIX}/lib" | awk '{print $1}'); do
-              base=$(basename "$lib")
-              install_name_tool -change "$lib" "@rpath/${base}" "$f" 2>/dev/null || true
-            done
+          # Verify the binaries really are self-contained: nothing may
+          # reference the Homebrew LLVM/MLIR dylibs, and each must start
+          # from a bare environment.
+          for bin in rrc rene rrepl; do
+            echo "--- otool -L ${bin}"
+            otool -L "${PREFIX}/bin/${bin}"
+            if otool -L "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR'; then
+              echo "::error::${bin} has unexpected LLVM/MLIR dylib dependencies"
+              exit 1
+            fi
+            env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
           done
 
           XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
@@ -511,35 +489,63 @@ jobs:
           $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"
           cmake --build build --target check
 
+      - name: Stage rrepl
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        run: |
+          $env:RUSTC_WRAPPER = "sccache"
+          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
+          cmake --build build --target rrepl
+
       - name: Package
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
           $date = Get-Date -Format "yyyy-MM-dd"
-          $llvmMajor = (& "$env:LLVM_PREFIX\bin\llvm-config.exe" --version).Split('.')[0]
-          $prefix = "reussir-nightly-$date-windows-x64-msvc-llvm$llvmMajor"
-          New-Item -ItemType Directory -Force -Path "$prefix\bin", "$prefix\lib" | Out-Null
+          $prefix = "reussir-nightly-$date-windows-x64-msvc"
+          New-Item -ItemType Directory -Force -Path "$prefix\bin" | Out-Null
 
-          # No Rust toolchain and no prebuilt runtime ship anymore: rene
-          # carries the reussir-rt source bundle and bakes it with the user's
-          # own rust/cargo on first use.
-          foreach ($bin in @("reussir-opt", "reussir-translate", "rrc", "rene", "reussir-syntax")) {
-            Copy-Item "build\bin\$bin.exe" "$prefix\bin\" -ErrorAction SilentlyContinue
+          # Only the user-facing toolchain ships: rrc and rrepl link
+          # LLVM/MLIR and the Reussir backend statically, and rene links no
+          # native code at all — no MLIR/LLVM DLLs and no Bridge DLL. No Rust
+          # toolchain and no prebuilt runtime ship either: rene carries the
+          # reussir-rt source bundle and bakes it with the user's own
+          # rust/cargo on first use.
+          foreach ($bin in @("rrc", "rene", "rrepl")) {
+            Copy-Item "build\bin\$bin.exe" "$prefix\bin\"
           }
 
-          Copy-Item "build\bin\MLIRReussirBridge*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
+          # Ship the transitive closure of conda-toolchain DLLs the binaries
+          # actually import (zstd and friends, if the static LLVM referenced
+          # their import libraries); everything else must come from the OS.
+          $condaBin = "$env:LLVM_PREFIX\bin"
+          $queue = [System.Collections.Generic.Queue[string]]::new()
+          Get-ChildItem "$prefix\bin\*.exe" | ForEach-Object { $queue.Enqueue($_.FullName) }
+          $seen = @{}
+          while ($queue.Count -gt 0) {
+            $file = $queue.Dequeue()
+            $deps = (& dumpbin /nologo /dependents $file) -match '^\s+\S+\.dll\s*$' |
+              ForEach-Object { $_.Trim() }
+            foreach ($dll in $deps) {
+              $key = $dll.ToLowerInvariant()
+              if ($seen.ContainsKey($key)) { continue }
+              $seen[$key] = $true
+              $src = Join-Path $condaBin $dll
+              if (Test-Path $src) {
+                Copy-Item $src "$prefix\bin\"
+                Write-Host "Bundled conda DLL dependency: $dll"
+                $queue.Enqueue((Join-Path "$prefix\bin" $dll))
+              }
+            }
+          }
 
-          Copy-Item "$env:LLVM_PREFIX\bin\MLIR*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-          Copy-Item "$env:LLVM_PREFIX\bin\LLVM*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-          Copy-Item "$env:LLVM_PREFIX\bin\libMLIR*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-          Copy-Item "$env:LLVM_PREFIX\bin\libLLVM*.dll" "$prefix\bin\" -ErrorAction SilentlyContinue
-
-          $strip = "$env:LLVM_PREFIX\bin\llvm-strip.exe"
-          $stripInputs = @("$prefix\bin\reussir-opt.exe", "$prefix\bin\reussir-translate.exe") | Where-Object { Test-Path $_ }
-          if ((Test-Path $strip) -and $stripInputs.Count -gt 0) {
-            & $strip @stripInputs
+          # Verify each binary starts with only the OS on PATH (the bundled
+          # DLLs, if any, resolve from the exe's own directory).
+          $binDir = (Resolve-Path "$prefix\bin").Path
+          foreach ($bin in @("rrc", "rene", "rrepl")) {
+            cmd /c "set PATH=%SystemRoot%\System32;%SystemRoot%&& `"$binDir\$bin.exe`" --help > NUL"
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "llvm-strip failed; continuing with unstripped binaries."
+              throw "$bin.exe failed to run from a bare PATH (exit $LASTEXITCODE)"
             }
           }
 
@@ -592,12 +598,14 @@ jobs:
           body: |
             Automated nightly build from `${{ github.sha }}`.
 
-            **Platforms:**
-            - Linux x86_64 (LLVM 22)
-            - Linux aarch64 (LLVM 22)
-            - macOS ARM64 (Homebrew LLVM)
-            - Windows x64 (MSVC LLVM via conda-forge)
+            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), and `rrepl` (REPL). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
-            **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`. Libraries are bundled with correct rpaths — no need to set `LD_LIBRARY_PATH`.
+            **Platforms:**
+            - Linux x86_64 (built against LLVM 22)
+            - Linux aarch64 (built against LLVM 22)
+            - macOS ARM64 (built against Homebrew LLVM)
+            - Windows x64 (built against MSVC LLVM via conda-forge)
+
+            **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
 
             Compiling programs requires a Rust toolchain (`rustc`/`cargo`) on `PATH`: the bundled `rene` bakes the `reussir-rt` runtime from its embedded source with your toolchain on first use — no toolchain or prebuilt runtime ships in this archive.
