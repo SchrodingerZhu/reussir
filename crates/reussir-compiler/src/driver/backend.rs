@@ -47,8 +47,9 @@ pub(crate) fn backend(
     // same symbols.
     if target == Stage::Staticlib || target.is_linked() {
         let mut lib = ScratchMembers::new(output, cli.lto)?;
-        for module in modules {
+        for (index, module) in modules.into_iter().enumerate() {
             let member = lib.next_member();
+            tracing::debug!(unit = index, "compiling codegen unit");
             backend_module(
                 cli, context, module, target, opt, reloc, spec, name, &member,
             )?;
@@ -127,6 +128,7 @@ pub(crate) fn backend_module(
         ..LoweringOptions::default()
     };
     let optimize_ffi = !matches!(opt, OptLevel::None);
+    tracing::debug!("gathering polymorphic FFI");
     let prepared = LlvmLowering::prepare(
         &module,
         machine.data_layout(),
@@ -134,6 +136,7 @@ pub(crate) fn backend_module(
         &polyffi_paths(cli)?,
     )
     .map_err(|e| format!("{name}: {e}"))?;
+    tracing::debug!("running the MLIR lowering pipeline");
     pipeline::run_lowering_pipeline(context, &mut module, &options)
         .map_err(|e| format!("lowering pipeline failed: {e:?}"))?;
 
@@ -145,13 +148,16 @@ pub(crate) fn backend_module(
         return Ok(true);
     }
 
+    tracing::debug!("translating to LLVM IR");
     let finalized = prepared
         .finish(&module)
         .map_err(|e| format!("{name}: {e}"))?;
     let kind = target
         .output_kind(cli.lto)
         .expect("file-emitting or linked target past the mlir-llvm stage");
+    tracing::debug!("optimizing and emitting the object");
     emit_to_file(finalized, &machine, opt, kind, output)?;
+    tracing::debug!(output = %output.display(), "emitted");
     Ok(true)
 }
 

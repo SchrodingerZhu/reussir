@@ -275,6 +275,7 @@ pub(crate) fn link_product(
     }
 
     // rustc's diagnostics stream straight through to stderr.
+    tracing::debug!(rustc = %rustc, "linking through rustc");
     let status = cmd
         .status()
         .map_err(|e| format!("cannot run `{rustc}` for the link step: {e}"))?;
@@ -284,6 +285,7 @@ pub(crate) fn link_product(
             output.display()
         ));
     }
+    tracing::debug!(output = %output.display(), "linked");
     Ok(())
 }
 
