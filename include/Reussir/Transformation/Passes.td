@@ -232,4 +232,25 @@ def ReussirTRMCRecursionAnalysisPass
                            "::mlir::LLVM::LLVMDialect"];
 }
 
+def ReussirDefaultInlinerPass
+    : Pass<"reussir-default-inliner", "::mlir::ModuleOp"> {
+  let summary = "the pipeline's inliner: one iteration, canonicalize between";
+  let description = [{
+    `reussir-default-inliner` runs MLIR's SCC inliner with the pipeline's
+    fixed policy, configured programmatically (no textual pass options, no
+    pass-registry resolution): a single inlining iteration, and a callable
+    optimizer that canonicalizes with region simplification disabled.
+
+    One iteration is the load-bearing part: within a recursive SCC the
+    inliner re-inlines the call sites each round just created, so the
+    upstream default of four iterations grows a mutually recursive call
+    graph geometrically in its fanout — an interpreter-shaped program
+    inflates a few thousand ops into millions. A single iteration keeps
+    ordinary bottom-up inlining across SCCs (every non-recursive call still
+    inlines) and unrolls recursion one level, the posture LLVM's own inliner
+    takes. Region simplification stays off in the callable optimizer to
+    match the rest of the pipeline's canonicalization policy.
+  }];
+}
+
 #endif // REUSSIR_TRANSFORMATION_PASSES_TD
