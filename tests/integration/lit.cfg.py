@@ -121,7 +121,10 @@ def _probe_openmp():
     flags = '-fopenmp'
     if libomp_dir:
         flags += ' -Wl,-rpath,%s' % libomp_dir
-    with tempfile.TemporaryDirectory() as tmp:
+    # Windows can hold the probe executable's lock a beat past process
+    # exit (observed under x64 emulation); a failed cleanup is not a
+    # failed probe.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         src = os.path.join(tmp, 'omp.c')
         exe = os.path.join(tmp, 'omp')
         with open(src, 'w') as f:
