@@ -293,6 +293,14 @@ pub fn run_lowering_pipeline(
     }
 
     let manager = PassManager::new(context);
+    // Verbose runs get per-pass `[mlir-pass] begin/end` progress on stderr, so
+    // a wedged or pathological pass is locatable from a captured log alone
+    // (the last `begin` without an `end` names it).
+    // SAFETY: `manager` outlives the call; the CAPI attaches an owned
+    // instrumentation to the pass manager.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        unsafe { sys::reussirPassManagerAttachPhaseLogger(manager.to_raw()) };
+    }
 
     // Transform scripts, marshalled for the C API: every script file is
     // preloaded into the context's transform library up front (one pass, all

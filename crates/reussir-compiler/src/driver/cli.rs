@@ -353,4 +353,11 @@ pub(crate) fn init_tracing(verbose: bool) {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .try_init();
+    // Bridge the verbosity to the C++ legs (texture rustc spawns) that cannot
+    // see the tracing filter: they narrate their spawns to stderr when this is
+    // set.
+    // SAFETY: called once during single-threaded process startup.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        unsafe { std::env::set_var("REUSSIR_PHASE_LOG", "1") };
+    }
 }

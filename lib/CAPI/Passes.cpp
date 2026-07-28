@@ -28,7 +28,12 @@
 // Complete mlir::DialectVersion before MLIR C API headers reach
 // BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
 // forward declared.
+#include <chrono>
 #include <mutex>
+
+#include <llvm/ADT/SmallString.h>
+#include <llvm/Support/raw_ostream.h>
+#include <mlir/Pass/PassInstrumentation.h>
 
 #include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
@@ -324,4 +329,77 @@ void reussirContextSetPackRecordMembers(MlirContext context, bool enable) {
   mlir::MLIRContext *ctx = unwrap(context);
   ctx->getOrLoadDialect<reussir::ReussirDialect>()->setPackRecordMembers(
       enable);
+}
+
+namespace {
+/// Per-pass progress on stderr, for locating a wedged or pathological pass
+/// from nothing but a captured log (a CI timeout kills the process before any
+/// debugger can attach). Every pass execution prints a `begin` line before it
+/// runs and an `end` line (with wall time) after; the last `begin` without a
+/// matching `end` names the pass — and the op it was running on — that never
+/// came back. Each line is assembled in a local buffer and written with a
+/// single `errs()` call so lines from MLIR's parallel per-op drivers do not
+/// tear.
+class PassPhaseLogger final : public mlir::PassInstrumentation {
+public:
+  void runBeforePass(mlir::Pass *pass, mlir::Operation *op) override {
+    starts().push_back({pass, std::chrono::steady_clock::now()});
+    llvm::SmallString<128> line;
+    llvm::raw_svector_ostream os(line);
+    os << "[mlir-pass] begin " << pass->getName() << " on " << label(op)
+       << "\n";
+    llvm::errs() << line;
+  }
+  void runAfterPass(mlir::Pass *pass, mlir::Operation *op) override {
+    finish(pass, op, /*failed=*/false);
+  }
+  void runAfterPassFailed(mlir::Pass *pass, mlir::Operation *op) override {
+    finish(pass, op, /*failed=*/true);
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+  // Per-thread begin stack: passes nest within a thread (pipelines inside
+  // adaptors) and run in parallel across threads, so matching begin to end
+  // thread-locally is both necessary and sufficient.
+  static llvm::SmallVector<std::pair<mlir::Pass *, Clock::time_point>> &
+  starts() {
+    thread_local llvm::SmallVector<std::pair<mlir::Pass *, Clock::time_point>>
+        stack;
+    return stack;
+  }
+  static std::string label(mlir::Operation *op) {
+    std::string text = op->getName().getStringRef().str();
+    if (auto sym = op->getAttrOfType<mlir::StringAttr>("sym_name")) {
+      text += " @";
+      text += sym.getValue();
+    }
+    return text;
+  }
+  void finish(mlir::Pass *pass, mlir::Operation *op, bool failed) {
+    int64_t ms = -1;
+    auto &stack = starts();
+    for (size_t i = stack.size(); i-- > 0;) {
+      if (stack[i].first == pass) {
+        ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                 Clock::now() - stack[i].second)
+                 .count();
+        stack.erase(stack.begin() + i);
+        break;
+      }
+    }
+    llvm::SmallString<128> line;
+    llvm::raw_svector_ostream os(line);
+    os << "[mlir-pass] " << (failed ? "FAILED " : "end ") << pass->getName()
+       << " on " << label(op);
+    if (ms >= 0)
+      os << " (" << ms << " ms)";
+    os << "\n";
+    llvm::errs() << line;
+  }
+};
+} // namespace
+
+void reussirPassManagerAttachPhaseLogger(MlirPassManager pm) {
+  unwrap(pm)->addInstrumentation(std::make_unique<PassPhaseLogger>());
 }
