@@ -29,10 +29,6 @@
 // CHECK-NEXT: unbound variable
 // CHECK-NEXT: = -220
 
-// The release profile (aggressive optimization, and a two-unit link from
-// the manifest's `codegen_units`) is the same interpreter: identical
-// session transcript from the identical input.
-// RUN: %rene build --manifest-path %S/calc/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
-// RUN: %t.bdir/release/calc%exe_ext < %S/calc/example.in | %FileCheck %s
-
-// RELEASE: {{[/\\]}}release{{[/\\]}}calc
+// The release-profile build of this same package lives in calc_release.rr
+// so it can be gated independently (it exceeds the lit timeout on Windows
+// while this dev half passes there).

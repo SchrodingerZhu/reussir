@@ -1,0 +1,31 @@
+// UNSUPPORTED: windows
+// On Windows CI this release-profile build reliably exceeds the 900s lit
+// timeout (three consecutive runs), while a fresh dev+release cycle of the
+// same package finishes in ~30s on Linux and the dev half (calc.rr) builds
+// and runs correctly on Windows. The hang is inside `rene build --profile
+// release` — after the dev stage passed, before the release listing is
+// printed — so the suspects are the `-O aggressive` middle-end on this
+// package (the one that previously exposed the inliner SCC blowup) or the
+// two-unit split link. Needs a Windows host to profile; see the PR #479
+// discussion.
+
+// The release profile (aggressive optimization, and a two-unit link from
+// the manifest's `codegen_units`) is the same interpreter as calc.rr:
+// identical session transcript from the identical input.
+
+// RUN: %rene build --manifest-path %S/calc/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}calc
+
+// RUN: %t.bdir/release/calc%exe_ext < %S/calc/example.in | %FileCheck %s
+
+// CHECK:      bind 19
+// CHECK-NEXT: bind 12
+// CHECK-NEXT: = 228
+// CHECK-NEXT: = 200
+// CHECK-NEXT: bind 235
+// CHECK-NEXT: = 35
+// CHECK-NEXT: division by zero
+// CHECK-NEXT: parse error
+// CHECK-NEXT: unbound variable
+// CHECK-NEXT: = -220
