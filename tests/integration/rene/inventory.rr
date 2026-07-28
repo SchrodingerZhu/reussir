@@ -1,11 +1,9 @@
-// UNSUPPORTED: windows
-// On COFF the built binaries crash at runtime before the first line of
-// output (dev: silent early exit; the shape survives the correct
-// `linkonce_odr` + comdat IR for the nullary tag dummies). The remaining
-// suspects are cross-unit nullary tagged immediates and/or the win64
-// packed (nontrivial) import boundary — both gated tests use packed
-// imports, while the trivially-crossing `calc` passes. See the PR #479
-// discussion for the minimal repro sketch.
+// This test was briefly gated off Windows for a dev-build crash that
+// turned out to be the `-g` opaque-FFI data-layout defect (an `ffi_object`
+// answering no layout queries), fixed before the gate was revisited: both
+// profiles build and run correctly under x86_64-pc-windows-msvc. The
+// `ffi_debug.rr` and `ffi_string_e2e.rr` `-g` runs pin the underlying
+// regression.
 
 // An inventory report as a four-dependency `rene build`: generic
 // containers (`collections`), the domain layer folding transactions into a
