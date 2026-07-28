@@ -2,6 +2,13 @@ use std::{marker::PhantomData, string::String as StdString};
 
 use crate::rc::{Rc, RcRef};
 
+/// A functional (copy-on-write, rc-boxed) string: the exposed string
+/// collection for Reussir's polymorphic FFI, crossing the boundary the same
+/// way [`crate::collections::vec::Vec`] does. Owning operations take `self`
+/// linearly and return the updated string (`make_mut` copies only when the
+/// box is shared); read-only operations borrow. The `#[repr(transparent)]`
+/// wrapper over [`Rc`] is what the FFI contract requires: the compiler
+/// treats the value as an rc pointer whose count sits at offset 0.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct String(Rc<StdString>);
@@ -35,6 +42,12 @@ impl String {
     pub fn push_str(mut self, s: Str) -> Self {
         self.make_mut().push_str(&s);
         self
+    }
+    pub fn len(&self) -> usize {
+        self.0.data_ref().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.data_ref().is_empty()
     }
     pub fn as_ref(&self) -> StringRef<'_> {
         StringRef(self.0.as_ref())
