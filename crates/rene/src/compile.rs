@@ -208,17 +208,10 @@ impl Invocation {
         for (key, value) in &self.envs {
             cmd.env(key, value);
         }
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("cannot run `{}`: {e}", self.program.display()))?;
-        // The watchdog reports a child that outlives its expected wall time —
-        // and whether the wait, rather than the child, is what's stuck.
-        let watchdog = crate::diag::StuckReporter::arm(child.id(), &self.out);
-        let status = child
-            .wait()
+        let status = cmd
+            .status()
             .await
-            .map_err(|e| format!("cannot await `{}`: {e}", self.program.display()))?;
-        drop(watchdog);
+            .map_err(|e| format!("cannot run `{}`: {e}", self.program.display()))?;
         if !status.success() {
             return Err(format!(
                 "compiling `{}` failed (see rrc's diagnostics above)",

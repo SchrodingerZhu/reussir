@@ -13,7 +13,6 @@ static GLOBAL: alloc::ReussirGlobalAlloc = alloc::ReussirGlobalAlloc;
 
 pub mod alloc;
 pub mod collections;
-pub mod crash;
 pub mod nullable;
 pub mod option;
 pub mod panic;

@@ -1,11 +1,3 @@
-// This test was briefly gated off Windows for runtime crashes observed
-// mid-bringup: the dev half was the `-g` opaque-FFI data-layout defect
-// (fixed before the gate was revisited), and the release stack overflow
-// has not reproduced since — on x86_64-pc-windows-msvc both profiles now
-// build and run correctly, with the linked binary carrying exactly one
-// folded `REUSSIR_TAG_DUMMY` definition (the cross-unit immediate
-// identity the overflow signature had implicated).
-
 // A statistics pipeline as a two-package `rene build`: stdin is parsed
 // into the runtime's rc vector inside `vecio`'s textures (bad tokens
 // skipped Rust-side), and everything after the boundary is functional

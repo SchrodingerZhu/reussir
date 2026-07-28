@@ -15,8 +15,6 @@
 
 #include "Reussir/RustCompiler.h"
 #include <array>
-#include <chrono>
-#include <cstdlib>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/SmallVector.h>
@@ -170,20 +168,8 @@ std::unique_ptr<llvm::MemoryBuffer> compileRustSourceToBitcode(
   }
   for (auto arg : additionalArgs)
     args.push_back(arg);
-  // Execute rustc. `REUSSIR_PHASE_LOG` (set by a verbose rrc) narrates the
-  // spawn to stderr so a wedged toolchain process is attributable from a
-  // captured log: a `begin` line with no `done` names this rustc.
-  bool phaseLog = std::getenv("REUSSIR_PHASE_LOG") != nullptr;
-  if (phaseLog)
-    llvm::errs() << "[polyffi] begin texture rustc: " << rustcPath << "\n";
-  auto spawnStart = std::chrono::steady_clock::now();
+  // Execute rustc
   int code = llvm::sys::ExecuteAndWait(rustcPath, args);
-  if (phaseLog)
-    llvm::errs() << "[polyffi] texture rustc done ("
-                 << std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - spawnStart)
-                        .count()
-                 << " ms, exit " << code << ")\n";
   if (code != 0) {
     llvm::errs() << "Rust compilation failed with exit code " << code << "\n";
     llvm::errs() << "Full command: " << rustcPath << " ";

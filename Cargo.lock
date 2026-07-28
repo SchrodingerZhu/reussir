@@ -2821,7 +2821,6 @@ dependencies = [
  "toml_edit 0.25.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "windows-sys",
  "zstd",
 ]
 
@@ -2952,7 +2951,6 @@ dependencies = [
  "num_enum",
  "smallvec",
  "stacker",
- "windows-sys",
 ]
 
 [[package]]

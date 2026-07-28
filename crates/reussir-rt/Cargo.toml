@@ -32,17 +32,6 @@ num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-# The last-chance crash reporter (`crash`): SEH exceptions in generated code
-# die silently otherwise, and a CI log needs at least the exception code and
-# faulting module+offset to locate them.
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_System_Diagnostics_Debug",
-    "Win32_System_Kernel",
-    "Win32_System_LibraryLoader",
-] }
-
 [features]
 default = ["mimalloc-v2"]
 # The language heap requires a size-recovering allocator (`token<?>` frees

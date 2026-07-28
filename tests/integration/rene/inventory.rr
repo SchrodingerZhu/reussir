@@ -1,10 +1,3 @@
-// This test was briefly gated off Windows for a dev-build crash that
-// turned out to be the `-g` opaque-FFI data-layout defect (an `ffi_object`
-// answering no layout queries), fixed before the gate was revisited: both
-// profiles build and run correctly under x86_64-pc-windows-msvc. The
-// `ffi_debug.rr` and `ffi_string_e2e.rr` `-g` runs pin the underlying
-// regression.
-
 // An inventory report as a four-dependency `rene build`: generic
 // containers (`collections`), the domain layer folding transactions into a
 // BST stock map (`store`), and two polyffi packages in one link —
