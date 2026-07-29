@@ -1,10 +1,9 @@
 // REQUIRES: wasmer, wasip1-threads
 // The WebAssembly end of the pipeline, threads and all: `rene build` bakes
 // the runtime for `wasm32-wasip1-threads`, compiles the package through
-// `rrc` with the target's atomics/bulk-memory features, and links a wasm
-// module through rustc; `wasmer` then runs it — real WASI threads sharing
-// one linear memory, committing to one atomically counted, lock-guarded
-// map (see the package's `src/lib.rr`).
+// `rrc`, and links a wasm module through rustc; `wasmer` then runs it —
+// real WASI threads sharing one linear memory, committing to one atomically
+// counted, lock-guarded map (see the package's `src/lib.rr`).
 //
 // This is the whole cross-target story in one test: the bake, the driver's
 // `--target-triple`, the polyffi textures compiled for the target, the
@@ -16,18 +15,29 @@
 // `--target` here — and no `%rrc_linker` either: this link is rust-lld's,
 // not MSVC's, whatever the host is.
 
-// RUN: %rene build --manifest-path %S/wasi_threads/rene.ncl --build-dir %t.bdir | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/wasi_threads/rene.ncl --build-dir %t.bdir 2>%t.build.log >%t.listing
+// RUN: %FileCheck %s --check-prefix=LISTING < %t.listing
 
 // The artifact carries the target's extension, chosen by rene from the
 // triple rather than from the host.
 // LISTING: {{[/\\]}}dev{{[/\\]}}threads.wasm
+
+// Nothing on the way there disagrees about what machine this is. rustc
+// spells this target `wasm32-unknown-wasi` in the bitcode it hands back for
+// a polyffi texture, where LLVM's normalization of the same target name is
+// `wasm32-unknown-wasip1-threads`; the gather settles that (they describe
+// one machine) instead of letting the IR linker report it.
+// RUN: %FileCheck %s --check-prefix=QUIET --allow-empty < %t.build.log
+
+// QUIET-NOT: different target triples
 
 // RUN: %wasmer %t.bdir/dev/threads.wasm | %FileCheck %s
 
 // Four threads, keys 0..256 committed once each, so the fold is
 // 256 * 255 / 2. A lost update or a torn count would change it — and the
 // program asserts on it Rust-side before printing, so a wrong answer is a
-// failure, not a smaller number.
+// failure, not a smaller number. This is also what makes the run a real
+// test of the implied `+atomics`: the reference counts here are contended.
 // CHECK: parallel shared map: 32640
 
 // A second build is up to date: the wasm bake and the products are

@@ -132,6 +132,7 @@ pub(crate) fn backend_module(
     let prepared = LlvmLowering::prepare(
         &module,
         machine.data_layout(),
+        machine.triple(),
         optimize_ffi,
         &polyffi_paths(cli)?,
     )

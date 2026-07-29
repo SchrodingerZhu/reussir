@@ -3389,7 +3389,7 @@ void ReussirDialect::registerOperations() {
 //===----------------------------------------------------------------------===//
 std::unique_ptr<llvm::Module>
 gatherCompiledModules(mlir::ModuleOp moduleOp, llvm::LLVMContext &context,
-                      llvm::StringRef dataLayout) {
+                      llvm::StringRef dataLayout, llvm::StringRef targetTriple) {
   // Collect all polyffi operations with compiledModule
   llvm::SmallVector<ReussirPolyFFIOp> opsWithCompiledModule;
   moduleOp.walk([&](ReussirPolyFFIOp op) {
@@ -3398,9 +3398,22 @@ gatherCompiledModules(mlir::ModuleOp moduleOp, llvm::LLVMContext &context,
   });
   // Handle empty case - create an empty module if no compiledModule is
   // found
+  // The destination's spelling of the machine, stamped on every module this
+  // gathers (below) and on the empty stand-in. rustc names some targets
+  // differently from LLVM's own normalization of the same name —
+  // `wasm32-wasip1-threads` comes back from rustc as `wasm32-unknown-wasi` —
+  // and `llvm::Linker` warns whenever two modules disagree textually. Both
+  // describe the machine this compilation asked for (the textures were
+  // compiled with that very `--target`), so the disagreement is spelling
+  // only, and it is settled here rather than left to the linker to complain
+  // about. Empty leaves the parsed triple alone.
+  const bool retriple = !targetTriple.empty();
+  const llvm::Triple triple(targetTriple);
   if (opsWithCompiledModule.empty()) {
     auto module = std::make_unique<llvm::Module>("empty", context);
     module->setDataLayout(dataLayout);
+    if (retriple)
+      module->setTargetTriple(triple);
     return module;
   }
   // Parse bitcode and link all modules together
@@ -3433,6 +3446,8 @@ gatherCompiledModules(mlir::ModuleOp moduleOp, llvm::LLVMContext &context,
     }
     std::unique_ptr<llvm::Module> parsedModule = std::move(*moduleOrErr);
     parsedModule->setDataLayout(dataLayout);
+    if (retriple)
+      parsedModule->setTargetTriple(triple);
     // Link into final module
     if (!finalModule) {
       // First module becomes the base

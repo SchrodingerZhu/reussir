@@ -151,6 +151,38 @@ unsafe fn take_llvm_string(ptr: *mut c_char) -> CString {
     }
 }
 
+/// The target features a triple implies on its own — what the machine must
+/// have for code compiled *for* that target to mean what it says, regardless
+/// of whether the user passed `--target-features`.
+///
+/// Only WebAssembly needs this today, and it needs it badly. Every other
+/// architecture Reussir targets has atomics in its baseline, so an
+/// `atomicrmw` in the IR is an atomic instruction in the object. WebAssembly
+/// does not: without the `atomics` feature the backend is entitled to assume
+/// the module is single-threaded and lowers the same IR to a plain load and
+/// store. A threaded target (`wasm32-wasip1-threads`, whose environment
+/// normalizes to `-threads`) is exactly the case where that assumption is
+/// wrong — the atomic reference counts and the lock-guarded cells are the
+/// program's shared state — and the failure is silent: the module builds,
+/// links, runs, and loses updates under contention.
+///
+/// So the triple decides, as it does for rustc: the same target name gives
+/// rustc `+atomics,+bulk-memory,+mutable-globals` (and a `--shared-memory`
+/// link) for the standard library and every polyffi texture, and this keeps
+/// the objects `rrc` emits on the same footing. An explicit
+/// `--target-features` is appended after these, so `-atomics` still turns
+/// them back off: LLVM takes the last setting of a feature.
+fn implied_target_features(triple: &str) -> &'static str {
+    let mut components = triple.split('-');
+    let arch = components.next().unwrap_or_default();
+    let threaded = components.next_back() == Some("threads");
+    if matches!(arch, "wasm32" | "wasm64") && threaded {
+        "+atomics,+bulk-memory,+mutable-globals"
+    } else {
+        ""
+    }
+}
+
 /// A host or cross `TargetMachine` plus the triple and data layout it implies.
 ///
 /// Built up front (before the lowering pipeline) because the data layout must be
@@ -189,11 +221,20 @@ impl TargetMachine {
                 None if foreign => CString::default(),
                 None => take_llvm_string(LLVMGetHostCPUName()),
             };
+            // What the triple implies (see `implied_target_features`) comes
+            // first, so an explicit `--target-features` can still countermand
+            // it; the host's own feature string is the baseline when no
+            // triple was given, and nothing is implied on top of it.
+            let implied = implied_target_features(triple.to_str().unwrap_or_default());
             let features = match spec.features.as_deref() {
-                Some(f) => {
+                Some(f) if implied.is_empty() => {
                     CString::new(f).map_err(|_| "target features contain a NUL byte".to_string())?
                 }
-                None if foreign => CString::default(),
+                Some(f) => CString::new(format!("{implied},{f}"))
+                    .map_err(|_| "target features contain a NUL byte".to_string())?,
+                None if foreign => {
+                    CString::new(implied).expect("implied features are NUL-free literals")
+                }
                 None => take_llvm_string(LLVMGetHostCPUFeatures()),
             };
 
@@ -415,5 +456,48 @@ unsafe fn emit(
             return Err(format!("failed to emit {}: {msg}", out_path.display()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::implied_target_features;
+
+    /// The threaded WebAssembly targets — in either spelling, since the
+    /// caller works from LLVM's normalized triple but the flag the user
+    /// types is rustc's name.
+    #[test]
+    fn threaded_wasm_implies_atomics() {
+        for triple in [
+            "wasm32-wasip1-threads",
+            "wasm32-unknown-wasip1-threads",
+            "wasm64-unknown-wasip1-threads",
+        ] {
+            assert_eq!(
+                implied_target_features(triple),
+                "+atomics,+bulk-memory,+mutable-globals",
+                "{triple}"
+            );
+        }
+    }
+
+    /// Everything else keeps its architectural default: single-threaded wasm
+    /// stays single-threaded (its reference counts are plain loads and
+    /// stores, correctly), and no native target needs a feature to make
+    /// `atomicrmw` atomic.
+    #[test]
+    fn other_targets_imply_nothing() {
+        for triple in [
+            "wasm32-wasip1",
+            "wasm32-unknown-unknown",
+            "wasm32-unknown-emscripten",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            // Not a wasm target, whatever it calls its environment.
+            "x86_64-unknown-linux-threads",
+            "",
+        ] {
+            assert_eq!(implied_target_features(triple), "", "{triple}");
+        }
     }
 }

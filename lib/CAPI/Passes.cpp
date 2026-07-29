@@ -207,9 +207,10 @@ bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
 
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
                                            LLVMContextRef context,
-                                           const char *dataLayout) {
+                                           const char *dataLayout,
+                                           const char *targetTriple) {
   std::unique_ptr<llvm::Module> result = reussir::gatherCompiledModules(
-      unwrap(module), *llvm::unwrap(context), dataLayout);
+      unwrap(module), *llvm::unwrap(context), dataLayout, targetTriple);
   return llvm::wrap(result.release());
 }
 

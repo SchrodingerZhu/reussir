@@ -171,6 +171,15 @@ impl LlvmLowering {
     /// unaffected). `data_layout` stamps the gathered module — and later the main
     /// module — so the eventual link is layout-consistent.
     ///
+    /// `llvm_triple` stamps it the same way, and for the same reason one step
+    /// further out: the bitcode rustc hands back names the target however
+    /// *rustc* spells it for LLVM, which is not always LLVM's normalization of
+    /// the target name both sides were given (`wasm32-wasip1-threads` comes
+    /// back as `wasm32-unknown-wasi`), and the IR linker reports the
+    /// difference. Pass the triple the main module will carry — i.e. the one
+    /// `pipeline::attach_target_spec` stamped; empty leaves the parsed
+    /// triples alone.
+    ///
     /// Gathering erases the polyffi ops, so the lowering pipeline's own
     /// `CompilePolymorphicFFIPass` then sees nothing to do.
     ///
@@ -179,11 +188,14 @@ impl LlvmLowering {
     pub fn prepare(
         module: &Module,
         data_layout: &str,
+        llvm_triple: &str,
         optimized: bool,
         paths: &PolyffiPaths,
     ) -> Result<Self, String> {
         let data_layout =
             CString::new(data_layout).map_err(|_| "data layout contains a NUL byte".to_string())?;
+        let llvm_triple = CString::new(llvm_triple)
+            .map_err(|_| "target triple contains a NUL byte".to_string())?;
         let libdirs = string_refs(&paths.libdirs);
         unsafe {
             if !sys::reussirCompilePolymorphicFFI(
@@ -201,6 +213,7 @@ impl LlvmLowering {
                 module.to_raw(),
                 context as sys::LLVMContextRef,
                 data_layout.as_ptr(),
+                llvm_triple.as_ptr(),
             ) as LLVMModuleRef;
             if gathered.is_null() {
                 LLVMContextDispose(context);

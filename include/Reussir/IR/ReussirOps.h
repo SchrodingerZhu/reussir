@@ -131,9 +131,14 @@ mlir::func::FuncOp emitOwnershipAcquisitionFuncIfNotExists(
 
 //===----------------------------------------------------------------------===//
 
-std::unique_ptr<llvm::Module> gatherCompiledModules(mlir::ModuleOp moduleOp,
-                                                    llvm::LLVMContext &context,
-                                                    llvm::StringRef dataLayout);
+// Every gathered module is stamped with `dataLayout` and, when it is
+// non-empty, `targetTriple` — the destination module's own spelling of the
+// machine, which rustc-produced bitcode need not share (see the comment at
+// the definition).
+std::unique_ptr<llvm::Module>
+gatherCompiledModules(mlir::ModuleOp moduleOp, llvm::LLVMContext &context,
+                      llvm::StringRef dataLayout,
+                      llvm::StringRef targetTriple = {});
 
 constexpr llvm::StringRef REUSSIR_EXPANDED_ENSURE_ATTR =
     "reussir.expanded_ensure";
