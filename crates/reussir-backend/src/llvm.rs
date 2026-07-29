@@ -38,6 +38,10 @@ pub struct PolyffiPaths {
     /// The directories searched for Rust packages (one `rustc -L` each) —
     /// `libreussir_rt` and friends.
     pub libdirs: Vec<String>,
+    /// The machine target passed to the texture's `rustc --target`. `None`
+    /// leaves rustc on its native host, matching an omitted rrc
+    /// `--target-triple`.
+    pub target_triple: Option<String>,
 }
 
 // Views an optional string as the borrowed MlirStringRef the C API takes; the
@@ -188,6 +192,7 @@ impl LlvmLowering {
                 opt_string_ref(&paths.rust_path),
                 libdirs.as_ptr(),
                 libdirs.len() as isize,
+                opt_string_ref(&paths.target_triple),
             ) {
                 return Err("failed to compile polymorphic FFI".into());
             }

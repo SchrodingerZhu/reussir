@@ -194,13 +194,15 @@ MlirPass reussirCreateReconcileUnrealizedCastsPass(void) {
 bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
                                   MlirStringRef rustPath,
                                   const MlirStringRef *libDirs,
-                                  intptr_t nLibDirs) {
+                                  intptr_t nLibDirs,
+                                  MlirStringRef targetTriple) {
   llvm::SmallVector<llvm::StringRef> dirs;
   dirs.reserve(nLibDirs);
   for (intptr_t i = 0; i < nLibDirs; ++i)
     dirs.push_back(unwrap(libDirs[i]));
   return succeeded(reussir::compilePolymorphicFFI(unwrap(module), optimized,
-                                                  unwrap(rustPath), dirs));
+                                                  unwrap(rustPath), dirs,
+                                                  unwrap(targetTriple)));
 }
 
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,

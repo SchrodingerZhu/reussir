@@ -34,6 +34,26 @@ fn rrc(args: &[&Path]) -> Output {
         .expect("spawn rrc")
 }
 
+#[cfg(unix)]
+fn shell_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}")).expect("write shell script");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("make shell script executable");
+    path
+}
+
+#[cfg(unix)]
+fn assert_recorded_target(log: &Path, target: &str) {
+    let args: Vec<_> = read(log).lines().map(str::to_owned).collect();
+    assert!(
+        args.windows(2).any(|pair| pair == ["--target", target]),
+        "rustc did not receive `--target {target}`: {args:#?}"
+    );
+}
+
 /// Compile `input` to `target` (`--emit target`), writing `out`; assert success.
 fn emit(input: &Path, target: &str, out: &Path) {
     let output = rrc(&[
@@ -284,6 +304,101 @@ fn compiles_to_the_wasm_target() {
         "not a wasm object, leading bytes: {:02x?}",
         &bytes[..bytes.len().min(8)]
     );
+}
+
+/// The target selected for LLVM must also reach the direct rustc invocation
+/// that compiles an embedded polymorphic-FFI texture.
+#[cfg(unix)]
+#[test]
+fn passes_the_target_to_polyffi_rustc() {
+    let dir = scratch("polyffi-target");
+    let input = dir.path().join("texture.mlir");
+    std::fs::write(
+        &input,
+        r##"
+module {
+  reussir.polyffi texture("#[unsafe(no_mangle)] pub unsafe extern \"C\" fn target_probe() {}")
+}
+"##,
+    )
+    .expect("write polyffi module");
+    let rustc = shell_script(
+        dir.path(),
+        "record-rustc",
+        "printf '%s\n' \"$@\" > \"$FAKE_RUSTC_LOG\"\nexit 1\n",
+    );
+    let log = dir.path().join("rustc-args");
+    let output = Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args([
+            input.as_os_str(),
+            "-o".as_ref(),
+            dir.path().join("texture.ll").as_os_str(),
+            "--emit".as_ref(),
+            "llvm-ir".as_ref(),
+            "--target-triple".as_ref(),
+            "wasm32-wasip1".as_ref(),
+            "--polyffi-rust-path".as_ref(),
+            rustc.as_os_str(),
+            "--polyffi-libdir".as_ref(),
+            dir.path().as_os_str(),
+        ])
+        .current_dir(dir.path())
+        .env("FAKE_RUSTC_LOG", &log)
+        .output()
+        .expect("spawn rrc");
+    assert!(
+        !output.status.success(),
+        "the recording rustc deliberately fails"
+    );
+    assert_recorded_target(&log, "wasm32-wasip1");
+}
+
+/// A linked product's launcher is another Rust compilation; it must use the
+/// same explicit target as LLVM and the embedded textures.
+#[cfg(unix)]
+#[test]
+fn passes_the_target_to_linking_rustc() {
+    let dir = scratch("link-target");
+    let input = dir.path().join("program.ll");
+    std::fs::write(&input, "define void @__reussir_main() {\n  ret void\n}\n")
+        .expect("write LLVM IR");
+    std::fs::write(dir.path().join("libreussir_rt.rlib"), "").expect("write fake runtime");
+    let rustc = shell_script(
+        dir.path(),
+        "record-rustc",
+        "printf '%s\n' \"$@\" > \"$FAKE_RUSTC_LOG\"\n\
+         previous=''\n\
+         for arg in \"$@\"; do\n\
+           if [ \"$previous\" = '-o' ]; then : > \"$arg\"; fi\n\
+           previous=\"$arg\"\n\
+         done\n",
+    );
+    let log = dir.path().join("rustc-args");
+    let output_path = dir.path().join("program.wasm");
+    let output = Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args([
+            input.as_os_str(),
+            "-o".as_ref(),
+            output_path.as_os_str(),
+            "--emit".as_ref(),
+            "executable".as_ref(),
+            "--target-triple".as_ref(),
+            "wasm32-wasip1".as_ref(),
+            "--polyffi-rust-path".as_ref(),
+            rustc.as_os_str(),
+            "--polyffi-libdir".as_ref(),
+            dir.path().as_os_str(),
+        ])
+        .env("FAKE_RUSTC_LOG", &log)
+        .output()
+        .expect("spawn rrc");
+    assert!(
+        output.status.success(),
+        "link driver failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output_path.is_file(), "recording rustc did not make output");
+    assert_recorded_target(&log, "wasm32-wasip1");
 }
 
 /// `--scan-deps` describes the package source graph — `lib.rr` plus

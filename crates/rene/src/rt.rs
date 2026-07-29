@@ -177,6 +177,18 @@ fn validate_target(target: &str) -> Result<String, String> {
     }
 }
 
+/// Whether the bundled runtime must use its platform allocator instead of
+/// mimalloc for `target`.
+///
+/// mimalloc's backend is C and does not support WebAssembly targets. WASI
+/// supplies the libc allocator used by reussir-rt's no-default-features
+/// backend; freestanding wasm targets are classified the same way so they
+/// fail, if unsupported, at that platform allocator boundary rather than in
+/// mimalloc's native C build.
+fn target_should_disable_mimalloc(target: &str) -> bool {
+    matches!(target.split('-').next(), Some("wasm32" | "wasm64"))
+}
+
 async fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
     let out = compio::process::Command::new(program)
         .args(args)
@@ -313,17 +325,18 @@ async fn cargo_build(
     linker: Option<&Path>,
 ) -> Result<(PathBuf, PathBuf, Vec<PathBuf>), String> {
     let mut cmd = compio::process::Command::new(&toolchain.cargo);
-    cmd.args([
-        "build",
-        "--release",
-        "--target",
-        toolchain.target.as_str(),
-        "--message-format=json-render-diagnostics",
-    ])
-    .current_dir(src_dir)
-    // Pin the rustc cargo delegates to, so the recorded version and
-    // libdir describe the compiler that actually built the artifacts.
-    .env("RUSTC", &toolchain.rustc);
+    cmd.args(["build", "--release", "--target", toolchain.target.as_str()]);
+    // The bundled mimalloc backend builds C code and is not yet a WebAssembly
+    // allocator. WASI supplies the libc malloc family used by the runtime's
+    // size-recovering fallback, so select that backend for wasm targets.
+    if target_should_disable_mimalloc(&toolchain.target) {
+        cmd.arg("--no-default-features");
+    }
+    cmd.arg("--message-format=json-render-diagnostics")
+        .current_dir(src_dir)
+        // Pin the rustc cargo delegates to, so the recorded version and
+        // libdir describe the compiler that actually built the artifacts.
+        .env("RUSTC", &toolchain.rustc);
     if let Some(linker) = linker {
         // Cargo's target-specific linker configuration, as an environment
         // variable: `CARGO_TARGET_<TARGET>_LINKER`. Unlike RUSTFLAGS this
@@ -418,6 +431,24 @@ async fn cargo_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocator_backend_follows_the_target_architecture() {
+        for target in [
+            "wasm32-wasip1",
+            "wasm32-unknown-unknown",
+            "wasm64-unknown-unknown",
+        ] {
+            assert!(target_should_disable_mimalloc(target), "{target}");
+        }
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "wasmtime-unknown-linux-gnu",
+        ] {
+            assert!(!target_should_disable_mimalloc(target), "{target}");
+        }
+    }
 
     #[test]
     fn the_bundle_unpacks_to_a_standalone_crate() {

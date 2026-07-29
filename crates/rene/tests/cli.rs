@@ -383,7 +383,7 @@ fn build_resolves_the_target_and_keeps_each_runtime_bake() {
     assert!(default.status.success(), "stderr: {}", stderr(&default));
     assert_eq!(
         String::from_utf8(default.stdout).unwrap().trim(),
-        root.join("dev/demo").display().to_string()
+        root.join("dev/demo.wasm").display().to_string()
     );
 
     let override_target = "aarch64-unknown-linux-gnu";
@@ -410,7 +410,7 @@ fn build_resolves_the_target_and_keeps_each_runtime_bake() {
     assert_eq!(
         fakes.cargo_invocations(),
         [
-            "build --release --target wasm32-unknown-unknown --message-format=json-render-diagnostics",
+            "build --release --target wasm32-unknown-unknown --no-default-features --message-format=json-render-diagnostics",
             "build --release --target aarch64-unknown-linux-gnu --message-format=json-render-diagnostics",
         ]
     );

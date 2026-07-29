@@ -4,7 +4,8 @@
 //! `src/lib.rr`, the profile's knobs as flags, `--emit` from the target's
 //! kind, and the baked runtime's libdirs for polyffi and the link step.
 //! Artifacts land in `<build-dir>/<profile>/`, named per platform
-//! (`demo`/`demo.exe`, `libdemo.so`/`libdemo.dylib`/`demo.dll`,
+//! (`demo`/`demo.exe`/`demo.wasm`,
+//! `libdemo.so`/`libdemo.dylib`/`demo.dll`,
 //! `libdemo.a`/`demo.lib`).
 //!
 //! Each product's build is recorded in the status database under
@@ -401,11 +402,14 @@ pub(crate) fn product_is_current(
 pub(crate) fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
     let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
     let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));
+    let wasm = triple.is_some_and(|t| t.starts_with("wasm"));
     match kind {
         TargetKind::Executable if windows => format!("{name}.exe"),
+        TargetKind::Executable if wasm => format!("{name}.wasm"),
         TargetKind::Executable => name.to_owned(),
         TargetKind::Dynlib if windows => format!("{name}.dll"),
         TargetKind::Dynlib if apple => format!("lib{name}.dylib"),
+        TargetKind::Dynlib if wasm => format!("{name}.wasm"),
         TargetKind::Dynlib => format!("lib{name}.so"),
         TargetKind::Staticlib if windows => format!("{name}.lib"),
         TargetKind::Staticlib => format!("lib{name}.a"),
@@ -421,20 +425,25 @@ mod tests {
         let linux = Some("x86_64-unknown-linux-gnu");
         let mac = Some("aarch64-apple-darwin");
         let win = Some("x86_64-pc-windows-msvc");
+        let wasm = Some("wasm32-wasip1");
         for (kind, expect) in [
-            (TargetKind::Executable, ["demo", "demo", "demo.exe"]),
+            (
+                TargetKind::Executable,
+                ["demo", "demo", "demo.exe", "demo.wasm"],
+            ),
             (
                 TargetKind::Dynlib,
-                ["libdemo.so", "libdemo.dylib", "demo.dll"],
+                ["libdemo.so", "libdemo.dylib", "demo.dll", "demo.wasm"],
             ),
             (
                 TargetKind::Staticlib,
-                ["libdemo.a", "libdemo.a", "demo.lib"],
+                ["libdemo.a", "libdemo.a", "demo.lib", "libdemo.a"],
             ),
         ] {
             assert_eq!(artifact_file("demo", kind, linux), expect[0]);
             assert_eq!(artifact_file("demo", kind, mac), expect[1]);
             assert_eq!(artifact_file("demo", kind, win), expect[2]);
+            assert_eq!(artifact_file("demo", kind, wasm), expect[3]);
         }
     }
 }

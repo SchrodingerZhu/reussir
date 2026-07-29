@@ -132,6 +132,15 @@ pub(crate) fn link_product(
 
     let mut cmd = std::process::Command::new(&rustc);
     cmd.arg("--edition").arg("2024");
+    // LLVM, the embedded Rust textures, and the Rust launcher must agree on
+    // one machine target. Keep native rrc invocations implicit, but preserve
+    // an explicit `--target-triple` all the way through the final rustc link.
+    if let Some(target) = &cli.target_triple {
+        // Use rustc's target *name*, not LLVM's normalized triple: rustc
+        // accepts `wasm32-wasip1`, while LLVM canonicalizes it to
+        // `wasm32-unknown-wasip1`.
+        cmd.arg("--target").arg(target);
+    }
     match target {
         Stage::Executable => {
             let launcher = scratch.dir().join("launcher.rs");
@@ -389,7 +398,11 @@ pub(crate) fn polyffi_paths(cli: &Cli) -> Result<PolyffiPaths, String> {
             Ok(dir.to_string_lossy().into_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(PolyffiPaths { rust_path, libdirs })
+    Ok(PolyffiPaths {
+        rust_path,
+        libdirs,
+        target_triple: cli.target_triple.clone(),
+    })
 }
 
 /// A bare `--polyffi-rust-path` name (no separator) searches `PATH`; anything

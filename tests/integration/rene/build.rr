@@ -56,6 +56,16 @@
 // PLAN-NEXT: "{{[^<].*}}"
 // PLAN: "target": "{{[^"]+-[^"]+}}"
 
+// A cross-target plan needs no target toolchain to render: the public
+// contract already names the WASI target at rrc's boundary and gives the
+// executable its WebAssembly suffix.
+// RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands --target wasm32-wasip1 | %FileCheck %s --check-prefix=WASM
+
+// WASM: "{{.*[/\\]}}dev{{[/\\]}}demo.wasm"
+// WASM: "--target-triple",
+// WASM-NEXT: "wasm32-wasip1",
+// WASM: "target": "wasm32-wasip1"
+
 // An undeclared profile or binary target is refused by name.
 // RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile bogus 2>&1 | %FileCheck %s --check-prefix=NOPROFILE
 // RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --bin bogus 2>&1 | %FileCheck %s --check-prefix=NOTARGET
