@@ -1,0 +1,9 @@
+// REQUIRES: rrepl
+
+// The release archives smoke-test every user-facing binary with `--help`
+// from a bare environment. Help is successful and is written to stdout.
+// RUN: %rrepl --help > %t.help
+// RUN: %FileCheck %s --check-prefix=HELP < %t.help
+
+// HELP: Reussir REPL (Rust pipeline).
+// HELP: Usage: rrepl [OPTIONS]

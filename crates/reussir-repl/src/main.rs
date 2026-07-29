@@ -124,7 +124,22 @@ fn run(cli: &Cli) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // `palc` represents `--help` as a parse error. Keep the conventional CLI
+    // contract used by `rrc` and `rene`: help goes to stdout with exit 0,
+    // while genuine usage errors go to stderr with exit 2.
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => match err.try_into_help() {
+            Ok(help) => {
+                println!("{help}");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
     match run(&cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
