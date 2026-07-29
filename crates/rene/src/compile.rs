@@ -4,7 +4,8 @@
 //! `src/lib.rr`, the profile's knobs as flags, `--emit` from the target's
 //! kind, and the baked runtime's libdirs for polyffi and the link step.
 //! Artifacts land in `<build-dir>/<profile>/`, named per platform
-//! (`demo`/`demo.exe`, `libdemo.so`/`libdemo.dylib`/`demo.dll`,
+//! (`demo`/`demo.exe`/`demo.wasm`,
+//! `libdemo.so`/`libdemo.dylib`/`demo.dll`,
 //! `libdemo.a`/`demo.lib`).
 //!
 //! Each product's build is recorded in the status database under
@@ -36,6 +37,8 @@ pub struct Options {
     pub profile_name: String,
     /// The resolved profile (built-in refined by the manifest's).
     pub profile: Profile,
+    /// The resolved machine target: CLI, profile default, then rustc host.
+    pub target: String,
     /// `--bin` filters; empty together with [`Self::libs`] means every
     /// declared target.
     pub bins: Vec<String>,
@@ -104,11 +107,7 @@ pub async fn build(
     let mut plan = Vec::with_capacity(selected.len());
     for name in selected {
         let kind = manifest.targets[name].kind;
-        let path = out_dir.join(artifact_file(
-            name,
-            kind,
-            opts.profile.target_triple.as_deref(),
-        ));
+        let path = out_dir.join(artifact_file(name, kind, Some(&opts.target)));
         let key = tables::product_key(&opts.profile_name, name);
         let current = product_is_current(dir, &key, &fingerprint, &path)?;
         if current {
@@ -126,6 +125,7 @@ pub async fn build(
             &plan::Options {
                 profile_name: &opts.profile_name,
                 profile: &opts.profile,
+                target: &opts.target,
                 linker: opts.linker.as_deref(),
                 build_dir: dir.root(),
             },
@@ -279,6 +279,7 @@ impl Invocation {
 /// real invocation above and the planned-command dump ([`crate::plan`]).
 pub(crate) fn profile_flags(
     profile: &Profile,
+    target: &str,
     kind: TargetKind,
     linker: Option<&Path>,
 ) -> Vec<String> {
@@ -314,9 +315,7 @@ pub(crate) fn profile_flags(
     if let Some(encoding) = &profile.nullary_variant_encoding {
         push(&mut args, "--nullary-variant-encoding", encoding);
     }
-    if let Some(triple) = &profile.target_triple {
-        push(&mut args, "--target-triple", triple);
-    }
+    push(&mut args, "--target-triple", target);
     if let Some(cpu) = &profile.target_cpu {
         push(&mut args, "--target-cpu", cpu);
     }
@@ -364,6 +363,7 @@ pub(crate) fn fingerprint(
     let mut hasher = blake3::Hasher::new();
     hasher.update(deps::config_hash(&loaded.dump).as_bytes());
     hasher.update(opts.profile_name.as_bytes());
+    hasher.update(opts.target.as_bytes());
     for file in files {
         hasher.update(file.path.as_bytes());
         hasher.update(&file.record.hash);
@@ -398,15 +398,18 @@ pub(crate) fn product_is_current(
 }
 
 /// The artifact's file name for `name`, per the target platform — the
-/// profile's `target_triple` when set, the host otherwise.
+/// resolved machine target.
 pub(crate) fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
     let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
     let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));
+    let wasm = triple.is_some_and(|t| t.starts_with("wasm"));
     match kind {
         TargetKind::Executable if windows => format!("{name}.exe"),
+        TargetKind::Executable if wasm => format!("{name}.wasm"),
         TargetKind::Executable => name.to_owned(),
         TargetKind::Dynlib if windows => format!("{name}.dll"),
         TargetKind::Dynlib if apple => format!("lib{name}.dylib"),
+        TargetKind::Dynlib if wasm => format!("{name}.wasm"),
         TargetKind::Dynlib => format!("lib{name}.so"),
         TargetKind::Staticlib if windows => format!("{name}.lib"),
         TargetKind::Staticlib => format!("lib{name}.a"),
@@ -422,20 +425,25 @@ mod tests {
         let linux = Some("x86_64-unknown-linux-gnu");
         let mac = Some("aarch64-apple-darwin");
         let win = Some("x86_64-pc-windows-msvc");
+        let wasm = Some("wasm32-wasip1");
         for (kind, expect) in [
-            (TargetKind::Executable, ["demo", "demo", "demo.exe"]),
+            (
+                TargetKind::Executable,
+                ["demo", "demo", "demo.exe", "demo.wasm"],
+            ),
             (
                 TargetKind::Dynlib,
-                ["libdemo.so", "libdemo.dylib", "demo.dll"],
+                ["libdemo.so", "libdemo.dylib", "demo.dll", "demo.wasm"],
             ),
             (
                 TargetKind::Staticlib,
-                ["libdemo.a", "libdemo.a", "demo.lib"],
+                ["libdemo.a", "libdemo.a", "demo.lib", "libdemo.a"],
             ),
         ] {
             assert_eq!(artifact_file("demo", kind, linux), expect[0]);
             assert_eq!(artifact_file("demo", kind, mac), expect[1]);
             assert_eq!(artifact_file("demo", kind, win), expect[2]);
+            assert_eq!(artifact_file("demo", kind, wasm), expect[3]);
         }
     }
 }

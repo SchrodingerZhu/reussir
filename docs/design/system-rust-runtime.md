@@ -249,10 +249,10 @@ phase 4.
   keyed by toolchain+source hash (Koka builds per project). Cargo's target
   dir gives us safe sharing for free; a `--rt-target-dir` escape hatch can
   serve hermetic build systems (Nix, Bazel) that want project-local builds.
-- **Cross-compilation**: the cache key already includes the target triple;
-  polyffi invocations need `--target` propagation and the final link needs
-  a target-appropriate staticlib. Deferred until cross-compilation is a
-  supported flow generally.
+- **Cross-compilation**: `rene` keys runtime bakes by target and propagates the
+  selected triple to Cargo and `rrc`. Individual targets still need compatible
+  runtime features, linkers, and Rust standard-library components before the
+  full cross-compilation flow is supported.
 - **Windows**: staticlib-by-default sidesteps the `reussir_rt.dll` +
   `libstd` DLL story; MSVC vs GNU toolchain flavor must match the user's
   C toolchain — detect from the rustc host triple and warn on mismatch.

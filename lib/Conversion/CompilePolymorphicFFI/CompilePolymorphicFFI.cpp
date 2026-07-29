@@ -193,7 +193,8 @@ static std::string monomorphize(mlir::ModuleOp moduleOp, ReussirPolyFFIOp op) {
 mlir::LogicalResult
 compilePolymorphicFFI(mlir::ModuleOp moduleOp, bool optimized,
                       llvm::StringRef rustPath,
-                      llvm::ArrayRef<llvm::StringRef> libDirs) {
+                      llvm::ArrayRef<llvm::StringRef> libDirs,
+                      llvm::StringRef targetTriple) {
   llvm::LLVMContext context;
   llvm::SmallVector<ReussirPolyFFIOp> uncompiledOps;
   moduleOp.walk([&](ReussirPolyFFIOp op) {
@@ -204,6 +205,10 @@ compilePolymorphicFFI(mlir::ModuleOp moduleOp, bool optimized,
   llvm::SmallVector<llvm::StringRef> additionalArgs;
   if (optimized)
     additionalArgs.push_back("-O");
+  if (!targetTriple.empty()) {
+    additionalArgs.push_back("--target");
+    additionalArgs.push_back(targetTriple);
+  }
 
   for (ReussirPolyFFIOp op : uncompiledOps) {
     std::string monomorphized = monomorphize(moduleOp, op);

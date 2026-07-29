@@ -35,7 +35,7 @@ use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMCodeModel, LLVMCreateTargetDataLayout,
     LLVMCreateTargetMachine, LLVMDisposeTargetMachine, LLVMGetDefaultTargetTriple,
     LLVMGetHostCPUFeatures, LLVMGetHostCPUName, LLVMGetTargetFromTriple, LLVMRelocMode,
-    LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
+    LLVMNormalizeTargetTriple, LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
 };
 
 use reussir_backend::llvm::{Finalized, LtoMode, run_backend_llvm_pipeline};
@@ -172,7 +172,13 @@ impl TargetMachine {
             let foreign = spec.triple.is_some();
             let triple = match spec.triple.as_deref() {
                 Some(t) => {
-                    CString::new(t).map_err(|_| "target triple contains a NUL byte".to_string())?
+                    let requested = CString::new(t)
+                        .map_err(|_| "target triple contains a NUL byte".to_string())?;
+                    // Rust target names may use LLVM aliases (notably
+                    // `wasm32-wasip1`). Stamp LLVM's canonical spelling so
+                    // rustc-produced polyffi bitcode links without a
+                    // different-target-triples warning.
+                    take_llvm_string(LLVMNormalizeTargetTriple(requested.as_ptr()))
                 }
                 None => take_llvm_string(LLVMGetDefaultTargetTriple()),
             };

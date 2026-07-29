@@ -83,6 +83,11 @@ struct BuildArgs {
     #[arg(long = "lib", value_name = "NAME")]
     libs: Vec<String>,
 
+    /// Build for this machine target triple. Overrides the selected
+    /// profile's `default_target_triple`; otherwise rustc's host is used.
+    #[arg(long, value_name = "TRIPLE")]
+    target: Option<String>,
+
     /// The linker rrc's link step hands to rustc (`rrc --linker`),
     /// overriding the profile's. Useful where rustc's own discovery resolves
     /// the wrong tool.
@@ -137,6 +142,12 @@ struct InspectArgs {
     /// The profile the `plan` section renders against.
     #[arg(long, default_value = "dev")]
     profile: String,
+
+    /// Render commands for this machine target triple. Overrides the
+    /// selected profile's `default_target_triple`; otherwise rustc's host
+    /// is used.
+    #[arg(long, value_name = "TRIPLE")]
+    target: Option<String>,
 
     /// The linker override the compared build ran with (`rene build
     /// --linker`): part of the root products' fingerprints, so freshness
@@ -286,7 +297,12 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // the pipeline's bars after.
     let progress = indicatif::MultiProgress::new();
     let bake_linker = args.linker.clone().or_else(|| profile.linker.clone());
-    let artifacts = rt::prepare(&dir, bake_linker.as_deref(), &progress).await?;
+    let requested_target = args
+        .target
+        .as_deref()
+        .or(profile.default_target_triple.as_deref());
+    let artifacts = rt::prepare(&dir, requested_target, bake_linker.as_deref(), &progress).await?;
+    let target = artifacts.target.clone();
 
     // No declared targets: stop after the bake, reporting the libdirs for
     // whoever drives rrc by hand — the pre-target workflow, kept working.
@@ -315,6 +331,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
         &exec::Options {
             profile_name: &args.profile,
             profile: &profile,
+            target: &target,
             linker: args.linker.as_deref(),
             jobs: args.jobs,
             build_dir: &root,
@@ -339,6 +356,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
         &compile::Options {
             profile_name: args.profile.clone(),
             profile,
+            target: target.clone(),
             bins: args.bins.clone(),
             libs: args.libs.clone(),
             linker: args.linker.clone(),
@@ -349,6 +367,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
             upstream: rene::fresh::root_upstream_digests(
                 &graph,
                 &root.join(&args.profile).join("deps"),
+                &target,
             ),
             jobs: args.jobs,
         },
@@ -452,13 +471,19 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
         }
         if args.commands {
             let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
-            let bake = fresh::recorded_bake(held.as_ref())?;
+            let requested_target = args
+                .target
+                .as_deref()
+                .or(profile.default_target_triple.as_deref());
+            let target = rt::resolve_target(requested_target).await?;
+            let bake = fresh::recorded_bake(held.as_ref(), &target)?;
             let states = fresh::states(
                 &graph,
                 &fresh::Context {
                     dir: held.as_ref(),
                     profile_name: &args.profile,
                     profile: &profile,
+                    target: &target,
                     linker: args.linker.as_deref(),
                     build_dir: &root,
                 },
@@ -468,6 +493,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                 &plan::Options {
                     profile_name: &args.profile,
                     profile: &profile,
+                    target: &target,
                     linker: args.linker.as_deref(),
                     build_dir: &root,
                 },

@@ -188,7 +188,8 @@ unsafe extern "C" {
     /// Monomorphizes and compiles polymorphic FFI operations in the module.
     /// Returns true on success. `rust_path` and the `lib_dirs` array (of
     /// `n_lib_dirs` entries) name the rustc executable and the Rust package
-    /// search directories explicitly; pass an empty string ref / an empty
+    /// search directories explicitly; `target_triple` is passed to
+    /// `rustc --target` when non-empty. Pass an empty string ref / an empty
     /// array to fall back to the `REUSSIR_RUSTC` / `REUSSIR_RUSTC_DEPS`
     /// environment variables and the built-in probe list.
     pub fn reussirCompilePolymorphicFFI(
@@ -197,6 +198,7 @@ unsafe extern "C" {
         rust_path: MlirStringRef,
         lib_dirs: *const MlirStringRef,
         n_lib_dirs: isize,
+        target_triple: MlirStringRef,
     ) -> bool;
 
     /// Gathers the LLVM bitcode modules attached to compiled operations into a

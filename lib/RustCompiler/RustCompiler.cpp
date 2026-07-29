@@ -22,6 +22,7 @@
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/FileUtilities.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/Path.h>
 #include <llvm/Support/Program.h>
@@ -76,8 +77,13 @@ llvm::StringRef findRustCompiler(llvm::StringRef preferred) {
   // first check if REUSSIR_RUSTC is set
   if (const char *env_p = std::getenv("REUSSIR_RUSTC"))
     return env_p;
+  // A bare `rustc` is the normal installation shape. ExecuteAndWait requires
+  // a resolved program path, so recognize PATH here before trying the
+  // project-relative fallback locations below.
+  if (llvm::sys::findProgramByName(RUSTC_HINTS.front()))
+    return RUSTC_HINTS.front();
   // locate rustc in known paths
-  for (const auto &path : RUSTC_HINTS) {
+  for (const auto &path : llvm::drop_begin(RUSTC_HINTS)) {
     if (llvm::sys::fs::exists(path))
       return path;
   }
@@ -121,6 +127,16 @@ std::unique_ptr<llvm::MemoryBuffer> compileRustSourceToBitcode(
     llvm::ArrayRef<llvm::StringRef> additionalArgs, llvm::StringRef rustcPath,
     llvm::ArrayRef<llvm::StringRef> rustcDepsDirs) {
   rustcPath = findRustCompiler(rustcPath);
+  // ExecuteAndWait does not search PATH: its Program parameter is expected to
+  // have come from findProgramByName. Resolve explicit/env bare names as well
+  // as the default discovery result before spawning.
+  auto resolvedRustc = llvm::sys::findProgramByName(rustcPath);
+  if (!resolvedRustc) {
+    llvm::errs() << "Could not find rustc executable `" << rustcPath << "`\n";
+    return nullptr;
+  }
+  std::string rustcExecutable = *resolvedRustc;
+  rustcPath = rustcExecutable;
   llvm::SmallVector<std::string> rustcDepsPaths =
       findRustCompilerDeps(rustcDepsDirs);
   if (rustcPath.empty() || rustcDepsPaths.empty()) {
@@ -139,12 +155,18 @@ std::unique_ptr<llvm::MemoryBuffer> compileRustSourceToBitcode(
   llvm::SmallString<32> resultBitcodeFilePath;
   std::error_code srcFileCode = llvm::sys::fs::createUniqueFile(
       "reussir_rust_module_%%%%%%.rs", srcFilePath);
-  std::error_code resultBitcodeFileCode = llvm::sys::fs::createUniqueFile(
-      "reussir_rust_module_%%%%%%.bc", resultBitcodeFilePath);
-  if (srcFileCode || resultBitcodeFileCode) {
-    llvm::errs() << "Could not create temporary files for Rust compilation\n";
+  if (srcFileCode) {
+    llvm::errs() << "Could not create temporary Rust source file\n";
     return nullptr;
   }
+  llvm::FileRemover srcFileRemover(srcFilePath);
+  std::error_code resultBitcodeFileCode = llvm::sys::fs::createUniqueFile(
+      "reussir_rust_module_%%%%%%.bc", resultBitcodeFilePath);
+  if (resultBitcodeFileCode) {
+    llvm::errs() << "Could not create temporary Rust bitcode file\n";
+    return nullptr;
+  }
+  llvm::FileRemover resultBitcodeFileRemover(resultBitcodeFilePath);
   {
     int fd = -1;
     std::error_code code = llvm::sys::fs::openFileForWrite(srcFilePath, fd);
@@ -169,16 +191,21 @@ std::unique_ptr<llvm::MemoryBuffer> compileRustSourceToBitcode(
   for (auto arg : additionalArgs)
     args.push_back(arg);
   // Execute rustc
-  int code = llvm::sys::ExecuteAndWait(rustcPath, args);
+  std::string executionError;
+  int code =
+      llvm::sys::ExecuteAndWait(rustcPath, args, std::nullopt, {},
+                                /*SecondsToWait=*/0, /*MemoryLimit=*/0,
+                                &executionError);
   if (code != 0) {
     llvm::errs() << "Rust compilation failed with exit code " << code << "\n";
+    if (!executionError.empty())
+      llvm::errs() << "Failed to execute rustc: " << executionError << "\n";
     llvm::errs() << "Full command: " << rustcPath << " ";
-    llvm::interleave(args, llvm::errs(), " ");
+    // args[0] is argv[0], not a second command-line argument.
+    llvm::interleave(llvm::drop_begin(args), llvm::errs(), " ");
     llvm::errs() << "\n";
     return nullptr;
   }
-  if (auto err = llvm::sys::fs::remove(srcFilePath))
-    llvm::errs() << "Failed to discard source file\n";
   // Load the bitcode file into a buffer
   std::unique_ptr<llvm::MemoryBuffer> buffer;
   {
@@ -194,8 +221,6 @@ std::unique_ptr<llvm::MemoryBuffer> compileRustSourceToBitcode(
     buffer = std::move(*bufferOrErr);
 #endif
   }
-  if (auto err = llvm::sys::fs::remove(resultBitcodeFilePath))
-    llvm::errs() << "Failed to discard bitcode file\n";
   return buffer;
 }
 

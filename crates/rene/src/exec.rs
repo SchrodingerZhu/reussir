@@ -22,13 +22,13 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
+use crate::compile;
 use crate::db::BuildDir;
 use crate::deps;
 use crate::fresh;
 use crate::manifest::Profile;
 use crate::plan;
 use crate::pool::Pool;
-use crate::compile;
 use crate::resolve::Graph;
 use crate::rt::RtArtifacts;
 
@@ -36,6 +36,7 @@ use crate::rt::RtArtifacts;
 pub struct Options<'a> {
     pub profile_name: &'a str,
     pub profile: &'a Profile,
+    pub target: &'a str,
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<&'a Path>,
     /// `rene build -j`: the process admission bound (held by the [`Pool`]).
@@ -140,6 +141,7 @@ async fn build_node(
         dir: Some(dir),
         profile_name: opts.profile_name,
         profile: opts.profile,
+        target: opts.target,
         linker: opts.linker,
         build_dir: opts.build_dir,
     };
@@ -169,6 +171,7 @@ async fn build_node(
     let plan_opts = plan::Options {
         profile_name: opts.profile_name,
         profile: opts.profile,
+        target: opts.target,
         linker: opts.linker,
         build_dir: opts.build_dir,
     };

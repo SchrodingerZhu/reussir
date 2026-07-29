@@ -26,7 +26,7 @@ module attributes { dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<64> :
 
   // Test function that applies multiple arguments to a closure
   // CHECK-LABEL: define ptr @apply_multiple_args(ptr %0, i32 %1, i64 %2) {
-  // CHECK: %4 = getelementptr { i32, { ptr, ptr } }, ptr %0, i32 0, i32 1, i32 1
+  // CHECK: %4 = getelementptr { i32, { ptr, ptr, i64 } }, ptr %0, i32 0, i32 1, i32 1
   // CHECK: %5 = load ptr, ptr %4, align 8
   // CHECK: %6 = ptrtoint ptr %5 to i64
   // CHECK: %7 = sub i64 0, %6

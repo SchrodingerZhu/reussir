@@ -38,13 +38,15 @@ namespace reussir {
 // monomorphizing their templates and compiling them to LLVM bitcode.
 // `rustPath` and `libDirs`, when non-empty, name the `rustc` executable and
 // the package search directories explicitly (see `findRustCompiler` /
-// `findRustCompilerDeps` for the fallback discovery).
+// `findRustCompilerDeps` for the fallback discovery). A non-empty
+// `targetTriple` is passed to the texture compiler as `rustc --target`.
 //
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult
 compilePolymorphicFFI(mlir::ModuleOp moduleOp, bool optimized = false,
                       llvm::StringRef rustPath = {},
-                      llvm::ArrayRef<llvm::StringRef> libDirs = {});
+                      llvm::ArrayRef<llvm::StringRef> libDirs = {},
+                      llvm::StringRef targetTriple = {});
 
 //===----------------------------------------------------------------------===//
 // Variant debug-info fixup (post-translation)

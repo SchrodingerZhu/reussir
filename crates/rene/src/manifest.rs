@@ -143,8 +143,8 @@ pub struct Profile {
     pub sanitizers: Vec<String>,
     /// `rrc --nullary-variant-encoding`.
     pub nullary_variant_encoding: Option<String>,
-    /// `rrc --target-triple`.
-    pub target_triple: Option<String>,
+    /// Default machine target when `rene build --target` is absent.
+    pub default_target_triple: Option<String>,
     /// `rrc --target-cpu`.
     pub target_cpu: Option<String>,
     /// `rrc --target-features`.
@@ -182,7 +182,7 @@ impl Profile {
             runtime_linkage,
             linker,
             nullary_variant_encoding,
-            target_triple,
+            default_target_triple,
             target_cpu,
             target_features,
             reuse_across_call,
@@ -435,7 +435,12 @@ mod tests {
                 archive = { kind = 'staticlib },
               },
               profiles = {
-                release = { lto = "thin", codegen_units = 4, link_args = ["-lm"] },
+                release = {
+                  lto = "thin",
+                  codegen_units = 4,
+                  link_args = ["-lm"],
+                  default_target_triple = "wasm32-unknown-unknown",
+                },
                 asan = { sanitizers = ["address"], nullary_variant_encoding = "arch-independent" },
               },
             }
@@ -450,6 +455,10 @@ mod tests {
         assert_eq!(m.profiles["release"].lto.as_deref(), Some("thin"));
         assert_eq!(m.profiles["release"].codegen_units, Some(4));
         assert_eq!(m.profiles["release"].link_args, ["-lm"]);
+        assert_eq!(
+            m.profiles["release"].default_target_triple.as_deref(),
+            Some("wasm32-unknown-unknown")
+        );
         assert_eq!(m.profiles["asan"].sanitizers, ["address"]);
     }
 
@@ -498,6 +507,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for manifest in [
             r#"{ package = { name = "p" }, profiles = { dev = { optt = "none" } } }"#,
+            r#"{ package = { name = "p" }, profiles = { dev = { target_triple = "x" } } }"#,
             r#"{ package = { name = "p" }, targets = { t = { kind = 'executable, knid = 1 } } }"#,
             r#"{ package = { name = "p" }, targets = { t = { kind = "exe" } } }"#,
         ] {
