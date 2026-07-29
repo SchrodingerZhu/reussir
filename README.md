@@ -229,6 +229,20 @@ The integration suite covers backend conversions, reuse-related passes, and
 frontend end-to-end examples under `tests/integration/`. Build `rrepl` first
 (`cmake --build build --target rrepl`) to include the `repl-rs` suite.
 
+Some suites need tools the build does not require. Each is a lit feature, and
+a test that names a missing one reports `UNSUPPORTED` instead of failing:
+`lldb`/`gdb` (the debug-info suite), `openmp` (the multithreaded e2e drivers),
+and `wasmer` plus `wasip1-threads` (the WebAssembly suite, which cross-builds a
+package for `wasm32-wasip1-threads` and runs it with threads). To enable the
+last one:
+
+```bash
+rustup target add wasm32-wasip1-threads   # the target's standard library
+curl https://get.wasmer.io -sSfL | sh     # the engine, or your package manager
+# ... then re-run cmake so it finds wasmer (or point at one explicitly):
+cmake -S . -B build -G Ninja -DREUSSIR_WASMER=/path/to/wasmer
+```
+
 ## Status
 
 Reussir is an active research compiler. The design space is still moving, but

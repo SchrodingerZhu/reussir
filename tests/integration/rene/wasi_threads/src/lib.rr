@@ -1,0 +1,202 @@
+// The thread-safety design on WebAssembly: the same shared, atomically
+// counted map as `frontend/cells_sync_parallel_e2e.rr`, but driven by real
+// `wasm32-wasip1-threads` threads instead of OpenMP — and with the driver
+// written in Rust *inside the program*, as a polyffi texture, so the whole
+// thing is one `rene build` and one wasm module.
+//
+// A `Mutex<Arc<Map>>` is shared across the workers; each commits a strided
+// slice of the keyspace as a short critical section running a pure
+// path-copying insert, and the final fold proves no update was lost and no
+// count was torn. Everything that makes that sound on a native target has
+// to hold here too: the atomic reference counts become wasm atomic
+// read-modify-writes (hence the profile's `+atomics`), and the lock's
+// contended path becomes `memory.atomic.wait32`/`notify` through the
+// runtime's futex (mlir-sync's wasm backend).
+//
+// The worker body is exported over the C ABI: multi-argument trampolines
+// take a pointer to a packed argument struct, and arguments are owned, so
+// the driver splits its one reference into N + 1 with `dup` (threading
+// `keep` forward) — one per worker plus one for the final fold, each
+// consumed exactly once.
+
+import core::intrinsic::cell;
+
+pub enum Map {
+    Tip,
+    Node(i64, i64, Map, Map)
+}
+
+// Path-copying insert in the colored world: untouched subtrees are shared,
+// and a uniquely held path is updated in place by Perceus reuse.
+fn insert(m: Arc<Map>, k: i64, v: i64) -> Arc<Map> {
+    match m {
+        Map::Tip => Arc<Map>::Node{k, v, Arc<Map>::Tip, Arc<Map>::Tip},
+        Map::Node(nk, nv, l, r) => {
+            if k < nk {
+                Arc<Map>::Node{nk, nv, insert(l, k, v), r}
+            } else {
+                if k > nk {
+                    Arc<Map>::Node{nk, nv, l, insert(r, k, v)}
+                } else {
+                    Arc<Map>::Node{nk, v, l, r}
+                }
+            }
+        }
+    }
+}
+
+fn total(m: Arc<Map>) -> i64 {
+    match m {
+        Map::Tip => 0,
+        Map::Node(_, nv, l, r) => nv + total(l) + total(r)
+    }
+}
+
+pub fn make_stats() -> Mutex<Arc<Map>> {
+    cell::alloc<Mutex<Arc<Map>>>(Arc<Map>::Tip)
+}
+extern "C" trampoline "make_stats_ffi" = make_stats;
+
+// Split one owned handle into two: the ctor references `s` twice, so the
+// returned pair holds two live references. Both fields carry the same
+// atomically counted cell — a `[value]` struct, so the pair is returned by
+// value (two pointers, no heap box) and the driver consumes each handle
+// exactly once.
+pub struct [value] Pair {
+    keep: Mutex<Arc<Map>>,
+    extra: Mutex<Arc<Map>>
+}
+
+pub fn dup(s: Mutex<Arc<Map>>) -> Pair {
+    Pair { keep: s, extra: s }
+}
+extern "C" trampoline "dup_ffi" = dup;
+
+// One worker's whole job: commit a strided slice of the keyspace, each
+// commit a short critical section running the pure insert.
+fn loop_insert(stats: Mutex<Arc<Map>>, k: i64, stride: i64, upto: i64) -> i64 {
+    if k < upto {
+        cell::rmw(stats, |m| insert(m, k, k));
+        loop_insert(stats, k + stride, stride, upto)
+    } else {
+        0
+    }
+}
+
+pub fn worker(stats: Mutex<Arc<Map>>, tid: i64, stride: i64, upto: i64) -> i64 {
+    loop_insert(stats, tid, stride, upto)
+}
+extern "C" trampoline "worker_ffi" = worker;
+
+// The final fold over a snapshot, consuming the last reference.
+pub fn grand_total(stats: Mutex<Arc<Map>>) -> i64 {
+    total(cell::get(stats))
+}
+extern "C" trampoline "grand_total_ffi" = grand_total;
+
+// The driver, in Rust: `std::thread` on this target is WASI's
+// `thread-spawn`, so these are real threads sharing the module's memory.
+// It reaches the program through the exported trampolines above — the same
+// C boundary the OpenMP driver of `cells_sync_parallel_e2e.c` uses, with a
+// handle appearing as an opaque pointer.
+extern "rust" [{
+    // A trampoline's C spelling: a handle is an opaque pointer, a
+    // multi-argument trampoline takes a pointer to a packed argument
+    // struct, and a `[value]` struct result returns through a leading
+    // out-pointer. A single scalar argument with a scalar result passes
+    // directly.
+    #[repr(C)]
+    struct WorkerArgs {
+        stats: *mut std::ffi::c_void,
+        tid: i64,
+        stride: i64,
+        upto: i64,
+    }
+    #[repr(C)]
+    struct DupArg {
+        s: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    struct DupPair {
+        keep: *mut std::ffi::c_void,
+        extra: *mut std::ffi::c_void,
+    }
+
+    unsafe extern "C" {
+        fn make_stats_ffi() -> *mut std::ffi::c_void;
+        fn dup_ffi(out: *mut DupPair, arg: *mut DupArg);
+        fn worker_ffi(args: *mut WorkerArgs) -> i64;
+        fn grand_total_ffi(stats: *mut std::ffi::c_void) -> i64;
+    }
+
+    /// One owned reference to the shared cell, on its way to a worker.
+    struct Handle(*mut std::ffi::c_void);
+
+    // SAFETY: the cell is `Mutex<Arc<Map>>` — an atomically counted handle
+    // to a lock-guarded value. Moving one *owned* reference to another
+    // thread is precisely what it is for, and the reference this carries is
+    // owned (it came from `dup`, and only this thread's `worker_ffi` call
+    // consumes it).
+    unsafe impl Send for Handle {}
+}];
+
+// Run the whole parallel commit and return the fold over the result. Panics
+// (in Rust) rather than returning junk: a lost update is a wrong answer, and
+// the test wants to see it as a failure, not as a smaller number.
+#[ffi(import)]
+fn run_workers(threads: i64, keys: i64) -> i64 [{
+    {
+        // One owned reference to the shared cell...
+        let mut keep = unsafe { make_stats_ffi() };
+        // ...split into one per worker, threading `keep` forward: `dup`
+        // returns two references where there was one, so the count ends at
+        // `threads + 1`.
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let mut arg = DupArg { s: keep };
+            let mut out = DupPair {
+                keep: std::ptr::null_mut(),
+                extra: std::ptr::null_mut(),
+            };
+            unsafe { dup_ffi(&mut out, &mut arg) };
+            handles.push(Handle(out.extra));
+            keep = out.keep;
+        }
+        let workers: Vec<_> = handles
+            .into_iter()
+            .enumerate()
+            .map(|(tid, handle)| {
+                std::thread::spawn(move || {
+                    let mut args = WorkerArgs {
+                        stats: handle.0,
+                        tid: tid as i64,
+                        stride: threads,
+                        upto: keys,
+                    };
+                    unsafe { worker_ffi(&mut args) }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("a worker thread panicked");
+        }
+        // The last reference, consumed by the fold.
+        unsafe { grand_total_ffi(keep) }
+    }
+}];
+
+#[ffi(import)]
+fn report(got: i64, want: i64) [{
+    {
+        assert_eq!(got, want, "an update was lost");
+        println!("parallel shared map: {got}");
+    }
+}];
+
+// Every key in `0..KEYS` is committed exactly once, with its own value.
+#[main]
+pub fn entry() {
+    let keys: i64 = 256;
+    let got = run_workers(4, keys);
+    report(got, keys * (keys - 1) / 2);
+}

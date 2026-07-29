@@ -100,6 +100,44 @@ if config.gdb_path and os.path.exists(config.gdb_path):
     config.substitutions.append((r'%gdb',
                                  '%s --batch -nx' % sh_path(config.gdb_path)))
 
+# WebAssembly (rene/wasi_threads.rr): a package cross-built for
+# `wasm32-wasip1-threads` and run on a real engine. Two independent things
+# have to be present, so they are two features.
+#
+# `wasip1-threads` — the rustc this build compiles against ships the
+# target's standard library. `rene` bakes `reussir-rt` for the target with
+# cargo, `rrc` compiles every polyffi texture for it, and the launcher link
+# is another rustc invocation: all three need `rustup target add
+# wasm32-wasip1-threads`. `--print target-libdir` renders the path whether
+# or not it is populated, so the rlibs are what decide.
+def _has_wasip1_threads_std():
+    import subprocess
+    rustc = config.environment.get('REUSSIR_RUSTC')
+    if not rustc:
+        return False
+    try:
+        printed = subprocess.run(
+            [rustc, '--print', 'target-libdir',
+             '--target', 'wasm32-wasip1-threads'],
+            capture_output=True, text=True, timeout=60)
+    except Exception:
+        return False
+    libdir = printed.stdout.strip()
+    if printed.returncode != 0 or not libdir or not os.path.isdir(libdir):
+        return False
+    return any(name.startswith('libstd-') for name in os.listdir(libdir))
+
+if _has_wasip1_threads_std():
+    config.available_features.add('wasip1-threads')
+
+# `wasmer` — the engine that runs the module (tests/integration/CMakeLists.txt
+# locates it; `-DREUSSIR_WASMER=` pins one). The threads proposal is on by
+# default there, so `run` needs no further flags.
+if config.wasmer_path and os.path.exists(config.wasmer_path):
+    config.available_features.add('wasmer')
+    config.substitutions.append((r'%wasmer',
+                                 '%s run' % sh_path(config.wasmer_path)))
+
 # OpenMP: multithreaded e2e drivers (the atomic-rc suite) need `-fopenmp` and
 # a runtime rpath to wherever the toolchain keeps libomp. Probe by linking a
 # trivial parallel program; on failure the tests are unsupported rather than

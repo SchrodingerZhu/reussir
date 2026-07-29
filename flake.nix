@@ -193,6 +193,15 @@
             pkgs.zlib
             pkgs.libxml2
             pkgs.gdb
+
+            # The engine the WebAssembly lit suite runs its modules on
+            # (tests/integration/rene/wasi_threads.rr). That suite also
+            # wants the target's Rust standard library, which this pinned
+            # toolchain does not carry — `rustup target add
+            # wasm32-wasip1-threads` in a rustup shell, or add the target
+            # to the fenix toolchain above. Missing either one, the suite
+            # reports UNSUPPORTED rather than failing.
+            pkgs.wasmer
           ];
 
           # libomp: the OpenMP e2e lit tests probe `clang -fopenmp` and are

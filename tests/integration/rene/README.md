@@ -16,3 +16,4 @@ program exercises.
 | `calc.rr`      | interpreter app + polyffi I/O dep: lexer/parser/eval modules |
 | `inventory.rr` | four deps, two polyffi units, cross-package generics         |
 | `stats.rr`     | float pipeline + polyffi vector I/O, multi-unit release      |
+| `wasi_threads.rr` | cross build to `wasm32-wasip1-threads`, run on wasmer     |
