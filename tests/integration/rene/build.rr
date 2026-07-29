@@ -61,7 +61,7 @@
 // executable its WebAssembly suffix.
 // RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands --target wasm32-wasip1 | %FileCheck %s --check-prefix=WASM
 
-// WASM: "{{.*[/\\]}}dev{{[/\\]}}demo.wasm"
+// WASM: "{{.*[/\\]+}}dev{{[/\\]+}}demo.wasm"
 // WASM: "--target-triple",
 // WASM-NEXT: "wasm32-wasip1",
 // WASM: "target": "wasm32-wasip1"
