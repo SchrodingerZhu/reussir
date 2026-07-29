@@ -563,11 +563,10 @@ def ReussirRcBoxType
     // variant overlays the refcount on the element's leading count slot, so
     // box pointer == element pointer.
     bool isHeaderFused() const;
-    size_t getElementIndex() const {
-      if (isRegional())
-        return 3;
-      return isHeaderFused() ? 0 : 1;
-    }
+    // Canonical physical header fields, shared by data-layout computation and
+    // LLVM type conversion.
+    llvm::SmallVector<mlir::Type> getHeaderTypes() const;
+    size_t getElementIndex() const { return getHeaderTypes().size(); }
   }];
 }
 
@@ -612,6 +611,15 @@ def ReussirClosureBoxType
   let extraClassDeclaration = [{
     static constexpr size_t VTABLE_INDEX = 0;
     static constexpr size_t ARG_CURSOR_INDEX = 1;
+    static constexpr size_t PAYLOAD_TAIL_INDEX = 2;
+    static constexpr size_t PAYLOAD_INDEX_WITHOUT_PADDING = 0;
+    static constexpr size_t PAYLOAD_INDEX_WITH_PADDING = 1;
+
+    // Canonical physical header fields, shared by data-layout computation and
+    // LLVM type conversion.
+    llvm::SmallVector<mlir::Type> getHeaderTypes() const;
+    uint64_t getPayloadPadding(const ::mlir::DataLayout &dataLayout) const;
+    size_t getPayloadIndex(const ::mlir::DataLayout &dataLayout) const;
   }];
 }
 

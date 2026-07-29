@@ -2224,6 +2224,8 @@ struct ReussirClosureCreateOpConversionPattern
 
     // Get the RcBox<ClosureBox> type
     RcBoxType rcBoxType = op.getRcClosureBoxType();
+    auto closureBoxType =
+        llvm::cast<ClosureBoxType>(rcBoxType.getElementType());
     auto convertedRcBoxType = converter->convertType(rcBoxType);
 
     // Token is the pointer to RcBox<ClosureBox>
@@ -2245,15 +2247,17 @@ struct ReussirClosureCreateOpConversionPattern
         mlir::LLVM::StoreOp::create(rewriter, loc, vtableAddr, vtablePtrSlot);
     vtableStore.setInvariantGroup(true);
 
-    // 3. Assign cursor (GEP[0, 1, 1]) to the value of GEP[0, 1, 2]
-    //    (cursor points to the start of payload area)
+    // 3. Assign cursor to the payload aggregate, past any layout padding.
     auto cursorSlot = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedRcBoxType, tokenPtr,
         llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1,
                                            ClosureBoxType::ARG_CURSOR_INDEX});
+    int64_t payloadIndex = static_cast<int64_t>(closureBoxType.getPayloadIndex(
+        getDataLayout(*converter, op.getOperation())));
     auto payloadStart = mlir::LLVM::GEPOp::create(
         rewriter, loc, llvmPtrType, convertedRcBoxType, tokenPtr,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1, 2});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{
+            0, 1, ClosureBoxType::PAYLOAD_TAIL_INDEX, payloadIndex});
     mlir::LLVM::StoreOp::create(rewriter, loc, payloadStart, cursorSlot);
 
     // Replace with the token pointer (which is now a valid RcPtr<Closure>)
@@ -2575,13 +2579,14 @@ public:
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
 
     // This operation assumes that the closure is already uniquely owned.
-    // First, use GEP[0, 1, ARG_CURSOR_INDEX] and load op to read the cursor
-    // RcBox {
-    //    size_t refcnt;
-    //    {
-    //        void* vtable;
-    //        void* cursor;
-    //        // trailing payload
+    // First, load the cursor from the pointer-aligned header.
+    // ClosureBox {
+    //    void* vtable;
+    //    void* cursor;
+    //    packed {
+    //        // Present only when required by DataLayout.
+    //        i8 padding[N];
+    //        Payload payload;
     //    };
     // }
     auto cursorPtr = mlir::LLVM::GEPOp::create(
@@ -2753,15 +2758,20 @@ struct ReussirClosureInspectPayloadOpConversionPattern
         llvm::cast<ClosureBoxType>(refType.getElementType());
 
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto structType = getTypeConverter()->convertType(closureBoxType);
+    auto converter =
+        static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+    auto structType = converter->convertType(closureBoxType);
 
-    // GEP[0, N+2] where N is the payload index
-    // ClosureBox layout: { vtable (0), cursor (1), payload... (2+) }
-    int64_t gepIndex =
-        static_cast<int64_t>(op.getPayloadIndex().getZExtValue()) + 2;
+    // The payload keeps its normal aggregate layout inside the packed tail.
+    int64_t payloadFieldIndex =
+        static_cast<int64_t>(op.getPayloadIndex().getZExtValue());
+    int64_t payloadIndex = static_cast<int64_t>(closureBoxType.getPayloadIndex(
+        getDataLayout(*converter, op.getOperation())));
     rewriter.replaceOpWithNewOp<mlir::LLVM::GEPOp>(
         op, llvmPtrType, structType, adaptor.getClosureBoxRef(),
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, gepIndex});
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{0,
+                                           ClosureBoxType::PAYLOAD_TAIL_INDEX,
+                                           payloadIndex, payloadFieldIndex});
     return mlir::success();
   }
 };
