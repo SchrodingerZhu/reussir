@@ -6,4 +6,4 @@
 // RUN: %FileCheck %s --check-prefix=HELP < %t.help
 
 // HELP: Reussir REPL (Rust pipeline).
-// HELP: Usage: rrepl [OPTIONS]
+// HELP: Usage: rrepl{{(\.exe)?}} [OPTIONS]
