@@ -742,22 +742,17 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     let out = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    // Stdout lists the artifacts, BTreeMap (declaration-name) order, named
-    // for the host platform (these tests are unix-only, so the split is
-    // Apple vs ELF).
+    // Stdout lists the artifacts in BTreeMap (declaration-name) order. The
+    // fake rustc reports `x86_64-unknown-fake`, an ELF-like target regardless
+    // of the platform running this test.
     let stdout = String::from_utf8(out.stdout).unwrap();
     let release = root.join("release");
-    let dylib = if cfg!(target_vendor = "apple") {
-        "libshared.dylib"
-    } else {
-        "libshared.so"
-    };
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),
         [
             release.join("libarchive.a").display().to_string(),
             release.join("demo").display().to_string(),
-            release.join(dylib).display().to_string(),
+            release.join("libshared.so").display().to_string(),
         ]
     );
     for line in stdout.lines() {
@@ -882,15 +877,10 @@ fn build_selects_bins_and_libs_and_refuses_invalid_names() {
     );
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let stdout = String::from_utf8(out.stdout).unwrap();
-    let dylib = if cfg!(target_vendor = "apple") {
-        "libshared.dylib"
-    } else {
-        "libshared.so"
-    };
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),
         [
-            root.join("dev").join(dylib).display().to_string(),
+            root.join("dev/libshared.so").display().to_string(),
             root.join("dev").join("libarchive.a").display().to_string(),
         ]
     );
@@ -980,18 +970,27 @@ fn build_bakes_the_runtime_with_the_host_toolchain() {
 
     let stdout = String::from_utf8(out.stdout).unwrap();
     let libdirs: Vec<PathBuf> = stdout.lines().map(PathBuf::from).collect();
-    assert_eq!(libdirs.len(), 2, "stdout: {stdout}");
+    assert_eq!(libdirs.len(), 3, "stdout: {stdout}");
     // The detected rust libdir holds the standard library…
     assert!(libdirs[0].is_dir());
-    // …and the baked deps dir holds the runtime rlib polyffi links against.
-    assert!(libdirs[1].is_dir());
+    // …while explicit `--target` keeps host proc macros and target libraries
+    // in separate Cargo deps directories. One holds the runtime rlib polyffi
+    // links against; ordering varies with the target triple's spelling.
+    assert!(libdirs[1..].iter().all(|dir| dir.is_dir()));
     assert!(
-        std::fs::read_dir(&libdirs[1])
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|e| e.file_name().to_string_lossy().starts_with("libreussir_rt")),
-        "no libreussir_rt in {}",
-        libdirs[1].display()
+        libdirs[1..].iter().any(|dir| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("libreussir_rt")
+                })
+        }),
+        "no libreussir_rt in {:#?}",
+        &libdirs[1..]
     );
 }
 
