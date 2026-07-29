@@ -272,28 +272,41 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
   converter.addConversion([&converter](RcBoxType type) -> mlir::Type {
     // A box of a fused-header variant IS the variant record: its refcount
     // lives in the record's leading count slot.
-    if (auto recordTy = llvm::dyn_cast<RecordType>(type.getElementType());
-        recordTy && recordTy.hasFusedHeader() && !type.isRegional())
-      return converter.convertType(recordTy);
+    if (type.isHeaderFused())
+      return converter.convertType(type.getElementType());
     llvm::SmallVector<mlir::Type> members;
-    auto ptrTy = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    if (type.isRegional()) {
-      members.push_back(ptrTy);
-      members.push_back(ptrTy);
-      members.push_back(ptrTy);
-    } else
-      members.push_back(mlir::IntegerType::get(type.getContext(), 32));
+    for (mlir::Type headerType : type.getHeaderTypes())
+      members.push_back(converter.convertType(headerType));
     members.push_back(converter.convertType(type.getElementType()));
     return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
   });
 
-  converter.addConversion([&converter](ClosureBoxType type) {
-    llvm::SmallVector<mlir::Type> members;
-    auto ptrTy = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    members.push_back(ptrTy);
-    members.push_back(ptrTy);
+  converter.addConversion([&converter, dataLayout](ClosureBoxType type) {
+    llvm::SmallVector<mlir::Type> payloadMembers;
     for (auto payloadType : type.getPayloadTypes())
-      members.push_back(converter.convertType(payloadType));
+      payloadMembers.push_back(converter.convertType(payloadType));
+
+    auto payloadStruct = mlir::LLVM::LLVMStructType::getLiteral(
+        type.getContext(), payloadMembers);
+
+    // Keep the closure box pointer-aligned regardless of the payload. Packing
+    // only the payload tail prevents the normally laid-out payload aggregate
+    // from raising the box alignment; explicit padding places that aggregate
+    // at its required address.
+    llvm::SmallVector<mlir::Type> tailMembers;
+    uint64_t payloadPadding = type.getPayloadPadding(*dataLayout);
+    if (payloadPadding != 0) {
+      auto i8Ty = mlir::IntegerType::get(type.getContext(), 8);
+      tailMembers.push_back(
+          mlir::LLVM::LLVMArrayType::get(i8Ty, payloadPadding));
+    }
+    tailMembers.push_back(payloadStruct);
+    auto payloadTail = mlir::LLVM::LLVMStructType::getLiteral(
+        type.getContext(), tailMembers, /*isPacked=*/true);
+    llvm::SmallVector<mlir::Type> members;
+    for (mlir::Type headerType : type.getHeaderTypes())
+      members.push_back(converter.convertType(headerType));
+    members.push_back(payloadTail);
     return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), members);
   });
 

@@ -275,42 +275,54 @@ mlir::Type memberStorageType(mlir::MLIRContext *context, mlir::Type rawMember,
 }
 
 //===----------------------------------------------------------------------===//
-// deriveCompoundSizeAndAlignment
+// deriveCompoundLayout
 //===----------------------------------------------------------------------===//
-std::optional<std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>>
-deriveCompoundSizeAndAlignment(mlir::MLIRContext *context,
-                               llvm::ArrayRef<mlir::Type> members,
-                               llvm::ArrayRef<bool> memberIsField,
-                               const mlir::DataLayout &dataLayout,
-                               bool memBoxInternal) {
-  llvm::TypeSize resultSize = llvm::TypeSize::getFixed(0);
+struct CompoundLayout {
+  // `dataSize` ends at the final member; `size` additionally includes the
+  // aggregate's trailing alignment padding.
+  llvm::TypeSize size;
+  llvm::TypeSize dataSize;
+  llvm::Align alignment;
+  mlir::Type memberWithLargestAlignment;
+  llvm::SmallVector<uint64_t> memberOffsets;
+};
+
+std::optional<CompoundLayout> deriveCompoundLayout(
+    mlir::MLIRContext *context, llvm::ArrayRef<mlir::Type> members,
+    llvm::ArrayRef<bool> memberIsField, const mlir::DataLayout &dataLayout,
+    bool memBoxInternal = false) {
+  uint64_t dataSize = 0;
   llvm::Align resultAlignment{1};
   mlir::Type memberWithLargestAlignment;
   if (memberIsField.size() != members.size())
     llvm::report_fatal_error(
         "Number of member capabilities must match number of members");
-  for (auto [rawMember, isField] : llvm::zip(members, memberIsField)) {
+  llvm::SmallVector<uint64_t> memberOffsets(members.size());
+  for (size_t index = 0; index < members.size(); ++index) {
+    mlir::Type rawMember = members[index];
     if (!rawMember)
       continue;
-    mlir::Type member =
-        memberStorageType(context, rawMember, isField, memBoxInternal);
+    mlir::Type member = memberStorageType(context, rawMember,
+                                          memberIsField[index], memBoxInternal);
     llvm::TypeSize memberSize = dataLayout.getTypeSize(member);
     if (!memberSize.isFixed())
       return std::nullopt;
 
     uint64_t memberAlignment = dataLayout.getTypeABIAlignment(member);
     llvm::Align memberAlign(memberAlignment);
-    uint64_t alignedSize = llvm::alignTo(resultSize, memberAlign);
+    uint64_t memberOffset = llvm::alignTo(dataSize, memberAlign);
+    memberOffsets[index] = memberOffset;
     if (memberAlign > resultAlignment) {
       resultAlignment = memberAlign;
       memberWithLargestAlignment = member;
     }
-    resultSize =
-        llvm::TypeSize::getFixed(alignedSize + memberSize.getFixedValue());
+    dataSize = memberOffset + memberSize.getFixedValue();
   }
-  resultSize = llvm::alignTo(resultSize, resultAlignment.value());
-  return std::make_optional(
-      std::make_tuple(resultSize, resultAlignment, memberWithLargestAlignment));
+  llvm::TypeSize size =
+      llvm::TypeSize::getFixed(llvm::alignTo(dataSize, resultAlignment));
+  return CompoundLayout{size, llvm::TypeSize::getFixed(dataSize),
+                        resultAlignment, memberWithLargestAlignment,
+                        std::move(memberOffsets)};
 }
 
 //===----------------------------------------------------------------------===//
@@ -638,6 +650,16 @@ bool RcBoxType::isHeaderFused() const {
   return recordTy && recordTy.hasFusedHeader() && !isRegional();
 }
 
+llvm::SmallVector<mlir::Type> RcBoxType::getHeaderTypes() const {
+  if (isHeaderFused())
+    return {};
+  if (isRegional()) {
+    auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+    return {ptrTy, ptrTy, ptrTy};
+  }
+  return {mlir::IntegerType::get(getContext(), 32)};
+}
+
 bool RecordType::hasFusedHeader() const {
   return isVariant() && getDefaultCapability() != Capability::value;
 }
@@ -700,12 +722,12 @@ RecordType::LayoutInfo RecordType::getElementRegionLayoutInfo(
       members[physical] = getMembers()[logical];
       memberIsField[physical] = getMemberIsField()[logical];
     }
-    auto derived = deriveCompoundSizeAndAlignment(getContext(), members,
-                                                  memberIsField, dataLayout);
+    auto derived =
+        deriveCompoundLayout(getContext(), members, memberIsField, dataLayout);
     if (!derived)
       llvm_unreachable("RecordType must have a fixed size");
-    auto [sizeInBytes, alignment, memberWithLargestAlignment] = *derived;
-    return {sizeInBytes, alignment, memberWithLargestAlignment};
+    return {derived->size, derived->alignment,
+            derived->memberWithLargestAlignment};
   }
   llvm::TypeSize largestSize = llvm::TypeSize::getZero();
   llvm::Align largestAlignment = llvm::Align(1);
@@ -1277,49 +1299,39 @@ void RcBoxType::print(mlir::AsmPrinter &printer) const {
 //===----------------------------------------------------------------------===//
 // RcBoxType DataLayoutInterface
 //===----------------------------------------------------------------------===//
+namespace {
+std::optional<CompoundLayout>
+deriveLayoutForRcBox(RcBoxType type, const mlir::DataLayout &dataLayout) {
+  llvm::SmallVector<mlir::Type> members = type.getHeaderTypes();
+  members.push_back(type.getElementType());
+  llvm::SmallVector<bool> memberIsField(members.size(), false);
+  return deriveCompoundLayout(type.getContext(), members, memberIsField,
+                              dataLayout,
+                              /*memBoxInternal=*/true);
+}
+} // namespace
+
 llvm::TypeSize
 RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                              mlir::DataLayoutEntryListRef params) const {
   // A box whose element carries a fused header IS the element: the refcount
   // overlays the element's leading count slot.
-  if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
-      recordTy && recordTy.hasFusedHeader() && !isRegional())
-    return dataLayout.getTypeSizeInBits(recordTy);
-  mlir::IndexType ptrWord = mlir::IndexType::get(getContext());
-  mlir::IntegerType countType = mlir::IntegerType::get(getContext(), 32);
-  auto derived =
-      isRegional()
-          ? deriveCompoundSizeAndAlignment(
-                getContext(), {ptrWord, ptrWord, ptrWord, getEleTy()},
-                {false, false, false, false}, dataLayout, true)
-          : deriveCompoundSizeAndAlignment(getContext(),
-                                           {countType, getEleTy()},
-                                           {false, false}, dataLayout, true);
+  if (isHeaderFused())
+    return dataLayout.getTypeSizeInBits(getElementType());
+  auto derived = deriveLayoutForRcBox(*this, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed size");
-  auto [sizeInBytes, _x, _y] = *derived;
-  return sizeInBytes * 8; // Convert to bits
+  return derived->size * 8; // Convert to bits
 }
 
 uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                     mlir::DataLayoutEntryListRef params) const {
-  if (auto recordTy = llvm::dyn_cast<RecordType>(getEleTy());
-      recordTy && recordTy.hasFusedHeader() && !isRegional())
-    return dataLayout.getTypeABIAlignment(recordTy);
-  mlir::IndexType ptrWord = mlir::IndexType::get(getContext());
-  mlir::IntegerType countType = mlir::IntegerType::get(getContext(), 32);
-  auto derived =
-      isRegional()
-          ? deriveCompoundSizeAndAlignment(
-                getContext(), {ptrWord, ptrWord, ptrWord, getEleTy()},
-                {false, false, false, false}, dataLayout, true)
-          : deriveCompoundSizeAndAlignment(getContext(),
-                                           {countType, getEleTy()},
-                                           {false, false}, dataLayout, true);
+  if (isHeaderFused())
+    return dataLayout.getTypeABIAlignment(getElementType());
+  auto derived = deriveLayoutForRcBox(*this, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed alignment");
-  auto [_x, alignment, _y] = *derived;
-  return alignment.value();
+  return derived->alignment.value();
 }
 
 MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
@@ -1572,23 +1584,72 @@ mlir::Type getProjectedType(mlir::Type type, bool fieldCap, Capability refCap,
 // ClosureBoxType DataLayoutInterface
 //===----------------------------------------------------------------------===//
 
+llvm::SmallVector<mlir::Type> ClosureBoxType::getHeaderTypes() const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return {ptrTy, ptrTy};
+}
+
 namespace {
-std::optional<std::tuple<llvm::TypeSize, llvm::Align, mlir::Type>>
+struct ClosureBoxLayout {
+  llvm::TypeSize size;
+  llvm::Align alignment;
+  uint64_t payloadPadding;
+};
+
+std::optional<ClosureBoxLayout>
 deriveLayoutForClosureBox(mlir::MLIRContext *context,
                           llvm::ArrayRef<mlir::Type> payloadTypes,
                           const mlir::DataLayout &dataLayout) {
-  auto ptrTy = mlir::LLVM::LLVMPointerType::get(context);
-  llvm::SmallVector<mlir::Type> members = {ptrTy, ptrTy};
-  llvm::SmallVector<bool> memberCapabilities = {false, false};
+  auto closureType = ClosureBoxType::get(context, payloadTypes);
+  llvm::SmallVector<mlir::Type> closureHeaderMembers =
+      closureType.getHeaderTypes();
+  llvm::SmallVector<bool> closureHeaderIsField(closureHeaderMembers.size(),
+                                               false);
+  auto closureHeaderLayout = deriveCompoundLayout(
+      context, closureHeaderMembers, closureHeaderIsField, dataLayout);
+  if (!closureHeaderLayout)
+    return std::nullopt;
 
-  // Add payload types
-  for (auto payloadType : payloadTypes) {
-    members.push_back(payloadType);
-    memberCapabilities.push_back(false);
-  }
-  // This is not the memory box but the payload argument
-  return deriveCompoundSizeAndAlignment(context, members, memberCapabilities,
-                                        dataLayout, /*memBoxInternal=*/false);
+  if (payloadTypes.empty())
+    return ClosureBoxLayout{closureHeaderLayout->size,
+                            closureHeaderLayout->alignment,
+                            /*payloadPadding=*/0};
+
+  llvm::SmallVector<bool> memberIsField(payloadTypes.size(), false);
+  auto payloadLayout =
+      deriveCompoundLayout(context, payloadTypes, memberIsField, dataLayout,
+                           /*memBoxInternal=*/false);
+  if (!payloadLayout)
+    return std::nullopt;
+
+  // Lay out the allocation prefix using the same nested aggregate boundary as
+  // LLVM lowering. The closure member's offset and its header's data size
+  // locate the payload cursor without encoding any target-specific offsets.
+  auto closureHeaderTy =
+      mlir::LLVM::LLVMStructType::getLiteral(context, closureHeaderMembers);
+  auto boxType = RcBoxType::get(context, closureType);
+  llvm::SmallVector<mlir::Type> prefixMembers = boxType.getHeaderTypes();
+  prefixMembers.push_back(closureHeaderTy);
+  llvm::SmallVector<bool> prefixIsField(prefixMembers.size(), false);
+  auto prefixLayout =
+      deriveCompoundLayout(context, prefixMembers, prefixIsField, dataLayout,
+                           /*memBoxInternal=*/true);
+  if (!prefixLayout)
+    return std::nullopt;
+
+  uint64_t closureOffset = prefixLayout->memberOffsets.back();
+  uint64_t payloadOffset =
+      closureOffset + closureHeaderLayout->dataSize.getFixedValue();
+  uint64_t alignedPayloadOffset =
+      llvm::alignTo(payloadOffset, payloadLayout->alignment);
+  uint64_t payloadPadding = alignedPayloadOffset - payloadOffset;
+  uint64_t closureDataSize = closureHeaderLayout->dataSize.getFixedValue() +
+                             payloadPadding +
+                             payloadLayout->size.getFixedValue();
+
+  return ClosureBoxLayout{llvm::TypeSize::getFixed(llvm::alignTo(
+                              closureDataSize, closureHeaderLayout->alignment)),
+                          closureHeaderLayout->alignment, payloadPadding};
 }
 } // namespace
 
@@ -1599,8 +1660,7 @@ ClosureBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
       deriveLayoutForClosureBox(getContext(), getPayloadTypes(), dataLayout);
   if (!derived)
     llvm_unreachable("ClosureBoxType must have a fixed size");
-  auto [sizeInBytes, _x, _y] = *derived;
-  return sizeInBytes * 8; // Convert to bits
+  return derived->size * 8; // Convert to bits
 }
 
 uint64_t
@@ -1610,8 +1670,22 @@ ClosureBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
       deriveLayoutForClosureBox(getContext(), getPayloadTypes(), dataLayout);
   if (!derived)
     llvm_unreachable("ClosureBoxType must have a fixed alignment");
-  auto [_x, alignment, _y] = *derived;
-  return alignment.value();
+  return derived->alignment.value();
+}
+
+uint64_t
+ClosureBoxType::getPayloadPadding(const mlir::DataLayout &dataLayout) const {
+  auto derived =
+      deriveLayoutForClosureBox(getContext(), getPayloadTypes(), dataLayout);
+  if (!derived)
+    llvm_unreachable("ClosureBoxType must have a fixed layout");
+  return derived->payloadPadding;
+}
+
+size_t
+ClosureBoxType::getPayloadIndex(const mlir::DataLayout &dataLayout) const {
+  return getPayloadPadding(dataLayout) == 0 ? PAYLOAD_INDEX_WITHOUT_PADDING
+                                            : PAYLOAD_INDEX_WITH_PADDING;
 }
 
 MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
