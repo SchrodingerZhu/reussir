@@ -959,7 +959,7 @@ RcBoxType RcType::getInnerBoxType() const {
   mlir::Type eleTy = getElementType();
   if (auto closureTy = llvm::dyn_cast<ClosureType>(eleTy))
     eleTy = ClosureBoxType::get(getContext(), closureTy.getInputTypes());
-  return RcBoxType::get(getContext(), getEleTy(), isFlexOrRigid);
+  return RcBoxType::get(getContext(), eleTy, isFlexOrRigid);
 }
 
 bool RcType::mayCarrySpecialPointerTag() const {
