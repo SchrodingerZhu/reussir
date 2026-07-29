@@ -51,9 +51,9 @@
 // PLAN-NEXT: "--polyffi-libdir",
 // PLAN-NEXT: "{{[^<].*}}"
 
-// An undeclared profile or target is refused by name, before any work.
+// An undeclared profile or binary target is refused by name.
 // RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --profile bogus 2>&1 | %FileCheck %s --check-prefix=NOPROFILE
-// RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --target bogus 2>&1 | %FileCheck %s --check-prefix=NOTARGET
+// RUN: %not %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --bin bogus 2>&1 | %FileCheck %s --check-prefix=NOTARGET
 
 // NOPROFILE: no profile named `bogus`
-// NOTARGET: no target named `bogus`
+// NOTARGET: no binary target named `bogus`

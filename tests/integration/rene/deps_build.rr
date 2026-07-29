@@ -17,6 +17,17 @@
 // LISTING: {{[/\\]}}dev{{[/\\]}}demo
 // LISTING: shared
 
+// Kind-specific selectors narrow the listing (and would narrow compilation
+// when a selected product were stale), leaving `--target` available for
+// machine-target selection.
+// RUN: %rene build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --bin demo %rrc_linker | %FileCheck %s --check-prefix=BIN
+// RUN: %rene build --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --lib shared %rrc_linker | %FileCheck %s --check-prefix=LIB
+
+// BIN: {{[/\\]}}dev{{[/\\]}}demo
+// BIN-NOT: shared
+// LIB: shared
+// LIB-NOT: {{[/\\]}}demo
+
 // The dependencies' interfaces and archives landed in `<profile>/deps/`.
 // RUN: ls %t.bdir/dev/deps | %FileCheck %s --check-prefix=DEPS
 // DEPS-DAG: logs.rri
