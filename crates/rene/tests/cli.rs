@@ -355,6 +355,27 @@ fn build_bakes_the_runtime_and_prints_the_libdirs() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), stdout);
     assert_eq!(fakes.runs("cargo"), 1, "the second build re-ran cargo");
     assert!(fakes.cargo_invocations()[0].contains("--target x86_64-unknown-fake"));
+
+    // A compiler at a different explicit path is a different toolchain
+    // selection even when it reports the same version. Do not restore the
+    // old cached path and hand that stale value to rrc.
+    let alternate_rustc = tmp.join("alternate-rustc");
+    std::fs::copy(&fakes.rustc, &alternate_rustc).unwrap();
+    let with_alternate = || {
+        run(rene(&["build", "--manifest-path"])
+            .arg(&manifest)
+            .arg("--build-dir")
+            .arg(&root)
+            .env("REUSSIR_RRC", &fakes.rrc)
+            .env("REUSSIR_CARGO", &fakes.cargo)
+            .env("REUSSIR_RUSTC", &alternate_rustc))
+    };
+    let out = with_alternate();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(fakes.runs("cargo"), 2, "the rustc path did not rebake");
+    let out = with_alternate();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(fakes.runs("cargo"), 2, "the new rustc path was not cached");
 }
 
 /// The profile supplies a default target, the CLI overrides it, and the two

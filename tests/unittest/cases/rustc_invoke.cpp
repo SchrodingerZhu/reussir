@@ -76,4 +76,21 @@ TEST(RustCompilerTest, ExplicitPathsOverrideDiscovery) {
   ASSERT_NE(m, nullptr);
   EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_new"), nullptr);
 }
+
+TEST(RustCompilerTest, BareCompilerNameResolvesThroughPath) {
+  primeRustDiscoveryEnv();
+  llvm::SmallVector<std::string> deps = findRustCompilerDeps();
+  ASSERT_FALSE(deps.empty());
+  llvm::SmallVector<llvm::StringRef> depDirs(deps.begin(), deps.end());
+#ifdef _WIN32
+  constexpr llvm::StringRef bareRustc = "rustc.exe";
+#else
+  constexpr llvm::StringRef bareRustc = "rustc";
+#endif
+  llvm::LLVMContext context;
+  std::unique_ptr<llvm::Module> m =
+      compileRustSource(context, EXAMPLE_SOURCE, {}, bareRustc, depDirs);
+  ASSERT_NE(m, nullptr);
+  EXPECT_NE(m->getFunction("__reussir_extern_Vec_f64_new"), nullptr);
+}
 } // namespace reussir

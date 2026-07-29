@@ -308,6 +308,11 @@ fn fresh_bake(
         return Ok(None);
     };
     let valid = artifacts.target == toolchain.target
+        // The path is part of an explicit toolchain selection. In
+        // particular, changing REUSSIR_RUSTC from a cached bare `rustc` to a
+        // rustup/Nix absolute path must not silently restore the old value
+        // merely because both binaries report the same version string.
+        && artifacts.rustc == toolchain.rustc
         && artifacts.rustc_version == toolchain.version
         && artifacts.rlib.is_file()
         && artifacts.staticlib.is_file()

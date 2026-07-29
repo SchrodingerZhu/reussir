@@ -318,21 +318,33 @@ pub(crate) fn bundled_lld_dir(rustc: &str) -> Option<PathBuf> {
 /// `REUSSIR_RUSTC` environment variable, then `rustc` on `PATH` — the same
 /// order the polyffi texture compiles resolve in.
 pub(crate) fn resolve_link_rustc(cli: &Cli) -> Result<String, String> {
-    if let Some(path) = &cli.polyffi_rust_path {
-        return resolve_rustc(path);
-    }
-    if let Some(env) = std::env::var_os("REUSSIR_RUSTC") {
-        let path = PathBuf::from(&env);
-        if !path.is_file() {
-            return Err(format!("REUSSIR_RUSTC `{}` does not exist", path.display()));
-        }
-        return Ok(path.to_string_lossy().into_owned());
+    if let Some(rustc) = configured_rustc(cli)? {
+        return Ok(rustc);
     }
     resolve_rustc(Path::new("rustc")).map_err(|_| {
         "cannot find `rustc` for the link step: pass --polyffi-rust-path or set \
          REUSSIR_RUSTC"
             .to_owned()
     })
+}
+
+/// Resolve only an explicit CLI/environment rustc, leaving `None` when the
+/// caller should use its own fallback discovery. Bare environment values
+/// search `PATH` just like `--polyffi-rust-path rustc`.
+fn configured_rustc(cli: &Cli) -> Result<Option<String>, String> {
+    if let Some(path) = &cli.polyffi_rust_path {
+        return resolve_rustc(path).map(Some);
+    }
+    if let Some(env) = std::env::var_os("REUSSIR_RUSTC") {
+        let path = PathBuf::from(&env);
+        return resolve_rustc(&path).map(Some).map_err(|_| {
+            format!(
+                "REUSSIR_RUSTC `{}` does not exist and was not found on PATH",
+                path.display()
+            )
+        });
+    }
+    Ok(None)
 }
 
 /// The directories searched for the runtime library: `--polyffi-libdir`, then
@@ -380,11 +392,11 @@ pub(crate) fn find_in_libdirs(libdirs: &[PathBuf], name: &str) -> Result<PathBuf
 /// Both are validated here so a typo fails with a clear driver diagnostic
 /// instead of a texture-compile error deep in the pipeline.
 pub(crate) fn polyffi_paths(cli: &Cli) -> Result<PolyffiPaths, String> {
-    let rust_path = cli
-        .polyffi_rust_path
-        .as_deref()
-        .map(resolve_rustc)
-        .transpose()?;
+    // Resolve configured bare names before crossing the C API. This also
+    // makes the polyffi compile and final link use exactly the same compiler
+    // selection semantics. With neither source configured, keep the backend
+    // API's legacy discovery fallback.
+    let rust_path = configured_rustc(cli)?;
     let libdirs = cli
         .polyffi_libdir
         .iter()
@@ -409,7 +421,7 @@ pub(crate) fn polyffi_paths(cli: &Cli) -> Result<PolyffiPaths, String> {
 /// else is used as given. Either way the executable must exist.
 pub(crate) fn resolve_rustc(path: &Path) -> Result<String, String> {
     let is_bare = path.components().count() == 1 && !path.is_absolute();
-    if is_bare && !path.exists() {
+    if is_bare {
         let name = path.as_os_str().to_owned();
         let found = std::env::var_os("PATH").and_then(|paths| {
             std::env::split_paths(&paths).find_map(|dir| {

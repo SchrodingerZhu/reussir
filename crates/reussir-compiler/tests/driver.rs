@@ -353,6 +353,73 @@ module {
     assert_recorded_target(&log, "wasm32-wasip1");
 }
 
+/// A bare REUSSIR_RUSTC value follows PATH before crossing into the C++
+/// polyffi compiler. A failed texture compile must not leave its temporary
+/// source or bitcode in rrc's working directory.
+#[cfg(unix)]
+#[test]
+fn resolves_bare_environment_rustc_for_polyffi() {
+    let dir = scratch("polyffi-bare-rustc");
+    let bin = dir.path().join("bin");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&bin).expect("create fake bin");
+    std::fs::create_dir_all(&work).expect("create work directory");
+    let input = dir.path().join("texture.mlir");
+    std::fs::write(
+        &input,
+        r##"
+module {
+  reussir.polyffi texture("#[unsafe(no_mangle)] pub unsafe extern \"C\" fn target_probe() {}")
+}
+"##,
+    )
+    .expect("write polyffi module");
+    shell_script(
+        &bin,
+        "rustc",
+        "printf '%s\n' \"$@\" > \"$FAKE_RUSTC_LOG\"\nexit 1\n",
+    );
+    let inherited_path = std::env::var_os("PATH");
+    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(
+        inherited_path
+            .as_deref()
+            .into_iter()
+            .flat_map(std::env::split_paths),
+    ))
+    .expect("construct PATH");
+    let log = dir.path().join("rustc-args");
+    let output = Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args([
+            input.as_os_str(),
+            "-o".as_ref(),
+            dir.path().join("texture.ll").as_os_str(),
+            "--emit".as_ref(),
+            "llvm-ir".as_ref(),
+            "--target-triple".as_ref(),
+            "wasm32-wasip1-threads".as_ref(),
+            "--polyffi-libdir".as_ref(),
+            dir.path().as_os_str(),
+        ])
+        .current_dir(&work)
+        .env("PATH", path)
+        .env("REUSSIR_RUSTC", "rustc")
+        .env("FAKE_RUSTC_LOG", &log)
+        .output()
+        .expect("spawn rrc");
+    assert!(
+        !output.status.success(),
+        "the recording rustc deliberately fails"
+    );
+    assert_recorded_target(&log, "wasm32-wasip1-threads");
+    let leftovers: Vec<_> = std::fs::read_dir(&work)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("reussir_rust_module_"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+}
+
 /// A linked product's launcher is another Rust compilation; it must use the
 /// same explicit target as LLVM and the embedded textures.
 #[cfg(unix)]
