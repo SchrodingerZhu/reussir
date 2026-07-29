@@ -273,7 +273,8 @@ fn root_state(
         &compile::Options {
             profile_name: ctx.profile_name.to_owned(),
             profile: ctx.profile.clone(),
-            targets: Vec::new(),
+            bins: Vec::new(),
+            libs: Vec::new(),
             linker: ctx.linker.map(Path::to_path_buf),
             upstream,
             jobs: None,

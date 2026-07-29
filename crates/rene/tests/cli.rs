@@ -76,6 +76,16 @@ fn build_fails_cleanly_without_a_manifest() {
 }
 
 #[test]
+fn build_help_uses_kind_specific_target_selectors() {
+    let out = run(&mut rene(&["build", "--help"]));
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(help.contains("--bin <NAME>"), "{help}");
+    assert!(help.contains("--lib <NAME>"), "{help}");
+    assert!(!help.contains("--target <"), "{help}");
+}
+
+#[test]
 fn build_refuses_a_build_dir_held_by_another_instance() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("reussir-build");
@@ -683,11 +693,11 @@ fn build_pins_the_linker_through_the_bake_and_the_compiles() {
     }
 }
 
-/// `--target` narrows the build; unknown target and profile names are
-/// refused with their names.
+/// `--bin` and `--lib` narrow the build by target kind; unknown names,
+/// kind mismatches, and unknown profiles are refused with their names.
 #[cfg(unix)]
 #[test]
-fn build_selects_targets_and_refuses_unknown_names() {
+fn build_selects_bins_and_libs_and_refuses_invalid_names() {
     let tmp_dir = tempfile::tempdir().unwrap();
     let tmp = tmp_dir.path().canonicalize().unwrap();
     let root = tmp.join("reussir-build");
@@ -695,7 +705,7 @@ fn build_selects_targets_and_refuses_unknown_names() {
     let manifest = write_targets_manifest(&tmp);
     let fakes = Fakes::new(&tmp);
 
-    let out = fakes.rene(&["build", "--target", "demo"], &manifest, &root);
+    let out = fakes.rene(&["build", "--bin", "demo"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
@@ -708,10 +718,55 @@ fn build_selects_targets_and_refuses_unknown_names() {
     assert!(compiles[0].contains("-O none"), "{}", compiles[0]);
     assert!(compiles[0].contains("-g"), "{}", compiles[0]);
 
-    let out = fakes.rene(&["build", "--target", "bogus"], &manifest, &root);
+    let out = fakes.rene(
+        &["build", "--lib", "shared", "--lib", "archive"],
+        &manifest,
+        &root,
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let dylib = if cfg!(target_vendor = "apple") {
+        "libshared.dylib"
+    } else {
+        "libshared.so"
+    };
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            root.join("dev").join(dylib).display().to_string(),
+            root.join("dev").join("libarchive.a").display().to_string(),
+        ]
+    );
+    assert_eq!(fakes.compiles().len(), 3);
+
+    let out = fakes.rene(&["build", "--bin", "bogus"], &manifest, &root);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("no target named `bogus`"),
+        stderr(&out).contains("no binary target named `bogus`"),
+        "stderr: {}",
+        stderr(&out)
+    );
+
+    let out = fakes.rene(&["build", "--lib", "bogus"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("no library target named `bogus`"),
+        "stderr: {}",
+        stderr(&out)
+    );
+
+    let out = fakes.rene(&["build", "--bin", "shared"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("select it with `--lib shared`"),
+        "stderr: {}",
+        stderr(&out)
+    );
+
+    let out = fakes.rene(&["build", "--lib", "demo"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("select it with `--bin demo`"),
         "stderr: {}",
         stderr(&out)
     );

@@ -73,9 +73,15 @@ struct BuildArgs {
     #[arg(long, default_value = "dev")]
     profile: String,
 
-    /// Build only this declared target (repeatable). Default: all of them.
-    #[arg(long = "target")]
-    targets: Vec<String>,
+    /// Build only this declared executable target (repeatable). If neither
+    /// `--bin` nor `--lib` is given, build every declared target.
+    #[arg(long = "bin", value_name = "NAME")]
+    bins: Vec<String>,
+
+    /// Build only this declared library target (repeatable). Both `dynlib`
+    /// and `staticlib` targets are libraries.
+    #[arg(long = "lib", value_name = "NAME")]
+    libs: Vec<String>,
 
     /// The linker rrc's link step hands to rustc (`rrc --linker`),
     /// overriding the profile's. Useful where rustc's own discovery resolves
@@ -333,7 +339,8 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
         &compile::Options {
             profile_name: args.profile.clone(),
             profile,
-            targets: args.targets.clone(),
+            bins: args.bins.clone(),
+            libs: args.libs.clone(),
             linker: args.linker.clone(),
             // The cone's artifact digests enter the fingerprint, so a
             // product consuming a changed upstream artifact re-fingerprints.

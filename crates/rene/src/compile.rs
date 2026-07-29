@@ -36,8 +36,11 @@ pub struct Options {
     pub profile_name: String,
     /// The resolved profile (built-in refined by the manifest's).
     pub profile: Profile,
-    /// `--target` filters; empty means every declared target.
-    pub targets: Vec<String>,
+    /// `--bin` filters; empty together with [`Self::libs`] means every
+    /// declared target.
+    pub bins: Vec<String>,
+    /// `--lib` filters; both `dynlib` and `staticlib` are libraries.
+    pub libs: Vec<String>,
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<PathBuf>,
     /// The dependency cone's artifact digests
@@ -75,23 +78,20 @@ pub async fn build(
     pool: &Pool,
 ) -> Result<Vec<Product>, String> {
     let manifest = &loaded.manifest;
-    let selected: Vec<&str> = if opts.targets.is_empty() {
+    let selected: Vec<&str> = if opts.bins.is_empty() && opts.libs.is_empty() {
         manifest.targets.keys().map(String::as_str).collect()
     } else {
-        for name in &opts.targets {
-            if !manifest.targets.contains_key(name) {
-                return Err(format!(
-                    "no target named `{name}`: the manifest declares {}",
-                    manifest
-                        .targets
-                        .keys()
-                        .map(|t| format!("`{t}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
+        for name in &opts.bins {
+            check_selected_bin(manifest, name)?;
         }
-        opts.targets.iter().map(String::as_str).collect()
+        for name in &opts.libs {
+            check_selected_library(manifest, name)?;
+        }
+        opts.bins
+            .iter()
+            .chain(&opts.libs)
+            .map(String::as_str)
+            .collect()
     };
 
     let out_dir = dir.root().join(&opts.profile_name);
@@ -168,6 +168,59 @@ pub async fn build(
         });
     }
     Ok(products)
+}
+
+fn check_selected_bin(manifest: &crate::manifest::Manifest, name: &str) -> Result<(), String> {
+    let Some(target) = manifest.targets.get(name) else {
+        return Err(unknown_selection(manifest, name, "binary", |kind| {
+            kind == TargetKind::Executable
+        }));
+    };
+    if target.kind != TargetKind::Executable {
+        return Err(format!(
+            "target `{name}` is {}, not a binary; select it with `--lib {name}`",
+            target.kind.emit()
+        ));
+    }
+    Ok(())
+}
+
+fn check_selected_library(manifest: &crate::manifest::Manifest, name: &str) -> Result<(), String> {
+    let Some(target) = manifest.targets.get(name) else {
+        return Err(unknown_selection(
+            manifest,
+            name,
+            "library",
+            TargetKind::is_library,
+        ));
+    };
+    if !target.kind.is_library() {
+        return Err(format!(
+            "target `{name}` is {}, not a library; select it with `--bin {name}`",
+            target.kind.emit()
+        ));
+    }
+    Ok(())
+}
+
+fn unknown_selection(
+    manifest: &crate::manifest::Manifest,
+    name: &str,
+    group: &str,
+    accepts: impl Fn(TargetKind) -> bool,
+) -> String {
+    let declared = manifest
+        .targets
+        .iter()
+        .filter(|(_, target)| accepts(target.kind))
+        .map(|(name, _)| format!("`{name}`"))
+        .collect::<Vec<_>>();
+    let suffix = if declared.is_empty() {
+        format!("the manifest declares no {group} targets")
+    } else {
+        format!("the manifest declares {}", declared.join(", "))
+    };
+    format!("no {group} target named `{name}`: {suffix}")
 }
 
 /// One `rrc` compile as owned data — everything a pool worker needs to

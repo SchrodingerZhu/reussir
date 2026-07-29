@@ -89,6 +89,11 @@ impl TargetKind {
         }
     }
 
+    /// Whether `rene build --lib` selects this kind.
+    pub fn is_library(self) -> bool {
+        matches!(self, TargetKind::Dynlib | TargetKind::Staticlib)
+    }
+
     /// Whether `rrc` finishes this kind with a link step — where the
     /// link-only knobs (`runtime_linkage`, `linker`, `link_args`) apply.
     pub fn is_linked(self) -> bool {
