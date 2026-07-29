@@ -36,6 +36,8 @@ pub struct Options {
     pub profile_name: String,
     /// The resolved profile (built-in refined by the manifest's).
     pub profile: Profile,
+    /// The resolved machine target: CLI, profile default, then rustc host.
+    pub target: String,
     /// `--bin` filters; empty together with [`Self::libs`] means every
     /// declared target.
     pub bins: Vec<String>,
@@ -104,11 +106,7 @@ pub async fn build(
     let mut plan = Vec::with_capacity(selected.len());
     for name in selected {
         let kind = manifest.targets[name].kind;
-        let path = out_dir.join(artifact_file(
-            name,
-            kind,
-            opts.profile.target_triple.as_deref(),
-        ));
+        let path = out_dir.join(artifact_file(name, kind, Some(&opts.target)));
         let key = tables::product_key(&opts.profile_name, name);
         let current = product_is_current(dir, &key, &fingerprint, &path)?;
         if current {
@@ -126,6 +124,7 @@ pub async fn build(
             &plan::Options {
                 profile_name: &opts.profile_name,
                 profile: &opts.profile,
+                target: &opts.target,
                 linker: opts.linker.as_deref(),
                 build_dir: dir.root(),
             },
@@ -279,6 +278,7 @@ impl Invocation {
 /// real invocation above and the planned-command dump ([`crate::plan`]).
 pub(crate) fn profile_flags(
     profile: &Profile,
+    target: &str,
     kind: TargetKind,
     linker: Option<&Path>,
 ) -> Vec<String> {
@@ -314,9 +314,7 @@ pub(crate) fn profile_flags(
     if let Some(encoding) = &profile.nullary_variant_encoding {
         push(&mut args, "--nullary-variant-encoding", encoding);
     }
-    if let Some(triple) = &profile.target_triple {
-        push(&mut args, "--target-triple", triple);
-    }
+    push(&mut args, "--target-triple", target);
     if let Some(cpu) = &profile.target_cpu {
         push(&mut args, "--target-cpu", cpu);
     }
@@ -364,6 +362,7 @@ pub(crate) fn fingerprint(
     let mut hasher = blake3::Hasher::new();
     hasher.update(deps::config_hash(&loaded.dump).as_bytes());
     hasher.update(opts.profile_name.as_bytes());
+    hasher.update(opts.target.as_bytes());
     for file in files {
         hasher.update(file.path.as_bytes());
         hasher.update(&file.record.hash);
@@ -398,7 +397,7 @@ pub(crate) fn product_is_current(
 }
 
 /// The artifact's file name for `name`, per the target platform — the
-/// profile's `target_triple` when set, the host otherwise.
+/// resolved machine target.
 pub(crate) fn artifact_file(name: &str, kind: TargetKind, triple: Option<&str>) -> String {
     let windows = triple.map_or(cfg!(windows), |t| t.contains("windows"));
     let apple = triple.map_or(cfg!(target_vendor = "apple"), |t| t.contains("apple"));

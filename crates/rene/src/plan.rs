@@ -29,6 +29,7 @@ use crate::rt::RtArtifacts;
 pub struct Options<'a> {
     pub profile_name: &'a str,
     pub profile: &'a Profile,
+    pub target: &'a str,
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<&'a Path>,
     pub build_dir: &'a Path,
@@ -76,19 +77,25 @@ pub(crate) fn node_commands(
             .targets
             .iter()
             .map(|(target, decl)| {
-                let out = profile_dir.join(compile::artifact_file(
-                    target,
-                    decl.kind,
-                    opts.profile.target_triple.as_deref(),
-                ));
+                let out =
+                    profile_dir.join(compile::artifact_file(target, decl.kind, Some(opts.target)));
                 let mut args = package_args(node, &out, decl.kind.emit());
-                args.extend(compile::profile_flags(opts.profile, decl.kind, opts.linker));
+                args.extend(compile::profile_flags(
+                    opts.profile,
+                    opts.target,
+                    decl.kind,
+                    opts.linker,
+                ));
                 args.extend(polyffi_args(bake));
                 args.extend(externs.iter().cloned());
                 if decl.kind.is_linked() {
                     for dep in &link_order {
                         args.push("--link-lib".to_owned());
-                        args.push(archive_path(&deps_dir, dep).display().to_string());
+                        args.push(
+                            archive_path(&deps_dir, dep, opts.target)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 PlannedCommand {
@@ -103,10 +110,11 @@ pub(crate) fn node_commands(
         let rri = deps_dir.join(format!("{name}.rri"));
         let mut interface = package_args(node, &rri, "rri");
         interface.extend(externs.iter().cloned());
-        let archive = archive_path(&deps_dir, name);
+        let archive = archive_path(&deps_dir, name, opts.target);
         let mut staticlib = package_args(node, &archive, "staticlib");
         staticlib.extend(compile::profile_flags(
             opts.profile,
+            opts.target,
             TargetKind::Staticlib,
             opts.linker,
         ));
@@ -176,6 +184,7 @@ pub fn render(
     });
     serde_json::json!({
         "profile": opts.profile_name,
+        "target": opts.target,
         "env": { "REUSSIR_RUSTC": rustc },
         "nodes": nodes,
     })
@@ -214,23 +223,25 @@ fn extern_args(graph: &Graph, deps: &[String], deps_dir: &Path) -> Vec<String> {
 }
 
 fn polyffi_args(bake: Option<&RtArtifacts>) -> Vec<String> {
-    let (rust_libdir, rt_deps) = match bake {
-        Some(bake) => (
-            bake.rust_libdir.display().to_string(),
-            bake.deps_dir.display().to_string(),
-        ),
-        None => (RUST_LIBDIR.to_owned(), RT_DEPS_DIR.to_owned()),
+    let libdirs = match bake {
+        Some(bake) => bake
+            .libdirs()
+            .map(|path| path.display().to_string())
+            .collect(),
+        None => vec![RUST_LIBDIR.to_owned(), RT_DEPS_DIR.to_owned()],
     };
-    vec![
-        "--polyffi-libdir".to_owned(),
-        rust_libdir,
-        "--polyffi-libdir".to_owned(),
-        rt_deps,
-    ]
+    libdirs
+        .into_iter()
+        .flat_map(|path| ["--polyffi-libdir".to_owned(), path])
+        .collect()
 }
 
-pub(crate) fn archive_path(deps_dir: &Path, name: &str) -> PathBuf {
-    deps_dir.join(compile::artifact_file(name, TargetKind::Staticlib, None))
+pub(crate) fn archive_path(deps_dir: &Path, name: &str, target: &str) -> PathBuf {
+    deps_dir.join(compile::artifact_file(
+        name,
+        TargetKind::Staticlib,
+        Some(target),
+    ))
 }
 
 /// Dependency-first order: every node appears after all of its dependencies

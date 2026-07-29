@@ -76,13 +76,13 @@ fn build_fails_cleanly_without_a_manifest() {
 }
 
 #[test]
-fn build_help_uses_kind_specific_target_selectors() {
+fn build_help_distinguishes_products_from_the_machine_target() {
     let out = run(&mut rene(&["build", "--help"]));
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let help = String::from_utf8(out.stdout).unwrap();
     assert!(help.contains("--bin <NAME>"), "{help}");
     assert!(help.contains("--lib <NAME>"), "{help}");
-    assert!(!help.contains("--target <"), "{help}");
+    assert!(help.contains("--target <TRIPLE>"), "{help}");
 }
 
 #[test]
@@ -197,11 +197,20 @@ impl Fakes {
         let cargo = script(
             "fake-cargo",
             "echo run >> \"$(dirname \"$0\")/cargo-runs\"\n\
+             echo \"$*\" >> \"$(dirname \"$0\")/cargo-args\"\n\
              echo \"linker=$CARGO_TARGET_X86_64_UNKNOWN_FAKE_LINKER\" >> \"$(dirname \"$0\")/cargo-env\"\n\
-             mkdir -p target/release/deps\n\
-             rlib=\"$PWD/target/release/deps/libreussir_rt-0000.rlib\"\n\
-             staticlib=\"$PWD/target/release/libreussir_rt.a\"\n\
-             touch \"$rlib\" \"$staticlib\"\n\
+             target=\"\"; prev=\"\"\n\
+             for arg in \"$@\"; do\n\
+               [ \"$prev\" = \"--target\" ] && target=\"$arg\"\n\
+               prev=\"$arg\"\n\
+             done\n\
+             [ -n \"$target\" ] || exit 2\n\
+             mkdir -p \"target/$target/release/deps\" target/release/deps\n\
+             proc_macro=\"$PWD/target/release/deps/libnum_enum_derive-fake.so\"\n\
+             rlib=\"$PWD/target/$target/release/deps/libreussir_rt-0000.rlib\"\n\
+             staticlib=\"$PWD/target/$target/release/libreussir_rt.a\"\n\
+             touch \"$proc_macro\" \"$rlib\" \"$staticlib\"\n\
+             printf '{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"num_enum_derive\"},\"filenames\":[\"%s\"]}\\n' \"$proc_macro\"\n\
              printf '{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"reussir-rt\"},\"filenames\":[\"%s\",\"%s\"]}\\n' \"$rlib\" \"$staticlib\"\n"
                 .to_owned(),
         );
@@ -262,6 +271,14 @@ impl Fakes {
         }
     }
 
+    /// The cargo bake invocations, one argv line each.
+    fn cargo_invocations(&self) -> Vec<String> {
+        match std::fs::read_to_string(self.dir.join("cargo-args")) {
+            Ok(log) => log.lines().map(str::to_owned).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// A `rene` invocation wired to the fake toolchain.
     fn rene(&self, args: &[&str], manifest: &Path, build_dir: &Path) -> Output {
         run(rene(args)
@@ -301,24 +318,35 @@ fn build_bakes_the_runtime_and_prints_the_libdirs() {
     let out = fakes.rene(&["build"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    // Stdout is exactly the two `--polyffi-libdir` directories: the detected
-    // rust lib, then the freshly baked runtime's deps dir.
+    // Stdout is exactly the `--polyffi-libdir` directories: the detected
+    // Rust lib, Cargo's host proc-macro deps, then its target deps.
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    let deps_dir = root.join("reussir-rt/target/release/deps");
+    let target = "x86_64-unknown-fake";
+    let target_deps = root.join(format!("{target}/reussir-rt/target/{target}/release/deps"));
+    let host_deps = root.join(format!("{target}/reussir-rt/target/release/deps"));
     assert_eq!(
         lines,
         [
             fakes.libdir.display().to_string(),
-            deps_dir.display().to_string()
+            host_deps.display().to_string(),
+            target_deps.display().to_string(),
         ]
     );
 
     // The bundle really was unpacked, and the bake recorded.
-    assert!(root.join("reussir-rt/Cargo.toml").is_file());
+    assert!(root.join(target).join("reussir-rt/Cargo.toml").is_file());
     let dir = BuildDir::open(&root).unwrap();
-    assert!(dir.status(tables::RT_SOURCE_HASH_KEY).unwrap().is_some());
-    assert!(dir.status(tables::RT_ARTIFACTS_KEY).unwrap().is_some());
+    assert!(
+        dir.status(&tables::rt_source_hash_key(target))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        dir.status(&tables::rt_artifacts_key(target))
+            .unwrap()
+            .is_some()
+    );
     drop(dir);
 
     // A second build must reuse the bake: same output, no new cargo run.
@@ -326,6 +354,131 @@ fn build_bakes_the_runtime_and_prints_the_libdirs() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), stdout);
     assert_eq!(fakes.runs("cargo"), 1, "the second build re-ran cargo");
+    assert!(fakes.cargo_invocations()[0].contains("--target x86_64-unknown-fake"));
+}
+
+/// The profile supplies a default target, the CLI overrides it, and the two
+/// target-prefixed runtime bakes remain independently reusable.
+#[cfg(unix)]
+#[test]
+fn build_resolves_the_target_and_keeps_each_runtime_bake() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    let manifest = package(&tmp, "demo");
+    std::fs::write(
+        &manifest,
+        r#"
+        {
+          package = { name = "demo", version = "0.1.0" },
+          targets.demo.kind = 'executable,
+          profiles.dev.default_target_triple = "wasm32-unknown-unknown",
+        }
+        "#,
+    )
+    .unwrap();
+    let fakes = Fakes::new(&tmp);
+
+    let default = fakes.rene(&["build"], &manifest, &root);
+    assert!(default.status.success(), "stderr: {}", stderr(&default));
+    assert_eq!(
+        String::from_utf8(default.stdout).unwrap().trim(),
+        root.join("dev/demo").display().to_string()
+    );
+
+    let override_target = "aarch64-unknown-linux-gnu";
+    let overridden = fakes.rene(&["build", "--target", override_target], &manifest, &root);
+    assert!(
+        overridden.status.success(),
+        "stderr: {}",
+        stderr(&overridden)
+    );
+    assert_eq!(
+        String::from_utf8(overridden.stdout).unwrap().trim(),
+        root.join("dev/demo").display().to_string()
+    );
+
+    for target in ["wasm32-unknown-unknown", override_target] {
+        assert!(root.join(target).join("reussir-rt/Cargo.toml").is_file());
+        let dir = BuildDir::open(&root).unwrap();
+        assert!(
+            dir.status(&tables::rt_artifacts_key(target))
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert_eq!(
+        fakes.cargo_invocations(),
+        [
+            "build --release --target wasm32-unknown-unknown --message-format=json-render-diagnostics",
+            "build --release --target aarch64-unknown-linux-gnu --message-format=json-render-diagnostics",
+        ]
+    );
+    let compiles = fakes.compiles();
+    assert_eq!(compiles.len(), 2, "{compiles:#?}");
+    assert!(
+        compiles[0].contains("--target-triple wasm32-unknown-unknown"),
+        "{compiles:#?}"
+    );
+    assert!(
+        compiles[1].contains("--target-triple aarch64-unknown-linux-gnu"),
+        "{compiles:#?}"
+    );
+
+    let inspected = fakes.rene(
+        &[
+            "inspect",
+            "--frozen",
+            "--commands",
+            "--target",
+            override_target,
+        ],
+        &manifest,
+        &root,
+    );
+    assert!(inspected.status.success(), "stderr: {}", stderr(&inspected));
+    let report: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert_eq!(report["plan"]["target"], override_target);
+    assert!(
+        report["plan"]["env"]["REUSSIR_RUSTC"]
+            .as_str()
+            .unwrap()
+            .contains("fake-rustc")
+    );
+
+    let default_again = fakes.rene(&["build"], &manifest, &root);
+    assert!(
+        default_again.status.success(),
+        "stderr: {}",
+        stderr(&default_again)
+    );
+    assert_eq!(fakes.runs("cargo"), 2, "the default target was rebaked");
+    let compiles = fakes.compiles();
+    assert_eq!(compiles.len(), 3, "{compiles:#?}");
+    assert!(
+        compiles[2].contains("--target-triple wasm32-unknown-unknown"),
+        "{compiles:#?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn build_rejects_a_target_that_is_not_one_safe_triple_component() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    let manifest = package(&tmp, "demo");
+    let fakes = Fakes::new(&tmp);
+
+    let out = fakes.rene(&["build", "--target", "../escape"], &manifest, &root);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("invalid target triple `../escape`"),
+        "stderr: {}",
+        stderr(&out)
+    );
+    assert_eq!(fakes.runs("cargo"), 0);
+    assert!(!tmp.join("escape").exists());
 }
 
 /// The first build records the graph; a build that finds every recorded file
@@ -622,6 +775,10 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
         assert!(line.contains("--lto thin"), "{line}");
         assert!(line.contains("--codegen-units 2"), "{line}");
         assert!(line.contains("--relocation-mode pic"), "{line}");
+        assert!(
+            line.contains("--target-triple x86_64-unknown-fake"),
+            "{line}"
+        );
         assert!(line.contains("--polyffi-libdir"), "{line}");
         assert!(
             line.contains(&format!("rustc={}", fakes.rustc.display())),
@@ -676,7 +833,7 @@ fn build_pins_the_linker_through_the_bake_and_the_compiles() {
     let out = fakes.rene(&["build", "--linker", &linker], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    // The bake saw it through CARGO_TARGET_<HOST>_LINKER…
+    // The bake saw it through CARGO_TARGET_<TARGET>_LINKER…
     let cargo_env = std::fs::read_to_string(tmp.join("cargo-env")).unwrap();
     assert_eq!(cargo_env.trim(), format!("linker={linker}"));
 

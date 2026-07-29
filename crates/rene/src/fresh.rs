@@ -124,6 +124,7 @@ pub struct Context<'a> {
     pub dir: Option<&'a BuildDir>,
     pub profile_name: &'a str,
     pub profile: &'a Profile,
+    pub target: &'a str,
     /// The `--linker` override the compared build ran (or would run) with —
     /// part of the root products' fingerprints.
     pub linker: Option<&'a Path>,
@@ -133,10 +134,10 @@ pub struct Context<'a> {
 /// The recorded runtime bake, if any — the toolchain identity freshness
 /// compares against, and the real paths the plan dump expands its
 /// placeholders with.
-pub fn recorded_bake(dir: Option<&BuildDir>) -> Result<Option<RtArtifacts>, String> {
+pub fn recorded_bake(dir: Option<&BuildDir>, target: &str) -> Result<Option<RtArtifacts>, String> {
     let Some(dir) = dir else { return Ok(None) };
     Ok(dir
-        .status(tables::RT_ARTIFACTS_KEY)
+        .status(&tables::rt_artifacts_key(target))
         .map_err(|e| e.to_string())?
         .and_then(|record| serde_json::from_str(&record).ok()))
 }
@@ -144,7 +145,7 @@ pub fn recorded_bake(dir: Option<&BuildDir>) -> Result<Option<RtArtifacts>, Stri
 /// One node's local freshness — no upstream-stale propagation, so at
 /// execution time (when the cone is final) the answer is exact.
 pub fn node_state(graph: &Graph, name: &str, ctx: &Context<'_>) -> Result<State, String> {
-    let bake = recorded_bake(ctx.dir)?;
+    let bake = recorded_bake(ctx.dir, ctx.target)?;
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
     if name == graph.root {
         root_state(graph, ctx, bake.as_ref())
@@ -156,7 +157,7 @@ pub fn node_state(graph: &Graph, name: &str, ctx: &Context<'_>) -> Result<State,
 /// The freshness of every node of the graph, keyed by package name.
 pub fn states(graph: &Graph, ctx: &Context<'_>) -> Result<BTreeMap<String, State>, String> {
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
-    let bake = recorded_bake(ctx.dir)?;
+    let bake = recorded_bake(ctx.dir, ctx.target)?;
     let cones = plan::transitive_deps(graph);
     let mut states: BTreeMap<String, State> = BTreeMap::new();
     for name in plan::topological(graph) {
@@ -219,7 +220,7 @@ fn dep_state(
     if record.config_hash != deps::config_hash(&node.loaded.dump) {
         return Ok(State::ConfigChanged);
     }
-    if record.profile_digest != profile_digest(ctx.profile_name, ctx.profile) {
+    if record.profile_digest != profile_digest(ctx.profile_name, ctx.profile, ctx.target) {
         return Ok(State::ProfileChanged);
     }
     if record.toolchain != bake.rustc_version {
@@ -236,7 +237,7 @@ fn dep_state(
     for dep in &graph.nodes[name].dependencies {
         // Direct edges suffice locally: transitive drift reaches this node
         // through its dependency's own record (and the propagation pass).
-        if record.upstream.get(dep) != Some(&artifact_digest(deps_dir, dep)) {
+        if record.upstream.get(dep) != Some(&artifact_digest(deps_dir, dep, ctx.target)) {
             return Ok(State::UpstreamChanged(dep.clone()));
         }
     }
@@ -265,7 +266,11 @@ fn root_state(
     }
     let files = dir.sources().map_err(|e| e.to_string())?;
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
-    let upstream = upstream_digests(&deps_dir, &plan::transitive_deps(graph)[&graph.root]);
+    let upstream = upstream_digests(
+        &deps_dir,
+        &plan::transitive_deps(graph)[&graph.root],
+        ctx.target,
+    );
     let fingerprint = compile::fingerprint(
         &node.loaded,
         &files,
@@ -273,6 +278,7 @@ fn root_state(
         &compile::Options {
             profile_name: ctx.profile_name.to_owned(),
             profile: ctx.profile.clone(),
+            target: ctx.target.to_owned(),
             bins: Vec::new(),
             libs: Vec::new(),
             linker: ctx.linker.map(Path::to_path_buf),
@@ -283,11 +289,7 @@ fn root_state(
     let out_dir = ctx.build_dir.join(ctx.profile_name);
     for (target, decl) in &node.loaded.manifest.targets {
         let key = tables::product_key(ctx.profile_name, target);
-        let path = out_dir.join(compile::artifact_file(
-            target,
-            decl.kind,
-            ctx.profile.target_triple.as_deref(),
-        ));
+        let path = out_dir.join(compile::artifact_file(target, decl.kind, Some(ctx.target)));
         if !compile::product_is_current(dir, &key, &fingerprint, &path)? {
             return Ok(State::TargetStale(target.clone()));
         }
@@ -312,15 +314,15 @@ pub fn record_dep(
     let deps_dir = ctx.build_dir.join(ctx.profile_name).join("deps");
     let record = DepRecord {
         config_hash: deps::config_hash(&node.loaded.dump),
-        profile_digest: profile_digest(ctx.profile_name, ctx.profile),
+        profile_digest: profile_digest(ctx.profile_name, ctx.profile, ctx.target),
         toolchain: bake.rustc_version.clone(),
         upstream: graph.nodes[name]
             .dependencies
             .iter()
-            .map(|dep| (dep.clone(), artifact_digest(&deps_dir, dep)))
+            .map(|dep| (dep.clone(), artifact_digest(&deps_dir, dep, ctx.target)))
             .collect(),
         rri: deps_dir.join(format!("{name}.rri")),
-        archive: plan::archive_path(&deps_dir, name),
+        archive: plan::archive_path(&deps_dir, name, ctx.target),
     };
     let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
     let sources = serde_json::to_string(sources).map_err(|e| e.to_string())?;
@@ -335,11 +337,11 @@ pub fn record_dep(
 /// An absent artifact digests to a sentinel rather than an error, so a
 /// fingerprint can be taken before anything is built — and changes the
 /// moment the artifact appears.
-pub fn artifact_digest(deps_dir: &Path, name: &str) -> String {
+pub fn artifact_digest(deps_dir: &Path, name: &str, target: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     for path in [
         deps_dir.join(format!("{name}.rri")),
-        plan::archive_path(deps_dir, name),
+        plan::archive_path(deps_dir, name, target),
     ] {
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -355,25 +357,33 @@ pub fn artifact_digest(deps_dir: &Path, name: &str) -> String {
 
 /// The root's whole cone digested — what `rene build` folds into the
 /// product fingerprints.
-pub fn root_upstream_digests(graph: &Graph, deps_dir: &Path) -> BTreeMap<String, String> {
-    upstream_digests(deps_dir, &plan::transitive_deps(graph)[&graph.root])
+pub fn root_upstream_digests(
+    graph: &Graph,
+    deps_dir: &Path,
+    target: &str,
+) -> BTreeMap<String, String> {
+    upstream_digests(deps_dir, &plan::transitive_deps(graph)[&graph.root], target)
 }
 
 /// The whole cone's artifact digests, name-keyed — what a consumer's
 /// fingerprint hashes.
-pub fn upstream_digests(deps_dir: &Path, cone: &[String]) -> BTreeMap<String, String> {
+pub fn upstream_digests(
+    deps_dir: &Path,
+    cone: &[String],
+    target: &str,
+) -> BTreeMap<String, String> {
     cone.iter()
-        .map(|dep| (dep.clone(), artifact_digest(deps_dir, dep)))
+        .map(|dep| (dep.clone(), artifact_digest(deps_dir, dep, target)))
         .collect()
 }
 
 /// Digest of the knobs a profile expands to for a dependency's compiles
 /// (archives are the shared shape; the profile name rides along because two
 /// names with equal knobs still build into different directories).
-fn profile_digest(profile_name: &str, profile: &Profile) -> String {
+fn profile_digest(profile_name: &str, profile: &Profile, target: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(profile_name.as_bytes());
-    for flag in compile::profile_flags(profile, TargetKind::Staticlib, None) {
+    for flag in compile::profile_flags(profile, target, TargetKind::Staticlib, None) {
         hasher.update(flag.as_bytes());
         hasher.update(&[0]);
     }
@@ -385,6 +395,8 @@ mod tests {
     use super::*;
     use crate::manifest;
     use crate::resolve;
+
+    const TEST_TARGET: &str = "x86_64-unknown-test";
 
     /// A two-package graph on disk (`app` → `util`), an open build dir with
     /// a fake bake record, and fake built artifacts for `util`.
@@ -419,15 +431,17 @@ mod tests {
         let build_dir = tmp.path().join("build");
         let dir = BuildDir::open(&build_dir).unwrap();
         let bake = fake_bake();
-        dir.set_status(&[(
-            tables::RT_ARTIFACTS_KEY,
-            &serde_json::to_string(&bake).unwrap(),
-        )])
-        .unwrap();
+        let bake_key = tables::rt_artifacts_key(TEST_TARGET);
+        dir.set_status(&[(bake_key.as_str(), &serde_json::to_string(&bake).unwrap())])
+            .unwrap();
         let deps_dir = build_dir.join("dev").join("deps");
         std::fs::create_dir_all(&deps_dir).unwrap();
         std::fs::write(deps_dir.join("util.rri"), "interface").unwrap();
-        std::fs::write(plan::archive_path(&deps_dir, "util"), "archive").unwrap();
+        std::fs::write(
+            plan::archive_path(&deps_dir, "util", TEST_TARGET),
+            "archive",
+        )
+        .unwrap();
         Fixture {
             _tmp: tmp,
             graph,
@@ -439,10 +453,11 @@ mod tests {
 
     fn fake_bake() -> RtArtifacts {
         RtArtifacts {
+            target: TEST_TARGET.to_owned(),
             rustc: PathBuf::from("rustc"),
             rustc_version: "rustc 1.0.0-test".to_owned(),
             rust_libdir: PathBuf::from("lib"),
-            deps_dir: PathBuf::from("deps"),
+            deps_dirs: vec![PathBuf::from("deps")],
             staticlib: PathBuf::from("librt.a"),
             rlib: PathBuf::from("librt.rlib"),
         }
@@ -453,6 +468,7 @@ mod tests {
             dir: Some(&f.dir),
             profile_name: "dev",
             profile,
+            target: TEST_TARGET,
             linker: None,
             build_dir: &f.build_dir,
         }
@@ -526,14 +542,18 @@ mod tests {
         record_dep(&f.graph, "util", &ctx, &bake, &util_sources(&f)).unwrap();
 
         // A missing artifact is named.
-        std::fs::remove_file(plan::archive_path(&f.deps_dir, "util")).unwrap();
+        std::fs::remove_file(plan::archive_path(&f.deps_dir, "util", TEST_TARGET)).unwrap();
         let states_now = states(&f.graph, &ctx).unwrap();
         assert!(
             matches!(&states_now["util"], State::ArtifactMissing(path) if path.contains("util")),
             "{:?}",
             states_now["util"]
         );
-        std::fs::write(plan::archive_path(&f.deps_dir, "util"), "archive").unwrap();
+        std::fs::write(
+            plan::archive_path(&f.deps_dir, "util", TEST_TARGET),
+            "archive",
+        )
+        .unwrap();
 
         // A different profile name: profile-changed (records are per
         // profile *name*, two names never share).
@@ -548,11 +568,9 @@ mod tests {
         // A changed toolchain: toolchain-changed.
         let mut newer = fake_bake();
         newer.rustc_version = "rustc 2.0.0-test".to_owned();
+        let bake_key = tables::rt_artifacts_key(TEST_TARGET);
         f.dir
-            .set_status(&[(
-                tables::RT_ARTIFACTS_KEY,
-                &serde_json::to_string(&newer).unwrap(),
-            )])
+            .set_status(&[(bake_key.as_str(), &serde_json::to_string(&newer).unwrap())])
             .unwrap();
         let states_now = states(&f.graph, &ctx).unwrap();
         assert_eq!(states_now["util"], State::ToolchainChanged);
@@ -579,9 +597,9 @@ mod tests {
 
         // (a) artifact_digest changes when bytes change, so any recorded
         // consumer mismatches.
-        let before = artifact_digest(&f.deps_dir, "util");
+        let before = artifact_digest(&f.deps_dir, "util", TEST_TARGET);
         std::fs::write(f.deps_dir.join("util.rri"), "interface v2").unwrap();
-        assert_ne!(before, artifact_digest(&f.deps_dir, "util"));
+        assert_ne!(before, artifact_digest(&f.deps_dir, "util", TEST_TARGET));
 
         // (b) a current node over a non-current cone reports the wait:
         // util's record now names the old… re-record, then invalidate util

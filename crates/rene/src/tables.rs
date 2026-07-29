@@ -36,14 +36,19 @@ pub const SOURCES: TableDefinition<&str, (&str, u64, u64, &[u8; 32])> =
 /// changed configuration may change the package's layout.
 pub const SOURCES_CONFIG_HASH_KEY: &str = "sources.config-hash";
 
-/// Blake3 hex digest of the bundled `reussir-rt` source archive the baked
-/// runtime was built from (a JSON string). Written by [`crate::rt`]; a
-/// mismatch with the running `rene`'s bundle invalidates the bake.
-pub const RT_SOURCE_HASH_KEY: &str = "rt.source-hash";
+/// Status key for the Blake3 hex digest of the bundled `reussir-rt` source
+/// archive baked for `target`. Each target keeps an independent record and
+/// source tree, so switching targets does not evict a usable bake.
+pub fn rt_source_hash_key(target: &str) -> String {
+    format!("rt.{target}.source-hash")
+}
 
-/// The baked runtime's artifact record, a JSON [`crate::rt::RtArtifacts`]:
-/// toolchain identity plus the paths `build` reports to the user.
-pub const RT_ARTIFACTS_KEY: &str = "rt.artifacts";
+/// Status key for a target's baked runtime artifact record, a JSON
+/// [`crate::rt::RtArtifacts`]: target, toolchain identity, and artifact
+/// paths.
+pub fn rt_artifacts_key(target: &str) -> String {
+    format!("rt.{target}.artifacts")
+}
 
 /// The status key of one built product's record, a JSON
 /// [`crate::compile::ProductRecord`]: the fingerprint it was built under and

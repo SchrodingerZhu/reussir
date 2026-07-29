@@ -35,8 +35,9 @@ fn main() {
     // versions of the reachable packages and pruning the rest.
     let lock = fs::read_to_string(&workspace_lock).expect("failed to read Cargo.lock");
 
-    // Archive layout: everything under a `reussir-rt/` root, so unpacking into
-    // the build directory yields `<build-dir>/reussir-rt/{Cargo.toml,src/**}`.
+    // Archive layout: everything under a `reussir-rt/` root, so unpacking
+    // into a target's build prefix yields
+    // `<build-dir>/<target>/reussir-rt/{Cargo.toml,src/**}`.
     let mut tar = tar::Builder::new(Vec::new());
     append_text(&mut tar, "reussir-rt/Cargo.toml", &manifest);
     append_text(&mut tar, "reussir-rt/Cargo.lock", &lock);
