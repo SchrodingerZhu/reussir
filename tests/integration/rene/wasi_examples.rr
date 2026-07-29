@@ -1,0 +1,58 @@
+// REQUIRES: wasmer, wasip1
+// The example corpus on WASI: every end-to-end program in this directory,
+// cross-built for `wasm32-wasip1` and run on wasmer. Between them they
+// cover most of what a Reussir program is made of — cons lists, ASTs and
+// association environments (`calc`), generic containers and cross-package
+// monomorphization (`inventory`), closures, floats and a merge sort
+// (`stats`), plain recursion (`fib`) — plus five polyffi packages' worth of
+// textures: stdin slurped into the runtime's rc vector, byte-level
+// accessors, format strings owned Rust-side, a four-parameter import
+// crossing packed, and duplicate generic instances collapsing at link.
+//
+// None of that is target-specific in the source. The point of the suite is
+// that none of it needs to be: the same packages the native tests build
+// produce a working wasm module, the console traffic goes through WASI
+// rather than through libc, and the transcripts do not change. Which is why
+// each run is checked against the *native* test's own expectations
+// (`%FileCheck %S/calc.rr`, …) instead of a copy that could drift from it.
+//
+// One build directory for all four packages, so the runtime is baked for
+// the target once. `--target` on the command line rather than in the
+// manifests: these are the unmodified example packages.
+
+// RUN: %rene build --manifest-path %S/fib/rene.ncl --build-dir %t.bdir --target wasm32-wasip1 | %FileCheck %s --check-prefix=LISTING
+
+// Every artifact is named for the target, not the host.
+// LISTING: {{[/\\]}}dev{{[/\\]}}fib.wasm
+
+// RUN: echo 24 | %wasmer %t.bdir/dev/fib.wasm | %FileCheck %S/fib.rr
+
+// The interpreter: a two-package build whose whole console surface is
+// polyffi, reading its session from stdin.
+// RUN: %rene build --manifest-path %S/calc/rene.ncl --build-dir %t.bdir --target wasm32-wasip1 | %FileCheck %s --check-prefix=CALC
+// RUN: %wasmer %t.bdir/dev/calc.wasm < %S/calc/example.in | %FileCheck %S/calc.rr
+
+// CALC: {{[/\\]}}dev{{[/\\]}}calc.wasm
+
+// Four dependencies, two polyffi units, generic instances emitted by more
+// than one package: the link is the interesting part here.
+// RUN: %rene build --manifest-path %S/inventory/rene.ncl --build-dir %t.bdir --target wasm32-wasip1 | %FileCheck %s --check-prefix=INVENTORY
+// RUN: %wasmer %t.bdir/dev/inventory.wasm | %FileCheck %S/inventory.rr
+
+// INVENTORY: {{[/\\]}}dev{{[/\\]}}inventory.wasm
+
+// Floats through an opaque runtime vector, sorted by a closure. The
+// release profile is the one worth building twice: three codegen units and
+// reuse-across-call, with the polyffi bitcode linked into the split module
+// set — on a target where the linker is `wasm-ld`.
+// RUN: %rene build --manifest-path %S/stats/rene.ncl --build-dir %t.bdir --target wasm32-wasip1 | %FileCheck %s --check-prefix=STATS
+// RUN: %wasmer %t.bdir/dev/stats.wasm < %S/stats/example.in | %FileCheck %S/stats.rr
+// RUN: %rene build --manifest-path %S/stats/rene.ncl --build-dir %t.bdir --target wasm32-wasip1 --profile release | %FileCheck %s --check-prefix=STATSREL
+// RUN: %wasmer %t.bdir/release/stats.wasm < %S/stats/example.in | %FileCheck %S/stats.rr
+
+// STATS: {{[/\\]}}dev{{[/\\]}}stats.wasm
+// STATSREL: {{[/\\]}}release{{[/\\]}}stats.wasm
+
+// An empty session is a report, not a crash — on WASI too, where the read
+// that returns nothing is `fd_read` on a preview1 descriptor.
+// RUN: echo | %wasmer %t.bdir/dev/stats.wasm | %FileCheck %S/stats.rr --check-prefix=EMPTY

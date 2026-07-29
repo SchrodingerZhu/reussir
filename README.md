@@ -232,12 +232,12 @@ frontend end-to-end examples under `tests/integration/`. Build `rrepl` first
 Some suites need tools the build does not require. Each is a lit feature, and
 a test that names a missing one reports `UNSUPPORTED` instead of failing:
 `lldb`/`gdb` (the debug-info suite), `openmp` (the multithreaded e2e drivers),
-and `wasmer` plus `wasip1-threads` (the WebAssembly suite, which cross-builds a
-package for `wasm32-wasip1-threads` and runs it with threads). To enable the
-last one:
+and `wasmer` plus `wasip1`/`wasip1-threads` (the WebAssembly suites, which
+cross-build the example packages for WASI and run the modules). To enable the
+last ones:
 
 ```bash
-rustup target add wasm32-wasip1-threads   # the target's standard library
+rustup target add wasm32-wasip1 wasm32-wasip1-threads   # their standard libraries
 curl https://get.wasmer.io -sSfL | sh     # the engine, or your package manager
 # ... then re-run cmake so it finds wasmer (or point at one explicitly):
 cmake -S . -B build -G Ninja -DREUSSIR_WASMER=/path/to/wasmer

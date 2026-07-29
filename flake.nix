@@ -194,12 +194,12 @@
             pkgs.libxml2
             pkgs.gdb
 
-            # The engine the WebAssembly lit suite runs its modules on
-            # (tests/integration/rene/wasi_threads.rr). That suite also
-            # wants the target's Rust standard library, which this pinned
-            # toolchain does not carry — `rustup target add
-            # wasm32-wasip1-threads` in a rustup shell, or add the target
-            # to the fenix toolchain above. Missing either one, the suite
+            # The engine the WebAssembly lit suites run their modules on
+            # (tests/integration/rene/wasi_*.rr). Those suites also want the
+            # targets' Rust standard libraries, which this pinned toolchain
+            # does not carry — `rustup target add wasm32-wasip1
+            # wasm32-wasip1-threads` in a rustup shell, or add the targets
+            # to the fenix toolchain above. Missing either piece, a suite
             # reports UNSUPPORTED rather than failing.
             pkgs.wasmer
           ];

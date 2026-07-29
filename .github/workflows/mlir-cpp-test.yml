@@ -52,13 +52,13 @@ jobs:
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
-          # The WebAssembly suite (tests/integration/rene/wasi_threads.rr)
-          # cross-builds a package for this target: the runtime bake, the
+          # The WebAssembly suites (tests/integration/rene/wasi_*.rr)
+          # cross-build packages for these targets: the runtime bake, the
           # polyffi textures, and the launcher link are all rustc
-          # invocations that need its standard library. Without it the
-          # `wasip1-threads` lit feature stays off and the suite reports
-          # UNSUPPORTED instead of running.
-          target: wasm32-wasip1-threads
+          # invocations that need the target's standard library. Without one
+          # the matching lit feature (`wasip1`, `wasip1-threads`) stays off
+          # and its suite reports UNSUPPORTED instead of running.
+          target: wasm32-wasip1, wasm32-wasip1-threads
 
       - name: Install dependencies
         run: |

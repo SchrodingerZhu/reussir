@@ -100,25 +100,24 @@ if config.gdb_path and os.path.exists(config.gdb_path):
     config.substitutions.append((r'%gdb',
                                  '%s --batch -nx' % sh_path(config.gdb_path)))
 
-# WebAssembly (rene/wasi_threads.rr): a package cross-built for
-# `wasm32-wasip1-threads` and run on a real engine. Two independent things
-# have to be present, so they are two features.
+# WebAssembly (the rene/wasi_*.rr suites): packages cross-built for a WASI
+# target and run on a real engine. Two independent things have to be
+# present, so they are separate features.
 #
-# `wasip1-threads` — the rustc this build compiles against ships the
-# target's standard library. `rene` bakes `reussir-rt` for the target with
-# cargo, `rrc` compiles every polyffi texture for it, and the launcher link
-# is another rustc invocation: all three need `rustup target add
-# wasm32-wasip1-threads`. `--print target-libdir` renders the path whether
-# or not it is populated, so the rlibs are what decide.
-def _has_wasip1_threads_std():
+# One per target — the rustc this build compiles against ships that
+# target's standard library. `rene` bakes `reussir-rt` for it with cargo,
+# `rrc` compiles every polyffi texture for it, and the launcher link is
+# another rustc invocation: all three need `rustup target add <target>`.
+# `--print target-libdir` renders the path whether or not it is populated,
+# so the rlibs are what decide.
+def _has_rust_std(target):
     import subprocess
     rustc = config.environment.get('REUSSIR_RUSTC')
     if not rustc:
         return False
     try:
         printed = subprocess.run(
-            [rustc, '--print', 'target-libdir',
-             '--target', 'wasm32-wasip1-threads'],
+            [rustc, '--print', 'target-libdir', '--target', target],
             capture_output=True, text=True, timeout=60)
     except Exception:
         return False
@@ -127,8 +126,11 @@ def _has_wasip1_threads_std():
         return False
     return any(name.startswith('libstd-') for name in os.listdir(libdir))
 
-if _has_wasip1_threads_std():
-    config.available_features.add('wasip1-threads')
+# The feature is the target's short name: `wasip1` for the baseline WASI
+# target, `wasip1-threads` for the one whose programs get real threads.
+for _target in ('wasm32-wasip1', 'wasm32-wasip1-threads'):
+    if _has_rust_std(_target):
+        config.available_features.add(_target.removeprefix('wasm32-'))
 
 # `wasmer` — the engine that runs the module (tests/integration/CMakeLists.txt
 # locates it; `-DREUSSIR_WASMER=` pins one). The threads proposal is on by
