@@ -65,7 +65,7 @@ set of principles and features we aim to maintain in this codebase:
   systems-level problems.
 
 - **Transparent program compilation.**
-  Ruessir provides means to inspect its type-checking and elaboration process,
+  Reussir provides means to inspect its type-checking and elaboration process,
   making it easier to understand and debug the compiler, or trace the
   optimization on programs.
 
@@ -82,6 +82,8 @@ under the `.skills` directory within the root of the repository.
 - **elaboration** — Elaborate Reussir source code.
 - **integration-test** — Run integration tests for Reussir.
 - **parser-tree** — Parse Reussir source code into a parser tree.
+- **rene** — Build Reussir packages with the rene package manager.
 - **reussir-mlir** — Run MLIR conversions and translations.
 - **run-repl** — Run Reussir REPL to interpret Reussir source code.
+- **sanitizer-testing** — Build and test Reussir with ASan, LSan, MSan, or TSan.
 - **unit-test** — Run unit tests for Reussir.

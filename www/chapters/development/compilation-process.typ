@@ -2,7 +2,7 @@
 #import "@preview/cetz:0.4.0" as cetz: draw
 #import "@preview/cetz-plot:0.1.2" as cetz-plot: smartart
 
-#show: book-page.with(title: "Reference Capabilities")
+#show: book-page.with(title: "Compilation Process")
 
 == Compilation Process
 
