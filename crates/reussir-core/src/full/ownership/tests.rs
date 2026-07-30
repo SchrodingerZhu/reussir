@@ -2,7 +2,7 @@
 //!
 //! The analysis is a pure `(&Function, &RecordTable) → OwnershipTable`, so it is
 //! exercised without any MLIR or runtime. Three pieces, mirroring
-//! `docs/ownership-analysis.md` §9:
+//! `crates/reussir-core/docs/ownership-analysis.md` §9:
 //!
 //! * [`MirBuilder`] — constructs `mir::Function`s directly in the arena, sharing
 //!   the production [`mir::ExprIdGen`] anchor stamping and using **real interned

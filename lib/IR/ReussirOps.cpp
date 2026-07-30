@@ -811,8 +811,11 @@ mlir::LogicalResult ReussirRcCreateVariantOp::verify() {
 
   mlir::Type targetVariantType = variantType.getMembers()[tag];
   bool targetVariantIsField = variantType.getMemberIsField()[tag];
+  // Field members are region-managed; assembling one requires a region
+  // nesting check that is not implemented yet, so reject it for now.
   if (targetVariantIsField)
-    return emitOpError("TODO: check this is nested in a region operation");
+    return emitOpError(
+        "cannot assemble a variant whose selected member has field storage");
 
   bool hasValue = getValue() != nullptr;
   bool hasFields = !getFields().empty();
@@ -1081,8 +1084,11 @@ mlir::LogicalResult ReussirRecordVariantOp::verify() {
            << reussir::getProjectedType(targetVariantType,
                                         targetVariantIsIsField,
                                         Capability::flex);
+  // Same as rc.create-variant: field members would need a region nesting
+  // check that is not implemented yet, so reject them for now.
   if (targetVariantIsIsField)
-    return emitOpError("TODO: check this is nested in a region operation");
+    return emitOpError(
+        "cannot assemble a variant whose selected member has field storage");
   return mlir::success();
 }
 
