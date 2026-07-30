@@ -20,12 +20,10 @@ use std::process::ExitCode;
 
 use palc::Parser;
 
+use crate::package;
+use crate::{TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir};
 use reussir_backend::melior::ir::Module;
 use reussir_codegen::source::FileId;
-use crate::package;
-use crate::{
-    TargetMachine, TargetSpec, emit_to_file, parse_llvm_ir,
-};
 use reussir_core::in_arena;
 use reussir_syntax::diagnostics;
 
@@ -35,17 +33,14 @@ mod frontend;
 mod link;
 mod stage;
 
-use cli::{
-    Cli, init_tracing, parse_opt, parse_reloc, read_input,
-    resolve_input_stage, resolve_target, write_text,
-};
-use link::{ScratchMembers, link_product,
-};
 use backend::backend;
+use cli::{
+    Cli, init_tracing, parse_opt, parse_reloc, read_input, resolve_input_stage, resolve_target,
+    write_text,
+};
 use frontend::{frontend, frontend_package};
+use link::{ScratchMembers, link_product};
 use stage::{Lto, SanitizerCli, Stage, VariantEncoding};
-
-
 
 /// What the front (arena-scoped) leg produces: a text dump for `hir`/`mir`, or an
 /// MLIR module for `mlir` and anything past it. The module borrows the MLIR
@@ -259,14 +254,14 @@ fn run(cli: &Cli) -> Result<bool, String> {
         let produced = match in_arena(|tcx| {
             frontend_package(&context, tcx, target, &mut pkg, &pkg_name, &interner, cli)
         }) {
-                Ok(produced) => produced,
-                Err(msg) => {
-                    if !msg.is_empty() {
-                        eprintln!("{msg}");
-                    }
-                    return Ok(false);
+            Ok(produced) => produced,
+            Err(msg) => {
+                if !msg.is_empty() {
+                    eprintln!("{msg}");
                 }
-            };
+                return Ok(false);
+            }
+        };
         return backend(
             cli, &context, produced, target, opt, reloc, &spec, &name, output,
         );

@@ -121,8 +121,7 @@ pub(crate) fn link_product(
     // same codegen unit as the runtime's `__reussir_*` entry points, so any
     // program that allocates would pull that member and collide with the
     // launcher's.
-    const RUNTIME_EXTERN: &str =
-        "\n// Static runtime linkage: pull the runtime rlib into the link.\n\
+    const RUNTIME_EXTERN: &str = "\n// Static runtime linkage: pull the runtime rlib into the link.\n\
          extern crate reussir_rt;\n";
     let runtime_extern = if linkage == RuntimeLinkage::Static {
         RUNTIME_EXTERN

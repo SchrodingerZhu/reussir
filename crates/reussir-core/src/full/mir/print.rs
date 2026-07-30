@@ -206,8 +206,7 @@ impl Render<'_> {
                             "@{} {}(",
                             self.sym(v.symbol),
                             spell_name(self.sym(v.name))
-                        ))
-                            + comma_sep(fields)
+                        )) + comma_sep(fields)
                             + text(")")
                     })
                     .collect();

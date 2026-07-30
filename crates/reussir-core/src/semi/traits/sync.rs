@@ -434,11 +434,14 @@ mod tests {
     use crate::with_tcx;
     use rustc_hash::FxHashMap;
 
-    /// A synthetic record table: `def ↦ (cap, members)`. Members are stored
-    /// pre-instantiated (the tests use no generics).
+    /// One synthetic record: its capability, and its members (`None` for an
+    /// opaque record) pre-instantiated — the tests use no generics.
+    type TestRecord<'tcx> = (DefaultCap, Option<Vec<(String, Ty<'tcx>)>>);
+
+    /// A synthetic record table: `def ↦ (cap, members)`.
     #[derive(Default)]
     struct TestEnv<'tcx> {
-        records: FxHashMap<DefId, (DefaultCap, Option<Vec<(String, Ty<'tcx>)>>)>,
+        records: FxHashMap<DefId, TestRecord<'tcx>>,
     }
 
     impl<'tcx> SyncEnv<'tcx> for TestEnv<'tcx> {

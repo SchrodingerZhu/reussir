@@ -43,7 +43,7 @@ mod backend {
 
     #[inline]
     const fn naturally_aligned(size: usize, align: usize) -> bool {
-        align <= MI_MAX_ALIGN_SIZE && size % align == 0
+        align <= MI_MAX_ALIGN_SIZE && size.is_multiple_of(align)
     }
 
     #[inline]
@@ -99,7 +99,10 @@ mod backend {
     pub unsafe fn realloc_dead(ptr: *mut u8, new_align: usize, new_size: usize) -> *mut u8 {
         unsafe {
             let usable = ffi::mi_usable_size(ptr.cast());
-            if ptr as usize % new_align == 0 && new_size <= usable && new_size >= usable / 2 {
+            if (ptr as usize).is_multiple_of(new_align)
+                && new_size <= usable
+                && new_size >= usable / 2
+            {
                 return ptr;
             }
             ffi::mi_free(ptr.cast());

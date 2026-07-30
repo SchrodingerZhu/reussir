@@ -1515,7 +1515,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         let mut valid = true;
         if func.body.is_none() {
-            self.error(span, "`#[main]` needs a function body: it is the program's entry point");
+            self.error(
+                span,
+                "`#[main]` needs a function body: it is the program's entry point",
+            );
             valid = false;
         }
         if !func.generics.is_empty() {

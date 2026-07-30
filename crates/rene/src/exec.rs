@@ -68,12 +68,9 @@ pub async fn build_deps(
     std::fs::create_dir_all(&deps_dir)
         .map_err(|e| format!("cannot create `{}`: {e}", deps_dir.display()))?;
 
-    let overall = progress.add(
-        ProgressBar::new(dep_names.len() as u64).with_style(
-            ProgressStyle::with_template("{bar:24} {pos}/{len} dependencies")
-                .expect("static template"),
-        ),
-    );
+    let overall = progress.add(ProgressBar::new(dep_names.len() as u64).with_style(
+        ProgressStyle::with_template("{bar:24} {pos}/{len} dependencies").expect("static template"),
+    ));
 
     // Readiness over direct edges: a node dispatches when its last
     // unfinished dependency completes.
@@ -154,9 +151,8 @@ async fn build_node(
     }
     tracing::debug!(package = name, reason = %state, "building");
 
-    let bar = progress.add(
-        ProgressBar::new_spinner().with_message(format!("{name}: scanning sources")),
-    );
+    let bar =
+        progress.add(ProgressBar::new_spinner().with_message(format!("{name}: scanning sources")));
     bar.enable_steady_tick(Duration::from_millis(120));
 
     // The dependency's own source graph — recorded with the build so the

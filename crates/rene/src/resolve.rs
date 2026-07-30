@@ -116,15 +116,17 @@ pub fn check(graph: &Graph) -> Result<Solution, String> {
             .dependencies
             .iter()
             .map(|dep_name| {
-                let constraint = node.loaded.manifest.dependencies[dep_name].version.as_deref();
+                let constraint = node.loaded.manifest.dependencies[dep_name]
+                    .version
+                    .as_deref();
                 Ok((dep_name.clone(), parse_constraint(constraint)?))
             })
             .collect::<Result<_, String>>()?;
         provider.add_dependencies(name.clone(), node.version, deps);
     }
     let root = &graph.nodes[&graph.root];
-    let solution = pubgrub::resolve(&provider, graph.root.clone(), root.version).map_err(
-        |err| match err {
+    let solution =
+        pubgrub::resolve(&provider, graph.root.clone(), root.version).map_err(|err| match err {
             PubGrubError::NoSolution(mut tree) => {
                 tree.collapse_no_versions();
                 format!(
@@ -133,8 +135,7 @@ pub fn check(graph: &Graph) -> Result<Solution, String> {
                 )
             }
             other => format!("dependency resolution failed: {other}"),
-        },
-    )?;
+        })?;
     Ok(Solution {
         pinned: solution.into_iter().collect(),
     })
@@ -232,7 +233,12 @@ fn bump_breaking(low: SemanticVersion, given: usize) -> SemanticVersion {
 mod tests {
     use super::*;
 
-    fn write_pkg(dir: &Path, name: &str, version: Option<&str>, deps: &[(&str, &str, Option<&str>)]) {
+    fn write_pkg(
+        dir: &Path,
+        name: &str,
+        version: Option<&str>,
+        deps: &[(&str, &str, Option<&str>)],
+    ) {
         std::fs::create_dir_all(dir).unwrap();
         let version = version.map_or(String::new(), |v| format!("version = \"{v}\","));
         let deps = deps
@@ -315,7 +321,10 @@ mod tests {
         );
         write_pkg(&tmp.path().join("util"), "util", Some("1.0.0"), &[]);
         let err = graph_of(&tmp.path().join("app")).unwrap_err();
-        assert!(err.contains("the key and the package name must agree"), "{err}");
+        assert!(
+            err.contains("the key and the package name must agree"),
+            "{err}"
+        );
     }
 
     /// The constraint grammar, at its edges.

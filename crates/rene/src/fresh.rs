@@ -419,7 +419,10 @@ mod tests {
                     dependencies.util = { path = "../util", version = "^1.0" },
                     targets.demo = { kind = 'executable } }"#,
             ),
-            (&util, r#"{ package = { name = "util", version = "1.0.0" } }"#),
+            (
+                &util,
+                r#"{ package = { name = "util", version = "1.0.0" } }"#,
+            ),
         ] {
             std::fs::create_dir_all(dir.join("src")).unwrap();
             std::fs::write(dir.join(manifest::MANIFEST_FILE), text).unwrap();
@@ -499,11 +502,8 @@ mod tests {
     #[test]
     fn states_walk_the_record_lifecycle() {
         let f = fixture();
-        let profile = manifest::resolve_profile(
-            &f.graph.nodes["app"].loaded.manifest,
-            "dev",
-        )
-        .unwrap();
+        let profile =
+            manifest::resolve_profile(&f.graph.nodes["app"].loaded.manifest, "dev").unwrap();
         let ctx = ctx(&f, &profile);
 
         // Nothing recorded: both nodes uninitialized (the root has no
@@ -582,11 +582,8 @@ mod tests {
     #[test]
     fn upstream_drift_reaches_the_consumer() {
         let f = fixture();
-        let profile = manifest::resolve_profile(
-            &f.graph.nodes["app"].loaded.manifest,
-            "dev",
-        )
-        .unwrap();
+        let profile =
+            manifest::resolve_profile(&f.graph.nodes["app"].loaded.manifest, "dev").unwrap();
         let ctx = ctx(&f, &profile);
         let bake = fake_bake();
 

@@ -111,8 +111,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // resolves here unless a user record of the same name shadows it —
         // the same precedence a real import would have. The canonical
         // qualified spelling always names the builtin (`core` is reserved).
-        let bare_unshadowed =
-            path.segments.is_empty() && self.defs.resolve_record(key).is_none();
+        let bare_unshadowed = path.segments.is_empty() && self.defs.resolve_record(key).is_none();
 
         // The cell type constructors: `Cell<T>` is the plain get/set cell;
         // `RefCell<T>` the exclusive flavor with guarded read-modify-write;
@@ -230,7 +229,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         // A user record, resolved to its def — bare in the current module, or
         // module-qualified (`utils::math::Widget`, `root::…`, `super::…`).
-        return self.eval_record_type_expr(path, args, span, key);
+        self.eval_record_type_expr(path, args, span, key)
     }
 
     /// [`arc_inner_rejection`] against this elaborator's record table.

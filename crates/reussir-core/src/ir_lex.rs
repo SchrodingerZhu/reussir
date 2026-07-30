@@ -298,13 +298,12 @@ pub(crate) fn unescape_debug_str(raw: Cow<'_, str>) -> Cow<'_, str> {
                     digits.push(h);
                 }
 
-                if closed {
-                    if let Ok(code) = u32::from_str_radix(&digits, 16) {
-                        if let Some(ch) = char::from_u32(code) {
-                            out.push(ch);
-                            continue;
-                        }
-                    }
+                if closed
+                    && let Ok(code) = u32::from_str_radix(&digits, 16)
+                    && let Some(ch) = char::from_u32(code)
+                {
+                    out.push(ch);
+                    continue;
                 }
 
                 out.push_str("\\u{");
@@ -345,8 +344,8 @@ pub fn lex(input: &str) -> impl Iterator<Item = Result<(usize, Token<'_>, usize)
 /// both spellings, so names round-trip whatever they are.
 pub(crate) fn spell_name(name: &str) -> Cow<'_, str> {
     let mut lexer = <Token as logos::Logos>::lexer(name);
-    let bare = matches!(lexer.next(), Some(Ok(Token::Ident(s))) if s == name)
-        && lexer.next().is_none();
+    let bare =
+        matches!(lexer.next(), Some(Ok(Token::Ident(s))) if s == name) && lexer.next().is_none();
     if bare {
         Cow::Borrowed(name)
     } else {

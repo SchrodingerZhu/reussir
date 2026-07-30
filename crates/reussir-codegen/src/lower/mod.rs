@@ -344,6 +344,7 @@ pub fn lower_program<'c, 'tcx>(
 /// functions with bodies, every other unit's as declarations, trampolines
 /// co-located with their targets, and the full record set (layout metadata
 /// carries no symbols, so each unit is self-contained for types).
+#[allow(clippy::too_many_arguments)]
 pub fn lower_unit<'c, 'tcx>(
     context: &'c Context,
     tcx: &TyCtxt<'tcx>,

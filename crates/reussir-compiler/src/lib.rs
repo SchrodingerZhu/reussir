@@ -34,8 +34,8 @@ use llvm_sys::target::{
 use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMCodeModel, LLVMCreateTargetDataLayout,
     LLVMCreateTargetMachine, LLVMDisposeTargetMachine, LLVMGetDefaultTargetTriple,
-    LLVMGetHostCPUFeatures, LLVMGetHostCPUName, LLVMGetTargetFromTriple, LLVMRelocMode,
-    LLVMNormalizeTargetTriple, LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
+    LLVMGetHostCPUFeatures, LLVMGetHostCPUName, LLVMGetTargetFromTriple, LLVMNormalizeTargetTriple,
+    LLVMRelocMode, LLVMTargetMachineEmitToFile, LLVMTargetMachineRef, LLVMTargetRef,
 };
 
 use reussir_backend::llvm::{Finalized, LtoMode, run_backend_llvm_pipeline};
