@@ -43,6 +43,10 @@ int main(int argc, char **argv) {
         if (!llvmModule)
           return mlir::failure();
         polyffiModule->setDataLayout(llvmModule->getDataLayout());
+        // Same machine, possibly spelled differently by whoever produced the
+        // bitcode; take the translated module's spelling so the link does not
+        // report a mismatch (see `gatherCompiledModules`).
+        polyffiModule->setTargetTriple(llvmModule->getTargetTriple());
         if (llvm::Linker::linkModules(*llvmModule, std::move(polyffiModule)))
           return mlir::failure();
         llvmModule->removeDebugIntrinsicDeclarations();

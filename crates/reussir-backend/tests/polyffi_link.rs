@@ -34,6 +34,11 @@ module {
 }
 "##;
 
+/// A stand-in for a real machine: the gather stamps it on the bitcode, and
+/// the link then carries it onto the finalized module (whose own triple this
+/// bare MLIR module leaves unset).
+const TRIPLE: &str = "x86_64-unknown-linux-gnu";
+
 #[test]
 #[ignore = "requires rustc + a REUSSIR_RUSTC_DEPS directory for the polyffi bitcode compile"]
 fn polyffi_function_is_linked_in() {
@@ -51,7 +56,11 @@ fn polyffi_function_is_linked_in() {
 
     // Gather (compiles the template + collects its bitcode) must run before the
     // lowering pipeline erases the polyffi op; the link happens in `finish`.
-    let prepared = LlvmLowering::prepare(&module, "", false, &paths)
+    // The triple is what the gathered bitcode is stamped with, so that a
+    // rustc spelling differing from the destination's does not turn the link
+    // into a mismatch (this template is compiled for the host, where they
+    // agree; the cross case is pinned by the `wasm_polyffi_triple` lit test).
+    let prepared = LlvmLowering::prepare(&module, "", TRIPLE, false, &paths)
         .expect("polyffi compile + gather succeeds");
     run_lowering_pipeline(&context, &mut module, &LoweringOptions::default())
         .expect("lowering pipeline succeeds");
@@ -68,6 +77,12 @@ fn polyffi_function_is_linked_in() {
             llvm_sys::core::LLVMIsDeclaration(function),
             0,
             "polyffi function is only declared, not defined — gather/link did not run"
+        );
+        let triple = std::ffi::CStr::from_ptr(llvm_sys::core::LLVMGetTarget(finalized.module));
+        assert_eq!(
+            triple.to_string_lossy(),
+            TRIPLE,
+            "the gathered bitcode did not take the triple it was prepared with"
         );
         llvm_sys::core::LLVMDisposeModule(finalized.module);
         llvm_sys::core::LLVMContextDispose(finalized.context);

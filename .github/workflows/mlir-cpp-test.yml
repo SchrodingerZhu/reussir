@@ -52,12 +52,29 @@ jobs:
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
+          # The WebAssembly suites (tests/integration/rene/wasi_*.rr)
+          # cross-build packages for these targets: the runtime bake, the
+          # polyffi textures, and the launcher link are all rustc
+          # invocations that need the target's standard library. Without one
+          # the matching lit feature (`wasip1`, `wasip1-threads`) stays off
+          # and its suite reports UNSUPPORTED instead of running.
+          target: wasm32-wasip1, wasm32-wasip1-threads
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
           sudo pip install lit --break-system-packages
+
+      # The engine that runs what the WebAssembly suite builds. The official
+      # installer drops the binary in ~/.wasmer/bin; putting that on PATH is
+      # what lets CMake's find_program see it at configure time, which is what
+      # turns the `wasmer` lit feature on.
+      - name: Install wasmer
+        run: |
+          curl https://get.wasmer.io -sSfL | sh
+          echo "$HOME/.wasmer/bin" >> $GITHUB_PATH
+          "$HOME/.wasmer/bin/wasmer" --version
 
       - name: Install LLVM ${{ matrix.llvm-version }}
         run: |

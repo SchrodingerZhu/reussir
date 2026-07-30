@@ -1,0 +1,67 @@
+// The features a WebAssembly triple implies, read off the emitted assembly.
+// No toolchain beyond LLVM's wasm backend is involved — this compiles, it
+// does not link or run — so it holds everywhere, including where the WASI
+// suites (rene/wasi_*.rr) report UNSUPPORTED.
+//
+// Atomics are not in WebAssembly's baseline. Without the `atomics` feature
+// the backend may assume the module is single-threaded, and the very same
+// `atomicrmw` — an `Arc`'s reference count, a `Mutex` cell's fast path —
+// comes out as a plain load and store. That is right for `wasm32-wasip1`,
+// which has no way to spawn a thread, and silently wrong for
+// `wasm32-wasip1-threads`, whose programs share their linear memory. So the
+// driver derives the features from the triple (`implied_target_features`),
+// the way rustc does for the standard library and the polyffi textures it
+// compiles for the same target.
+
+import core::intrinsic::cell;
+
+pub enum List {
+    Nil,
+    Cons(i64, List)
+}
+
+fn sum(xs: Arc<List>) -> i64 {
+    match xs {
+        List::Nil => 0,
+        List::Cons(x, rest) => x + sum(rest)
+    }
+}
+
+// Two uses of one `Arc` — an atomic increment stands between them — and a
+// consuming fold on each side, so the function carries both directions of
+// the count.
+pub fn sum_twice(xs: Arc<List>) -> i64 {
+    sum(xs) + sum(xs)
+}
+extern "C" trampoline "sum_twice_ffi" = sum_twice;
+
+// The lock-guarded cell: its uncontended path is a compare-exchange, which
+// has to be a real one for the contended path (the runtime's futex) to mean
+// anything.
+pub fn commit(cell: Mutex<Arc<List>>, x: i64) -> i64 {
+    cell::rmw(cell, |xs| Arc<List>::Cons{x, xs});
+    0
+}
+extern "C" trampoline "commit_ffi" = commit;
+
+// The threaded target, with nothing asked for on the command line:
+// RUN: %rrc %s --target-triple wasm32-wasip1-threads --emit asm -o %t.threads.s
+// RUN: %FileCheck %s --check-prefix=THREADS < %t.threads.s
+
+// THREADS-DAG: i32.atomic.rmw.add
+// THREADS-DAG: i32.atomic.rmw.sub
+// THREADS-DAG: i32.atomic.rmw.cmpxchg
+
+// The single-threaded one, same source: no atomics, and none wanted.
+// RUN: %rrc %s --target-triple wasm32-wasip1 --emit asm -o %t.plain.s
+// RUN: %FileCheck %s --check-prefix=PLAIN < %t.plain.s
+
+// PLAIN-NOT: atomic.rmw
+
+// What the triple implies is a default, not a decree: an explicit
+// `--target-features` is applied after it, so a feature can still be turned
+// back off (or another one added alongside).
+// RUN: %rrc %s --target-triple wasm32-wasip1-threads --target-features=-atomics --emit asm -o %t.off.s
+// RUN: %FileCheck %s --check-prefix=PLAIN < %t.off.s
+// RUN: %rrc %s --target-triple wasm32-wasip1-threads --target-features=+simd128 --emit asm -o %t.simd.s
+// RUN: %FileCheck %s --check-prefix=THREADS < %t.simd.s

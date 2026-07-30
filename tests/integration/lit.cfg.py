@@ -100,6 +100,46 @@ if config.gdb_path and os.path.exists(config.gdb_path):
     config.substitutions.append((r'%gdb',
                                  '%s --batch -nx' % sh_path(config.gdb_path)))
 
+# WebAssembly (the rene/wasi_*.rr suites): packages cross-built for a WASI
+# target and run on a real engine. Two independent things have to be
+# present, so they are separate features.
+#
+# One per target — the rustc this build compiles against ships that
+# target's standard library. `rene` bakes `reussir-rt` for it with cargo,
+# `rrc` compiles every polyffi texture for it, and the launcher link is
+# another rustc invocation: all three need `rustup target add <target>`.
+# `--print target-libdir` renders the path whether or not it is populated,
+# so the rlibs are what decide.
+def _has_rust_std(target):
+    import subprocess
+    rustc = config.environment.get('REUSSIR_RUSTC')
+    if not rustc:
+        return False
+    try:
+        printed = subprocess.run(
+            [rustc, '--print', 'target-libdir', '--target', target],
+            capture_output=True, text=True, timeout=60)
+    except Exception:
+        return False
+    libdir = printed.stdout.strip()
+    if printed.returncode != 0 or not libdir or not os.path.isdir(libdir):
+        return False
+    return any(name.startswith('libstd-') for name in os.listdir(libdir))
+
+# The feature is the target's short name: `wasip1` for the baseline WASI
+# target, `wasip1-threads` for the one whose programs get real threads.
+for _target in ('wasm32-wasip1', 'wasm32-wasip1-threads'):
+    if _has_rust_std(_target):
+        config.available_features.add(_target.removeprefix('wasm32-'))
+
+# `wasmer` — the engine that runs the module (tests/integration/CMakeLists.txt
+# locates it; `-DREUSSIR_WASMER=` pins one). The threads proposal is on by
+# default there, so `run` needs no further flags.
+if config.wasmer_path and os.path.exists(config.wasmer_path):
+    config.available_features.add('wasmer')
+    config.substitutions.append((r'%wasmer',
+                                 '%s run' % sh_path(config.wasmer_path)))
+
 # OpenMP: multithreaded e2e drivers (the atomic-rc suite) need `-fopenmp` and
 # a runtime rpath to wherever the toolchain keeps libomp. Probe by linking a
 # trivial parallel program; on failure the tests are unsupported rather than

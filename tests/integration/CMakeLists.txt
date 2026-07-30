@@ -108,6 +108,28 @@ else()
     message(STATUS "gdb not found: gdb debuginfo lit tests will be skipped")
 endif()
 
+# wasmer runs the WebAssembly suite's modules (tests/integration/rene/
+# wasi_threads.rr): `rene build` cross-compiles a package for
+# `wasm32-wasip1-threads` and wasmer executes the result, threads and all.
+# Optional like lldb/gdb — without it the `wasmer` lit feature stays off and
+# those tests are unsupported rather than broken. `REUSSIR_WASMER` points at
+# a specific binary (an unpacked release tarball, say); otherwise PATH and
+# the standard install location are searched.
+set(REUSSIR_WASMER "" CACHE FILEPATH "wasmer executable used by the WebAssembly integration tests")
+if(REUSSIR_WASMER)
+    set(wasmer_path "${REUSSIR_WASMER}")
+else()
+    find_program(wasmer_path
+        NAMES "wasmer${CMAKE_EXECUTABLE_SUFFIX}" wasmer
+        HINTS "$ENV{WASMER_DIR}/bin" "$ENV{HOME}/.wasmer/bin")
+endif()
+if(wasmer_path)
+    message(STATUS "wasmer path: ${wasmer_path}")
+else()
+    set(wasmer_path "")
+    message(STATUS "wasmer not found: WebAssembly lit tests will be skipped")
+endif()
+
 if(REUSSIR_RUNTIME_SANITIZERS AND NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
   message(FATAL_ERROR
     "Sanitizer integration tests require Clang as C compiler because they "

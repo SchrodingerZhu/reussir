@@ -124,9 +124,16 @@ bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
 // Gathers the LLVM bitcode modules attached to compiled operations into a
 // single LLVM module owned by `context`. Returns NULL on failure; otherwise the
 // caller owns the returned module.
+//
+// `dataLayout` and `targetTriple` describe the machine the gathered module is
+// destined for and are stamped on it. A non-empty `targetTriple` also settles
+// the spelling: rustc-produced bitcode may name the same target differently
+// (`wasm32-wasip1-threads` arrives as `wasm32-unknown-wasi`), which the IR
+// linker reports as a mismatch. Pass an empty string to leave it as parsed.
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
                                            LLVMContextRef context,
-                                           const char *dataLayout);
+                                           const char *dataLayout,
+                                           const char *targetTriple);
 
 // Rewrites the `{ tag, payload-union }` debug type emitted for each enum into a
 // real DWARF `DW_TAG_variant_part`, so a debugger shows only the active case.

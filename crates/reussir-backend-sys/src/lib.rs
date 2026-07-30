@@ -204,10 +204,17 @@ unsafe extern "C" {
     /// Gathers the LLVM bitcode modules attached to compiled operations into a
     /// single LLVM module owned by `context`. Returns null on failure; otherwise
     /// the caller owns the returned module.
+    ///
+    /// `data_layout` and `target_triple` are stamped on the gathered module:
+    /// they describe the machine it is destined for, and the triple also
+    /// settles the spelling rustc's bitcode arrives with (which need not be
+    /// LLVM's normalization of the same target name). An empty triple leaves
+    /// what was parsed.
     pub fn reussirGatherCompiledModules(
         module: MlirModule,
         context: LLVMContextRef,
         data_layout: *const c_char,
+        target_triple: *const c_char,
     ) -> LLVMModuleRef;
 
     /// Rewrites the `{ tag, payload-union }` debug type emitted for each enum

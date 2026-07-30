@@ -29,7 +29,10 @@ jobs:
       - name: Install Homebrew dependencies
         run: |
           brew update
-          brew install cmake ninja llvm spdlog googletest python@3
+          # wasmer runs the WebAssembly suites' modules
+          # (tests/integration/rene/wasi_*.rr); CMake finds it on PATH at
+          # configure time, which is what turns the `wasmer` lit feature on.
+          brew install cmake ninja llvm spdlog googletest python@3 wasmer
           pip3 install lit --break-system-packages
 
       - name: Setup Rust
@@ -37,6 +40,11 @@ jobs:
         with:
           toolchain: nightly-2026-02-15
           components: rust-src, rustfmt, clippy
+          # Cross-building those same suites: the runtime bake, the polyffi
+          # textures and the launcher link are rustc invocations that need
+          # the target's standard library. Missing one, the matching lit
+          # feature stays off and its suite reports UNSUPPORTED.
+          target: wasm32-wasip1, wasm32-wasip1-threads
 
       - name: Setup environment paths
         run: |

@@ -111,7 +111,12 @@ pub(crate) struct Cli {
     #[arg(long = "target-cpu")]
     pub(crate) target_cpu: Option<String>,
 
-    /// Target features. Defaults to the native host features (none for a custom triple).
+    /// Target features. Defaults to the native host features; for a custom
+    /// triple, to whatever that triple implies on its own (a threaded wasm
+    /// target implies `+atomics,+bulk-memory,+mutable-globals` — without
+    /// them its atomic reference counts would be compiled as plain loads and
+    /// stores) and nothing else. What is given here is applied *after* the
+    /// implied set, so it can countermand it: `--target-features=-atomics`.
     #[arg(long = "target-features")]
     pub(crate) target_features: Option<String>,
 
