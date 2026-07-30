@@ -1,0 +1,24 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// Assorted elaboration diagnostics that had no coverage: the record
+// capability check, unresolved bound reporting, and the array size cap.
+
+// A record's default capability is `value`, `shared`, or `regional`;
+// `flex`/`rigid` are flexivity colorings of regional values, not
+// capabilities a declaration can pick.
+// CHECK-DAG: `Flex` is not a valid record capability
+struct [flex] Bad { x: i64 }
+
+// The closure parameter's type is never pinned, so the arithmetic bound
+// stays unresolved.
+// CHECK-DAG: type annotations needed: cannot resolve a bound
+fn ambiguous() -> i64 {
+    let f = |x| x + x;
+    0
+}
+
+// The extent product is capped at 2^32 elements.
+// CHECK-DAG: array is too large (more than 2^32 elements)
+fn huge(a: [f64; 70000, 70000]) -> f64 {
+    0.0
+}

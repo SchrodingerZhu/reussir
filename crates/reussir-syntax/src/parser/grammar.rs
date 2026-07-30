@@ -28,12 +28,19 @@
 use super::{CompletedMarker, Marker, Parser, STACK_GROW, STACK_RED_ZONE};
 use crate::kind::SyntaxKind::{self, *};
 
-const PRIM_TYPES: &[&str] = &[
+/// The contextual primitive type names the parser recognizes. Re-exported at
+/// the crate root: downstream consumers that match on primitive names (the
+/// AST emitter here, `surface` lowering in `reussir-core`) must cover exactly
+/// this set, and their tests iterate it so a new entry cannot silently miss
+/// one of the mirrors.
+pub const PRIM_TYPES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "f32", "f64", "bfloat16",
     "float8", "bool", "str", "char", "unit",
 ];
 
-const CAPABILITIES: &[&str] = &["shared", "value", "flex", "rigid", "field", "regional"];
+/// The contextual capability names, under the same contract as
+/// [`PRIM_TYPES`].
+pub const CAPABILITIES: &[&str] = &["shared", "value", "flex", "rigid", "field", "regional"];
 
 impl Parser<'_> {
     pub(crate) fn source_file(&mut self) {

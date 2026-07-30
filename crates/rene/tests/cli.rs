@@ -967,6 +967,47 @@ fn build_reports_a_package_without_sources() {
     );
 }
 
+/// `-j`/`--jobs` caps the compile-process pool. `-j 1` serializes the pool
+/// entirely; the build must still produce every artifact.
+#[cfg(unix)]
+#[test]
+fn build_honors_a_single_job_cap() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    package(&tmp, "demo");
+    let manifest = write_targets_manifest(&tmp);
+    let fakes = Fakes::new(&tmp);
+
+    let out = fakes.rene(&["build", "--jobs", "1"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 3, "stdout: {stdout}");
+    for line in stdout.lines() {
+        assert!(Path::new(line).is_file(), "no artifact at {line}");
+    }
+    assert_eq!(fakes.compiles().len(), 3);
+}
+
+/// The pool needs at least one process: `-j 0` is a usage error (exit 2),
+/// reported by the parser before any build state is touched.
+#[test]
+fn build_rejects_a_zero_jobs_cap() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+
+    let out = run(rene(&["build", "-j", "0"])
+        .arg("--manifest-path")
+        .arg(tmp.join("rene.ncl"))
+        .arg("--build-dir")
+        .arg(&root));
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr(&out));
+    assert!(stderr(&out).contains("--jobs"), "stderr: {}", stderr(&out));
+    assert!(!root.exists(), "usage error must not create the build dir");
+}
+
 /// The real thing: bake `reussir-rt` with the host toolchain. Slow (a full
 /// release build of the runtime) and network-dependent (crates.io + the
 /// pinned mlir-sync git revision), hence ignored by default:
@@ -1079,10 +1120,7 @@ fn build_runs_the_dependency_pipeline() {
         "{compiles:#?}"
     );
     assert!(
-        compiles[2].contains(&format!(
-            "--extern-src util={}",
-            util.join("src").display()
-        )),
+        compiles[2].contains(&format!("--extern-src util={}", util.join("src").display())),
         "{compiles:#?}"
     );
     assert!(
@@ -1124,7 +1162,9 @@ fn build_runs_the_dependency_pipeline() {
     assert!(after[3].contains("--emit rri"), "{after:#?}");
     assert!(after[4].contains("--emit staticlib"), "{after:#?}");
     assert!(
-        after[3..].iter().all(|line| !line.contains("--package-name app")),
+        after[3..]
+            .iter()
+            .all(|line| !line.contains("--package-name app")),
         "the root re-ran despite identical upstream bytes: {after:#?}"
     );
 }

@@ -1,0 +1,46 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// Negative-path coverage for match compilation: the exhaustiveness error
+// and the unreachable-arm warning, over constructor, integer, and boolean
+// scrutinees. The positive decision-tree shapes live in pattern_*.rr.
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+// CHECK-DAG: non-exhaustive patterns in `match`
+fn missing_ctor(c: Color) -> i32 {
+    match c {
+        Color::Red => 1,
+        Color::Green => 2
+    }
+}
+
+// A wildcard after every constructor has been listed can never match.
+// CHECK-DAG: unreachable match arm
+fn dead_arm(c: Color) -> i32 {
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+        _ => 4
+    }
+}
+
+// Integer matches need a wildcard (or full range) to be exhaustive.
+// CHECK-DAG: non-exhaustive patterns in `match`
+fn missing_int(x: i32) -> i32 {
+    match x {
+        0 => 1,
+        1 => 2
+    }
+}
+
+// CHECK-DAG: non-exhaustive patterns in `match`
+fn missing_bool(b: bool) -> i32 {
+    match b {
+        true => 1
+    }
+}

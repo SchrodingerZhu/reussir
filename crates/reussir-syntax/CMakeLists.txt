@@ -29,3 +29,17 @@ add_custom_target(reussir-syntax-install ALL
 )
 
 add_custom_target(reussir-syntax DEPENDS reussir-syntax-build reussir-syntax-install)
+
+# The crate's own tests (lexer, parser, CST). Pure Rust — no backend
+# environment needed. Not part of `ALL`; invoke explicitly:
+#   ninja -C build reussir-syntax-test
+add_custom_target(reussir-syntax-test
+    COMMAND ${CMAKE_COMMAND} -E env
+        CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
+        RUSTFLAGS=-Awarnings
+        cargo test --locked --profile ${REUSSIR_SYNTAX_CARGO_PROFILE}
+        --package reussir-syntax
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Testing reussir-syntax with cargo"
+    USES_TERMINAL
+)

@@ -1,0 +1,63 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// Negative-path coverage for the region/flexivity discipline: values of a
+// `[regional]` record are flex (writable) only inside their region, and a
+// flex value can never escape it — not by call, parameter, capture, nor
+// closure result. See docs/design and the positive tests in region.rr.
+
+struct [regional] Cell<T> {
+    value: T
+}
+
+struct [regional] Fixed {
+    value: u64
+}
+
+regional fn make(x: u64) -> [flex] Cell<u64> {
+    Cell { value: x }
+}
+
+// Regions do not nest: the region rule freezes its result once, at its own
+// boundary.
+// CHECK-DAG: cannot create a nested region
+fn nested() -> Cell<u64> {
+    regional {
+        regional {
+            Cell { value: 1 }
+        }
+    }
+}
+
+// A regional function assumes a current region; calling it from plain code
+// has none. The unfrozen flex result also cannot satisfy the rigid return.
+// CHECK-DAG: cannot call a regional function outside of a region
+// CHECK-DAG: flexivity mismatch: a `Flex` regional value cannot be used where `Rigid` is required
+fn outside_call() -> Cell<u64> {
+    make(1)
+}
+
+// A non-regional function may be called from anywhere, so a flex parameter
+// would let the value leave its region.
+// CHECK-DAG: a non-regional function cannot take flex parameter `x`: a flex value cannot escape its region
+fn flex_param(x: [flex] Cell<u64>) -> u64 {
+    0
+}
+
+// A closure may outlive the region, so it can neither capture nor return a
+// flex value.
+// CHECK-DAG: closure cannot capture `x`: a flex value cannot escape its region
+// CHECK-DAG: closure cannot return a flex value: a flex value cannot escape its region
+fn capture_flex() -> Cell<u64> {
+    regional {
+        let x = make(1);
+        let f = |y: u64| x;
+        f(0)
+    }
+}
+
+// Only `[field]` links are mutable; a plain member is frozen at
+// construction even while the record is flex.
+// CHECK-DAG: cannot assign to an immutable field
+regional fn set_value(c: [flex] Fixed) {
+    c->value := 3;
+}
