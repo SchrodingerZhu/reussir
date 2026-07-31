@@ -22,3 +22,10 @@ fn ambiguous() -> i64 {
 fn huge(a: [f64; 70000, 70000]) -> f64 {
     0.0
 }
+
+// An `if` without `else` is sugar for an empty `else {}`, so the whole
+// expression is unit and a non-unit then-branch is rejected at the branch.
+// CHECK-DAG: type mismatch: expected `unit`, found `bool`
+fn non_unit_then(c: bool) -> i32 {
+    if c { true }
+}

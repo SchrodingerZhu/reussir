@@ -327,15 +327,19 @@ impl Parser<'_> {
         }
     }
 
-    /// `if cond { ... } else { ... }` — the `else` branch is mandatory and
-    /// the condition is parsed in no-struct mode.
+    /// `if cond { ... } (else { ... })?` — the condition is parsed in
+    /// no-struct mode. A missing `else` branch is sugar for an empty
+    /// `else {}`: the elaborator supplies a unit else-block, so the whole
+    /// expression is unit and the then-branch must be unit too.
     fn if_expr(&mut self) -> CompletedMarker {
         let m = self.start();
         self.bump(); // if
         self.expr_no_struct();
         self.block_expr();
-        self.expect(ElseKw);
-        self.block_expr();
+        if self.at(ElseKw) {
+            self.bump();
+            self.block_expr();
+        }
         m.complete(self, IfExpr)
     }
 

@@ -206,15 +206,21 @@ Cap: raw::Cap = {
 /// spanless expression is not wrapped (a spanless one-statement `Seq` prints
 /// indistinguishably and is normalized away — structurally, not semantically,
 /// significant).
-Block: raw::Expr = <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
-    if sp.is_none() && rest.is_empty() {
-        first
-    } else {
-        let mut v = vec![first];
-        v.extend(rest);
-        let ty = v.last().unwrap().ty.clone();
-        raw::Expr::new(raw::Kind::Seq(v), ty).with_span(sp)
-    }
+Block: raw::Expr = {
+    <sp:Span?> <first:Expr> <rest:(";" <Expr>)*> => {
+        if sp.is_none() && rest.is_empty() {
+            first
+        } else {
+            let mut v = vec![first];
+            v.extend(rest);
+            let ty = v.last().unwrap().ty.clone();
+            raw::Expr::new(raw::Kind::Seq(v), ty).with_span(sp)
+        }
+    },
+    // An empty block is an empty (unit) `Seq` — an empty function body, an
+    // empty surface `{}`, or the else-branch the elaborator synthesizes for
+    // an `if` without `else`.
+    <sp:Span?> => raw::Expr::new(raw::Kind::Seq(Vec::new()), raw::Ty::Unit).with_span(sp),
 };
 
 /// Every value expression is `Atom : Ty` — the node's type is always printed and

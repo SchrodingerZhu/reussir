@@ -278,7 +278,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             surface::ExprKind::ConstExpr(c) => self.infer_const(c, span),
             surface::ExprKind::Var(path) => self.infer_var(path, span),
             surface::ExprKind::ExprSeq(exprs) => self.infer_seq(exprs, span),
-            surface::ExprKind::If(c, t, f) => self.infer_if(c, t, f, span),
+            surface::ExprKind::If(c, t, f) => self.infer_if(c, t, f.as_ref(), span),
             surface::ExprKind::Let(name, ty, value) => {
                 self.infer_let(name, ty.as_ref(), value, span)
             }
@@ -401,18 +401,35 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// (IF) `Γ ⊢ if c t f ⇒ (If(hc,ht,hf) : T)`: `c ⇐ Bool`, `t ⇒ T`, then `f ⇐ T`
     /// (the then-branch's synthesized type drives the else-branch).
+    ///
+    /// An omitted else branch is sugar for an empty `else {}`: the elaborated
+    /// HIR carries a synthesized empty unit block, so the whole expression is
+    /// unit and the then-branch is checked against unit (`t ⇐ Unit`) — that
+    /// way a non-unit then-branch is reported at the branch itself rather
+    /// than at an else block the programmer never wrote.
     fn infer_if(
         &mut self,
         c: &surface::Expr,
         t: &surface::Expr,
-        f: &surface::Expr,
+        f: Option<&surface::Expr>,
         span: Option<Span>,
     ) -> Expr<'tcx> {
         let bool_ty = self.tcx.mk_bool();
         let c = self.check_expr(c, bool_ty);
-        let t = self.infer_expr(t);
+        let (t, f) = match f {
+            Some(f) => {
+                let t = self.infer_expr(t);
+                let f = self.check_expr(f, t.ty);
+                (t, f)
+            }
+            None => {
+                let unit = self.tcx.mk_unit();
+                let t = self.check_expr(t, unit);
+                let f = self.mk_expr(ExprKind::Seq(Vec::new()), unit, span);
+                (t, f)
+            }
+        };
         let result = t.ty;
-        let f = self.check_expr(f, result);
         self.mk_expr(
             ExprKind::If(Box::new(c), Box::new(t), Box::new(f)),
             result,

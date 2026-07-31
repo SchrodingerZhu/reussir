@@ -895,6 +895,13 @@ mod tests {
         );
     }
 
+    /// The empty else-block synthesized for an `if` without `else` survives
+    /// the MIR textual round-trip.
+    #[test]
+    fn roundtrips_if_without_else() {
+        roundtrip("pub fn noop() { } pub fn tick(n: u64) { if n > 1 { noop() } }");
+    }
+
     #[test]
     fn roundtrips_records_and_projection() {
         // Exercises `@Pair{..}` constructors, the `Pair` record type, and

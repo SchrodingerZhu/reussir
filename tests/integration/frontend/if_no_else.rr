@@ -1,0 +1,19 @@
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
+
+// An `if` without an `else` branch is sugar for an empty `else {}`: the
+// elaborated HIR carries an explicit empty unit else-branch, and the whole
+// expression is unit.
+
+// CHECK: fn #noop() -> () {
+// CHECK: fn #tick(v0 (n): u64) -> () {
+// CHECK-NEXT: if (v0 : u64 > 1 : u64) : bool then {
+// CHECK-NEXT: #noop() : ()
+// CHECK-NEXT: } else {
+// CHECK: } : ()
+// CHECK-NEXT: }
+
+pub fn noop() { }
+
+pub fn tick(n: u64) {
+    if n > 1 { noop() }
+}

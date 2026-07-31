@@ -987,6 +987,38 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_if_without_else() {
+        roundtrip("pub fn noop() { } pub fn tick(n: u64) { if n > 1 { noop() } }");
+    }
+
+    /// The sugar is pure syntax: an omitted `else` elaborates to exactly the
+    /// HIR of an explicit empty `else {}`.
+    #[test]
+    fn if_without_else_matches_explicit_empty_else() {
+        fn printed_hir(source: &str) -> String {
+            with_tcx(|tcx| {
+                let parse = reussir_syntax::parse(source);
+                assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+                let prog = surface::program(&parse.root);
+                let elab = elaborate(tcx, &prog, parse.resolver());
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+                let strings = elab.strings.entries();
+                Printer::new(&elab.defs, elab.resolver).program(
+                    &elab.elaborated,
+                    &strings,
+                    &elab.records,
+                    &elab.trampolines,
+                )
+            })
+        }
+
+        let sugar = printed_hir("pub fn noop() { } pub fn tick(n: u64) { if n > 1 { noop() } }");
+        let explicit =
+            printed_hir("pub fn noop() { } pub fn tick(n: u64) { if n > 1 { noop() } else { } }");
+        assert_eq!(sugar, explicit);
+    }
+
+    #[test]
     fn roundtrips_a_string_literal() {
         roundtrip("pub fn greet() -> str { \"hi\" }");
     }

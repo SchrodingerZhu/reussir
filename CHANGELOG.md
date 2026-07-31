@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Language
+
+- `if` without an `else` branch is now accepted as sugar for an empty
+  `else {}`: the whole expression is unit and the then-branch is checked
+  against unit. The elaborated HIR carries an explicit empty else-block, so
+  everything downstream of elaboration is unchanged.
+
 ## 0.1.0
 
 The first tagged release of Reussir: an MLIR-based compiler framework for

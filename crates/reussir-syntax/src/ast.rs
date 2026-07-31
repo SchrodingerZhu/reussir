@@ -516,7 +516,10 @@ impl Emitter<'_> {
                 let mut parts = expr_children(node).map(|e| self.expr(e));
                 let cond = parts.next().expect("condition");
                 let then = parts.next().expect("then branch");
-                let other = parts.next().expect("else branch");
+                // A missing `else` desugars to an empty (unit) block.
+                let other = parts
+                    .next()
+                    .unwrap_or_else(|| tagged("ExprSeq", Value::Array(Vec::new())));
                 tagged("If", json!([cond, then, other]))
             }
             LetExpr => {
