@@ -110,12 +110,14 @@ The repository is split by responsibility:
   (elaboration, monomorphization, ownership analysis), `reussir-codegen`
   (MLIR lowering), `reussir-backend`/`reussir-jit` (the melior/MLIR bridge and
   JIT), `reussir-compiler` (the `rrc` driver), `reussir-repl` (the `rrepl`
-  REPL), and `reussir-rt` (the RC-object runtime).
+  REPL), `rene` (the package manager and build driver), and `reussir-rt`
+  (the RC-object runtime).
 - `include/` and `lib/`:
   the Reussir MLIR dialect, analyses, conversions, bridge code, and backend
   support libraries.
 - `tool/`:
-  command-line MLIR tools such as `reussir-opt` and `reussir-translate`.
+  command-line MLIR/LLVM tools — `reussir-opt`, `reussir-translate`, and
+  `reussir-llvm-opt` — plus the LLDB pretty-printers under `tool/lldb/`.
 - `tests/`:
   C++ unit tests and LLVM `lit` integration tests covering both backend passes
   and frontend end-to-end compilation.
@@ -165,6 +167,7 @@ the Rust frontend tools:
 - `rrc` — the compiler driver
 - `reussir-syntax` — the parser (JSON AST emitter)
 - `rrepl` — the REPL
+- `rene` — the package manager and build driver
 
 ### 3. Compile specific targets
 
@@ -174,6 +177,7 @@ cmake --build build --target reussir-translate
 cmake --build build --target reussir-rt
 cmake --build build --target rrc
 cmake --build build --target rrepl
+cmake --build build --target rene
 ```
 
 Built binaries are placed under `build/bin/`, and runtime libraries are
@@ -200,6 +204,23 @@ cmake --build build --target rrepl
 build/bin/rrepl
 ```
 
+Build a package with `rene` (the manifest is `rene.ncl`; artifacts land in
+`reussir-build/<profile>/` next to it):
+
+```bash
+cd path/to/package
+rene build                        # every declared target, dev profile
+rene build --profile release      # a built-in or manifest-declared profile
+rene build --bin app --lib util   # only the named targets
+rene build --target wasm32-wasip1 # cross-compile for a machine target
+rene build -j 4                   # cap the compile-process pool
+rene inspect --solved --graph     # dependency resolution and graph as JSON
+rene clean                        # delete the build directory
+```
+
+The example packages under `tests/integration/rene/` (e.g. `calc-project`,
+`inventory-project`) show what a manifest looks like.
+
 ## Testing
 
 Reussir has both unit tests and integration tests.
@@ -217,6 +238,11 @@ ctest --test-dir build --output-on-failure
 cmake --build build --target rrc-test
 cmake --build build --target reussir-codegen-test
 cmake --build build --target reussir-backend-test
+cmake --build build --target reussir-core-test
+cmake --build build --target reussir-syntax-test
+cmake --build build --target reussir-jit-test
+cmake --build build --target rrepl-test
+cmake --build build --target rene-test
 ```
 
 ### LLVM `lit` integration tests
@@ -229,12 +255,15 @@ The integration suite covers backend conversions, reuse-related passes, and
 frontend end-to-end examples under `tests/integration/`. Build `rrepl` first
 (`cmake --build build --target rrepl`) to include the `repl-rs` suite.
 
-Some suites need tools the build does not require. Each is a lit feature, and
-a test that names a missing one reports `UNSUPPORTED` instead of failing:
-`lldb`/`gdb` (the debug-info suite), `openmp` (the multithreaded e2e drivers),
-and `wasmer` plus `wasip1`/`wasip1-threads` (the WebAssembly suites, which
-cross-build the example packages for WASI and run the modules). To enable the
-last ones:
+Some suites need tools or artifacts the build does not require. Each is a lit
+feature, and a test that names a missing one reports `UNSUPPORTED` instead of
+failing: `lldb`/`gdb` (the debug-info suite), `openmp` (the multithreaded e2e
+drivers), `lto-link`/`rustc-lto-link` (the cross-language LTO links),
+`asan`/`lsan`/`msan`/`tsan` (the sanitizer suite — build the instrumented
+runtimes with `cmake --build build --target reussir-rt-sanitizers`, then run
+`cmake --build build --target check-sanitizer`), and `wasmer` plus
+`wasip1`/`wasip1-threads` (the WebAssembly suites, which cross-build the
+example packages for WASI and run the modules). To enable the last ones:
 
 ```bash
 rustup target add wasm32-wasip1 wasm32-wasip1-threads   # their standard libraries

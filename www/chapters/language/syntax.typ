@@ -7,11 +7,15 @@
 
 = Syntax
 
-Currently, the syntax is not stable yet and subject change. For example, importing syntax are not provided and type bounds are not included.
+The syntax is not stable yet and is subject to change. For example, type
+bounds are not included, and the trait system is still under design.
 
 == Syntax Family
 
-Reussir language adopts a traditional two-phase syntax. The input sequence is first tokenized as a regular language and then parsed using parser expression grammar combinators.
+Reussir adopts a traditional two-phase syntax. The input sequence is first
+tokenized as a regular language and then parsed by a hand-written recursive
+descent parser (with a precedence-climbing loop for expressions) into a
+lossless concrete syntax tree.
 
 
 == Lexical Tokens
@@ -22,94 +26,113 @@ Reussir language adopts a traditional two-phase syntax. The input sequence is fi
   $])
 === Symbols and Punctuations
 #math.mono([$
-        "LANGLE" & eq.def "<"  \
-        "RANGLE" & eq.def ">"  \
-        "LBRACE" & eq.def "{"  \
-        "RBRACE" & eq.def "}"  \
-        "LPAREN" & eq.def "("  \
-        "RPAREN" & eq.def ")"  \
-      "LBRACKET" & eq.def "["  \
-      "RBRACKET" & eq.def "]"  \
-         "COMMA" & eq.def ","  \
-         "COLON" & eq.def ":"  \
-     "SEMICOLON" & eq.def ";"  \
-           "DOT" & eq.def "."  \
        "PATHSEP" & eq.def "::" \
          "ARROW" & eq.def "->" \
       "FATARROW" & eq.def "=>" \
-            "EQ" & eq.def "="  \
+       "COLONEQ" & eq.def ":=" \
           "EQEQ" & eq.def "==" \
-         "NOTEQ" & eq.def "!=" \
-        "LESSEQ" & eq.def "<=" \
-     "GREATEREQ" & eq.def ">=" \
+        "BANGEQ" & eq.def "!=" \
+          "LTEQ" & eq.def "<=" \
+          "GTEQ" & eq.def ">=" \
+        "AMPAMP" & eq.def "&&" \
+      "PIPEPIPE" & eq.def "||" \
+        "DOTDOT" & eq.def ".." \
+        "LPAREN" & eq.def "("  \
+        "RPAREN" & eq.def ")"  \
+        "LBRACE" & eq.def "{"  \
+        "RBRACE" & eq.def "}"  \
+      "LBRACKET" & eq.def "["  \
+      "RBRACKET" & eq.def "]"  \
+        "LANGLE" & eq.def "<"  \
+        "RANGLE" & eq.def ">"  \
+         "COLON" & eq.def ":"  \
+     "SEMICOLON" & eq.def ";"  \
+         "COMMA" & eq.def ","  \
+           "DOT" & eq.def "."  \
+            "EQ" & eq.def "="  \
           "PLUS" & eq.def "+"  \
          "MINUS" & eq.def "-"  \
           "STAR" & eq.def "*"  \
          "SLASH" & eq.def "/"  \
        "PERCENT" & eq.def "%"  \
-            "OR" & eq.def "or" \
-        "ANDAND" & eq.def "&&" \
-          "OROR" & eq.def "||" \
-         "CARET" & eq.def "^"  \
           "BANG" & eq.def "!"  \
-         "TILDE" & eq.def "~"  \
-      "QUESTION" & eq.def "?"  \
-     "AMPERSAND" & eq.def "&"  \
-            "AT" & eq.def "@"  \
-     "SHIFTLEFT" & eq.def "<<" \
-    "SHIFTRIGHT" & eq.def ">>" \
-          "UNIT" & eq.def "()" \
+          "PIPE" & eq.def "|"  \
+         "POUND" & eq.def "#"  \
     "UNDERSCORE" & eq.def "_"  \
-      "ELLIPSIS" & eq.def ".." \
   $])
 === Keywords
+
+Only the words that introduce syntactic forms are keyword tokens:
+
 #math.mono([$
-    "STRUCT" & eq.def "struct" \
-      "ENUM" & eq.def "enum"   \
-    "OPAQUE" & eq.def "opaque" \
-       "LET" & eq.def "let"    \
-        "IF" & eq.def "if"     \
-      "ELSE" & eq.def "else"   \
-     "MATCH" & eq.def "match"  \
-      "COND" & eq.def "cond"   \
-        "FN" & eq.def "fn"     \
-       "PUB" & eq.def "pub"    \
-    "REGION" & eq.def "reg"    \
-        "AS" & eq.def "as"     \
-    "RETURN" & eq.def "return" \
-     "YIELD" & eq.def "yield"  \
-      "TRUE" & eq.def "true"   \
-     "FALSE" & eq.def "false"  \
-        "I8" & eq.def "i8"     \
-       "I16" & eq.def "i16"    \
-       "I32" & eq.def "i32"    \
-       "I64" & eq.def "i64"    \
-      "I128" & eq.def "i128"   \
-        "U8" & eq.def "u8"     \
-       "U16" & eq.def "u16"    \
-       "U32" & eq.def "u32"    \
-       "U64" & eq.def "u64"    \
-      "U128" & eq.def "u128"   \
-      "BF16" & eq.def "bf16"   \
-       "F16" & eq.def "f16"    \
-       "F32" & eq.def "f32"    \
-       "F64" & eq.def "f64"    \
-      "F128" & eq.def "f128"   \
-       "STR" & eq.def "str"    \
-      "CHAR" & eq.def "char"   \
-      "BOOL" & eq.def "bool"   \
+        "FN" & eq.def "fn"       \
+    "STRUCT" & eq.def "struct"   \
+      "ENUM" & eq.def "enum"     \
+       "PUB" & eq.def "pub"      \
+       "MOD" & eq.def "mod"      \
+       "LET" & eq.def "let"      \
+        "IF" & eq.def "if"       \
+      "ELSE" & eq.def "else"     \
+     "MATCH" & eq.def "match"    \
+  "REGIONAL" & eq.def "regional" \
+    "EXTERN" & eq.def "extern"   \
+        "AS" & eq.def "as"       \
+      "TRUE" & eq.def "true"     \
+     "FALSE" & eq.def "false"    \
+    "IMPORT" & eq.def "import"   \
   $])
 
+Contextual words are lexed as plain identifiers and matched by text in the
+parser, so they stay usable as ordinary names:
+
+- primitive type names: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`,
+  `u64`, `f16`, `f32`, `f64`, `bfloat16`, `float8`, `bool`, `str`, `char`,
+  and `unit`;
+- reference capability names: `shared`, `value`, `flex`, `rigid`, `field`,
+  and `regional`;
+- other markers such as `trampoline`.
+
 === Literals
+
+Integer literals are unsigned digit runs — negation is a prefix operator —
+in decimal, hexadecimal, octal, or binary, with `_` digit separators.
+Literals carry no type suffix; the type comes from the context or an
+`as` cast. Float literals need a fractional part, an exponent, or both.
+
 #math.mono([$
-        "INTEGER" & eq.def "DECIMAL" | "BINARY" | "HEXADECIMAL" | "OCTAL"                              \
-        "DECIMAL" & eq.def "-?\d[\d_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?"                      \
-         "BINARY" & eq.def "-?0b[01][01_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?"                  \
-    "HEXADECIMAL" & eq.def "-?0x[0-9a-fA-F][0-9a-fA-F_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?"    \
-          "OCTAL" & eq.def "-?0o[0-7][0-7_]*(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128)?"                \
-          "FLOAT" & eq.def "[+\-]?([\d]+(\.\d*)|[\d]+(\.\d*)?([eE][+\-]?\d+))(bf16|f16|f32|f64|f128)?"
+        "INTEGER" & eq.def "DECIMAL" | "BINARY" | "HEXADECIMAL" | "OCTAL"    \
+        "DECIMAL" & eq.def "[0-9][0-9_]*"                                    \
+         "BINARY" & eq.def "0[bB]_*[01][01_]*"                               \
+    "HEXADECIMAL" & eq.def "0[xX]_*[0-9a-fA-F][0-9a-fA-F_]*"                 \
+          "OCTAL" & eq.def "0[oO]_*[0-7][0-7_]*"                             \
+          "FLOAT" & eq.def "[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?" \
+                  &      | "[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*"
   $])
+
+String literals are double-quoted and character literals are single-quoted,
+both following Rust's escape grammar (`\n`, `\xNN`, `\u{...}`, ...). Raw
+MLIR snippets for FFI bodies are written between `[{` and `}]`. Line
+comments start with `//`; block comments are `/* ... */` and do not nest.
 
 == Grammar
 
-TODO
+The normative grammar lives in the hand-written parser under
+`crates/reussir-syntax/src/parser/`; its module documentation describes each
+production. A source file is a module header followed by items: `import`
+declarations, `mod` declarations, `struct`/`enum` definitions, `extern`
+blocks, and (possibly `regional`) functions.
+
+Expressions are parsed by precedence climbing with the following operator
+table (tightest to loosest):
+
+#table(
+  columns: (auto, auto, auto),
+  table.header([*level*], [*operators*], [*associativity*]),
+  [6], [prefix `-` `!`; postfix `as T` or suffix chain], [one prefix and one postfix per term],
+  [5], [`*` `/` `%`], [left],
+  [4], [`+` `-`], [left],
+  [3], [`==` `!=` `<` `>` `<=` `>=`], [none],
+  [2], [`&&`], [left],
+  [1], [`||`], [left],
+  [0], [`lhs -> field := rhs`], [none],
+)

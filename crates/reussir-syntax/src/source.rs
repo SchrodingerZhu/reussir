@@ -68,7 +68,7 @@ impl SourceFile {
                     .path
                     .as_deref()
                     .expect("lazy source files always carry an on-disk path");
-                match source.get_or_init(|| match std::fs::read_to_string(path) {
+                source.get_or_init(|| match std::fs::read_to_string(path) {
                     Ok(text) => Ok(Source::from(text)),
                     Err(error) => {
                         tracing::warn!(
@@ -80,10 +80,7 @@ impl SourceFile {
                         );
                         Err(error.to_string())
                     }
-                }) {
-                    Ok(source) => Some(source),
-                    Err(_) => None,
-                }
+                }).as_ref().ok()
             }
             SourceState::Unavailable => None,
         }

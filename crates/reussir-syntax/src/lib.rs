@@ -32,6 +32,11 @@ use source::CharMap;
 // names); its `Resolver` counterpart is re-exported from [`kind`].
 pub use cstree::interning::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
 
+// The single source of truth for the contextual primitive-type and
+// capability names. Consumers that re-encode these sets by hand (the AST
+// emitter, `surface` lowering in `reussir-core`) test against them.
+pub use parser::grammar::{CAPABILITIES, PRIM_TYPES};
+
 /// The result of parsing: a lossless syntax tree (always produced, even in
 /// the presence of errors) plus collected diagnostics.
 pub struct Parse {
@@ -220,6 +225,25 @@ mod tests {
     fn json_of(source: &str) -> serde_json::Value {
         let map = CharMap::new(source);
         parse_ok(source).to_json(&map)
+    }
+
+    /// The AST emitter re-encodes [`PRIM_TYPES`] and [`CAPABILITIES`] in
+    /// `ast::prim_type_json` / the capability match, each ending in
+    /// `unreachable!`. Feeding every name the parser recognizes through the
+    /// emitter turns a missed mirror entry into a test failure instead of a
+    /// panic on valid user input.
+    #[test]
+    fn every_primitive_type_reaches_the_ast_emitter() {
+        for prim in PRIM_TYPES {
+            json_of(&format!("fn f(x: {prim}) {{ }}"));
+        }
+    }
+
+    #[test]
+    fn every_capability_reaches_the_ast_emitter() {
+        for cap in CAPABILITIES {
+            json_of(&format!("struct [{cap}] S {{ x: i64 }}"));
+        }
     }
 
     #[test]
@@ -415,7 +439,10 @@ mod tests {
             let item = unwrap_span(item);
             assert_eq!(item["tag"], "ImportStmt");
             assert_eq!(item["contents"][0], name);
-            assert_eq!(item["contents"][1]["pathSegments"], serde_json::json!(segments));
+            assert_eq!(
+                item["contents"][1]["pathSegments"],
+                serde_json::json!(segments)
+            );
             assert_eq!(item["contents"][1]["pathBasename"], basename);
         }
         // `import` remains a contextual word in identifier positions.

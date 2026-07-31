@@ -245,7 +245,10 @@ mod tests {
             assert_eq!(ids.len(), 2);
             assert_eq!(ids[0].index(), 1);
             assert_eq!(ids[1].index(), 2);
-            assert!(!cache.is_available(ids[1]), "virtual entries stay name-only");
+            assert!(
+                !cache.is_available(ids[1]),
+                "virtual entries stay name-only"
+            );
         });
     }
 

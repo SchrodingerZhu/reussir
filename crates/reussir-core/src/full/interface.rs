@@ -154,6 +154,42 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
     closure
 }
 
+/// Note every record a type's structure mentions, queueing fresh ones for the
+/// field-closure pass.
+fn note_records<'tcx>(ty: Ty<'tcx>, records: &mut FxHashSet<DefId>, queue: &mut VecDeque<DefId>) {
+    match *ty.kind() {
+        TyKind::Record { def, args, .. } => {
+            if records.insert(def) {
+                queue.push_back(def);
+            }
+            for &a in args {
+                note_records(a, records, queue);
+            }
+        }
+        TyKind::Closure { params, ret } => {
+            for &p in params {
+                note_records(p, records, queue);
+            }
+            note_records(ret, records, queue);
+        }
+        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => {
+            note_records(elem, records, queue);
+        }
+        TyKind::Nullable(inner) | TyKind::Arc(inner) => {
+            note_records(inner, records, queue);
+        }
+        TyKind::Int(_)
+        | TyKind::Fp(_)
+        | TyKind::Bool
+        | TyKind::Str
+        | TyKind::Char
+        | TyKind::Unit
+        | TyKind::Generic(_)
+        | TyKind::Hole(_)
+        | TyKind::Bottom => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,7 +273,10 @@ mod tests {
                 "{text}"
             );
             assert!(text.contains("fn #deep(v0 (x): i64) -> i64;"), "{text}");
-            assert!(text.contains("pub fn #ground(v0 (x): i64) -> i64;"), "{text}");
+            assert!(
+                text.contains("pub fn #ground(v0 (x): i64) -> i64;"),
+                "{text}"
+            );
             assert!(!text.contains("unreachable_helper"), "{text}");
             assert!(!text.contains("from_ground"), "{text}");
             let api = text.find("fn #api").expect("api printed");
@@ -264,45 +303,5 @@ mod tests {
             assert!(!body_of("deep") && !body_of("ground") && !body_of("helper"));
             assert!(!body_of("bar"), "ground bodies never ship");
         });
-    }
-}
-
-/// Note every record a type's structure mentions, queueing fresh ones for the
-/// field-closure pass.
-fn note_records<'tcx>(
-    ty: Ty<'tcx>,
-    records: &mut FxHashSet<DefId>,
-    queue: &mut VecDeque<DefId>,
-) {
-    match *ty.kind() {
-        TyKind::Record { def, args, .. } => {
-            if records.insert(def) {
-                queue.push_back(def);
-            }
-            for &a in args {
-                note_records(a, records, queue);
-            }
-        }
-        TyKind::Closure { params, ret } => {
-            for &p in params {
-                note_records(p, records, queue);
-            }
-            note_records(ret, records, queue);
-        }
-        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => {
-            note_records(elem, records, queue);
-        }
-        TyKind::Nullable(inner) | TyKind::Arc(inner) => {
-            note_records(inner, records, queue);
-        }
-        TyKind::Int(_)
-        | TyKind::Fp(_)
-        | TyKind::Bool
-        | TyKind::Str
-        | TyKind::Char
-        | TyKind::Unit
-        | TyKind::Generic(_)
-        | TyKind::Hole(_)
-        | TyKind::Bottom => {}
     }
 }

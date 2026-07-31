@@ -53,7 +53,8 @@ the following capability:
    where capabilities are not related.
 2. A record now has fixed capability, which makes it easier to do type inference.
 
-== TODOs
+== Future Directions
 
-- Describe atomic/nonatomic axis.
+- Describe the atomic/nonatomic axis (the `Arc` and synchronized-cell
+  surface already exercises it).
 - Consider adding more axes.

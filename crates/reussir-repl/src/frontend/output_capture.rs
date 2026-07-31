@@ -112,6 +112,10 @@ mod unix {
             // SAFETY: `read_end` is a fresh pipe fd owned by this thread.
             let mut source = unsafe { std::fs::File::from_raw_fd(read_end) };
             let reader = std::thread::spawn(move || {
+                // The mutex only guards a Vec of captured lines, so a
+                // poisoned lock (some other thread panicked mid-push) still
+                // holds coherent data; recover it rather than aborting the
+                // whole REPL session.
                 let mut buf = [0u8; 4096];
                 let mut pending = Vec::new();
                 loop {
@@ -122,14 +126,16 @@ mod unix {
                             while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
                                 let line: Vec<u8> = pending.drain(..=pos).collect();
                                 let text = String::from_utf8_lossy(&line[..line.len() - 1]);
-                                sink.lock().unwrap().push(text.into_owned());
+                                sink.lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(text.into_owned());
                             }
                         }
                     }
                 }
                 if !pending.is_empty() {
                     let text = String::from_utf8_lossy(&pending).into_owned();
-                    sink.lock().unwrap().push(text);
+                    sink.lock().unwrap_or_else(|e| e.into_inner()).push(text);
                 }
             });
 
@@ -150,7 +156,7 @@ mod unix {
 
         /// Take the lines captured so far.
         pub fn drain(&self) -> Vec<String> {
-            std::mem::take(&mut *self.lines.lock().unwrap())
+            std::mem::take(&mut *self.lines.lock().unwrap_or_else(|e| e.into_inner()))
         }
     }
 

@@ -23,9 +23,9 @@ use reussir_syntax::kind::{Resolver, TokenKey};
 
 use crate::package;
 
+use super::Produced;
 use super::cli::Cli;
 use super::stage::Stage;
-use super::Produced;
 
 /// The arena-scoped front leg for package mode: elaborate every discovered
 /// file as one translation unit, then continue exactly as the single-file

@@ -81,8 +81,12 @@ impl<'tcx> Elaborator<'_, 'tcx> {
         let defs: Vec<DefId> = (0..parsed.defs.len())
             .map(|i| {
                 let info = parsed.defs.info(DefId(i as u32));
-                let segs: Vec<TokenKey> =
-                    info.path.0.iter().map(|k| keys[k.into_u32() as usize]).collect();
+                let segs: Vec<TokenKey> = info
+                    .path
+                    .0
+                    .iter()
+                    .map(|k| keys[k.into_u32() as usize])
+                    .collect();
                 let (name, module) = segs.split_last().expect("paths are never empty");
                 let existing = match info.kind {
                     DefKind::Record => self.defs.lookup_record(&segs),
@@ -309,7 +313,9 @@ impl<'tcx> Remapper<'_, '_, 'tcx> {
                     .collect(),
             ),
             RecordFields::Unnamed(fs) => RecordFields::Unnamed(
-                fs.iter().map(|&(ty, is_mut)| (self.ty(ty), is_mut)).collect(),
+                fs.iter()
+                    .map(|&(ty, is_mut)| (self.ty(ty), is_mut))
+                    .collect(),
             ),
             RecordFields::Variants(vs) => RecordFields::Variants(
                 vs.iter()
@@ -633,13 +639,10 @@ mod tests {
                  fn d() -> i64 { dep::Hidden { v: 1 }; 0 }",
             )],
             |elab| {
-                let messages: Vec<&str> =
-                    elab.reports.iter().map(|r| r.message.as_str()).collect();
+                let messages: Vec<&str> = elab.reports.iter().map(|r| r.message.as_str()).collect();
                 // A private hit is access control, not absence …
                 assert!(
-                    messages
-                        .iter()
-                        .any(|m| *m == "function `private_helper` in package `dep` is private"),
+                    messages.contains(&"function `private_helper` in package `dep` is private"),
                     "{messages:#?}"
                 );
                 assert!(
@@ -658,7 +661,9 @@ mod tests {
                     "{messages:#?}"
                 );
                 assert!(
-                    !messages.iter().any(|m| m.contains("unknown function `dep::private_helper`")),
+                    !messages
+                        .iter()
+                        .any(|m| m.contains("unknown function `dep::private_helper`")),
                     "private must not double-report as unknown: {messages:#?}"
                 );
             },
@@ -681,8 +686,7 @@ mod tests {
                 (&["dep"], "pub fn local(x: i64) -> i64 { x }"),
             ],
             |elab| {
-                let messages: Vec<&str> =
-                    elab.reports.iter().map(|r| r.message.as_str()).collect();
+                let messages: Vec<&str> = elab.reports.iter().map(|r| r.message.as_str()).collect();
                 assert!(
                     messages
                         .iter()
@@ -800,9 +804,9 @@ mod tests {
             )],
             |elab| {
                 assert!(
-                    elab.reports.iter().any(|r| r
-                        .message
-                        .contains("`dep` names a loaded extern package")),
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("`dep` names a loaded extern package")),
                     "{:#?}",
                     elab.reports
                 );

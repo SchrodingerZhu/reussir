@@ -1122,10 +1122,7 @@ mod tests {
     #[test]
     fn rejects_invalid_imports() {
         for (src, expected) in [
-            (
-                "pub import core::intrinsic::math;",
-                "cannot be `pub`",
-            ),
+            ("pub import core::intrinsic::math;", "cannot be `pub`"),
             (
                 "import core::intrinsic::math;\nimport core::intrinsic::array as math;",
                 "already bound",

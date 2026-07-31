@@ -168,9 +168,10 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
     pub fn integer_like(&self, ty: Ty<'tcx>) -> bool {
         match *ty.kind() {
             TyKind::Int(_) | TyKind::Bool | TyKind::Char => true,
-            TyKind::Record { def, .. } => self.records.get(&def).is_some_and(|r| {
-                r.ffi.is_some() || r.default_cap == DefaultCap::Shared
-            }),
+            TyKind::Record { def, .. } => self
+                .records
+                .get(&def)
+                .is_some_and(|r| r.ffi.is_some() || r.default_cap == DefaultCap::Shared),
             _ => false,
         }
     }
@@ -231,6 +232,7 @@ pub struct WrapperParam {
 /// result crosses directly (`unit` or integer-like — mirrors
 /// `hasReturnPtr`); `body` is the user's Rust block (braces included) with
 /// generic placeholders already substituted.
+#[allow(clippy::too_many_arguments)]
 pub fn import_texture(
     preludes: &[&str],
     decls: &BTreeMap<String, WrapperDecl<'_>>,
@@ -252,9 +254,9 @@ pub fn import_texture(
             .map(|p| format!("{}: {}", p.ident, p.rust_ty))
             .collect();
         let ret_ann = ret.map(|r| format!(" -> {r}")).unwrap_or_default();
-        let _ = write!(
+        let _ = writeln!(
             out,
-            "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {body}\n",
+            "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {body}",
             sig.join(", ")
         );
         return out;
@@ -285,16 +287,16 @@ pub fn import_texture(
         (true, Some(r)) => format!(" -> {r}"),
         _ => String::new(),
     };
-    let _ = write!(
+    let _ = writeln!(
         out,
-        "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {{\n",
+        "{attrs}pub unsafe extern \"C\" fn {boundary}({}){ret_ann} {{",
         sig.join(", ")
     );
     if !params.is_empty() {
         let binders: Vec<&str> = params.iter().map(|p| p.ident.as_str()).collect();
-        let _ = write!(
+        let _ = writeln!(
             out,
-            "    let __ReussirArgs({}) = unsafe {{ __reussir_args.read() }};\n",
+            "    let __ReussirArgs({}) = unsafe {{ __reussir_args.read() }};",
             binders.join(", ")
         );
     }

@@ -3329,7 +3329,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let inner = Block::new(&[(Type::index(self.context), loc)]);
         {
             let iv = inner.argument(0).expect("loop induction variable").into();
-            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.to_vec();
             ivs2.push(iv);
             self.splat_nest(&inner, view, value, &dims[1..], ivs2)?;
             inner.append_operation(scf::r#yield(&[], loc));
@@ -3393,7 +3393,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let inner = Block::new(&[(Type::index(self.context), loc)]);
         {
             let iv = inner.argument(0).expect("loop induction variable").into();
-            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.to_vec();
             ivs2.push(iv);
             self.tabulate_nest(&inner, view, closure, kernel_ty, &dims[1..], ivs2)?;
             inner.append_operation(scf::r#yield(&[], loc));
@@ -3472,7 +3472,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         {
             let iv = inner.argument(0).expect("loop induction variable").into();
             let carried = inner.argument(1).expect("loop-carried accumulator").into();
-            let mut ivs2: Vec<Value<'c, '_>> = ivs.iter().copied().collect();
+            let mut ivs2: Vec<Value<'c, '_>> = ivs.to_vec();
             ivs2.push(iv);
             let next = self.fold_nest(
                 &inner,

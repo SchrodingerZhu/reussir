@@ -11,10 +11,10 @@ use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
 
 use crate::{RelocMode, TargetMachine, TargetSpec, emit_to_file};
 
+use super::Produced;
 use super::cli::{Cli, parse_transform_scripts, write_text};
 use super::link::{ScratchMembers, link_product, polyffi_paths};
 use super::stage::Stage;
-use super::Produced;
 
 /// The shared back leg from a produced text/module: write a text dump, or run
 /// the MLIR lowering pipeline and emit the requested artifact.
@@ -82,6 +82,7 @@ pub(crate) fn backend(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn backend_module(
     cli: &Cli,
     context: &reussir_backend::melior::Context,

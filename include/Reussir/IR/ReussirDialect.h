@@ -27,7 +27,8 @@
 #include "Reussir/IR/ReussirDialect.h.inc"
 
 namespace reussir {
-// TODO: this does really work since we need to link external modules
+// Dialect translation registration is not exposed here: it would only work
+// once external module linking is in place.
 // void registerReussirDialectTranslation(mlir::DialectRegistry &registry);
 } // namespace reussir
 

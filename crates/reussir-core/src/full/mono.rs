@@ -59,11 +59,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::FileId;
 
+use crate::full::ffi as ffi_render;
 use crate::full::ffi::{FfiCtx, WrapperDecl, WrapperParam};
 use crate::full::mangle::Mangler;
 use crate::full::mir;
 use crate::full::subst::{Subst, subst_ty};
-use crate::full::{ffi as ffi_render};
 use crate::literal;
 use crate::semi::ctxt::{
     DefaultCap, Elaborator, FfiImport, FfiPrelude, Record, RecordFields, Report, Severity,
@@ -329,7 +329,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     // FFI accumulators. `ffi_mangler` is a second (stateless) mangler the
     // rendering closures borrow, keeping `driver` free for mutation.
     let ffi_mangler = Mangler::new(input.defs, input.resolver);
-    let instance_symbol = |def: DefId, args: &'tcx [Ty<'tcx>]| ffi_mangler.mangle_instance(def, args);
+    let instance_symbol =
+        |def: DefId, args: &'tcx [Ty<'tcx>]| ffi_mangler.mangle_instance(def, args);
     let mut ffi_imports_out: Vec<mir::FfiImport> = Vec::new();
     let mut ffi_textures: Vec<mir::FfiTexture> = Vec::new();
     let mut import_trampolines: Vec<mir::Trampoline> = Vec::new();
@@ -448,10 +449,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                 _ => match fctx.rust_name(return_ty, &mut decls) {
                     Ok(r) => Some(r),
                     Err(err) => {
-                        driver.error(
-                            fimport.span,
-                            format!("`#[ffi(import)]` return type: {err}"),
-                        );
+                        driver.error(fimport.span, format!("`#[ffi(import)]` return type: {err}"));
                         ok = false;
                         None
                     }
@@ -460,8 +458,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             if ok {
                 let param_tys: Vec<Ty<'tcx>> = params.iter().map(|p| p.ty).collect();
                 let trivial = fctx.classify_trivial(&param_tys, return_ty);
-                let ret_direct = matches!(*return_ty.kind(), TyKind::Unit)
-                    || fctx.integer_like(return_ty);
+                let ret_direct =
+                    matches!(*return_ty.kind(), TyKind::Unit) || fctx.integer_like(return_ty);
                 // `[:T:]` placeholders in the body substitute to the
                 // instance's Rust spellings.
                 let mut placeholders: FxHashMap<&str, String> = FxHashMap::default();
@@ -470,8 +468,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                         placeholders.insert(input.resolver.resolve(*gname), rendered);
                     }
                 }
-                let body_text =
-                    ffi_render::substitute_placeholders(&fimport.body, &placeholders);
+                let body_text = ffi_render::substitute_placeholders(&fimport.body, &placeholders);
                 // File ids are one space (externs remap at declaration), so
                 // the per-file prelude pairing holds across both tables.
                 let preludes: Vec<&str> = input
@@ -481,8 +478,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                     .filter(|p| p.file == fimport.file)
                     .map(|p| p.body.as_str())
                     .collect();
-                let boundary_name =
-                    format!("{}_ffi", driver.symbols.resolve(&symbol.0));
+                let boundary_name = format!("{}_ffi", driver.symbols.resolve(&symbol.0));
                 let texture = ffi_render::import_texture(
                     &preludes,
                     &decls,
@@ -1650,7 +1646,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             SwitchCases::Char { cases, default } => {
                 let lowered = self.lower_keyed(cases, subst);
                 M::Char {
-                    cases: self.tcx.alloc_slice(&lowered),
+                    cases: self.tcx.alloc_slice(lowered),
                     default: self.lower_tree_ref(default, subst),
                 }
             }
@@ -2572,8 +2568,8 @@ mod tests {
                 })
                 .program(&dep_elab.elaborated, &strings, &dep_elab.records, &[]);
             let text = edit(text);
-            let parsed = crate::semi::hir::build::parse_program(tcx, &text)
-                .expect("interface re-parses");
+            let parsed =
+                crate::semi::hir::build::parse_program(tcx, &text).expect("interface re-parses");
 
             let interner = Arc::new(reussir_syntax::new_threaded_interner());
             let mut keys = interner.clone();

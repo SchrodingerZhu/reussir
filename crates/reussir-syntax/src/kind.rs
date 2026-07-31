@@ -221,14 +221,7 @@ impl SyntaxKind {
     pub fn starts_stmt(self) -> bool {
         matches!(
             self,
-            FnKw | StructKw
-                | EnumKw
-                | PubKw
-                | ModKw
-                | ExternKw
-                | RegionalKw
-                | ImportKw
-                | Pound
+            FnKw | StructKw | EnumKw | PubKw | ModKw | ExternKw | RegionalKw | ImportKw | Pound
         )
     }
 

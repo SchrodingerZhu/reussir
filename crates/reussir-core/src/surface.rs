@@ -1016,10 +1016,7 @@ fn attribute_of(node: &ResolvedNode) -> Attribute {
         {
             // `key = "value"`; a missing/ill-typed value already produced a
             // parse error, so silently skipping here is fine.
-            if let Some(value) = toks
-                .get(idx + 2)
-                .filter(|value| value.kind() == StringLit)
-            {
+            if let Some(value) = toks.get(idx + 2).filter(|value| value.kind() == StringLit) {
                 values.push((key(tok), unescape_string(value.text())));
             }
             idx += 3;
@@ -1293,6 +1290,38 @@ mod tests {
         parse
     }
 
+    /// `prim_type` and the capability match re-encode the parser's
+    /// `PRIM_TYPES`/`CAPABILITIES` sets by hand, each ending in
+    /// `unreachable!`. Forcing every name the parser recognizes through the
+    /// surface view turns a missed mirror entry into a test failure instead
+    /// of a compiler panic on valid user input.
+    #[test]
+    fn every_primitive_type_reaches_the_surface_view() {
+        for prim in reussir_syntax::PRIM_TYPES {
+            let parse = parse(&format!("fn f(x: {prim}) {{ }}"));
+            let prog = program(&parse.root);
+            let StmtKind::Function(f) = prog[0].kind() else {
+                panic!("expected a function for `{prim}`");
+            };
+            // `Type::kind` is the lazy view that runs `prim_type`.
+            f.params[0].1.kind();
+        }
+    }
+
+    #[test]
+    fn every_capability_reaches_the_surface_view() {
+        for cap in reussir_syntax::CAPABILITIES {
+            let parse = parse(&format!("struct [{cap}] S {{ x: i64 }}"));
+            let prog = program(&parse.root);
+            let StmtKind::Record(r) = prog[0].kind() else {
+                panic!("expected a record for `{cap}`");
+            };
+            // Every parser-recognized capability must map onto the enum;
+            // whether it is *valid* as a record default is semi's business.
+            let _ = r.default_cap;
+        }
+    }
+
     #[test]
     fn views_a_function_with_calls() {
         let parse = parse(
@@ -1350,11 +1379,7 @@ mod tests {
         );
         let prog = program(&parse.root);
         assert_eq!(prog.len(), 3);
-        let cases = [
-            ("math", "math"),
-            ("arr", "array"),
-            ("rt", "sqrt"),
-        ];
+        let cases = [("math", "math"), ("arr", "array"), ("rt", "sqrt")];
         for (stmt, (name, basename)) in prog.iter().zip(cases) {
             let StmtKind::Import(decl) = stmt.kind() else {
                 panic!("expected an import");

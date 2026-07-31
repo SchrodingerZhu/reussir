@@ -415,9 +415,9 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
           branchResults.push_back(
               oneShotTokenReuse(nestedRegion, availableTokens, reuses, frees,
                                 aliasAnalyzer, domInfo, dfsOrder));
-        if (branchResults.empty()) {
-          llvm::errs() << "[WARN] RegionBranch with no regions?\n";
-        } else {
+        // A RegionBranch op with no regions has nothing to intersect;
+        // availableTokens flows through unchanged.
+        if (!branchResults.empty()) {
           // effective intersect with available token at parent
           // this rule out inner-scope created tokens from escaping parent
           // scope.

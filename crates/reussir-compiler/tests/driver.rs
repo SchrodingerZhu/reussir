@@ -380,12 +380,14 @@ module {
         "printf '%s\n' \"$@\" > \"$FAKE_RUSTC_LOG\"\nexit 1\n",
     );
     let inherited_path = std::env::var_os("PATH");
-    let path = std::env::join_paths(std::iter::once(bin.clone()).chain(
-        inherited_path
-            .as_deref()
-            .into_iter()
-            .flat_map(std::env::split_paths),
-    ))
+    let path = std::env::join_paths(
+        std::iter::once(bin.clone()).chain(
+            inherited_path
+                .as_deref()
+                .into_iter()
+                .flat_map(std::env::split_paths),
+        ),
+    )
     .expect("construct PATH");
     let log = dir.path().join("rustc-args");
     let output = Command::new(env!("CARGO_BIN_EXE_rrc"))
@@ -417,7 +419,10 @@ module {
         .map(|entry| entry.file_name())
         .filter(|name| name.to_string_lossy().starts_with("reussir_rust_module_"))
         .collect();
-    assert!(leftovers.is_empty(), "temporary files leaked: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "temporary files leaked: {leftovers:?}"
+    );
 }
 
 /// A linked product's launcher is another Rust compilation; it must use the
@@ -851,9 +856,18 @@ fn emits_a_package_interface() {
     );
     // The generic ships whole; the grounds it reaches are bodyless
     // prototypes; the unreachable private function is absent.
-    assert!(rri.contains("pub fn #demo::api<$0 (T)>(v0 (x): $0) -> i64 in 0"), "{rri}");
-    assert!(rri.contains("fn #demo::hidden(v0 (s): #demo::Secret) -> i64 in 0"), "{rri}");
-    assert!(rri.contains("pub fn #demo::util::mul(v0 (a): i64, v1 (b): i64) -> i64 in 1"), "{rri}");
+    assert!(
+        rri.contains("pub fn #demo::api<$0 (T)>(v0 (x): $0) -> i64 in 0"),
+        "{rri}"
+    );
+    assert!(
+        rri.contains("fn #demo::hidden(v0 (s): #demo::Secret) -> i64 in 0"),
+        "{rri}"
+    );
+    assert!(
+        rri.contains("pub fn #demo::util::mul(v0 (a): i64, v1 (b): i64) -> i64 in 1"),
+        "{rri}"
+    );
     assert!(!rri.contains("stays_home"), "{rri}");
     // The file table is package-root-relative.
     assert!(rri.contains("0 = \"lib.rr\";"), "{rri}");
