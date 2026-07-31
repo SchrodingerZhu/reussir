@@ -1,8 +1,9 @@
 <p align="center">
-  <img src="misc/logos/reussir_banner_1600x800.svg" alt="Reussir Logo" width="600">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="misc/logos/reussir-horizontal-dark.svg">
+    <img src="misc/logos/reussir-horizontal-color.svg" alt="Reussir" width="600">
+  </picture>
 </p>
-
-<h1 align="center">Reussir</h1>
 
 <p align="center">
   <strong>An MLIR-based compiler framework for token-based memory reuse in RC-managed functional programs</strong>

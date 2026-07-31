@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">Reussir horizontal logo — dark background</title>
+  <desc id="desc">The Reussir Sentinel mark beside its custom vector wordmark.</desc>
+  <g transform="scale(.703125)">
+    <defs>
+    <linearGradient id="wing-left" x1="34" y1="62" x2="211" y2="292" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF7A8C"/>
+      <stop offset=".52" stop-color="#9B7BFF"/>
+      <stop offset="1" stop-color="#55D6FF"/>
+    </linearGradient>
+    <linearGradient id="wing-right" x1="478" y1="62" x2="301" y2="292" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF7A8C"/>
+      <stop offset=".52" stop-color="#9B7BFF"/>
+      <stop offset="1" stop-color="#55D6FF"/>
+    </linearGradient>
+    <linearGradient id="head" x1="205" y1="42" x2="298" y2="176" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF8A70"/>
+      <stop offset="1" stop-color="#9577FF"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="185" y1="190" x2="326" y2="427" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6755DD"/>
+      <stop offset="1" stop-color="#00869B"/>
+    </linearGradient>
+    <clipPath id="left-wing-clip">
+      <path d="M202 191 143 98 50 58l38 76-59-17 48 62-52 18 87 42-42 43 107 10 35-72Z"/>
+    </clipPath>
+    <clipPath id="right-wing-clip">
+      <path d="m310 191 59-93 93-40-38 76 59-17-48 62 52 18-87 42 42 43-107 10-35-72Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- The broad, symmetrical wings establish the Sentinel silhouette. -->
+  <path d="M202 191 143 98 50 58l38 76-59-17 48 62-52 18 87 42-42 43 107 10 35-72Z"
+        fill="url(#wing-left)" stroke="#F5F1FF" stroke-width="16" stroke-linejoin="miter"/>
+  <path d="m310 191 59-93 93-40-38 76 59-17-48 62 52 18-87 42 42 43-107 10-35-72Z"
+        fill="url(#wing-right)" stroke="#F5F1FF" stroke-width="16" stroke-linejoin="miter"/>
+  <g fill="none" stroke="#F5F1FF" stroke-width="7" stroke-linejoin="miter" opacity=".54">
+    <g clip-path="url(#left-wing-clip)">
+      <path d="m55 75 123 217M36 122l141 170M31 194l146 98M83 136l127 84M78 180l132 40M112 239l98-19"/>
+    </g>
+    <g clip-path="url(#right-wing-clip)">
+      <path d="m457 75-123 217m142-170L335 292m146-98-146 98m94-156-127 84m132-40-132 40m98 19-98-19"/>
+    </g>
+  </g>
+
+  <!-- Mechanical forelimbs emerge from behind the shield. -->
+  <path d="M224 148 194 184 157 211 175 250M288 148l30 36 37 27-18 39"
+        fill="none" stroke="#F5F1FF" stroke-width="28" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M224 148 194 184 157 211 175 250M288 148l30 36 37 27-18 39"
+        fill="none" stroke="#9B7BFF" stroke-width="11" stroke-linecap="square" stroke-linejoin="miter"/>
+
+  <!-- Horns, eye apertures, and a plated muzzle form the cyber-dragon head. -->
+  <path fill="url(#head)" fill-rule="evenodd" stroke="#F5F1FF" stroke-width="7" stroke-linejoin="miter"
+        d="m256 37-26 34-37-18 16 42-34 18 36 17 7 32 23 22 15-15 15 15 23-22 7-32 36-17-34-18 16-42-37 18Zm-44 73 32 6-22 11Zm88 0-32 6 22 11Z"/>
+  <path d="m232 122 24-14 24 14-6 31-18 17-18-17Z"
+        fill="#FF9C7D" stroke="#F5F1FF" stroke-width="6" stroke-linejoin="miter"/>
+  <path d="m241 145 15 9 15-9M230 72l26 20 26-20"
+        fill="none" stroke="#F5F1FF" stroke-width="7" stroke-linecap="square" stroke-linejoin="miter" opacity=".78"/>
+
+  <!-- The shield is the visual anchor; lambda receives the warm focal color. -->
+  <path d="m256 172 94 37-17 148-77 82-77-82-17-148Z"
+        fill="url(#shield)" stroke="#F5F1FF" stroke-width="19" stroke-linejoin="miter"/>
+  <path d="m193 225 63-25 63 25"
+        fill="none" stroke="#F5F1FF" stroke-width="8" stroke-linejoin="miter" opacity=".78"/>
+  <path d="M211 348 246 243q8-24 17 0l39 105M251 278l-38 70"
+        fill="none" stroke="#FFE174" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Claws overlap the rim so “holding the shield” remains literal. -->
+  <path d="m179 187-39 13 23 16-24 15 42 7 22-30-19 6 11-20Z"
+        fill="#FF7A8C" stroke="#F5F1FF" stroke-width="7" stroke-linejoin="miter"/>
+  <path d="m333 187 39 13-23 16 24 15-42 7-22-30 19 6-11-20Z"
+        fill="#FF7A8C" stroke="#F5F1FF" stroke-width="7" stroke-linejoin="miter"/>
+  </g>
+  <g transform="translate(410 111) scale(1.15)" color="#F5F1FF">
+    <g fill="none" stroke="currentColor" stroke-width="12" stroke-linecap="square" stroke-linejoin="miter">
+    <!-- R -->
+    <path d="M16 104V16h38l16 15v22L54 68H16M48 68l26 36"/>
+    <!-- E -->
+    <path d="M160 16h-56v88h56M104 59h45"/>
+    <!-- U -->
+    <path d="M184 16v63l24 25h20l24-25V16"/>
+    <!-- S -->
+    <path d="M344 16h-52l-14 14v20l14 12h38l14 12v16l-14 14h-52"/>
+    <!-- S -->
+    <path d="M438 16h-52l-14 14v20l14 12h38l14 12v16l-14 14h-52"/>
+    <!-- I -->
+    <path d="M466 16h64M498 16v88M466 104h64"/>
+    <!-- R -->
+    <path d="M554 104V16h38l16 15v22l-16 15h-38M586 68l26 36"/>
+  </g>
+  </g>
+</svg>
