@@ -1,8 +1,12 @@
 name: Nightly Release
 
+# Every push to main refreshes the rolling `nightly` prerelease; pushing a
+# `v*` tag runs the same build matrix and tests but publishes a versioned
+# release under that tag instead (marked latest, nightly untouched).
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 permissions:
@@ -98,9 +102,13 @@ jobs:
 
       - name: Package
         run: |
-          DATE=$(date +%Y-%m-%d)
           ARCH=$(uname -m)
-          PREFIX="reussir-nightly-${DATE}-linux-${ARCH}"
+          # Tag builds carry the version; main builds carry the date.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            PREFIX="reussir-${GITHUB_REF_NAME}-linux-${ARCH}"
+          else
+            PREFIX="reussir-nightly-$(date +%Y-%m-%d)-linux-${ARCH}"
+          fi
           mkdir -p "${PREFIX}/bin"
 
           # Only the user-facing toolchain ships: rrc and rrepl link
@@ -210,9 +218,13 @@ jobs:
 
       - name: Package
         run: |
-          DATE=$(date +%Y-%m-%d)
           ARCH=$(uname -m)
-          PREFIX="reussir-nightly-${DATE}-macos-${ARCH}"
+          # Tag builds carry the version; main builds carry the date.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            PREFIX="reussir-${GITHUB_REF_NAME}-macos-${ARCH}"
+          else
+            PREFIX="reussir-nightly-$(date +%Y-%m-%d)-macos-${ARCH}"
+          fi
           mkdir -p "${PREFIX}/bin"
 
           # Only the user-facing toolchain ships: rrc and rrepl link
@@ -501,8 +513,13 @@ jobs:
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          $date = Get-Date -Format "yyyy-MM-dd"
-          $prefix = "reussir-nightly-$date-windows-x64-msvc"
+          # Tag builds carry the version; main builds carry the date.
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $prefix = "reussir-$($env:GITHUB_REF_NAME)-windows-x64-msvc"
+          } else {
+            $date = Get-Date -Format "yyyy-MM-dd"
+            $prefix = "reussir-nightly-$date-windows-x64-msvc"
+          }
           New-Item -ItemType Directory -Force -Path "$prefix\bin" | Out-Null
 
           # Only the user-facing toolchain ships: rrc and rrepl link
@@ -566,12 +583,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # The rolling-nightly bookkeeping only applies to main builds: a tag
+      # build publishes under its own immutable tag and must leave the
+      # nightly release alone.
       - name: Delete existing nightly release
+        if: github.ref_type != 'tag'
         run: gh release delete nightly --yes --cleanup-tag || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Force-tag nightly
+        if: github.ref_type != 'tag'
         run: |
           git tag -f nightly
           git push origin nightly --force
@@ -586,6 +608,7 @@ jobs:
         run: ls -lh artifacts/
 
       - name: Create or update nightly release
+        if: github.ref_type != 'tag'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly
@@ -597,6 +620,33 @@ jobs:
             artifacts/*.zip
           body: |
             Automated nightly build from `${{ github.sha }}`.
+
+            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), and `rrepl` (REPL). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
+
+            **Platforms:**
+            - Linux x86_64 (built against LLVM 22)
+            - Linux aarch64 (built against LLVM 22)
+            - macOS ARM64 (built against Homebrew LLVM)
+            - Windows x64 (built against MSVC LLVM via conda-forge)
+
+            **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
+
+            Compiling programs requires a Rust toolchain (`rustc`/`cargo`) on `PATH`: the bundled `rene` bakes the `reussir-rt` runtime from its embedded source with your toolchain on first use — no toolchain or prebuilt runtime ships in this archive.
+
+      - name: Create versioned release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Reussir ${{ github.ref_name }}"
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.xz
+            artifacts/*.zip
+          body: |
+            Reussir ${{ github.ref_name }}, built from `${{ github.sha }}`. See `CHANGELOG.md` for the release notes.
 
             **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), and `rrepl` (REPL). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
