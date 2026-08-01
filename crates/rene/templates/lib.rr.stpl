@@ -1,0 +1,12 @@
+//! `<%= name %>`'s crate root: `rene` hands `src/` to `rrc` as the package root,
+//! so this file is module `<%= name %>` and its `mod` declarations discover the
+//! rest of the sources (`mod util;` -> `src/util.rr`).
+
+<% if bin { %>#[main]
+pub fn entry() {
+    let result = answer();
+}
+
+<% } %>pub fn answer() -> u64 {
+    42
+}

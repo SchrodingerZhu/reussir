@@ -50,6 +50,13 @@ zstd.workspace = true
 # from the pool's worker threads (see `pool`).
 async-lock = "3"
 indicatif = "0.18.6"
+# The `rene new -i` form: a one-screen terminal UI on stderr (stdout stays
+# machine-readable). The crossterm backend is re-exported by ratatui, so the
+# event types stay in lockstep.
+ratatui.workspace = true
+# Renders `rene new`'s scaffold files from `templates/*.stpl`, compiled in
+# at build time so the binary stays self-contained.
+sailfish = "0.9"
 
 [build-dependencies]
 # Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its

@@ -1,0 +1,2 @@
+# The rene build directory (`rene build --build-dir` overrides it).
+/reussir-build/

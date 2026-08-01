@@ -1,0 +1,36 @@
+// `rene new`, end to end: the scaffold's manifest carries the requested
+// target kinds and cross triple, the crate root carries the entry point,
+// and the fresh package scans cleanly through the real `rrc` (`inspect` is
+// the cheapest command exercising the whole load-scan path — no runtime
+// bake). `--vcs none` keeps git out of the test.
+
+// RUN: rm -rf %t.pkg
+// RUN: %rene new %t.pkg --name fresh --bin --lib --target wasm32-wasip1 --vcs none
+// RUN: %FileCheck %s --check-prefix=MANIFEST < %t.pkg/rene.ncl
+// RUN: %FileCheck %s --check-prefix=ROOT < %t.pkg/src/lib.rr
+
+// The commented manifest: the package name bound with `let` (the template
+// teaches the recursive-record pitfall), one target per requested kind —
+// the executable claims the bare name, the library key is suffixed to keep
+// the map keys apart — and the cross triple defaulted into both built-in
+// profiles.
+// MANIFEST: let pkg_name = "fresh" in
+// MANIFEST: let cross_target = { default_target_triple = "wasm32-wasip1" } in
+// MANIFEST: fresh = { kind = 'executable },
+// MANIFEST: fresh_dylib = { kind = 'dynlib },
+// MANIFEST: dev = cross_target,
+// MANIFEST: release = cross_target,
+
+// An executable package scaffolds an entry point.
+// ROOT: #[main]
+// ROOT: pub fn entry()
+
+// A second scaffold into the same directory refuses rather than overwrites.
+// RUN: %not %rene new %t.pkg --vcs none 2>&1 | %FileCheck %s --check-prefix=OCCUPIED
+// OCCUPIED: not empty
+
+// The scaffold scans: `inspect` records the source graph through
+// `rrc --scan-deps` and reports the fresh package up to date.
+// RUN: %rene inspect --manifest-path %t.pkg/rene.ncl --build-dir %t.bdir | %FileCheck %s --check-prefix=INSPECT
+// INSPECT: "package": "fresh"
+// INSPECT: "state": "up-to-date"
