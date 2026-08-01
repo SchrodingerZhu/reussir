@@ -747,6 +747,30 @@ mod tests {
         });
     }
 
+    /// An `if` with no `else` is unit, so a non-unit then-branch is a type
+    /// error reported at the branch itself.
+    #[test]
+    fn if_without_else_requires_a_unit_then_branch() {
+        with_tcx(|tcx| {
+            let source = "fn bad(c: bool) -> i32 { if c { true } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(elab.has_errors(), "expected a unit mismatch error");
+            let messages = elab
+                .reports
+                .iter()
+                .map(|r| r.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                messages.contains("expected `unit`, found `bool`"),
+                "then-branch should be checked against unit: {messages}"
+            );
+        });
+    }
+
     /// Diagnostics spell types the way the surface does (`i32`, `bool`,
     /// `Nullable<TestCell<u64>>`, `[rigid] …`), never the internal `Debug` form
     /// (`Int(Signed(32))`).

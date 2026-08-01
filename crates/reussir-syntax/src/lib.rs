@@ -312,6 +312,8 @@ mod tests {
             "f(1, 2)",
             "let a = 10; let b = 20; a + b",
             "if true { 1 } else { 0 }",
+            // The `else` branch may be omitted (unit `if`).
+            "if true { f() }",
             "{ let x = 1; x }",
             "|x: i32| x + 1",
             // `regional` NOT followed by `fn` is a regional expression.
@@ -377,6 +379,40 @@ mod tests {
         json_of(
             "fn f(x: i32, y: i32) -> i32 {\n    let z = x * 2 + y % 3;\n    if (z >= 0 && !(z == 4)) { z } else { -z }\n}",
         );
+    }
+
+    /// `if` without `else` is sugar for an empty `else {}`: the emitted AST
+    /// still carries three `If` parts, the last being an empty block.
+    #[test]
+    fn if_without_else_desugars_to_an_empty_else_block() {
+        fn find_if(v: &serde_json::Value) -> Option<&serde_json::Value> {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if map.get("tag").and_then(|t| t.as_str()) == Some("If") {
+                        return Some(v);
+                    }
+                    map.values().find_map(find_if)
+                }
+                serde_json::Value::Array(items) => items.iter().find_map(find_if),
+                _ => None,
+            }
+        }
+
+        let json = json_of("fn f(c: bool) { if c { f(c) } }");
+        let if_node = find_if(&json).expect("an If node");
+        let parts = if_node["contents"].as_array().expect("If parts");
+        assert_eq!(parts.len(), 3, "desugared If still has three parts");
+        assert_eq!(
+            parts[2],
+            serde_json::json!({ "tag": "ExprSeq", "contents": [] })
+        );
+    }
+
+    /// A dangling `else` with no block is still a parse error.
+    #[test]
+    fn if_with_dangling_else_still_errors() {
+        let parse = parse("fn f(c: bool) { if c { } else }");
+        assert!(!parse.ok());
     }
 
     #[test]

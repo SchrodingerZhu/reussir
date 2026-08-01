@@ -612,7 +612,9 @@ pub struct CtorCall {
 pub enum ExprKind {
     ConstExpr(Const),
     ExprSeq(Vec<Expr>),
-    If(Expr, Expr, Expr),
+    /// `if cond { then } else { other }`; `None` for the else branch means it
+    /// was omitted, which is sugar for an empty (unit) `else {}`.
+    If(Expr, Expr, Option<Expr>),
     Let(Spanned<TokenKey>, Option<(Type, bool)>, Expr),
     Match(Expr, Vec<(Pattern, Expr)>),
     RegionalExpr(Expr),
@@ -690,7 +692,7 @@ impl Expr {
                 let mut parts = expr_children(node);
                 let cond = Expr::new(parts.next().expect("condition"));
                 let then = Expr::new(parts.next().expect("then branch"));
-                let other = Expr::new(parts.next().expect("else branch"));
+                let other = parts.next().map(Expr::new);
                 ExprKind::If(cond, then, other)
             }
             LetExpr => {
