@@ -84,8 +84,9 @@ impl Drop for RawScreen {
     }
 }
 
-/// The Sentinel mark (a distribution copy from reussir-lang/artwork; see
-/// `misc/logos/README.md`), embedded so the binary stays self-contained.
+/// The Sentinel mark, embedded so the binary stays self-contained. A
+/// distribution copy from reussir-lang/artwork (Sentinel design language
+/// v1.0.0) — do not hand-edit; re-copy from that repository instead.
 const SENTINEL_PNG: &[u8] = include_bytes!("logo.png");
 
 /// Rows the mark spans in the dialog when a picture protocol draws it.
