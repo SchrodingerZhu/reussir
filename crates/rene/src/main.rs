@@ -1,5 +1,10 @@
 //! `rene`: the Reussir package manager driver.
 //!
+//! `rene new` scaffolds a fresh package: a directory with a commented
+//! `rene.ncl`, a `src/lib.rr` crate root for the requested target kinds
+//! (`--bin`, `--lib`, `--staticlib`, freely combined; `--target` pins a
+//! cross triple), and a git repository with the build directory ignored;
+//! `--interactive` asks about each choice instead.
 //! `rene build` locates the package manifest (`rene.ncl`), takes the build
 //! directory's lock (the status database), records the package's source graph
 //! (re-scanning it through `rrc --scan-deps` only when something moved), bakes
@@ -21,7 +26,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, exec, fresh, manifest, plan, pool, resolve, rt};
+use rene::{compile, deps, exec, fresh, manifest, new, plan, pool, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -56,6 +61,52 @@ enum Command {
     Build(BuildArgs),
     Clean(CleanArgs),
     Inspect(InspectArgs),
+    New(NewArgs),
+}
+
+/// Create a new package: a directory with a commented `rene.ncl` manifest, a
+/// `src/lib.rr` crate root, and (by default) a git repository ignoring the
+/// build directory.
+#[derive(palc::Args)]
+struct NewArgs {
+    /// Directory to create the package in; its final component names the
+    /// package unless `--name` says otherwise.
+    path: PathBuf,
+
+    /// The package's name (`rrc --package-name`, the first segment of every
+    /// item's module path). Defaults to the directory's name.
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Declare an executable target — the default when no kind is requested.
+    /// Kinds combine: `--bin --lib` declares both products over one source
+    /// tree.
+    #[arg(long)]
+    bin: bool,
+
+    /// Declare a dynamic library target.
+    #[arg(long)]
+    lib: bool,
+
+    /// Declare a static library target.
+    #[arg(long)]
+    staticlib: bool,
+
+    /// Record TRIPLE as every profile's default machine target, so a plain
+    /// `rene build` cross-compiles (`rene build --target` still overrides).
+    #[arg(long, value_name = "TRIPLE")]
+    target: Option<String>,
+
+    /// Version control to set up in the new package: `git` (the default)
+    /// initializes a repository — unless already inside one — and writes a
+    /// `.gitignore`; `none` does neither.
+    #[arg(long, value_name = "VCS")]
+    vcs: Option<new::Vcs>,
+
+    /// Ask about each choice instead (the flags above become the defaults
+    /// an empty answer keeps).
+    #[arg(short = 'i', long)]
+    interactive: bool,
 }
 
 /// Build the current package: bake the bundled reussir-rt runtime if needed,
@@ -189,6 +240,16 @@ fn main() -> ExitCode {
             Command::Build(args) => build(&args).await,
             Command::Clean(args) => clean(&args.location),
             Command::Inspect(args) => inspect(&args).await,
+            Command::New(args) => new::run(&new::Options {
+                path: args.path,
+                name: args.name,
+                bin: args.bin,
+                lib: args.lib,
+                staticlib: args.staticlib,
+                target: args.target,
+                vcs: args.vcs,
+                interactive: args.interactive,
+            }),
         }
     });
     match result {

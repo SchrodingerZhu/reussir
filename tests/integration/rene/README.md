@@ -9,6 +9,7 @@ program exercises.
 
 | test           | shape                                                        |
 |----------------|--------------------------------------------------------------|
+| `new.rr`       | `rene new` scaffolding: kinds, cross target, the first scan  |
 | `build.rr`     | one package, targets/profiles, freshness, plan inspection    |
 | `deps.rr`      | dependency graph views, pubgrub feasibility, build plan      |
 | `source_graph.rr` | the source-graph table and its rebuild conditions         |

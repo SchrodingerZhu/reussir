@@ -6,8 +6,9 @@
 //! directory (`reussir-build/` by default) whose status lives in a redb
 //! database: the baked bundled `reussir-rt` runtime ([`rt`]), the package's
 //! source graph as `rrc --scan-deps` reported it ([`deps`]), and the built
-//! products of the manifest's declared targets ([`compile`]). Dependency
-//! resolution and project scaffolding come later.
+//! products of the manifest's declared targets ([`compile`]). Dependencies
+//! resolve over local paths ([`resolve`]), and `rene new` scaffolds a fresh
+//! package ([`new`]).
 
 pub mod compile;
 pub mod db;
@@ -15,6 +16,7 @@ pub mod deps;
 pub mod exec;
 pub mod fresh;
 pub mod manifest;
+pub mod new;
 pub mod plan;
 pub mod pool;
 pub mod resolve;

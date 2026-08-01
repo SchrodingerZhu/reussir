@@ -1168,3 +1168,106 @@ fn build_runs_the_dependency_pipeline() {
         "the root re-ran despite identical upstream bytes: {after:#?}"
     );
 }
+
+/// `rene new` end to end: the flags land in the scaffold, the manifest the
+/// binary writes really evaluates, and stdout stays silent (it is reserved
+/// for machine-readable listings).
+#[test]
+fn new_scaffolds_a_package_the_loader_accepts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("hello");
+    let out = run(rene(&["new", "--vcs", "none", "--lib"]).arg(&dir));
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(out.stdout.is_empty(), "stdout is for machine output");
+
+    let loaded = rene::manifest::load(&dir.join("rene.ncl")).unwrap();
+    assert_eq!(loaded.manifest.package.name, "hello");
+    assert_eq!(
+        loaded.manifest.targets["hello"].kind,
+        rene::manifest::TargetKind::Dynlib
+    );
+    assert!(!dir.join(".gitignore").exists(), "--vcs none writes none");
+
+    // Occupied now: a rerun must refuse rather than overwrite.
+    let out = run(rene(&["new", "--vcs", "none"]).arg(&dir));
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("not empty"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+/// Interactive mode reads the answers from stdin; typed answers override
+/// the flag-provided defaults, and empty ones keep them.
+#[test]
+fn new_interactive_answers_override_the_flag_defaults() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("scaffold");
+    // name: typed; version: kept; executable: declined (flag default was
+    // yes); dynlib: accepted; staticlib: kept (no); triple: typed; git:
+    // declined.
+    let answers = "calc\n\nn\ny\n\nwasm32-wasip1\nn\n";
+    let mut child = rene(&["new", "-i"])
+        .arg(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(answers.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    let manifest = rene::manifest::load(&dir.join("rene.ncl"))
+        .unwrap()
+        .manifest;
+    assert_eq!(manifest.package.name, "calc");
+    assert_eq!(manifest.package.version.as_deref(), Some("0.1.0"));
+    assert_eq!(manifest.targets.len(), 1, "{:?}", manifest.targets);
+    assert_eq!(
+        manifest.targets["calc"].kind,
+        rene::manifest::TargetKind::Dynlib
+    );
+    let dev = rene::manifest::resolve_profile(&manifest, "dev").unwrap();
+    assert_eq!(dev.default_target_triple.as_deref(), Some("wasm32-wasip1"));
+    assert!(!dir.join(".git").exists(), "git was declined");
+}
+
+/// The git default: a repository outside any work tree gets its own, a
+/// scaffold nested inside one only gets the ignore file.
+#[test]
+fn new_inits_git_once_and_never_nested() {
+    if !std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        eprintln!("skipping: no git on PATH");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = tmp.path().join("outer");
+    let out = run(rene(&["new"]).arg(&outer));
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(outer.join(".git").exists());
+    let ignore = std::fs::read_to_string(outer.join(".gitignore")).unwrap();
+    assert!(ignore.contains("/reussir-build/"), "{ignore}");
+
+    let nested = outer.join("vendor").join("inner");
+    let out = run(rene(&["new"]).arg(&nested));
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        !nested.join(".git").exists(),
+        "must not nest a repository inside `outer`'s"
+    );
+    assert!(nested.join(".gitignore").exists());
+}

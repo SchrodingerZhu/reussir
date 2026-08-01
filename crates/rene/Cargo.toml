@@ -50,6 +50,22 @@ zstd.workspace = true
 # from the pool's worker threads (see `pool`).
 async-lock = "3"
 indicatif = "0.18.6"
+# The `rene new -i` wizard: a stepped terminal UI on stderr (stdout stays
+# machine-readable). The crossterm backend is re-exported by ratatui, so the
+# event types stay in lockstep.
+ratatui.workspace = true
+# Draws the Sentinel mark in the wizard through whatever the terminal
+# supports (kitty graphics, iTerm2 inline images, sixel), degrading to
+# half-block cells everywhere else. No default features: they pull the chafa
+# C library (a pkg-config build dependency on every platform) and the full
+# image codec set.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+# Decodes the embedded logo PNG for ratatui-image; PNG is the only codec
+# compiled in.
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Renders `rene new`'s scaffold files from `templates/*.stpl`, compiled in
+# at build time so the binary stays self-contained.
+sailfish = "0.9"
 
 [build-dependencies]
 # Pack the `reussir-rt` source tree (tar + zstd) into the binary, with its

@@ -29,6 +29,13 @@ sources under `src/` (`src/lib.rr` is the root module). A minimal manifest:
 Commands (`rene --help` and `rene build --help` for the full lists):
 
 ```bash
+rene new mypkg                    # scaffold a package: commented rene.ncl,
+                                  # src/lib.rr, git repo with reussir-build/
+                                  # ignored (--vcs none to skip)
+rene new mypkg --lib --staticlib  # target kinds (--bin/--lib/--staticlib,
+                                  # combinable; --bin is the default)
+rene new mypkg --target wasm32-wasip1  # cross target baked into the profiles
+rene new mypkg -i                 # ask about each choice interactively
 rene build                        # every declared target, dev profile
 rene build --profile release      # a built-in (dev, release) or manifest profile
 rene build --bin app --lib util   # only the named targets
