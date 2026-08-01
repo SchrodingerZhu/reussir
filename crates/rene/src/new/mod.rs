@@ -9,7 +9,7 @@
 //! cross-compiles.
 //!
 //! `--interactive` asks about each choice instead, with the flags providing
-//! the defaults: a one-screen form ([`interactive`]) on a real terminal,
+//! the defaults: a stepped wizard ([`interactive`]) on a real terminal,
 //! plain line prompts when stdin or stderr is piped. The generated files are
 //! rendered from `templates/*.stpl` (sailfish, compiled in at build time);
 //! prompts and progress go to stderr, per the crate's convention that stdout
@@ -183,10 +183,10 @@ fn resolve(opts: &Options) -> Result<Plan, String> {
         });
     }
 
-    // A real terminal gets the form; piped stdin or stderr (scripts, tests)
-    // falls back to one plain line prompt per choice.
+    // A real terminal gets the wizard; piped stdin or stderr (scripts,
+    // tests) falls back to one plain line prompt per choice.
     if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
-        interactive::form(opts, &default_name)
+        interactive::wizard(opts, &default_name)
     } else {
         prompt_lines(opts, &default_name)
     }
