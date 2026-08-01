@@ -18,6 +18,10 @@ rustc-ice-*
 /build-*
 .cache
 dist-*
+# rene's per-package build directory and rrc's rust-module temp files, as the
+# integration tests scatter both inside tests/integration/ packages
+reussir-build/
+reussir_rust_module_*
 
 # Environment
 .envrc

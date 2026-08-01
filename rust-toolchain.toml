@@ -4,3 +4,4 @@ channel = "nightly-2026-02-15"
 # compile std themselves (-Zbuild-std, see crates/reussir-rt/CMakeLists.txt).
 # Declaring it here provisions it through rustup and the Nix flake alike.
 components = ["rust-src"]
+targets = ["wasm32-wasip1-threads"]
