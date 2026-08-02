@@ -201,6 +201,9 @@ pub struct Generic {
     /// `#[ffi(import)]` instantiates in a consumer package. Absent in older
     /// dumps; the rebuild then falls back to the positional `$n` spelling.
     pub name: Option<String>,
+    /// The binder's serialized trait bounds (`$0 (T): Num + Sync`), each a
+    /// qualified path. Empty in dumps that predate bounds.
+    pub bounds: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

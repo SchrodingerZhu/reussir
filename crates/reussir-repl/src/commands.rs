@@ -64,9 +64,11 @@ pub fn dispatch(session: &mut ReplSession<'_, '_>, command: &str) -> Outcome {
                     .map(|(k, v)| (*k, v.clone()))
                     .collect();
                 let strings = elab.strings.entries();
+                let bounds = elab.bound_names();
                 let text = Printer::new(&elab.defs, elab.resolver)
                     .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
                     .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                    .with_bounds(&bounds)
                     .program(&funcs, &strings, &records, &elab.trampolines);
                 Outcome::Text(text)
             }

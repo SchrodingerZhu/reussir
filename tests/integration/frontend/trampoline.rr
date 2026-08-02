@@ -1,5 +1,8 @@
 // RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s
 // RUN: %rrc %s --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=FULL
+// Resume: the bounded binder survives `--from hir` re-emission.
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s
 
 fn foo<T : Num>(x : T) -> i32 {
     x as i32 + 1
@@ -9,7 +12,7 @@ extern "C" trampoline "bar" = foo<i32>;
 
 // CHECK: extern "C" trampoline "bar" = #foo::<i32>;
 // CHECK-EMPTY:
-// CHECK-NEXT: fn #foo<$0 (T)>(v0 (x): $0) -> i32 {
+// CHECK-NEXT: fn #foo<$0 (T): Num>(v0 (x): $0) -> i32 {
 // CHECK-NEXT:     ((v0 : $0 as i32) : i32 + 1 : i32) : i32
 // CHECK-NEXT: }
 

@@ -42,9 +42,9 @@ fn balance_left<T : Num>(l : Tree<T>, k : T, r : Tree<T>) -> Tree<T> {
 
 // CHECK: [value] enum #Color { Red(), Black() };
 // CHECK-EMPTY:
-// CHECK-NEXT: [shared] enum #Tree<$0 (T)> { Branch(#Color, #Tree::<$0>, $0, #Tree::<$0>), Leaf() };
+// CHECK-NEXT: [shared] enum #Tree<$0 (T): Num> { Branch(#Color, #Tree::<$0>, $0, #Tree::<$0>), Leaf() };
 // CHECK-EMPTY:
-// CHECK-NEXT: fn #balance_left<$1 (T)>(v0 (l): #Tree::<$1>, v1 (k): $1, v2 (r): #Tree::<$1>) -> #Tree::<$1> {
+// CHECK-NEXT: fn #balance_left<$1 (T): Num>(v0 (l): #Tree::<$1>, v1 (k): $1, v2 (r): #Tree::<$1>) -> #Tree::<$1> {
 // CHECK-NEXT:     match v0 : #Tree::<$1> {
 // CHECK-NEXT:         switch scrut {
 // CHECK-NEXT:             #0 => {

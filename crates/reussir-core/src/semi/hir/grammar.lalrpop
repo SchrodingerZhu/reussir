@@ -192,10 +192,23 @@ PathArgsTail: (String, Vec<raw::Ty>) = {
 };
 
 /// A generic binder: `$0 (T)` — positional id plus its source name, which
-/// foreign bodies reference through `[:T:]` placeholders. The name is
-/// optional for compatibility with dumps that predate it.
-Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")")?>
-    => raw::Generic { id: g, regional: r.is_some(), name: name.map(|n| n.into_owned()) };
+/// foreign bodies reference through `[:T:]` placeholders, plus optional
+/// `+`-separated trait bounds (`$0 (T): Num + Sync`). The name and the
+/// bounds are optional for compatibility with dumps that predate them.
+Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")")?> <bounds:(":" <Bounds>)?>
+    => raw::Generic {
+        id: g,
+        regional: r.is_some(),
+        name: name.map(|n| n.into_owned()),
+        bounds: bounds.unwrap_or_default(),
+    };
+
+/// A `+`-separated trait-bound list; each bound is a qualified path.
+Bounds: Vec<String> = <first:QPath> <rest:("+" <QPath>)*> => {
+    let mut v = vec![first];
+    v.extend(rest);
+    v
+};
 
 /// Source identifiers remain legal when they spell a transform directive.
 Name: &'input str = {

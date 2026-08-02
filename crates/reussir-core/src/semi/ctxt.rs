@@ -1074,6 +1074,24 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &self.generics[generic.0 as usize].bounds
     }
 
+    /// Every bounded generic's bound names, for the HIR printer's binder
+    /// serialization (`$0 (T): Num`). Derived data — no new elaborator state.
+    pub fn bound_names(&self) -> FxHashMap<GenericId, Vec<String>> {
+        self.generics
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| !info.bounds.is_empty())
+            .map(|(i, info)| {
+                let names = info
+                    .bounds
+                    .iter()
+                    .map(|&t| self.traits.trait_def(t).name.clone())
+                    .collect();
+                (GenericId(i as u32), names)
+            })
+            .collect()
+    }
+
     /// Resolve a bound path (by basename) to a built-in trait.
     pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
         let name = self.sym(path.basename);

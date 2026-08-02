@@ -48,6 +48,10 @@ pub struct Printer<'a> {
     transform_scripts: &'a [TransformScript],
     ffi_preludes: &'a [FfiPrelude],
     ffi_imports: Option<&'a rustc_hash::FxHashMap<DefId, FfiImport>>,
+    /// Per-generic trait-bound names to serialize in binders (`$0 (T): Num`).
+    /// Absent for display-only dumps that predate the caller wiring; the
+    /// round-trip helpers and the driver always attach it.
+    bounds: Option<&'a rustc_hash::FxHashMap<GenericId, Vec<String>>>,
     interface: Option<InterfaceEmit<'a>>,
 }
 
@@ -85,6 +89,7 @@ impl<'a> Printer<'a> {
             transform_scripts: &[],
             ffi_preludes: &[],
             ffi_imports: None,
+            bounds: None,
             interface: None,
         }
     }
@@ -103,6 +108,7 @@ impl<'a> Printer<'a> {
             transform_scripts: &[],
             ffi_preludes: &[],
             ffi_imports: None,
+            bounds: None,
             interface: None,
         }
     }
@@ -127,6 +133,15 @@ impl<'a> Printer<'a> {
     ) -> Self {
         self.ffi_preludes = preludes;
         self.ffi_imports = Some(imports);
+        self
+    }
+
+    /// Attach per-generic trait-bound names to serialize in binders.
+    pub fn with_bounds(
+        mut self,
+        bounds: &'a rustc_hash::FxHashMap<GenericId, Vec<String>>,
+    ) -> Self {
+        self.bounds = Some(bounds);
         self
     }
 
@@ -254,8 +269,12 @@ impl<'a> Printer<'a> {
                 } else {
                     ""
                 };
+                let bounds = match self.bounds.and_then(|m| m.get(g)) {
+                    Some(bs) if !bs.is_empty() => format!(": {}", bs.join(" + ")),
+                    _ => String::new(),
+                };
                 text(format!(
-                    "{r}${} ({})",
+                    "{r}${} ({}){bounds}",
                     g.0,
                     spell_name(self.resolver.resolve(*name))
                 ))

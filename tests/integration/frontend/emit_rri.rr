@@ -27,8 +27,8 @@
 // CHECK: pub fn #demo::origin() -> #demo::Point in 0 [{{[0-9]+}}..{{[0-9]+}}];
 
 // The `pub` generic and the private generic it calls ship with bodies.
-// CHECK: pub fn #demo::scale<$1 (T)>(v0 (x): $1) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}] {
-// CHECK: fn #demo::scale_impl<$0 (T)>(v0 (x): $0, v1 (k): i64) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}] {
+// CHECK: pub fn #demo::scale<$1 (T): Num>(v0 (x): $1) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}] {
+// CHECK: fn #demo::scale_impl<$0 (T): Num>(v0 (x): $0, v1 (k): i64) -> i64 in 0 [{{[0-9]+}}..{{[0-9]+}}] {
 
 // CHECK: pub fn #demo::util::mul(v0 (a): i64, v1 (b): i64) -> i64 in 1 [{{[0-9]+}}..{{[0-9]+}}];
 
