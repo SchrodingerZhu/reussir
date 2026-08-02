@@ -645,6 +645,26 @@ mod tests {
         );
     }
 
+    /// Temporary until impl scanning lands: the placeholder arm reports
+    /// cleanly instead of panicking.
+    #[test]
+    fn impl_block_reports_not_supported_yet() {
+        with_tcx(|tcx| {
+            let source = "struct P { x: i64 }\nimpl P { fn get(self: Self) -> i64 { 1 } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("not supported yet")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
     /// The shared two-module package for the visibility tests: module `a`
     /// defines the records, module `c` uses them from outside.
     fn vis_package(consumer: &str, f: impl Fn(&[crate::semi::ctxt::Report])) {

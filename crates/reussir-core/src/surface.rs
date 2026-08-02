@@ -959,9 +959,21 @@ pub enum StmtKind {
     ExternSource(ExternSource),
     Transform(TransformScript),
     Import(ImportDecl),
-    /// An `impl` block. Placeholder until elaboration supports it — the
-    /// typed view lands with the impl-scan work.
-    Impl,
+    Impl(ImplBlock),
+}
+
+/// An `impl<T: B> Type<args> { fn ... }` block: the block-level generics, the
+/// target type head with its applied arguments, and the member functions.
+#[derive(Clone, Debug)]
+pub struct ImplBlock {
+    /// Parses for uniformity with the other items; `pub impl` is rejected at
+    /// elaboration (members carry their own visibility).
+    pub visibility: Visibility,
+    /// Each block-level generic is `(name, bounds)`.
+    pub generics: SmallVec<[(TokenKey, Vec<Path>); 2]>,
+    pub target: Path,
+    pub target_args: SmallVec<[Type; 2]>,
+    pub members: Vec<Spanned<Function>>,
 }
 
 /// A statement (a view over a top-level item node).
@@ -997,7 +1009,7 @@ impl Stmt {
             ExternSourceStmt => StmtKind::ExternSource(extern_source_of(node)),
             TransformStmt => StmtKind::Transform(transform_of(node)),
             ImportStmt => StmtKind::Import(import_of(node)),
-            ImplStmt => StmtKind::Impl,
+            ImplStmt => StmtKind::Impl(impl_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
         }
     }
@@ -1110,6 +1122,32 @@ fn source_block_of(node: &ResolvedNode) -> Option<SourceBlock> {
             end: span.end - 1,
         },
     })
+}
+
+fn impl_of(node: &ResolvedNode) -> ImplBlock {
+    let target_ty = nodes(node)
+        .find(|n| n.kind() == PathType)
+        .expect("impl target type");
+    let target = path_of(child_node(target_ty, PathKind).expect("target path"));
+    let target_args = child_node(target_ty, TypeArgList)
+        .map(|l| {
+            nodes(l)
+                .filter(|n| is_type_kind(n.kind()))
+                .map(Type::new)
+                .collect()
+        })
+        .unwrap_or_default();
+    let members = nodes(node)
+        .filter(|n| n.kind() == FnStmt)
+        .map(|f| spanned(f, function_of(f)))
+        .collect();
+    ImplBlock {
+        visibility: visibility_of(node),
+        generics: generics_of(node),
+        target,
+        target_args,
+        members,
+    }
 }
 
 fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
@@ -1328,6 +1366,44 @@ mod tests {
             // `Type::kind` is the lazy view that runs `prim_type`.
             f.params[0].1.kind();
         }
+    }
+
+    #[test]
+    fn impl_block_projects_visibility_target_generics_members() {
+        let parse = parse(
+            "impl<T: Num + Sync> Box<T> {\n\
+                 pub fn get(self: Self) -> T { 1 }\n\
+                 regional fn touch(self: [flex] Self) { 2 }\n\
+             }",
+        );
+        let prog = program(&parse.root);
+        let resolver = parse.resolver();
+        let StmtKind::Impl(ib) = prog[0].kind() else {
+            panic!("expected an impl block");
+        };
+        assert_eq!(ib.visibility, Visibility::Private);
+        assert_eq!(resolver.resolve(ib.target.basename), "Box");
+        assert!(ib.target.segments.is_empty());
+        assert_eq!(ib.target_args.len(), 1);
+        assert_eq!(ib.generics.len(), 1);
+        let (g, bounds) = &ib.generics[0];
+        assert_eq!(resolver.resolve(*g), "T");
+        assert_eq!(bounds.len(), 2);
+
+        assert_eq!(ib.members.len(), 2);
+        let get = &ib.members[0].value;
+        assert_eq!(resolver.resolve(get.name), "get");
+        assert_eq!(get.visibility, Visibility::Public);
+        assert!(!get.is_regional);
+        let (pname, _, pflex) = &get.params[0];
+        assert_eq!(resolver.resolve(*pname), "self");
+        assert!(!pflex);
+        let touch = &ib.members[1].value;
+        assert_eq!(resolver.resolve(touch.name), "touch");
+        assert_eq!(touch.visibility, Visibility::Private);
+        assert!(touch.is_regional);
+        let (_, _, rflex) = &touch.params[0];
+        assert!(rflex, "the `[flex]` receiver flag projects");
     }
 
     #[test]
