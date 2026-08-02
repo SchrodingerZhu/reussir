@@ -46,7 +46,7 @@ impl Parser<'_> {
     pub(crate) fn source_file(&mut self) {
         let m = self.start();
         while !self.at_eof() {
-            if self.current().starts_stmt() || self.at_transform_stmt() {
+            if self.current().starts_stmt() || self.at_transform_stmt() || self.at_impl_stmt() {
                 self.stmt();
             } else {
                 // Statement-level recovery: collect the unexpected tokens
@@ -54,10 +54,14 @@ impl Parser<'_> {
                 // again.
                 let e = self.start();
                 self.error(format!(
-                    "expected a top-level item (fn, struct, enum, mod, extern, transform, or import), found {}",
+                    "expected a top-level item (fn, struct, enum, mod, extern, impl, transform, or import), found {}",
                     self.current().describe()
                 ));
-                while !self.at_eof() && !self.current().starts_stmt() && !self.at_transform_stmt() {
+                while !self.at_eof()
+                    && !self.current().starts_stmt()
+                    && !self.at_transform_stmt()
+                    && !self.at_impl_stmt()
+                {
                     self.bump();
                 }
                 e.complete(self, ErrorNode);
@@ -81,9 +85,10 @@ impl Parser<'_> {
             ExternKw => self.extern_trampoline_stmt(m),
             ImportKw => self.import_stmt(m),
             Ident if self.at_transform_stmt() => self.transform_stmt(m),
+            Ident if self.at_impl_stmt() => self.impl_stmt(m),
             _ => {
                 self.error(format!(
-                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `transform`, or `import` after visibility, found {}",
+                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `impl`, `transform`, or `import` after visibility, found {}",
                     self.current().describe()
                 ));
                 // Consume nothing further; the outer loop recovers.
@@ -94,6 +99,68 @@ impl Parser<'_> {
 
     fn at_transform_stmt(&self) -> bool {
         self.at_ctx_kw("transform") && self.nth(1) == RawMlirLiteral
+    }
+
+    /// `impl` is contextual (the language has no reserved words): it heads an
+    /// impl block only when followed by a generic-parameter list or a type
+    /// name — `impl + 1` stays an expression over a variable named `impl`,
+    /// and `impl as i64` a cast of one.
+    fn at_impl_stmt(&self) -> bool {
+        self.at_ctx_kw("impl")
+            && (self.nth(1) == LAngle || (self.nth(1).is_ident_like() && self.nth(1) != AsKw))
+    }
+
+    /// `impl generics? Type<args>? { (pub? (regional? fn ...))* }`.
+    fn impl_stmt(&mut self, m: Marker) {
+        self.bump(); // the `impl` ident
+        if self.at(LAngle) {
+            self.generic_param_list();
+        }
+        if PRIM_TYPES.contains(&self.current_text()) {
+            let e = self.start();
+            self.error("the target of `impl` must be a named type");
+            self.bump();
+            e.complete(self, ErrorNode);
+        } else if self.type_atom().is_none() {
+            self.error("expected a type name as the `impl` target");
+        }
+        self.expect(LBrace);
+        while !self.at(RBrace) && !self.at_eof() {
+            if self.at(PubKw) || self.at(RegionalKw) || self.at(FnKw) {
+                let member = self.start();
+                if self.at(PubKw) {
+                    self.bump();
+                }
+                if self.at(RegionalKw) || self.at(FnKw) {
+                    self.fn_stmt(member);
+                } else {
+                    self.error(format!(
+                        "expected `fn` or `regional fn` after visibility, found {}",
+                        self.current().describe()
+                    ));
+                    member.complete(self, ErrorNode);
+                }
+            } else {
+                // Member-level recovery: skip to something that can start a
+                // member (or the closing brace) under an error node.
+                let e = self.start();
+                self.error(format!(
+                    "expected `pub`, `fn`, or `regional fn` in an `impl` block, found {}",
+                    self.current().describe()
+                ));
+                while !self.at_eof()
+                    && !self.at(RBrace)
+                    && !self.at(PubKw)
+                    && !self.at(RegionalKw)
+                    && !self.at(FnKw)
+                {
+                    self.bump();
+                }
+                e.complete(self, ErrorNode);
+            }
+        }
+        self.expect(RBrace);
+        m.complete(self, ImplStmt);
     }
 
     /// `transform [{ opaque MLIR }];`.

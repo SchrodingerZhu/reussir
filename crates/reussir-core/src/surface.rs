@@ -959,6 +959,9 @@ pub enum StmtKind {
     ExternSource(ExternSource),
     Transform(TransformScript),
     Import(ImportDecl),
+    /// An `impl` block. Placeholder until elaboration supports it — the
+    /// typed view lands with the impl-scan work.
+    Impl,
 }
 
 /// A statement (a view over a top-level item node).
@@ -994,6 +997,7 @@ impl Stmt {
             ExternSourceStmt => StmtKind::ExternSource(extern_source_of(node)),
             TransformStmt => StmtKind::Transform(transform_of(node)),
             ImportStmt => StmtKind::Import(import_of(node)),
+            ImplStmt => StmtKind::Impl,
             k => unreachable!("unexpected statement node {k:?}"),
         }
     }

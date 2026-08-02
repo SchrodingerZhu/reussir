@@ -161,6 +161,14 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // An outer attribute `#[...]` only ever heads an item.
         Pound => true,
         Ident if p.current_text() == "transform" && p.nth(1) == RawMlirLiteral => true,
+        // `impl<...>` / `impl Type` — mirrors the parser's contextual gate;
+        // `impl + 1` (a variable named `impl`) stays an expression.
+        Ident
+            if p.current_text() == "impl"
+                && (p.nth(1) == LAngle || (p.nth(1).is_ident_like() && p.nth(1) != AsKw)) =>
+        {
+            true
+        }
         _ => false,
     };
     if starts_item {
@@ -298,6 +306,9 @@ mod tests {
             "extern \"rust\" [{ use reussir_rt::collections::vec::Vec; }];",
             "#[ffi(rust = \"::reussir_rt::collections::vec::Vec\")]\npub struct Vec<T>;",
             "#[ffi(import)]\npub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ Vec::push(v, x) }];",
+            // `impl` heads an item when a generic list or type name follows.
+            "impl Point { fn get(self: Self) -> i64 { 1 } }",
+            "impl<T: Num> Box<T> { pub fn get(self: Self) -> T { self.0 } }",
         ];
         for source in items {
             let rp = parse_repl(source, interner.clone());
@@ -333,6 +344,9 @@ mod tests {
             // `import` as a keyword-named variable.
             "import + 1",
             "import as i64",
+            // A variable named `impl` heads an expression.
+            "impl + 1",
+            "impl as i64",
         ];
         for source in exprs {
             let rp = parse_repl(source, interner.clone());
@@ -663,6 +677,72 @@ mod tests {
         // The surface language has no reserved identifiers.
         json_of("fn f() -> i32 { let value = 1; value }");
         json_of("fn shared(field: i32) -> i32 { field }");
+        // `impl` included: legal as a parameter and a variable.
+        json_of("fn f(impl: i64) -> i64 { impl }");
+    }
+
+    #[test]
+    fn impl_block_parses_members_and_generics() {
+        let json = json_of(
+            "impl<T: Num> Box<T> {\n\
+                 pub fn get(self: Self) -> T { 1 }\n\
+                 regional fn touch(self: [flex] Self) { 2 }\n\
+             }",
+        );
+        let block = unwrap_span(&json[0]);
+        assert_eq!(block["tag"], "ImplStmt");
+        let contents = &block["contents"];
+        assert_eq!(contents["implVisibility"], "Private");
+        assert_eq!(contents["implGenerics"][0][0], "T");
+        let members = contents["implMembers"].as_array().expect("members");
+        assert_eq!(members.len(), 2);
+        let get = &members[0]["spanValue"];
+        assert_eq!(get["tag"], "FunctionStmt");
+        assert_eq!(get["contents"]["funcName"], "get");
+        assert_eq!(get["contents"]["funcVisibility"], "Public");
+        assert_eq!(get["contents"]["funcParams"][0][0], "self");
+        assert_eq!(get["contents"]["funcParams"][0][2], false);
+        let touch = &members[1]["spanValue"];
+        assert_eq!(touch["contents"]["funcName"], "touch");
+        assert_eq!(touch["contents"]["funcVisibility"], "Private");
+        assert_eq!(touch["contents"]["funcIsRegional"], true);
+        // `[flex]` on the receiver annotation.
+        assert_eq!(touch["contents"]["funcParams"][0][2], true);
+    }
+
+    #[test]
+    fn impl_target_prim_type_is_rejected() {
+        let source = "impl i64 { fn f(self: Self) -> i64 { 1 } }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|e| e.message.contains("must be a named type")),
+            "{:#?}",
+            parse.errors
+        );
+        // Losslessness holds under the error.
+        assert_eq!(parse.root.text(), source);
+    }
+
+    #[test]
+    fn impl_member_recovery_continues_to_next_member() {
+        let source = "impl P { 42 fn ok(self: Self) -> i64 { 1 } }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert_eq!(parse.root.text(), source);
+        // The junk lands in an error node and the member after it survives.
+        let block = parse
+            .root
+            .children()
+            .find(|n| n.kind() == SyntaxKind::ImplStmt)
+            .expect("impl block");
+        assert!(
+            block.children().any(|n| n.kind() == SyntaxKind::FnStmt),
+            "member after junk was not recovered"
+        );
     }
 
     #[test]

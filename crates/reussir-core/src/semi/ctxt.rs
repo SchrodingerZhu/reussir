@@ -1304,6 +1304,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             file: *file,
                         });
                     }
+                    surface::StmtKind::Impl => {
+                        self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
+                        self.error(span, "`impl` blocks are not supported yet");
+                    }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.
                     surface::StmtKind::ExternSource(src) => {
