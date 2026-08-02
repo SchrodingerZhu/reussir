@@ -1102,6 +1102,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Resolve a bound path (by basename) to a built-in trait.
     pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
         let name = self.sym(path.basename);
+        self.resolve_bound_name(name, span)
+    }
+
+    /// Resolve a bound's basename against the builtin trait table — shared by
+    /// surface bounds and the extern reload of serialized interface bounds.
+    pub(super) fn resolve_bound_name(&mut self, name: &str, span: Option<Span>) -> Option<TraitId> {
         match self.trait_names.get(name) {
             Some(&id) => Some(id),
             None => {

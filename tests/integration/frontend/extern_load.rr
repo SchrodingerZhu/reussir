@@ -8,6 +8,10 @@
 // RUN: %rrc %s --package-name dep --emit rri -o %t.rri
 // RUN: %rrc %s --package-name dep --emit hir --no-source-locations -o %t.hir
 
+// Trait bounds are physically present in the artifact `--extern` consumes.
+// RUN: %FileCheck %s --check-prefix=RRI < %t.rri
+// RRI: pub fn #dep::id<$0 (T): Num>(v0 (x): $0) -> $0
+
 // Loading succeeds and the consumer compiles as usual.
 // RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
 // RUN:   | %FileCheck %s

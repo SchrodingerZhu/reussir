@@ -108,7 +108,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
 
         for (pdef, rec) in &parsed.records {
             let def = defs[pdef.0 as usize];
-            let generics = self.remap_generics(&rec.ty_params, &keys);
+            let generics = self.remap_generics(&rec.ty_params, &keys, &parsed.generic_bounds);
             let remap = Remapper {
                 tcx: self.tcx,
                 defs: &defs,
@@ -134,7 +134,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
 
         for func in &parsed.funcs {
             let def = defs[func.def.0 as usize];
-            let generics = self.remap_generics(&func.generics, &keys);
+            let generics = self.remap_generics(&func.generics, &keys, &parsed.generic_bounds);
             let remap = Remapper {
                 tcx: self.tcx,
                 defs: &defs,
@@ -194,34 +194,41 @@ impl<'tcx> Elaborator<'_, 'tcx> {
         // cross-package monomorphization decides its shape (deferred).
     }
 
-    /// Re-allocate an extern item's generic binder in the global table. The
-    /// interface does not serialize trait bounds yet, so extern binders
-    /// re-allocate unbounded: consumer-side obligations arise only from the
-    /// consumer's own expressions.
+    /// Re-allocate an extern item's generic binder in the global table,
+    /// resolving the interface's serialized bound paths (by basename, against
+    /// the builtin trait table) into real `TraitId`s. `instantiate` then
+    /// registers the bounds as obligations at every consumer call of an
+    /// extern generic, so a bad instantiation reports at the consumer's call
+    /// site instead of inside the imported body at monomorphization.
     ///
-    /// This is safe for the builtin traits: shipped bodies are *elaborated*
-    /// HIR (trait machinery consumed at the producer — `x + x` under
-    /// `T : Num` ships as `Arith`), so a bad instantiation cannot
-    /// miscompile; it grounds into an operation monomorphization rejects
-    /// with a spanned report. What is lost is only diagnostic placement —
-    /// the error fires inside the imported body instead of at the
-    /// consumer's call site.
-    ///
-    /// TODO(#451, trait system): revisit when real traits define what a
-    /// bound is. When bounds join the interface, they serialize as
-    /// qualified *paths* (the shape user-defined traits need), not bare
-    /// names, and the format stays at version 1 — nothing is released yet.
+    /// A bound naming an unknown trait (a version-skewed dependency) reports
+    /// through the shared "unknown trait bound" diagnostic and the binder
+    /// degrades to the resolvable subset; shipped bodies are *elaborated*
+    /// HIR, so this can never miscompile — the residue still grounds into an
+    /// operation monomorphization rejects with a spanned report.
     fn remap_generics(
         &mut self,
         binder: &[(TokenKey, GenericId)],
         keys: &[TokenKey],
+        bounds: &FxHashMap<GenericId, Vec<crate::semi::hir::Bound>>,
     ) -> RemappedGenerics {
         let mut map = FxHashMap::default();
         let binder = binder
             .iter()
             .map(|&(name, old)| {
+                let tids: Vec<_> = bounds
+                    .get(&old)
+                    .map(|bs| {
+                        bs.iter()
+                            .filter_map(|bound| {
+                                let path = bound.trait_path();
+                                self.resolve_bound_name(path.basename(), None)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let name = keys[name.into_u32() as usize];
-                let fresh = self.fresh_generic(name, Vec::new());
+                let fresh = self.fresh_generic(name, tids);
                 map.insert(old, fresh);
                 (name, fresh)
             })
@@ -524,12 +531,10 @@ mod tests {
         let elab = elaborate_package(tcx, &files, &interner);
         assert!(!elab.has_errors(), "dep elab errors: {:#?}", elab.reports);
         let strings = elab.strings.entries();
-        let text = Printer::new(&elab.defs, elab.resolver).program(
-            &elab.elaborated,
-            &strings,
-            &elab.records,
-            &elab.trampolines,
-        );
+        let bounds = elab.bound_names();
+        let text = Printer::new(&elab.defs, elab.resolver)
+            .with_bounds(&bounds)
+            .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         crate::semi::hir::build::parse_program(tcx, &text).expect("re-parse")
     }
 
@@ -588,8 +593,168 @@ mod tests {
                        struct Hidden { v: i64 }\n\
                        fn private_helper(h: Hidden) -> i64 { h.v }\n\
                        pub fn api<T : Num>(x: T) -> T { private_helper(Hidden { v: 1 }); x }\n\
+                       pub fn narrow<T : Integral>(x: T) -> T { x }\n\
+                       pub fn both<T : Num + Sync>(x: T) -> T { x }\n\
+                       pub struct Holder<T : Num> { pub v: T }\n\
                        pub fn ground(x: i64) -> i64 { x + 1 }\n\
                        pub enum Opt { None, Some(i64) }";
+
+    #[test]
+    fn extern_bounds_reload() {
+        check_with_dep(
+            DEP,
+            &[(&[], "fn go(x: i64) -> i64 { dep::api(x) }")],
+            |elab| {
+                assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+                let api = elab
+                    .extern_functions
+                    .iter()
+                    .find(|f| elab.defs.path(f.def).display(elab.resolver) == "dep::api")
+                    .expect("api carried");
+                let (_, g) = api.generics[0];
+                assert_eq!(
+                    elab.generic_bounds(g),
+                    [elab.builtins.num],
+                    "reloaded binder carries the serialized bound"
+                );
+            },
+        );
+    }
+
+    /// A single-bound extern function checks at the consumer call site:
+    /// the satisfied instantiation is clean, the violating one names the
+    /// bound.
+    #[test]
+    fn extern_fn_bound_satisfied_and_violated() {
+        check_with_dep(
+            DEP,
+            &[(&[], "fn ok(x: i64) -> i64 { dep::narrow(x) }")],
+            |elab| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+        check_with_dep(
+            DEP,
+            &[(&[], "fn bad(x: f64) -> f64 { dep::narrow(x) }")],
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains("Integral")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    /// A multi-bound binder reloads with every TraitId, in order.
+    #[test]
+    fn extern_multi_bound_reloads_whole() {
+        check_with_dep(
+            DEP,
+            &[(&[], "fn ok(x: i64) -> i64 { dep::both(x) }")],
+            |elab| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+                let both = elab
+                    .extern_functions
+                    .iter()
+                    .find(|f| elab.defs.path(f.def).display(elab.resolver) == "dep::both")
+                    .expect("both carried");
+                let (_, g) = both.generics[0];
+                assert_eq!(
+                    elab.generic_bounds(g),
+                    [elab.builtins.num, elab.builtins.sync],
+                    "both bounds reload, in declaration order"
+                );
+            },
+        );
+    }
+
+    /// A bounded extern *record* checks its bound where the consumer
+    /// instantiates it — construction included.
+    #[test]
+    fn extern_record_bound_checks_at_construction() {
+        check_with_dep(
+            DEP,
+            &[(&[], "fn ok() -> i64 { dep::Holder { v: 2 }.v }")],
+            |elab| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+        check_with_dep(
+            DEP,
+            &[(&[], "fn bad() -> bool { dep::Holder { v: true }.v }")],
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains("Num")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn extern_bound_violation_reports_at_consumer_call_site() {
+        check_with_dep(
+            DEP,
+            &[(&[], "fn bad(p: dep::Point) -> dep::Point { dep::api(p) }")],
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains("Num")),
+                    "expected a Num-bound violation at the consumer call: {:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn extern_unknown_bound_reports() {
+        with_tcx(|tcx| {
+            let text = "pub fn #dep::odd<$0 (T): NotATrait>(v0 (x): $0) -> $0 {\n    v0 : $0\n}\n";
+            let parsed = crate::semi::hir::build::parse_program(tcx, text).expect("parse");
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let mut elab = Elaborator::new(tcx, &interner);
+            elab.declare_extern_package(
+                &mut keys,
+                &ExternPackage {
+                    name: "dep",
+                    parsed: &parsed,
+                    files: &[],
+                },
+            );
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("unknown trait bound `NotATrait`")),
+                "{:#?}",
+                elab.reports
+            );
+            // Declaration completes: the binder degrades to the resolvable
+            // subset instead of aborting the load.
+            assert_eq!(elab.extern_functions.len(), 1);
+        });
+    }
+
+    #[test]
+    fn extern_boundless_dump_still_loads() {
+        with_tcx(|tcx| {
+            let text = "pub fn #dep::id<$0 (T)>(v0 (x): $0) -> $0 {\n    v0 : $0\n}\n";
+            let parsed = crate::semi::hir::build::parse_program(tcx, text).expect("parse");
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let mut elab = Elaborator::new(tcx, &interner);
+            elab.declare_extern_package(
+                &mut keys,
+                &ExternPackage {
+                    name: "dep",
+                    parsed: &parsed,
+                    files: &[],
+                },
+            );
+            assert!(elab.reports.is_empty(), "{:#?}", elab.reports);
+            let id = &elab.extern_functions[0];
+            let (_, g) = id.generics[0];
+            assert!(elab.generic_bounds(g).is_empty());
+        });
+    }
 
     #[test]
     fn pub_items_resolve_through_the_package_head() {
