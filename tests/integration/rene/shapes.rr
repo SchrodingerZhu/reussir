@@ -1,0 +1,28 @@
+// Methods over a vendor dep as a realistic `rene build`: the app computes
+// every printed value through `geom`'s impl methods across the package
+// boundary — a value receiver reading a private field, an `Arc<Self>`
+// receiver, a regional `[flex] Self` receiver bumped inside the dep's own
+// region (frozen result read by the app), and one generic method the app
+// instantiates at two types via both dot and path spellings — reporting
+// through the `console` polyffi package. The method calls live in an app
+// submodule, so resolution also crosses in-package module files, and the
+// app's own `Tally` is impl'd from that submodule — a package-level impl.
+
+// RUN: %rene build --manifest-path %S/shapes/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}shapes
+
+// RUN: %t.bdir/dev/shapes%exe_ext | %FileCheck %s
+
+// CHECK:      35
+// CHECK-NEXT: 42
+// CHECK-NEXT: 12
+// CHECK-NEXT: 21
+// CHECK-NEXT: 3
+// CHECK-NEXT: 21
+
+// The release profile is the same session, optimized.
+// RUN: %rene build --manifest-path %S/shapes/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RUN: %t.bdir/release/shapes%exe_ext | %FileCheck %s
+
+// RELEASE: {{[/\\]}}release{{[/\\]}}shapes

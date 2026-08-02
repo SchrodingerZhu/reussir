@@ -1,0 +1,73 @@
+// The geometry domain: every record keeps state private behind `pub`
+// methods — the field-visibility model working across a package boundary —
+// with one method per receiver form and a generic method the app
+// instantiates at two types.
+
+pub struct Rect {
+    pub w: i64,
+    h: i64,
+}
+
+impl Rect {
+    pub fn make(w: i64) -> Rect {
+        Rect { w: w, h: w + 2 }
+    }
+
+    // Reads the private field: only methods (scoped to the defining
+    // module) can.
+    pub fn area(self: Self) -> i64 {
+        self.w * self.h
+    }
+}
+
+pub struct Shared {
+    v: i64,
+}
+
+impl Shared {
+    pub fn make(v: i64) -> Arc<Shared> {
+        Arc<Shared> { v: v }
+    }
+
+    pub fn read(self: Arc<Self>) -> i64 {
+        self.v + 1
+    }
+}
+
+pub struct [regional] Acc {
+    v: i64,
+}
+
+impl Acc {
+    regional fn bump(self: [flex] Self) -> i64 {
+        self.v + 1
+    }
+
+    pub fn total(self: Self) -> i64 {
+        self.v * 3
+    }
+
+    // Builds, bumps, and freezes an accumulator in one region — the
+    // regional receiver at work behind a plain callable surface.
+    pub fn folded(seed: i64) -> Acc {
+        regional {
+            let a: [flex] Acc = Acc { v: seed };
+            Acc { v: a.bump() }
+        }
+    }
+}
+
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+impl<T: Num> Pair<T> {
+    pub fn make(a: T, b: T) -> Pair<T> {
+        Pair { a: a, b: b }
+    }
+
+    pub fn sum(self: Pair<T>) -> T {
+        self.a + self.b
+    }
+}
