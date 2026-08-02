@@ -140,8 +140,8 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
             continue;
         };
         let member_tys: Vec<Ty<'_>> = match &rec.fields {
-            Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
-            Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
+            Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _, _)| *t).collect(),
+            Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _, _)| *t).collect(),
             Some(RecordFields::Variants(vs)) => {
                 vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
             }

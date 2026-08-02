@@ -28,7 +28,7 @@ use crate::semi::hir::{
 };
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
-use crate::surface::RecordKind;
+use crate::surface::{self, RecordKind};
 use crate::utils::string::StringToken;
 
 /// A parsed HIR program plus the fresh tables needed to re-print and resume it.
@@ -274,7 +274,15 @@ impl<'tcx> Builder<'_, 'tcx> {
                         .iter()
                         .map(|m| {
                             let name = self.names.intern(m.name.as_deref().unwrap_or(""));
-                            (name, self.ty(&m.ty), m.is_field)
+                            // Transitional until the HIR text form carries a
+                            // per-member visibility marker: resumed dumps
+                            // default to Public (nothing enforces yet).
+                            (
+                                name,
+                                self.ty(&m.ty),
+                                m.is_field,
+                                surface::Visibility::Public,
+                            )
                         })
                         .collect(),
                 )
@@ -282,7 +290,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::RecordBody::Compound(members) => RecordFields::Unnamed(
                 members
                     .iter()
-                    .map(|m| (self.ty(&m.ty), m.is_field))
+                    .map(|m| (self.ty(&m.ty), m.is_field, surface::Visibility::Public))
                     .collect(),
             ),
             raw::RecordBody::Variant(variants) => RecordFields::Variants(

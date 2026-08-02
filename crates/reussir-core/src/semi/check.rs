@@ -1081,7 +1081,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             Instantiation::from_pairs(ty_params.iter().map(|(_, g)| *g).zip(args.iter().copied()));
         let (idx, decl_ty, mutable) = match (&fields, acc) {
             (RecordFields::Named(fs), surface::Access::Named(name)) => {
-                let i = fs.iter().position(|(n, _, _)| n == name)?;
+                let i = fs.iter().position(|(n, _, _, _)| n == name)?;
                 (i, fs[i].1, fs[i].2)
             }
             (RecordFields::Named(fs), surface::Access::Unnamed(n)) => {
@@ -2076,7 +2076,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match fields {
             Some(RecordFields::Named(fs)) => fs
                 .iter()
-                .map(|(n, t, is_field)| {
+                .map(|(n, t, is_field, _)| {
                     (
                         Some(*n),
                         self.field_member_ty(*t, *is_field, base_flex, inst),
@@ -2085,7 +2085,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 .collect(),
             Some(RecordFields::Unnamed(fs)) => fs
                 .iter()
-                .map(|(t, is_field)| (None, self.field_member_ty(*t, *is_field, base_flex, inst)))
+                .map(|(t, is_field, _)| {
+                    (None, self.field_member_ty(*t, *is_field, base_flex, inst))
+                })
                 .collect(),
             _ => Vec::new(),
         }

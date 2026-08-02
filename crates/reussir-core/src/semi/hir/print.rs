@@ -295,14 +295,14 @@ impl<'a> Printer<'a> {
             Some(RecordFields::Named(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(name, ty, is_mut)| self.member(Some(*name), *ty, *is_mut))
+                    .map(|(name, ty, is_mut, _)| self.member(Some(*name), *ty, *is_mut))
                     .collect();
                 comma_sep(parts)
             }
             Some(RecordFields::Unnamed(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(ty, is_mut)| self.member(None, *ty, *is_mut))
+                    .map(|(ty, is_mut, _)| self.member(None, *ty, *is_mut))
                     .collect();
                 comma_sep(parts)
             }
