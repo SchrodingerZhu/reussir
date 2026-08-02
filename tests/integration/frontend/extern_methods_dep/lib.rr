@@ -1,0 +1,54 @@
+// The dependency fixture for cross-package methods: a record with mixed
+// field visibility whose private field is reachable only through its
+// methods, a private method, a bounded generic method, and an Arc receiver.
+
+pub struct Point {
+    pub x: i64,
+    y: i64,
+}
+
+impl Point {
+    pub fn make(x: i64) -> Point {
+        Point { x: x, y: x + 1 }
+    }
+
+    pub fn scale(self: Self, k: i64) -> i64 {
+        self.x * hidden_factor(self) * k
+    }
+
+    fn hidden(self: Self) -> i64 {
+        self.y
+    }
+
+    // A `pub` generic ships whole, so its private ground callee `hidden`
+    // ships as a prototype — which is what lets the consumer-side privacy
+    // gate distinguish is-private from absent.
+    pub fn traced<T: Num>(self: Self, tag: T) -> T {
+        self.hidden();
+        tag
+    }
+}
+
+fn hidden_factor(p: Point) -> i64 {
+    p.y
+}
+
+pub struct Counter {
+    pub v: i64,
+}
+
+impl Counter {
+    pub fn read(self: Arc<Self>) -> i64 {
+        self.v
+    }
+}
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl<T: Num> Box<T> {
+    pub fn scaled(self: Box<T>, k: T) -> T {
+        self.v * k
+    }
+}
