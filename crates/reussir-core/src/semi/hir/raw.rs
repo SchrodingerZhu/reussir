@@ -16,7 +16,7 @@ pub use crate::full::mir::raw::{
 #[derive(Clone, Debug)]
 pub struct Program {
     /// The `.rri` interface header, when the dump is a package interface
-    /// rather than a plain HIR program: `interface 2 package "demo"
+    /// rather than a plain HIR program: `interface 1 package "demo"
     /// producer "rrc …";`, always the first item.
     pub header: Option<InterfaceHeader>,
     pub files: Vec<FileEntry>,

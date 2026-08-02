@@ -22,7 +22,7 @@ pub Program: raw::Program = <h:Header?> <items:Item*> => {
 
 /// The `.rri` interface header, required first in an interface dump and
 /// absent from a plain HIR program:
-/// `interface 2 package "demo" producer "rrc 0.1.0";`.
+/// `interface 1 package "demo" producer "rrc 0.1.0";`.
 Header: raw::InterfaceHeader =
     "interface" <format:"int"> "package" <package:"quoted"> "producer" <producer:"quoted"> ";"
     => raw::InterfaceHeader {

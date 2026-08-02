@@ -9,7 +9,7 @@
 // RUN: %rrc --package-root %S/emit_rri --package-name demo --emit rri -o - | %FileCheck %s
 // RUN: %rrc --package-root %S/emit_rri --package-name demo --emit rri -o - | %FileCheck %s --check-prefix=ABSENT
 
-// CHECK: interface 2 package "demo" producer "rrc
+// CHECK: interface 1 package "demo" producer "rrc
 // CHECK: 0 = "lib.rr";
 // CHECK: 1 = "util.rr";
 

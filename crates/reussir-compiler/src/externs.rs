@@ -215,7 +215,7 @@ mod tests {
     fn file_tables_re_anchor_onto_the_source_root() {
         reussir_core::in_arena(|tcx| {
             let text = r#"
-                interface 2 package "dep" producer "t";
+                interface 1 package "dep" producer "t";
                 0 = "src/lib.rr";
                 1 = "<prelude>";
             "#;
