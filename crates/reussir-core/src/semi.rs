@@ -476,6 +476,41 @@ mod tests {
         assert!(m.contains("expects 2 argument(s)"), "{m}");
     }
 
+    /// Impl members ride the ordinary defs/generics/functions tables, so the
+    /// Checkpoint's truncate-and-retain rollback is sufficient: a rejected
+    /// batch retracts them and the method name is reusable.
+    #[test]
+    fn rejected_batch_retracts_impl_members() {
+        use std::sync::Arc;
+
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+
+            let p1 = parse("pub struct P { pub x: i64 }");
+            elab.try_extend(&surface::program(&p1.root))
+                .expect("record");
+
+            // A batch whose impl member has a type error is rejected whole.
+            let p2 = parse("impl P { pub fn get(p: P) -> i64 { true } }");
+            elab.try_extend(&surface::program(&p2.root))
+                .expect_err("bad member body");
+            assert!(!elab.has_errors());
+
+            // The retracted method name is free again and elaborates.
+            let p3 = parse("impl P { pub fn get(p: P) -> i64 { p.x } }");
+            elab.try_extend(&surface::program(&p3.root))
+                .expect("redeclared member");
+            let p4 = parse("fn use_it(p: P) -> i64 { P::get(p) }");
+            elab.try_extend(&surface::program(&p4.root)).expect("call");
+        });
+    }
+
     #[test]
     fn try_extend_accumulates_and_rolls_back_atomically() {
         use std::sync::Arc;

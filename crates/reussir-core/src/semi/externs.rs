@@ -601,6 +601,26 @@ mod tests {
                        pub enum Opt { None, Some(i64) }";
 
     #[test]
+    fn impl_of_extern_package_type_rejected() {
+        check_with_dep(
+            DEP,
+            &[(
+                &[],
+                "impl dep::Point { pub fn flip(p: dep::Point) -> i64 { p.x } }",
+            )],
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains(
+                        "cannot define methods for `dep::Point` from extern package `dep`"
+                    )),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
     fn extern_bounds_reload() {
         check_with_dep(
             DEP,
