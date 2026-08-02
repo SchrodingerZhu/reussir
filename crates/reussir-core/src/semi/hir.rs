@@ -26,6 +26,53 @@ lalrpop_util::lalrpop_mod!(
     "/semi/hir/grammar.rs"
 );
 
+/// The qualified path of a bound's trait in the textual HIR/.rri, as owned
+/// segments — structural, so consumers resolve by segment rather than
+/// re-splitting a joined string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundPath {
+    pub segments: Vec<String>,
+}
+
+impl BoundPath {
+    /// The trait's own name — the last segment.
+    pub fn basename(&self) -> &str {
+        self.segments.last().expect("a bound path is never empty")
+    }
+}
+
+impl std::fmt::Display for BoundPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.segments.join("::"))
+    }
+}
+
+/// One bound on a generic binder (`$0 (T): Num + Sync`) as it round-trips
+/// through the textual HIR and `.rri`. An enum so future bound kinds
+/// (capability bounds, …) extend it structurally; the only kind today is a
+/// trait named by qualified path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bound {
+    Trait(BoundPath),
+}
+
+impl Bound {
+    /// The trait path for resolution; every current bound kind carries one.
+    pub fn trait_path(&self) -> &BoundPath {
+        match self {
+            Bound::Trait(path) => path,
+        }
+    }
+}
+
+impl std::fmt::Display for Bound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Bound::Trait(path) => path.fmt(f),
+        }
+    }
+}
+
 /// A local variable, unique within a function body.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct VarId(pub u32);

@@ -23,7 +23,7 @@ use crate::semi::ctxt::{
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
 use crate::semi::hir::{
-    ArithOp, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
+    ArithOp, Bound, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
     SwitchCases, VarId,
 };
 use crate::semi::resolve::DefTable;
@@ -51,12 +51,12 @@ pub struct Parsed<'tcx> {
     pub ffi_preludes: Vec<FfiPrelude>,
     pub defs: DefTable,
     pub names: Names,
-    /// Serialized trait-bound names per generic binder (`$0 (T): Num`),
-    /// keyed by the dump's `$n` ids — machine emissions number generics
-    /// globally (one elaborator table), so the map is collision-free;
-    /// a hand-written dump that reuses an id across items with different
-    /// bounds is last-write-wins. Empty entries are omitted.
-    pub generic_bounds: FxHashMap<GenericId, Vec<String>>,
+    /// Serialized bounds per generic binder (`$0 (T): Num`), keyed by the
+    /// dump's `$n` ids — machine emissions number generics globally (one
+    /// elaborator table), so the map is collision-free; a hand-written dump
+    /// that reuses an id across items with different bounds is
+    /// last-write-wins. Empty entries are omitted.
+    pub generic_bounds: FxHashMap<GenericId, Vec<Bound>>,
     /// The dump's source-file table, in id order: each file's display name.
     /// Item/expr spans are byte offsets into these files (by [`FileId`] =
     /// table index); a `<bracketed>` name is virtual (content not on disk).
@@ -202,8 +202,8 @@ struct Builder<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
     names: Names,
     defs: DefTable,
-    /// Bound names collected off every parsed binder (see [`Parsed::generic_bounds`]).
-    generic_bounds: FxHashMap<GenericId, Vec<String>>,
+    /// Bounds collected off every parsed binder (see [`Parsed::generic_bounds`]).
+    generic_bounds: FxHashMap<GenericId, Vec<Bound>>,
     /// Monotonic counter for fresh [`ExprId`]s during the rebuild.
     next_expr_id: u32,
 }
@@ -1192,17 +1192,22 @@ mod tests {
             assert!(text.contains("fn #g<$2 (T)>"), "{text}");
 
             let parsed = parse_program(tcx, &text).expect("re-parse");
-            let mut entries: Vec<(u32, Vec<String>)> = parsed
+            let trait_bound = |name: &str| {
+                crate::semi::hir::Bound::Trait(crate::semi::hir::BoundPath {
+                    segments: vec![name.to_string()],
+                })
+            };
+            let mut entries: Vec<(u32, Vec<crate::semi::hir::Bound>)> = parsed
                 .generic_bounds
                 .iter()
                 .map(|(g, bs)| (g.0, bs.clone()))
                 .collect();
-            entries.sort();
+            entries.sort_by_key(|(g, _)| *g);
             assert_eq!(
                 entries,
                 [
-                    (0, vec!["Num".to_string()]),
-                    (1, vec!["Integral".to_string(), "Sync".to_string()]),
+                    (0, vec![trait_bound("Num")]),
+                    (1, vec![trait_bound("Integral"), trait_bound("Sync")]),
                 ]
             );
         });

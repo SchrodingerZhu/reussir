@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use crate::ir_lex::{LexError, Token, unescape_debug_str};
 use crate::literal::{FloatLit, Integer};
 use crate::semi::hir::raw as raw;
+use crate::semi::hir::{Bound, BoundPath};
 use crate::semi::ty::CellKind;
 
 grammar<'input>;
@@ -203,11 +204,18 @@ Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")"
         bounds: bounds.unwrap_or_default(),
     };
 
-/// A `+`-separated trait-bound list; each bound is a qualified path.
-Bounds: Vec<String> = <first:QPath> <rest:("+" <QPath>)*> => {
+/// A `+`-separated bound list; each bound is a trait named by qualified
+/// path, kept as segments.
+Bounds: Vec<Bound> = <first:BoundItem> <rest:("+" <BoundItem>)*> => {
     let mut v = vec![first];
     v.extend(rest);
     v
+};
+
+BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
+    let mut segments = vec![first.to_string()];
+    segments.extend(rest.iter().map(|s| s.to_string()));
+    Bound::Trait(BoundPath { segments })
 };
 
 /// Source identifiers remain legal when they spell a transform directive.
