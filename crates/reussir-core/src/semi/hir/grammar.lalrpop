@@ -22,7 +22,7 @@ pub Program: raw::Program = <h:Header?> <items:Item*> => {
 
 /// The `.rri` interface header, required first in an interface dump and
 /// absent from a plain HIR program:
-/// `interface 1 package "demo" producer "rrc 0.1.0";`.
+/// `interface 2 package "demo" producer "rrc 0.1.0";`.
 Header: raw::InterfaceHeader =
     "interface" <format:"int"> "package" <package:"quoted"> "producer" <producer:"quoted"> ";"
     => raw::InterfaceHeader {
@@ -106,10 +106,11 @@ DefaultCap: raw::DefaultCap = {
     "[" "regional" "]" => raw::DefaultCap::Regional,
 };
 
-/// A compound field: an optional `name:` prefix (absent for a tuple field), an
-/// optional `field` marker (a mutable `[field]` link), and its type.
-Member: raw::Member = <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
-    => raw::Member { name: n.map(|s| s.into()), is_field: f.is_some(), ty: t };
+/// A compound field: an optional `pub` visibility marker, an optional `name:`
+/// prefix (absent for a tuple field), an optional `field` marker (a mutable
+/// `[field]` link), and its type.
+Member: raw::Member = <p:"pub"?> <n:(<"quoted"> ":")?> <f:"field"?> <t:Ty>
+    => raw::Member { is_pub: p.is_some(), name: n.map(|s| s.into()), is_field: f.is_some(), ty: t };
 
 /// An enum variant: its source name and ordered field types.
 Variant: raw::Variant =

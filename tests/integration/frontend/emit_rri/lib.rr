@@ -5,7 +5,7 @@
 mod util;
 
 pub struct Point {
-    x: i64,
+    pub x: i64,
     y: i64,
 }
 

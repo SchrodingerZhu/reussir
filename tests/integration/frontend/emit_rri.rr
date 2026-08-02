@@ -9,13 +9,15 @@
 // RUN: %rrc --package-root %S/emit_rri --package-name demo --emit rri -o - | %FileCheck %s
 // RUN: %rrc --package-root %S/emit_rri --package-name demo --emit rri -o - | %FileCheck %s --check-prefix=ABSENT
 
-// CHECK: interface 1 package "demo" producer "rrc
+// CHECK: interface 2 package "demo" producer "rrc
 // CHECK: 0 = "lib.rr";
 // CHECK: 1 = "util.rr";
 
-// The `pub` surface record keeps its marker; the private record ships (a
-// shipped prototype mentions it) without one.
+// The `pub` surface record keeps its marker — and its members keep their
+// per-field visibility; the private record ships (a shipped prototype
+// mentions it) without one.
 // CHECK: pub [shared] struct #demo::Point
+// CHECK-SAME: { pub "x": i64, "y": i64 };
 // CHECK: [shared] struct #demo::Secret
 
 // Ground functions — private or `pub`, same-module or cross-module — are

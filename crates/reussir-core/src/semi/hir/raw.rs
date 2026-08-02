@@ -16,7 +16,7 @@ pub use crate::full::mir::raw::{
 #[derive(Clone, Debug)]
 pub struct Program {
     /// The `.rri` interface header, when the dump is a package interface
-    /// rather than a plain HIR program: `interface 1 package "demo"
+    /// rather than a plain HIR program: `interface 2 package "demo"
     /// producer "rrc …";`, always the first item.
     pub header: Option<InterfaceHeader>,
     pub files: Vec<FileEntry>,
@@ -88,8 +88,9 @@ pub struct FfiPrelude {
 
 /// A record declaration carrying what mono reads: its path/kind/default cap, its
 /// generic parameters (with the `regional` ones marked), and its field layout.
-/// Field types are serialized (struct field *names* are not — mono does not read
-/// them) so the resumed HIR resolves ground record layouts identically.
+/// Field types, names, and `pub` visibility markers are serialized so the
+/// resumed HIR resolves ground record layouts identically and dependent
+/// packages see the same field-access rights through a `.rri`.
 #[derive(Clone, Debug)]
 pub struct Record {
     pub is_pub: bool,
@@ -109,7 +110,7 @@ pub struct Record {
 /// A record's field layout in the HIR form.
 #[derive(Clone, Debug)]
 pub enum RecordBody {
-    /// A struct's ordered fields (names dropped; mono does not read them).
+    /// A struct's ordered fields.
     Compound(Vec<Member>),
     /// An enum's variants, in declaration order.
     Variant(Vec<Variant>),
@@ -117,10 +118,11 @@ pub enum RecordBody {
     Opaque(String),
 }
 
-/// One compound field: an optional source name (absent for a tuple field), a
-/// `[field]`-mutability marker, and its type.
+/// One compound field: a `pub` visibility marker, an optional source name
+/// (absent for a tuple field), a `[field]`-mutability marker, and its type.
 #[derive(Clone, Debug)]
 pub struct Member {
+    pub is_pub: bool,
     pub name: Option<String>,
     pub is_field: bool,
     pub ty: Ty,

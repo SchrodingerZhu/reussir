@@ -35,7 +35,7 @@ use super::mono::{MonoInput, for_each_expr};
 /// The `.rri` format integer, bumped on any change to the textual grammar or
 /// its meaning. The header's `producer` string (the exact producing rrc
 /// version) gates the rest while the format is unstable.
-pub const RRI_FORMAT: u32 = 1;
+pub const RRI_FORMAT: u32 = 2;
 
 /// The defs and ancillary facts an `.rri` interface ships. All sets are over
 /// the producing elaboration's ids; emission resolves them back through the
@@ -269,7 +269,7 @@ mod tests {
                 })
                 .program(&elab.elaborated, &strings, &elab.records, &[]);
             assert!(
-                text.starts_with("interface 1 package \"demo\" producer \"rrc-test\";"),
+                text.starts_with("interface 2 package \"demo\" producer \"rrc-test\";"),
                 "{text}"
             );
             assert!(text.contains("fn #deep(v0 (x): i64) -> i64;"), "{text}");

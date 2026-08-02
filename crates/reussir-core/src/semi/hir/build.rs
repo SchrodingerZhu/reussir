@@ -274,15 +274,7 @@ impl<'tcx> Builder<'_, 'tcx> {
                         .iter()
                         .map(|m| {
                             let name = self.names.intern(m.name.as_deref().unwrap_or(""));
-                            // Transitional until the HIR text form carries a
-                            // per-member visibility marker: resumed dumps
-                            // default to Public (nothing enforces yet).
-                            (
-                                name,
-                                self.ty(&m.ty),
-                                m.is_field,
-                                surface::Visibility::Public,
-                            )
+                            (name, self.ty(&m.ty), m.is_field, member_vis(m))
                         })
                         .collect(),
                 )
@@ -290,7 +282,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::RecordBody::Compound(members) => RecordFields::Unnamed(
                 members
                     .iter()
-                    .map(|m| (self.ty(&m.ty), m.is_field, surface::Visibility::Public))
+                    .map(|m| (self.ty(&m.ty), m.is_field, member_vis(m)))
                     .collect(),
             ),
             raw::RecordBody::Variant(variants) => RecordFields::Variants(
@@ -671,6 +663,15 @@ fn cmp(op: raw::CmpOp) -> CmpOp {
         raw::CmpOp::Ge => CmpOp::Ge,
         raw::CmpOp::Eq => CmpOp::Eq,
         raw::CmpOp::Ne => CmpOp::Ne,
+    }
+}
+
+/// A member's `pub` marker as the surface visibility it round-trips.
+fn member_vis(m: &raw::Member) -> surface::Visibility {
+    if m.is_pub {
+        surface::Visibility::Public
+    } else {
+        surface::Visibility::Private
     }
 }
 
@@ -1145,6 +1146,45 @@ mod tests {
             "pub struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
+        );
+    }
+
+    #[test]
+    fn roundtrips_field_visibility() {
+        with_tcx(|tcx| {
+            let source = "pub struct [value] S { pub x: i64, y: i64 }\n\
+                          pub struct T(pub i64, i64)\n\
+                          pub struct [regional] R { pub c: [field] R, d: i64 }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+
+            let strings = elab.strings.entries();
+            let text = Printer::new(&elab.defs, elab.resolver).program(
+                &elab.elaborated,
+                &strings,
+                &elab.records,
+                &elab.trampolines,
+            );
+            // `pub` precedes the name, and the `field` marker; a private
+            // member carries no marker.
+            assert!(
+                text.contains("pub [value] struct #S { pub \"x\": i64, \"y\": i64 };"),
+                "{text}"
+            );
+            assert!(
+                text.contains("pub [shared] struct #T { pub i64, i64 };"),
+                "{text}"
+            );
+            assert!(text.contains("pub \"c\": field "), "{text}");
+        });
+        // And the marker survives print -> parse -> print byte-identically.
+        roundtrip(
+            "pub struct [value] S { pub x: i64, y: i64 }\n\
+             pub struct T(pub i64, i64)\n\
+             pub struct [regional] R { pub c: [field] R, d: i64 }",
         );
     }
 }
