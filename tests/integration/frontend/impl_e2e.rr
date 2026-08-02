@@ -1,0 +1,86 @@
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/impl_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/impl_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+// End-to-end methods: a value receiver, an `Arc<Self>` receiver, a regional
+// `[flex] Self` method called inside a region with the frozen result read
+// after, a generic method instantiated at two types, and a C-ABI trampoline
+// bound directly to a method.
+
+pub struct [value] V {
+    pub v: i64,
+}
+
+impl V {
+    pub fn get(self: Self) -> i64 {
+        self.v * 2
+    }
+}
+
+pub struct S {
+    pub v: i64,
+}
+
+impl S {
+    pub fn read(self: Arc<Self>) -> i64 {
+        self.v + 1
+    }
+}
+
+pub struct [regional] R {
+    pub v: i64,
+}
+
+impl R {
+    regional fn bump(self: [flex] Self) -> i64 {
+        self.v + 1
+    }
+
+    pub fn frozen_read(self: Self) -> i64 {
+        self.v * 10
+    }
+}
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl<T: Num> Box<T> {
+    pub fn scaled(self: Box<T>, k: T) -> T {
+        self.v * k
+    }
+}
+
+fn test_value() -> i64 {
+    V { v: 21 }.get()
+}
+
+fn test_arc() -> i64 {
+    let a = Arc<S> { v: 41 };
+    a.read()
+}
+
+fn test_regional() -> i64 {
+    let frozen = regional {
+        let r: [flex] R = R { v: 3 };
+        let inner = r.bump();
+        R { v: inner }
+    };
+    frozen.frozen_read()
+}
+
+fn test_generic() -> i64 {
+    let a = Box { v: 21 };
+    let b = Box { v: 7 };
+    a.scaled(2) + b.scaled(3)
+}
+
+extern "C" trampoline "impl_value_ffi" = test_value;
+extern "C" trampoline "impl_arc_ffi" = test_arc;
+extern "C" trampoline "impl_regional_ffi" = test_regional;
+extern "C" trampoline "impl_generic_ffi" = test_generic;
+// A trampoline may target a method directly (a ground instance).
+extern "C" trampoline "impl_method_ffi" = V::get;

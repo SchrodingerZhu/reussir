@@ -1227,6 +1227,19 @@ mod tests {
         });
     }
 
+    /// A method is a plain function under the type-suffixed path with a
+    /// `self`-named first parameter; both round-trip forms hold.
+    #[test]
+    fn roundtrip_method_function() {
+        let source = "pub struct Point { pub x: i64, y: i64 }\n\
+                      impl Point {\n\
+                          pub fn area(self: Self) -> i64 { self.x * self.y }\n\
+                      }\n\
+                      fn use_it(p: Point) -> i64 { p.area() }";
+        roundtrip(source);
+        roundtrip_with_locations(source);
+    }
+
     #[test]
     fn roundtrips_field_visibility() {
         with_tcx(|tcx| {

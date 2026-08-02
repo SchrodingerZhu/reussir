@@ -591,6 +591,10 @@ mod tests {
     }
 
     const DEP: &str = "pub struct Point { pub x: i64, pub y: i64 }\n\
+                       impl Point {\n\
+                           pub fn norm(self: Self) -> i64 { self.x + self.y }\n\
+                           fn secret(self: Self) -> i64 { self.x }\n\
+                       }\n\
                        pub struct Mixed { pub a: i64, b: i64 }\n\
                        struct Hidden { v: i64 }\n\
                        fn private_helper(h: Hidden) -> i64 { h.v }\n\
@@ -600,6 +604,49 @@ mod tests {
                        pub struct Holder<T : Num> { pub v: T }\n\
                        pub fn ground(x: i64) -> i64 { x + 1 }\n\
                        pub enum Opt { None, Some(i64) }";
+
+    #[test]
+    fn extern_method_dot_call_resolves() {
+        check_with_dep(
+            DEP,
+            &[(
+                &[],
+                "fn a(p: dep::Point) -> i64 { p.norm() }\n\
+                 fn b(p: dep::Point) -> i64 { dep::Point::norm(p) }",
+            )],
+            |elab| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            },
+        );
+    }
+
+    /// The dot fallback's absolute lookup bypasses `resolve_extern`'s pub
+    /// gate; the method path must re-apply it, keeping the is-private wording
+    /// distinct from not-found.
+    #[test]
+    fn extern_private_method_gated_on_dot_call() {
+        check_with_dep(
+            DEP,
+            &[(
+                &[],
+                "fn a(p: dep::Point) -> i64 { p.secret() }\n\
+                 fn b(p: dep::Point) -> i64 { p.nope() }",
+            )],
+            |elab| {
+                let messages: Vec<&str> = elab.reports.iter().map(|r| r.message.as_str()).collect();
+                assert!(
+                    messages.contains(&"function `secret` in package `dep` is private"),
+                    "{messages:#?}"
+                );
+                assert!(
+                    messages
+                        .iter()
+                        .any(|m| m.contains("no field or method `nope`")),
+                    "{messages:#?}"
+                );
+            },
+        );
+    }
 
     #[test]
     fn impl_of_extern_package_type_rejected() {

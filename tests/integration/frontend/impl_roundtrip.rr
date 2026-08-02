@@ -1,0 +1,34 @@
+// Methods and their calls survive both dump/resume legs: emit HIR, re-enter
+// with `--from hir`, re-emit and compare; same for MIR. No new IR construct
+// exists — methods are path-suffixed functions — so both forms are already
+// closed under print -> parse -> print.
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --package-name demo --emit mir --no-source-locations -o %t.mir
+// RUN: %rrc %t.mir --from mir --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// The MIR resumes all the way to an object.
+// RUN: %rrc %t.mir --from mir -o %t.o
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl<T: Num> Box<T> {
+    pub fn scaled(self: Box<T>, k: T) -> T {
+        self.v * k
+    }
+}
+
+fn use_it() -> i64 {
+    Box { v: 21 }.scaled(2)
+}
+
+extern "C" trampoline "impl_rt_ffi" = use_it;
+
+// HIR-DAG: pub fn #demo::Box::scaled<$1 (T): Num>(v0 (self): #demo::Box::<$1>, v1 (k): $1) -> $1 {
+// HIR-DAG: fn #demo::use_it() -> i64 {
+// HIR-DAG: #demo::Box::scaled::<i64>(#demo::Box::<i64>{21 : i64} : #demo::Box::<i64>, 2 : i64) : i64
+
+// MIR-DAG: pub fn @_RINvNvC4demo3Box6scaledxE(v0 (self): demo::Box::<i64>, v1 (k): i64) -> i64 {
+// MIR-DAG: fn @_RNvC4demo6use_it() -> i64 {
