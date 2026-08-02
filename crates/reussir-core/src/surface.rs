@@ -655,17 +655,31 @@ pub enum ExprKind {
 #[derive(Clone, Debug)]
 pub struct Expr {
     node: ResolvedNode,
+    /// Whether the source wrapped this expression in parentheses (peeled by
+    /// [`Expr::new`]). Semantically transparent except in callee position,
+    /// where `(e.f)(x)` forces field application over method dispatch.
+    parenthesized: bool,
 }
 
 impl Expr {
     /// Wrap an expression node, peeling transparent parentheses.
     fn new(node: &ResolvedNode) -> Expr {
         let mut n = node.clone();
+        let mut parenthesized = false;
         while n.kind() == ParenExpr {
             let inner = expr_children(&n).next().expect("inner expression").clone();
             n = inner;
+            parenthesized = true;
         }
-        Expr { node: n }
+        Expr {
+            node: n,
+            parenthesized,
+        }
+    }
+
+    /// Whether the source spelled this expression inside parentheses.
+    pub fn parenthesized(&self) -> bool {
+        self.parenthesized
     }
 
     pub fn span(&self) -> Span {
