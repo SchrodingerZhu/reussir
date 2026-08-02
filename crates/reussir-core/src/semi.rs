@@ -818,6 +818,26 @@ mod tests {
         );
     }
 
+    /// An impl-level bound is enforced at the method call, dot and path
+    /// spellings alike.
+    #[test]
+    fn impl_bound_violation_reports_at_method_call() {
+        elaborate_source(
+            "pub struct Box<T> { pub v: T }
+             impl<T: Num> Box<T> { pub fn scaled(self: Box<T>, k: T) -> T { self.v * k } }
+             fn bad(b: Box<bool>) -> bool { b.scaled(true) }
+             fn also_bad(b: Box<bool>) -> bool { Box::scaled(b, true) }",
+            |elab| {
+                let violations = elab
+                    .reports
+                    .iter()
+                    .filter(|r| r.message.contains("Num"))
+                    .count();
+                assert!(violations >= 2, "{:#?}", elab.reports);
+            },
+        );
+    }
+
     #[test]
     fn generic_method_infers_type_args_from_receiver_and_args() {
         check(
