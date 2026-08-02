@@ -10,6 +10,10 @@
 //! * tuples are arrays, an optional value is `null` or the value;
 //! * spans are `{"spanValue": v, "spanStartOffset": n, "spanEndOffset": n}`
 //!   with *character* offsets.
+//!
+//! Record fields carry a trailing visibility string: named fields are
+//! `[name, type, is_field, vis]` quads and unnamed fields `[type, is_field,
+//! vis]` triples, with `vis` either `"Public"` or `"Private"`.
 
 use serde_json::{Number, Value, json};
 
@@ -53,6 +57,15 @@ fn child_node(node: &ResolvedNode, kind: SyntaxKind) -> Option<&ResolvedNode> {
 
 fn is_ident_like(kind: SyntaxKind) -> bool {
     kind.is_ident_like()
+}
+
+/// Field visibility as the all-nullary-sum string encoding.
+fn visibility_str(field: &ResolvedNode) -> &'static str {
+    if child_node(field, VisFlag).is_some() {
+        "Public"
+    } else {
+        "Private"
+    }
 }
 
 fn is_expr_kind(kind: SyntaxKind) -> bool {
@@ -242,14 +255,18 @@ impl Emitter<'_> {
             let fields: Vec<Value> = nodes(named)
                 .filter(|n| n.kind() == NamedField)
                 .map(|f| {
+                    // A `pub` marker is nested inside a VisFlag node, so the
+                    // direct-token scan below still finds the real field name
+                    // (which may itself be spelled `pub`).
                     let name = tokens(f)
                         .find(|t| is_ident_like(t.kind()))
                         .expect("field name");
                     let flag = child_node(f, FieldFlag).is_some();
+                    let vis = visibility_str(f);
                     let ty = nodes(f)
                         .find(|n| is_type_kind(n.kind()))
                         .expect("field type");
-                    self.with_node_span(f, json!([name.text(), self.type_(ty), flag]))
+                    self.with_node_span(f, json!([name.text(), self.type_(ty), flag, vis]))
                 })
                 .collect();
             tagged("Named", Value::Array(fields))
@@ -258,10 +275,11 @@ impl Emitter<'_> {
                 .filter(|n| n.kind() == UnnamedField)
                 .map(|f| {
                     let flag = child_node(f, FieldFlag).is_some();
+                    let vis = visibility_str(f);
                     let ty = nodes(f)
                         .find(|n| is_type_kind(n.kind()))
                         .expect("field type");
-                    self.with_node_span(f, json!([self.type_(ty), flag]))
+                    self.with_node_span(f, json!([self.type_(ty), flag, vis]))
                 })
                 .collect();
             tagged("Unnamed", Value::Array(fields))

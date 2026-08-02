@@ -206,12 +206,19 @@ impl Parser<'_> {
         m.complete(self, StructStmt);
     }
 
-    /// `{ name: [field]? type, ... }`.
+    /// `{ pub? name: [field]? type, ... }`.
     fn named_fields(&mut self) {
         let m = self.start();
         self.expect(LBrace);
         while !self.at(RBrace) && !self.at_eof() {
             let f = self.start();
+            // `pub` is also a legal field name (no reserved words); it is a
+            // visibility marker only when not immediately followed by `:`.
+            if self.at(PubKw) && self.nth(1) != Colon {
+                let v = self.start();
+                self.bump();
+                v.complete(self, VisFlag);
+            }
             self.expect_ident("a field name");
             self.expect(Colon);
             self.field_flag_opt();
@@ -227,12 +234,19 @@ impl Parser<'_> {
         m.complete(self, NamedFields);
     }
 
-    /// `( [field]? type, ... )`.
+    /// `( pub? [field]? type, ... )`.
     fn unnamed_fields(&mut self) {
         let m = self.start();
         self.expect(LParen);
         while !self.at(RParen) && !self.at_eof() {
             let f = self.start();
+            // `pub` is also a legal type name; it is a visibility marker only
+            // when what follows cannot continue a type headed by `pub`.
+            if self.at(PubKw) && !matches!(self.nth(1), Comma | RParen | PathSep | LAngle | Arrow) {
+                let v = self.start();
+                self.bump();
+                v.complete(self, VisFlag);
+            }
             self.field_flag_opt();
             self.type_();
             f.complete(self, UnnamedField);

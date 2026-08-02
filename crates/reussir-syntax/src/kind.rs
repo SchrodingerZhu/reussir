@@ -145,6 +145,8 @@ pub enum SyntaxKind {
     Capability,
     /// `[field]` flag on record fields.
     FieldFlag,
+    /// `pub` visibility marker on record fields.
+    VisFlag,
     /// `[flex]` flag on parameters/return types/let bindings.
     FlexFlag,
     /// An outer attribute `#[repr(fixed)]` on an item (e.g. an enum).

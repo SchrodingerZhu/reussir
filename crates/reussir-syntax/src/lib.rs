@@ -543,6 +543,51 @@ mod tests {
     }
 
     #[test]
+    fn field_visibility_parses_and_encodes() {
+        let json = json_of("pub struct S { pub x: i64, y: [field] T }");
+        let record = unwrap_span(&json[0]);
+        let named = &record["contents"]["recordFields"];
+        assert_eq!(named["tag"], "Named");
+        let x = &named["contents"][0]["spanValue"];
+        let y = &named["contents"][1]["spanValue"];
+        assert_eq!(x[0], "x");
+        assert_eq!(x[2], false);
+        assert_eq!(x[3], "Public");
+        assert_eq!(y[0], "y");
+        assert_eq!(y[2], true);
+        assert_eq!(y[3], "Private");
+
+        let json = json_of("struct P(pub i64, bool)");
+        let unnamed = &unwrap_span(&json[0])["contents"]["recordFields"];
+        assert_eq!(unnamed["tag"], "Unnamed");
+        assert_eq!(unnamed["contents"][0]["spanValue"][2], "Public");
+        assert_eq!(unnamed["contents"][1]["spanValue"][2], "Private");
+    }
+
+    /// `pub` stays a legal field name, field type, and path segment; the
+    /// marker is recognized only where a name/type cannot follow it.
+    #[test]
+    fn field_named_pub_stays_a_field_name() {
+        let json = json_of("struct S { pub: i64, pub pub: i64 }");
+        let named = &unwrap_span(&json[0])["contents"]["recordFields"]["contents"];
+        let first = &named[0]["spanValue"];
+        let second = &named[1]["spanValue"];
+        assert_eq!(first[0], "pub");
+        assert_eq!(first[3], "Private");
+        assert_eq!(second[0], "pub");
+        assert_eq!(second[3], "Public");
+
+        let json = json_of("struct T(pub, pub i64)");
+        let unnamed = &unwrap_span(&json[0])["contents"]["recordFields"]["contents"];
+        let first = &unnamed[0]["spanValue"];
+        let second = &unnamed[1]["spanValue"];
+        // The lone `pub` is a type named `pub`, not a visibility marker.
+        assert_eq!(first[1], false);
+        assert_eq!(first[2], "Private");
+        assert_eq!(second[2], "Public");
+    }
+
+    #[test]
     fn transform_item_requires_a_semicolon() {
         let parse = parse("transform [{ transform.yield }]");
         assert!(
