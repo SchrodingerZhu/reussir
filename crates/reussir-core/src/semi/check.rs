@@ -47,6 +47,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.defs.set_module(module.clone());
         }
         self.enter_function(&proto.generics);
+        // Body type annotations in an impl member resolve `Self` to the
+        // target; `enter_function` cleared the previous item's alias.
+        self.self_alias = proto.self_ty;
         // A `[regional]` function body runs inside an implicit region: its
         // parameters may already be flex and it may construct regional records
         // directly, so the body is checked with the region context active.

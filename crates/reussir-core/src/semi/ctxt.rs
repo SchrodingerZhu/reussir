@@ -226,6 +226,11 @@ pub struct FuncProto<'tcx> {
     /// that module sees — private fields only when the block sits in (or
     /// under) the type's defining module.
     pub impl_module: Option<Vec<TokenKey>>,
+    /// For an impl member, the target type in its unrefined coloring — the
+    /// `Self` alias the body's type annotations resolve to. `None` for plain
+    /// functions, extern prototypes, and reparsed dumps (printed HIR never
+    /// contains `Self`; it is resolved away at elaboration).
+    pub self_ty: Option<Ty<'tcx>>,
     pub is_regional: bool,
     pub span: Option<Span>,
     /// The file the function is declared in (spans index it).
@@ -283,9 +288,12 @@ fn collect_private_records<'tcx>(
 /// instantiated with a regional record.
 /// The impl-block context a member is scanned under: the resolved target
 /// record and the block-level generics its signature shares.
-pub(super) struct ImplCtx<'x> {
+pub(super) struct ImplCtx<'x, 'tcx> {
     pub target: DefId,
     pub generics: &'x [(TokenKey, GenericId)],
+    /// The applied target type — what `Self` (and a receiver annotation)
+    /// means inside the block, in the record's unrefined coloring.
+    pub self_ty: Ty<'tcx>,
 }
 
 fn collect_regional_generic(t: Ty<'_>, out: &mut Vec<GenericId>) {
@@ -452,6 +460,11 @@ pub struct Elaborator<'a, 'tcx> {
     pub infer: InferCtxt<'a, 'tcx>,
     pub vars: VarEnv<'tcx>,
     pub generic_names: FxHashMap<TokenKey, GenericId>,
+    /// The type `Self` resolves to while an impl member's signature or body
+    /// is being evaluated. Per-item working state like `generic_names`, NOT
+    /// accumulated — reset by `enter_function` and after signature eval, so
+    /// no Checkpoint entry.
+    pub(super) self_alias: Option<Ty<'tcx>>,
     pub inside_region: bool,
     /// Generics required to be regional, accumulated while checking the current
     /// function body (e.g. a generic assigned into a flex link). Seeded from the
@@ -525,6 +538,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             infer: InferCtxt::new(tcx),
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
+            self_alias: None,
             inside_region: false,
             regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
@@ -1144,6 +1158,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.infer = InferCtxt::new(self.tcx);
         self.vars.reset();
         self.generic_names.clear();
+        self.self_alias = None;
         self.inside_region = false;
         self.fulfill = FulfillCtxt::default();
         self.reported_holes.clear();
@@ -1386,15 +1401,35 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.defs.set_module(scope.module.to_vec());
             let target = self.scan_impl_target(ib, *span);
             let impl_generics = target.map(|_| self.collect_generics(&ib.generics, *span));
+            // The applied target type: `Self` inside the block. Evaluated
+            // once, under the block-level generics.
+            let self_ty = match (target, &impl_generics) {
+                (Some(target), Some(generics)) => {
+                    self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
+                    let args: Vec<Ty<'tcx>> =
+                        ib.target_args.iter().map(|a| self.eval_type(a)).collect();
+                    self.generic_names.clear();
+                    let flex = match self.records[&target].default_cap {
+                        DefaultCap::Value | DefaultCap::Shared => Flexivity::Irrelevant,
+                        DefaultCap::Regional => Flexivity::Regional,
+                    };
+                    Some(self.tcx.mk_record(target, &args, flex))
+                }
+                _ => None,
+            };
             for m in &ib.members {
                 let mspan = Some(surface::Span {
                     start: m.start,
                     end: m.end,
                 });
-                let def = match (target, &impl_generics) {
-                    (Some(target), Some(generics)) => {
+                let def = match (target, &impl_generics, self_ty) {
+                    (Some(target), Some(generics), Some(self_ty)) => {
                         self.defs.set_module(scope.module.to_vec());
-                        let ctx = ImplCtx { target, generics };
+                        let ctx = ImplCtx {
+                            target,
+                            generics,
+                            self_ty,
+                        };
                         self.scan_method(&m.value, false, Some(&ctx), mspan)
                     }
                     _ => None,
@@ -1872,7 +1907,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         &mut self,
         func: &surface::Function,
         is_ffi_import: bool,
-        impl_ctx: Option<&ImplCtx<'_>>,
+        impl_ctx: Option<&ImplCtx<'_, 'tcx>>,
         span: Option<Span>,
     ) -> Option<DefId> {
         // The block's own module, captured before declaration temporarily
@@ -1898,6 +1933,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             None => own,
         };
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
+        self.self_alias = impl_ctx.map(|ctx| ctx.self_ty);
 
         // A `[flex]` annotation on a bare generic (its coloring is dropped, as in
         // the reference) records that the generic must be instantiated regional.
@@ -1921,6 +1957,47 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             None => self.tcx.mk_unit(),
         };
         self.generic_names.clear();
+        self.self_alias = None;
+
+        // Receiver validation: a first parameter named `self` must be the
+        // impl target, optionally behind one `Arc` and/or a flexivity
+        // refinement; `self` anywhere else is rejected.
+        if let Some(ctx) = impl_ctx {
+            for (i, (pname, pty)) in params.iter().enumerate() {
+                if self.sym(*pname) != "self" {
+                    continue;
+                }
+                if i != 0 {
+                    self.error(
+                        span,
+                        "a parameter named `self` must be the method's first parameter",
+                    );
+                    continue;
+                }
+                let peeled = match pty.kind() {
+                    TyKind::Arc(inner) => *inner,
+                    _ => *pty,
+                };
+                let TyKind::Record {
+                    def: target,
+                    args: target_args,
+                    ..
+                } = ctx.self_ty.kind()
+                else {
+                    unreachable!("an impl target is always a record type");
+                };
+                let matches_target = matches!(
+                    peeled.kind(),
+                    TyKind::Record { def, args, .. } if def == target && args == target_args
+                );
+                if !matches_target {
+                    self.error(
+                        span,
+                        "the receiver of a method must be `Self`, `Arc<Self>`, or                          `[flex] Self` (or the equivalent spelling of the impl target)",
+                    );
+                }
+            }
+        }
 
         let name = func.name;
         let declared = match impl_ctx {
@@ -1965,6 +2042,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             params,
             return_ty,
             impl_module,
+            self_ty: impl_ctx.map(|ctx| ctx.self_ty),
             is_regional: func.is_regional,
             span,
             file: self.current_file,
