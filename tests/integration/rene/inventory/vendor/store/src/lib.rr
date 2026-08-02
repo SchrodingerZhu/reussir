@@ -5,8 +5,8 @@
 // take the incoming price, sales subtract and keep the price on record.
 
 pub struct Item {
-    qty: i64,
-    unit_cents: i64
+    pub qty: i64,
+    pub unit_cents: i64
 }
 
 pub enum Txn {

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Language
+
+- Record fields now carry visibility: fields default to private and accept a
+  leading `pub` marker. A private field is accessible (projection,
+  assignment, construction) only from the record's defining module and its
+  descendant modules, inside a package and across packages alike; the marker
+  round-trips through HIR text and ships in `.rri` interfaces.
+  Enum-variant payloads are unaffected — variants stay
+  exactly as visible as their enum.
+
 ## 0.1.0
 
 The first tagged release of Reussir: an MLIR-based compiler framework for

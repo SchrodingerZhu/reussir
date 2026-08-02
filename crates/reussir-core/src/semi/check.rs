@@ -13,6 +13,15 @@ use super::ctxt::{Elaborator, FuncProto, RecordFields};
 use super::fulfill::{collect_holes, ty_has_hole};
 use super::hir::{ArithOp, ClosureExpr, CmpOp, Expr, ExprKind, Function, VarId};
 
+/// Why a field access failed to resolve: the field does not exist (or the
+/// base is not a suitable record), or it exists but is private outside its
+/// defining module. Callers keep the two diagnostics distinct, mirroring the
+/// item-level "is private" vs "not found" split of extern resolution.
+enum FieldErr {
+    Missing,
+    Private { field: String, record: String },
+}
+
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Check a function definition: bind its parameters into Γ, check the body
     /// against the declared return type (`Γ ⊢ body ⇐ return_ty`), discharge the
@@ -956,10 +965,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         // The target was just checked to be `Flex`, so the link's slot is seen
         // at its flex (writable) coloring.
-        let Some((idx, field_ty, mutable)) = self.resolve_field(*def, args, Flexivity::Flex, acc)
-        else {
-            self.error(span, "no such field on assignment target");
-            return self.poison(span);
+        let (idx, field_ty, mutable) = match self.resolve_field(*def, args, Flexivity::Flex, acc) {
+            Ok(resolved) => resolved,
+            Err(FieldErr::Missing) => {
+                self.error(span, "no such field on assignment target");
+                return self.poison(span);
+            }
+            Err(FieldErr::Private { field, record }) => {
+                self.error(
+                    span,
+                    format!("field `{field}` of record `{record}` is private"),
+                );
+                return self.poison(span);
+            }
         };
         if !mutable {
             self.error(span, "cannot assign to an immutable field");
@@ -1047,9 +1065,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 );
                 return self.poison(span);
             };
-            let Some((idx, field_ty, _)) = self.resolve_field(*def, args, *flex, acc) else {
-                self.error(span, "no such field");
-                return self.poison(span);
+            let (idx, field_ty, _) = match self.resolve_field(*def, args, *flex, acc) {
+                Ok(resolved) => resolved,
+                Err(FieldErr::Missing) => {
+                    self.error(span, "no such field");
+                    return self.poison(span);
+                }
+                Err(FieldErr::Private { field, record }) => {
+                    self.error(
+                        span,
+                        format!("field `{field}` of record `{record}` is private"),
+                    );
+                    return self.poison(span);
+                }
             };
             indices.push(idx);
             let field_ty = self.infer.shallow_resolve(field_ty);
@@ -1063,6 +1091,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
     }
 
+    /// May the code being checked read or write `record_def`'s private
+    /// fields? Rust's rule: a private field is accessible from the record's
+    /// defining module and its descendant modules. An extern record's path is
+    /// headed by its package name, which is never a prefix of a consumer
+    /// module, so cross-package privacy falls out of the same prefix test.
+    fn may_access_private_fields(&self, record_def: DefId) -> bool {
+        let path = &self.defs.path(record_def).0;
+        let def_module = &path[..path.len() - 1];
+        self.defs.module().starts_with(def_module)
+    }
+
     /// Resolve an access on a record type to `(field index, field type, mutable)`.
     /// The field type is instantiated with the record's type arguments and
     /// colored as seen through a base of flexivity `base_flex`
@@ -1073,31 +1112,44 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[Ty<'tcx>],
         base_flex: Flexivity,
         acc: &surface::Access,
-    ) -> Option<(u32, Ty<'tcx>, bool)> {
-        let record = self.records.get(&record_def)?;
+    ) -> Result<(u32, Ty<'tcx>, bool), FieldErr> {
+        let record = self.records.get(&record_def).ok_or(FieldErr::Missing)?;
         let ty_params = record.ty_params.clone();
-        let fields = record.fields.clone()?;
+        let fields = record.fields.clone().ok_or(FieldErr::Missing)?;
         let inst =
             Instantiation::from_pairs(ty_params.iter().map(|(_, g)| *g).zip(args.iter().copied()));
-        let (idx, decl_ty, mutable) = match (&fields, acc) {
+        let (idx, decl_ty, mutable, vis) = match (&fields, acc) {
             (RecordFields::Named(fs), surface::Access::Named(name)) => {
-                let i = fs.iter().position(|(n, _, _, _)| n == name)?;
-                (i, fs[i].1, fs[i].2)
+                let i = fs
+                    .iter()
+                    .position(|(n, _, _, _)| n == name)
+                    .ok_or(FieldErr::Missing)?;
+                (i, fs[i].1, fs[i].2, fs[i].3)
             }
             (RecordFields::Named(fs), surface::Access::Unnamed(n)) => {
                 let i = *n as usize;
-                let f = fs.get(i)?;
-                (i, f.1, f.2)
+                let f = fs.get(i).ok_or(FieldErr::Missing)?;
+                (i, f.1, f.2, f.3)
             }
             (RecordFields::Unnamed(fs), surface::Access::Unnamed(n)) => {
                 let i = *n as usize;
-                let f = fs.get(i)?;
-                (i, f.0, f.1)
+                let f = fs.get(i).ok_or(FieldErr::Missing)?;
+                (i, f.0, f.1, f.2)
             }
-            _ => return None,
+            _ => return Err(FieldErr::Missing),
         };
+        if vis == surface::Visibility::Private && !self.may_access_private_fields(record_def) {
+            let label = match (&fields, acc) {
+                (RecordFields::Named(fs), _) => self.sym(fs[idx].0).to_owned(),
+                _ => idx.to_string(),
+            };
+            return Err(FieldErr::Private {
+                field: label,
+                record: self.defs.path(record_def).display(self.resolver),
+            });
+        }
         let field_ty = self.field_member_ty(decl_ty, mutable, base_flex, &inst);
-        Some((idx as u32, field_ty, mutable))
+        Ok((idx as u32, field_ty, mutable))
     }
 
     // ----- constructors -----
@@ -1900,6 +1952,37 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 span,
                 "cannot construct a regional record outside of a region",
             );
+        }
+        // Constructing a record supplies every field, so a single private
+        // field makes the constructor itself module-private. One error listing
+        // the private fields, then checking continues (no poison — matches the
+        // regional check above). Variant construction is exempt by design:
+        // variant payloads carry no per-field visibility.
+        if !self.may_access_private_fields(def) {
+            let private: Vec<String> = match &record.fields {
+                Some(RecordFields::Named(fs)) => fs
+                    .iter()
+                    .filter(|(_, _, _, v)| *v == surface::Visibility::Private)
+                    .map(|(n, _, _, _)| format!("`{}`", self.sym(*n)))
+                    .collect(),
+                Some(RecordFields::Unnamed(fs)) => fs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, _, v))| *v == surface::Visibility::Private)
+                    .map(|(i, _)| format!("`{i}`"))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if !private.is_empty() {
+                self.error(
+                    span,
+                    format!(
+                        "cannot construct `{}` outside its module: field(s) {} are private",
+                        self.defs.path(def).display(self.resolver),
+                        private.join(", ")
+                    ),
+                );
+            }
         }
         let inst = self.instantiate(&record.generics_as_decls(), ty_args, span);
         let mut field_tys = self.field_types(&record.fields, &inst);

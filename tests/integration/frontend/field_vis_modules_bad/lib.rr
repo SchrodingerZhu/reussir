@@ -1,0 +1,8 @@
+// The violating package: `spy` reaches for `geometry::Rect`'s private field.
+
+mod geometry;
+mod spy;
+
+pub fn entry(n: i64) -> i64 {
+    spy::peek(geometry::make(n))
+}

@@ -383,6 +383,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(span, "unknown enum".to_string());
             return Pat::Wild;
         };
+        // Struct patterns do not exist (only enum-variant and Nullable
+        // constructors match); if they ever land, private-field bindings must
+        // gate on `may_access_private_fields` like projection does.
         let Some(RecordFields::Variants(variants)) = &record.fields else {
             self.error(span, "not an enum".to_string());
             return Pat::Wild;
