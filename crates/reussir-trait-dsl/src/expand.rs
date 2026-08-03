@@ -154,10 +154,13 @@ pub(crate) fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                         def,
                         visibility: crate::surface::Visibility::Public,
                         sealed: #sealed,
-                        params: vec![self_g],
+                        self_param: self_g,
+                        params: vec![],
                         supertraits: vec![#(#supers),*],
                         methods: vec![],
                         assoc_tys: vec![],
+                        span: None,
+                        file: reussir_syntax::source::FileId::ROOT,
                     });
                 }
             }

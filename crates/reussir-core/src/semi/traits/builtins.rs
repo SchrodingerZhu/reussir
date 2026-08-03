@@ -83,10 +83,13 @@ impl Builtins {
                     def,
                     visibility: surface::Visibility::Public,
                     sealed: true,
-                    params: vec![self_g],
+                    self_param: self_g,
+                    params: vec![],
                     supertraits,
                     methods: vec![],
                     assoc_tys: vec![],
+                    span: None,
+                    file: reussir_syntax::source::FileId::ROOT,
                 });
             };
         declare(num, "Num", vec![], db, defs);

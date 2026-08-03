@@ -3,17 +3,39 @@
 //! These are the program's trait items after name resolution. Method bodies are
 //! deliberately absent in Phase 0 — only the shapes the resolver needs.
 
+use reussir_syntax::kind::TokenKey;
+use reussir_syntax::source::FileId;
+
 use crate::semi::ty::{DefId, GenericId, Ty};
-use crate::surface;
+use crate::surface::{self, Span};
 
 use super::{ImplId, Obligation, TraitId, TraitRef};
 
+/// How a trait method takes its receiver. Tracked out of band because the
+/// flex coloring is dropped on the generic `Self`, and `Arc<Self>` peels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiverForm {
+    /// `self: Self`.
+    Value,
+    /// `self: Arc<Self>`.
+    Arc,
+    /// `self: [flex] Self` (implies `regional fn`).
+    Flex,
+}
+
 /// A method declared by a trait. Bodies live on the impl side (Phase 1+).
+/// Parameters are positional (`params[0]` is the receiver): conformance is
+/// positional and no bodies exist, so names would serialize dead weight.
 #[derive(Clone, Debug)]
 pub struct MethodSig<'tcx> {
-    pub name: String,
+    pub name: TokenKey,
+    /// The method's own generics, following the trait's in the binder.
+    pub generics: Vec<(TokenKey, GenericId)>,
+    pub receiver: ReceiverForm,
     pub params: Vec<Ty<'tcx>>,
     pub ret: Ty<'tcx>,
+    pub is_regional: bool,
+    pub span: Option<Span>,
 }
 
 /// An associated type declaration. Reserved so the IR can grow into projections
@@ -38,13 +60,19 @@ pub struct TraitDef<'tcx> {
     /// value-class traits (whose operations lower by ground type) and the
     /// structural `Sync`.
     pub sealed: bool,
-    /// Type parameters; `params[0]` is the implicit `Self`.
-    pub params: Vec<GenericId>,
+    /// The implicit `Self` parameter. `GenericId(0)`-unallocated for the
+    /// builtins (their defs predate the elaborator's generics table);
+    /// `fresh_generic`-allocated for user traits.
+    pub self_param: GenericId,
+    /// The trait's declared (non-`Self`) type parameters.
+    pub params: Vec<(TokenKey, GenericId)>,
     /// Super-traits (`trait Sub: Super`). These subsume the old hard-coded class
     /// DAG: `Integral: Num` is just a super-trait edge.
     pub supertraits: Vec<TraitRef<'tcx>>,
     pub methods: Vec<MethodSig<'tcx>>,
     pub assoc_tys: Vec<AssocTyDef>,
+    pub span: Option<Span>,
+    pub file: FileId,
 }
 
 /// An impl declaration.
