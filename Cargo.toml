@@ -11,6 +11,7 @@ members = [
     "crates/reussir-compiler",
     "crates/reussir-repl",
     "crates/rene",
+    "crates/reussir-trait-dsl",
 ]
 # The backend crates (and reussir-codegen, which depends on them) link against
 # MLIR and the staged Reussir C API, so they are excluded from the default
@@ -21,6 +22,7 @@ default-members = [
     "crates/reussir-syntax",
     "crates/reussir-core",
     "crates/rene",
+    "crates/reussir-trait-dsl",
 ]
 
 [workspace.package]
@@ -29,6 +31,12 @@ edition = "2024"
 license = "(Apache-2.0 OR MIT)"
 
 [workspace.dependencies]
+# The builtin_traits! registration DSL (reussir-trait-dsl) parses with syn and
+# emits with quote; heck snake_cases trait names into Builtins field names.
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+heck = "0.5"
 ariadne = "0.5"
 blake3 = "1"
 rapidhash = "4.4.1"
