@@ -93,6 +93,15 @@ interface 1 package "demo" producer "rrc 0.5.0 (7d9c4d3)";
 The header is a grammar item (parsed, not sniffed by the driver), rejected in
 plain `.hir` re-entry and required first in `.rri`.
 
+**Generic binders carry their trait bounds** as `+`-separated qualified paths
+(`<$0 (T): Num + Sync>`). Loading resolves each bound by its final
+path segment against the builtin trait table and re-registers it on the
+remapped generic, so a bad instantiation of an imported generic reports at
+the consumer's call site rather than inside the imported body at
+monomorphization. A bound-less binder (a pre-bounds dump) reloads with no
+bounds; an unknown bound name reports "unknown trait bound" and the binder
+degrades to the resolvable subset.
+
 **Spans stay.** The rri is printed in the sources form
 (`Printer::with_sources`): file table plus per-item/per-node spans, so
 diagnostics raised while instantiating an upstream body point into the
