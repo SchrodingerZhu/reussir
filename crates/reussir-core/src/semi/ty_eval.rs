@@ -532,12 +532,12 @@ impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
         Some(match fields {
             RecordFields::Named(fs) => fs
                 .iter()
-                .map(|(n, t, _)| (self.el.sym(*n).to_owned(), subst(*t)))
+                .map(|(n, t, _, _)| (self.el.sym(*n).to_owned(), subst(*t)))
                 .collect(),
             RecordFields::Unnamed(fs) => fs
                 .iter()
                 .enumerate()
-                .map(|(i, (t, _))| (i.to_string(), subst(*t)))
+                .map(|(i, (t, _, _))| (i.to_string(), subst(*t)))
                 .collect(),
             RecordFields::Variants(vs) => vs
                 .iter()
@@ -562,8 +562,8 @@ impl<'tcx> SyncEnv<'tcx> for ElabSyncEnv<'_, '_, 'tcx> {
         let mut out = Vec::new();
         let mut walk = |t: Ty<'tcx>| crate::semi::traits::sync::collect_record_defs(t, &mut out);
         match fields {
-            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _)| walk(*t)),
-            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _)| walk(*t)),
+            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _, _)| walk(*t)),
+            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _, _)| walk(*t)),
             RecordFields::Variants(vs) => vs
                 .iter()
                 .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),

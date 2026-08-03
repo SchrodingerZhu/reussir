@@ -309,12 +309,12 @@ impl<'tcx> Remapper<'_, '_, 'tcx> {
         match fields {
             RecordFields::Named(fs) => RecordFields::Named(
                 fs.iter()
-                    .map(|&(name, ty, is_mut)| (self.key(name), self.ty(ty), is_mut))
+                    .map(|&(name, ty, is_mut, vis)| (self.key(name), self.ty(ty), is_mut, vis))
                     .collect(),
             ),
             RecordFields::Unnamed(fs) => RecordFields::Unnamed(
                 fs.iter()
-                    .map(|&(ty, is_mut)| (self.ty(ty), is_mut))
+                    .map(|&(ty, is_mut, vis)| (self.ty(ty), is_mut, vis))
                     .collect(),
             ),
             RecordFields::Variants(vs) => RecordFields::Variants(

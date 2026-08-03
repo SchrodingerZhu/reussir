@@ -891,8 +891,10 @@ pub struct Function {
 
 #[derive(Clone, Debug)]
 pub enum RecordFields {
-    Named(Vec<Spanned<(TokenKey, Type, bool)>>),
-    Unnamed(Vec<Spanned<(Type, bool)>>),
+    /// Each named field is `(name, type, is_mutable, visibility)`.
+    Named(Vec<Spanned<(TokenKey, Type, bool, Visibility)>>),
+    /// Each unnamed field is `(type, is_mutable, visibility)`.
+    Unnamed(Vec<Spanned<(Type, bool, Visibility)>>),
     Variants(Vec<Spanned<(TokenKey, SmallVec<[Type; 2]>)>>),
     /// A field-less declaration (`struct V<T>;`): an opaque (FFI) record.
     Opaque,
@@ -1045,6 +1047,16 @@ fn visibility_of(node: &ResolvedNode) -> Visibility {
     }
 }
 
+/// Per-field visibility: the `pub` marker lives inside a nested VisFlag node
+/// (never as a direct token, which would collide with a field named `pub`).
+fn visibility_of_field(field: &ResolvedNode) -> Visibility {
+    if child_node(field, VisFlag).is_some() {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    }
+}
+
 fn function_of(node: &ResolvedNode) -> Function {
     let body = expr_children(node).last().map(Expr::new);
     let return_type = child_node(node, RetType).map(|r| {
@@ -1118,14 +1130,17 @@ fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
             nodes(named)
                 .filter(|n| n.kind() == NamedField)
                 .map(|f| {
+                    // A `pub` marker sits inside a VisFlag node, so the
+                    // direct-token scan still finds the field name.
                     let name = tokens(f)
                         .find(|t| t.kind().is_ident_like())
                         .expect("field name");
                     let flag = child_node(f, FieldFlag).is_some();
+                    let vis = visibility_of_field(f);
                     let ty = nodes(f)
                         .find(|n| is_type_kind(n.kind()))
                         .expect("field type");
-                    spanned(f, (key(name), Type::new(ty), flag))
+                    spanned(f, (key(name), Type::new(ty), flag, vis))
                 })
                 .collect(),
         )
@@ -1135,10 +1150,11 @@ fn record_of(node: &ResolvedNode, kind: RecordKind) -> Record {
                 .filter(|n| n.kind() == UnnamedField)
                 .map(|f| {
                     let flag = child_node(f, FieldFlag).is_some();
+                    let vis = visibility_of_field(f);
                     let ty = nodes(f)
                         .find(|n| is_type_kind(n.kind()))
                         .expect("field type");
-                    spanned(f, (Type::new(ty), flag))
+                    spanned(f, (Type::new(ty), flag, vis))
                 })
                 .collect(),
         )

@@ -157,10 +157,10 @@ pub struct GenericInfo {
 /// A record's fields, with concrete field types resolved.
 #[derive(Clone, Debug)]
 pub enum RecordFields<'tcx> {
-    /// `(name, type, is_mutable)`.
-    Named(Vec<(TokenKey, Ty<'tcx>, bool)>),
-    /// `(type, is_mutable)`.
-    Unnamed(Vec<(Ty<'tcx>, bool)>),
+    /// `(name, type, is_mutable, visibility)`.
+    Named(Vec<(TokenKey, Ty<'tcx>, bool, surface::Visibility)>),
+    /// `(type, is_mutable, visibility)`.
+    Unnamed(Vec<(Ty<'tcx>, bool, surface::Visibility)>),
     Variants(Vec<Variant<'tcx>>),
     /// An opaque `#[ffi]` record: no fields, no constructors — the value is
     /// a foreign rc box whose payload only the foreign side interprets.
@@ -1359,8 +1359,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
             let (span, file, vis, name) = (rec.span, rec.file, rec.visibility, rec.name);
             let member_tys: Vec<Ty<'tcx>> = match &rec.fields {
-                Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
-                Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
+                Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _, _)| *t).collect(),
+                Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _, _)| *t).collect(),
                 Some(RecordFields::Variants(vs)) => {
                     vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
                 }
@@ -1819,26 +1819,26 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             surface::RecordFields::Named(fs) => RecordFields::Named(
                 fs.iter()
                     .map(|f| {
-                        let (name, ty, mutable) = &f.value;
+                        let (name, ty, mutable, vis) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         self.reject_arc_member(default_cap, fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
-                        (*name, fty, *mutable)
+                        (*name, fty, *mutable, *vis)
                     })
                     .collect(),
             ),
             surface::RecordFields::Unnamed(fs) => RecordFields::Unnamed(
                 fs.iter()
                     .map(|f| {
-                        let (ty, mutable) = &f.value;
+                        let (ty, mutable, vis) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         self.reject_arc_member(default_cap, fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
-                        (fty, *mutable)
+                        (fty, *mutable, *vis)
                     })
                     .collect(),
             ),
@@ -1867,8 +1867,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // Validate that mutable (`[field]`) fields require a regional record.
         if default_cap != DefaultCap::Regional {
             let has_mut = match &fields {
-                RecordFields::Named(fs) => fs.iter().any(|(_, _, m)| *m),
-                RecordFields::Unnamed(fs) => fs.iter().any(|(_, m)| *m),
+                RecordFields::Named(fs) => fs.iter().any(|(_, _, m, _)| *m),
+                RecordFields::Unnamed(fs) => fs.iter().any(|(_, m, _)| *m),
                 RecordFields::Variants(_) | RecordFields::Opaque => false,
             };
             if has_mut {
@@ -1965,8 +1965,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return Vec::new();
         };
         let member_tys: Vec<Ty<'tcx>> = match &rec.fields {
-            Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _)| *t).collect(),
-            Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _)| *t).collect(),
+            Some(RecordFields::Named(fs)) => fs.iter().map(|(_, t, _, _)| *t).collect(),
+            Some(RecordFields::Unnamed(fs)) => fs.iter().map(|(t, _, _)| *t).collect(),
             Some(RecordFields::Variants(vs)) => {
                 vs.iter().flat_map(|v| v.fields.iter().copied()).collect()
             }

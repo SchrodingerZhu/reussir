@@ -347,6 +347,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     field,
                     self.tcx.mk_generic(generic),
                     false,
+                    surface::Visibility::Public,
                 )])),
                 regional_generics: Vec::new(),
                 span: None,

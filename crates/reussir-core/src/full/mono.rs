@@ -720,7 +720,7 @@ fn resolve_layout<'tcx>(
         Some(RecordFields::Named(fields)) => {
             let members: Vec<mir::Member<'tcx>> = fields
                 .iter()
-                .map(|(name, ty, is_mut)| mir::Member {
+                .map(|(name, ty, is_mut, _)| mir::Member {
                     ty: subst_ty(tcx, *ty, &subst),
                     is_field: *is_mut,
                     name: Some(mir::Symbol(symbols.get_or_intern(resolver.resolve(*name)))),
@@ -731,7 +731,7 @@ fn resolve_layout<'tcx>(
         Some(RecordFields::Unnamed(fields)) => {
             let members: Vec<mir::Member<'tcx>> = fields
                 .iter()
-                .map(|(ty, is_mut)| mir::Member {
+                .map(|(ty, is_mut, _)| mir::Member {
                     ty: subst_ty(tcx, *ty, &subst),
                     is_field: *is_mut,
                     name: None,
@@ -858,12 +858,12 @@ impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
         Some(match fields {
             RecordFields::Named(fs) => fs
                 .iter()
-                .map(|(n, t, _)| (self.resolver.resolve(*n).to_owned(), ground(*t)))
+                .map(|(n, t, _, _)| (self.resolver.resolve(*n).to_owned(), ground(*t)))
                 .collect(),
             RecordFields::Unnamed(fs) => fs
                 .iter()
                 .enumerate()
-                .map(|(i, (t, _))| (i.to_string(), ground(*t)))
+                .map(|(i, (t, _, _))| (i.to_string(), ground(*t)))
                 .collect(),
             RecordFields::Variants(vs) => vs
                 .iter()
@@ -888,8 +888,8 @@ impl<'tcx> SyncEnv<'tcx> for MonoSyncEnv<'_, 'tcx> {
         let mut out = Vec::new();
         let mut walk = |t: Ty<'tcx>| crate::semi::traits::sync::collect_record_defs(t, &mut out);
         match fields {
-            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _)| walk(*t)),
-            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _)| walk(*t)),
+            RecordFields::Named(fs) => fs.iter().for_each(|(_, t, _, _)| walk(*t)),
+            RecordFields::Unnamed(fs) => fs.iter().for_each(|(t, _, _)| walk(*t)),
             RecordFields::Variants(vs) => vs
                 .iter()
                 .for_each(|v| v.fields.iter().for_each(|t| walk(*t))),
@@ -1194,8 +1194,12 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 subst.insert(*gid, ty);
             }
             let field_tys: Vec<Ty<'tcx>> = match record.fields.as_ref() {
-                Some(RecordFields::Named(fields)) => fields.iter().map(|(_, ty, _)| *ty).collect(),
-                Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _)| *ty).collect(),
+                Some(RecordFields::Named(fields)) => {
+                    fields.iter().map(|(_, ty, _, _)| *ty).collect()
+                }
+                Some(RecordFields::Unnamed(fields)) => {
+                    fields.iter().map(|(ty, _, _)| *ty).collect()
+                }
                 Some(RecordFields::Variants(variants)) => variants
                     .iter()
                     .flat_map(|v| v.fields.iter().copied())
@@ -1234,8 +1238,8 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             subst.insert(*gid, ty);
         }
         let field_tys: Vec<Ty<'tcx>> = match record.fields.as_ref() {
-            Some(RecordFields::Named(fields)) => fields.iter().map(|(_, ty, _)| *ty).collect(),
-            Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _)| *ty).collect(),
+            Some(RecordFields::Named(fields)) => fields.iter().map(|(_, ty, _, _)| *ty).collect(),
+            Some(RecordFields::Unnamed(fields)) => fields.iter().map(|(ty, _, _)| *ty).collect(),
             Some(RecordFields::Variants(variants)) => variants
                 .iter()
                 .flat_map(|v| v.fields.iter().copied())

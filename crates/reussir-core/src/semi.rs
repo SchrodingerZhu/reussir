@@ -611,6 +611,40 @@ mod tests {
         });
     }
 
+    #[test]
+    fn field_visibility_lands_in_record_tables() {
+        use crate::surface::Visibility::{Private, Public};
+
+        check(
+            "pub struct S { pub a: i64, b: i64 }\nstruct P(pub i64, bool)",
+            |elab, _| {
+                let fields_of = |name: &str| {
+                    elab.records
+                        .values()
+                        .find(|r| elab.sym(r.name) == name)
+                        .expect("record")
+                        .fields
+                        .clone()
+                        .expect("populated")
+                };
+                let crate::semi::ctxt::RecordFields::Named(fs) = fields_of("S") else {
+                    panic!("named fields");
+                };
+                assert_eq!(
+                    fs.iter().map(|&(_, _, m, v)| (m, v)).collect::<Vec<_>>(),
+                    [(false, Public), (false, Private)]
+                );
+                let crate::semi::ctxt::RecordFields::Unnamed(fs) = fields_of("P") else {
+                    panic!("unnamed fields");
+                };
+                assert_eq!(
+                    fs.iter().map(|&(_, m, v)| (m, v)).collect::<Vec<_>>(),
+                    [(false, Public), (false, Private)]
+                );
+            },
+        );
+    }
+
     fn function<'a, 'tcx>(elab: &'a Elaborator<'_, 'tcx>, name: &str) -> &'a hir::Function<'tcx> {
         elab.elaborated
             .iter()
