@@ -144,6 +144,7 @@ impl Emitter<'_> {
             ExternSourceStmt => self.extern_source_stmt(node),
             TransformStmt => self.transform_stmt(node),
             ImportStmt => self.import_stmt(node),
+            ImplStmt => self.impl_stmt(node),
             k => unreachable!("unexpected statement node {k:?}"),
         };
         tagged("SpannedStmt", self.with_node_span(node, inner))
@@ -335,6 +336,25 @@ impl Emitter<'_> {
                     .expect("non-empty path")
             });
         tagged("ImportStmt", json!([name.text(), self.path(path)]))
+    }
+
+    fn impl_stmt(&self, node: &ResolvedNode) -> Value {
+        let target = nodes(node)
+            .find(|n| n.kind() == PathType)
+            .expect("impl target type");
+        let members: Vec<Value> = nodes(node)
+            .filter(|n| n.kind() == FnStmt)
+            .map(|f| self.with_node_span(f, self.fn_stmt(f)))
+            .collect();
+        tagged(
+            "ImplStmt",
+            json!({
+                "implVisibility": self.visibility(node),
+                "implGenerics": self.generic_params(node),
+                "implTarget": self.type_(target),
+                "implMembers": members,
+            }),
+        )
     }
 
     fn extern_stmt(&self, node: &ResolvedNode) -> Value {

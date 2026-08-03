@@ -130,6 +130,8 @@ pub enum SyntaxKind {
     TransformStmt,
     /// `import path (as name)?;` — a file-scoped path abbreviation.
     ImportStmt,
+    /// `impl<T: B> Type<T> { fn ... }` — an inherent-method block.
+    ImplStmt,
     GenericParamList,
     GenericParam,
     ParamList,
