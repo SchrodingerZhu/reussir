@@ -38,8 +38,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         // The body's references resolve (and its reports attribute) in the
         // function's own declaration scope — the package driver checks items
-        // from many files/modules in one pass.
+        // from many files/modules in one pass. An impl member's scope is the
+        // module of the block that declared it (its path-derived parent is
+        // the *type*, not a module), so it sees exactly what that module
+        // sees — Rust's rule for package-level impls.
         self.enter_item_scope(def, proto.file);
+        if let Some(module) = &proto.impl_module {
+            self.defs.set_module(module.clone());
+        }
         self.enter_function(&proto.generics);
         // A `[regional]` function body runs inside an implicit region: its
         // parameters may already be flex and it may construct regional records

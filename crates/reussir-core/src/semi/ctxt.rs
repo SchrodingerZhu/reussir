@@ -219,6 +219,13 @@ pub struct FuncProto<'tcx> {
     /// `(name, colored type)`.
     pub params: Vec<(TokenKey, Ty<'tcx>)>,
     pub return_ty: Ty<'tcx>,
+    /// For an impl member, the module of the block that declared it — the
+    /// scope its body checks under. `None` for plain functions (their scope
+    /// derives from the declared path). Rust semantics: an impl may appear
+    /// anywhere in the defining package, and its members see exactly what
+    /// that module sees — private fields only when the block sits in (or
+    /// under) the type's defining module.
+    pub impl_module: Option<Vec<TokenKey>>,
     pub is_regional: bool,
     pub span: Option<Span>,
     /// The file the function is declared in (spans index it).
@@ -274,6 +281,13 @@ fn collect_private_records<'tcx>(
 /// Records the generic at the head of a `[flex]`-annotated type (peeling
 /// `Nullable`): a `[flex]` use of a bare generic means that generic must be
 /// instantiated with a regional record.
+/// The impl-block context a member is scanned under: the resolved target
+/// record and the block-level generics its signature shares.
+pub(super) struct ImplCtx<'x> {
+    pub target: DefId,
+    pub generics: &'x [(TokenKey, GenericId)],
+}
+
 fn collect_regional_generic(t: Ty<'_>, out: &mut Vec<GenericId>) {
     match *t.kind() {
         TyKind::Generic(id) => {
@@ -1252,6 +1266,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut records = Vec::new();
         let mut functions = Vec::new();
         let mut trampolines = Vec::new();
+        let mut impls = Vec::new();
         for (file, module, program) in files {
             for stmt in *program {
                 let scope = Scope {
@@ -1304,10 +1319,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             file: *file,
                         });
                     }
-                    surface::StmtKind::Impl(_) => {
+                    surface::StmtKind::Impl(ib) => {
                         self.validate_transform_anchor(&attrs, None);
                         self.reject_ffi_attr(ffi, span);
-                        self.error(span, "`impl` blocks are not supported yet");
+                        if ib.visibility == surface::Visibility::Public {
+                            self.error(
+                                span,
+                                "`pub` is not allowed on an `impl` block; \
+                                 mark individual members `pub` instead",
+                            );
+                        }
+                        impls.push((ib, span, scope));
                     }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.
@@ -1352,6 +1374,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.scan_function(func, *is_import, *span)
             })
             .collect();
+        // Impl members: declared after the record scan so targets resolve,
+        // under `[module.., Type, name]` in the function namespace. Their
+        // protos join the same wf-sweep and body-check flows as plain
+        // functions below. Members are ordinary defs/generics/functions
+        // entries, all covered by the REPL Checkpoint's truncate-and-retain
+        // rollback — no new state to track.
+        let mut methods: Vec<(&surface::Function, Option<Span>, Option<DefId>)> = Vec::new();
+        for (ib, span, scope) in &impls {
+            self.set_current_file(scope.file);
+            self.defs.set_module(scope.module.to_vec());
+            let target = self.scan_impl_target(ib, *span);
+            let impl_generics = target.map(|_| self.collect_generics(&ib.generics, *span));
+            for m in &ib.members {
+                let mspan = Some(surface::Span {
+                    start: m.start,
+                    end: m.end,
+                });
+                let def = match (target, &impl_generics) {
+                    (Some(target), Some(generics)) => {
+                        self.defs.set_module(scope.module.to_vec());
+                        let ctx = ImplCtx { target, generics };
+                        self.scan_method(&m.value, false, Some(&ctx), mspan)
+                    }
+                    _ => None,
+                };
+                methods.push((&m.value, mspan, def));
+            }
+        }
         functions
             .iter()
             .zip(&function_defs)
@@ -1411,7 +1461,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.check_private_in_public(&member_tys, &item, span);
             }
         }
-        for def in function_defs.iter().flatten() {
+        let method_defs: Vec<Option<DefId>> = methods.iter().map(|(_, _, def)| *def).collect();
+        for def in function_defs.iter().chain(method_defs.iter()).flatten() {
             let Some(proto) = self.functions.get(def) else {
                 continue;
             };
@@ -1436,6 +1487,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .iter()
             .zip(function_defs)
             .filter_map(|((func, span, _, _, _, _), def)| Some((func, *span, def?)))
+            .for_each(|(func, span, def)| {
+                self.check_function(func, def, span);
+            });
+        methods
+            .iter()
+            .filter_map(|(func, span, def)| Some((*func, *span, (*def)?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });
@@ -1758,7 +1815,88 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         is_ffi_import: bool,
         span: Option<Span>,
     ) -> Option<DefId> {
-        let generics = self.collect_generics(&func.generics, span);
+        self.scan_method(func, is_ffi_import, None, span)
+    }
+
+    /// Validate an `impl` block's target: it must resolve to a record this
+    /// package defines, in the module the block appears in, with a fully
+    /// applied generic head.
+    fn scan_impl_target(&mut self, ib: &surface::ImplBlock, span: Option<Span>) -> Option<DefId> {
+        let Some(def) = self.resolve_record_ref(&ib.target) else {
+            // A private record of a loaded extern package reports access,
+            // not absence — though methods for it are rejected either way.
+            if let Some(msg) = self.extern_private_msg(&ib.target, DefKind::Record) {
+                self.error(span, msg);
+            } else {
+                let hint = if ib.target.segments.is_empty() {
+                    self.record_suggestion(ib.target.basename)
+                } else {
+                    String::new()
+                };
+                let shown = self.path_display(&ib.target);
+                self.error(
+                    span,
+                    format!("cannot define methods for unknown type `{shown}`{hint}"),
+                );
+            }
+            return None;
+        };
+        if let Some(&head) = self.extern_defs.get(&def) {
+            self.error(
+                span,
+                format!(
+                    "cannot define methods for `{}` from extern package `{}`",
+                    self.path_display(&ib.target),
+                    self.sym(head)
+                ),
+            );
+            return None;
+        }
+        let expected = self.records[&def].ty_params.len();
+        if ib.target_args.len() != expected {
+            self.error(
+                span,
+                format!(
+                    "`impl` target `{}` expects {} type argument(s), got {}",
+                    self.sym(ib.target.basename),
+                    expected,
+                    ib.target_args.len()
+                ),
+            );
+            return None;
+        }
+        Some(def)
+    }
+
+    fn scan_method(
+        &mut self,
+        func: &surface::Function,
+        is_ffi_import: bool,
+        impl_ctx: Option<&ImplCtx<'_>>,
+        span: Option<Span>,
+    ) -> Option<DefId> {
+        // The block's own module, captured before declaration temporarily
+        // switches to the type's path: the member's body scope.
+        let impl_module = impl_ctx.map(|_| self.defs.module().to_vec());
+        let own = self.collect_generics(&func.generics, span);
+        let generics = match impl_ctx {
+            Some(ctx) => {
+                for (n, _) in &own {
+                    if ctx.generics.iter().any(|(g, _)| g == n) {
+                        self.error(
+                            span,
+                            format!(
+                                "generic `{0}` on the method shadows the impl block's \
+                                 generic `{0}`",
+                                self.sym(*n)
+                            ),
+                        );
+                    }
+                }
+                ctx.generics.iter().copied().chain(own).collect()
+            }
+            None => own,
+        };
         self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
 
         // A `[flex]` annotation on a bare generic (its coloring is dropped, as in
@@ -1785,11 +1923,37 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.generic_names.clear();
 
         let name = func.name;
-        let Some(def) = self.defs.declare_function(name) else {
-            self.error(
-                span,
-                format!("function `{}` is defined more than once", self.sym(name)),
-            );
+        let declared = match impl_ctx {
+            // A member declares under the type's own qualified path, so
+            // `Type::method` resolves like any path and mangles unchanged.
+            Some(ctx) => {
+                let module = self.defs.module().to_vec();
+                let type_path = self.defs.path(ctx.target).0.clone();
+                self.defs.set_module(type_path);
+                let def = self.defs.declare_function(name);
+                self.defs.set_module(module);
+                def
+            }
+            None => self.defs.declare_function(name),
+        };
+        let Some(def) = declared else {
+            match impl_ctx {
+                Some(ctx) => {
+                    let ty = self.sym(self.defs.path(ctx.target).name());
+                    self.error(
+                        span,
+                        format!(
+                            "method `{0}` conflicts with an existing function `{ty}::{0}` \
+                             (a function in a module named `{ty}` or another impl of `{ty}`)",
+                            self.sym(name)
+                        ),
+                    );
+                }
+                None => self.error(
+                    span,
+                    format!("function `{}` is defined more than once", self.sym(name)),
+                ),
+            }
             return None;
         };
         let proto = FuncProto {
@@ -1800,6 +1964,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             regional_generics,
             params,
             return_ty,
+            impl_module,
             is_regional: func.is_regional,
             span,
             file: self.current_file,
@@ -1820,7 +1985,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// Allocate generics for a list of `(name, bounds)` declarations.
-    fn collect_generics(
+    pub(super) fn collect_generics(
         &mut self,
         decls: &[(TokenKey, Vec<surface::Path>)],
         span: Option<Span>,

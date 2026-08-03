@@ -645,12 +645,219 @@ mod tests {
         );
     }
 
-    /// Temporary until impl scanning lands: the placeholder arm reports
-    /// cleanly instead of panicking.
     #[test]
-    fn impl_block_reports_not_supported_yet() {
+    fn impl_members_declare_under_type_path_and_resolve_cross_file() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (
+                    &["a"],
+                    "pub struct Rect { pub w: i64, h: i64 }\n\
+                     impl Rect {\n\
+                         pub fn area(r: Rect) -> i64 { r.w * r.h }\n\
+                         regional fn noop() { }\n\
+                     }",
+                ),
+                (
+                    &["c"],
+                    "pub fn use_area(r: super::a::Rect) -> i64 { super::a::Rect::area(r) }",
+                ),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+                let area = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.defs.path(f.def).display(elab.resolver) == "p::a::Rect::area")
+                    .expect("method declared under the type path");
+                assert_eq!(area.visibility, surface::Visibility::Public);
+                let noop = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.defs.path(f.def).display(elab.resolver) == "p::a::Rect::noop")
+                    .expect("regional member declared");
+                assert!(noop.is_regional);
+            },
+        );
+    }
+
+    /// A method body's scope is the type's defining module, so it reads the
+    /// target's private fields — the visibility model methods encapsulate.
+    #[test]
+    fn method_body_accesses_private_field_of_target() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (
+                    &["a"],
+                    "pub struct Rect { pub w: i64, h: i64 }\n\
+                     impl Rect { pub fn height(r: Rect) -> i64 { r.h } }",
+                ),
+                (
+                    &["c"],
+                    "pub fn peek(r: super::a::Rect) -> i64 { super::a::Rect::height(r) }",
+                ),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    #[test]
+    fn impl_member_clashes_with_module_function_reports() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a;"),
+                (
+                    &["a"],
+                    "mod Point;\npub struct Point { pub x: i64 }\n\
+                     impl Point { pub fn scale(p: Point) -> i64 { p.x } }",
+                ),
+                (&["a", "Point"], "pub fn scale(x: i64) -> i64 { x }"),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains(
+                        "method `scale` conflicts with an existing function `Point::scale`"
+                    )),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    /// Rust-style package-level impls: a block may appear in any module of
+    /// the defining package; its members declare under the type's path and
+    /// dispatch from anywhere.
+    #[test]
+    fn impl_allowed_across_modules_in_package() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (
+                    &["a"],
+                    "mod sub;
+pub struct Rect { pub w: i64 }",
+                ),
+                (
+                    &["a", "sub"],
+                    "impl super::Rect { pub fn from_child(r: super::Rect) -> i64 { r.w } }",
+                ),
+                (
+                    &["c"],
+                    "impl super::a::Rect { pub fn twice(r: super::a::Rect) -> i64 { r.w * 2 } }
+                     pub fn go(r: super::a::Rect) -> i64 {
+                         super::a::Rect::from_child(r) + super::a::Rect::twice(r)
+                     }",
+                ),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    /// An out-of-module impl sees exactly what its module sees: the target's
+    /// private fields stay private (Rust's rule — placement grants nothing).
+    #[test]
+    fn out_of_module_impl_cannot_read_private_fields() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (&["a"], "pub struct Rect { pub w: i64, h: i64 }"),
+                (
+                    &["c"],
+                    "impl super::a::Rect { pub fn peek(r: super::a::Rect) -> i64 { r.h } }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message == "field `h` of record `p::a::Rect` is private"),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    /// Coherence is by declared path, so two impls in different modules
+    /// declaring the same member still clash deterministically.
+    #[test]
+    fn cross_module_impl_clash_reports() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (
+                    &["a"],
+                    "pub struct Rect { pub w: i64 }
+                     impl Rect { pub fn area(r: Rect) -> i64 { r.w } }",
+                ),
+                (
+                    &["c"],
+                    "impl super::a::Rect { pub fn area(r: super::a::Rect) -> i64 { 0 } }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains(
+                        "method `area` conflicts with an existing function `Rect::area`"
+                    )),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn pub_impl_block_rejected() {
         with_tcx(|tcx| {
-            let source = "struct P { x: i64 }\nimpl P { fn get(self: Self) -> i64 { 1 } }";
+            let source = "struct P { x: i64 }\npub impl P { fn get(p: P) -> i64 { p.x } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("`pub` is not allowed on an `impl` block")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn impl_generics_concatenate_with_method_generics() {
+        check(
+            "pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Box<T> {\n\
+                 pub fn paired<U: Num>(b: Box<T>, u: U) -> U { u + u }\n\
+             }\n\
+             fn use_it(b: Box<i32>) -> i64 { Box::paired(b, 2) }",
+            |elab, _| {
+                let paired = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.sym(f.name) == "paired")
+                    .expect("method declared");
+                // Impl generics precede the method's own in the binder.
+                assert_eq!(paired.generics.len(), 2);
+            },
+        );
+    }
+
+    #[test]
+    fn method_generic_shadowing_impl_generic_reports() {
+        with_tcx(|tcx| {
+            let source = "pub struct Box<T> { pub v: T }\n\
+                          impl<T: Num> Box<T> { fn bad<T: Num>(b: Box<T>) -> i64 { 0 } }";
             let parse = reussir_syntax::parse(source);
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
@@ -658,7 +865,7 @@ mod tests {
             assert!(
                 elab.reports
                     .iter()
-                    .any(|r| r.message.contains("not supported yet")),
+                    .any(|r| r.message.contains("shadows the impl block's generic")),
                 "{:#?}",
                 elab.reports
             );

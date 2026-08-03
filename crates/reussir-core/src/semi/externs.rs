@@ -170,6 +170,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                     .map(|&(name, _, ty)| (name, ty))
                     .collect(),
                 return_ty: function.return_ty,
+                impl_module: None,
                 is_regional: function.is_regional,
                 span: function.span,
                 file: function.file,
