@@ -849,7 +849,8 @@ fn emits_a_package_interface() {
     let rri = read(&out);
     assert!(
         rri.starts_with(&format!(
-            "interface 1 package \"demo\" producer \"rrc {}\";",
+            "interface {} package \"demo\" producer \"rrc {}\";",
+            reussir_core::full::interface::RRI_FORMAT,
             env!("CARGO_PKG_VERSION")
         )),
         "{rri}"

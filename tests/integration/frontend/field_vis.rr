@@ -1,0 +1,38 @@
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// Roundtrip: emit HIR, re-parse it (`--from hir`), and re-emit — the per-field
+// `pub` marker must survive print -> parse -> print unchanged.
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s -o %t.o
+
+// Per-field `pub` visibility threads surface -> HIR text and stays
+// roundtrip-consistent for named, unnamed, and `[field]`-mutable members.
+// MIR is deliberately unaffected: visibility is erased before layout.
+
+// HIR-DAG: pub [value] struct #Named { pub "x": i64, "y": i64 };
+// HIR-DAG: pub [shared] struct #Tuple { pub i64, i64 };
+// HIR-DAG: pub [regional] struct #Link { pub "next": field Nullable<[regional] #Link>, "v": i64 };
+
+pub struct [value] Named {
+    pub x: i64,
+    y: i64,
+}
+
+pub struct Tuple(pub i64, i64)
+
+pub struct [regional] Link {
+    pub next: [field] Link,
+    v: i64,
+}
+
+fn use_named(n: Named) -> i64 {
+    n.x + n.y
+}
+
+fn use_tuple(t: Tuple) -> i64 {
+    t.0 + t.1
+}
+
+fn main() -> i64 {
+    use_named(Named { x: 1, y: 2 }) + use_tuple(Tuple { 3, 4 })
+}

@@ -295,14 +295,14 @@ impl<'a> Printer<'a> {
             Some(RecordFields::Named(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(name, ty, is_mut, _)| self.member(Some(*name), *ty, *is_mut))
+                    .map(|(name, ty, is_mut, vis)| self.member(Some(*name), *ty, *is_mut, *vis))
                     .collect();
                 comma_sep(parts)
             }
             Some(RecordFields::Unnamed(fields)) => {
                 let parts = fields
                     .iter()
-                    .map(|(ty, is_mut, _)| self.member(None, *ty, *is_mut))
+                    .map(|(ty, is_mut, vis)| self.member(None, *ty, *is_mut, *vis))
                     .collect();
                 comma_sep(parts)
             }
@@ -325,13 +325,23 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn member(&self, name: Option<TokenKey>, ty: Ty<'_>, is_mut: bool) -> Doc<'static> {
+    fn member(
+        &self,
+        name: Option<TokenKey>,
+        ty: Ty<'_>,
+        is_mut: bool,
+        vis: Visibility,
+    ) -> Doc<'static> {
+        let vis = match vis {
+            Visibility::Public => text("pub "),
+            Visibility::Private => Doc::Null,
+        };
         let name = match name {
             Some(n) => text(format!("\"{}\": ", self.resolver.resolve(n))),
             None => Doc::Null,
         };
         let marker = if is_mut { text("field ") } else { Doc::Null };
-        name + marker + self.ty(ty)
+        vis + name + marker + self.ty(ty)
     }
 
     fn trampoline(&self, t: &TrampolineRoot<'_>) -> Doc<'static> {

@@ -583,7 +583,7 @@ mod tests {
         });
     }
 
-    const DEP: &str = "pub struct Point { x: i64, y: i64 }\n\
+    const DEP: &str = "pub struct Point { pub x: i64, pub y: i64 }\n\
                        struct Hidden { v: i64 }\n\
                        fn private_helper(h: Hidden) -> i64 { h.v }\n\
                        pub fn api<T : Num>(x: T) -> T { private_helper(Hidden { v: 1 }); x }\n\
@@ -623,6 +623,22 @@ mod tests {
                 // but not the dump's record set.
                 assert!(!elab.records.is_empty());
                 assert!(elab.local_records().is_empty(), "dump stays consumer-only");
+                // Field visibility survives the `.rri` round trip and remap.
+                let point = elab
+                    .records
+                    .values()
+                    .find(|r| elab.sym(r.name) == "dep::Point")
+                    .expect("extern Point carried");
+                let crate::semi::ctxt::RecordFields::Named(fs) =
+                    point.fields.as_ref().expect("populated")
+                else {
+                    panic!("named fields");
+                };
+                assert!(
+                    fs.iter()
+                        .all(|&(_, _, _, v)| v == crate::surface::Visibility::Public),
+                    "{fs:#?}"
+                );
             },
         );
     }
