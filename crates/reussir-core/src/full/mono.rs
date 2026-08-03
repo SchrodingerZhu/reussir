@@ -321,6 +321,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     let mut driver = Driver {
         tcx,
         resolver: input.resolver,
+        defs: input.defs,
+        traits: input.traits,
         mangler: Mangler::new(input.defs, input.resolver),
         symbols: Rodeo::default(),
         queue: VecDeque::new(),
@@ -928,6 +930,10 @@ struct Driver<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
     /// Symbol resolution for diagnostics (member labels in `Sync` witnesses).
     resolver: &'a dyn Resolver<TokenKey>,
+    /// Path display for diagnostics (instance names, trait-call reports).
+    defs: &'a DefTable,
+    /// The trait tables `TraitCall` resolution selects against.
+    traits: MonoTraits<'a, 'tcx>,
     mangler: Mangler<'a>,
     /// Interner for every mangled symbol; moved into the final `mir::Program`.
     symbols: Rodeo,
@@ -983,6 +989,97 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         });
     }
 
+    /// Resolve a `TraitCall` at instance time: the substitution grounded
+    /// `Self`, so coherence names the unique impl. Returns the impl method
+    /// and its full instantiation — the impl's own generics (derived by the
+    /// one-way matcher inside selection) followed by the method's own
+    /// arguments (the grounded tail of the `TraitCall`'s `ty_args`).
+    fn resolve_trait_call(
+        &mut self,
+        trait_def: DefId,
+        method: u32,
+        ty_args: &'tcx [Ty<'tcx>],
+        span: Option<Span>,
+    ) -> Option<(DefId, &'tcx [Ty<'tcx>], bool)> {
+        use crate::semi::traits::{Evidence, Obligation, SelectCtxt, SelectError, TraitRef};
+        let path = |defs: &DefTable, def: DefId| defs.path(def).display(self.resolver);
+        let Some(db) = self.traits.db else {
+            let shown = path(self.defs, trait_def);
+            self.error(
+                span,
+                format!(
+                    "cannot resolve a call through trait `{shown}`: this input \
+                     carries no trait tables"
+                ),
+            );
+            return None;
+        };
+        let Some(tid) = db.trait_by_def(trait_def) else {
+            let shown = path(self.defs, trait_def);
+            self.error(span, format!("unknown trait `{shown}` in a trait call"));
+            return None;
+        };
+        let goal = Obligation::Trait(TraitRef {
+            trait_id: tid,
+            args: vec![ty_args[0]],
+        });
+        // Every type is ground here, so the assumption environment is empty.
+        let outcome = SelectCtxt::new(db, self.tcx, &[]).select(&goal);
+        let tdef = db.trait_def(tid);
+        let shown = path(self.defs, tdef.def);
+        let mname = self
+            .resolver
+            .try_resolve(tdef.methods[method as usize].name)
+            .unwrap_or("?")
+            .to_string();
+        let regional = tdef.methods[method as usize].is_regional;
+        match outcome {
+            Ok(Evidence::Impl { impl_id, args, .. }) => {
+                let imp = db.impl_def(impl_id);
+                let Some(&target) = imp.methods.get(method as usize) else {
+                    self.error(
+                        span,
+                        format!("the selected `impl {shown}` does not define method `{mname}`"),
+                    );
+                    return None;
+                };
+                let callee: Vec<Ty<'tcx>> = args
+                    .into_iter()
+                    .chain(ty_args[1..].iter().copied())
+                    .collect();
+                Some((target, self.tcx.alloc_slice(&callee), regional))
+            }
+            Ok(_) => {
+                self.error(
+                    span,
+                    format!(
+                        "no direct `impl {shown}` provides method `{mname}` for this \
+                         instantiation (the bound holds only through a sub-trait)"
+                    ),
+                );
+                None
+            }
+            Err(SelectError::NoImpl(inner)) => {
+                let inner_trait = path(self.defs, db.trait_def(inner.trait_id).def);
+                self.error(
+                    span,
+                    format!(
+                        "no implementation of `{shown}` applies in this instantiation: \
+                         `{inner_trait}` is not implemented for the required type",
+                    ),
+                );
+                None
+            }
+            Err(SelectError::DepthLimit(_)) => {
+                self.error(
+                    span,
+                    format!("overflow selecting an `impl {shown}` for this instantiation"),
+                );
+                None
+            }
+        }
+    }
+
     /// Enqueue a function instance if it has not been seen, recording the
     /// demanding site (`span` in [`cur_file`](Self::cur_file)) for the
     /// missing-definition diagnostic.
@@ -996,12 +1093,18 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             // looping forever. Ground types of depth <= the limit over a finite
             // set of `DefId`s are a finite set, so this guarantees termination.
             let depth = ty_args.iter().map(|&t| ty_depth(t)).max().unwrap_or(0);
-            assert!(
-                depth <= RECURSION_LIMIT,
-                "monomorphize: type-argument nesting depth {depth} exceeds the \
-                 recursion limit ({RECURSION_LIMIT}); this is almost certainly \
-                 unbounded instantiation from polymorphic recursion"
-            );
+            if depth > RECURSION_LIMIT {
+                let shown = self.defs.path(def).display(self.resolver);
+                self.error(
+                    span,
+                    format!(
+                        "type-argument nesting depth {depth} exceeds the recursion \
+                         limit ({RECURSION_LIMIT}) while instantiating `{shown}`; this \
+                         is almost certainly polymorphic recursion"
+                    ),
+                );
+                return;
+            }
             self.queue.push_back(inst);
         }
     }
@@ -1428,10 +1531,28 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
-            ExprKind::TraitCall { .. } => todo!(
-                "TraitCall resolves at instance time; the rewrite lands with \
-                 the trait-mono stack"
-            ),
+            ExprKind::TraitCall {
+                trait_def,
+                method,
+                ty_args,
+                args,
+            } => {
+                let ty_args = self.ground_args(ty_args, subst);
+                match self.resolve_trait_call(*trait_def, *method, ty_args, span) {
+                    Some((target, callee_args, regional)) => {
+                        self.enqueue(target, callee_args, span);
+                        let callee = self.symbol_of(target, callee_args);
+                        M::Call {
+                            callee,
+                            args: self.lower_slice(args, subst),
+                            regional,
+                        }
+                    }
+                    // The failure is already reported; poison keeps the
+                    // instance lowering so one bad call yields one report.
+                    None => M::Poison,
+                }
+            }
             ExprKind::ConstChar(c) => M::ConstChar(*c),
             ExprKind::ConstInt(n) => M::ConstInt(n),
             ExprKind::ConstFloat(f) => M::ConstFloat(f),
@@ -1924,6 +2045,163 @@ mod tests {
             assert_eq!(
                 text0, text1,
                 "resumed MIR differs from the original:\n=== original ===\n{text0}\n=== resumed ===\n{text1}"
+            );
+        });
+    }
+
+    /// `TraitCall` resolution at instance time, through a chain: the root
+    /// instantiation grounds `Self = Box<P>`, selection commits to the
+    /// generic impl, whose method body holds another `TraitCall` that
+    /// grounds to `Self = P` — two hops of coherent static dispatch, no
+    /// dictionaries anywhere in the MIR.
+    #[test]
+    fn trait_calls_resolve_at_instance_time() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        let source = "pub trait Show { fn show(self: Self) -> i64; }\n\
+                      pub struct P { pub x: i64 }\n\
+                      pub struct Box<T> { pub v: T }\n\
+                      impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+                      impl<T: Show> Show for Box<T> { fn show(self: Self) -> i64 { self.v.show() } }\n\
+                      fn describe<T: Show>(x: T) -> i64 { x.show() }\n\
+                      pub fn run(p: P) -> i64 { describe(p) + describe(Box { v: p }) }";
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let (mir, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "{reports:#?}");
+            let text = MirPrinter::new(&elab.defs, elab.resolver).program(&mir);
+            assert!(!text.contains("poison"), "unresolved trait call:\n{text}");
+            // Both impl-method instances were emitted (the mangled names
+            // carry the `Show` path segment).
+            assert!(text.contains("4Show"), "impl methods missing:\n{text}");
+        });
+    }
+
+    /// **Resumability, trait edition**: the twin of
+    /// [`parsed_hir_monomorphizes_to_the_same_mir`] over a trait-using
+    /// program. The parsed dump rebuilds its trait tables via
+    /// [`Parsed::rebuild_traits`] and must reach byte-identical MIR.
+    ///
+    /// [`Parsed::rebuild_traits`]: crate::semi::hir::build::Parsed::rebuild_traits
+    #[test]
+    fn trait_calls_resume_from_parsed_hir() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        use crate::semi::hir::build::parse_program;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        let source = "pub trait Show { fn show(self: Self) -> i64; }\n\
+                      pub struct P { pub x: i64 }\n\
+                      pub struct Box<T> { pub v: T }\n\
+                      impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+                      impl<T: Show> Show for Box<T> { fn show(self: Self) -> i64 { self.v.show() } }\n\
+                      fn describe<T: Show>(x: T) -> i64 { x.show() }\n\
+                      pub fn run(p: P) -> i64 { describe(p) + describe(Box { v: p }) }";
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+
+            let (mir0, r0) = monomorphize(&elab.mono_input());
+            assert!(r0.is_empty(), "{r0:#?}");
+            let text0 = MirPrinter::new(&elab.defs, elab.resolver).program(&mir0);
+
+            let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_bounds(&bounds)
+                .with_traits(&traits, &impls)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            let mut parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
+            let trait_db = parsed.rebuild_traits(tcx);
+            let input = MonoInput {
+                tcx,
+                defs: &parsed.defs,
+                resolver: &parsed.names,
+                elaborated: &parsed.funcs,
+                records: &parsed.records,
+                trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
+                strings: parsed.strings.clone(),
+                externs: MonoExterns::default(),
+                traits: MonoTraits {
+                    db: Some(&trait_db),
+                    env: None,
+                },
+            };
+            let (mir1, r1) = monomorphize(&input);
+            assert!(r1.is_empty(), "{r1:#?}");
+            let text1 = MirPrinter::new(&parsed.defs, &parsed.names).program(&mir1);
+
+            assert_eq!(
+                text0, text1,
+                "resumed MIR differs from the original:\n=== original ===\n{text0}\n=== resumed ===\n{text1}"
+            );
+        });
+    }
+
+    /// A trait-using dump monomorphized *without* rebuilt trait tables is a
+    /// spanned diagnostic (and poison), never a panic.
+    #[test]
+    fn trait_calls_without_tables_report() {
+        use crate::semi::hir::build::parse_program;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        let source = "pub trait Show { fn show(self: Self) -> i64; }\n\
+                      pub struct P { pub x: i64 }\n\
+                      pub struct Box<T> { pub v: T }\n\
+                      impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+                      impl<T: Show> Show for Box<T> { fn show(self: Self) -> i64 { self.v.show() } }\n\
+                      fn describe<T: Show>(x: T) -> i64 { x.show() }\n\
+                      pub fn run(p: P) -> i64 { describe(p) + describe(Box { v: p }) }";
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_bounds(&bounds)
+                .with_traits(&traits, &impls)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            let parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
+            let input = MonoInput {
+                tcx,
+                defs: &parsed.defs,
+                resolver: &parsed.names,
+                elaborated: &parsed.funcs,
+                records: &parsed.records,
+                trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
+                strings: parsed.strings.clone(),
+                externs: MonoExterns::default(),
+                traits: MonoTraits::default(),
+            };
+            let (_, reports) = monomorphize(&input);
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message.contains("carries no trait tables")),
+                "{reports:#?}"
             );
         });
     }

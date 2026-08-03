@@ -12,7 +12,7 @@ use reussir_codegen::lower::{
 use reussir_codegen::source::{FileId, SourceCache};
 use reussir_core::full::interface;
 use reussir_core::full::mir;
-use reussir_core::full::mono::{MonoInput, monomorphize};
+use reussir_core::full::mono::{MonoInput, MonoTraits, monomorphize};
 use reussir_core::semi::hir;
 use reussir_core::semi::resolve::DefTable;
 use reussir_core::semi::ty::TyCtxt;
@@ -280,7 +280,7 @@ pub(crate) fn frontend<'c, 'tcx>(
             )
         }
         Stage::Hir => {
-            let parsed =
+            let mut parsed =
                 hir::build::parse_program(tcx, source).map_err(|e| format!("{name}: {e}"))?;
             // An interface is not a resumable program: its prototypes have no
             // bodies to compile and its mono roots stayed home. Loading one
@@ -316,6 +316,7 @@ pub(crate) fn frontend<'c, 'tcx>(
                 );
                 return Ok(Produced::Text(text));
             }
+            let trait_db = parsed.rebuild_traits(tcx);
             let input = MonoInput {
                 tcx,
                 defs: &parsed.defs,
@@ -329,11 +330,12 @@ pub(crate) fn frontend<'c, 'tcx>(
                 ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
                 // A plain `.hir` re-entry is a closed world; interfaces load
-                // via `--extern` (package mode) only. Its trait tables are
-                // rebuilt by the extern-reload pass; until a dump ships
-                // TraitCalls it monomorphizes identically without them.
+                // via `--extern` (package mode) only.
                 externs: Default::default(),
-                traits: Default::default(),
+                traits: MonoTraits {
+                    db: Some(&trait_db),
+                    env: None,
+                },
             };
             let (full, reports) = monomorphize(&input);
             match &dump_sources {
