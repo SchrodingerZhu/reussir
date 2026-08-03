@@ -1,0 +1,8 @@
+pub struct Rect {
+    pub w: i64,
+    h: i64,
+}
+
+pub fn make(n: i64) -> Rect {
+    Rect { w: n, h: n + 1 }
+}

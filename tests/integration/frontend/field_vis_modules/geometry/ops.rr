@@ -1,0 +1,4 @@
+// A descendant of the defining module keeps private access.
+pub fn heightened(r: super::Rect) -> i64 {
+    r.h + super::Rect { w: 1, h: 2 }.h
+}

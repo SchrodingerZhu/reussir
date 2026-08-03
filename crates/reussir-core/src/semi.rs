@@ -302,7 +302,7 @@ mod tests {
                     r#"
                         pub fn seed() -> u64 { 3 }
                         pub fn scale(x: u64, k: u64) -> u64 { x * k }
-                        pub struct Wrap { v: u64 }
+                        pub struct Wrap { pub v: u64 }
                     "#,
                 ),
                 (
@@ -643,6 +643,109 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// The shared two-module package for the visibility tests: module `a`
+    /// defines the records, module `c` uses them from outside.
+    fn vis_package(consumer: &str, f: impl Fn(&[crate::semi::ctxt::Report])) {
+        let defs = r#"
+            pub struct S { pub a: i64, b: i64 }
+            pub struct P(pub i64, i64)
+            pub struct [regional] R { hidden: [field] R }
+        "#;
+        check_package(
+            "p",
+            &[(&[], "mod a; mod c;"), (&["a"], defs), (&["c"], consumer)],
+            |elab, _| f(&elab.reports),
+        );
+    }
+
+    #[test]
+    fn private_field_access_rejected_across_modules() {
+        vis_package("pub fn read(s: super::a::S) -> i64 { s.b }", |reports| {
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message == "field `b` of record `p::a::S` is private"),
+                "{reports:#?}"
+            );
+        });
+        // Assignment shares the resolver: the private diagnostic fires before
+        // mutability or source checking.
+        vis_package(
+            "regional fn poke(r: [flex] super::a::R) { r->hidden := 1 }",
+            |reports| {
+                assert!(
+                    reports
+                        .iter()
+                        .any(|r| r.message == "field `hidden` of record `p::a::R` is private"),
+                    "{reports:#?}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn pub_field_access_allowed_across_modules() {
+        vis_package(
+            "pub fn read(s: super::a::S, t: super::a::P) -> i64 { s.a + t.0 }",
+            |reports| assert!(reports.is_empty(), "{reports:#?}"),
+        );
+    }
+
+    #[test]
+    fn private_field_access_allowed_in_child_module() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a;"),
+                (&["a"], "mod sub;\npub struct S { pub a: i64, b: i64 }"),
+                (
+                    &["a", "sub"],
+                    "pub fn read(s: super::S) -> i64 { s.b }\n\
+                     pub fn make() -> super::S { super::S { a: 1, b: 2 } }",
+                ),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    #[test]
+    fn private_field_ctor_rejected_across_modules() {
+        vis_package(
+            "pub fn make() -> super::a::S { super::a::S { a: 1, b: 2 } }",
+            |reports| {
+                assert!(
+                    reports.iter().any(|r| r.message
+                        == "cannot construct `p::a::S` outside its module: field(s) `b` are private"),
+                    "{reports:#?}"
+                );
+            },
+        );
+        vis_package(
+            "pub fn make() -> super::a::P { super::a::P { 1, 2 } }",
+            |reports| {
+                assert!(
+                    reports.iter().any(|r| r.message
+                        == "cannot construct `p::a::P` outside its module: field(s) `1` are private"),
+                    "{reports:#?}"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn tuple_index_respects_named_field_visibility() {
+        // `s.1` into a named record resolves the named field, so the private
+        // diagnostic names it.
+        vis_package("pub fn read(s: super::a::S) -> i64 { s.1 }", |reports| {
+            assert!(
+                reports
+                    .iter()
+                    .any(|r| r.message == "field `b` of record `p::a::S` is private"),
+                "{reports:#?}"
+            );
+        });
     }
 
     fn function<'a, 'tcx>(elab: &'a Elaborator<'_, 'tcx>, name: &str) -> &'a hir::Function<'tcx> {

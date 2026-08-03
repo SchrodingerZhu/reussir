@@ -1,0 +1,23 @@
+// Field visibility inside one package: a private field is accessible from
+// its defining module and that module's descendants; a sibling module sees
+// only `pub` fields, at projection and construction alike.
+
+// The positive package: pub-field access from a sibling (`render`), private
+// access from the defining module (`geometry`) and its child
+// (`geometry::ops`) — elaborates clean and round-trips its markers.
+// RUN: %rrc --package-root %S/field_vis_modules --package-name pkg --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s
+
+// CHECK: pub [shared] struct #pkg::geometry::Rect { pub "w": i64, "h": i64 };
+// CHECK: pub fn #pkg::entry
+// CHECK: pub fn #pkg::geometry::area
+// CHECK: pub fn #pkg::geometry::ops::heightened
+// CHECK: pub fn #pkg::render::width
+
+// The negative package: a sibling module projecting and constructing across
+// the private field is access control, not absence.
+// RUN: %not %rrc --package-root %S/field_vis_modules_bad --package-name pkg --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=FIELD-PRIVATE
+
+// FIELD-PRIVATE-DAG: field `h` of record `pkg::geometry::Rect` is private
+// FIELD-PRIVATE-DAG: cannot construct `pkg::geometry::Rect` outside its module: field(s) `h` are private

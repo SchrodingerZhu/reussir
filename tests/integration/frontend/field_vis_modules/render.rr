@@ -1,0 +1,4 @@
+// A sibling module sees only the `pub` field.
+pub fn width(r: super::geometry::Rect) -> i64 {
+    r.w
+}
