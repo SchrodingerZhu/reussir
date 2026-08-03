@@ -113,6 +113,10 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
                         queue.push_back(*target);
                     }
                 }
+                // A TraitCall's reach — the trait item and the impls that can
+                // discharge it — joins the closure when the interface grows
+                // trait/impl sets alongside their serialization.
+                ExprKind::TraitCall { .. } => {}
                 _ => {}
             }
         });

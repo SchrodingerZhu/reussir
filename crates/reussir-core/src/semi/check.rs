@@ -4,7 +4,7 @@ use reussir_syntax::kind::TokenKey;
 
 use crate::semi::infer::Instantiation;
 use crate::semi::resolve::DefKind;
-use crate::semi::traits::{Obligation, TraitId, TraitRef};
+use crate::semi::traits::{Evidence, Obligation, SelectCtxt, SelectError, TraitId, TraitRef};
 use crate::semi::ty::CellKind;
 use crate::semi::ty::{DefId, Flexivity, GenericId, Ty, TyKind};
 use crate::surface::{self, BinOp, Const, Span, UnaryOp};
@@ -650,6 +650,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.error(span, msg);
                 return self.poison(span);
             }
+            // `Trait::method(recv, …)` — the path prefix names a trait.
+            if !fc.name.segments.is_empty()
+                && let Some(done) = self.try_trait_path_call(fc, span)
+            {
+                return done;
+            }
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
             } else {
@@ -733,6 +739,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         let arced = matches!(raw.kind(), TyKind::Arc(_));
         let cur = self.peel_arc(raw);
+        // A bare-generic receiver has no fields; its dot calls dispatch
+        // through the traits its bounds provide.
+        if let TyKind::Generic(g) = *cur.kind()
+            && let surface::Access::Named(name) = last
+        {
+            let receiver = if indices.is_empty() {
+                base
+            } else {
+                self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+            };
+            return self.dispatch_generic_dot(g, cur, receiver, *name, args, span);
+        }
         let TyKind::Record {
             def,
             args: rargs,
@@ -747,15 +765,49 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.poison(span);
         };
         let (def, flex) = (*def, *flex);
-        if let surface::Access::Named(name) = last
-            && let Some(method) = self.dot_method_candidate(def, *name)
-        {
-            let receiver = if indices.is_empty() {
-                base
+        if let surface::Access::Named(name) = last {
+            if let Some(method) = self.dot_method_candidate(def, *name) {
+                let receiver = if indices.is_empty() {
+                    base
+                } else {
+                    self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+                };
+                return self.infer_method_call(receiver, def, method, *name, args, span);
+            }
+            // No inherent method: trait methods are next in line, still
+            // ahead of fields. An unresolved receiver cannot probe impls —
+            // ask for annotations when a matching trait method could exist.
+            let rcur = self.infer.resolve(cur);
+            if ty_has_hole(rcur) {
+                if !self.traits_declaring(*name).is_empty() {
+                    self.error(
+                        span,
+                        format!(
+                            "type annotations needed: cannot resolve `{}` on `{}`",
+                            self.sym(*name),
+                            self.ty_display(rcur)
+                        ),
+                    );
+                    return self.poison(span);
+                }
             } else {
-                self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
-            };
-            return self.infer_method_call(receiver, def, method, *name, args, span);
+                let cands = self.ground_trait_candidates(rcur, *name);
+                match cands[..] {
+                    [] => {}
+                    [(tid, midx)] => {
+                        let receiver = if indices.is_empty() {
+                            base
+                        } else {
+                            self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+                        };
+                        return self.dispatch_trait_method(tid, midx, receiver, args, span);
+                    }
+                    [(a, _), (b, _), ..] => {
+                        self.ambiguous_method_error(*name, rcur, a, b, span);
+                        return self.poison(span);
+                    }
+                }
+            }
         }
         match self.resolve_field(def, rargs, flex, last) {
             Ok((idx, field_ty, _)) => {
@@ -800,10 +852,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         ),
                     );
                 } else {
+                    // A trait declares it but the receiver holds no impl:
+                    // steer toward the missing impl instead of a bare miss.
+                    let hint = self
+                        .traits_declaring(*name)
+                        .first()
+                        .map(|&(tid, _)| {
+                            format!(
+                                "; trait `{}` declares it, but `{type_display}` does not \
+                                 implement `{0}`",
+                                self.trait_display(tid)
+                            )
+                        })
+                        .unwrap_or_default();
                     self.error(
                         span,
                         format!(
-                            "no field or method `{}` on `{type_display}`",
+                            "no field or method `{}` on `{type_display}`{hint}",
                             self.sym(*name)
                         ),
                     );
@@ -910,6 +975,335 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             result,
             span,
         )
+    }
+
+    // ----- trait-method dispatch -----
+
+    /// Every trait whose method table declares `name`, with the method's
+    /// index. Deterministic: ascending trait id. Multi-parameter traits
+    /// never qualify — a dot call (or `Trait::m` path call) supplies only
+    /// `Self`, so their non-`Self` arguments have no instantiation source
+    /// until turbofish lands on trait-method calls.
+    fn traits_declaring(&self, name: TokenKey) -> Vec<(TraitId, usize)> {
+        (0..self.traits.traits_len() as u32)
+            .map(TraitId)
+            .filter_map(|tid| {
+                let def = self.traits.trait_def(tid);
+                if !def.params.is_empty() {
+                    return None;
+                }
+                def.methods
+                    .iter()
+                    .position(|m| m.name == name)
+                    .map(|idx| (tid, idx))
+            })
+            .collect()
+    }
+
+    /// Dot candidates for a *ground-headed* receiver: the declaring traits
+    /// whose goal `recv : Trait` the solver proves. Probing runs real
+    /// selection, so a candidate impl's where-clauses count — `Box<bool>`
+    /// is not a `Show` candidate under `impl<T: Num> Show for Box<T>`.
+    fn ground_trait_candidates(&self, recv: Ty<'tcx>, name: TokenKey) -> Vec<(TraitId, usize)> {
+        self.traits_declaring(name)
+            .into_iter()
+            .filter(|&(tid, _)| {
+                let goal = Obligation::Trait(TraitRef {
+                    trait_id: tid,
+                    args: vec![recv],
+                });
+                SelectCtxt::new(&self.traits, self.tcx, &self.generics)
+                    .select(&goal)
+                    .is_ok()
+            })
+            .collect()
+    }
+
+    /// Dot candidates for a bare-generic receiver: declaring traits
+    /// reachable from the generic's bounds — a bound's super-traits
+    /// dispatch too (`T: Integral` reaches a method `Num` declares).
+    fn generic_trait_candidates(&self, g: GenericId, name: TokenKey) -> Vec<(TraitId, usize)> {
+        let mut reach: Vec<TraitId> = Vec::new();
+        let mut work: Vec<TraitId> = self.generic_bounds(g).to_vec();
+        while let Some(t) = work.pop() {
+            if reach.contains(&t) {
+                continue;
+            }
+            reach.push(t);
+            work.extend(
+                self.traits
+                    .trait_def(t)
+                    .supertraits
+                    .iter()
+                    .map(|s| s.trait_id),
+            );
+        }
+        reach.sort_by_key(|t| t.0);
+        reach
+            .into_iter()
+            .filter_map(|tid| {
+                let def = self.traits.trait_def(tid);
+                if !def.params.is_empty() {
+                    return None;
+                }
+                def.methods
+                    .iter()
+                    .position(|m| m.name == name)
+                    .map(|idx| (tid, idx))
+            })
+            .collect()
+    }
+
+    /// (T-METHOD) Dispatch a resolved trait method — `recv.m(args)` or the
+    /// `Trait::m(recv, args…)` spelling — per the receiver's shape:
+    ///
+    /// * a **ground-headed** receiver commits at check time: coherence makes
+    ///   the selected impl unique, and the call becomes an ordinary
+    ///   [`ExprKind::FuncCall`] to that impl's method;
+    /// * a **bare-generic** receiver has no impl until monomorphization
+    ///   grounds `Self`, so the call is a serializable
+    ///   [`ExprKind::TraitCall`] resolved per instance.
+    fn dispatch_trait_method(
+        &mut self,
+        tid: TraitId,
+        midx: usize,
+        receiver: Expr<'tcx>,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let raw = self.infer.resolve(receiver.ty);
+        let peeled = self.peel_arc(raw);
+        if let TyKind::Generic(_) = peeled.kind() {
+            return self.trait_call_generic(tid, midx, receiver, peeled, args, span);
+        }
+        let mname = self.traits.trait_def(tid).methods[midx].name;
+        if ty_has_hole(peeled) {
+            self.error(
+                span,
+                format!(
+                    "type annotations needed: cannot resolve `{}` on `{}`",
+                    self.sym(mname),
+                    self.ty_display(peeled)
+                ),
+            );
+            return self.poison(span);
+        }
+        let goal = Obligation::Trait(TraitRef {
+            trait_id: tid,
+            args: vec![peeled],
+        });
+        let outcome = SelectCtxt::new(&self.traits, self.tcx, &self.generics).select(&goal);
+        match outcome {
+            Ok(Evidence::Impl { impl_id, .. }) => {
+                let Some(&def) = self.traits.impl_def(impl_id).methods.get(midx) else {
+                    // The impl elaborated with errors, reported at its site.
+                    return self.poison(span);
+                };
+                let TyKind::Record { def: head, .. } = *peeled.kind() else {
+                    unreachable!("user impls target records, so a selected method has one");
+                };
+                self.infer_method_call(receiver, head, def, mname, args, span)
+            }
+            Ok(_) => {
+                // Super-projected evidence proves the bound, but only a
+                // direct impl carries the method body.
+                let shown = self.trait_display(tid);
+                self.error(
+                    span,
+                    format!(
+                        "`{ty}` reaches `{shown}` only through a sub-trait; calling `{m}` \
+                         needs a direct `impl {shown} for {ty}`",
+                        ty = self.ty_display(peeled),
+                        m = self.sym(mname),
+                    ),
+                );
+                self.poison(span)
+            }
+            Err(SelectError::NoImpl(inner)) => {
+                let msg = self.no_impl_message(peeled, tid, &inner);
+                self.error(span, msg);
+                self.poison(span)
+            }
+            Err(SelectError::DepthLimit(g)) => {
+                let msg = self.depth_limit_message(&g);
+                self.error(span, msg);
+                self.poison(span)
+            }
+        }
+    }
+
+    /// The generic-receiver half of (T-METHOD): type the call against the
+    /// trait's [`MethodSig`] with `Self ↦` the receiver and the method's own
+    /// generics fresh, and emit the [`ExprKind::TraitCall`].
+    ///
+    /// [`MethodSig`]: crate::semi::traits::MethodSig
+    fn trait_call_generic(
+        &mut self,
+        tid: TraitId,
+        midx: usize,
+        receiver: Expr<'tcx>,
+        self_ty: Ty<'tcx>,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let tdef = self.traits.trait_def(tid);
+        if !tdef.params.is_empty() {
+            let shown = self.trait_display(tid);
+            self.error(
+                span,
+                format!(
+                    "cannot dispatch a method of multi-parameter trait `{shown}` \
+                     on a generic receiver"
+                ),
+            );
+            return self.poison(span);
+        }
+        let trait_def_id = tdef.def;
+        let self_param = tdef.self_param;
+        let sig = tdef.methods[midx].clone();
+        self.record_use(sig.name);
+        if sig.is_regional && !self.inside_region {
+            self.error(span, "cannot call a regional function outside of a region");
+        }
+        let mut inst = self.instantiate(&sig.generics, &[], span);
+        inst.insert(self_param, self_ty);
+        let expected_recv = self.infer.instantiate_ty(sig.params[0], &inst);
+        self.expect(receiver.ty, expected_recv, span);
+        let rest = &sig.params[1..];
+        if args.len() != rest.len() {
+            self.error(
+                span,
+                format!(
+                    "method `{}` expects {} argument(s) besides the receiver, got {}",
+                    self.sym(sig.name),
+                    rest.len(),
+                    args.len()
+                ),
+            );
+        }
+        let out: Vec<Expr<'tcx>> = std::iter::once(receiver)
+            .chain(args.iter().zip(rest).map(|(arg, &pty)| {
+                let expected = self.infer.instantiate_ty(pty, &inst);
+                self.check_expr(arg, expected)
+            }))
+            .collect();
+        let ty_args: Vec<Ty<'tcx>> = std::iter::once(self_ty)
+            .chain(self.inst_args(&sig.generics, &inst))
+            .collect();
+        let result = self.infer.instantiate_ty(sig.ret, &inst);
+        self.mk_expr(
+            ExprKind::TraitCall {
+                trait_def: trait_def_id,
+                method: midx as u32,
+                ty_args,
+                args: out,
+            },
+            result,
+            span,
+        )
+    }
+
+    /// The dot form on a bare-generic receiver: search the generic's bounds
+    /// for the (unique) declaring trait.
+    fn dispatch_generic_dot(
+        &mut self,
+        g: GenericId,
+        recv_ty: Ty<'tcx>,
+        receiver: Expr<'tcx>,
+        name: TokenKey,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let cands = self.generic_trait_candidates(g, name);
+        match cands[..] {
+            [] => {
+                self.error(
+                    span,
+                    format!(
+                        "no method `{}` on `{}`; its bounds do not declare one",
+                        self.sym(name),
+                        self.ty_display(recv_ty)
+                    ),
+                );
+                self.poison(span)
+            }
+            [(tid, midx)] => self.dispatch_trait_method(tid, midx, receiver, args, span),
+            [(a, _), (b, _), ..] => {
+                self.ambiguous_method_error(name, recv_ty, a, b, span);
+                self.poison(span)
+            }
+        }
+    }
+
+    fn ambiguous_method_error(
+        &mut self,
+        name: TokenKey,
+        recv_ty: Ty<'tcx>,
+        a: TraitId,
+        b: TraitId,
+        span: Option<Span>,
+    ) {
+        let (da, db) = (self.trait_display(a), self.trait_display(b));
+        self.error(
+            span,
+            format!(
+                "multiple traits provide method `{m}` for `{ty}`: `{da}` and `{db}`; \
+                 disambiguate with a trait path call like `{da}::{m}(…)`",
+                m = self.sym(name),
+                ty = self.ty_display(recv_ty),
+            ),
+        );
+    }
+
+    /// The `Trait::method(recv, args…)` path spelling: the path prefix names
+    /// the trait, the basename its method, and the first argument is the
+    /// receiver. `None` when the prefix is not a trait — the caller falls
+    /// back to its unknown-function diagnostic.
+    fn try_trait_path_call(
+        &mut self,
+        fc: &surface::FuncCall,
+        span: Option<Span>,
+    ) -> Option<Expr<'tcx>> {
+        let (tname, prefix) = fc.name.segments.split_last()?;
+        let tpath = surface::Path {
+            basename: *tname,
+            segments: prefix.iter().copied().collect(),
+        };
+        let def = self.resolve_trait_ref_quiet(&tpath)?;
+        let tid = self
+            .traits
+            .trait_by_def(def)
+            .expect("every trait-namespace def has a TraitDb entry");
+        let mname = self.sym(fc.name.basename).to_string();
+        let Some(midx) = self
+            .traits
+            .trait_def(tid)
+            .methods
+            .iter()
+            .position(|m| m.name == fc.name.basename)
+        else {
+            let shown = self.trait_display(tid);
+            self.error(span, format!("trait `{shown}` has no method `{mname}`"));
+            return Some(self.poison(span));
+        };
+        if !fc.ty_args.is_empty() {
+            self.error(
+                span,
+                "type arguments on a trait-method call are not supported yet",
+            );
+            return Some(self.poison(span));
+        }
+        let Some(recv_src) = fc.args.first() else {
+            let shown = self.trait_display(tid);
+            self.error(
+                span,
+                format!("`{shown}::{mname}` takes its receiver as the first argument"),
+            );
+            return Some(self.poison(span));
+        };
+        self.record_use(fc.name.basename);
+        let receiver = self.infer_expr(recv_src);
+        Some(self.dispatch_trait_method(tid, midx, receiver, &fc.args[1..], span))
     }
 
     /// (APP) `Γ ⊢ callee(args) ⇒ (ClosureCall{hc,[hᵢ]} : R)`: synthesize the callee to
@@ -2691,6 +3085,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 op,
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
             },
+            TraitCall {
+                trait_def,
+                method,
+                ty_args,
+                args,
+            } => TraitCall {
+                trait_def,
+                method,
+                ty_args: ty_args.into_iter().map(|t| self.zonk_ty(t, span)).collect(),
+                args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
+            },
             other => other,
         }
     }
@@ -2763,9 +3168,10 @@ fn var_occurrences<'tcx>(e: &Expr<'tcx>, used: &mut Vec<VarId>, bound: &mut Vec<
             bound.push(*var);
         }
         Seq(es) => es.iter().for_each(|e| var_occurrences(e, used, bound)),
-        FuncCall { args, .. } | CompoundCall { args, .. } | VariantCall { args, .. } => {
-            args.iter().for_each(|e| var_occurrences(e, used, bound))
-        }
+        FuncCall { args, .. }
+        | TraitCall { args, .. }
+        | CompoundCall { args, .. }
+        | VariantCall { args, .. } => args.iter().for_each(|e| var_occurrences(e, used, bound)),
         NullableCall(e) => {
             if let Some(e) = e {
                 var_occurrences(e, used, bound)

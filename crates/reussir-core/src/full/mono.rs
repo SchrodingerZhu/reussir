@@ -219,7 +219,7 @@ pub(crate) fn for_each_expr<'e, 'tcx>(expr: &'e Expr<'tcx>, f: &mut impl FnMut(&
         }
         Let { value, .. } => for_each_expr(value, f),
         Seq(es) => es.iter().for_each(|e| for_each_expr(e, f)),
-        FuncCall { args, .. } => {
+        FuncCall { args, .. } | TraitCall { args, .. } => {
             args.iter().for_each(|e| for_each_expr(e, f));
         }
         // Compound/variant targets name records, not functions; only their
@@ -1408,6 +1408,10 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         use mir::ExprKind as M;
         match kind {
             ExprKind::GlobalStr(s) => M::GlobalStr(*s),
+            ExprKind::TraitCall { .. } => todo!(
+                "TraitCall resolves at instance time; the rewrite lands with \
+                 the trait-mono stack"
+            ),
             ExprKind::ConstChar(c) => M::ConstChar(*c),
             ExprKind::ConstInt(n) => M::ConstInt(n),
             ExprKind::ConstFloat(f) => M::ConstFloat(f),

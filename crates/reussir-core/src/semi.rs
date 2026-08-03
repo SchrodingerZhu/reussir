@@ -1507,6 +1507,226 @@ mod tests {
         );
     }
 
+    /// The function named `name` in the elaborated set, with its body.
+    #[cfg(test)]
+    fn body_of<'a, 'tcx>(
+        elab: &'a Elaborator<'_, 'tcx>,
+        name: &str,
+    ) -> &'a crate::semi::hir::Expr<'tcx> {
+        elab.elaborated
+            .iter()
+            .find(|f| elab.sym(f.name) == name)
+            .and_then(|f| f.body.as_ref())
+            .expect("function with a body")
+    }
+
+    /// Collect `(is_trait_call, target_path)` for every call in `body` —
+    /// `target_path` rendered as `::`-joined segments for `FuncCall`s.
+    #[cfg(test)]
+    fn call_targets(elab: &Elaborator<'_, '_>, name: &str) -> Vec<(bool, String)> {
+        let mut out = Vec::new();
+        crate::full::mono::for_each_expr(body_of(elab, name), &mut |e| match &e.kind {
+            crate::semi::hir::ExprKind::FuncCall { target, .. } => {
+                let path = elab
+                    .defs
+                    .path(*target)
+                    .0
+                    .iter()
+                    .map(|k| elab.sym(*k).to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                out.push((false, path));
+            }
+            crate::semi::hir::ExprKind::TraitCall { trait_def, .. } => {
+                let path = elab
+                    .defs
+                    .path(*trait_def)
+                    .0
+                    .iter()
+                    .map(|k| elab.sym(*k).to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                out.push((true, path));
+            }
+            _ => {}
+        });
+        out
+    }
+
+    #[test]
+    fn trait_methods_dispatch_on_dot_for_ground_receivers() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn go(p: P) -> i64 { p.show() }",
+            |elab, _| {
+                let calls = call_targets(elab, "go");
+                // Ground receiver: committed to the impl method at check
+                // time — an ordinary FuncCall through the impl's path.
+                assert_eq!(calls.len(), 1, "{calls:?}");
+                assert!(!calls[0].0, "no TraitCall for a ground receiver");
+                assert_eq!(calls[0].1, "Show::P::show");
+            },
+        );
+    }
+
+    #[test]
+    fn trait_methods_dispatch_on_dot_for_generic_receivers() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn go<T: Show>(x: T) -> i64 { x.show() }",
+            |elab, _| {
+                let calls = call_targets(elab, "go");
+                assert_eq!(calls.len(), 1, "{calls:?}");
+                assert!(calls[0].0, "generic receiver defers to a TraitCall");
+                assert_eq!(calls[0].1, "Show");
+            },
+        );
+    }
+
+    #[test]
+    fn inherent_methods_win_over_trait_methods() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl P { pub fn show(self: P) -> i64 { 1 } }\n\
+             impl Show for P { fn show(self: Self) -> i64 { 2 } }\n\
+             pub fn go(p: P) -> i64 { p.show() }",
+            |elab, _| {
+                let calls = call_targets(elab, "go");
+                assert_eq!(calls.len(), 1, "{calls:?}");
+                // The inherent path is `P::show`; the trait impl's method
+                // lives under `Show::P::show`.
+                assert_eq!(calls[0], (false, "P::show".to_string()), "{calls:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn trait_method_wins_over_field_and_parens_force_the_field() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub show: (i64) -> i64, pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn method(p: P) -> i64 { p.show() }\n\
+             pub fn field(p: P) -> i64 { (p.show)(3) }",
+            |elab, _| {
+                let m = call_targets(elab, "method");
+                assert_eq!(m.len(), 1, "{m:?}");
+                assert_eq!(m[0].1, "Show::P::show", "method-first, ahead of the field");
+                assert!(
+                    call_targets(elab, "field").is_empty(),
+                    "paren form is a closure call"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn ambiguous_trait_methods_are_reported() {
+        elaborate_source(
+            "pub trait A { fn m(self: Self) -> i64; }\n\
+             pub trait B { fn m(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl A for P { fn m(self: Self) -> i64 { 1 } }\n\
+             impl B for P { fn m(self: Self) -> i64 { 2 } }\n\
+             pub fn go(p: P) -> i64 { p.m() }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("multiple traits provide method `m`")
+                            && r.message.contains("`A` and `B`")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn trait_path_calls_dispatch_both_ways() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn ground(p: P) -> i64 { Show::show(p) }\n\
+             pub fn generic<T: Show>(x: T) -> i64 { Show::show(x) }",
+            |elab, _| {
+                let g = call_targets(elab, "ground");
+                assert_eq!(g, vec![(false, "Show::P::show".to_string())], "{g:?}");
+                let t = call_targets(elab, "generic");
+                assert_eq!(t, vec![(true, "Show".to_string())], "{t:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn trait_dispatch_failure_diagnostics() {
+        elaborate_source(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             pub struct Q { pub y: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn miss(q: Q) -> i64 { q.show() }\n\
+             pub fn unbounded<T>(x: T) -> i64 { x.show() }\n\
+             pub fn wrong(p: P) -> i64 { Show::nope(p) }",
+            |elab| {
+                let has = |m: &str| elab.reports.iter().any(|r| r.message.contains(m));
+                assert!(
+                    has("no field or method `show` on `Q`; trait `Show` declares it"),
+                    "{:#?}",
+                    elab.reports
+                );
+                assert!(
+                    has("no method `show` on `T`; its bounds do not declare one"),
+                    "{:#?}",
+                    elab.reports
+                );
+                assert!(
+                    has("trait `Show` has no method `nope`"),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn supertrait_methods_reach_through_bounds() {
+        check(
+            "pub trait A { fn m(self: Self) -> i64; }\n\
+             pub trait B : A { fn extra(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl A for P { fn m(self: Self) -> i64 { self.x } }\n\
+             pub fn go<T: B>(x: T) -> i64 { x.m() }",
+            |elab, _| {
+                let calls = call_targets(elab, "go");
+                // The `B` bound reaches `A::m` through the super edge; the
+                // TraitCall names the declaring trait.
+                assert_eq!(calls, vec![(true, "A".to_string())], "{calls:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn arc_receiver_trait_methods_dispatch() {
+        check(
+            "pub trait Shared { fn get(self: Arc<Self>) -> i64; }\n\
+             pub struct [shared] P { pub x: i64 }\n\
+             impl Shared for P { fn get(self: Arc<Self>) -> i64 { self.x } }\n\
+             pub fn go(a: Arc<P>) -> i64 { a.get() }",
+            |elab, _| {
+                let calls = call_targets(elab, "go");
+                assert_eq!(calls.len(), 1, "{calls:?}");
+                assert_eq!(calls[0].1, "Shared::P::get");
+            },
+        );
+    }
+
     #[test]
     fn rejected_batch_retracts_trait_impls() {
         use std::sync::Arc;

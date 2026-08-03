@@ -108,6 +108,12 @@ impl<'tcx> Instantiation<'tcx> {
     pub fn get(&self, generic: GenericId) -> Option<Ty<'tcx>> {
         self.map.get(&generic).copied()
     }
+
+    /// Extend with an explicit pair. Trait-method dispatch adds the trait's
+    /// `Self` (the receiver type) alongside the method's own fresh generics.
+    pub fn insert(&mut self, generic: GenericId, ty: Ty<'tcx>) {
+        self.map.insert(generic, ty);
+    }
 }
 
 /// The inference context: the hole table, the current level, and the interner.
