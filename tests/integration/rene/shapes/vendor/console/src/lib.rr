@@ -1,0 +1,8 @@
+// The report surface: imported print functions, one per width the app
+// computes at.
+
+#[ffi(import)]
+pub fn print(v: i64) [{ println!("{v}") }];
+
+#[ffi(import)]
+pub fn print32(v: i32) [{ println!("{v}") }];

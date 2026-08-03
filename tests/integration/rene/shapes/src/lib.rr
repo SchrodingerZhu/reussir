@@ -1,0 +1,16 @@
+// The app: every value it prints comes out of a `geom` method called
+// across the package boundary; the calls themselves live in a submodule,
+// so method resolution also crosses in-package module files.
+
+mod report;
+
+// Impl blocks are package-level: `report` (a different module) adds this
+// type's methods below.
+pub struct Tally {
+    pub n: i64,
+}
+
+#[main]
+pub fn entry() {
+    report::run()
+}
