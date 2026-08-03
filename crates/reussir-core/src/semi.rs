@@ -1469,6 +1469,45 @@ mod tests {
     }
 
     #[test]
+    fn generic_impls_are_selected_through_bounds() {
+        // The one-way matcher at work: `use_show` needs `U: Show`, the call
+        // instantiates `U = Box<T>`, and the generic impl applies with its
+        // `T: Num` clause discharged by `go`'s own assumption.
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Show for Box<T> { fn show(self: Self) -> i64 { 1 } }\n\
+             pub fn use_show<U: Show>(u: U) -> i64 { 2 }\n\
+             pub fn go<T: Num>(b: Box<T>) -> i64 { use_show(b) }",
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    #[test]
+    fn where_clause_failure_names_the_root_cause() {
+        // `Box<bool>` matches the impl head, but its `T: Num` clause has no
+        // proof — the diagnostic must surface the inner goal, not just the
+        // outer one.
+        elaborate_source(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Show for Box<T> { fn show(self: Self) -> i64 { 1 } }\n\
+             pub fn use_show<U: Show>(u: U) -> i64 { 2 }\n\
+             pub fn go(b: Box<bool>) -> i64 { use_show(b) }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains(
+                        "`Box<bool>` does not implement `Show`: \
+                         `bool` does not implement `Num`"
+                    )),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
     fn rejected_batch_retracts_trait_impls() {
         use std::sync::Arc;
         with_tcx(|tcx| {

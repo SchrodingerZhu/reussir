@@ -1,12 +1,9 @@
-//! The trait/impl registry and a trivial resolver.
+//! The trait/impl registry: dense-id storage, the `(trait, head)` candidate
+//! index, super-trait reachability, and REPL-checkpoint truncation.
 //!
-//! Phase 0 resolves only *ground* obligations: a concrete self type is matched
-//! exactly against impls (a pointer comparison, thanks to interning), with
-//! super-trait projection, plus the capability lattice. Candidate gathering from
-//! in-scope assumptions, one-way matching of generic impls, where-clause
-//! discharge against an environment, and suspension of obligations whose self
-//! type is still a hole all arrive in Phase 1 — slotting into this same
-//! [`TraitDb::select`] entry point.
+//! Resolution lives in [`super::select::SelectCtxt`], which reads this
+//! registry; coherence (the overlap and orphan gates in the elaborator)
+//! is what entitles selection to commit to the first matching candidate.
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
@@ -15,7 +12,7 @@ use crate::semi::ty::DefId;
 
 use super::coherence::{HeadKey, head_key};
 use super::def::{ImplDef, TraitDef};
-use super::{Evidence, ImplId, Obligation, TraitId, TraitRef};
+use super::{ImplId, TraitId, TraitRef};
 
 /// The collected trait program plus resolution.
 #[derive(Default)]
@@ -32,8 +29,12 @@ pub struct TraitDb<'tcx> {
 /// Why an obligation could not be discharged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SelectError<'tcx> {
-    /// No impl makes `τ : Trait` hold.
+    /// No impl makes `τ : Trait` hold. Carries the *deepest* failing goal:
+    /// a where-clause failure on the unique applicable impl surfaces the
+    /// inner obligation, which is the root cause.
     NoImpl(TraitRef<'tcx>),
+    /// Proof search exceeded [`super::select::SELECT_DEPTH_LIMIT`].
+    DepthLimit(TraitRef<'tcx>),
 }
 
 impl<'tcx> TraitDb<'tcx> {
@@ -153,75 +154,10 @@ impl<'tcx> TraitDb<'tcx> {
             .any(|s| s.trait_id == target || self.reaches(self.trait_def(s.trait_id), target))
     }
 
-    /// Discharge an obligation, producing evidence.
-    pub fn select(
-        &self,
-        obligation: &Obligation<'tcx>,
-    ) -> Result<Evidence<'tcx>, SelectError<'tcx>> {
-        let Obligation::Trait(goal) = obligation;
-        self.select_trait(goal)
-    }
-
-    fn select_trait(&self, goal: &TraitRef<'tcx>) -> Result<Evidence<'tcx>, SelectError<'tcx>> {
-        // A direct impl of the goal trait for this exact self type. With
-        // interned types this self-type check is a pointer comparison.
-        for imp in &self.impls {
-            if imp.trait_ref.trait_id == goal.trait_id && imp.self_ty == goal.self_ty() {
-                let mut sub = Vec::with_capacity(imp.where_clauses.len());
-                for clause in &imp.where_clauses {
-                    sub.push(self.select(clause)?);
-                }
-                return Ok(Evidence::Impl {
-                    impl_id: imp.id,
-                    args: imp.trait_ref.args.clone(),
-                    sub,
-                });
-            }
-        }
-
-        // Otherwise, reach the goal through one or more super-trait hops: some
-        // impl for this self type implements a sub-trait whose super-trait
-        // closure contains the goal. (This is what the old class DAG did by
-        // hand.) The evidence projects the impl up the full hop chain.
-        for imp in &self.impls {
-            if imp.self_ty != goal.self_ty() || imp.trait_ref.trait_id == goal.trait_id {
-                continue;
-            }
-            let Ok(base) = self.select_trait(&imp.trait_ref) else {
-                continue;
-            };
-            let sub_def = self.trait_def(imp.trait_ref.trait_id);
-            if let Some(ev) = self.project_super(sub_def, base, goal.trait_id) {
-                return Ok(ev);
-            }
-        }
-
-        Err(SelectError::NoImpl(goal.clone()))
-    }
-
-    /// Project `of` — evidence that the self type implements `def` — up to
-    /// `target` through super-traits, building one [`Evidence::Super`] hop per
-    /// edge on the path. `None` if `target` is not in `def`'s super-trait
-    /// closure.
-    fn project_super(
-        &self,
-        def: &TraitDef<'tcx>,
-        of: Evidence<'tcx>,
-        target: TraitId,
-    ) -> Option<Evidence<'tcx>> {
-        for (i, sup) in def.supertraits.iter().enumerate() {
-            let step = Evidence::Super {
-                of: Box::new(of.clone()),
-                index: i,
-            };
-            if sup.trait_id == target {
-                return Some(step);
-            }
-            if let Some(ev) = self.project_super(self.trait_def(sup.trait_id), step, target) {
-                return Some(ev);
-            }
-        }
-        None
+    /// All impls in registration (dense-id) order — the deterministic scan
+    /// order for super-trait projection in selection.
+    pub fn impls(&self) -> impl Iterator<Item = &ImplDef<'tcx>> {
+        self.impls.iter()
     }
 }
 
@@ -231,13 +167,6 @@ mod tests {
     use crate::semi::traits::builtins::Builtins;
     use crate::semi::ty::{FpTy, IntTy, Ty, TyCtxt};
     use crate::with_tcx;
-
-    fn needs(trait_id: TraitId, self_ty: Ty<'_>) -> Obligation<'_> {
-        Obligation::Trait(TraitRef {
-            trait_id,
-            args: vec![self_ty],
-        })
-    }
 
     #[test]
     fn truncate_retracts_traits_and_impls() {
@@ -313,99 +242,6 @@ mod tests {
             let b = Builtins::register(&mut db, &mut defs, &mut interner, tcx);
             for id in [b.num, b.integral, b.floating_point, b.ptr_like, b.sync] {
                 assert_eq!(db.trait_by_def(db.trait_def(id).def), Some(id));
-            }
-        });
-    }
-
-    #[test]
-    fn primitive_membership_is_data_not_hardcoded() {
-        with_tcx(|tcx: &TyCtxt| {
-            let mut db = TraitDb::new();
-            let mut defs = crate::semi::resolve::DefTable::new();
-            let mut interner = lasso::Rodeo::<reussir_syntax::kind::TokenKey>::new();
-            let b = Builtins::register(&mut db, &mut defs, &mut interner, tcx);
-
-            let i32 = tcx.mk_int(IntTy::Signed(32));
-            let f32 = tcx.mk_fp(FpTy::Ieee(32));
-
-            // i32 is Integral directly, and Num through the super-trait edge.
-            assert!(db.select(&needs(b.integral, i32)).is_ok());
-            assert!(db.select(&needs(b.num, i32)).is_ok());
-
-            // f32 is FloatingPoint and (super) Num, but not Integral.
-            assert!(db.select(&needs(b.floating_point, f32)).is_ok());
-            assert!(db.select(&needs(b.num, f32)).is_ok());
-            assert!(db.select(&needs(b.integral, f32)).is_err());
-
-            // bool belongs to no numeric trait.
-            assert!(db.select(&needs(b.num, tcx.mk_bool())).is_err());
-        });
-    }
-
-    // `Sync` has no impls: ground goals are answered structurally by
-    // `traits::sync` (see its tests), so nothing here selects it.
-
-    #[test]
-    fn transitive_super_traits_build_a_full_evidence_chain() {
-        use crate::semi::traits::def::{ImplDef, TraitDef};
-        use crate::semi::traits::{Evidence, ImplId, TraitRef};
-
-        with_tcx(|tcx: &TyCtxt| {
-            // A 3-level chain: Sub : Mid : Top.
-            let mut db = TraitDb::new();
-            let self_g = crate::semi::ty::GenericId(0);
-            let self_ref = |t: TraitId| TraitRef {
-                trait_id: t,
-                args: vec![tcx.mk_generic(self_g)],
-            };
-            let (top, mid, sub) = (TraitId(0), TraitId(1), TraitId(2));
-            let def = |id: TraitId, def: u32, supers| TraitDef {
-                id,
-                def: crate::semi::ty::DefId(def),
-                visibility: crate::surface::Visibility::Public,
-                sealed: false,
-                self_param: self_g,
-                params: vec![],
-                supertraits: supers,
-                methods: vec![],
-                assoc_tys: vec![],
-                span: None,
-                file: reussir_syntax::source::FileId::ROOT,
-            };
-            db.add_trait(def(top, 0, vec![]));
-            db.add_trait(def(mid, 1, vec![self_ref(top)]));
-            db.add_trait(def(sub, 2, vec![self_ref(mid)]));
-
-            let unit = tcx.mk_unit();
-            db.add_impl(ImplDef {
-                id: ImplId(0),
-                generics: vec![],
-                trait_ref: TraitRef {
-                    trait_id: sub,
-                    args: vec![unit],
-                },
-                self_ty: unit,
-                where_clauses: vec![],
-                methods: vec![],
-                span: None,
-                file: reussir_syntax::source::FileId::ROOT,
-            });
-
-            // `unit: Top` is two hops away (Sub -> Mid -> Top): the evidence must
-            // nest two `Super` projections over the `Sub` impl.
-            let ev = db.select(&needs(top, unit)).expect("unit: Top should hold");
-            match ev {
-                Evidence::Super {
-                    of: outer,
-                    index: 0,
-                } => match *outer {
-                    Evidence::Super {
-                        of: inner,
-                        index: 0,
-                    } => assert!(matches!(*inner, Evidence::Impl { .. })),
-                    other => panic!("expected a nested Super, got {other:?}"),
-                },
-                other => panic!("expected a two-hop Super chain, got {other:?}"),
             }
         });
     }
