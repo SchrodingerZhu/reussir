@@ -1,0 +1,9 @@
+// Projection of a private field from a sibling module …
+pub fn peek(r: super::geometry::Rect) -> i64 {
+    r.h
+}
+
+// … and construction naming one.
+pub fn forge() -> super::geometry::Rect {
+    super::geometry::Rect { w: 1, h: 2 }
+}

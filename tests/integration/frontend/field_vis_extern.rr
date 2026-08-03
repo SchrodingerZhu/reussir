@@ -1,0 +1,39 @@
+// Field visibility across packages: a dependency's field markers ship in its
+// `.rri`, a consumer sees `pub` fields only, and the field-level diagnostics
+// mirror the item-level is-private/not-found split one level down.
+
+// RUN: %rrc --package-root %S/field_vis_extern --package-name dep --emit rri -o %t.rri
+
+// The markers ship in the interface …
+// RUN: %FileCheck %s --check-prefix=RRI < %t.rri
+// RRI: pub [shared] struct #dep::Gauge
+// RRI-SAME: { pub "level": i64, "secret": i64 };
+
+// … a consumer projecting the `pub` field elaborates …
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s
+
+// … the private field is access control at projection …
+// RUN: echo 'fn peek(g: dep::Gauge) -> i64 { g.secret }' > %t.peek.rr
+// RUN: %not %rrc %t.peek.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PRIVATE-FIELD
+// PRIVATE-FIELD: field `secret` of record `dep::Gauge` is private
+
+// … and at construction …
+// RUN: echo 'fn forge() -> dep::Gauge { dep::Gauge { level: 1, secret: 2 } }' > %t.forge.rr
+// RUN: %not %rrc %t.forge.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PRIVATE-CTOR
+// PRIVATE-CTOR: cannot construct `dep::Gauge` outside its module: field(s) `secret` are private
+
+// … while a missing field stays not-found.
+// RUN: echo 'fn miss(g: dep::Gauge) -> i64 { g.nope }' > %t.miss.rr
+// RUN: %not %rrc %t.miss.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NOPE
+// NOPE: no such field
+// NOPE-NOT: is private
+
+pub fn read(g: dep::Gauge) -> i64 {
+    g.level
+}
+
+// CHECK: pub fn #app::read

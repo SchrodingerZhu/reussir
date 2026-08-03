@@ -1,0 +1,15 @@
+mod ops;
+
+pub struct Rect {
+    pub w: i64,
+    h: i64,
+}
+
+pub fn make(n: i64) -> Rect {
+    Rect { w: n, h: n + 1 }
+}
+
+// The defining module reads its own private field freely.
+pub fn area(r: Rect) -> i64 {
+    r.w * r.h
+}

@@ -1,0 +1,10 @@
+// The intra-package fixture: `geometry` defines a record with mixed field
+// visibility; the root, a sibling, and a child module exercise the access
+// rules the driving test pins.
+
+mod geometry;
+mod render;
+
+pub fn entry(n: i64) -> i64 {
+    render::width(geometry::make(n))
+}

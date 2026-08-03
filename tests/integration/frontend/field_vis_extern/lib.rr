@@ -1,0 +1,16 @@
+// The dependency fixture: a `pub` record with one `pub` and one private
+// field, plus a `pub` accessor so the private field is reachable through the
+// package's own API.
+
+pub struct Gauge {
+    pub level: i64,
+    secret: i64,
+}
+
+pub fn make(n: i64) -> Gauge {
+    Gauge { level: n, secret: n * 2 }
+}
+
+pub fn reveal(g: Gauge) -> i64 {
+    g.secret
+}

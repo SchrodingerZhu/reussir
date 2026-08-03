@@ -584,6 +584,7 @@ mod tests {
     }
 
     const DEP: &str = "pub struct Point { pub x: i64, pub y: i64 }\n\
+                       pub struct Mixed { pub a: i64, b: i64 }\n\
                        struct Hidden { v: i64 }\n\
                        fn private_helper(h: Hidden) -> i64 { h.v }\n\
                        pub fn api<T : Num>(x: T) -> T { private_helper(Hidden { v: 1 }); x }\n\
@@ -639,6 +640,39 @@ mod tests {
                         .all(|&(_, _, _, v)| v == crate::surface::Visibility::Public),
                     "{fs:#?}"
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn private_extern_fields_are_rejected_distinctly() {
+        check_with_dep(
+            DEP,
+            &[(
+                &[],
+                "fn a(m: dep::Mixed) -> i64 { m.a }\n\
+                 fn b(m: dep::Mixed) -> i64 { m.b }\n\
+                 fn c() -> dep::Mixed { dep::Mixed { a: 1, b: 2 } }\n\
+                 fn d(m: dep::Mixed) -> i64 { m.nope }",
+            )],
+            |elab| {
+                let messages: Vec<&str> = elab.reports.iter().map(|r| r.message.as_str()).collect();
+                // The pub field elaborates; the private one is access
+                // control, not absence — one level below the item-level
+                // is-private/not-found split.
+                assert!(
+                    messages.contains(&"field `b` of record `dep::Mixed` is private"),
+                    "{messages:#?}"
+                );
+                assert!(
+                    messages.contains(
+                        &"cannot construct `dep::Mixed` outside its module: \
+                          field(s) `b` are private"
+                    ),
+                    "{messages:#?}"
+                );
+                assert!(messages.contains(&"no such field"), "{messages:#?}");
+                assert_eq!(messages.len(), 3, "{messages:#?}");
             },
         );
     }
