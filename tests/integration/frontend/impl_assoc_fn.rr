@@ -1,0 +1,39 @@
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o - | %FileCheck %s
+// Roundtrip: a member is a plain function under the type-suffixed path, so
+// the dump re-enters and re-emits identically.
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --package-name demo -o %t.o
+
+// Impl members declare under `[module.., Type, name]`: the HIR prints them
+// as ordinary `#demo::Point::area`-style functions and path calls resolve
+// to the same target — no new HIR construct, no format change.
+
+pub struct Point {
+    pub x: i64,
+    y: i64,
+}
+
+impl Point {
+    pub fn make(x: i64) -> Point {
+        Point { x: x, y: x + 1 }
+    }
+
+    // The member body reads the target's private field: its scope is the
+    // type's defining module.
+    pub fn area(p: Point) -> i64 {
+        p.x * p.y
+    }
+}
+
+pub fn use_it(n: i64) -> i64 {
+    Point::area(Point::make(n))
+}
+
+// Functions print in elaboration order (plain fns before members), so the
+// item lines match as a DAG.
+// CHECK: pub [shared] struct #demo::Point { pub "x": i64, "y": i64 };
+// CHECK-DAG: pub fn #demo::Point::area(v0 (p): #demo::Point) -> i64 {
+// CHECK-DAG: pub fn #demo::Point::make(v0 (x): i64) -> #demo::Point
+// CHECK-DAG: pub fn #demo::use_it(v0 (n): i64) -> i64 {
+// CHECK-DAG: #demo::Point::area(#demo::Point::make(v0 : i64) : #demo::Point) : i64
