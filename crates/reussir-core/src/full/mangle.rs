@@ -60,7 +60,13 @@ impl<'a> Mangler<'a> {
     }
 
     /// The symbol for a monomorphized item instance: its fully-qualified path
-    /// applied to `ty_args`. Functions and records share this form.
+    /// applied to `ty_args`. Functions and records share this form — including
+    /// impl members, whose declared path simply carries the type name as a
+    /// segment (`[demo, Point, scale]` → `_RNvNvC4demo5Point5scale`, generic
+    /// instances `_RINvNv…E` with the impl and method arguments flattened at
+    /// the path tail). Deliberately unlike [`Self::mangle_variant`], which
+    /// nests the ident *outside* the applied prefix — that form is for enum
+    /// variants only.
     pub fn mangle_instance(&self, def: DefId, ty_args: &[Ty<'_>]) -> String {
         let mut out = String::from("_R");
         self.path_with_args(&mut out, def, ty_args);
@@ -313,6 +319,28 @@ mod tests {
             mangle_segments(&["mycrate", "example"]),
             "_RNvC7mycrate7example"
         );
+    }
+
+    /// A method's path carries its type as an ordinary segment; a generic
+    /// instance flattens the impl+method arguments at the path tail.
+    #[test]
+    fn method_instance_symbol_nests_type_segment() {
+        assert_eq!(
+            mangle_segments(&["demo", "Point", "scale"]),
+            "_RNvNvC4demo5Point5scale"
+        );
+        let defs = DefTable::new();
+        let resolver = VecResolver(vec![]);
+        let m = Mangler::new(&defs, &resolver);
+        crate::with_tcx(|tcx| {
+            let mut out = String::from("_R");
+            m.path_with_args_segs(
+                &mut out,
+                &["demo", "Box", "get"],
+                &[tcx.mk_int(crate::semi::ty::IntTy::Signed(64))],
+            );
+            assert_eq!(out, "_RINvNvC4demo3Box3getxE");
+        });
     }
 
     #[test]

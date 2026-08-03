@@ -1,0 +1,37 @@
+// RUN: %rrc %s --package-name demo --emit mir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --package-name demo -o %t.o
+
+// Method symbols use the ordinary instance form: the type name is a plain
+// path segment (`_RNvNv…`), and a generic method instance flattens the
+// impl+method arguments at the path tail (`_RINvNv…E`) — deliberately unlike
+// enum-variant mangling, which nests the ident outside the applied prefix.
+
+pub struct Point {
+    pub x: i64,
+    pub y: i64,
+}
+
+impl Point {
+    pub fn area(self: Self) -> i64 {
+        self.x * self.y
+    }
+}
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl<T: Num> Box<T> {
+    pub fn get(self: Box<T>) -> T {
+        self.v
+    }
+}
+
+fn use_them(p: Point) -> i64 {
+    p.area() + Box { v: 1 }.get()
+}
+
+extern "C" trampoline "impl_mangling_ffi" = use_them;
+
+// CHECK-DAG: pub fn @_RNvNvC4demo5Point4area(v0 (self): demo::Point) -> i64 {
+// CHECK-DAG: pub fn @_RINvNvC4demo3Box3getxE(v0 (self): demo::Box::<i64>) -> i64 {

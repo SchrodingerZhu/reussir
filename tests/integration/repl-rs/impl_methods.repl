@@ -1,0 +1,50 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+// RUN: %rrepl -i %s -lerror -Onone 2>&1 | %FileCheck %s
+
+// Impl blocks at the REPL: declare a record and its methods, call them, and
+// pin that a rejected batch containing an impl retracts atomically — the
+// method name stays reusable.
+
+:{
+pub struct Point {
+    pub x: i64,
+    y: i64,
+}
+}:
+// CHECK: Definition added.
+
+:{
+impl Point {
+    pub fn make(x: i64) -> Point {
+        Point { x: x, y: x + 1 }
+    }
+
+    pub fn area(self: Self) -> i64 {
+        self.x * self.y
+    }
+}
+}:
+// CHECK: Definition added.
+
+Point::make(6).area()
+// CHECK: 42 : i64
+
+// A batch whose member body fails is rejected wholesale …
+:{
+impl Point {
+    pub fn bad(self: Self) -> i64 { true }
+}
+}:
+// CHECK: type mismatch
+
+// … and the retracted method name is free to redeclare.
+:{
+impl Point {
+    pub fn bad(self: Self) -> i64 { self.x }
+}
+}:
+// CHECK: Definition added.
+
+Point::make(2).bad()
+// CHECK: 2 : i64
