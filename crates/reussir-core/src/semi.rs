@@ -670,6 +670,225 @@ mod tests {
         });
     }
 
+    fn elaborate_source(source: &str, f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>)) {
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            f(&elab);
+        });
+    }
+
+    #[test]
+    fn method_call_dispatches_when_field_misses() {
+        check(
+            "pub struct P { pub x: i64 }\n\
+             impl P { pub fn scaled(self: Self, k: i64) -> i64 { self.x * k } }\n\
+             fn use_it(p: P) -> i64 { p.scaled(3) }",
+            |elab, _| {
+                let use_it = function(elab, "use_it");
+                let body = use_it.body.as_ref().unwrap();
+                // The dot call lowered to an ordinary FuncCall with the
+                // receiver prepended.
+                assert!(
+                    format!("{body:?}").contains("FuncCall"),
+                    "method call did not lower to FuncCall"
+                );
+            },
+        );
+    }
+
+    /// Rust-style dispatch: `e.f(x)` resolves the method whenever one
+    /// exists, even over a closure-valued field of the same name; the
+    /// parenthesized callee `(e.f)(x)` forces the field.
+    #[test]
+    fn method_wins_over_closure_field_and_parens_force_field() {
+        check(
+            "pub struct S { pub f: i64 -> i64 }\n\
+             impl S { pub fn f(self: Self, k: i64) -> i64 { k } }\n\
+             fn dot(s: S) -> i64 { s.f(1) }\n\
+             fn parens(s: S) -> i64 { (s.f)(1) }",
+            |elab, _| {
+                let dot = function(elab, "dot");
+                assert!(
+                    format!("{:?}", dot.body.as_ref().unwrap()).contains("FuncCall"),
+                    "the method must win the dot call"
+                );
+                let parens = function(elab, "parens");
+                assert!(
+                    format!("{:?}", parens.body.as_ref().unwrap()).contains("ClosureCall"),
+                    "the parenthesized callee must force the field"
+                );
+            },
+        );
+    }
+
+    /// A non-closure field of the same name never obstructs the method —
+    /// dispatch is by method existence, not field type.
+    #[test]
+    fn method_wins_over_non_closure_field() {
+        check(
+            "pub struct S { pub f: i64 }\n\
+             impl S { pub fn f(self: Self, k: i64) -> i64 { self.f + k } }\n\
+             fn use_it(s: S) -> i64 { s.f(2) }",
+            |elab, _| {
+                let use_it = function(elab, "use_it");
+                assert!(
+                    format!("{:?}", use_it.body.as_ref().unwrap()).contains("FuncCall"),
+                    "the method must win over the scalar field"
+                );
+            },
+        );
+    }
+
+    /// Visibility never redirects dispatch: a private field cannot block a
+    /// `pub` method of the same name from another module.
+    #[test]
+    fn private_field_does_not_block_pub_method() {
+        check_package(
+            "p",
+            &[
+                (&[], "mod a; mod c;"),
+                (
+                    &["a"],
+                    "pub struct S { f: i64 }\n\
+                     impl S {\n\
+                         pub fn make() -> S { S { f: 40 } }\n\
+                         pub fn f(self: Self, k: i64) -> i64 { self.f + k }\n\
+                     }",
+                ),
+                (&["c"], "pub fn go() -> i64 { super::a::S::make().f(2) }"),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    #[test]
+    fn method_call_through_arc_receiver() {
+        check(
+            "pub struct S { pub v: i64 }\n\
+             impl S { pub fn read(self: Arc<Self>) -> i64 { self.v } }\n\
+             fn use_it(a: Arc<S>) -> i64 { a.read() }",
+            |elab, _| {
+                let _ = elab;
+            },
+        );
+    }
+
+    #[test]
+    fn bare_base_against_arc_receiver_reports() {
+        elaborate_source(
+            "pub struct S { pub v: i64 }\n\
+             impl S { pub fn read(self: Arc<Self>) -> i64 { self.v } }\n\
+             fn use_it(s: S) -> i64 { s.read() }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains("Arc")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn flex_receiver_method_calls_inside_region_only() {
+        check(
+            "pub struct [regional] R { pub link: [field] R }\n\
+             impl R { regional fn poke(self: [flex] Self) { { } } }\n\
+             regional fn go(r: [flex] R) { r.poke() }",
+            |elab, _| {
+                let _ = elab;
+            },
+        );
+        elaborate_source(
+            "pub struct [regional] R { pub link: [field] R }\n\
+             impl R { regional fn poke(self: [flex] Self) { { } } }\n\
+             fn bad(r: R) { r.poke() }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("cannot call a regional function outside of a region")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn generic_method_infers_type_args_from_receiver_and_args() {
+        check(
+            "pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Box<T> { pub fn scaled(self: Box<T>, k: T) -> T { self.v * k } }\n\
+             fn use_it(b: Box<i64>) -> i64 { b.scaled(3) }",
+            |elab, _| {
+                let _ = elab;
+            },
+        );
+    }
+
+    #[test]
+    fn assoc_fn_without_receiver_is_not_dot_callable() {
+        elaborate_source(
+            "pub struct P { pub x: i64 }\n\
+             impl P { pub fn make(x: i64) -> P { P { x: x } } }\n\
+             fn bad(p: P) -> P { p.make(1) }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("takes no receiver and is not callable with `.`")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn no_field_or_method_diagnostic_in_call_position() {
+        elaborate_source(
+            "pub struct P { pub x: i64 }\n\
+             fn bad(p: P) -> i64 { p.nope(1) }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("no field or method `nope` on `P`")),
+                    "{:#?}",
+                    elab.reports
+                );
+                // The plain access path keeps its own wording.
+                assert!(
+                    !elab.reports.iter().any(|r| r.message == "no such field"),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn method_partial_application_rejected_with_hint() {
+        elaborate_source(
+            "pub struct P { pub x: i64 }\n\
+             impl P { pub fn add(self: Self, a: i64, b: i64) -> i64 { self.x + a + b } }\n\
+             fn bad(p: P) -> i64 { p.add(1) }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("partial application of a method call is not supported")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
     #[test]
     fn try_extend_accumulates_and_rolls_back_atomically() {
         use std::sync::Arc;

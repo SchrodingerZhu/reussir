@@ -306,7 +306,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             surface::ExprKind::FuncCallExpr(fc) => self.infer_func_call(fc, span),
             surface::ExprKind::CtorCallExpr(cc) => self.infer_ctor_call(cc, span),
             surface::ExprKind::CallExpr(callee, args) => {
-                self.infer_closure_call(callee, args, span)
+                // `e.f(x)` is a postfix call: the method wins when one
+                // exists, the closure-valued field otherwise. A
+                // parenthesized callee — `(e.f)(x)` — opts out of method
+                // dispatch and always applies the field.
+                match callee.kind() {
+                    surface::ExprKind::AccessChain(base, accs) if !callee.parenthesized() => {
+                        self.infer_postfix_call(&base, &accs, args, span)
+                    }
+                    _ => self.infer_closure_call(callee, args, span),
+                }
             }
             surface::ExprKind::AccessChain(base, accs) => self.infer_access(base, accs, span),
             surface::ExprKind::Assign(dst, acc, src) => self.infer_assign(dst, acc, src, span),
@@ -693,6 +702,216 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         )
     }
 
+    /// (POSTFIX-APP) `Γ ⊢ base.acc₁.….accₙ(args)`: the chain prefix projects
+    /// as in (PROJ); the last access resolves **method-first**, Rust-style —
+    /// a dot-callable method (a function under the record's qualified path
+    /// whose first parameter is named `self`) wins whenever one exists.
+    /// Dispatch is decided by existence and shape only, never by visibility,
+    /// so a private field cannot obstruct a `pub` method. Without a method
+    /// the call applies a closure-valued field, and a parenthesized callee —
+    /// `(e.f)(x)` — always forces the field, since it routes through
+    /// (PROJ)+(APP) instead of this rule. Method-first order is
+    /// deterministic, so no speculative inference is needed.
+    fn infer_postfix_call(
+        &mut self,
+        base: &surface::Expr,
+        accs: &[surface::Access],
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let base = self.infer_expr(base);
+        let mut raw = self.infer.shallow_resolve(base.ty);
+        let mut indices = Vec::new();
+        let (last, prefix_accs) = accs.split_last().expect("a postfix call has an access");
+        for acc in prefix_accs {
+            let Some((idx, ty)) = self.project_step(raw, acc, span) else {
+                return self.poison(span);
+            };
+            indices.push(idx);
+            raw = ty;
+        }
+
+        let arced = matches!(raw.kind(), TyKind::Arc(_));
+        let cur = self.peel_arc(raw);
+        let TyKind::Record {
+            def,
+            args: rargs,
+            flex,
+        } = cur.kind()
+        else {
+            let shown = self.infer.resolve(cur);
+            self.error(
+                span,
+                format!("cannot access a field of `{}`", self.ty_display(shown)),
+            );
+            return self.poison(span);
+        };
+        let (def, flex) = (*def, *flex);
+        if let surface::Access::Named(name) = last
+            && let Some(method) = self.dot_method_candidate(def, *name)
+        {
+            let receiver = if indices.is_empty() {
+                base
+            } else {
+                self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+            };
+            return self.infer_method_call(receiver, def, method, *name, args, span);
+        }
+        match self.resolve_field(def, rargs, flex, last) {
+            Ok((idx, field_ty, _)) => {
+                // One flat projection over the whole chain, then closure
+                // application — the same shape a parenthesized callee takes.
+                indices.push(idx);
+                let field_ty = self.infer.shallow_resolve(field_ty);
+                let field_ty = if arced {
+                    let group = self.arc_recursive_group(def);
+                    self.arc_promote_member_ty(&group, field_ty)
+                } else {
+                    field_ty
+                };
+                let callee = self.mk_expr(ExprKind::Proj(Box::new(base), indices), field_ty, span);
+                self.closure_apply(callee, args, span)
+            }
+            Err(FieldErr::Private { field, record }) => {
+                self.error(
+                    span,
+                    format!("field `{field}` of record `{record}` is private"),
+                );
+                self.poison(span)
+            }
+            Err(FieldErr::Missing) => {
+                let surface::Access::Named(name) = last else {
+                    self.error(span, "no such field");
+                    return self.poison(span);
+                };
+                // A receiver-less associated function is not a method
+                // candidate; when one exists, point at the path spelling
+                // instead of reporting absence.
+                let type_display = self.defs.path(def).display(self.resolver);
+                let mut mpath = self.defs.path(def).0.clone();
+                mpath.push(*name);
+                if self.defs.lookup_function(&mpath).is_some() {
+                    self.error(
+                        span,
+                        format!(
+                            "`{type_display}::{0}` takes no receiver and is not callable \
+                             with `.`; call it as a path",
+                            self.sym(*name)
+                        ),
+                    );
+                } else {
+                    self.error(
+                        span,
+                        format!(
+                            "no field or method `{}` on `{type_display}`",
+                            self.sym(*name)
+                        ),
+                    );
+                }
+                self.poison(span)
+            }
+        }
+    }
+
+    /// A dot-callable method on `record_def` named `name`: a function
+    /// declared under the record's qualified path whose first parameter is
+    /// named `self`. Shape only — visibility gates *after* dispatch, in
+    /// [`Self::infer_method_call`], so privacy can never redirect a call.
+    fn dot_method_candidate(&self, record_def: DefId, name: TokenKey) -> Option<DefId> {
+        let mut mpath = self.defs.path(record_def).0.clone();
+        mpath.push(name);
+        let def = self.defs.lookup_function(&mpath)?;
+        let takes_self = self
+            .functions
+            .get(&def)?
+            .params
+            .first()
+            .is_some_and(|(n, _)| self.sym(*n) == "self");
+        takes_self.then_some(def)
+    }
+
+    /// (METHOD) `Γ ⊢ recv.m(args)`: type the candidate resolved by
+    /// [`Self::dot_method_candidate`] as an ordinary `FuncCall` with the
+    /// receiver prepended. Type arguments are always inferred (dot calls
+    /// carry no turbofish); the receiver unifies against the instantiated
+    /// `self` parameter, which yields the arc-reconciliation and flexivity
+    /// diagnostics for free.
+    fn infer_method_call(
+        &mut self,
+        receiver: Expr<'tcx>,
+        record_def: DefId,
+        def: DefId,
+        name: TokenKey,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let type_display = self.defs.path(record_def).display(self.resolver);
+        // The absolute candidate lookup bypassed `resolve_extern`'s pub
+        // gate, so an extern-owned method must re-check visibility here —
+        // with the same is-private (not not-found) wording as path
+        // resolution. After dispatch, deliberately: privacy reports, it
+        // never redirects the call to a field.
+        if let Some(&head) = self.extern_defs.get(&def)
+            && self.functions[&def].visibility != surface::Visibility::Public
+        {
+            self.error(
+                span,
+                format!(
+                    "function `{}` in package `{}` is private",
+                    self.sym(name),
+                    self.sym(head)
+                ),
+            );
+            return self.poison(span);
+        }
+        let proto = self.functions[&def].clone();
+        self.record_use(name);
+        if proto.is_regional && !self.inside_region {
+            self.error(span, "cannot call a regional function outside of a region");
+        }
+        let inst = self.instantiate(&proto.generics, &[], span);
+        let expected_recv = self.infer.instantiate_ty(proto.params[0].1, &inst);
+        self.expect(receiver.ty, expected_recv, span);
+        let rest = &proto.params[1..];
+        if args.len() < rest.len() {
+            self.error(
+                span,
+                format!(
+                    "partial application of a method call is not supported; \
+                     call `{type_display}::{}` instead",
+                    self.sym(name)
+                ),
+            );
+        } else if args.len() > rest.len() {
+            self.error(
+                span,
+                format!(
+                    "method `{}` expects {} argument(s) besides the receiver, got {}",
+                    self.sym(name),
+                    rest.len(),
+                    args.len()
+                ),
+            );
+        }
+        let mut out = vec![receiver];
+        for (arg, (_, pty)) in args.iter().zip(rest) {
+            let expected = self.infer.instantiate_ty(*pty, &inst);
+            out.push(self.check_expr(arg, expected));
+        }
+        let ty_args = self.inst_args(&proto.generics, &inst);
+        let result = self.infer.instantiate_ty(proto.return_ty, &inst);
+        self.mk_expr(
+            ExprKind::FuncCall {
+                target: def,
+                ty_args,
+                args: out,
+                regional: proto.is_regional,
+            },
+            result,
+            span,
+        )
+    }
+
     /// (APP) `Γ ⊢ callee(args) ⇒ (ClosureCall{hc,[hᵢ]} : R)`: synthesize the callee to
     /// a `Closure{⟨Pᵢ⟩, R}` and check `argᵢ ⇐ Pᵢ`. Fewer args than params yields a
     /// residual `Closure` over the remaining params (partial application); more args is
@@ -1060,44 +1279,60 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut raw = self.infer.shallow_resolve(base.ty);
         let mut indices = Vec::new();
         for acc in accs {
-            // Reads see through the arc coloring, but the coloring is the
-            // atomic *context* of everything inside: a bare shared field read
-            // through an arc'd base comes out at its promoted (`Arc`) type —
-            // the §3.3 whole-subtree rule at the typing level.
-            let arced = matches!(raw.kind(), TyKind::Arc(_));
-            let cur = self.peel_arc(raw);
-            let TyKind::Record { def, args, flex } = cur.kind() else {
-                let shown = self.infer.resolve(cur);
-                self.error(
-                    span,
-                    format!("cannot access a field of `{}`", self.ty_display(shown)),
-                );
+            let Some((idx, ty)) = self.project_step(raw, acc, span) else {
                 return self.poison(span);
             };
-            let (idx, field_ty, _) = match self.resolve_field(*def, args, *flex, acc) {
-                Ok(resolved) => resolved,
-                Err(FieldErr::Missing) => {
-                    self.error(span, "no such field");
-                    return self.poison(span);
-                }
-                Err(FieldErr::Private { field, record }) => {
-                    self.error(
-                        span,
-                        format!("field `{field}` of record `{record}` is private"),
-                    );
-                    return self.poison(span);
-                }
-            };
             indices.push(idx);
-            let field_ty = self.infer.shallow_resolve(field_ty);
-            raw = if arced {
-                let group = self.arc_recursive_group(*def);
-                self.arc_promote_member_ty(&group, field_ty)
-            } else {
-                field_ty
-            };
+            raw = ty;
         }
         self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+    }
+
+    /// One projection step of an access chain: see through the arc coloring,
+    /// resolve the field, and produce `(index, member type as seen through
+    /// the base)`. Reads see through the arc coloring, but the coloring is
+    /// the atomic *context* of everything inside: a bare shared field read
+    /// through an arc'd base comes out at its promoted (`Arc`) type — the
+    /// §3.3 whole-subtree rule at the typing level. Diagnostics are emitted
+    /// here; `None` means the caller poisons.
+    fn project_step(
+        &mut self,
+        raw: Ty<'tcx>,
+        acc: &surface::Access,
+        span: Option<Span>,
+    ) -> Option<(u32, Ty<'tcx>)> {
+        let arced = matches!(raw.kind(), TyKind::Arc(_));
+        let cur = self.peel_arc(raw);
+        let TyKind::Record { def, args, flex } = cur.kind() else {
+            let shown = self.infer.resolve(cur);
+            self.error(
+                span,
+                format!("cannot access a field of `{}`", self.ty_display(shown)),
+            );
+            return None;
+        };
+        let (idx, field_ty, _) = match self.resolve_field(*def, args, *flex, acc) {
+            Ok(resolved) => resolved,
+            Err(FieldErr::Missing) => {
+                self.error(span, "no such field");
+                return None;
+            }
+            Err(FieldErr::Private { field, record }) => {
+                self.error(
+                    span,
+                    format!("field `{field}` of record `{record}` is private"),
+                );
+                return None;
+            }
+        };
+        let field_ty = self.infer.shallow_resolve(field_ty);
+        let out = if arced {
+            let group = self.arc_recursive_group(*def);
+            self.arc_promote_member_ty(&group, field_ty)
+        } else {
+            field_ty
+        };
+        Some((idx, out))
     }
 
     /// May the code being checked read or write `record_def`'s private

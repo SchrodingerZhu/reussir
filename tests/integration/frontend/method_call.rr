@@ -1,0 +1,66 @@
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --package-name demo -o %t.o
+
+// Method-call dispatch, Rust-style: `e.m(args)` resolves the method under
+// the receiver's record path whenever one exists — even over a same-named
+// closure field — lowering to the same FuncCall a `Type::m(e, args)` path
+// call produces; the parenthesized callee `(e.f)(x)` forces field
+// application, and a chained `a.b.m(x)` projects the prefix first.
+
+pub struct Inner {
+    pub v: i64,
+}
+
+impl Inner {
+    pub fn doubled(self: Self) -> i64 {
+        self.v * 2
+    }
+}
+
+pub struct Outer {
+    pub inner: Inner,
+}
+
+pub fn dot_call(i: Inner) -> i64 {
+    i.doubled()
+}
+
+pub fn path_call(i: Inner) -> i64 {
+    Inner::doubled(i)
+}
+
+pub fn chained(o: Outer) -> i64 {
+    o.inner.doubled()
+}
+
+pub struct Conflicted {
+    pub f: i64 -> i64,
+}
+
+impl Conflicted {
+    pub fn f(self: Self, k: i64) -> i64 {
+        k * 2
+    }
+}
+
+pub fn method_wins(c: Conflicted) -> i64 {
+    c.f(3)
+}
+
+pub fn parens_force_field(c: Conflicted) -> i64 {
+    (c.f)(3)
+}
+
+// The method shadows the field for dot syntax; parens reach the field.
+// CHECK-DAG: pub fn #demo::method_wins(v0 (c): #demo::Conflicted) -> i64 {
+// CHECK-DAG: #demo::Conflicted::f(v0 : #demo::Conflicted, 3 : i64) : i64
+// CHECK-DAG: pub fn #demo::parens_force_field(v0 (c): #demo::Conflicted) -> i64 {
+// CHECK-DAG: apply(proj(v0 : #demo::Conflicted, 0) : (i64) -> i64, 3 : i64) : i64
+
+// Both spellings hit the same target.
+// CHECK-DAG: pub fn #demo::Inner::doubled(v0 (self): #demo::Inner) -> i64 {
+// CHECK-DAG: pub fn #demo::dot_call(v0 (i): #demo::Inner) -> i64 {
+// CHECK-DAG: #demo::Inner::doubled(v0 : #demo::Inner) : i64
+// CHECK-DAG: pub fn #demo::path_call(v0 (i): #demo::Inner) -> i64 {
+// CHECK-DAG: pub fn #demo::chained(v0 (o): #demo::Outer) -> i64 {
+// CHECK-DAG: #demo::Inner::doubled(proj(v0 : #demo::Outer, 0) : #demo::Inner) : i64
