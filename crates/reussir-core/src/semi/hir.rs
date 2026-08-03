@@ -286,6 +286,125 @@ pub enum SwitchCases<'tcx> {
     },
 }
 
+/// A trait item in print-ready form: paths and names pre-rendered. Both the
+/// elaborator (from its `TraitDb`, via [`trait_texts`]) and the HIR-text
+/// parser produce this shape, so one printer serves emission and the
+/// parse-side round trip; the extern reload resolves it back into a session
+/// `TraitDb`.
+///
+/// [`trait_texts`]: crate::semi::hir::trait_texts
+#[derive(Clone, Debug)]
+pub struct TraitText<'tcx> {
+    pub is_pub: bool,
+    pub path: String,
+    /// Binders; `[0]` is the implicit `Self`. Names are display-only.
+    pub generics: Vec<(GenericId, Option<String>)>,
+    /// Super-references: rendered path + full args (`args[0]` = `Self`).
+    pub supers: Vec<(String, Vec<Ty<'tcx>>)>,
+    pub methods: Vec<TraitMethodText<'tcx>>,
+    pub file: FileId,
+    pub span: Option<Span>,
+}
+
+/// A trait method signature in print-ready form (receiver at `params[0]`).
+#[derive(Clone, Debug)]
+pub struct TraitMethodText<'tcx> {
+    pub regional: bool,
+    pub name: String,
+    pub generics: Vec<(GenericId, Option<String>)>,
+    pub receiver: crate::semi::traits::def::ReceiverForm,
+    pub params: Vec<Ty<'tcx>>,
+    pub ret: Ty<'tcx>,
+    pub span: Option<Span>,
+}
+
+/// An impl item in print-ready form: trait path + full args
+/// (`args[0]` = the self type) and method paths in trait-method order.
+#[derive(Clone, Debug)]
+pub struct ImplText<'tcx> {
+    pub generics: Vec<(GenericId, Option<String>)>,
+    pub trait_path: String,
+    pub args: Vec<Ty<'tcx>>,
+    pub methods: Vec<String>,
+    pub file: FileId,
+    pub span: Option<Span>,
+}
+
+/// Render the user-declared traits and impls of `db` print-ready. Sealed
+/// traits (the builtins) and their impls are skipped: they are re-registered
+/// from the compiler itself in every session, never shipped.
+pub fn trait_texts<'tcx>(
+    db: &crate::semi::traits::TraitDb<'tcx>,
+    defs: &crate::semi::resolve::DefTable,
+    resolver: &dyn reussir_syntax::kind::Resolver<TokenKey>,
+) -> (Vec<TraitText<'tcx>>, Vec<ImplText<'tcx>>) {
+    let path_of = |def: DefId| {
+        defs.path(def)
+            .0
+            .iter()
+            .map(|k| resolver.resolve(*k))
+            .collect::<Vec<_>>()
+            .join("::")
+    };
+    let mut traits = Vec::new();
+    for id in (0..db.traits_len() as u32).map(crate::semi::traits::TraitId) {
+        let t = db.trait_def(id);
+        if t.sealed {
+            continue;
+        }
+        let mut generics = vec![(t.self_param, Some("Self".to_string()))];
+        generics.extend(
+            t.params
+                .iter()
+                .map(|&(name, g)| (g, Some(resolver.resolve(name).to_string()))),
+        );
+        traits.push(TraitText {
+            is_pub: t.visibility == crate::surface::Visibility::Public,
+            path: path_of(t.def),
+            generics,
+            supers: t
+                .supertraits
+                .iter()
+                .map(|s| (path_of(db.trait_def(s.trait_id).def), s.args.clone()))
+                .collect(),
+            methods: t
+                .methods
+                .iter()
+                .map(|m| TraitMethodText {
+                    regional: m.is_regional,
+                    name: resolver.resolve(m.name).to_string(),
+                    generics: m
+                        .generics
+                        .iter()
+                        .map(|&(name, g)| (g, Some(resolver.resolve(name).to_string())))
+                        .collect(),
+                    receiver: m.receiver,
+                    params: m.params.clone(),
+                    ret: m.ret,
+                    span: m.span,
+                })
+                .collect(),
+            file: t.file,
+            span: t.span,
+        });
+    }
+    let mut impls = Vec::new();
+    for imp in db.impls() {
+        if db.trait_def(imp.trait_ref.trait_id).sealed {
+            continue;
+        }
+        impls.push(ImplText {
+            generics: imp.generics.iter().map(|&g| (g, None)).collect(),
+            trait_path: path_of(db.trait_def(imp.trait_ref.trait_id).def),
+            args: imp.trait_ref.args.clone(),
+            methods: imp.methods.iter().map(|&d| path_of(d)).collect(),
+            file: imp.file,
+            span: imp.span,
+        });
+    }
+    (traits, impls)
+}
+
 /// A type-checked function, the unit of Semi output.
 #[derive(Clone, Debug)]
 pub struct Function<'tcx> {

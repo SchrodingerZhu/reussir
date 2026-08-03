@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use reussir_syntax::SharedInterner;
+
 use melior::Context;
 // Brings `verify` into scope for the pre-JIT module check.
 use melior::ir::operation::OperationLike as _;
