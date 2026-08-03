@@ -198,14 +198,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     ///                  o ⇝ ✗
     /// ```
     ///
-    /// The (impl) and (param) rules are realized by [`SelectCtxt`]: the goal
-    /// carries *all* of the obligation's arguments (deeply resolved), impl
-    /// search one-way-matches generic impls, residual where-clauses recurse,
-    /// and a bare-generic self is proved from the enclosing definition's
-    /// declared bounds — so `Box<G> : Show` holds under `impl<T: Num> Show
-    /// for Box<T>` when `G : Num` is assumed. A goal whose arguments still
-    /// hold holes (head or nested, `List<?h>`) defers instead of failing
-    /// spuriously.
+    /// The (impl) and (param) rules are realized by [`SelectCtxt`] — the
+    /// judgment `Δ; D ⊢ G ⇓ ε` of `traits/select.rs`, whose (assume)/
+    /// (impl)/(super) rules refine them: the goal carries *all* of the
+    /// obligation's arguments (deeply resolved), impl search one-way-matches
+    /// generic impls, residual where-clauses recurse, and a bare-generic
+    /// self is proved from the enclosing definition's declared bounds — so
+    /// `Box<G> : Show` holds under `impl<T: Num> Show for Box<T>` when
+    /// `G : Num` is assumed. A goal whose arguments still hold holes (head
+    /// or nested, `List<?h>`) defers instead of failing spuriously.
     fn discharge_trait(&mut self, tref: &TraitRef<'tcx>) -> Discharge {
         let self_ty = self.infer.shallow_resolve(tref.self_ty());
         match self_ty.kind() {

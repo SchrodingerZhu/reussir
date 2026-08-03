@@ -5,8 +5,20 @@
 //! coherence's overlap check passes BOTH impls' generics as unifiable —
 //! `Pair<T, i32>` vs `Pair<u8, U>` overlap exactly because a two-sided
 //! unifier maps `T ↦ u8, U ↦ i32`, which one-way matching in either
-//! direction misses — while selection (a later stack) passes only the
-//! candidate's generics, making the same routine a one-way matcher.
+//! direction misses — while selection passes only the candidate's generics,
+//! making the same routine a one-way matcher:
+//!
+//! ```text
+//!   head(I₁.self) = head(I₂.self)     I₁.trait = I₂.trait
+//!   unify_{ᾱ₁ ∪ ᾱ₂}(I₁.args, I₂.args) ⇝ θ
+//!  ──────────────────────────────────────────────────────── (overlap)
+//!   ᾱ₁. I₁  ♯  ᾱ₂. I₂        — rejected at declaration
+//! ```
+//!
+//! Rejecting every (overlap)-related pair is what entitles selection's
+//! (impl) rule (`select.rs`) to commit to its first one-way match: with the
+//! goal's generics rigid, two committed candidates for one goal would be a
+//! two-sided unifier for their heads.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
