@@ -38,6 +38,9 @@ malachite-base.workspace = true
 malachite-nz.workspace = true
 # The surface AST is a set of typed views over the parser's lossless CST.
 reussir-syntax = { path = "../reussir-syntax" }
+# The builtin_traits! registration DSL: the trait/impl table in
+# semi::traits::builtins is a declaration, not hand-written registration.
+reussir-trait-dsl = { path = "../reussir-trait-dsl" }
 # Backends for utils::bitset's small-set-optimized VarId live-sets: a dense
 # fixedbitset that promotes to a compressed roaring bitmap past 512 bits.
 roaring.workspace = true
