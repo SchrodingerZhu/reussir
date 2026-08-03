@@ -11,6 +11,7 @@
 //! [`TraitDb::select`] entry point.
 
 pub mod builtins;
+pub mod coherence;
 pub mod db;
 pub mod def;
 pub mod subst;
