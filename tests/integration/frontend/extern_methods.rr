@@ -1,0 +1,88 @@
+// Cross-package methods through a `.rri`: dot and path calls resolve to the
+// dependency's method defs, privacy gates both spellings with the is-private
+// wording (distinct from not-found), field visibility holds across the
+// boundary, and an instantiated generic method links weak_odr.
+
+// RUN: %rrc --package-root %S/extern_methods_dep --package-name dep --emit rri -o %t.rri
+
+// (1) Dot and path calls both target `#dep::Point::scale`; the Arc-receiver
+// and bounded-generic methods elaborate from the interface.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s --check-prefix=HIR
+
+pub fn dot_call(p: dep::Point) -> i64 {
+    p.scale(2)
+}
+
+pub fn path_call(p: dep::Point) -> i64 {
+    dep::Point::scale(p, 2)
+}
+
+pub fn arc_call(c: Arc<dep::Counter>) -> i64 {
+    c.read()
+}
+
+pub fn generic_call(b: dep::Box<i64>) -> i64 {
+    b.scaled(3)
+}
+
+// HIR-DAG: pub fn #app::dot_call(v0 (p): #dep::Point) -> i64 {
+// HIR-DAG: #dep::Point::scale(v0 : #dep::Point, 2 : i64) : i64
+// HIR-DAG: pub fn #app::path_call(v0 (p): #dep::Point) -> i64 {
+// HIR-DAG: pub fn #app::arc_call(v0 (c): Arc<#dep::Counter>) -> i64 {
+// HIR-DAG: #dep::Counter::read(v0 : Arc<#dep::Counter>) : i64
+// HIR-DAG: pub fn #app::generic_call(v0 (b): #dep::Box::<i64>) -> i64 {
+// HIR-DAG: #dep::Box::scaled::<i64>(v0 : #dep::Box::<i64>, 3 : i64) : i64
+
+// (2) A private method is access control, not absence — both spellings.
+// RUN: echo 'fn a(p: dep::Point) -> i64 { p.hidden() }' > %t.dot.rr
+// RUN: %not %rrc %t.dot.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PRIVATE
+// RUN: echo 'fn a(p: dep::Point) -> i64 { dep::Point::hidden(p) }' > %t.path.rr
+// RUN: %not %rrc %t.path.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=PRIVATE
+// PRIVATE: function `hidden` in package `dep` is private
+
+// (3) A missing method stays not-found.
+// RUN: echo 'fn a(p: dep::Point) -> i64 { p.nope() }' > %t.nope.rr
+// RUN: %not %rrc %t.nope.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=NOPE
+// NOPE: no field or method `nope` on `dep::Point`
+// NOPE-NOT: is private
+
+// (4) Field visibility crosses the boundary: the pub field projects (see
+// dot_call above), the private field is rejected.
+// RUN: echo 'fn a(p: dep::Point) -> i64 { p.y }' > %t.field.rr
+// RUN: %not %rrc %t.field.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=FIELD
+// FIELD: field `y` of record `dep::Point` is private
+
+// (4b) The dependency's impl-level bound (`impl<T: Num>`) checks at the
+// consumer's method call — dot and path spellings alike.
+// RUN: echo 'fn a(b: dep::Box<bool>) -> bool { b.scaled(true) }' > %t.bound.rr
+// RUN: %not %rrc %t.bound.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=BOUND
+// RUN: echo 'fn a(b: dep::Box<bool>) -> bool { dep::Box::scaled(b, true) }' > %t.boundp.rr
+// RUN: %not %rrc %t.boundp.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=BOUND
+// BOUND: Num
+
+// (5) The consumer's instance of the generic method is weak_odr; the
+// imported ground method stays a declaration resolved at link time.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit llvm-ir -O none -o %t.ll
+// RUN: %FileCheck %s %linkage_check_prefixes < %t.ll
+// CHECK-DEDUP-DAG: define weak_odr i64 @_RINvNvC3dep3Box6scaledxE(
+// CHECK-COFF-DAG: define weak_odr i64 @_RINvNvC3dep3Box6scaledxE({{.*}}) comdat
+// CHECK-DAG: declare i64 @_RNvNvC3dep5Point5scale(
+// CHECK-DAG: declare i64 @_RNvNvC3dep7Counter4read(
+
+// (6) Interface emission is deterministic and ships the method surface: the
+// ground method as a bodyless prototype, the generic method whole with its
+// serialized bound, and the mixed-visibility fields.
+// RUN: %rrc --package-root %S/extern_methods_dep --package-name dep --emit rri -o %t.b.rri
+// RUN: diff %t.rri %t.b.rri
+// RUN: %FileCheck %s --check-prefix=RRI < %t.rri
+// RRI-DAG: pub [shared] struct #dep::Point
+// RRI-DAG: { pub "x": i64, "y": i64 };
+// RRI-DAG: pub fn #dep::Point::scale(v0 (self): #dep::Point, v1 (k): i64) -> i64
+// RRI-DAG: pub fn #dep::Box::scaled<{{\$[0-9]+}} (T): Num>
