@@ -1,0 +1,53 @@
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o - | %FileCheck %s
+// Roundtrip: `Self` is resolved away at elaboration, so receivers print as
+// concrete types and the dump re-enters with zero HIR-format change.
+// RUN: %rrc %s --package-name demo --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit hir --no-source-locations -o - | %FileCheck %s
+// RUN: %rrc %s --package-name demo -o %t.o
+
+// The three receiver forms: `self: Self` (by value / frozen), `self:
+// Arc<Self>` (shared), and `self: [flex] Self` (regional, on a `regional
+// fn`). `Self` also resolves in return position and body annotations.
+
+pub struct [value] V { pub v: i64 }
+
+impl V {
+    pub fn get(self: Self) -> i64 {
+        self.v
+    }
+
+    pub fn dup(self: Self) -> Self {
+        let q: Self = V { v: self.v };
+        q
+    }
+}
+
+pub struct S { pub v: i64 }
+
+impl S {
+    pub fn read(self: Arc<Self>) -> i64 {
+        self.v
+    }
+}
+
+pub struct [regional] R {
+    pub link: [field] R,
+    pub v: i64,
+}
+
+impl R {
+    regional fn poke(self: [flex] Self) {
+        { }
+    }
+
+    // A plain `Self` receiver of a regional record is the frozen form.
+    pub fn frozen(self: Self) -> i64 {
+        self.v
+    }
+}
+
+// CHECK-DAG: pub fn #demo::V::get(v0 (self): #demo::V) -> i64 {
+// CHECK-DAG: pub fn #demo::V::dup(v0 (self): #demo::V) -> #demo::V {
+// CHECK-DAG: pub fn #demo::S::read(v0 (self): Arc<#demo::S>) -> i64 {
+// CHECK-DAG: regional fn #demo::R::poke(v0 (self): [flex] #demo::R) -> () {
+// CHECK-DAG: pub fn #demo::R::frozen(v0 (self): [rigid] #demo::R) -> i64 {

@@ -512,6 +512,165 @@ mod tests {
     }
 
     #[test]
+    fn receiver_value_arc_and_flex_forms_accepted() {
+        check(
+            "pub struct [value] V { pub v: i64 }\n\
+             impl V { pub fn get(self: Self) -> i64 { self.v } }\n\
+             pub struct S { pub v: i64 }\n\
+             impl S { pub fn read(self: Arc<Self>) -> i64 { self.v } }\n\
+             pub struct [regional] R { pub link: [field] R }\n\
+             impl R { regional fn poke(self: [flex] Self) { } }",
+            |elab, tcx| {
+                let proto = |name: &str| {
+                    elab.functions
+                        .values()
+                        .find(|f| elab.sym(f.name) == name)
+                        .unwrap_or_else(|| panic!("method {name}"))
+                };
+                // The value receiver is the record itself.
+                let get = proto("get");
+                assert!(matches!(get.params[0].1.kind(), TyKind::Record { .. }));
+                assert_eq!(Some(get.params[0].1), get.self_ty);
+                // The shared receiver is one Arc around Self.
+                let read = proto("read");
+                let TyKind::Arc(inner) = read.params[0].1.kind() else {
+                    panic!("arc receiver");
+                };
+                assert_eq!(Some(*inner), read.self_ty);
+                // The flex receiver refines the regional target to Flex.
+                let poke = proto("poke");
+                assert!(poke.is_regional);
+                assert!(matches!(
+                    poke.params[0].1.kind(),
+                    TyKind::Record {
+                        flex: crate::semi::ty::Flexivity::Flex,
+                        ..
+                    }
+                ));
+                let _ = tcx;
+            },
+        );
+    }
+
+    #[test]
+    fn plain_self_receiver_on_regional_record_is_rigid() {
+        check(
+            "pub struct [regional] R { pub v: i64 }\n\
+             impl R { pub fn read(self: Self) -> i64 { self.v } }",
+            |elab, _| {
+                let read = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.sym(f.name) == "read")
+                    .expect("method");
+                // A plain `Self` receiver of a regional record is the frozen
+                // (materializable) form.
+                assert!(matches!(
+                    read.params[0].1.kind(),
+                    TyKind::Record {
+                        flex: crate::semi::ty::Flexivity::Rigid,
+                        ..
+                    }
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn flex_receiver_on_non_regional_fn_reports() {
+        with_tcx(|tcx| {
+            let source = "pub struct [regional] R { pub v: i64 }\n\
+                          impl R { fn bad(self: [flex] Self) -> i64 { self.v } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("a non-regional function cannot take flex parameter `self`")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn receiver_type_must_match_impl_target() {
+        with_tcx(|tcx| {
+            let source = "pub struct A { pub v: i64 }\npub struct B { pub v: i64 }\n\
+                          impl A { fn bad(self: B) -> i64 { self.v } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("the receiver of a method must be `Self`, `Arc<Self>`")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_receiver_spelling_accepted() {
+        check(
+            "pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Box<T> { pub fn get(self: Box<T>) -> T { self.v } }",
+            |elab, _| {
+                let get = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.sym(f.name) == "get")
+                    .expect("method");
+                assert_eq!(Some(get.params[0].1), get.self_ty);
+            },
+        );
+    }
+
+    #[test]
+    fn self_alias_resolves_in_signature_and_body_annotations() {
+        check(
+            "pub struct P { pub x: i64 }\n\
+             impl P {\n\
+                 pub fn dup(self: Self) -> Self {\n\
+                     let q: Self = P { x: self.x };\n\
+                     q\n\
+                 }\n\
+             }",
+            |elab, _| {
+                let dup = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.sym(f.name) == "dup")
+                    .expect("method");
+                assert_eq!(Some(dup.return_ty), dup.self_ty);
+            },
+        );
+    }
+
+    #[test]
+    fn self_param_not_first_reports() {
+        with_tcx(|tcx| {
+            let source = "pub struct P { pub x: i64 }\n\
+                          impl P { fn bad(n: i64, self: Self) -> i64 { n } }";
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("a parameter named `self` must be the method's first parameter")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
     fn try_extend_accumulates_and_rolls_back_atomically() {
         use std::sync::Arc;
 

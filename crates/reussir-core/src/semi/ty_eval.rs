@@ -97,6 +97,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk_generic(generic);
         }
 
+        // `Self` inside an impl member: the applied target type. Contextual —
+        // with no alias in scope, `Self` stays an ordinary identifier (the
+        // language has no reserved words).
+        if path.segments.is_empty()
+            && let Some(alias) = self.self_alias
+            && self.sym(key) == "Self"
+        {
+            if !args.is_empty() {
+                self.error(Some(span), "`Self` takes no type arguments");
+            }
+            return alias;
+        }
+
         // Expand `import` bindings before the builtin-name checks so an
         // imported builtin type former spells the same as the original.
         // Generics were checked first — a binding never shadows one.

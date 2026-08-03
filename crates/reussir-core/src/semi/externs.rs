@@ -171,6 +171,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                     .collect(),
                 return_ty: function.return_ty,
                 impl_module: None,
+                self_ty: None,
                 is_regional: function.is_regional,
                 span: function.span,
                 file: function.file,
