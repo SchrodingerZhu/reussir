@@ -1304,7 +1304,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             file: *file,
                         });
                     }
-                    surface::StmtKind::Impl => {
+                    surface::StmtKind::Impl(_) => {
                         self.validate_transform_anchor(&attrs, None);
                         self.reject_ffi_attr(ffi, span);
                         self.error(span, "`impl` blocks are not supported yet");
