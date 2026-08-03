@@ -1,0 +1,21 @@
+pub struct Q {
+    pub y: i64,
+}
+
+impl showable::Show for Q {
+    fn show(self: Self) -> i64 {
+        self.y * 2
+    }
+}
+
+#[main]
+pub fn entry() {
+    // Ground dispatch through the dependency's compiled impl, generic
+    // dispatch instantiating its impl method at our local type, our own
+    // impl through the dependency's bounded generic, and both surface
+    // spellings.
+    console::print_value(showable::describe(showable::P { x: 21 }));
+    console::print_value(showable::describe(showable::Box { v: Q { y: 5 } }));
+    console::print_value(showable::P { x: 3 }.show());
+    console::print_value(showable::Show::show(Q { y: 4 }));
+}

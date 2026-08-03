@@ -1,0 +1,78 @@
+// Traits across a package boundary: the dependency's `.rri` ships its trait
+// item, both impls (methods by qualified path, in trait-method order), the
+// generic impl method's body, and the ground one as a bodyless prototype.
+// The consumer dispatches on extern types (dot resolves at check time to
+// the unique impl), implements the extern trait for a local type inside the
+// same coherence world, defers its own generic bodies to `TraitCall`, and
+// monomorphization instantiates the dependency's generic impl method at a
+// consumer-local type.
+
+// RUN: %rrc --package-root %S/trait_extern_dep --package-name dep --emit rri -o %t.rri
+// RUN: %FileCheck %s --check-prefix=RRI < %t.rri
+
+// RRI: interface 1 package "dep"
+// RRI-DAG: pub trait #dep::Show<$1 (Self)> in 0 {{\[[0-9.]+\]}} {
+// RRI-DAG: fn show ($1) -> i64
+// RRI-DAG: impl #dep::Show::<#dep::P> in 0 {{\[[0-9.]+\]}} { #dep::dep::Show::P::show }
+// RRI-DAG: impl<$3: dep::Show> #dep::Show::<#dep::Box::<$3>> in 0 {{\[[0-9.]+\]}} { #dep::dep::Show::Box::show }
+// RRI-DAG: pub fn #dep::dep::Show::Box::show<$3 (T): dep::Show>(v0 (self): #dep::Box::<$3>) -> i64 in 0 {{\[[0-9.]+\]}} {
+// RRI-DAG: pub fn #dep::dep::Show::P::show(v0 (self): #dep::P) -> i64 in 0 {{\[[0-9.]+\]}};
+// RRI-DAG: trait#dep::Show::<$2>#0(v0 : $2 {{\[[0-9.]+\]}}) : i64
+
+// (1) The consumer HIR — ground receivers commit to the impl method at check
+// time; a bare-generic receiver stays a `TraitCall`; the local impl of the
+// extern trait registers beside the loaded ones.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --emit hir --no-source-locations -o - \
+// RUN:   | %FileCheck %s --check-prefix=HIR
+
+// HIR-DAG: impl #dep::Show::<#app::Q> { #app::dep::Show::Q::show }
+// HIR-DAG: pub fn #app::direct(v0 (p): #dep::P) -> i64 {
+// HIR-DAG: #dep::dep::Show::P::show(v0 : #dep::P) : i64
+// HIR-DAG: fn #app::my_generic<$5 (T): dep::Show>(v0 (x): $5) -> i64 {
+// HIR-DAG: trait#dep::Show::<$5>#0(v0 : $5) : i64
+
+// (2) Monomorphization: `describe(Box { v: Q })` makes the dependency's
+// generic impl method instantiate at the *consumer's* type (its `_RI`
+// symbol dedups weak_odr against any other emitter), while the ground impl
+// method stays a bodyless declaration resolved by the dependency's
+// artifact at link time.
+// RUN: %rrc %s --package-name app --extern dep=%t.rri --extern-src dep=%S/trait_extern_dep \
+// RUN:   --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+
+// MIR-DAG: pub fn @_RINvNvNvNvC3dep3dep4Show3Box4showNvC3app1QE(v0 (self): dep::Box::<app::Q>) -> i64 {
+// MIR-DAG: pub fn @_RNvNvNvNvC3dep3dep4Show1P4show(v0 (self): dep::P) -> i64;
+// MIR-DAG: pub fn @_RNvNvNvNvC3app3dep4Show1Q4show(v0 (self): app::Q) -> i64 {
+// MIR-DAG: pub fn @_RINvC3dep8describeINvC3dep3BoxNvC3app1QEE(v0 (x): dep::Box::<app::Q>) -> i64 {
+
+// (3) The orphan rule holds across the boundary: both the trait and the
+// head extern is refused.
+// RUN: echo 'impl dep::Show for dep::P { fn show(self: Self) -> i64 { 9 } }' > %t.orphan.rr
+// RUN: %not %rrc %t.orphan.rr --package-name app --extern dep=%t.rri --emit hir -o - 2>&1 \
+// RUN:   | %FileCheck %s --check-prefix=ORPHAN
+// ORPHAN: the trait or the self type's head must be local
+
+pub struct Q {
+    pub y: i64,
+}
+
+impl dep::Show for Q {
+    fn show(self: Self) -> i64 {
+        self.y * 2
+    }
+}
+
+pub fn direct(p: dep::P) -> i64 {
+    p.show()
+}
+
+fn my_generic<T: dep::Show>(x: T) -> i64 {
+    x.show() + 1
+}
+
+#[main]
+pub fn entry() {
+    let a = dep::describe(dep::P { x: 1 });
+    let b = dep::describe(dep::Box { v: Q { y: 2 } });
+    let c = my_generic(dep::P { x: 3 });
+    let d = direct(dep::P { x: 4 });
+}

@@ -1,0 +1,56 @@
+// A self-contained trait program through the whole resumable pipeline: the
+// HIR dump carries the trait items and `TraitCall`s, re-prints losslessly,
+// reaches the same MIR whether monomorphized directly or resumed from the
+// dump (the rebuilt trait tables select the same impls), and links into a
+// running executable with two hops of static dispatch and no dictionaries.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.a.hir
+// RUN: %rrc %t.a.hir --emit hir --no-source-locations -o %t.b.hir
+// RUN: diff %t.a.hir %t.b.hir
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.direct.mir
+// RUN: %rrc %t.a.hir --emit mir --no-source-locations -o %t.via.mir
+// RUN: diff %t.direct.mir %t.via.mir
+// RUN: %FileCheck %s --input-file=%t.a.hir
+
+// CHECK-DAG: pub trait #Show<$1 (Self)> {
+// CHECK-DAG: impl #Show::<#P> { #Show::P::show }
+// CHECK-DAG: impl<$3: Show> #Show::<#Box::<$3>> { #Show::Box::show }
+// CHECK-DAG: trait#Show::<$2>#0(v0 : $2) : i64
+
+// RUN: %rrc %s -o %t.exe --emit executable --relocation-mode pic %rrc_linker
+// RUN: %t.exe
+
+pub trait Show {
+    fn show(self: Self) -> i64;
+}
+
+pub struct P {
+    pub x: i64,
+}
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl Show for P {
+    fn show(self: Self) -> i64 {
+        self.x
+    }
+}
+
+impl<T: Show> Show for Box<T> {
+    fn show(self: Self) -> i64 {
+        self.v.show()
+    }
+}
+
+fn describe<T: Show>(x: T) -> i64 {
+    x.show()
+}
+
+#[main]
+pub fn entry() {
+    let a = describe(P { x: 1 });
+    let b = describe(Box { v: Box { v: P { x: 2 } } });
+    let c = P { x: 3 }.show();
+}

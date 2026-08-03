@@ -1,0 +1,20 @@
+// A two-package trait build: the `showable` dependency owns the trait and
+// its impls, the app implements the extern trait for a local type, and
+// dispatch spans the archive — the dependency's ground impl method
+// resolves at link time while its generic impl method instantiates in the
+// app (weak_odr). The binary's output pins every dispatch path.
+
+// RUN: %rene build --manifest-path %S/trait_dep/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}traitdemo
+
+// RUN: %t.bdir/dev/traitdemo%exe_ext | %FileCheck %s --check-prefix=OUT
+
+// Ground dispatch through the dependency's compiled impl…
+// OUT: 21
+// …its generic impl method instantiated at the app's own type…
+// OUT-NEXT: 10
+// …the dot spelling on an extern type…
+// OUT-NEXT: 3
+// …and the trait-path spelling through the app's impl.
+// OUT-NEXT: 8
