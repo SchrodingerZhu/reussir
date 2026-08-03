@@ -32,6 +32,31 @@ use source::CharMap;
 // names); its `Resolver` counterpart is re-exported from [`kind`].
 pub use cstree::interning::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
 
+/// The shared session string table: one threaded interner backs the parser,
+/// the elaborator, and the REPL. The handle is an `Arc` — the *table* is
+/// shared and interior-mutable, so holders pass `&SessionInterner` and
+/// nothing about sharing it is ever `&mut`. (cstree's [`Interner`] trait
+/// spells `get_or_intern(&mut self)` and implements it for the `Arc`
+/// handle; a handle copy satisfies that spelling without copying the
+/// table — see [`SharedInterner::intern`]. Only a locally-owned table — a
+/// `Rodeo`, the HIR parser's `Names` — legitimately interns through
+/// `&mut impl Interner`.)
+pub type SessionInterner = std::sync::Arc<MultiThreadedTokenInterner>;
+
+/// `&self` interning over the shared session table.
+pub trait SharedInterner {
+    fn intern(&self, text: &str) -> kind::TokenKey;
+}
+
+impl SharedInterner for SessionInterner {
+    fn intern(&self, text: &str) -> kind::TokenKey {
+        // A handle copy (`Arc` clone, a refcount bump) satisfies the
+        // trait's `&mut self` spelling; the write lands in the shared,
+        // interior-mutable table.
+        Interner::get_or_intern(&mut self.clone(), text)
+    }
+}
+
 // The single source of truth for the contextual primitive-type and
 // capability names. Consumers that re-encode these sets by hand (the AST
 // emitter, `surface` lowering in `reussir-core`) test against them.

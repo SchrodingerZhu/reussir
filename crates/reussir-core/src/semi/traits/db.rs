@@ -8,6 +8,10 @@
 //! type is still a hole all arrive in Phase 1 — slotting into this same
 //! [`TraitDb::select`] entry point.
 
+use rustc_hash::FxHashMap;
+
+use crate::semi::ty::DefId;
+
 use super::def::{ImplDef, TraitDef};
 use super::{Evidence, ImplId, Obligation, TraitId, TraitRef};
 
@@ -16,6 +20,8 @@ use super::{Evidence, ImplId, Obligation, TraitId, TraitRef};
 pub struct TraitDb<'tcx> {
     traits: Vec<TraitDef<'tcx>>,
     impls: Vec<ImplDef<'tcx>>,
+    /// The dense [`TraitId`] of each path-keyed trait def.
+    by_def: FxHashMap<DefId, TraitId>,
 }
 
 /// Why an obligation could not be discharged.
@@ -39,8 +45,42 @@ impl<'tcx> TraitDb<'tcx> {
             "trait ids must be dense"
         );
         let id = def.id;
+        let displaced = self.by_def.insert(def.def, id);
+        debug_assert!(displaced.is_none(), "one TraitDb entry per trait def");
         self.traits.push(def);
         id
+    }
+
+    /// The dense id of the trait declared under `def`, if any. Every
+    /// trait-namespace def has an entry — the elaborator registers them
+    /// together.
+    pub fn trait_by_def(&self, def: DefId) -> Option<TraitId> {
+        self.by_def.get(&def).copied()
+    }
+
+    /// Checkpoint counters for [`TraitDb::truncate`].
+    pub fn traits_len(&self) -> usize {
+        self.traits.len()
+    }
+
+    pub fn impls_len(&self) -> usize {
+        self.impls.len()
+    }
+
+    /// Retract every trait past `traits` and every impl past `impls` — the
+    /// REPL's atomic-rollback hook, mirroring `DefTable::truncate` (ids are
+    /// dense, so popping the tails restores exactly the checkpointed state).
+    pub fn truncate(&mut self, traits: usize, impls: usize) {
+        while self.traits.len() > traits {
+            let def = self.traits.pop().expect("len checked above");
+            let removed = self.by_def.remove(&def.def);
+            debug_assert_eq!(
+                removed,
+                Some(def.id),
+                "by_def must point at the popped trait"
+            );
+        }
+        self.impls.truncate(impls);
     }
 
     pub fn add_impl(&mut self, def: ImplDef<'tcx>) -> ImplId {
@@ -159,10 +199,81 @@ mod tests {
     }
 
     #[test]
+    fn truncate_retracts_traits_and_impls() {
+        with_tcx(|tcx: &TyCtxt| {
+            let mut db = TraitDb::new();
+            let mut defs = crate::semi::resolve::DefTable::new();
+            let mut interner = lasso::Rodeo::<reussir_syntax::kind::TokenKey>::new();
+            let b = Builtins::register(&mut db, &mut defs, &mut interner, tcx);
+            let (traits, impls) = (db.traits_len(), db.impls_len());
+
+            // Register a user trait + impl past the builtins, then retract.
+            let key = reussir_syntax::Interner::get_or_intern(&mut interner, "Show");
+            let def = defs.declare_trait(key).expect("fresh");
+            let id = TraitId(traits as u32);
+            db.add_trait(TraitDef {
+                id,
+                def,
+                visibility: crate::surface::Visibility::Public,
+                sealed: false,
+                params: vec![crate::semi::ty::GenericId(0)],
+                supertraits: vec![],
+                methods: vec![],
+                assoc_tys: vec![],
+            });
+            let unit = tcx.mk_unit();
+            db.add_impl(ImplDef {
+                id: ImplId(impls as u32),
+                generics: vec![],
+                trait_ref: TraitRef {
+                    trait_id: id,
+                    args: vec![unit],
+                },
+                self_ty: unit,
+                where_clauses: vec![],
+            });
+            assert_eq!(db.trait_by_def(def), Some(id));
+
+            db.truncate(traits, impls);
+            assert_eq!(db.traits_len(), traits);
+            assert_eq!(db.impls_len(), impls);
+            assert_eq!(db.trait_by_def(def), None);
+            // The builtins survive and re-adding at the same dense ids works.
+            assert_eq!(db.trait_by_def(db.trait_def(b.num).def), Some(b.num));
+            db.add_trait(TraitDef {
+                id,
+                def,
+                visibility: crate::surface::Visibility::Public,
+                sealed: false,
+                params: vec![crate::semi::ty::GenericId(0)],
+                supertraits: vec![],
+                methods: vec![],
+                assoc_tys: vec![],
+            });
+            assert_eq!(db.trait_by_def(def), Some(id));
+        });
+    }
+
+    #[test]
+    fn trait_by_def_round_trips_builtins() {
+        with_tcx(|tcx: &TyCtxt| {
+            let mut db = TraitDb::new();
+            let mut defs = crate::semi::resolve::DefTable::new();
+            let mut interner = lasso::Rodeo::<reussir_syntax::kind::TokenKey>::new();
+            let b = Builtins::register(&mut db, &mut defs, &mut interner, tcx);
+            for id in [b.num, b.integral, b.floating_point, b.ptr_like, b.sync] {
+                assert_eq!(db.trait_by_def(db.trait_def(id).def), Some(id));
+            }
+        });
+    }
+
+    #[test]
     fn primitive_membership_is_data_not_hardcoded() {
         with_tcx(|tcx: &TyCtxt| {
             let mut db = TraitDb::new();
-            let b = Builtins::register(&mut db, tcx);
+            let mut defs = crate::semi::resolve::DefTable::new();
+            let mut interner = lasso::Rodeo::<reussir_syntax::kind::TokenKey>::new();
+            let b = Builtins::register(&mut db, &mut defs, &mut interner, tcx);
 
             let i32 = tcx.mk_int(IntTy::Signed(32));
             let f32 = tcx.mk_fp(FpTy::Ieee(32));
@@ -198,17 +309,19 @@ mod tests {
                 args: vec![tcx.mk_generic(self_g)],
             };
             let (top, mid, sub) = (TraitId(0), TraitId(1), TraitId(2));
-            let def = |id: TraitId, name: &str, supers| TraitDef {
+            let def = |id: TraitId, def: u32, supers| TraitDef {
                 id,
-                name: name.to_owned(),
+                def: crate::semi::ty::DefId(def),
+                visibility: crate::surface::Visibility::Public,
+                sealed: false,
                 params: vec![self_g],
                 supertraits: supers,
                 methods: vec![],
                 assoc_tys: vec![],
             };
-            db.add_trait(def(top, "Top", vec![]));
-            db.add_trait(def(mid, "Mid", vec![self_ref(top)]));
-            db.add_trait(def(sub, "Sub", vec![self_ref(mid)]));
+            db.add_trait(def(top, 0, vec![]));
+            db.add_trait(def(mid, 1, vec![self_ref(top)]));
+            db.add_trait(def(sub, 2, vec![self_ref(mid)]));
 
             let unit = tcx.mk_unit();
             db.add_impl(ImplDef {

@@ -224,7 +224,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 {
                     Discharge::Solved
                 } else {
-                    let name = &self.traits.trait_def(want).name;
+                    let name = self.trait_display(want);
                     Discharge::Failed(format!(
                         "the bound `{name}` is not satisfied by this generic"
                     ))
@@ -268,7 +268,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 match self.traits.select(&goal) {
                     Ok(_) => Discharge::Solved,
                     Err(_) => {
-                        let name = &self.traits.trait_def(tref.trait_id).name;
+                        let name = self.trait_display(tref.trait_id);
                         Discharge::Failed(format!(
                             "`{}` does not implement `{name}`",
                             self.ty_display(self_ty)

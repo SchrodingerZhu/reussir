@@ -373,7 +373,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 mod tests {
     use std::sync::Arc;
 
-    use reussir_syntax::{Interner, MultiThreadedTokenInterner, new_threaded_interner};
+    use reussir_syntax::{MultiThreadedTokenInterner, SharedInterner, new_threaded_interner};
 
     use crate::semi::repl::ReplExprRequest;
     use crate::semi::ty::{FpTy, IntTy, Ty, TyCtxt, TyKind};
@@ -407,9 +407,8 @@ mod tests {
             let expr = surface::repl_expr(&p.parse.root);
             let export = format!("__repl_expr_{}", self.counter);
             self.counter += 1;
-            let key = Interner::get_or_intern(&mut self.interner.clone(), &export);
-            let dec_key =
-                Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
+            let key = self.interner.intern(&export);
+            let dec_key = self.interner.intern(&format!("{export}_dec"));
             self.elab
                 .try_repl_expr(
                     &ReplExprRequest {
@@ -429,15 +428,10 @@ mod tests {
     fn session<R>(f: impl for<'a, 'tcx> FnOnce(&mut Session<'a, 'tcx>, &TyCtxt<'tcx>) -> R) -> R {
         with_tcx(|tcx| {
             let interner = Arc::new(new_threaded_interner());
-            // The elaborator borrows the session interner as its resolver —
-            // the same shape a real REPL driver uses.
-            let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
-                &interner;
-            let mut interning = interner.clone();
-            let box_name = Interner::get_or_intern(&mut interning, "__ReplBox");
-            let box_param = Interner::get_or_intern(&mut interning, "T");
-            let box_field = Interner::get_or_intern(&mut interning, "value");
-            let mut elab = Elaborator::new(tcx, resolver);
+            let box_name = interner.intern("__ReplBox");
+            let box_param = interner.intern("T");
+            let box_field = interner.intern("value");
+            let mut elab = Elaborator::new(tcx, &interner);
             let repl_box = elab
                 .install_repl_box(box_name, box_param, box_field)
                 .expect("fresh session");
@@ -574,13 +568,13 @@ mod tests {
             // it: the wrapper takes the binding's box as a parameter and
             // projects the value in a prologue.
             let x_ty = s.eval("41").expect("bind rhs");
-            let x_key = Interner::get_or_intern(&mut s.interner.clone(), "x");
+            let x_key = s.interner.intern("x");
 
             let p = reussir_syntax::parse_repl("x + 1", s.interner.clone());
             assert!(p.parse.ok());
             let expr = surface::repl_expr(&p.parse.root);
-            let key = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_1");
-            let dec = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_1_dec");
+            let key = s.interner.intern("__repl_expr_1");
+            let dec = s.interner.intern("__repl_expr_1_dec");
             let (ty, _) = s
                 .elab
                 .try_repl_expr(
@@ -610,8 +604,8 @@ mod tests {
             // An unknown name still errors cleanly.
             let p = reussir_syntax::parse_repl("y + 1", s.interner.clone());
             let expr = surface::repl_expr(&p.parse.root);
-            let key = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_2");
-            let dec = Interner::get_or_intern(&mut s.interner.clone(), "__repl_expr_2_dec");
+            let key = s.interner.intern("__repl_expr_2");
+            let dec = s.interner.intern("__repl_expr_2_dec");
             let errs = s
                 .elab
                 .try_repl_expr(
