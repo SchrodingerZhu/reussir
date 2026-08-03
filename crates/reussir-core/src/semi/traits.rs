@@ -13,6 +13,7 @@
 pub mod builtins;
 pub mod db;
 pub mod def;
+pub mod subst;
 pub mod sync;
 
 pub use db::{SelectError, TraitDb};

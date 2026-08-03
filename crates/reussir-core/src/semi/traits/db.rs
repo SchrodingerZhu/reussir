@@ -99,6 +99,10 @@ impl<'tcx> TraitDb<'tcx> {
         &self.traits[id.0 as usize]
     }
 
+    pub fn impl_def(&self, id: ImplId) -> &ImplDef<'tcx> {
+        &self.impls[id.0 as usize]
+    }
+
     /// Mutable access for the elaborator's two-phase populate: trait stubs
     /// register first (so bounds resolve during the record/function scans),
     /// then supertraits and members fill in.
@@ -241,6 +245,9 @@ mod tests {
                 },
                 self_ty: unit,
                 where_clauses: vec![],
+                methods: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             });
             assert_eq!(db.trait_by_def(def), Some(id));
 
@@ -349,6 +356,9 @@ mod tests {
                 },
                 self_ty: unit,
                 where_clauses: vec![],
+                methods: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             });
 
             // `unit: Top` is two hops away (Sub -> Mid -> Top): the evidence must

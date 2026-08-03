@@ -295,6 +295,10 @@ pub(super) struct ImplCtx<'x, 'tcx> {
     /// The applied target type — what `Self` (and a receiver annotation)
     /// means inside the block, in the record's unrefined coloring.
     pub self_ty: Ty<'tcx>,
+    /// For a *trait* impl member: the implemented trait (declaration goes
+    /// under `[impl-module.., trait-path.., head-name, method]`, visibility
+    /// is the trait's, and the clash diagnostic names the trait).
+    pub trait_of: Option<TraitId>,
 }
 
 fn collect_regional_generic(t: Ty<'_>, out: &mut Vec<GenericId>) {
@@ -1426,17 +1430,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                                  mark individual members `pub` instead",
                             );
                         }
-                        if ib.trait_ref.is_some() {
-                            // Not collected: members must not be declared as
-                            // inherent methods of the target.
-                            self.error(
-                                span,
-                                "trait implementations (`impl Trait for Type`) \
-                                 are not supported yet",
-                            );
-                        } else {
-                            impls.push((ib, span, scope));
-                        }
+                        impls.push((ib, span, scope));
                     }
                     surface::StmtKind::Trait(td) => {
                         self.validate_transform_anchor(&attrs, None);
@@ -1528,6 +1522,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         for (ib, span, scope) in &impls {
             self.set_current_file(scope.file);
             self.defs.set_module(scope.module.to_vec());
+            if ib.trait_ref.is_some() {
+                let declared = self.scan_trait_impl(ib, *span);
+                for (m, def) in ib.members.iter().zip(declared) {
+                    let mspan = Some(surface::Span {
+                        start: m.start,
+                        end: m.end,
+                    });
+                    methods.push((&m.value, mspan, def));
+                }
+                continue;
+            }
             let target = self.scan_impl_target(ib, *span);
             let impl_generics = target.map(|_| self.collect_generics(&ib.generics, *span));
             // The applied target type: `Self` inside the block. Evaluated
@@ -1558,6 +1563,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             target,
                             generics,
                             self_ty,
+                            trait_of: None,
                         };
                         self.scan_method(&m.value, false, Some(&ctx), mspan)
                     }
@@ -1982,6 +1988,351 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.scan_method(func, is_ffi_import, None, span)
     }
 
+    /// Scan a trait implementation `impl<G..> Trait<args> for Type<..>`:
+    /// resolve and gate the trait (sealed builtins rejected), validate the
+    /// target and trait-argument arity, enforce E0207 constrainedness,
+    /// declare every member under the trait-impl path, check conformance
+    /// against the trait's method signatures (exact set, positional, Self
+    /// substituted), and register the `ImplDef`. Returns each member's
+    /// declared def in member order so bodies join the common check flow.
+    fn scan_trait_impl(
+        &mut self,
+        ib: &surface::ImplBlock,
+        span: Option<Span>,
+    ) -> Vec<Option<DefId>> {
+        let nones = vec![None; ib.members.len()];
+        let tref = ib.trait_ref.as_ref().expect("trait impl");
+        let (tpath, targs_surface) = (&tref.path, &tref.args);
+
+        // Resolve the trait through the trait namespace.
+        let expanded = self.expand_path(tpath);
+        let rpath = expanded.as_ref().unwrap_or(tpath);
+        let tdef = if self.extern_head(rpath).is_some() {
+            self.resolve_extern(rpath, DefKind::Trait)
+        } else if rpath.segments.is_empty() {
+            self.defs.resolve_trait(rpath.basename)
+        } else {
+            self.defs
+                .resolve_trait_path(&self.classify_segs(rpath), rpath.basename)
+        };
+        let Some(tid) = tdef.and_then(|d| self.traits.trait_by_def(d)) else {
+            if let Some(msg) = self.extern_private_msg(rpath, DefKind::Trait) {
+                self.error(span, msg);
+                return nones;
+            }
+            let hint = if rpath.segments.is_empty() {
+                self.trait_suggestion(self.sym(rpath.basename))
+            } else {
+                String::new()
+            };
+            let shown = self.path_display(rpath);
+            self.error(
+                span,
+                format!("cannot implement unknown trait `{shown}`{hint}"),
+            );
+            return nones;
+        };
+        if self.traits.trait_def(tid).sealed {
+            self.error(
+                span,
+                format!(
+                    "`{}` is a built-in trait and cannot be implemented; its \
+                     impls are provided by the language",
+                    self.trait_display(tid)
+                ),
+            );
+            return nones;
+        }
+
+        let Some(target) = self.scan_impl_target(ib, span) else {
+            return nones;
+        };
+        let generics = self.collect_generics(&ib.generics, span);
+
+        // Trait arguments and the self type evaluate under the block
+        // generics.
+        self.generic_names = generics.iter().map(|(n, id)| (*n, *id)).collect();
+        let trait_args: Vec<Ty<'tcx>> = targs_surface.iter().map(|a| self.eval_type(a)).collect();
+        let self_args: Vec<Ty<'tcx>> = ib.target_args.iter().map(|a| self.eval_type(a)).collect();
+        self.generic_names.clear();
+        let flex = match self.records[&target].default_cap {
+            DefaultCap::Value | DefaultCap::Shared => Flexivity::Irrelevant,
+            DefaultCap::Regional => Flexivity::Regional,
+        };
+        let self_ty = self.tcx.mk_record(target, &self_args, flex);
+
+        let expected = self.traits.trait_def(tid).params.len();
+        if trait_args.len() != expected {
+            self.error(
+                span,
+                format!(
+                    "trait `{}` expects {expected} type argument(s), got {}",
+                    self.trait_display(tid),
+                    trait_args.len()
+                ),
+            );
+            return nones;
+        }
+
+        // E0207: every block generic must be constrained by the trait
+        // reference or the self type, or monomorphization could never derive
+        // its instantiation.
+        let mut constrained = rustc_hash::FxHashSet::default();
+        std::iter::once(self_ty)
+            .chain(trait_args.iter().copied())
+            .for_each(|t| crate::semi::traits::subst::collect_generics_of(t, &mut constrained));
+        generics
+            .iter()
+            .filter(|(_, g)| !constrained.contains(g))
+            .map(|&(name, _)| {
+                format!(
+                    "impl generic `{}` is not constrained by the trait \
+                     reference or the self type",
+                    self.sym(name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .for_each(|msg| self.error(span, msg));
+
+        // Members: declare + conformance, in member order; track coverage in
+        // trait-method order for the missing-set diagnostic and the
+        // ImplDef's method table.
+        let sigs = self.traits.trait_def(tid).methods.clone();
+        let mut by_sig: Vec<Option<DefId>> = vec![None; sigs.len()];
+        let declared: Vec<Option<DefId>> = ib
+            .members
+            .iter()
+            .map(|m| {
+                let func = &m.value;
+                let mspan = Some(Span {
+                    start: m.start,
+                    end: m.end,
+                });
+                let Some(sig_idx) = sigs.iter().position(|sig| sig.name == func.name) else {
+                    self.error(
+                        mspan,
+                        format!(
+                            "`{}` is not a member of trait `{}`",
+                            self.sym(func.name),
+                            self.trait_display(tid)
+                        ),
+                    );
+                    return None;
+                };
+                if func.visibility == surface::Visibility::Public {
+                    self.error(
+                        mspan,
+                        "visibility is not allowed on a trait impl method; the \
+                         trait's visibility applies",
+                    );
+                }
+                self.defs.set_module(self.defs.module().to_vec());
+                let ctx = ImplCtx {
+                    target,
+                    generics: &generics,
+                    self_ty,
+                    trait_of: Some(tid),
+                };
+                let def = self.scan_method(func, false, Some(&ctx), mspan)?;
+                if by_sig[sig_idx].replace(def).is_some() {
+                    // Duplicate member: the declare clash already reported.
+                    return Some(def);
+                }
+                self.check_conformance(
+                    tid,
+                    &sigs[sig_idx],
+                    def,
+                    self_ty,
+                    &trait_args,
+                    generics.len(),
+                    mspan,
+                );
+                Some(def)
+            })
+            .collect();
+
+        let missing: Vec<String> = sigs
+            .iter()
+            .zip(&by_sig)
+            .filter(|(_, d)| d.is_none())
+            .map(|(sig, _)| format!("`{}`", self.sym(sig.name)))
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "impl of trait `{}` for `{}` is missing method(s) {}",
+                    self.trait_display(tid),
+                    self.ty_display(self_ty),
+                    missing.join(", ")
+                ),
+            );
+            return declared;
+        }
+
+        let id = crate::semi::traits::ImplId(self.traits.impls_len() as u32);
+        let mut args = Vec::with_capacity(1 + trait_args.len());
+        args.push(self_ty);
+        args.extend(trait_args.iter().copied());
+        let where_clauses = generics
+            .iter()
+            .flat_map(|(_, g)| {
+                let gt = self.tcx.mk_generic(*g);
+                self.generic_bounds(*g)
+                    .iter()
+                    .map(move |&b| {
+                        crate::semi::traits::Obligation::Trait(crate::semi::traits::TraitRef {
+                            trait_id: b,
+                            args: vec![gt],
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        self.traits.add_impl(crate::semi::traits::def::ImplDef {
+            id,
+            generics: generics.iter().map(|(_, g)| *g).collect(),
+            trait_ref: crate::semi::traits::TraitRef {
+                trait_id: tid,
+                args,
+            },
+            self_ty,
+            where_clauses,
+            methods: by_sig
+                .into_iter()
+                .map(|d| d.expect("missing checked"))
+                .collect(),
+            span,
+            file: self.current_file,
+        });
+        declared
+    }
+
+    /// Conformance of one declared member against its trait signature: the
+    /// trait's binder substituted (`Self` -> the impl self type, trait
+    /// params -> the impl's trait arguments, the signature's own generics ->
+    /// the member's own), then positional pointer-equality over the
+    /// non-receiver parameters and the return type, plus receiver-form,
+    /// regional, and generic-count parity.
+    #[allow(clippy::too_many_arguments)]
+    fn check_conformance(
+        &mut self,
+        tid: TraitId,
+        sig: &crate::semi::traits::def::MethodSig<'tcx>,
+        def: DefId,
+        self_ty: Ty<'tcx>,
+        trait_args: &[Ty<'tcx>],
+        block_generics: usize,
+        span: Option<Span>,
+    ) {
+        use crate::semi::traits::def::ReceiverForm;
+        let proto = self.functions[&def].clone();
+        let tdef = self.traits.trait_def(tid);
+        let name = self.sym(proto.name).to_owned();
+        let tr = self.trait_display(tid);
+
+        // The member's own generics follow the block's in its binder.
+        let own = &proto.generics[block_generics..];
+        if own.len() != sig.generics.len() {
+            self.error(
+                span,
+                format!(
+                    "method `{name}` declares {} generic parameter(s); trait \
+                     `{tr}` declares {}",
+                    own.len(),
+                    sig.generics.len()
+                ),
+            );
+            return;
+        }
+
+        let map: FxHashMap<GenericId, Ty<'tcx>> = std::iter::once((tdef.self_param, self_ty))
+            .chain(
+                tdef.params
+                    .iter()
+                    .zip(trait_args)
+                    .map(|(&(_, p), &a)| (p, a)),
+            )
+            .chain(
+                sig.generics
+                    .iter()
+                    .zip(own)
+                    .map(|(&(_, sg), &(_, ig))| (sg, self.tcx.mk_generic(ig))),
+            )
+            .collect();
+
+        if sig.params.len() != proto.params.len() {
+            self.error(
+                span,
+                format!(
+                    "method `{name}` takes {} parameter(s); trait `{tr}` \
+                     requires {}",
+                    proto.params.len(),
+                    sig.params.len()
+                ),
+            );
+            return;
+        }
+        // Receiver: form parity, not type equality (flexivity refinement and
+        // the arc peel make the spellings differ structurally).
+        let impl_form = {
+            let (_, pty) = &proto.params[0];
+            match pty.kind() {
+                TyKind::Arc(_) => ReceiverForm::Arc,
+                _ if self.is_flex(*pty) => ReceiverForm::Flex,
+                _ => ReceiverForm::Value,
+            }
+        };
+        if impl_form != sig.receiver {
+            let want = match sig.receiver {
+                ReceiverForm::Value => "self: Self",
+                ReceiverForm::Arc => "self: Arc<Self>",
+                ReceiverForm::Flex => "self: [flex] Self",
+            };
+            self.error(
+                span,
+                format!("the receiver of `{name}` must be `{want}` to match trait `{tr}`"),
+            );
+        }
+        for (i, ((_, ity), &sty)) in proto.params.iter().zip(&sig.params).enumerate().skip(1) {
+            let want = crate::semi::traits::subst::replace_generics(self.tcx, sty, &map);
+            if *ity != want {
+                self.error(
+                    span,
+                    format!(
+                        "parameter {i} of method `{name}` has type `{}` but trait \
+                         `{tr}` requires `{}`",
+                        self.ty_display(*ity),
+                        self.ty_display(want)
+                    ),
+                );
+            }
+        }
+        let want_ret = crate::semi::traits::subst::replace_generics(self.tcx, sig.ret, &map);
+        if proto.return_ty != want_ret {
+            self.error(
+                span,
+                format!(
+                    "method `{name}` returns `{}` but trait `{tr}` requires `{}`",
+                    self.ty_display(proto.return_ty),
+                    self.ty_display(want_ret)
+                ),
+            );
+        }
+        if sig.is_regional != proto.is_regional {
+            let (a, b) = if sig.is_regional {
+                ("is", "but not in this impl")
+            } else {
+                ("is not", "but is in this impl")
+            };
+            self.error(
+                span,
+                format!("method `{name}` {a} `regional` in trait `{tr}` {b}"),
+            );
+        }
+    }
+
     /// Validate an `impl` block's target: it must resolve to a record this
     /// package defines, in the module the block appears in, with a fully
     /// applied generic head.
@@ -2130,8 +2481,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         let name = func.name;
         let declared = match impl_ctx {
-            // A member declares under the type's own qualified path, so
-            // `Type::method` resolves like any path and mangles unchanged.
+            // A trait-impl member declares under
+            // `[impl-module.., trait-path.., head-name, method]` — unique by
+            // coherence, never spelled at call sites (dispatch goes through
+            // the trait), mangled by the ordinary path machinery.
+            Some(ctx) if ctx.trait_of.is_some() => {
+                let tid = ctx.trait_of.expect("checked");
+                let module = self.defs.module().to_vec();
+                let mut decl = module.clone();
+                decl.extend(self.defs.path(self.traits.trait_def(tid).def).0.iter());
+                decl.push(self.defs.path(ctx.target).name());
+                self.defs.set_module(decl);
+                let def = self.defs.declare_function(name);
+                self.defs.set_module(module);
+                def
+            }
+            // An inherent member declares under the type's own qualified
+            // path, so `Type::method` resolves like any path.
             Some(ctx) => {
                 let module = self.defs.module().to_vec();
                 let type_path = self.defs.path(ctx.target).0.clone();
@@ -2144,6 +2510,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         let Some(def) = declared else {
             match impl_ctx {
+                Some(ctx) if ctx.trait_of.is_some() => {
+                    let tid = ctx.trait_of.expect("checked");
+                    let ty = self.sym(self.defs.path(ctx.target).name()).to_owned();
+                    let tr = self.trait_display(tid);
+                    self.error(
+                        span,
+                        format!(
+                            "a method `{0}` for `{ty}` under trait `{tr}` is already \
+                             declared by another impl; merge the impls of `{tr}` for \
+                             `{ty}` into one parameterized impl",
+                            self.sym(name)
+                        ),
+                    );
+                }
                 Some(ctx) => {
                     let ty = self.sym(self.defs.path(ctx.target).name());
                     self.error(
@@ -2162,10 +2542,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             return None;
         };
+        let visibility = match impl_ctx {
+            // Trait members take the trait's visibility.
+            Some(ctx) if ctx.trait_of.is_some() => {
+                self.traits
+                    .trait_def(ctx.trait_of.expect("checked"))
+                    .visibility
+            }
+            _ => func.visibility,
+        };
         let proto = FuncProto {
             def,
             name,
-            visibility: func.visibility,
+            visibility,
             generics,
             regional_generics,
             params,

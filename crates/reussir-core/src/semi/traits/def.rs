@@ -84,6 +84,13 @@ pub struct ImplDef<'tcx> {
     /// The trait being implemented; `trait_ref.args[0]` is `self_ty`.
     pub trait_ref: TraitRef<'tcx>,
     pub self_ty: Ty<'tcx>,
-    /// Obligations the impl assumes (`where …`).
+    /// Obligations the impl assumes (`where …`; populated from the block
+    /// generics' inline bounds this cut).
     pub where_clauses: Vec<Obligation<'tcx>>,
+    /// The declared method bodies, as function defs in *trait-method order*
+    /// — the future `TraitCall { method index }` targets. Empty for the
+    /// builtin (method-less) impls.
+    pub methods: Vec<DefId>,
+    pub span: Option<Span>,
+    pub file: FileId,
 }

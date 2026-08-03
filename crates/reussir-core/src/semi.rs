@@ -1090,38 +1090,199 @@ mod tests {
         );
     }
 
-    /// Until the impl-for stack lands, trait implementations are rejected
-    /// cleanly — and their members are never misattached as inherent
-    /// methods. (Trait declarations themselves now elaborate.)
     #[test]
-    fn trait_items_are_rejected_for_now() {
-        elaborate_source(
-            "pub struct P { pub x: i64 }
-             impl Show for P { fn show(self: Self) -> i64 { 1 } }
-             impl P { pub fn ok(self: Self) -> i64 { self.x } }",
-            |elab| {
+    fn trait_impl_conformance_accepted_and_bodies_check() {
+        check(
+            "pub trait Show { fn show(self: Self, k: i64) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self, k: i64) -> i64 { self.x * k } }",
+            |elab, _| {
+                // The member declared under the trait-impl path and its body
+                // checked through the common flow.
+                let show = elab
+                    .functions
+                    .values()
+                    .find(|f| elab.sym(f.name) == "show")
+                    .expect("declared");
                 assert_eq!(
-                    elab.reports.len(),
-                    1,
-                    "exactly the placeholder, no cascades: {:#?}",
+                    elab.defs.path(show.def).display(elab.resolver),
+                    "Show::P::show"
+                );
+                assert!(elab.elaborated.iter().any(|f| f.def == show.def));
+            },
+        );
+    }
+
+    #[test]
+    fn trait_impl_conformance_matrix() {
+        let hdr = "pub trait Show { fn show(self: Self, k: i64) -> i64; }\n\
+                   pub struct P { pub x: i64 }\n";
+        for (src, needle) in [
+            ("impl Show for P { }", "is missing method(s) `show`"),
+            (
+                "impl Show for P { fn show(self: Self, k: i64) -> i64 { k } \
+                 fn extra(self: Self) -> i64 { 0 } }",
+                "`extra` is not a member of trait `Show`",
+            ),
+            (
+                "impl Show for P { fn show(self: Self, k: bool) -> i64 { 1 } }",
+                "parameter 1 of method `show` has type `bool` but trait `Show` requires `i64`",
+            ),
+            (
+                "impl Show for P { fn show(self: Self, k: i64) -> bool { true } }",
+                "returns `bool` but trait `Show` requires `i64`",
+            ),
+            (
+                "impl Show for P { fn show(self: Arc<Self>, k: i64) -> i64 { k } }",
+                "the receiver of `show` must be `self: Self` to match trait `Show`",
+            ),
+            (
+                "impl Show for P { regional fn show(self: Self, k: i64) -> i64 { k } }",
+                "is not `regional` in trait `Show` but is in this impl",
+            ),
+            (
+                "impl Show for P { fn show<U: Num>(self: Self, k: i64) -> i64 { k } }",
+                "declares 1 generic parameter(s); trait `Show` declares 0",
+            ),
+            (
+                "impl Show for P { pub fn show(self: Self, k: i64) -> i64 { k } }",
+                "visibility is not allowed on a trait impl method",
+            ),
+        ] {
+            let source = format!("{hdr}{src}");
+            elaborate_source(&source, |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r.message.contains(needle)),
+                    "wanted {needle:?} in {:#?}",
                     elab.reports
                 );
+            });
+        }
+    }
+
+    #[test]
+    fn sealed_builtins_cannot_be_implemented() {
+        for tr in ["Num", "Integral", "FloatingPoint", "PtrLike", "Sync"] {
+            let source = format!("pub struct P {{ pub x: i64 }}\nimpl {tr} for P {{ }}");
+            elaborate_source(&source, |elab| {
                 assert!(
-                    elab.reports[0].message.contains(
-                        "trait implementations (`impl Trait for Type`) are not supported yet"
-                    ),
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("is a built-in trait and cannot be implemented")),
+                    "{tr}: {:#?}",
+                    elab.reports
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn trait_and_inherent_methods_coexist() {
+        check(
+            "pub trait Show { fn norm(self: Self) -> i64; }\n\
+             pub struct V { pub x: i64 }\n\
+             impl V { pub fn norm(self: Self) -> i64 { self.x } }\n\
+             impl Show for V { fn norm(self: Self) -> i64 { 0 - self.x } }",
+            |elab, _| {
+                // Distinct paths: [V, norm] inherent, [Show, V, norm] trait.
+                let paths: Vec<String> = elab
+                    .functions
+                    .values()
+                    .filter(|f| elab.sym(f.name) == "norm")
+                    .map(|f| elab.defs.path(f.def).display(elab.resolver))
+                    .collect();
+                assert_eq!(paths.len(), 2, "{paths:?}");
+                assert!(paths.contains(&"V::norm".to_string()));
+                assert!(paths.contains(&"Show::V::norm".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn duplicate_ground_trait_impls_hit_the_guided_clash() {
+        elaborate_source(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { 1 } }\n\
+             impl Show for P { fn show(self: Self) -> i64 { 2 } }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("already declared by another impl; merge the impls")),
                     "{:#?}",
                     elab.reports
                 );
-                // The trait impl's member was not declared as an inherent
-                // method, while the inherent block's member was.
-                assert!(
-                    !elab.functions.values().any(|f| elab.sym(f.name) == "show"),
-                    "misattached trait-impl member"
-                );
-                assert!(elab.functions.values().any(|f| elab.sym(f.name) == "ok"));
             },
         );
+    }
+
+    #[test]
+    fn impl_where_clauses_from_inline_bounds() {
+        check(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct Box<T> { pub v: T }\n\
+             impl<T: Num> Show for Box<T> { fn show(self: Self) -> i64 { 1 } }",
+            |elab, _| {
+                let imp = (0..elab.traits.impls_len() as u32)
+                    .map(crate::semi::traits::ImplId)
+                    .map(|i| elab.traits.impl_def(i))
+                    .find(|i| !i.generics.is_empty())
+                    .expect("generic impl registered");
+                assert_eq!(imp.where_clauses.len(), 1, "T: Num recorded");
+                assert_eq!(imp.methods.len(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn impl_generic_must_be_constrained() {
+        elaborate_source(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl<T: Num> Show for P { fn show(self: Self) -> i64 { 1 } }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("impl generic `T` is not constrained")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn rejected_batch_retracts_trait_impls() {
+        use std::sync::Arc;
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+            let p1 = parse(
+                "pub trait Show { fn show(self: Self) -> i64; }\n\
+                 pub struct P { pub x: i64 }",
+            );
+            elab.try_extend(&surface::program(&p1.root)).expect("decl");
+            let impls_before = elab.traits.impls_len();
+
+            // A batch whose impl member body fails is rejected wholesale …
+            let p2 = parse("impl Show for P { fn show(self: Self) -> i64 { true } }");
+            elab.try_extend(&surface::program(&p2.root))
+                .expect_err("bad body");
+            assert_eq!(elab.traits.impls_len(), impls_before, "impl retracted");
+
+            // … and the corrected impl registers cleanly (no phantom impl,
+            // no phantom method defs).
+            let p3 = parse("impl Show for P { fn show(self: Self) -> i64 { self.x } }");
+            elab.try_extend(&surface::program(&p3.root)).expect("fixed");
+            assert_eq!(elab.traits.impls_len(), impls_before + 1);
+        });
     }
 
     #[test]
