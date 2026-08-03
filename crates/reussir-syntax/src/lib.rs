@@ -151,10 +151,12 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
         // `extern "C" trampoline ...` — a string cannot follow a variable.
         ExternKw => p.nth(1) == StringLit,
         // `pub <item>` — mirrors `stmt`'s post-visibility dispatch.
-        PubKw => matches!(
-            p.nth(1),
-            RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw | ImportKw
-        ),
+        PubKw => {
+            matches!(
+                p.nth(1),
+                RegionalKw | FnKw | StructKw | EnumKw | ModKw | ExternKw | ImportKw
+            ) || (p.nth_text(1) == "trait" && p.nth(2).is_ident_like() && p.nth(2) != AsKw)
+        }
         // `regional fn` is an item; any other `regional ...` is a region
         // expression.
         RegionalKw => p.nth(1) == FnKw,
@@ -167,6 +169,11 @@ fn repl_route(p: &parser::Parser) -> ReplInputKind {
             if p.current_text() == "impl"
                 && (p.nth(1) == LAngle || (p.nth(1).is_ident_like() && p.nth(1) != AsKw)) =>
         {
+            true
+        }
+        // `trait Name` heads a declaration; `trait + 1` / `trait as i64`
+        // stay expressions over a variable named `trait`.
+        Ident if p.current_text() == "trait" && p.nth(1).is_ident_like() && p.nth(1) != AsKw => {
             true
         }
         _ => false,
@@ -309,6 +316,11 @@ mod tests {
             // `impl` heads an item when a generic list or type name follows.
             "impl Point { fn get(self: Self) -> i64 { 1 } }",
             "impl<T: Num> Box<T> { pub fn get(self: Self) -> T { self.0 } }",
+            // Trait declarations and trait implementations.
+            "trait Ord { fn cmp(self: Self, other: Self) -> i64; }",
+            "pub trait Marker { }",
+            "impl Show for Point { fn show(self: Self) -> i64 { 1 } }",
+            "impl<T: Num> Convert<T> for Box<T> { fn conv(self: Self) -> T { self.0 } }",
         ];
         for source in items {
             let rp = parse_repl(source, interner.clone());
@@ -347,6 +359,11 @@ mod tests {
             // A variable named `impl` heads an expression.
             "impl + 1",
             "impl as i64",
+            // A variable named `trait` heads an expression; bare `trait`
+            // has nothing ident-like after it.
+            "trait + 1",
+            "trait as i64",
+            "trait",
         ];
         for source in exprs {
             let rp = parse_repl(source, interner.clone());
@@ -679,6 +696,166 @@ mod tests {
         json_of("fn shared(field: i32) -> i32 { field }");
         // `impl` included: legal as a parameter and a variable.
         json_of("fn f(impl: i64) -> i64 { impl }");
+        // `trait` and `for` too.
+        json_of("fn trait(trait: i64) -> i64 { trait }");
+        json_of("fn for(for: i64) -> i64 { for }");
+    }
+
+    #[test]
+    fn trait_decl_encodes_supers_generics_and_sig_members() {
+        let json = json_of(
+            "pub trait Ord<T>: Eq + Show {
+                 fn cmp(self: Self, other: T) -> i64;
+                 regional fn touch(self: [flex] Self);
+             }",
+        );
+        let decl = unwrap_span(&json[0]);
+        assert_eq!(decl["tag"], "TraitStmt");
+        let c = &decl["contents"];
+        assert_eq!(c["traitVisibility"], "Public");
+        assert_eq!(c["traitName"], "Ord");
+        assert_eq!(c["traitGenerics"][0][0], "T");
+        let supers = c["traitSupers"].as_array().expect("supers");
+        assert_eq!(supers.len(), 2);
+        let members = c["traitMembers"].as_array().expect("members");
+        assert_eq!(members.len(), 2);
+        let cmp = &members[0]["spanValue"]["contents"];
+        assert_eq!(cmp["funcName"], "cmp");
+        assert!(cmp["funcBody"].is_null());
+        assert!(cmp["funcForeignBody"].is_null());
+        let touch = &members[1]["spanValue"]["contents"];
+        assert_eq!(touch["funcIsRegional"], true);
+        assert_eq!(touch["funcParams"][0][2], true);
+    }
+
+    #[test]
+    fn impl_trait_for_encodes_trait_and_target() {
+        let json = json_of("impl<T: Num> Show<T> for Vec<T> { fn show(self: Self) -> i64 { 1 } }");
+        let block = unwrap_span(&json[0]);
+        assert_eq!(block["tag"], "ImplStmt");
+        let c = &block["contents"];
+        assert!(!c["implTrait"].is_null());
+        assert_eq!(c["implMembers"].as_array().expect("members").len(), 1);
+    }
+
+    /// The greedy `for` rule: `for` stays a legal type name in both impl
+    /// head positions.
+    #[test]
+    fn for_stays_a_type_name() {
+        let json = json_of("impl for { fn get(self: Self) -> i64 { 1 } }");
+        let c = &unwrap_span(&json[0])["contents"];
+        assert!(c["implTrait"].is_null());
+        let json = json_of("impl for for X { fn get(self: Self) -> i64 { 1 } }");
+        let c = &unwrap_span(&json[0])["contents"];
+        assert!(!c["implTrait"].is_null());
+    }
+
+    #[test]
+    fn trait_method_body_is_rejected() {
+        let source = "trait T { fn m(self: Self) -> i64 { 1 } fn ok(self: Self) -> i64; }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|e| e.message.contains("end the signature with `;`")),
+            "{:#?}",
+            parse.errors
+        );
+        assert_eq!(parse.root.text(), source);
+        // The member after the rejected body survives.
+        let decl = parse
+            .root
+            .children()
+            .find(|n| n.kind() == SyntaxKind::TraitStmt)
+            .expect("trait decl");
+        assert_eq!(
+            decl.children()
+                .filter(|n| n.kind() == SyntaxKind::FnStmt)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn trait_foreign_body_rejected() {
+        let source = "trait T { fn m(self: Self) -> i64 [{ x }]; }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|e| e.message.contains("foreign body")),
+            "{:#?}",
+            parse.errors
+        );
+        assert_eq!(parse.root.text(), source);
+    }
+
+    #[test]
+    fn trait_supertrait_args_parse() {
+        // A supertrait reference is a path type: arguments parse and reach
+        // the tree (whether they are *admitted* is the elaborator's call).
+        let parse = super::parse("trait A: B<C> { }");
+        assert!(parse.ok(), "{:#?}", parse.errors);
+        let decl = parse
+            .root
+            .children()
+            .find(|n| n.kind() == SyntaxKind::TraitStmt)
+            .expect("trait decl");
+        let sup = decl
+            .children()
+            .find(|n| n.kind() == SyntaxKind::PathType)
+            .expect("supertrait reference");
+        assert!(
+            sup.children().any(|n| n.kind() == SyntaxKind::TypeArgList),
+            "arguments reach the tree"
+        );
+    }
+
+    #[test]
+    fn trait_member_recovery_continues() {
+        let source = "trait T { 42 fn ok(self: Self) -> i64; }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert_eq!(parse.root.text(), source);
+        let decl = parse
+            .root
+            .children()
+            .find(|n| n.kind() == SyntaxKind::TraitStmt)
+            .expect("trait decl");
+        assert!(decl.children().any(|n| n.kind() == SyntaxKind::FnStmt));
+    }
+
+    #[test]
+    fn impl_for_prim_positions() {
+        let source = "impl Show for i64 { }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|e| e.message.contains("must be a named type")),
+            "{:#?}",
+            parse.errors
+        );
+        assert_eq!(parse.root.text(), source);
+
+        let source = "impl i64 for X { }";
+        let parse = super::parse(source);
+        assert!(!parse.ok());
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|e| e.message.contains("must be a named trait")),
+            "{:#?}",
+            parse.errors
+        );
+        assert_eq!(parse.root.text(), source);
     }
 
     #[test]

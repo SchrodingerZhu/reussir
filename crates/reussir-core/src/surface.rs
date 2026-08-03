@@ -974,6 +974,34 @@ pub enum StmtKind {
     Transform(TransformScript),
     Import(ImportDecl),
     Impl(ImplBlock),
+    Trait(TraitDecl),
+}
+
+/// A `trait Name<T>: A + B { fn m(...) -> U; }` declaration. `Self` is
+/// implicit and not listed among `generics`; member signatures have
+/// `body`/`foreign_body` = `None` (the parser rejects bodies).
+#[derive(Clone, Debug)]
+pub struct TraitDecl {
+    pub visibility: Visibility,
+    pub name: TokenKey,
+    /// Each declared generic is `(name, bounds)`.
+    pub generics: SmallVec<[(TokenKey, Vec<Path>); 2]>,
+    /// Supertrait references from the `: A + B<C>` list.
+    pub supertraits: Vec<TraitRef>,
+    pub members: Vec<Spanned<Function>>,
+}
+
+/// A trait reference in the surface syntax: a qualified path plus its type
+/// arguments (`Eq`, `pkg::Convert<K>`) — the shape shared by supertrait
+/// lists and `impl` trait heads. Arguments always parse and project;
+/// whether a position *admits* them is the elaborator's call (supertrait
+/// references reject a non-empty list this cut — trait references are not
+/// parameterized yet, though the layers below already carry argument lists
+/// end to end).
+#[derive(Clone, Debug)]
+pub struct TraitRef {
+    pub path: Path,
+    pub args: SmallVec<[Type; 2]>,
 }
 
 /// An `impl<T: B> Type<args> { fn ... }` block: the block-level generics, the
@@ -985,6 +1013,9 @@ pub struct ImplBlock {
     pub visibility: Visibility,
     /// Each block-level generic is `(name, bounds)`.
     pub generics: SmallVec<[(TokenKey, Vec<Path>); 2]>,
+    /// `Some((path, args))` for a trait implementation
+    /// `impl Trait<args> for Type`; `None` for an inherent block.
+    pub trait_ref: Option<TraitRef>,
     pub target: Path,
     pub target_args: SmallVec<[Type; 2]>,
     pub members: Vec<Spanned<Function>>,
@@ -1024,6 +1055,7 @@ impl Stmt {
             TransformStmt => StmtKind::Transform(transform_of(node)),
             ImportStmt => StmtKind::Import(import_of(node)),
             ImplStmt => StmtKind::Impl(impl_of(node)),
+            TraitStmt => StmtKind::Trait(trait_of(node)),
             k => unreachable!("unexpected statement node {k:?}"),
         }
     }
@@ -1067,6 +1099,23 @@ fn attribute_of(node: &ResolvedNode) -> Attribute {
         values,
         span: node_span(node),
     }
+}
+
+/// The defining name of an item introduced by a *contextual* keyword (which
+/// lexes as a plain `Ident`): the first identifier-like direct token after
+/// the first `Ident` spelled `intro`. (`pub trait trait` names a trait
+/// `trait`: PubKw is ident-like but not Ident-kind, so the introducer scan
+/// skips it.)
+fn name_after_text<'n>(node: &'n ResolvedNode, intro: &str) -> &'n ResolvedToken {
+    let mut seen_intro = false;
+    for t in tokens(node) {
+        if !seen_intro && t.kind() == Ident && t.text() == intro {
+            seen_intro = true;
+        } else if seen_intro && t.kind().is_ident_like() {
+            return t;
+        }
+    }
+    panic!("missing name token in {:?}", node.kind())
 }
 
 fn visibility_of(node: &ResolvedNode) -> Visibility {
@@ -1138,12 +1187,11 @@ fn source_block_of(node: &ResolvedNode) -> Option<SourceBlock> {
     })
 }
 
-fn impl_of(node: &ResolvedNode) -> ImplBlock {
-    let target_ty = nodes(node)
-        .find(|n| n.kind() == PathType)
-        .expect("impl target type");
-    let target = path_of(child_node(target_ty, PathKind).expect("target path"));
-    let target_args = child_node(target_ty, TypeArgList)
+/// Split a `PathType` node into its qualified path and type arguments —
+/// the projection behind every [`TraitRef`] and `impl` head.
+fn path_type_parts(ty: &ResolvedNode) -> (Path, SmallVec<[Type; 2]>) {
+    let path = path_of(child_node(ty, PathKind).expect("type path"));
+    let args = child_node(ty, TypeArgList)
         .map(|l| {
             nodes(l)
                 .filter(|n| is_type_kind(n.kind()))
@@ -1151,6 +1199,23 @@ fn impl_of(node: &ResolvedNode) -> ImplBlock {
                 .collect()
         })
         .unwrap_or_default();
+    (path, args)
+}
+
+fn trait_ref_of(ty: &ResolvedNode) -> TraitRef {
+    let (path, args) = path_type_parts(ty);
+    TraitRef { path, args }
+}
+
+fn impl_of(node: &ResolvedNode) -> ImplBlock {
+    // Two direct PathType heads iff the `for` separator was parsed: the
+    // first is then the trait reference, the second the target.
+    let mut heads = nodes(node).filter(|n| n.kind() == PathType);
+    let first = heads.next().expect("impl target type");
+    let (trait_ref, (target, target_args)) = match heads.next() {
+        Some(second) => (Some(trait_ref_of(first)), path_type_parts(second)),
+        None => (None, path_type_parts(first)),
+    };
     let members = nodes(node)
         .filter(|n| n.kind() == FnStmt)
         .map(|f| spanned(f, function_of(f)))
@@ -1158,9 +1223,29 @@ fn impl_of(node: &ResolvedNode) -> ImplBlock {
     ImplBlock {
         visibility: visibility_of(node),
         generics: generics_of(node),
+        trait_ref,
         target,
         target_args,
         members,
+    }
+}
+
+fn trait_of(node: &ResolvedNode) -> TraitDecl {
+    TraitDecl {
+        visibility: visibility_of(node),
+        name: key(name_after_text(node, "trait")),
+        generics: generics_of(node),
+        // Direct PathType children of TraitStmt are exactly the supertrait
+        // list: the name is a token, bound paths nest under
+        // GenericParamList, and member types nest under FnStmt.
+        supertraits: nodes(node)
+            .filter(|n| n.kind() == PathType)
+            .map(trait_ref_of)
+            .collect(),
+        members: nodes(node)
+            .filter(|n| n.kind() == FnStmt)
+            .map(|f| spanned(f, function_of(f)))
+            .collect(),
     }
 }
 
@@ -1418,6 +1503,69 @@ mod tests {
         assert!(touch.is_regional);
         let (_, _, rflex) = &touch.params[0];
         assert!(rflex, "the `[flex]` receiver flag projects");
+    }
+
+    #[test]
+    fn trait_decl_projects_name_generics_supers_and_sig_members() {
+        let parse = parse(
+            "pub trait Ord<T: Num>: Eq + Show {
+                 fn cmp(self: Self, other: T) -> i64;
+                 fn zero() -> T;
+             }",
+        );
+        let prog = program(&parse.root);
+        let resolver = parse.resolver();
+        let StmtKind::Trait(decl) = prog[0].kind() else {
+            panic!("expected a trait declaration");
+        };
+        assert_eq!(decl.visibility, Visibility::Public);
+        assert_eq!(resolver.resolve(decl.name), "Ord");
+        assert_eq!(decl.generics.len(), 1);
+        assert_eq!(decl.generics[0].1.len(), 1, "bound carried");
+        let supers: Vec<&str> = decl
+            .supertraits
+            .iter()
+            .map(|s| resolver.resolve(s.path.basename))
+            .collect();
+        assert_eq!(supers, ["Eq", "Show"]);
+        // Supertrait references carry their arguments structurally.
+        assert!(decl.supertraits.iter().all(|s| s.args.is_empty()));
+        assert_eq!(decl.members.len(), 2);
+        let cmp = &decl.members[0].value;
+        assert!(cmp.body.is_none());
+        assert_eq!(resolver.resolve(cmp.params[0].0), "self");
+        // The receiver is optional at the view level: statics project too.
+        assert!(decl.members[1].value.params.is_empty());
+    }
+
+    #[test]
+    fn impl_of_projects_trait_ref() {
+        let parse = parse("impl<T: Num> Show<T> for Vec<T> { fn show(self: Self) -> i64 { 1 } }");
+        let prog = program(&parse.root);
+        let resolver = parse.resolver();
+        let StmtKind::Impl(ib) = prog[0].kind() else {
+            panic!("expected an impl block");
+        };
+        let tr = ib.trait_ref.as_ref().expect("trait ref");
+        assert_eq!(resolver.resolve(tr.path.basename), "Show");
+        assert_eq!(tr.args.len(), 1);
+        assert_eq!(resolver.resolve(ib.target.basename), "Vec");
+        assert_eq!(ib.target_args.len(), 1);
+        assert_eq!(ib.members.len(), 1);
+    }
+
+    /// The greedy `for` projection rule: a lone head named `for` is the
+    /// inherent target.
+    #[test]
+    fn for_named_type_projects_as_inherent_target() {
+        let parse = parse("impl for { fn get(self: Self) -> i64 { 1 } }");
+        let prog = program(&parse.root);
+        let resolver = parse.resolver();
+        let StmtKind::Impl(ib) = prog[0].kind() else {
+            panic!("expected an impl block");
+        };
+        assert!(ib.trait_ref.is_none());
+        assert_eq!(resolver.resolve(ib.target.basename), "for");
     }
 
     #[test]

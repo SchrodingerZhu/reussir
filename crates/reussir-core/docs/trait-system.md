@@ -400,9 +400,20 @@ impl Ord for i32 { fn cmp(self, other: i32) -> Ordering { … } }
 impl<T: Ord> Ord for List<T> where … { … }
 ```
 
-That is: lexer keywords (`trait`, `impl`, `for`, `where`), grammar rules, CST
-kinds, and AST/JSON lowering in `reussir-syntax`. **Decision: this is in the
-first cut** — user-declared traits from the start, not deferred.
+That is: grammar rules, CST kinds, and AST/JSON lowering in `reussir-syntax`.
+**Decision: this is in the first cut** — user-declared traits from the start,
+not deferred.
+
+> **As built (surface layer):** `trait`, `impl`, and `for` are *contextual
+> identifiers*, not lexer keywords — the language has no reserved words, so
+> `fn trait(trait: i64)` stays legal and `trait + 1` is an expression over a
+> variable named `trait`. Trait bodies carry method *signatures only*
+> (default bodies deferred per Phase 3; the parser consumes an offending body
+> losslessly and reports). Supertraits are bare `+`-separated paths; `where`
+> is not parsed (deferred). `impl Trait<args> for Type` uses a greedy
+> single-shot `for` rule (`impl for { }` is an inherent impl of a type named
+> `for`); a primitive in either head position is rejected this cut. Typed
+> views: `surface::TraitDecl` and `ImplBlock::trait_ref`.
 
 Flexivity bounds reuse the existing bound position. The names `Irrelevant`,
 `Regional`, `Flex`, `Rigid` in a bound list are recognized as built-in
