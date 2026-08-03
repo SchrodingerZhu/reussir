@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use crate::ir_lex::{LexError, Token, unescape_debug_str};
 use crate::literal::{FloatLit, Integer};
 use crate::semi::hir::raw as raw;
+use crate::semi::hir::{Bound, BoundPath};
 use crate::semi::ty::CellKind;
 
 grammar<'input>;
@@ -192,10 +193,30 @@ PathArgsTail: (String, Vec<raw::Ty>) = {
 };
 
 /// A generic binder: `$0 (T)` — positional id plus its source name, which
-/// foreign bodies reference through `[:T:]` placeholders. The name is
-/// optional for compatibility with dumps that predate it.
-Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")")?>
-    => raw::Generic { id: g, regional: r.is_some(), name: name.map(|n| n.into_owned()) };
+/// foreign bodies reference through `[:T:]` placeholders, plus optional
+/// `+`-separated trait bounds (`$0 (T): Num + Sync`). The name and the
+/// bounds are optional for compatibility with dumps that predate them.
+Generic: raw::Generic = <r:"regional"?> <g:"generic"> <name:("(" <DebugName> ")")?> <bounds:(":" <Bounds>)?>
+    => raw::Generic {
+        id: g,
+        regional: r.is_some(),
+        name: name.map(|n| n.into_owned()),
+        bounds: bounds.unwrap_or_default(),
+    };
+
+/// A `+`-separated bound list; each bound is a trait named by qualified
+/// path, kept as segments.
+Bounds: Vec<Bound> = <first:BoundItem> <rest:("+" <BoundItem>)*> => {
+    let mut v = vec![first];
+    v.extend(rest);
+    v
+};
+
+BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
+    let mut segments = vec![first.to_string()];
+    segments.extend(rest.iter().map(|s| s.to_string()));
+    Bound::Trait(BoundPath { segments })
+};
 
 /// Source identifiers remain legal when they spell a transform directive.
 Name: &'input str = {

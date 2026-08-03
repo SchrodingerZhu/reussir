@@ -100,13 +100,15 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         return Err(String::new());
     }
     if target == Stage::Hir {
+        let bounds = elab.bound_names();
         let printer = if cli.no_source_locations {
             hir::print::Printer::new(&elab.defs, elab.resolver)
         } else {
             hir::print::Printer::with_sources(&elab.defs, elab.resolver, &pkg.cache)
         }
         .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
-        .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports);
+        .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+        .with_bounds(&bounds);
         let strings = elab.strings.entries();
         // The dump describes the consumer package: extern-imported records
         // are filtered out (extern bodies never joined `elaborated`).
@@ -161,6 +163,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
             _ => None,
         }
         .map(|root| root.canonicalize().unwrap_or(root));
+        let bounds = elab.bound_names();
         let printer = if cli.no_source_locations {
             hir::print::Printer::new(&elab.defs, elab.resolver)
         } else {
@@ -168,6 +171,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         }
         .with_transform_metadata(&anchors, &scripts)
         .with_ffi_metadata(&ffi_preludes, &ffi_imports)
+        .with_bounds(&bounds)
         .with_interface(hir::print::InterfaceEmit {
             format: interface::RRI_FORMAT,
             package: cli.package_name.as_deref().unwrap_or_default(),
@@ -232,13 +236,15 @@ pub(crate) fn frontend<'c, 'tcx>(
                 return Err(String::new());
             }
             if target == Stage::Hir {
+                let bounds = elab.bound_names();
                 let printer = if cli.no_source_locations {
                     hir::print::Printer::new(&elab.defs, elab.resolver)
                 } else {
                     hir::print::Printer::with_sources(&elab.defs, elab.resolver, sources)
                 }
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
-                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports);
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .with_bounds(&bounds);
                 let strings = elab.strings.entries();
                 let text =
                     printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
@@ -286,7 +292,8 @@ pub(crate) fn frontend<'c, 'tcx>(
                     _ => hir::print::Printer::new(&parsed.defs, &parsed.names),
                 }
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
-                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports);
+                .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
+                .with_bounds(&parsed.generic_bounds);
                 let text = printer.program(
                     &parsed.funcs,
                     &parsed.strings,

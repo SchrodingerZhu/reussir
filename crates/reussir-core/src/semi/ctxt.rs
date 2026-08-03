@@ -16,6 +16,7 @@ use crate::utils::fuzzy::FuzzyIndex;
 use crate::utils::string::StringUniqifier;
 
 use super::fulfill::FulfillCtxt;
+use super::hir;
 use super::hir::{ExprId, Function, VarId};
 
 /// The capability a record declares by default. (Per-use [`crate::semi::ty::Flexivity`]
@@ -1072,6 +1073,30 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     pub fn generic_bounds(&self, generic: GenericId) -> &[TraitId] {
         &self.generics[generic.0 as usize].bounds
+    }
+
+    /// Every bounded generic's bounds, for the HIR printer's binder
+    /// serialization (`$0 (T): Num`). Derived data — no new elaborator
+    /// state. Builtin traits are root names, so each path is one segment;
+    /// user-declared traits will carry their full module path here.
+    pub fn bound_names(&self) -> FxHashMap<GenericId, Vec<hir::Bound>> {
+        self.generics
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| !info.bounds.is_empty())
+            .map(|(i, info)| {
+                let bounds = info
+                    .bounds
+                    .iter()
+                    .map(|&t| {
+                        hir::Bound::Trait(hir::BoundPath {
+                            segments: vec![self.traits.trait_def(t).name.clone()],
+                        })
+                    })
+                    .collect();
+                (GenericId(i as u32), bounds)
+            })
+            .collect()
     }
 
     /// Resolve a bound path (by basename) to a built-in trait.

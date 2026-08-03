@@ -858,7 +858,7 @@ fn emits_a_package_interface() {
     // The generic ships whole; the grounds it reaches are bodyless
     // prototypes; the unreachable private function is absent.
     assert!(
-        rri.contains("pub fn #demo::api<$0 (T)>(v0 (x): $0) -> i64 in 0"),
+        rri.contains("pub fn #demo::api<$0 (T): Num>(v0 (x): $0) -> i64 in 0"),
         "{rri}"
     );
     assert!(

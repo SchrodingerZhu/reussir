@@ -23,7 +23,7 @@ use crate::semi::ctxt::{
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
 use crate::semi::hir::{
-    ArithOp, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
+    ArithOp, Bound, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
     SwitchCases, VarId,
 };
 use crate::semi::resolve::DefTable;
@@ -51,6 +51,12 @@ pub struct Parsed<'tcx> {
     pub ffi_preludes: Vec<FfiPrelude>,
     pub defs: DefTable,
     pub names: Names,
+    /// Serialized bounds per generic binder (`$0 (T): Num`), keyed by the
+    /// dump's `$n` ids — machine emissions number generics globally (one
+    /// elaborator table), so the map is collision-free; a hand-written dump
+    /// that reuses an id across items with different bounds is
+    /// last-write-wins. Empty entries are omitted.
+    pub generic_bounds: FxHashMap<GenericId, Vec<Bound>>,
     /// The dump's source-file table, in id order: each file's display name.
     /// Item/expr spans are byte offsets into these files (by [`FileId`] =
     /// table index); a `<bracketed>` name is virtual (content not on disk).
@@ -128,6 +134,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         tcx,
         names: Names::default(),
         defs: DefTable::new(),
+        generic_bounds: FxHashMap::default(),
         next_expr_id: 0,
     };
     // Records first so their `DefId`s exist before function bodies reference them.
@@ -186,6 +193,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         ffi_preludes,
         defs: b.defs,
         names: b.names,
+        generic_bounds: b.generic_bounds,
         files,
     })
 }
@@ -194,6 +202,8 @@ struct Builder<'a, 'tcx> {
     tcx: &'a TyCtxt<'tcx>,
     names: Names,
     defs: DefTable,
+    /// Bounds collected off every parsed binder (see [`Parsed::generic_bounds`]).
+    generic_bounds: FxHashMap<GenericId, Vec<Bound>>,
     /// Monotonic counter for fresh [`ExprId`]s during the rebuild.
     next_expr_id: u32,
 }
@@ -239,6 +249,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                     Some(name) => self.names.intern(name),
                     None => self.names.intern(&format!("${}", g.id)),
                 };
+                if !g.bounds.is_empty() {
+                    self.generic_bounds
+                        .insert(GenericId(g.id), g.bounds.clone());
+                }
                 (key, GenericId(g.id))
             })
             .collect();
@@ -715,9 +729,11 @@ mod tests {
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
             let text = Printer::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .with_bounds(&bounds)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
@@ -735,6 +751,7 @@ mod tests {
             let text2 = Printer::new(&parsed.defs, &parsed.names)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
                 .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
+                .with_bounds(&parsed.generic_bounds)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -763,9 +780,11 @@ mod tests {
 
             let cache = SourceCache::single("<test>", source);
             let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .with_bounds(&bounds)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             assert!(
                 text.contains("0 = \"<test>\";"),
@@ -794,6 +813,7 @@ mod tests {
             let text2 = Printer::with_sources(&parsed.defs, &parsed.names, &cache2)
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
                 .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
+                .with_bounds(&parsed.generic_bounds)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -1147,6 +1167,64 @@ mod tests {
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );
+    }
+
+    #[test]
+    fn bounded_generics_roundtrip() {
+        let source = "struct M<T : Num> { v: T }\n\
+                      fn f<T : Integral + Sync>(x: T) -> T { x }\n\
+                      fn g<T>(x: T) -> T { x }";
+        with_tcx(|tcx| {
+            let parse = reussir_syntax::parse(source);
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, parse.resolver());
+            assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
+
+            let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
+            let text = Printer::new(&elab.defs, elab.resolver)
+                .with_bounds(&bounds)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            assert!(text.contains("struct #M<$0 (T): Num>"), "{text}");
+            assert!(text.contains(": Integral + Sync>"), "{text}");
+            // The unbounded generic prints bare.
+            assert!(text.contains("fn #g<$2 (T)>"), "{text}");
+
+            let parsed = parse_program(tcx, &text).expect("re-parse");
+            let trait_bound = |name: &str| {
+                crate::semi::hir::Bound::Trait(crate::semi::hir::BoundPath {
+                    segments: vec![name.to_string()],
+                })
+            };
+            let mut entries: Vec<(u32, Vec<crate::semi::hir::Bound>)> = parsed
+                .generic_bounds
+                .iter()
+                .map(|(g, bs)| (g.0, bs.clone()))
+                .collect();
+            entries.sort_by_key(|(g, _)| *g);
+            assert_eq!(
+                entries,
+                [
+                    (0, vec![trait_bound("Num")]),
+                    (1, vec![trait_bound("Integral"), trait_bound("Sync")]),
+                ]
+            );
+        });
+        // And byte-stability through both round-trip forms.
+        roundtrip(source);
+        roundtrip_with_locations(source);
+    }
+
+    /// A pre-bounds dump (bound-less binder) still parses, with empty bounds.
+    #[test]
+    fn boundless_binder_still_parses() {
+        with_tcx(|tcx| {
+            let text = "fn #id<$0 (T)>(v0 (x): $0) -> $0 {\n    v0 : $0\n}\n";
+            let parsed = parse_program(tcx, text).expect("parse");
+            assert!(parsed.generic_bounds.is_empty());
+            assert_eq!(parsed.funcs.len(), 1);
+        });
     }
 
     #[test]
