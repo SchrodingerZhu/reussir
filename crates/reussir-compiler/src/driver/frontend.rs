@@ -183,7 +183,9 @@ pub(crate) fn frontend_package<'c, 'tcx>(
             records: &closure.records,
             file_root: file_root.as_deref(),
         });
-        let (traits, impls) = hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+        let (mut traits, mut impls) = hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+        traits.retain(|t| closure.traits.contains(&t.def));
+        impls.retain(|i| closure.traits.contains(&i.trait_def));
         let text = printer.with_traits(&traits, &impls).program(
             &elab.elaborated,
             &strings,
@@ -327,8 +329,11 @@ pub(crate) fn frontend<'c, 'tcx>(
                 ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
                 // A plain `.hir` re-entry is a closed world; interfaces load
-                // via `--extern` (package mode) only.
+                // via `--extern` (package mode) only. Its trait tables are
+                // rebuilt by the extern-reload pass; until a dump ships
+                // TraitCalls it monomorphizes identically without them.
                 externs: Default::default(),
+                traits: Default::default(),
             };
             let (full, reports) = monomorphize(&input);
             match &dump_sources {

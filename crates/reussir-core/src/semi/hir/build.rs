@@ -415,8 +415,9 @@ impl<'tcx> Builder<'_, 'tcx> {
         use crate::semi::traits::def::ReceiverForm;
         // Declare the def so `#path` references (and the round-trip print)
         // resolve to the same id the call form uses.
-        self.trait_item_def(&t.path);
+        let def = self.trait_item_def(&t.path);
         TraitText {
+            def,
             is_pub: t.is_pub,
             path: t.path.clone(),
             generics: self.text_generics(&t.generics),
@@ -449,6 +450,7 @@ impl<'tcx> Builder<'_, 'tcx> {
 
     fn impl_text(&mut self, i: &raw::ImplItem) -> ImplText<'tcx> {
         ImplText {
+            trait_def: self.trait_item_def(&i.trait_path),
             generics: self.text_generics(&i.generics),
             trait_path: i.trait_path.clone(),
             args: self.tys(&i.args),
