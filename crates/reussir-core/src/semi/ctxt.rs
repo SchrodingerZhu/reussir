@@ -1397,6 +1397,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             let want = match item.kind() {
                 LangItemKind::Trait => "a trait",
                 LangItemKind::Record => "a struct or enum",
+                LangItemKind::Function => "a function prototype",
             };
             self.error(span, format!("lang item `{}` must be {want}", item.name()));
             return;
@@ -1473,16 +1474,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
                         let is_import = self.validate_ffi_function(&func, ffi, span);
                         let is_main = self.validate_main_attr(&attrs, &func, span);
-                        // No function-kinded lang item exists yet (intrinsic
-                        // prototypes arrive with the `core` scaffolding).
-                        if let Some(item) = self.lang_attr(&attrs, span) {
-                            let want = match item.kind() {
-                                crate::semi::lang::LangItemKind::Trait => "a trait",
-                                crate::semi::lang::LangItemKind::Record => "a struct or enum",
-                            };
-                            self.error(span, format!("lang item `{}` must be {want}", item.name()));
+                        let lang = self.lang_attr(&attrs, span);
+                        if let Some(item) = lang
+                            && item.kind() == crate::semi::lang::LangItemKind::Function
+                            && func.body.is_some()
+                        {
+                            self.error(
+                                span,
+                                format!(
+                                    "an intrinsic prototype must not have a body: \
+                                     `{}` is checked and lowered by the compiler",
+                                    item.name()
+                                ),
+                            );
                         }
-                        functions.push((func, span, scope, anchor, is_import, is_main));
+                        functions.push((func, span, scope, anchor, is_import, is_main, lang));
                     }
                     surface::StmtKind::ExternTrampoline(t) => {
                         self.validate_transform_anchor(&attrs, None);
@@ -1609,10 +1615,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.reject_supertrait_cycles(trait_ids.iter().flatten().copied());
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
-            .map(|(func, span, scope, _, is_import, _)| {
+            .map(|(func, span, scope, _, is_import, _, lang)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_function(func, *is_import, *span)
+                let def = self.scan_function(func, *is_import, *span);
+                if let (Some(item), Some(def)) = (lang, def) {
+                    self.declare_lang(*item, def, crate::semi::lang::LangItemKind::Function, *span);
+                }
+                def
             })
             .collect();
         // Impl members: declared after the record scan so targets resolve,
@@ -1678,7 +1688,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(&function_defs)
-            .filter_map(|((_, _, _, anchor, _, _), def)| if *anchor { *def } else { None })
+            .filter_map(|((_, _, _, anchor, _, _, _), def)| if *anchor { *def } else { None })
             .for_each(|def| self.transform_anchors.push(def));
         // `#[main]`: export the entry point under the symbol the runtime's
         // `__reussir_start` is handed. Registered here, once the scan has
@@ -1688,7 +1698,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mains: Vec<(DefId, Option<Span>)> = functions
             .iter()
             .zip(&function_defs)
-            .filter_map(|((_, span, _, _, _, is_main), def)| {
+            .filter_map(|((_, span, _, _, _, is_main, _), def)| {
                 (*is_main).then(|| Some(((*def)?, *span))).flatten()
             })
             .collect();
@@ -1759,7 +1769,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         functions
             .iter()
             .zip(function_defs)
-            .filter_map(|((func, span, _, _, _, _), def)| Some((func, *span, def?)))
+            .filter_map(|((func, span, _, _, _, _, _), def)| Some((func, *span, def?)))
             .for_each(|(func, span, def)| {
                 self.check_function(func, def, span);
             });

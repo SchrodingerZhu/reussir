@@ -1,0 +1,2 @@
+#[ffi(import)]
+pub fn print_u64(v: u64) [{ println!("{v}") }];

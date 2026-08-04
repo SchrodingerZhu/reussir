@@ -1,0 +1,5 @@
+// The built-in core package. `core::intrinsic` holds the declaration sites
+// of the compiler's intrinsic operations; the language-coupled traits and
+// types (`core::cmp`, the prelude) land here as the library grows.
+
+pub mod intrinsic;

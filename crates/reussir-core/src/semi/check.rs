@@ -383,6 +383,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.record_use(path.basename);
                 let proto = self.functions[&def].clone();
                 let inst = self.instantiate(&proto.generics, &[], span);
+                if self.reject_intrinsic_value(def, span) {
+                    return self.poison(span);
+                }
                 return self.lift_function(def, &proto, &inst, span);
             }
             // A bare name bound by an import to a *qualified* path (e.g.
@@ -676,6 +679,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // function to a closure and applies the supplied arguments, yielding a
         // residual closure over the rest (`add(5)` : `i32 -> i32`).
         if fc.args.len() < proto.params.len() {
+            if self.reject_intrinsic_value(def, span) {
+                return self.poison(span);
+            }
             let lifted = self.lift_function(def, &proto, &inst, span);
             return self.closure_apply(lifted, &fc.args, span);
         }
@@ -1385,6 +1391,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// an unapplied generic, which the surrounding context then solves). This
     /// reuses the ordinary closure path, so ownership and codegen need no
     /// special case.
+    /// Reject lifting a bound intrinsic prototype: the declaration is a
+    /// location anchor; the operation itself has no function value (calls
+    /// through its path are intercepted as the intrinsic).
+    fn reject_intrinsic_value(&mut self, def: DefId, span: Option<Span>) -> bool {
+        if self.lang.is_intrinsic_def(def) {
+            let shown = self.defs.path(def).display(self.resolver);
+            self.error(
+                span,
+                format!("`{shown}` is an intrinsic and cannot be used as a value"),
+            );
+            return true;
+        }
+        false
+    }
+
     fn lift_function(
         &mut self,
         def: DefId,

@@ -52,6 +52,9 @@ macro_rules! math_fns {
                     $(MathFn::$variant => MathKind::$kind),*
                 }
             }
+
+            /// Every surfaced math intrinsic, for coverage checks.
+            pub const ALL: &'static [MathFn] = &[$(MathFn::$variant),*];
         }
     };
 }
@@ -151,7 +154,7 @@ impl FastMath {
 /// these carry their own HIR/MIR node (`ExprKind::ArrayOp`) because
 /// `Tabulate`/`Fold` hold an inline kernel body, which the generic
 /// `Intrinsic` node cannot.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ArrayFn {
     /// `splat<[T; e…]>(v)`: every element is `v`. Value operands: `[v]`.
     Splat,

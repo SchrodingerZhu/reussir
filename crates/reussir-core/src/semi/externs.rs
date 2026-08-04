@@ -357,8 +357,10 @@ impl<'tcx> Elaborator<'_, 'tcx> {
             let def = defs[pdef.0 as usize];
             let actual = if self.traits.trait_by_def(def).is_some() {
                 crate::semi::lang::LangItemKind::Trait
-            } else {
+            } else if self.records.contains_key(&def) {
                 crate::semi::lang::LangItemKind::Record
+            } else {
+                crate::semi::lang::LangItemKind::Function
             };
             self.declare_lang(item, def, actual, None);
         }

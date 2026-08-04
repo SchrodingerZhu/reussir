@@ -1,0 +1,123 @@
+// The math intrinsics' declaration sites. Each prototype is bound to the
+// compiler's operation by its `#[lang]` marker: checking and lowering stay
+// wired in the compiler (calls through these paths are intercepted as the
+// intrinsic, and the prototypes are not values), but the operation now has
+// a real declaration — locations for diagnostics, debug info, and the LSP.
+//
+// Every operation is generic over the floating-point format and takes the
+// fast-math flag as its trailing `i64` argument, exactly as call sites
+// spell it.
+
+#[lang("core::intrinsic::math::absf")]
+pub fn absf<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::acos")]
+pub fn acos<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::acosh")]
+pub fn acosh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::asin")]
+pub fn asin<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::asinh")]
+pub fn asinh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::atan")]
+pub fn atan<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::atanh")]
+pub fn atanh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::cbrt")]
+pub fn cbrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::ceil")]
+pub fn ceil<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::cos")]
+pub fn cos<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::cosh")]
+pub fn cosh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::erf")]
+pub fn erf<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::erfc")]
+pub fn erfc<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::exp")]
+pub fn exp<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::exp2")]
+pub fn exp2<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::expm1")]
+pub fn expm1<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::floor")]
+pub fn floor<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::log10")]
+pub fn log10<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::log1p")]
+pub fn log1p<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::log2")]
+pub fn log2<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::round")]
+pub fn round<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::roundeven")]
+pub fn roundeven<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::rsqrt")]
+pub fn rsqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::sin")]
+pub fn sin<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::sinh")]
+pub fn sinh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::sqrt")]
+pub fn sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::tan")]
+pub fn tan<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::tanh")]
+pub fn tanh<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::trunc")]
+pub fn trunc<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::isfinite")]
+pub fn isfinite<F: FloatingPoint>(x: F, fastmath: i64) -> bool;
+
+#[lang("core::intrinsic::math::isinf")]
+pub fn isinf<F: FloatingPoint>(x: F, fastmath: i64) -> bool;
+
+#[lang("core::intrinsic::math::isnan")]
+pub fn isnan<F: FloatingPoint>(x: F, fastmath: i64) -> bool;
+
+#[lang("core::intrinsic::math::isnormal")]
+pub fn isnormal<F: FloatingPoint>(x: F, fastmath: i64) -> bool;
+
+#[lang("core::intrinsic::math::atan2")]
+pub fn atan2<F: FloatingPoint>(x: F, y: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::copysign")]
+pub fn copysign<F: FloatingPoint>(x: F, y: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::powf")]
+pub fn powf<F: FloatingPoint>(x: F, y: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::fma")]
+pub fn fma<F: FloatingPoint>(x: F, y: F, z: F, fastmath: i64) -> F;
+
+#[lang("core::intrinsic::math::fpowi")]
+pub fn fpowi<F: FloatingPoint>(x: F, e: i32, fastmath: i64) -> F;

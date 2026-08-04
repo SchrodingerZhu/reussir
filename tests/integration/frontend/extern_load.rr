@@ -26,10 +26,12 @@
 // RUN:   | %FileCheck %s --check-prefix=PLAIN
 // PLAIN: plain HIR dump, not a package interface
 
-// `core` and the compiling package's own name are reserved.
+// `core` loads like any other dependency now (rene injects the bundled
+// one), so the name is no longer refused — but the interface must really
+// describe the package the flag names.
 // RUN: %not %rrc %s --package-name app --extern core=%t.rri --emit hir -o - 2>&1 \
 // RUN:   | %FileCheck %s --check-prefix=CORE
-// CORE: `core` is the builtin package
+// CORE: describes package `dep`, but was loaded as `--extern core=...`
 // RUN: %not %rrc %s --package-name dep --extern dep=%t.rri --emit hir -o - 2>&1 \
 // RUN:   | %FileCheck %s --check-prefix=SHADOW
 // SHADOW: shadows the package being compiled

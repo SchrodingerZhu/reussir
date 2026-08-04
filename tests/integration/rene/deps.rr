@@ -9,7 +9,8 @@
 // and any writes.
 //
 // The fixture graph: app 0.1.0 → util ^1.2 (at 1.2.9) → logs 0.3 (at
-// 0.3.4), with app also depending on logs unconstrained.
+// 0.3.4), with app also depending on logs unconstrained — plus the
+// implicit edge every package gets to the bundled `core` (constraint `*`).
 
 // RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --solved --graph --commands | %FileCheck %s
 
@@ -28,20 +29,34 @@
 // CHECK: "version": "1.2.9"
 // CHECK: "root": "app"
 
-// The plan: dependency-first (logs, then util, then the root), each
+// The plan: dependency-first (core, logs, then util, then the root), each
 // dependency emitting its interface and its archive into
 // `<profile>/deps/`, the root's targets compiling against them. A node's
 // JSON keys sort alphabetically, so its commands precede its `package` tag.
 // CHECK: "plan": {
 // CHECK: "REUSSIR_RUSTC": "<baked-rustc>"
 
-// logs first: no dependencies, so no externs on its interface.
+// The bundled core first: it depends on nothing, and its compiles carry
+// `--core` to lift the reserved-name check for exactly this build.
+// CHECK: "--package-name",
+// CHECK-NEXT: "core",
+// CHECK-NEXT: "--emit",
+// CHECK-NEXT: "rri",
+// CHECK-NEXT: "-o",
+// CHECK-NEXT: "{{.*}}{{[/\\]+}}dev{{[/\\]+}}deps{{[/\\]+}}core.rri",
+// CHECK-NEXT: "--core"
+// CHECK: "package": "core"
+
+// logs: no declared dependencies, so its interface sees only the implicit
+// core.
 // CHECK: "--package-name",
 // CHECK-NEXT: "logs",
 // CHECK-NEXT: "--emit",
 // CHECK-NEXT: "rri",
 // CHECK-NEXT: "-o",
-// CHECK-NEXT: "{{.*}}{{[/\\]+}}dev{{[/\\]+}}deps{{[/\\]+}}logs.rri"
+// CHECK-NEXT: "{{.*}}{{[/\\]+}}dev{{[/\\]+}}deps{{[/\\]+}}logs.rri",
+// CHECK-NEXT: "--extern",
+// CHECK-NEXT: "core={{.*}}core.rri"
 // CHECK: "emit": "rri"
 // CHECK: "emit": "staticlib"
 // CHECK: "package": "logs"
@@ -57,6 +72,10 @@
 // CHECK-NEXT: "rri",
 // CHECK-NEXT: "-o",
 // CHECK-NEXT: "{{.*}}util.rri",
+// CHECK-NEXT: "--extern",
+// CHECK-NEXT: "core={{.*}}core.rri",
+// CHECK-NEXT: "--extern-src",
+// CHECK-NEXT: "core={{.*}}core-src{{.*}}src",
 // CHECK-NEXT: "--extern",
 // CHECK-NEXT: "logs={{.*}}logs.rri",
 // CHECK-NEXT: "--extern-src",
@@ -76,6 +95,10 @@
 // CHECK-NEXT: "--emit",
 // CHECK-NEXT: "executable",
 // CHECK: "--extern",
+// CHECK-NEXT: "core={{.*}}core.rri",
+// CHECK-NEXT: "--extern-src",
+// CHECK-NEXT: "core={{.*}}src",
+// CHECK-NEXT: "--extern",
 // CHECK-NEXT: "logs={{.*}}logs.rri",
 // CHECK-NEXT: "--extern-src",
 // CHECK-NEXT: "logs={{.*}}src",
@@ -86,7 +109,9 @@
 // CHECK-NEXT: "--link-lib",
 // CHECK-NEXT: "{{.*}}{{(lib)?}}util.{{(a|lib)}}",
 // CHECK-NEXT: "--link-lib",
-// CHECK-NEXT: "{{.*}}{{(lib)?}}logs.{{(a|lib)}}"
+// CHECK-NEXT: "{{.*}}{{(lib)?}}logs.{{(a|lib)}}",
+// CHECK-NEXT: "--link-lib",
+// CHECK-NEXT: "{{.*}}{{(lib)?}}core.{{(a|lib)}}"
 // CHECK: "target": "demo"
 // CHECK: "--emit",
 // CHECK-NEXT: "dynlib",
@@ -98,6 +123,7 @@
 // The solved pins, one per package (`resolution` sorts after `plan`).
 // CHECK: "resolution": {
 // CHECK-NEXT: "app": "0.1.0",
+// CHECK-NEXT: "core": "0.1.0",
 // CHECK-NEXT: "logs": "0.3.4",
 // CHECK-NEXT: "util": "1.2.9"
 

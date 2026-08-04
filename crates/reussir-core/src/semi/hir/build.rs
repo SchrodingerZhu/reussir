@@ -323,6 +323,11 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
             mark(b.trait_item_def(&t.path), marker)?;
         }
     }
+    for f in &raw.funcs {
+        if let Some(marker) = f.lang.as_deref() {
+            mark(b.function_def(&f.path), marker)?;
+        }
+    }
     let impls: Vec<ImplText<'tcx>> = raw.impls.iter().map(|i| b.impl_text(i)).collect();
     let funcs: Vec<Function<'tcx>> = raw.funcs.iter().map(|f| b.func(f)).collect();
     let transform_anchors = raw

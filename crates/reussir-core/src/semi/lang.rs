@@ -23,6 +23,44 @@ use crate::semi::traits::TraitId;
 use crate::semi::traits::builtins::Builtins;
 use crate::semi::ty::DefId;
 
+/// A `core::intrinsic` operation, as a lang item: the marker on the
+/// prototype `core` declares for it, so the operation has a real
+/// declaration site (locations for diagnostics, debug info, the LSP)
+/// while checking and lowering stay wired in the compiler.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum IntrinsicItem {
+    Math(crate::intrinsic::MathFn),
+    Array(crate::intrinsic::ArrayFn),
+    Cell(crate::intrinsic::CellFn),
+}
+
+impl IntrinsicItem {
+    pub fn family(self) -> &'static str {
+        match self {
+            IntrinsicItem::Math(_) => "math",
+            IntrinsicItem::Array(_) => "array",
+            IntrinsicItem::Cell(_) => "cell",
+        }
+    }
+
+    pub fn op_name(self) -> &'static str {
+        match self {
+            IntrinsicItem::Math(f) => f.as_str(),
+            IntrinsicItem::Array(f) => f.as_str(),
+            IntrinsicItem::Cell(f) => f.as_str(),
+        }
+    }
+
+    fn from_parts(family: &str, name: &str) -> Option<IntrinsicItem> {
+        match family {
+            "math" => crate::intrinsic::MathFn::parse(name).map(IntrinsicItem::Math),
+            "array" => crate::intrinsic::ArrayFn::parse(name).map(IntrinsicItem::Array),
+            "cell" => crate::intrinsic::CellFn::parse(name).map(IntrinsicItem::Cell),
+            _ => None,
+        }
+    }
+}
+
 /// Every language item the compiler recognizes. Closed: an unknown
 /// `#[lang("…")]` name is a diagnostic, so the set is versioned with the
 /// compiler.
@@ -43,6 +81,9 @@ pub enum LangItem {
     Ord,
     /// `core::cmp::Ordering`, the result of `Ord::cmp`.
     Ordering,
+    /// A `core::intrinsic` operation's prototype
+    /// (`#[lang("core::intrinsic::math::sqrt")]`).
+    Intrinsic(IntrinsicItem),
 }
 
 /// What kind of declaration a lang item must be.
@@ -50,10 +91,12 @@ pub enum LangItem {
 pub enum LangItemKind {
     Trait,
     Record,
+    Function,
 }
 
 impl LangItem {
-    pub const ALL: [LangItem; 10] = [
+    /// The fixed (non-intrinsic) items, for enumeration.
+    pub const FIXED: [LangItem; 10] = [
         LangItem::Num,
         LangItem::Integral,
         LangItem::FloatingPoint,
@@ -66,29 +109,38 @@ impl LangItem {
         LangItem::Ordering,
     ];
 
-    /// The attribute spelling: `#[lang("partial_eq")]`.
-    pub fn name(self) -> &'static str {
+    /// The attribute spelling: `#[lang("partial_eq")]`,
+    /// `#[lang("core::intrinsic::math::sqrt")]`.
+    pub fn name(self) -> String {
         match self {
-            LangItem::Num => "num",
-            LangItem::Integral => "integral",
-            LangItem::FloatingPoint => "floating_point",
-            LangItem::PtrLike => "ptr_like",
-            LangItem::Sync => "sync",
-            LangItem::PartialEq => "partial_eq",
-            LangItem::Eq => "eq",
-            LangItem::PartialOrd => "partial_ord",
-            LangItem::Ord => "ord",
-            LangItem::Ordering => "ordering",
+            LangItem::Num => "num".into(),
+            LangItem::Integral => "integral".into(),
+            LangItem::FloatingPoint => "floating_point".into(),
+            LangItem::PtrLike => "ptr_like".into(),
+            LangItem::Sync => "sync".into(),
+            LangItem::PartialEq => "partial_eq".into(),
+            LangItem::Eq => "eq".into(),
+            LangItem::PartialOrd => "partial_ord".into(),
+            LangItem::Ord => "ord".into(),
+            LangItem::Ordering => "ordering".into(),
+            LangItem::Intrinsic(op) => {
+                format!("core::intrinsic::{}::{}", op.family(), op.op_name())
+            }
         }
     }
 
     pub fn from_name(name: &str) -> Option<LangItem> {
-        Self::ALL.into_iter().find(|item| item.name() == name)
+        if let Some(rest) = name.strip_prefix("core::intrinsic::") {
+            let (family, op) = rest.split_once("::")?;
+            return IntrinsicItem::from_parts(family, op).map(LangItem::Intrinsic);
+        }
+        Self::FIXED.into_iter().find(|item| item.name() == name)
     }
 
     pub fn kind(self) -> LangItemKind {
         match self {
             LangItem::Ordering => LangItemKind::Record,
+            LangItem::Intrinsic(_) => LangItemKind::Function,
             _ => LangItemKind::Trait,
         }
     }
@@ -153,6 +205,15 @@ impl LangItems {
             .iter()
             .map(|&(item, def)| (def, item))
             .collect()
+    }
+
+    /// Whether `def` is a bound intrinsic prototype — a location anchor,
+    /// not a callable value (calls to its path are intercepted as the
+    /// intrinsic itself).
+    pub fn is_intrinsic_def(&self, def: DefId) -> bool {
+        self.declared
+            .iter()
+            .any(|&(item, d)| d == def && matches!(item, LangItem::Intrinsic(_)))
     }
 
     /// The checkpoint counter, in the elaborator's truncate-and-retain

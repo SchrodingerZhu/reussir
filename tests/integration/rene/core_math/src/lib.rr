@@ -1,0 +1,12 @@
+// Intrinsic calls keep their compiler-intercepted checking and lowering;
+// the implicit `core` dependency supplies their declaration sites.
+
+fn is_f64(x: f64, want: f64) -> u64 {
+    if x == want { 1 } else { 0 }
+}
+
+#[main]
+pub fn entry() {
+    console::print_u64(is_f64(core::intrinsic::math::sqrt(9.0, 0), 3.0));
+    console::print_u64(is_f64(core::intrinsic::math::powf(2.0, 10.0, 0), 1024.0));
+}

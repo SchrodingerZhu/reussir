@@ -41,6 +41,10 @@ pub struct Package {
     /// of every item's module path.
     pub name: String,
     pub version: Option<String>,
+    /// Opt out of the implicit dependency on the built-in `core` package.
+    /// `core` itself sets it; ordinary packages should not.
+    #[serde(default)]
+    pub no_core: bool,
 }
 
 /// One declared dependency. Unknown fields are rejected — a typo'd

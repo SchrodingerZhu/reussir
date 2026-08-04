@@ -34,6 +34,12 @@ pub(crate) struct Cli {
     #[arg(long = "package-name")]
     pub(crate) package_name: Option<String>,
 
+    /// Compile the built-in `core` package itself: lifts the reservation on
+    /// the `core` package name. Passed by `rene` when it builds the bundled
+    /// core sources; not for user packages.
+    #[arg(long = "core", default_value_t = false)]
+    pub(crate) core: bool,
+
     /// Instead of compiling, describe the package's source graph — `lib.rr`
     /// plus everything reachable through `mod` declarations — as JSON:
     /// `{"package": …, "files": [{"path": …, "module": […]}]}`, with files in

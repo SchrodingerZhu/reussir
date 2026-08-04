@@ -11,6 +11,7 @@
 //! package ([`new`]).
 
 pub mod compile;
+pub mod core_src;
 pub mod db;
 pub mod deps;
 pub mod exec;

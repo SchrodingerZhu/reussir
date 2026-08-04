@@ -150,10 +150,11 @@ FfiPreludeDecl: raw::FfiPrelude =
     };
 
 Func: raw::Func =
-    <a:("#" "[" "transform_anchor" "]")?> <p:"pub"?> <r:"regional"?>
+    <lang:LangAttr?> <a:("#" "[" "transform_anchor" "]")?> <p:"pub"?> <r:"regional"?>
     "fn" "#" <path:QPath> <generics:Generics?>
     "(" <params:Comma<Param>> ")" "->" <ret:Ty> <loc:ItemLoc?> <body:Body>
     => raw::Func {
+        lang,
         transform_anchor: a.is_some(),
         is_pub: p.is_some(),
         regional: r.is_some(),
@@ -289,6 +290,8 @@ BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
 Name: &'input str = {
     <name:"ident"> => name,
     "lang" => "lang",
+    "intrinsic" => "intrinsic",
+    "array" => "array",
     "trait" => "trait",
     "impl" => "impl",
     "transform" => "transform",

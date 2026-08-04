@@ -225,6 +225,8 @@ pub struct Transform {
 
 #[derive(Clone, Debug)]
 pub struct Func {
+    /// A `#[lang("…")]` marker naming the language item this declares.
+    pub lang: Option<String>,
     pub transform_anchor: bool,
     pub is_pub: bool,
     pub regional: bool,
