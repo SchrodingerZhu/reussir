@@ -1727,6 +1727,142 @@ mod tests {
         );
     }
 
+    /// The Hash/Hasher shape across modules — the pattern's full interplay
+    /// in one package: the trait pair at the root (a trait method carrying
+    /// its *own* bounded generic, `fn hash<H: Hasher>`), the hasher impl,
+    /// the ground and generic `Hash` impls, and the bounded API each in
+    /// their own module, every bound spelled through a qualified path
+    /// (`super::Hash`). Pins the collected shapes, the dispatch split
+    /// (`TraitCall` only under generic receivers), and — end to end —
+    /// that the whole package monomorphizes to dictionary-free MIR.
+    #[test]
+    fn hash_hasher_shape_across_modules() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod fnv; mod geo; mod pairs; mod api;\n\
+                     pub trait Hasher {\n\
+                         fn write_i64(self: Self, x: i64) -> Self;\n\
+                         fn finish(self: Self) -> i64;\n\
+                     }\n\
+                     pub trait Hash {\n\
+                         fn hash<H: Hasher>(self: Self, state: H) -> H;\n\
+                     }",
+                ),
+                (
+                    &["fnv"],
+                    "pub struct Fnv { pub state: i64 }\n\
+                     impl super::Hasher for Fnv {\n\
+                         fn write_i64(self: Self, x: i64) -> Self {\n\
+                             Fnv { state: self.state * 31 + x }\n\
+                         }\n\
+                         fn finish(self: Self) -> i64 { self.state }\n\
+                     }",
+                ),
+                (
+                    &["geo"],
+                    "pub struct Point { pub x: i64, pub y: i64 }\n\
+                     impl super::Hash for Point {\n\
+                         fn hash<H: super::Hasher>(self: Self, state: H) -> H {\n\
+                             state.write_i64(self.x).write_i64(self.y)\n\
+                         }\n\
+                     }",
+                ),
+                (
+                    &["pairs"],
+                    "pub struct Pair<A, B> { pub a: A, pub b: B }\n\
+                     impl<A: super::Hash, B: super::Hash> super::Hash for Pair<A, B> {\n\
+                         fn hash<H: super::Hasher>(self: Self, state: H) -> H {\n\
+                             self.b.hash(self.a.hash(state))\n\
+                         }\n\
+                     }",
+                ),
+                (
+                    &["api"],
+                    "pub fn hash_of<T: super::Hash>(v: T) -> i64 {\n\
+                         v.hash(super::fnv::Fnv { state: 5381 }).finish()\n\
+                     }\n\
+                     pub fn demo(p: super::geo::Point) -> i64 {\n\
+                         hash_of(p) + hash_of(super::pairs::Pair { a: p, b: p })\n\
+                     }",
+                ),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+
+                // The collected shapes: `Hash::hash` carries one own generic
+                // bounded by `Hasher` (resolved across the module boundary),
+                // a by-value receiver, and `Hasher` declares two methods.
+                let trait_named = |name: &str| {
+                    (0..elab.traits.traits_len() as u32)
+                        .map(crate::semi::traits::TraitId)
+                        .find(|&t| {
+                            let def = elab.traits.trait_def(t).def;
+                            elab.sym(elab.defs.path(def).name()) == name
+                        })
+                        .expect("trait registered")
+                };
+                let (hash, hasher) = (trait_named("Hash"), trait_named("Hasher"));
+                assert_eq!(elab.traits.trait_def(hasher).methods.len(), 2);
+                let sig = &elab.traits.trait_def(hash).methods[0];
+                assert_eq!(sig.generics.len(), 1, "hash<H> has one own generic");
+                assert_eq!(
+                    elab.generic_bounds(sig.generics[0].1),
+                    [hasher],
+                    "H's bound resolved to Hasher through `super::`"
+                );
+                assert_eq!(sig.receiver, crate::semi::traits::def::ReceiverForm::Value);
+
+                // The generic Pair impl recorded both bounds as assumptions.
+                let pair_impl = elab
+                    .traits
+                    .impls()
+                    .find(|i| i.generics.len() == 2)
+                    .expect("the Pair impl");
+                assert_eq!(pair_impl.trait_ref.trait_id, hash);
+                assert_eq!(pair_impl.where_clauses.len(), 2);
+
+                // Dispatch split: every trait-method call in this package
+                // sits under a generic receiver, so each is a TraitCall —
+                // one in `hash_of` (Hash), two in `geo`'s body (Hasher on
+                // H), two in `pairs`' body (Hash on A/B); the ground calls
+                // in `demo` and the `.finish()` on the solved H are plain
+                // calls.
+                let mut trait_calls = 0;
+                for f in &elab.elaborated {
+                    if let Some(body) = &f.body {
+                        crate::full::mono::for_each_expr(body, &mut |e| {
+                            if matches!(e.kind, hir::ExprKind::TraitCall { .. }) {
+                                trait_calls += 1;
+                            }
+                        });
+                    }
+                }
+                assert_eq!(
+                    trait_calls, 5,
+                    "generic receivers defer, ground ones commit"
+                );
+
+                // End to end: the package monomorphizes cleanly, and the
+                // instances are direct calls (no poison, both impl methods
+                // ground at Fnv).
+                let (mir, reports) = crate::full::mono::monomorphize(&elab.mono_input());
+                assert!(reports.is_empty(), "{reports:#?}");
+                let text =
+                    crate::full::mir::print::Printer::new(&elab.defs, elab.resolver).program(&mir);
+                assert!(!text.contains("poison"), "unresolved dispatch:\n{text}");
+                for needle in ["9write_i64", "6finish", "4hash"] {
+                    assert!(
+                        text.contains(needle),
+                        "missing `{needle}` instance:\n{text}"
+                    );
+                }
+            },
+        );
+    }
+
     #[test]
     fn rejected_batch_retracts_trait_impls() {
         use std::sync::Arc;
