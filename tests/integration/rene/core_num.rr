@@ -18,6 +18,13 @@
 // RRI-DAG: #[lang("ptr_like")] #[sealed] pub trait #core::marker::PtrLike<{{.*}}(Self)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
 // RRI-DAG: #[lang("sync")] #[sealed] pub trait #core::marker::Sync<{{.*}}(Self)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
 
+// The numeric membership impls and the former anchors ship too.
+// RUN: %FileCheck %s --check-prefix=IMPLS < %t.bdir/dev/deps/core.rri
+// IMPLS-DAG: impl #core::num::Integral::<u8> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  }
+// IMPLS-DAG: impl #core::num::FloatingPoint::<f64> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  }
+// IMPLS-DAG: #[lang("arc")] pub [shared] struct #core::intrinsic::arc::Arc<{{.*}}(T)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  };
+// IMPLS-DAG: #[lang("cell")] pub [shared] struct #core::intrinsic::cell::Cell<{{.*}}(T)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  };
+
 // Intrinsic prototypes now bound against core's own tower.
 // RUN: %FileCheck %s --check-prefix=PROTO < %t.bdir/dev/deps/core.rri
 // PROTO: #[lang("core::intrinsic::math::sqrt")] pub fn #core::intrinsic::math::sqrt<{{.*}}: core::num::FloatingPoint>({{.*}}

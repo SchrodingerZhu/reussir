@@ -480,11 +480,11 @@ pub struct Elaborator<'a, 'tcx> {
     /// the fallback registration ([`Elaborator::ensure_cmp_fallback`])
     /// draws its declared names from the same table.
     pub(super) prelude_names: [(TokenKey, crate::semi::lang::LangItem); 10],
-    /// The operator-method names (`eq`, `lt`, `le`, `gt`, `ge`), interned at
-    /// construction: operator desugaring resolves the active trait's method
-    /// *by name*, so method order in `core`'s declarations is not a
-    /// compiler contract.
-    pub(super) cmp_method_names: [TokenKey; 5],
+    /// The operator-method names (`eq`, `lt`, `le`, `gt`, `ge`, `cmp`),
+    /// interned at construction: operator desugaring and the builtin-impl
+    /// rewrites resolve the active trait's method *by name*, so method
+    /// order in `core`'s declarations is not a compiler contract.
+    pub(super) cmp_method_names: [TokenKey; 6],
     pub inside_region: bool,
     /// Generics required to be regional, accumulated while checking the current
     /// function body (e.g. a generic assigned into a flex link). Seeded from the
@@ -555,7 +555,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ]
             .map(|(name, item)| (interner.intern(name), item))
         };
-        let cmp_method_names = ["eq", "lt", "le", "gt", "ge"].map(|name| interner.intern(name));
+        let cmp_method_names =
+            ["eq", "lt", "le", "gt", "ge", "cmp"].map(|name| interner.intern(name));
         Elaborator {
             tcx,
             resolver: &**interner,
@@ -1458,6 +1459,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Some(item)
     }
 
+    /// A built-in type former's anchor (`#[lang("arc")] pub struct
+    /// Arc<T> { }`): a declaration *site* for the wired former — one type
+    /// parameter, no fields. The former itself keeps resolving by
+    /// spelling; the anchor is never a nominal type.
+    fn validate_former_anchor(
+        &mut self,
+        rec: &surface::Record,
+        former: crate::semi::lang::FormerItem,
+        span: Option<Span>,
+    ) {
+        let empty = matches!(
+            &rec.fields,
+            surface::RecordFields::Named(fields) if fields.is_empty()
+        );
+        if rec.kind != surface::RecordKind::StructKind || !empty || rec.ty_params.len() != 1 {
+            self.error(
+                span,
+                format!(
+                    "a builtin-type anchor must be an empty struct with one type parameter: `#[lang(\"{}\")]` binds the former's declaration site",
+                    former.name()
+                ),
+            );
+        }
+    }
+
     /// The `#[sealed]` marker on a trait: no user impls (the compiler
     /// provides them, as with the numeric tower). Bare — any argument is a
     /// diagnostic.
@@ -1548,7 +1574,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// alone and a partially bound one is completed. Runs *before* the
     /// batch's trait scan: a root-name collision is then always the user
     /// declaration's error, exactly as with the numeric tower.
-    fn ensure_cmp_fallback(&mut self) {
+    pub(super) fn ensure_cmp_fallback(&mut self) {
         use crate::semi::lang::LangItem;
 
         // Resolve-or-declare the tower's traits: a declared item (a loaded
@@ -1581,7 +1607,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// after the trait-stub scan so a tower the batch itself declares —
     /// `core` compiling itself, a hand-declared REPL tower — completes the
     /// same way as the fallback's or a loaded interface's.
-    fn ensure_cmp_scalar_impls(&mut self) {
+    pub(super) fn ensure_cmp_scalar_impls(&mut self) {
         use crate::semi::lang::LangItem;
         use crate::semi::ty::{FpTy, IntTy};
         let resolve = |el: &Self, item| {
@@ -1711,7 +1737,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// scan so the edge targets whichever `PartialOrd` is active: the
     /// fallback's, a loaded interface's, or this very batch's (`core`
     /// compiling itself). Checkpoint-covered by `num_supers`.
-    fn ensure_num_partial_ord_edge(&mut self) {
+    pub(super) fn ensure_num_partial_ord_edge(&mut self) {
         use crate::semi::lang::LangItem;
         let Some(po) = self
             .lang
@@ -1776,6 +1802,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let ffi = self.validate_ffi_record(&rec, ffi, span);
                         let lang = self.lang_attr(&attrs, span);
                         self.reject_sealed_attr(&attrs, span);
+                        if let Some(crate::semi::lang::LangItem::Former(f)) = lang {
+                            self.validate_former_anchor(&rec, f, span);
+                        }
                         records.push((rec, span, scope, ffi, lang));
                     }
                     surface::StmtKind::Function(func) => {
@@ -1904,7 +1933,6 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // Every provenance of the tower is in place now — fallback, loaded
         // interface, or this very batch's stubs.
         self.ensure_num_partial_ord_edge();
-        self.ensure_cmp_scalar_impls();
         let record_defs: Vec<Option<DefId>> = records
             .iter()
             .map(|(rec, span, scope, ffi, lang)| {
@@ -2010,6 +2038,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 methods.push((&m.value, mspan, def));
             }
         }
+        // Scalar-impl completion runs after the impl scan, so a batch that
+        // declares the builtin impls itself — `core`, whose source carries
+        // them — is left alone; the completion only fills what no source
+        // or interface provided (the no-`core` fallback).
+        self.ensure_cmp_scalar_impls();
         functions
             .iter()
             .zip(&function_defs)
@@ -2433,6 +2466,128 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// against the trait's method signatures (exact set, positional, Self
     /// substituted), and register the `ImplDef`. Returns each member's
     /// declared def in member order so bodies join the common check flow.
+    /// The scalar type a primitive impl-target names: a bare primitive
+    /// spelling with no arguments, unshadowed by any record in scope.
+    fn prim_impl_target(
+        &mut self,
+        target: &surface::Path,
+        target_args: &[surface::Type],
+    ) -> Option<Ty<'tcx>> {
+        use crate::semi::ty::{FpTy, IntTy};
+        if !target.segments.is_empty()
+            || !target_args.is_empty()
+            || self.resolve_record_ref(target).is_some()
+        {
+            return None;
+        }
+        Some(match self.sym(target.basename) {
+            "i8" => self.tcx.mk_int(IntTy::Signed(8)),
+            "i16" => self.tcx.mk_int(IntTy::Signed(16)),
+            "i32" => self.tcx.mk_int(IntTy::Signed(32)),
+            "i64" => self.tcx.mk_int(IntTy::Signed(64)),
+            "u8" => self.tcx.mk_int(IntTy::Unsigned(8)),
+            "u16" => self.tcx.mk_int(IntTy::Unsigned(16)),
+            "u32" => self.tcx.mk_int(IntTy::Unsigned(32)),
+            "u64" => self.tcx.mk_int(IntTy::Unsigned(64)),
+            "f16" => self.tcx.mk_fp(FpTy::Ieee(16)),
+            "f32" => self.tcx.mk_fp(FpTy::Ieee(32)),
+            "f64" => self.tcx.mk_fp(FpTy::Ieee(64)),
+            "bfloat16" => self.tcx.mk_fp(FpTy::BFloat16),
+            "float8" => self.tcx.mk_fp(FpTy::Float8),
+            "bool" => self.tcx.mk_bool(),
+            "char" => self.tcx.mk_char(),
+            "str" => self.tcx.mk_str(),
+            "unit" => self.tcx.mk_unit(),
+            _ => return None,
+        })
+    }
+
+    /// The builtin-impl special form: `impl Trait for <primitive> { }`,
+    /// how `core` declares the compiler-provided impls in source — with a
+    /// real declaration site, serialized into the interface. Reserved to
+    /// lang-bound traits declared by the current package; the members are
+    /// compiler-provided (selection of the method-less impl lowers
+    /// intrinsically), so the body must be empty.
+    fn scan_builtin_impl(
+        &mut self,
+        ib: &surface::ImplBlock,
+        tid: TraitId,
+        targs_surface: &[surface::Type],
+        self_ty: Ty<'tcx>,
+        span: Option<Span>,
+    ) -> Vec<Option<DefId>> {
+        let nones = vec![None; ib.members.len()];
+        let tdef = self.traits.trait_def(tid);
+        let lang_bound = self.lang.item_of(tdef.def).is_some();
+        let local = !self.extern_defs.contains_key(&tdef.def);
+        if !lang_bound || !local {
+            self.error(
+                span,
+                format!(
+                    "cannot implement `{}` for a builtin type: builtin impls \
+                     are reserved to the package declaring the lang trait",
+                    self.trait_display(tid)
+                ),
+            );
+            return nones;
+        }
+        if !ib.members.is_empty() {
+            self.error(
+                span,
+                "the members of a builtin impl are compiler-provided; the \
+                 impl body must be empty",
+            );
+            return nones;
+        }
+        if !ib.generics.is_empty() {
+            self.error(span, "a builtin impl takes no generic parameters");
+            return nones;
+        }
+        let trait_args: Vec<Ty<'tcx>> = targs_surface.iter().map(|a| self.eval_type(a)).collect();
+        let expected = self.traits.trait_def(tid).params.len();
+        if trait_args.len() != expected {
+            self.error(
+                span,
+                format!(
+                    "trait `{}` expects {expected} type argument(s), got {}",
+                    self.trait_display(tid),
+                    trait_args.len()
+                ),
+            );
+            return nones;
+        }
+        let head = crate::semi::traits::coherence::head_key(self_ty).expect("scalars have heads");
+        if !self.traits.impls_for(tid, head).is_empty() {
+            self.error(
+                span,
+                format!(
+                    "conflicting implementations of trait `{}` for `{}`",
+                    self.trait_display(tid),
+                    self.ty_display(self_ty)
+                ),
+            );
+            return nones;
+        }
+        let id = crate::semi::traits::ImplId(self.traits.impls_len() as u32);
+        let mut args = Vec::with_capacity(1 + trait_args.len());
+        args.push(self_ty);
+        args.extend(trait_args.iter().copied());
+        self.traits.add_impl(crate::semi::traits::def::ImplDef {
+            id,
+            generics: Vec::new(),
+            trait_ref: crate::semi::traits::TraitRef {
+                trait_id: tid,
+                args,
+            },
+            self_ty,
+            where_clauses: Vec::new(),
+            methods: Vec::new(),
+            span,
+            file: self.current_file,
+        });
+        nones
+    }
+
     fn scan_trait_impl(
         &mut self,
         ib: &surface::ImplBlock,
@@ -2475,6 +2630,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return nones;
         };
+        // The builtin-impl special form: `impl Trait for <primitive> { }`.
+        // Detected before the sealed guard — `core` declares the sealed
+        // tower's own impls this way; every other package is rejected by
+        // the form's locality rule instead.
+        if let Some(scalar) = self.prim_impl_target(&ib.target, &ib.target_args) {
+            return self.scan_builtin_impl(ib, tid, targs_surface, scalar, span);
+        }
         if self.traits.trait_def(tid).sealed {
             self.error(
                 span,

@@ -1,0 +1,5 @@
+//! Anchor for the atomic-rc coloring: `Arc<X>` is the shared rc box `X`
+//! counted atomically, so the value may cross threads.
+
+#[lang("arc")]
+pub struct Arc<T> { }

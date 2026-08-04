@@ -171,8 +171,9 @@ mod tests {
         );
     }
 
-    /// Without `core`, comparing anything the compiler does not order
-    /// itself is a clean diagnostic, not a mislowering.
+    /// Comparing anything without an impl of the operator trait is the
+    /// ordinary missing-impl diagnostic — selection decides, uniformly,
+    /// instead of a type test at the operator (and never a mislowering).
     #[test]
     fn non_scalar_comparisons_need_core() {
         with_tcx(|tcx| {
@@ -187,12 +188,12 @@ mod tests {
             let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
             assert!(
                 msgs.iter()
-                    .any(|m| m.contains("`==` on `str` needs `core`'s `PartialEq`")),
+                    .any(|m| m.contains("`str` does not implement `PartialEq`")),
                 "{msgs:#?}"
             );
             assert!(
                 msgs.iter()
-                    .any(|m| m.contains("`<` on `P` needs `core`'s `PartialOrd`")),
+                    .any(|m| m.contains("`P` does not implement `PartialOrd`")),
                 "{msgs:#?}"
             );
         });
@@ -2096,6 +2097,18 @@ mod tests {
                     &["intrinsic", "math"],
                     include_str!("../../../library/core/src/intrinsic/math.rr"),
                 ),
+                (
+                    &["intrinsic", "arc"],
+                    include_str!("../../../library/core/src/intrinsic/arc.rr"),
+                ),
+                (
+                    &["intrinsic", "cell"],
+                    include_str!("../../../library/core/src/intrinsic/cell.rr"),
+                ),
+                (
+                    &["intrinsic", "nullable"],
+                    include_str!("../../../library/core/src/intrinsic/nullable.rr"),
+                ),
             ],
             |elab, _| {
                 assert!(!elab.has_errors(), "{:#?}", elab.reports);
@@ -2152,6 +2165,33 @@ mod tests {
                         .iter()
                         .any(|s| s.trait_id == po)
                 );
+                // Every former anchor binds, with a site, and is flagged
+                // as an anchor (never a nominal type).
+                for former in crate::semi::lang::FormerItem::ALL {
+                    let item = LangItem::Former(former);
+                    let def = elab
+                        .lang
+                        .get(item)
+                        .unwrap_or_else(|| panic!("core does not anchor `{}`", former.name()));
+                    assert!(elab.lang.is_former_anchor(def));
+                    assert!(
+                        elab.lang_item_site(item)
+                            .is_some_and(|(_, sp)| sp.is_some())
+                    );
+                }
+                // The builtin impls come from source: located, none
+                // compiler-provided, every scalar covered for `PartialEq`.
+                let pe = elab
+                    .traits
+                    .trait_by_def(elab.lang.get(LangItem::PartialEq).expect("declared"))
+                    .expect("trait-kinded");
+                let pe_impls: Vec<_> = elab
+                    .traits
+                    .impls()
+                    .filter(|i| i.trait_ref.trait_id == pe)
+                    .collect();
+                assert_eq!(pe_impls.len(), 15);
+                assert!(pe_impls.iter().all(|i| !i.compiler_provided()));
             },
         );
     }
@@ -2239,6 +2279,64 @@ mod tests {
                 "a rejected batch restores the builtin field"
             );
             assert_eq!(elab.lang.num, declared, "accepted repoints survive");
+        });
+    }
+
+    /// The builtin-impl special form is fenced: reserved to lang-bound
+    /// traits of the declaring package, body must be empty, duplicates
+    /// conflict — and a former anchor is a declaration site, not a
+    /// constructible struct.
+    #[test]
+    fn builtin_impl_and_anchor_matrix() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let src = r#"
+                pub trait Plain { fn p(self: Self) -> bool; }
+                impl Plain for i64 { }
+                #[lang("partial_eq")]
+                pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+                impl PartialEq for u8 { fn eq(self: Self, other: Self) -> bool { true } }
+                impl PartialEq for u16 { }
+                impl PartialEq for u16 { }
+                #[lang("arc")]
+                pub struct Arc2<T> { }
+                #[lang("nullable")]
+                pub struct Bad { pub x: i64 }
+                pub fn go() -> Arc2<i64> { Arc2 { } }
+            "#;
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
+            assert!(
+                msgs.iter().any(|m| m.contains(
+                    "cannot implement `Plain` for a builtin type: builtin impls are reserved"
+                )),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("members of a builtin impl are compiler-provided")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m
+                        .contains("conflicting implementations of trait `PartialEq` for `u16`")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m
+                        .contains("`Arc2` is a built-in type; construct it with its own syntax")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("a builtin-type anchor must be an empty struct")),
+                "{msgs:#?}"
+            );
         });
     }
 

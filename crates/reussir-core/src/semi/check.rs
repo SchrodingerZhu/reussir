@@ -543,7 +543,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             _ => {
                 let l = self.infer_expr(l);
                 let ty = self.infer.shallow_resolve(l.ty);
-                if ty.is_scalar() || matches!(ty.kind(), TyKind::Hole(_)) {
+                if matches!(ty.kind(), TyKind::Hole(_)) {
+                    // Inference: the operand is still an open hole — commit
+                    // to the intrinsic form under a comparison obligation
+                    // (defaulting or context solves the hole; a non-scalar
+                    // solution is caught at monomorphization). Everything
+                    // resolved dispatches through the trait: whether the
+                    // comparison is intrinsic is the *impl*'s property, not
+                    // a type test here.
                     let r = self.check_expr(r, l.ty);
                     self.register_cmp_bound(op, ty, span);
                     let bool_ty = self.tcx.mk_bool();
@@ -619,27 +626,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let name = self.cmp_method_names[name_idx];
         let methods = &self.traits.trait_def(tid).methods;
         let Some(midx) = methods.iter().position(|m| m.name == name) else {
-            // The method-less fallback tower. A generic operand keeps the
-            // intrinsic path — its comparison bound admits only scalar
-            // instantiations (the fallback impls cover nothing else), so
-            // monomorphization grounds this `Cmp` to a scalar one. Anything
-            // concrete needs `core`.
-            if matches!(self.infer.shallow_resolve(l.ty).kind(), TyKind::Generic(_)) {
-                let r = self.check_expr(r, l.ty);
-                self.register_bound(tid, l.ty, span);
-                let bool_ty = self.tcx.mk_bool();
-                let cop = cmp_op(op);
-                return self.mk_expr(ExprKind::Cmp(Box::new(l), cop, Box::new(r)), bool_ty, span);
-            }
-            let shown_trait = self.trait_display(tid);
-            self.error(
-                span,
-                format!(
-                    "`{sym}` on `{shown_ty}` needs `core`'s `{shown_trait}` — the \
-                     compiler's fallback `{shown_trait}` is a method-less marker"
-                ),
-            );
-            return self.poison(span);
+            // The method-less fallback tower: selection decides. A
+            // compiler impl (the scalars) grounds the intrinsic here; a
+            // bound on a generic grounds it at monomorphization; no
+            // evidence is the ordinary missing-impl diagnostic.
+            let ty = self.infer.resolve(l.ty);
+            let goal = Obligation::Trait(TraitRef {
+                trait_id: tid,
+                args: vec![ty],
+            });
+            let outcome = SelectCtxt::new(&self.traits, self.tcx, &self.generics).select(&goal);
+            return match outcome {
+                Ok(_) => {
+                    let r = self.check_expr(r, l.ty);
+                    let bool_ty = self.tcx.mk_bool();
+                    let cop = cmp_op(op);
+                    self.mk_expr(ExprKind::Cmp(Box::new(l), cop, Box::new(r)), bool_ty, span)
+                }
+                Err(SelectError::NoImpl(inner)) => {
+                    let msg = self.no_impl_message(ty, tid, &inner);
+                    self.error(span, msg);
+                    self.poison(span)
+                }
+                Err(SelectError::DepthLimit(goal)) => {
+                    let msg = self.depth_limit_message(&goal);
+                    self.error(span, msg);
+                    self.poison(span)
+                }
+            };
         };
         let call = self.dispatch_trait_method(tid, midx, l, std::slice::from_ref(r), span);
         if !negate {
@@ -859,6 +873,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
             };
             return self.dispatch_generic_dot(g, cur, receiver, *name, args, span);
+        }
+        // A scalar receiver has no fields either; its dot calls dispatch
+        // through the traits the builtin impls provide (`a.eq(b)`,
+        // `a.cmp(b)` — lowered intrinsically by the selected impl).
+        if cur.is_scalar()
+            && let surface::Access::Named(name) = last
+        {
+            let receiver = if indices.is_empty() {
+                base
+            } else {
+                self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
+            };
+            return self.dispatch_scalar_dot(cur, receiver, *name, args, span);
         }
         let TyKind::Record {
             def,
@@ -1205,8 +1232,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match outcome {
             Ok(Evidence::Impl { impl_id, .. }) => {
                 let Some(&def) = self.traits.impl_def(impl_id).methods.get(midx) else {
-                    // The impl elaborated with errors, reported at its site.
-                    return self.poison(span);
+                    // A method-less impl: the builtin special form (or its
+                    // no-`core` fallback twin). For the comparison tower
+                    // the call *is* the intrinsic — this is also what makes
+                    // method syntax on scalars work, `(5).eq(3)`. Any other
+                    // method-less selection means the impl elaborated with
+                    // errors, reported at its site.
+                    return self.builtin_cmp_call(tid, mname, receiver, args, span);
                 };
                 let TyKind::Record { def: head, .. } = *peeled.kind() else {
                     unreachable!("user impls target records, so a selected method has one");
@@ -1239,6 +1271,207 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.poison(span)
             }
         }
+    }
+
+    /// Dot dispatch on a scalar receiver: the traits its impls provide
+    /// are the only method sources (there are no fields and no inherent
+    /// methods). The unique named candidate wins.
+    fn dispatch_scalar_dot(
+        &mut self,
+        recv_ty: Ty<'tcx>,
+        receiver: Expr<'tcx>,
+        name: TokenKey,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let mut candidates: Vec<(TraitId, usize)> = self
+            .traits
+            .impls()
+            .filter(|imp| imp.self_ty == recv_ty)
+            .filter_map(|imp| {
+                let tid = imp.trait_ref.trait_id;
+                self.traits
+                    .trait_def(tid)
+                    .methods
+                    .iter()
+                    .position(|m| m.name == name)
+                    .map(|midx| (tid, midx))
+            })
+            .collect();
+        candidates.sort_unstable_by_key(|(tid, _)| tid.0);
+        candidates.dedup();
+        match candidates.as_slice() {
+            [] => {
+                self.error(
+                    span,
+                    format!(
+                        "no method `{}` on `{}`",
+                        self.sym(name),
+                        self.ty_display(recv_ty)
+                    ),
+                );
+                self.poison(span)
+            }
+            [(tid, midx)] => self.dispatch_trait_method(*tid, *midx, receiver, args, span),
+            more => {
+                let shown: Vec<String> = more
+                    .iter()
+                    .map(|(tid, _)| format!("`{}`", self.trait_display(*tid)))
+                    .collect();
+                self.error(
+                    span,
+                    format!(
+                        "ambiguous method `{}` on `{}`: provided by {}",
+                        self.sym(name),
+                        self.ty_display(recv_ty),
+                        shown.join(", ")
+                    ),
+                );
+                self.poison(span)
+            }
+        }
+    }
+
+    /// A selected method-less impl of a comparison-tower trait: the call
+    /// lowers intrinsically at check time. `eq`/`lt`/`le`/`gt`/`ge` become
+    /// the `Cmp` node; `cmp` becomes a let-bound three-way comparison
+    /// constructing `Ordering`. Selection already proved the impl, so no
+    /// obligation is registered.
+    fn builtin_cmp_call(
+        &mut self,
+        tid: TraitId,
+        mname: TokenKey,
+        receiver: Expr<'tcx>,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let lang_cmp = self
+            .lang
+            .item_of(self.traits.trait_def(tid).def)
+            .is_some_and(|item| item.is_cmp_trait());
+        let name_idx = self.cmp_method_names.iter().position(|&k| k == mname);
+        let (Some(idx), true, [other]) = (name_idx, lang_cmp, args) else {
+            // Not the builtin form: the impl elaborated with errors,
+            // already reported at its declaration site.
+            return self.poison(span);
+        };
+        let recv_ty = self.infer.resolve(receiver.ty);
+        let other = self.check_expr(other, recv_ty);
+        let bool_ty = self.tcx.mk_bool();
+        let op = match idx {
+            0 => CmpOp::Eq,
+            1 => CmpOp::Lt,
+            2 => CmpOp::Le,
+            3 => CmpOp::Gt,
+            4 => CmpOp::Ge,
+            _ => {
+                // `cmp`: bind both operands once, then the three-way
+                // comparison over them.
+                return self.three_way_cmp(tid, mname, receiver, other, recv_ty, span);
+            }
+        };
+        self.mk_expr(
+            ExprKind::Cmp(Box::new(receiver), op, Box::new(other)),
+            bool_ty,
+            span,
+        )
+    }
+
+    /// `Ord::cmp` on a builtin impl: `{ let a = recv; let b = other;
+    /// if a < b { Less } else { if a == b { Equal } else { Greater } } }`.
+    fn three_way_cmp(
+        &mut self,
+        tid: TraitId,
+        mname: TokenKey,
+        receiver: Expr<'tcx>,
+        other: Expr<'tcx>,
+        recv_ty: Ty<'tcx>,
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        // Ground the declared return type — `Ordering` — for this receiver.
+        let tdef = self.traits.trait_def(tid);
+        let sig = tdef
+            .methods
+            .iter()
+            .find(|m| m.name == mname)
+            .expect("dispatched by name");
+        let mut subst = crate::full::subst::Subst::default();
+        subst.insert(tdef.self_param, recv_ty);
+        let ret = crate::full::subst::subst_ty(self.tcx, sig.ret, &subst);
+        let TyKind::Record { def, .. } = *ret.kind() else {
+            self.error(span, "`cmp` must return `core`'s `Ordering`");
+            return self.poison(span);
+        };
+        let variant_of = |el: &Self, name: &str| -> Option<usize> {
+            let record = el.records.get(&def)?;
+            let Some(RecordFields::Variants(variants)) = &record.fields else {
+                return None;
+            };
+            variants.iter().position(|v| el.sym(v.name) == name)
+        };
+        let (Some(less), Some(equal), Some(greater)) = (
+            variant_of(self, "Less"),
+            variant_of(self, "Equal"),
+            variant_of(self, "Greater"),
+        ) else {
+            self.error(
+                span,
+                "`cmp` must return `core`'s `Ordering` (with variants `Less`, `Equal`, `Greater`)",
+            );
+            return self.poison(span);
+        };
+        let bool_ty = self.tcx.mk_bool();
+        let unit = self.tcx.mk_unit();
+        let a = self.vars.fresh(mname, recv_ty, span);
+        let b = self.vars.fresh(mname, recv_ty, span);
+        let bind = |el: &mut Self, var, value: Expr<'tcx>| {
+            el.mk_expr(
+                ExprKind::Let {
+                    var,
+                    name: mname,
+                    span,
+                    value: Box::new(value),
+                },
+                unit,
+                span,
+            )
+        };
+        let var = |el: &mut Self, v| el.mk_expr(ExprKind::Var(v), recv_ty, span);
+        let cmp = |el: &mut Self, op| {
+            let l = var(el, a);
+            let r = var(el, b);
+            el.mk_expr(ExprKind::Cmp(Box::new(l), op, Box::new(r)), bool_ty, span)
+        };
+        let ctor = |el: &mut Self, variant| {
+            el.mk_expr(
+                ExprKind::VariantCall {
+                    target: def,
+                    ty_args: Vec::new(),
+                    variant,
+                    args: Vec::new(),
+                },
+                ret,
+                span,
+            )
+        };
+        let bind_a = bind(self, a, receiver);
+        let bind_b = bind(self, b, other);
+        let lt = cmp(self, CmpOp::Lt);
+        let eq = cmp(self, CmpOp::Eq);
+        let less = ctor(self, less);
+        let equal = ctor(self, equal);
+        let greater = ctor(self, greater);
+        let inner = self.mk_expr(
+            ExprKind::If(Box::new(eq), Box::new(equal), Box::new(greater)),
+            ret,
+            span,
+        );
+        let outer = self.mk_expr(
+            ExprKind::If(Box::new(lt), Box::new(less), Box::new(inner)),
+            ret,
+            span,
+        );
+        self.mk_expr(ExprKind::Seq(vec![bind_a, bind_b, outer]), ret, span)
     }
 
     /// The generic-receiver half of (T-METHOD): type the call against the
@@ -2690,6 +2923,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         arc: bool,
         span: Option<Span>,
     ) -> Expr<'tcx> {
+        if self.lang.is_former_anchor(def) {
+            self.error(
+                span,
+                format!(
+                    "`{}` is a built-in type; construct it with its own syntax, not as a struct",
+                    self.sym(name)
+                ),
+            );
+            return self.poison(span);
+        }
         let record = self.records[&def].clone();
         if matches!(record.fields, Some(RecordFields::Variants(_))) {
             self.error(

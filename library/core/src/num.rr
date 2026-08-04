@@ -20,3 +20,21 @@ pub trait Integral: Num {}
 #[lang("floating_point")]
 #[sealed]
 pub trait FloatingPoint: Num {}
+
+// The builtin impls (see `core::cmp` for the form): membership of the
+// sealed numeric classes, declared in source.
+
+impl Integral for i8 { }
+impl Integral for i16 { }
+impl Integral for i32 { }
+impl Integral for i64 { }
+impl Integral for u8 { }
+impl Integral for u16 { }
+impl Integral for u32 { }
+impl Integral for u64 { }
+
+impl FloatingPoint for f16 { }
+impl FloatingPoint for f32 { }
+impl FloatingPoint for f64 { }
+impl FloatingPoint for bfloat16 { }
+impl FloatingPoint for float8 { }

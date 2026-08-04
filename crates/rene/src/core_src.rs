@@ -35,6 +35,18 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/intrinsic/mod.rr"),
     ),
     (
+        "src/intrinsic/arc.rr",
+        include_str!("../../../library/core/src/intrinsic/arc.rr"),
+    ),
+    (
+        "src/intrinsic/cell.rr",
+        include_str!("../../../library/core/src/intrinsic/cell.rr"),
+    ),
+    (
+        "src/intrinsic/nullable.rr",
+        include_str!("../../../library/core/src/intrinsic/nullable.rr"),
+    ),
+    (
         "src/intrinsic/math.rr",
         include_str!("../../../library/core/src/intrinsic/math.rr"),
     ),

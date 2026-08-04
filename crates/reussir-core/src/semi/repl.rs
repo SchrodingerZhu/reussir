@@ -76,6 +76,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             bindings,
             repl_box,
         } = request;
+        // An expression batch never reaches `run_files`, so ensure the
+        // comparison tower here — before the checkpoint, exactly like the
+        // scan driver, so rollback can never retract it mid-session.
+        self.ensure_cmp_fallback();
+        self.ensure_num_partial_ord_edge();
+        self.ensure_cmp_scalar_impls();
         let cp = self.checkpoint();
         let span = Some(expr.span());
 

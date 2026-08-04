@@ -61,6 +61,51 @@ impl IntrinsicItem {
     }
 }
 
+/// A built-in type *former* — `Arc`, `Nullable`, and the cell family —
+/// as a lang item: the marker on the anchor record `core` declares for
+/// it. The former itself stays wired (its canonical
+/// `core::intrinsic::…` spelling and bare prelude name resolve in
+/// `ty_eval` by spelling, never through the anchor); the anchor supplies
+/// the declaration site for diagnostics, debug info, and the LSP.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum FormerItem {
+    Arc,
+    Nullable,
+    /// One per [`crate::semi::ty::CellKind`].
+    Cell,
+    RefCell,
+    Atomic,
+    Mutex,
+    FlatLock,
+    RwLock,
+}
+
+impl FormerItem {
+    pub const ALL: [FormerItem; 8] = [
+        FormerItem::Arc,
+        FormerItem::Nullable,
+        FormerItem::Cell,
+        FormerItem::RefCell,
+        FormerItem::Atomic,
+        FormerItem::Mutex,
+        FormerItem::FlatLock,
+        FormerItem::RwLock,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FormerItem::Arc => "arc",
+            FormerItem::Nullable => "nullable",
+            FormerItem::Cell => "cell",
+            FormerItem::RefCell => "ref_cell",
+            FormerItem::Atomic => "atomic",
+            FormerItem::Mutex => "mutex",
+            FormerItem::FlatLock => "flat_lock",
+            FormerItem::RwLock => "rw_lock",
+        }
+    }
+}
+
 /// Every language item the compiler recognizes. Closed: an unknown
 /// `#[lang("…")]` name is a diagnostic, so the set is versioned with the
 /// compiler.
@@ -84,6 +129,8 @@ pub enum LangItem {
     /// A `core::intrinsic` operation's prototype
     /// (`#[lang("core::intrinsic::math::sqrt")]`).
     Intrinsic(IntrinsicItem),
+    /// A built-in type former's anchor record (`#[lang("arc")]`).
+    Former(FormerItem),
 }
 
 /// What kind of declaration a lang item must be.
@@ -136,6 +183,7 @@ impl LangItem {
             LangItem::Intrinsic(op) => {
                 format!("core::intrinsic::{}::{}", op.family(), op.op_name())
             }
+            LangItem::Former(f) => f.name().into(),
         }
     }
 
@@ -143,6 +191,9 @@ impl LangItem {
         if let Some(rest) = name.strip_prefix("core::intrinsic::") {
             let (family, op) = rest.split_once("::")?;
             return IntrinsicItem::from_parts(family, op).map(LangItem::Intrinsic);
+        }
+        if let Some(former) = FormerItem::ALL.into_iter().find(|f| f.name() == name) {
+            return Some(LangItem::Former(former));
         }
         Self::FIXED.into_iter().find(|item| item.name() == name)
     }
@@ -162,7 +213,7 @@ impl LangItem {
 
     pub fn kind(self) -> LangItemKind {
         match self {
-            LangItem::Ordering => LangItemKind::Record,
+            LangItem::Ordering | LangItem::Former(_) => LangItemKind::Record,
             LangItem::Intrinsic(_) => LangItemKind::Function,
             _ => LangItemKind::Trait,
         }
@@ -292,6 +343,13 @@ impl LangItems {
             .iter()
             .map(|&(item, def)| (def, item))
             .collect()
+    }
+
+    /// Whether `def` is a built-in type former's anchor record — a
+    /// declaration site, not a nominal type (the former resolves by
+    /// spelling; the anchor cannot be constructed).
+    pub fn is_former_anchor(&self, def: DefId) -> bool {
+        matches!(self.item_of(def), Some(LangItem::Former(_)))
     }
 
     /// The lang item bound to `def`, if any.
