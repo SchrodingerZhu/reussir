@@ -558,8 +558,11 @@ mod tests {
         assert!(!elab.has_errors(), "dep elab errors: {:#?}", elab.reports);
         let strings = elab.strings.entries();
         let bounds = elab.bound_names();
+        let (traits, impls) =
+            crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
         let text = Printer::new(&elab.defs, elab.resolver)
             .with_bounds(&bounds)
+            .with_traits(&traits, &impls)
             .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         crate::semi::hir::build::parse_program(tcx, &text).expect("re-parse")
     }
@@ -1045,8 +1048,11 @@ mod tests {
             assert!(!elab.has_errors(), "dep elab errors: {:#?}", elab.reports);
             let cache = SourceCache::single("lib.rr", dep_src);
             let strings = elab.strings.entries();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
             let text = Printer::with_sources(&elab.defs, elab.resolver, &cache)
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .with_traits(&traits, &impls)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = crate::semi::hir::build::parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.files, ["lib.rr"], "table travels");

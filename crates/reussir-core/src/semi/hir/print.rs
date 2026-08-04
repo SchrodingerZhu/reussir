@@ -52,6 +52,10 @@ pub struct Printer<'a> {
     /// for display-only dumps that predate the caller wiring; the
     /// round-trip helpers and the driver always attach it.
     bounds: Option<&'a rustc_hash::FxHashMap<GenericId, Vec<Bound>>>,
+    /// Trait/impl items to emit (see [`super::trait_texts`] and the parsed
+    /// program's views); empty for dumps that carry none.
+    trait_items: &'a [super::TraitText<'a>],
+    impl_items: &'a [super::ImplText<'a>],
     interface: Option<InterfaceEmit<'a>>,
 }
 
@@ -90,6 +94,8 @@ impl<'a> Printer<'a> {
             ffi_preludes: &[],
             ffi_imports: None,
             bounds: None,
+            trait_items: &[],
+            impl_items: &[],
             interface: None,
         }
     }
@@ -109,6 +115,8 @@ impl<'a> Printer<'a> {
             ffi_preludes: &[],
             ffi_imports: None,
             bounds: None,
+            trait_items: &[],
+            impl_items: &[],
             interface: None,
         }
     }
@@ -137,6 +145,17 @@ impl<'a> Printer<'a> {
     }
 
     /// Attach per-generic bounds to serialize in binders.
+    /// Attach trait/impl items to emit.
+    pub fn with_traits(
+        mut self,
+        traits: &'a [super::TraitText<'a>],
+        impls: &'a [super::ImplText<'a>],
+    ) -> Self {
+        self.trait_items = traits;
+        self.impl_items = impls;
+        self
+    }
+
     pub fn with_bounds(mut self, bounds: &'a rustc_hash::FxHashMap<GenericId, Vec<Bound>>) -> Self {
         self.bounds = Some(bounds);
         self
@@ -187,6 +206,8 @@ impl<'a> Printer<'a> {
         // elaboration and a reparse, unlike the session-local `DefId`).
         recs.sort_by_key(|r| self.path(r.def));
         items.extend(recs.into_iter().map(|record| self.record(record)));
+        items.extend(self.trait_items.iter().map(|t| self.trait_item(t)));
+        items.extend(self.impl_items.iter().map(|i| self.impl_item(i)));
         items.extend(
             trampolines
                 .iter()
@@ -281,6 +302,84 @@ impl<'a> Printer<'a> {
             })
             .collect();
         text("<") + comma_sep(parts) + text(">")
+    }
+
+    /// A binder list over pre-rendered names (`$5 (Self), $6: Num`); a
+    /// nameless binder prints bare. Bounds come from the shared map.
+    fn text_binder(&self, generics: &[(GenericId, Option<String>)]) -> Doc<'static> {
+        if generics.is_empty() {
+            return Doc::Null;
+        }
+        let parts: Vec<Doc<'static>> = generics
+            .iter()
+            .map(|(g, name)| {
+                let named = match name {
+                    Some(n) => format!(" ({})", spell_name(n)),
+                    None => String::new(),
+                };
+                let bounds = match self.bounds.and_then(|m| m.get(g)) {
+                    Some(bs) if !bs.is_empty() => {
+                        let spelled: Vec<String> = bs.iter().map(Bound::to_string).collect();
+                        format!(": {}", spelled.join(" + "))
+                    }
+                    _ => String::new(),
+                };
+                text(format!("${}{named}{bounds}", g.0))
+            })
+            .collect();
+        text("<") + comma_sep(parts) + text(">")
+    }
+
+    fn trait_item(&self, t: &super::TraitText<'_>) -> Doc<'static> {
+        let vis = if t.is_pub { "pub " } else { "" };
+        let mut head = text(format!("{vis}trait #{}", t.path)) + self.text_binder(&t.generics);
+        if !t.supers.is_empty() {
+            let supers: Vec<Doc<'static>> = t
+                .supers
+                .iter()
+                .map(|(path, args)| text(format!("#{path}")) + self.ty_args(args))
+                .collect();
+            head = head + text(" : ") + comma_sep(supers);
+        }
+        head = head + self.item_loc(t.file, t.span);
+        let methods: Vec<Doc<'static>> = t
+            .methods
+            .iter()
+            .map(|m| {
+                let regional = if m.regional { "regional " } else { "" };
+                let recv = match m.receiver {
+                    crate::semi::traits::def::ReceiverForm::Value => "",
+                    crate::semi::traits::def::ReceiverForm::Arc => " Arc",
+                    crate::semi::traits::def::ReceiverForm::Flex => " flex",
+                };
+                let params: Vec<Doc<'static>> = m.params.iter().map(|p| self.ty(*p)).collect();
+                text(format!("{regional}fn {}", m.name))
+                    + self.text_binder(&m.generics)
+                    + text(recv)
+                    + text(" (")
+                    + comma_sep(params)
+                    + text(") -> ")
+                    + self.ty(m.ret)
+                    + self.span_doc(m.span)
+                    + text(";")
+            })
+            .collect();
+        let body = methods
+            .into_iter()
+            .fold(Doc::Null, |body, m| body + hardline() + m);
+        head + text(" {") + indent(body) + hardline() + text("}")
+    }
+
+    fn impl_item(&self, i: &super::ImplText<'_>) -> Doc<'static> {
+        let methods: Vec<Doc<'static>> = i.methods.iter().map(|m| text(format!("#{m}"))).collect();
+        text("impl")
+            + self.text_binder(&i.generics)
+            + text(format!(" #{}", i.trait_path))
+            + self.ty_args(&i.args)
+            + self.item_loc(i.file, i.span)
+            + text(" { ")
+            + comma_sep(methods)
+            + text(" }")
     }
 
     fn record(&self, r: &Record<'_>) -> Doc<'static> {
@@ -599,10 +698,18 @@ impl<'a> Printer<'a> {
     /// The bare form of a value node, without its `: ty` suffix.
     fn atom(&self, e: &Expr<'_>) -> Doc<'static> {
         match &e.kind {
-            ExprKind::TraitCall { .. } => unimplemented!(
-                "trait-method calls have no HIR text form yet; it lands with \
-                 trait serialization"
-            ),
+            ExprKind::TraitCall {
+                trait_def,
+                method,
+                ty_args,
+                args,
+            } => {
+                text(format!("trait#{}", self.path(*trait_def)))
+                    + self.ty_args(ty_args)
+                    + text(format!("#{method}("))
+                    + self.arg_list(args)
+                    + text(")")
+            }
             ExprKind::GlobalStr(s) => text(str_lit(s.words())),
             ExprKind::ConstInt(n) => text(format!("{n}")),
             ExprKind::ConstFloat(f) => text(f.to_string()),

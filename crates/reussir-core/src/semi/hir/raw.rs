@@ -26,6 +26,55 @@ pub struct Program {
     pub transforms: Vec<Transform>,
     pub ffi_preludes: Vec<FfiPrelude>,
     pub funcs: Vec<Func>,
+    pub traits: Vec<TraitItem>,
+    pub impls: Vec<ImplItem>,
+}
+
+/// A trait declaration item. `generics[0]` is the implicit `Self` binder.
+#[derive(Clone, Debug)]
+pub struct TraitItem {
+    pub is_pub: bool,
+    pub path: String,
+    pub generics: Vec<Generic>,
+    /// Super-trait references: qualified path + full argument list
+    /// (`args[0]` = `Self`).
+    pub supers: Vec<(String, Vec<Ty>)>,
+    pub methods: Vec<TraitMethodItem>,
+    pub file: Option<u32>,
+    pub span: Option<Span>,
+}
+
+/// A trait method signature; parameters are positional types with the
+/// receiver at `params[0]`.
+#[derive(Clone, Debug)]
+pub struct TraitMethodItem {
+    pub regional: bool,
+    pub name: String,
+    pub generics: Vec<Generic>,
+    pub receiver: RecvForm,
+    pub params: Vec<Ty>,
+    pub ret: Ty,
+    pub span: Option<Span>,
+}
+
+/// The serialized receiver form tag; `Value` is the unmarked default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecvForm {
+    Value,
+    Arc,
+    Flex,
+}
+
+/// An impl item: trait path + full argument list (`args[0]` = self type)
+/// and the method definitions by qualified path in trait-method order.
+#[derive(Clone, Debug)]
+pub struct ImplItem {
+    pub generics: Vec<Generic>,
+    pub trait_path: String,
+    pub args: Vec<Ty>,
+    pub methods: Vec<String>,
+    pub file: Option<u32>,
+    pub span: Option<Span>,
 }
 
 /// The `.rri` header: format integer, the package the interface describes,
@@ -48,6 +97,8 @@ pub enum Item {
     Transform(Transform),
     FfiPrelude(FfiPrelude),
     Func(Func),
+    Trait(TraitItem),
+    Impl(ImplItem),
 }
 
 impl Program {
@@ -61,6 +112,8 @@ impl Program {
             transforms: Vec::new(),
             ffi_preludes: Vec::new(),
             funcs: Vec::new(),
+            traits: Vec::new(),
+            impls: Vec::new(),
         };
         for item in items {
             match item {
@@ -71,6 +124,8 @@ impl Program {
                 Item::Transform(t) => p.transforms.push(t),
                 Item::FfiPrelude(f) => p.ffi_preludes.push(f),
                 Item::Func(f) => p.funcs.push(f),
+                Item::Trait(t) => p.traits.push(t),
+                Item::Impl(i) => p.impls.push(i),
             }
         }
         p
@@ -309,6 +364,12 @@ pub enum Kind {
     FuncCall {
         regional: bool,
         path: String,
+        ty_args: Vec<Ty>,
+        args: Vec<Expr>,
+    },
+    TraitCall {
+        path: String,
+        method: u32,
         ty_args: Vec<Ty>,
         args: Vec<Expr>,
     },

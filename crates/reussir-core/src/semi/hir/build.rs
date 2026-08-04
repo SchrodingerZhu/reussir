@@ -23,8 +23,8 @@ use crate::semi::ctxt::{
 use crate::semi::hir::grammar as hir_ir;
 use crate::semi::hir::raw;
 use crate::semi::hir::{
-    ArithOp, Bound, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, PatVarRef,
-    SwitchCases, VarId,
+    ArithOp, Bound, ClosureExpr, CmpOp, DecisionTree, Expr, ExprId, ExprKind, Function, ImplText,
+    PatVarRef, SwitchCases, TraitMethodText, TraitText, VarId,
 };
 use crate::semi::resolve::DefTable;
 use crate::semi::ty::{DefId, Flexivity, FpTy, GenericId, IntTy, Ty, TyCtxt, TyKind};
@@ -42,6 +42,11 @@ pub struct Parsed<'tcx> {
     /// caller's job.
     pub header: Option<raw::InterfaceHeader>,
     pub funcs: Vec<Function<'tcx>>,
+    /// Trait items, print-ready; the extern reload resolves them into the
+    /// session `TraitDb`.
+    pub traits: Vec<TraitText<'tcx>>,
+    /// Impl items, print-ready (method paths unresolved strings).
+    pub impls: Vec<ImplText<'tcx>>,
     pub transform_anchors: Vec<DefId>,
     pub transform_scripts: Vec<TransformScript>,
     pub strings: Vec<(StringToken, String)>,
@@ -139,6 +144,8 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     };
     // Records first so their `DefId`s exist before function bodies reference them.
     let records: FxHashMap<DefId, Record<'tcx>> = raw.records.iter().map(|r| b.record(r)).collect();
+    let traits: Vec<TraitText<'tcx>> = raw.traits.iter().map(|t| b.trait_text(t)).collect();
+    let impls: Vec<ImplText<'tcx>> = raw.impls.iter().map(|i| b.impl_text(i)).collect();
     let funcs: Vec<Function<'tcx>> = raw.funcs.iter().map(|f| b.func(f)).collect();
     let transform_anchors = raw
         .funcs
@@ -184,6 +191,8 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     Ok(Parsed {
         header: raw.header.clone(),
         funcs,
+        traits,
+        impls,
         transform_anchors,
         transform_scripts,
         strings,
@@ -227,6 +236,18 @@ impl<'tcx> Builder<'_, 'tcx> {
         let (name, module) = segs.split_last().expect("paths are never empty");
         self.defs.set_module(module.to_vec());
         self.defs.declare_function(*name).expect("fresh fn decl")
+    }
+
+    /// Resolve-or-declare a trait path (the `trait#path#idx(…)` call form
+    /// and trait items share the id, in any order).
+    fn trait_item_def(&mut self, path: &str) -> DefId {
+        let segs: Vec<_> = path.split("::").map(|s| self.names.intern(s)).collect();
+        if let Some(id) = self.defs.lookup_trait(&segs) {
+            return id;
+        }
+        let (name, module) = segs.split_last().expect("paths are never empty");
+        self.defs.set_module(module.to_vec());
+        self.defs.declare_trait(*name).expect("fresh trait decl")
     }
 
     fn record_def(&mut self, path: &str) -> DefId {
@@ -377,6 +398,66 @@ impl<'tcx> Builder<'_, 'tcx> {
         }
     }
 
+    /// Rebuild a text-view binder list, banking bounds like [`Self::generics`].
+    fn text_generics(&mut self, gs: &[raw::Generic]) -> Vec<(GenericId, Option<String>)> {
+        gs.iter()
+            .map(|g| {
+                if !g.bounds.is_empty() {
+                    self.generic_bounds
+                        .insert(GenericId(g.id), g.bounds.clone());
+                }
+                (GenericId(g.id), g.name.clone())
+            })
+            .collect()
+    }
+
+    fn trait_text(&mut self, t: &raw::TraitItem) -> TraitText<'tcx> {
+        use crate::semi::traits::def::ReceiverForm;
+        // Declare the def so `#path` references (and the round-trip print)
+        // resolve to the same id the call form uses.
+        self.trait_item_def(&t.path);
+        TraitText {
+            is_pub: t.is_pub,
+            path: t.path.clone(),
+            generics: self.text_generics(&t.generics),
+            supers: t
+                .supers
+                .iter()
+                .map(|(p, args)| (p.clone(), self.tys(args)))
+                .collect(),
+            methods: t
+                .methods
+                .iter()
+                .map(|m| TraitMethodText {
+                    regional: m.regional,
+                    name: m.name.clone(),
+                    generics: self.text_generics(&m.generics),
+                    receiver: match m.receiver {
+                        raw::RecvForm::Value => ReceiverForm::Value,
+                        raw::RecvForm::Arc => ReceiverForm::Arc,
+                        raw::RecvForm::Flex => ReceiverForm::Flex,
+                    },
+                    params: self.tys(&m.params),
+                    ret: self.ty(&m.ret),
+                    span: span_of(m.span),
+                })
+                .collect(),
+            file: file_of(t.file),
+            span: span_of(t.span),
+        }
+    }
+
+    fn impl_text(&mut self, i: &raw::ImplItem) -> ImplText<'tcx> {
+        ImplText {
+            generics: self.text_generics(&i.generics),
+            trait_path: i.trait_path.clone(),
+            args: self.tys(&i.args),
+            methods: i.methods.clone(),
+            file: file_of(i.file),
+            span: span_of(i.span),
+        }
+    }
+
     fn ty(&mut self, t: &raw::Ty) -> Ty<'tcx> {
         match t {
             raw::Ty::Signed(w) => self.tcx.mk_int(IntTy::Signed(*w)),
@@ -484,6 +565,20 @@ impl<'tcx> Builder<'_, 'tcx> {
                     ty_args: self.tys(ty_args),
                     args: self.exprs(args),
                     regional: *regional,
+                }
+            }
+            raw::Kind::TraitCall {
+                path,
+                method,
+                ty_args,
+                args,
+            } => {
+                let trait_def = self.trait_item_def(path);
+                ExprKind::TraitCall {
+                    trait_def,
+                    method: *method,
+                    ty_args: self.tys(ty_args),
+                    args: self.exprs(args),
                 }
             }
             raw::Kind::CompoundCall {
@@ -731,10 +826,13 @@ mod tests {
 
             let strings = elab.strings.entries();
             let bounds = elab.bound_names();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
             let text = Printer::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .with_bounds(&bounds)
+                .with_traits(&traits, &impls)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
@@ -753,6 +851,7 @@ mod tests {
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
                 .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .with_bounds(&parsed.generic_bounds)
+                .with_traits(&parsed.traits, &parsed.impls)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -1172,6 +1271,66 @@ mod tests {
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
         );
+    }
+
+    #[test]
+    fn trait_items_roundtrip() {
+        // Declarations exercise every serialized facet: supertraits, method
+        // generics with bounds, all three receiver forms (value / Arc /
+        // [flex]), regional methods, bounded impl generics, and both ground
+        // and generic impls.
+        roundtrip(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub trait Fancy : Show {\n\
+                 fn fancy<U: Num>(self: Self, u: U) -> i64;\n\
+             }\n\
+             pub trait Shared { fn get(self: Arc<Self>) -> i64; }\n\
+             pub trait Ticker { regional fn tick(self: [flex] Self) -> unit; }\n\
+             pub struct P { pub x: i64 }\n\
+             pub struct Box<T> { pub v: T }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             impl<T: Num> Show for Box<T> { fn show(self: Self) -> i64 { 1 } }",
+        );
+    }
+
+    #[test]
+    fn trait_calls_roundtrip() {
+        // Both TraitCall spellings survive: the dot form and the trait path
+        // form, in a generic body (ground receivers resolve to plain calls).
+        roundtrip(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct P { pub x: i64 }\n\
+             impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+             pub fn dot<T: Show>(x: T) -> i64 { x.show() }\n\
+             pub fn path<T: Show>(x: T) -> i64 { Show::show(x) }\n\
+             pub fn ground(p: P) -> i64 { p.show() }",
+        );
+    }
+
+    #[test]
+    fn sealed_builtins_never_serialize() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let source = "pub trait Show { fn show(self: Self) -> i64; }";
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
+            assert!(parse.ok());
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let strings = elab.strings.entries();
+            let text = Printer::new(&elab.defs, elab.resolver)
+                .with_traits(&traits, &impls)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            assert!(text.contains("trait #Show"), "{text}");
+            for builtin in ["Num", "Integral", "FloatingPoint", "PtrLike", "Sync"] {
+                assert!(
+                    !text.contains(&format!("trait #{builtin}")),
+                    "sealed `{builtin}` must not serialize:\n{text}"
+                );
+            }
+        });
     }
 
     #[test]

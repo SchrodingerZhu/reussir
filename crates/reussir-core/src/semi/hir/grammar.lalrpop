@@ -39,6 +39,8 @@ Item: raw::Item = {
     <t:TrampDecl> => raw::Item::Tramp(t),
     <t:TransformDecl> => raw::Item::Transform(t),
     <p:FfiPreludeDecl> => raw::Item::FfiPrelude(p),
+    <t:TraitDecl> => raw::Item::Trait(t),
+    <i:ImplDecl> => raw::Item::Impl(i),
     <f:Func> => raw::Item::Func(f),
 };
 
@@ -161,6 +163,62 @@ Func: raw::Func =
         body,
     };
 
+/// A trait item. The binder's first generic is the implicit `Self`; the
+/// super-references carry their full argument lists (args[0] = `Self`), so
+/// rebuilding involves no convention.
+TraitDecl: raw::TraitItem =
+    <p:"pub"?> "trait" "#" <path:QPath> <generics:Generics> <supers:(":" <CommaPlus<SuperRef>>)?>
+    <loc:ItemLoc?> "{" <methods:TraitMethodSig*> "}"
+    => raw::TraitItem {
+        is_pub: p.is_some(),
+        path,
+        generics,
+        supers: supers.unwrap_or_default(),
+        methods,
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+    };
+
+SuperRef: (String, Vec<raw::Ty>) = "#" <p:PathArgs> => p;
+
+/// A trait method signature: positional parameter types (params[0] is the
+/// receiver), with an `Arc`/`flex` tag disambiguating the receiver form
+/// (absent = by-value `Self`).
+TraitMethodSig: raw::TraitMethodItem =
+    <r:"regional"?> "fn" <name:Name> <generics:Generics?> <recv:RecvForm?>
+    "(" <params:Comma<Ty>> ")" "->" <ret:Ty> <sp:Span?> ";"
+    => raw::TraitMethodItem {
+        regional: r.is_some(),
+        name: name.to_string(),
+        generics: generics.unwrap_or_default(),
+        receiver: recv.unwrap_or(raw::RecvForm::Value),
+        params,
+        ret,
+        span: sp,
+    };
+
+RecvForm: raw::RecvForm = {
+    "Arc" => raw::RecvForm::Arc,
+    "flex" => raw::RecvForm::Flex,
+};
+
+/// An impl item: the trait reference carries its full argument list
+/// (args[0] is the self type), and the body lists the impl's method
+/// definitions by qualified path in trait-method order — the functions
+/// themselves serialize as ordinary items.
+ImplDecl: raw::ImplItem =
+    "impl" <generics:Generics?> "#" <tr:PathArgs> <loc:ItemLoc?> "{" <methods:Comma<MethodRef>> "}"
+    => raw::ImplItem {
+        generics: generics.unwrap_or_default(),
+        trait_path: tr.0,
+        args: tr.1,
+        methods,
+        file: loc.map(|l| l.0),
+        span: loc.and_then(|l| l.1),
+    };
+
+MethodRef: String = "#" <p:QPath> => p;
+
 Generics: Vec<raw::Generic> = "<" <CommaPlus<Generic>> ">";
 
 /// A fully-qualified item path: `a::b::Name`. Serialized with its segments
@@ -221,6 +279,8 @@ BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
 /// Source identifiers remain legal when they spell a transform directive.
 Name: &'input str = {
     <name:"ident"> => name,
+    "trait" => "trait",
+    "impl" => "impl",
     "transform" => "transform",
     "transform_anchor" => "transform_anchor",
     "import" => "import",
@@ -345,6 +405,8 @@ Atom: raw::Kind = {
         => raw::Kind::Assign(dst, raw::small_u32(&field), src),
     <r:"regional"?> "#" <path:PathArgs> "(" <args:Comma<Expr>> ")"
         => raw::Kind::FuncCall { regional: r.is_some(), path: path.0, ty_args: path.1, args },
+    "trait" "#" <path:PathArgs> "#" <m:"int"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::TraitCall { path: path.0, ty_args: path.1, method: raw::small_u32(&m), args },
     "#" <path:PathArgs> "{" <args:Comma<Expr>> "}"
         => raw::Kind::CompoundCall { path: path.0, ty_args: path.1, args },
     "#" <path:PathArgs> "#" <v:"int"> "(" <args:Comma<Expr>> ")"
@@ -466,6 +528,8 @@ extern {
         "texture" => Token::Texture,
         "glue" => Token::Glue,
         "transform" => Token::Transform,
+        "trait" => Token::Trait,
+        "impl" => Token::Impl,
         "transform_anchor" => Token::TransformAnchor,
         "interface" => Token::Interface,
         "package" => Token::Package,

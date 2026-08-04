@@ -50,6 +50,10 @@ pub enum Token<'a> {
     Glue,
     #[token("transform")]
     Transform,
+    #[token("trait")]
+    Trait,
+    #[token("impl")]
+    Impl,
     #[token("transform_anchor")]
     TransformAnchor,
     #[token("interface")]
