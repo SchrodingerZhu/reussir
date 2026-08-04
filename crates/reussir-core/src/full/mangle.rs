@@ -321,6 +321,17 @@ mod tests {
         );
     }
 
+    /// A trait-impl method's path — `[impl-module.., trait-path.., head,
+    /// method]` — mangles through the same machinery: every segment is an
+    /// ordinary nested-path component.
+    #[test]
+    fn trait_impl_method_symbol_mangles_through_segments() {
+        assert_eq!(
+            mangle_segments(&["demo", "Show", "Vec", "norm"]),
+            "_RNvNvNvC4demo4Show3Vec4norm"
+        );
+    }
+
     /// A method's path carries its type as an ordinary segment; a generic
     /// instance flattens the impl+method arguments at the path tail.
     #[test]

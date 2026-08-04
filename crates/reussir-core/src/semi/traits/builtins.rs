@@ -117,6 +117,9 @@ impl Builtins {
                 },
                 self_ty,
                 where_clauses: vec![],
+                methods: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             });
         };
 
