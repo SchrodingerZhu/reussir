@@ -25,6 +25,9 @@ use crate::semi::ctxt::{Elaborator, FuncProto, Record, RecordFields, Variant};
 use crate::semi::hir::build::Parsed;
 use crate::semi::hir::{ClosureExpr, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefKind;
+use crate::semi::traits::coherence::{head_key, unify_args};
+use crate::semi::traits::def::MethodSig;
+use crate::semi::traits::{ImplDef, ImplId, Obligation, TraitDef, TraitId, TraitRef};
 use crate::semi::ty::{DefId, GenericId, Ty, TyCtxt, TyKind};
 
 /// One loaded dependency interface, ready to join elaboration: its `--extern`
@@ -135,6 +138,219 @@ impl<'tcx> Elaborator<'_, 'tcx> {
             self.records.entry(def).or_insert(record);
         }
 
+        // Trait items: rebuild each declaration in consumer space and
+        // register it in the session TraitDb — so bounds on imported
+        // binders resolve (the funcs loop below reads them), methods
+        // dispatch, and coherence sees the dependency's impls. Two passes,
+        // because a super-trait may be declared later in the dump than its
+        // sub-trait (exactly like the elaborator's stub/populate split).
+        // Registration is idempotent: a def-unified trait (the same package
+        // loaded twice, or a transitive re-ship) keeps its first
+        // registration.
+        let mut pending: Vec<(
+            TraitId,
+            &crate::semi::hir::TraitText<'tcx>,
+            FxHashMap<GenericId, GenericId>,
+        )> = Vec::new();
+        for t in &parsed.traits {
+            let def = defs[t.def.0 as usize];
+            if self.traits.trait_by_def(def).is_some() {
+                continue;
+            }
+            let mut ids = FxHashMap::default();
+            let binder =
+                self.remap_text_generics(&t.generics, &parsed.generic_bounds, interner, &mut ids);
+            let (&(_, self_param), params) = binder
+                .split_first()
+                .expect("trait binders carry `Self` first");
+            let id = TraitId(self.traits.traits_len() as u32);
+            self.traits.add_trait(TraitDef {
+                id,
+                def,
+                visibility: if t.is_pub {
+                    crate::surface::Visibility::Public
+                } else {
+                    crate::surface::Visibility::Private
+                },
+                sealed: false,
+                self_param,
+                params: params.to_vec(),
+                supertraits: Vec::new(),
+                methods: Vec::new(),
+                assoc_tys: Vec::new(),
+                span: t.span,
+                file: file_of(t.file),
+            });
+            pending.push((id, t, ids));
+        }
+        for (id, t, ids) in pending {
+            let supertraits: Vec<TraitRef<'tcx>> = t
+                .supers
+                .iter()
+                .filter_map(|(path, args)| {
+                    let segs: Vec<TokenKey> = path
+                        .split("::")
+                        .map(|s| interner.get_or_intern(s))
+                        .collect();
+                    let sup = self
+                        .defs
+                        .lookup_trait(&segs)
+                        .and_then(|d| self.traits.trait_by_def(d));
+                    if sup.is_none() {
+                        self.error(
+                            None,
+                            format!(
+                                "package `{}` names an unknown super-trait `{path}`; \
+                                 the dependency set is inconsistent",
+                                ext.name
+                            ),
+                        );
+                    }
+                    let remap = Remapper {
+                        tcx: self.tcx,
+                        defs: &defs,
+                        keys: &keys,
+                        generics: &ids,
+                    };
+                    Some(TraitRef {
+                        trait_id: sup?,
+                        args: args.iter().map(|&a| remap.ty(a)).collect(),
+                    })
+                })
+                .collect();
+            let methods: Vec<MethodSig<'tcx>> = t
+                .methods
+                .iter()
+                .map(|m| {
+                    let mut mids = ids.clone();
+                    let generics = self.remap_text_generics(
+                        &m.generics,
+                        &parsed.generic_bounds,
+                        interner,
+                        &mut mids,
+                    );
+                    let remap = Remapper {
+                        tcx: self.tcx,
+                        defs: &defs,
+                        keys: &keys,
+                        generics: &mids,
+                    };
+                    MethodSig {
+                        name: interner.get_or_intern(&m.name),
+                        generics,
+                        receiver: m.receiver,
+                        params: m.params.iter().map(|&p| remap.ty(p)).collect(),
+                        ret: remap.ty(m.ret),
+                        is_regional: m.regional,
+                        span: m.span,
+                    }
+                })
+                .collect();
+            let def = self.traits.trait_def_mut(id);
+            def.supertraits = supertraits;
+            def.methods = methods;
+        }
+
+        // Impl items. An impl identical to a registered one (same trait and
+        // the same method defs — paths unify across loads) is a re-ship and
+        // is skipped; a genuinely overlapping one is a load-time coherence
+        // error.
+        for i in &parsed.impls {
+            let tdef = defs[i.trait_def.0 as usize];
+            let Some(tid) = self.traits.trait_by_def(tdef) else {
+                self.error(
+                    None,
+                    format!(
+                        "package `{}` ships an impl of `{}`, which it does not declare; \
+                         the dependency set is inconsistent",
+                        ext.name, i.trait_path
+                    ),
+                );
+                continue;
+            };
+            let mut ids = FxHashMap::default();
+            let binder =
+                self.remap_text_generics(&i.generics, &parsed.generic_bounds, interner, &mut ids);
+            let remap = Remapper {
+                tcx: self.tcx,
+                defs: &defs,
+                keys: &keys,
+                generics: &ids,
+            };
+            let args: Vec<Ty<'tcx>> = i.args.iter().map(|&a| remap.ty(a)).collect();
+            let self_ty = args[0];
+            let methods: Vec<DefId> = i
+                .methods
+                .iter()
+                .filter_map(|p| {
+                    let segs: Vec<TokenKey> =
+                        p.split("::").map(|s| interner.get_or_intern(s)).collect();
+                    self.defs.lookup_function(&segs)
+                })
+                .collect();
+            let head = head_key(self_ty).expect("shipped impls have ground heads");
+            let duplicate = self.traits.impls_for(tid, head).iter().any(|&e| {
+                let other = self.traits.impl_def(e);
+                other.methods == methods && (!methods.is_empty() || other.trait_ref.args == args)
+            });
+            if duplicate {
+                continue;
+            }
+            let mut conflict = false;
+            for &e in self.traits.impls_for(tid, head) {
+                let other = self.traits.impl_def(e);
+                let mut vars: rustc_hash::FxHashSet<GenericId> =
+                    other.generics.iter().copied().collect();
+                vars.extend(binder.iter().map(|&(_, g)| g));
+                let mut subst = FxHashMap::default();
+                if unify_args(&other.trait_ref.args, &args, &vars, &mut subst) {
+                    conflict = true;
+                    break;
+                }
+            }
+            if conflict {
+                let shown = self.trait_display(tid);
+                let ty = self.ty_display(self_ty);
+                self.error(
+                    None,
+                    format!(
+                        "conflicting implementations of trait `{shown}` for `{ty}`: \
+                         an impl loaded from package `{}` overlaps a registered one",
+                        ext.name
+                    ),
+                );
+                continue;
+            }
+            let where_clauses: Vec<Obligation<'tcx>> = binder
+                .iter()
+                .flat_map(|&(_, g)| {
+                    self.generic_bounds(g)
+                        .iter()
+                        .map(|&b| {
+                            Obligation::Trait(TraitRef {
+                                trait_id: b,
+                                args: vec![self.tcx.mk_generic(g)],
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let id = ImplId(self.traits.impls_len() as u32);
+            self.traits.add_impl(ImplDef {
+                id,
+                generics: binder.iter().map(|&(_, g)| g).collect(),
+                trait_ref: TraitRef {
+                    trait_id: tid,
+                    args,
+                },
+                self_ty,
+                where_clauses,
+                methods,
+                span: i.span,
+                file: file_of(i.file),
+            });
+        }
+
         for func in &parsed.funcs {
             let def = defs[func.def.0 as usize];
             let generics =
@@ -212,6 +428,43 @@ impl<'tcx> Elaborator<'_, 'tcx> {
     /// degrades to the resolvable subset; shipped bodies are *elaborated*
     /// HIR, so this can never miscompile — the residue still grounds into an
     /// operation monomorphization rejects with a spanned report.
+    /// [`Self::remap_generics`] over a text-view binder (`(id, name?)`
+    /// pairs): re-allocate in the global table, resolving serialized bound
+    /// paths, and extend `out` with the producer→consumer id mapping.
+    fn remap_text_generics(
+        &mut self,
+        binder: &[(GenericId, Option<String>)],
+        bounds: &FxHashMap<GenericId, Vec<crate::semi::hir::Bound>>,
+        interner: &mut impl Interner<TokenKey>,
+        out: &mut FxHashMap<GenericId, GenericId>,
+    ) -> Vec<(TokenKey, GenericId)> {
+        binder
+            .iter()
+            .map(|&(old, ref name)| {
+                let tids: Vec<_> = bounds
+                    .get(&old)
+                    .map(|bs| {
+                        bs.iter()
+                            .filter_map(|bound| {
+                                let segs: Vec<TokenKey> = bound
+                                    .trait_path()
+                                    .segments
+                                    .iter()
+                                    .map(|s| interner.get_or_intern(s))
+                                    .collect();
+                                self.resolve_bound_segments(&segs, None)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let key = interner.get_or_intern(name.as_deref().unwrap_or("_"));
+                let fresh = self.fresh_generic(key, tids);
+                out.insert(old, fresh);
+                (key, fresh)
+            })
+            .collect()
+    }
+
     fn remap_generics(
         &mut self,
         binder: &[(TokenKey, GenericId)],
@@ -614,6 +867,115 @@ mod tests {
             );
             elab.run_package(&files);
             f(&elab);
+        });
+    }
+
+    const TRAIT_DEP: &str = "pub trait Show { fn show(self: Self) -> i64; }\n\
+         pub struct P { pub x: i64 }\n\
+         impl Show for P { fn show(self: Self) -> i64 { self.x } }\n\
+         pub fn use_show<T: Show>(x: T) -> i64 { x.show() }";
+
+    /// Trait items reload across the interface: an extern trait dispatches
+    /// on its extern type (dot and path form), bounds name it, and the
+    /// dependency's own bounded generic accepts the extern type again.
+    #[test]
+    fn extern_traits_dispatch_across_packages() {
+        check_with_dep(
+            TRAIT_DEP,
+            &[(
+                &[],
+                "pub fn direct(p: dep::P) -> i64 { p.show() }\n\
+                 pub fn path_call(p: dep::P) -> i64 { dep::Show::show(p) }\n\
+                 pub fn bounded<T: dep::Show>(x: T) -> i64 { x.show() }\n\
+                 pub fn call_dep(p: dep::P) -> i64 { dep::use_show(p) }",
+            )],
+            |elab| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            },
+        );
+    }
+
+    /// A consumer impl of an extern trait for a local type joins the same
+    /// coherence world as the loaded impls: it is accepted, dispatches, and
+    /// a both-extern impl or a duplicate is rejected by the same gates.
+    #[test]
+    fn consumer_impls_of_extern_traits_join_coherence() {
+        check_with_dep(
+            TRAIT_DEP,
+            &[(
+                &[],
+                "pub struct Q { pub y: i64 }\n\
+                 impl dep::Show for Q { fn show(self: Self) -> i64 { self.y } }\n\
+                 pub fn go(q: Q) -> i64 { q.show() }",
+            )],
+            |elab| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            },
+        );
+        // Both trait and head extern: the orphan rule refuses.
+        check_with_dep(
+            TRAIT_DEP,
+            &[(
+                &[],
+                "impl dep::Show for dep::P { fn show(self: Self) -> i64 { 9 } }",
+            )],
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("the trait or the self type's head must be local")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        // A consumer impl overlapping a loaded one: coherence refuses.
+        check_with_dep(
+            TRAIT_DEP,
+            &[
+                (
+                    &[],
+                    "pub struct Q { pub y: i64 }\n\
+                 impl dep::Show for Q { fn show(self: Self) -> i64 { 1 } }\n\
+                 mod b;",
+                ),
+                (
+                    &["b"],
+                    "impl dep::Show for super::Q { fn show(self: Self) -> i64 { 2 } }",
+                ),
+            ],
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("conflicting implementations of trait")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    /// Loading the same package twice re-registers nothing: trait defs
+    /// unify by path and impls dedupe by their method defs.
+    #[test]
+    fn twice_loaded_trait_packages_are_idempotent() {
+        with_tcx(|tcx| {
+            let parsed = dep_interface(tcx, TRAIT_DEP);
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let mut keys = interner.clone();
+            let mut elab = Elaborator::new(tcx, &interner);
+            let ext = ExternPackage {
+                name: "dep",
+                parsed: &parsed,
+                files: &[],
+            };
+            elab.declare_extern_package(&mut keys, &ext);
+            let (traits, impls) = (elab.traits.traits_len(), elab.traits.impls_len());
+            elab.declare_extern_package(&mut keys, &ext);
+            assert_eq!(elab.traits.traits_len(), traits, "traits re-registered");
+            assert_eq!(elab.traits.impls_len(), impls, "impls re-registered");
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
         });
     }
 
