@@ -1,0 +1,3 @@
+pub fn hash_of<T: super::Hash>(v: T) -> u64 {
+    v.hash(super::djb2::new()).finish()
+}
