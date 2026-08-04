@@ -66,7 +66,13 @@ pub fn unify_args<'tcx>(
     a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| unify_ty(x, y, vars, subst))
 }
 
-fn resolve<'tcx>(mut ty: Ty<'tcx>, subst: &FxHashMap<GenericId, Ty<'tcx>>) -> Ty<'tcx> {
+/// Chase a binding chain to its representative. Shallow: only a `Generic`
+/// *head* is followed; selection grounds whole types by feeding the resolved
+/// bindings through `replace_generics`.
+pub(crate) fn resolve_binding<'tcx>(
+    mut ty: Ty<'tcx>,
+    subst: &FxHashMap<GenericId, Ty<'tcx>>,
+) -> Ty<'tcx> {
     while let TyKind::Generic(g) = *ty.kind() {
         match subst.get(&g) {
             Some(&next) => ty = next,
@@ -77,7 +83,7 @@ fn resolve<'tcx>(mut ty: Ty<'tcx>, subst: &FxHashMap<GenericId, Ty<'tcx>>) -> Ty
 }
 
 fn occurs(g: GenericId, ty: Ty<'_>, subst: &FxHashMap<GenericId, Ty<'_>>) -> bool {
-    let ty = resolve(ty, subst);
+    let ty = resolve_binding(ty, subst);
     match *ty.kind() {
         TyKind::Generic(h) => g == h,
         TyKind::Nullable(inner) | TyKind::Arc(inner) => occurs(g, inner, subst),
@@ -96,8 +102,8 @@ fn unify_ty<'tcx>(
     vars: &FxHashSet<GenericId>,
     subst: &mut FxHashMap<GenericId, Ty<'tcx>>,
 ) -> bool {
-    let a = resolve(a, subst);
-    let b = resolve(b, subst);
+    let a = resolve_binding(a, subst);
+    let b = resolve_binding(b, subst);
     if a == b {
         return true;
     }

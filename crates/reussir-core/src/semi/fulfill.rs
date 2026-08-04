@@ -16,7 +16,7 @@
 //! each obligation against the (now solved) self type — via impl search for
 //! concrete types and super-trait subsumption for in-scope generics.
 
-use crate::semi::traits::{Obligation, TraitRef};
+use crate::semi::traits::{Obligation, SelectCtxt, SelectError, TraitRef};
 use crate::semi::ty::{FpTy, HoleId, IntTy, TyKind};
 use crate::surface::Span;
 
@@ -198,48 +198,53 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     ///                  o ⇝ ✗
     /// ```
     ///
-    /// Caveat: (defer) fires only on a *head* hole. A self type with holes nested
-    /// under a constructor (`List<?h>`) is read as concrete, so (no-impl) can
-    /// fire spuriously instead of deferring — latent until parameterized impls
-    /// exist; the fix is to defer when the *deeply* resolved self type still
-    /// holds any hole.
-    ///
-    /// The (impl) rule rebuilds the goal with only the resolved `self` argument;
-    /// a trait's other arguments — a multi-parameter `Rhs`, an associated-type
-    /// output — are dropped here. Supporting them means matching *all* arguments
-    /// in `select` and unifying the chosen impl's against the obligation's, which
-    /// is where discharge starts solving holes (see `resolve_obligations`).
+    /// The (impl) and (param) rules are realized by [`SelectCtxt`]: the goal
+    /// carries *all* of the obligation's arguments (deeply resolved), impl
+    /// search one-way-matches generic impls, residual where-clauses recurse,
+    /// and a bare-generic self is proved from the enclosing definition's
+    /// declared bounds — so `Box<G> : Show` holds under `impl<T: Num> Show
+    /// for Box<T>` when `G : Num` is assumed. A goal whose arguments still
+    /// hold holes (head or nested, `List<?h>`) defers instead of failing
+    /// spuriously.
     fn discharge_trait(&mut self, tref: &TraitRef<'tcx>) -> Discharge {
         let self_ty = self.infer.shallow_resolve(tref.self_ty());
         match self_ty.kind() {
             TyKind::Hole(_) => Discharge::Defer,
-            // In-scope generic: satisfied iff one of its declared bounds implies
-            // the required trait (super-trait subsumption).
-            TyKind::Generic(g) => {
-                let want = tref.trait_id;
-                if self
-                    .generic_bounds(*g)
-                    .iter()
-                    .any(|&have| self.traits.implies(have, want))
-                {
-                    Discharge::Solved
-                } else {
-                    let name = self.trait_display(want);
-                    Discharge::Failed(format!(
-                        "the bound `{name}` is not satisfied by this generic"
-                    ))
+            // In-scope generic: satisfied iff a declared bound proves the
+            // goal (directly, or through the super-trait closure).
+            TyKind::Generic(_) => {
+                let args: Vec<_> = tref.args.iter().map(|&a| self.infer.resolve(a)).collect();
+                if args.iter().any(|&a| ty_has_hole(a)) {
+                    return Discharge::Defer;
+                }
+                let goal = Obligation::Trait(TraitRef {
+                    trait_id: tref.trait_id,
+                    args,
+                });
+                let mut select = SelectCtxt::new(&self.traits, self.tcx, &self.generics);
+                match select.select(&goal) {
+                    Ok(_) => Discharge::Solved,
+                    Err(err) => {
+                        let name = self.trait_display(tref.trait_id);
+                        Discharge::Failed(match err {
+                            SelectError::NoImpl(_) => {
+                                format!("the bound `{name}` is not satisfied by this generic")
+                            }
+                            SelectError::DepthLimit(g) => self.depth_limit_message(&g),
+                        })
+                    }
                 }
             }
             _ => {
-                // Deeply resolve before deciding: a self type whose *head* is a
-                // constructor may still hold holes under it (`List<?h>`). Reading
-                // such a type as ground would let (no-impl) fire spuriously
-                // instead of deferring. Defer while any hole remains so the
-                // obligation is retried once more of the substitution is known.
-                let self_ty = self.infer.resolve(self_ty);
-                if ty_has_hole(self_ty) {
+                // Deeply resolve before deciding: a type whose *head* is a
+                // constructor may still hold holes under it (`List<?h>`).
+                // Defer while any hole remains so the obligation is retried
+                // once more of the substitution is known.
+                let args: Vec<_> = tref.args.iter().map(|&a| self.infer.resolve(a)).collect();
+                if args.iter().any(|&a| ty_has_hole(a)) {
                     return Discharge::Defer;
                 }
+                let self_ty = args[0];
                 // `Sync` is the structural thread-safety auto trait: answered
                 // by the checker over the type's shape, never by impl search
                 // (docs/design/thread-safety.md §2.2).
@@ -263,20 +268,41 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
                 let goal = Obligation::Trait(TraitRef {
                     trait_id: tref.trait_id,
-                    args: vec![self_ty],
+                    args,
                 });
-                match self.traits.select(&goal) {
+                let mut select = SelectCtxt::new(&self.traits, self.tcx, &self.generics);
+                match select.select(&goal) {
                     Ok(_) => Discharge::Solved,
-                    Err(_) => {
+                    Err(SelectError::NoImpl(inner)) => {
                         let name = self.trait_display(tref.trait_id);
-                        Discharge::Failed(format!(
-                            "`{}` does not implement `{name}`",
-                            self.ty_display(self_ty)
-                        ))
+                        let mut msg =
+                            format!("`{}` does not implement `{name}`", self.ty_display(self_ty));
+                        // A where-clause failure on the chosen impl bubbles
+                        // the inner goal; name the root cause.
+                        if inner.trait_id != tref.trait_id || inner.self_ty() != self_ty {
+                            msg.push_str(&format!(
+                                ": `{}` does not implement `{}`",
+                                self.ty_display(inner.self_ty()),
+                                self.trait_display(inner.trait_id)
+                            ));
+                        }
+                        Discharge::Failed(msg)
+                    }
+                    Err(SelectError::DepthLimit(g)) => {
+                        Discharge::Failed(self.depth_limit_message(&g))
                     }
                 }
             }
         }
+    }
+
+    fn depth_limit_message(&self, goal: &TraitRef<'tcx>) -> String {
+        use crate::semi::traits::select::SELECT_DEPTH_LIMIT;
+        format!(
+            "overflow evaluating the bound `{}: {}` (depth limit {SELECT_DEPTH_LIMIT})",
+            self.ty_display(goal.self_ty()),
+            self.trait_display(goal.trait_id)
+        )
     }
 }
 

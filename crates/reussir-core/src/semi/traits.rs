@@ -8,19 +8,21 @@
 //!
 //! Flexivity-as-a-bound is deferred (see [`crate::semi::ty::Flexivity`]); if it
 //! lands it becomes a second [`Obligation`] variant discharged through the same
-//! [`TraitDb::select`] entry point.
+//! [`SelectCtxt::select`] entry point.
 
 pub mod builtins;
 pub mod coherence;
 pub mod db;
 pub mod def;
+pub mod select;
 pub mod subst;
 pub mod sync;
 
 pub use db::{SelectError, TraitDb};
 pub use def::{AssocTyDef, ImplDef, MethodSig, TraitDef};
+pub use select::{ParamEnv, SELECT_DEPTH_LIMIT, SelectCtxt};
 
-use crate::semi::ty::Ty;
+use crate::semi::ty::{GenericId, Ty};
 
 /// Identifies a trait declaration.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -66,9 +68,11 @@ pub enum Evidence<'tcx> {
         args: Vec<Ty<'tcx>>,
         sub: Vec<Evidence<'tcx>>,
     },
-    /// Discharged by an in-scope assumption (a `T: Trait` bound on the enclosing
-    /// definition). Phase 1.
-    Param(usize),
+    /// Discharged by an in-scope assumption: the `index`-th declared bound of
+    /// `generic` on the enclosing definition. At monomorphization the
+    /// instantiating context re-selects with the generic grounded, so this
+    /// never survives to codegen.
+    Param { generic: GenericId, index: usize },
     /// Projected from a super-trait of other evidence; `index` is the position
     /// in the sub-trait's super-trait list.
     Super {
