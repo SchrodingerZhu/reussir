@@ -33,6 +33,8 @@ pub struct Program {
 /// A trait declaration item. `generics[0]` is the implicit `Self` binder.
 #[derive(Clone, Debug)]
 pub struct TraitItem {
+    /// A `#[lang("…")]` marker naming the language item this declares.
+    pub lang: Option<String>,
     pub is_pub: bool,
     pub path: String,
     pub generics: Vec<Generic>,
@@ -148,6 +150,8 @@ pub struct FfiPrelude {
 /// packages see the same field-access rights through a `.rri`.
 #[derive(Clone, Debug)]
 pub struct Record {
+    /// A `#[lang("…")]` marker naming the language item this declares.
+    pub lang: Option<String>,
     pub is_pub: bool,
     pub default_cap: DefaultCap,
     /// `#[repr(fixed)]`: uniform max-arm box sizing for an enum. Only ever set

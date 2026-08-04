@@ -17,6 +17,7 @@
 
 // The Semi-phase type machinery.
 pub mod infer;
+pub mod lang;
 pub mod traits;
 pub mod ty;
 
@@ -1725,6 +1726,87 @@ mod tests {
                 assert_eq!(calls[0].1, "Shared::P::get");
             },
         );
+    }
+
+    #[test]
+    fn lang_items_declare_resolve_and_locate() {
+        use crate::semi::lang::LangItem;
+        check(
+            "#[lang(\"partial_eq\")]\n\
+             pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }\n\
+             #[lang(\"ordering\")]\n\
+             pub enum Ordering { Less(), Equal(), Greater() }",
+            |elab, _| {
+                let pe = elab.lang.get(LangItem::PartialEq).expect("declared");
+                assert_eq!(elab.sym(elab.defs.path(pe).name()), "PartialEq");
+                let (_, span) = elab.lang_item_site(LangItem::PartialEq).expect("site");
+                assert!(span.is_some(), "source declarations carry locations");
+                assert!(elab.lang.get(LangItem::Ordering).is_some());
+                // The fallback tower is compiler-provided: no declared site.
+                assert!(elab.lang_item_site(LangItem::Num).is_none());
+            },
+        );
+    }
+
+    #[test]
+    fn lang_item_diagnostics() {
+        elaborate_source(
+            "#[lang(\"nope\")] pub trait A { fn a(self: Self) -> i64; }\n\
+             #[lang(\"eq\")] pub struct B { pub x: i64 }\n\
+             #[lang(\"ordering\")] pub trait C { fn c(self: Self) -> i64; }\n\
+             #[lang(\"partial_eq\")] pub trait D { fn d(self: Self) -> i64; }\n\
+             #[lang(\"partial_eq\")] pub trait E { fn e(self: Self) -> i64; }\n\
+             #[lang(\"ord\")] pub fn f() -> i64 { 1 }",
+            |elab| {
+                let has = |m: &str| elab.reports.iter().any(|r| r.message.contains(m));
+                assert!(has("unknown lang item `nope`"), "{:#?}", elab.reports);
+                assert!(has("lang item `eq` must be a trait"), "{:#?}", elab.reports);
+                assert!(
+                    has("lang item `ordering` must be a struct or enum"),
+                    "{:#?}",
+                    elab.reports
+                );
+                assert!(
+                    has("lang item `partial_eq` is already declared by `D`"),
+                    "{:#?}",
+                    elab.reports
+                );
+                assert!(
+                    has("lang item `ord` must be a trait"),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn rejected_batch_retracts_lang_items() {
+        use std::sync::Arc;
+
+        use crate::semi::lang::LangItem;
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+            // A batch that declares a lang item but fails elsewhere retracts
+            // the declaration with everything else…
+            let p1 = parse(
+                "#[lang(\"partial_eq\")]\npub trait P { fn e(self: Self) -> bool; }\n\
+                 fn bad() -> i64 { nonexistent() }",
+            );
+            elab.try_extend(&surface::program(&p1.root))
+                .expect_err("batch fails");
+            assert!(elab.lang.get(LangItem::PartialEq).is_none(), "retracted");
+            // …so the clean re-declaration is fresh, not a duplicate.
+            let p2 = parse("#[lang(\"partial_eq\")]\npub trait P { fn e(self: Self) -> bool; }");
+            elab.try_extend(&surface::program(&p2.root)).expect("clean");
+            assert!(elab.lang.get(LangItem::PartialEq).is_some());
+        });
     }
 
     #[test]

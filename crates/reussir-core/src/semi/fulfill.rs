@@ -139,9 +139,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let f64_ty = self.tcx.mk_fp(FpTy::Ieee(64));
         let i64_ty = self.tcx.mk_int(IntTy::Signed(64));
         let passes = [
-            (self.builtins.floating_point, f64_ty),
-            (self.builtins.integral, i64_ty),
-            (self.builtins.num, i64_ty),
+            (self.lang.floating_point, f64_ty),
+            (self.lang.integral, i64_ty),
+            (self.lang.num, i64_ty),
         ];
         for (want, default) in passes {
             self.fulfill
@@ -249,7 +249,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 // `Sync` is the structural thread-safety auto trait: answered
                 // by the checker over the type's shape, never by impl search
                 // (docs/design/thread-safety.md §2.2).
-                if tref.trait_id == self.builtins.sync {
+                if tref.trait_id == self.lang.sync {
                     use crate::semi::traits::sync::{SyncVerdict, sync_verdict};
                     use crate::semi::ty_eval::ElabSyncEnv;
                     return match sync_verdict(&ElabSyncEnv { el: self }, self_ty) {

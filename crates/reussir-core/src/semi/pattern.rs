@@ -280,7 +280,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 // the `Integral` bound on the column type, exactly as an integer
                 // literal *expression* does; the eventual int-switch lowering
                 // reads the column's real type to pick the signed/unsigned cast.
-                self.register_bound(self.builtins.integral, ty, span);
+                self.register_bound(self.lang.integral, ty, span);
                 Ctor::Int(self.tcx.alloc(i.clone()))
             }
             Const::ConstBool(b) => {
