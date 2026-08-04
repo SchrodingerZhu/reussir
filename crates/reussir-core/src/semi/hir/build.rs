@@ -95,11 +95,165 @@ impl Names {
     }
 }
 
+impl reussir_syntax::Interner<TokenKey> for Names {
+    type Error = std::convert::Infallible;
+
+    fn try_get_or_intern(&mut self, text: &str) -> Result<TokenKey, Self::Error> {
+        Ok(self.intern(text))
+    }
+
+    fn get_or_intern(&mut self, text: &str) -> TokenKey {
+        self.intern(text)
+    }
+}
+
 impl Resolver<TokenKey> for Names {
     fn try_resolve(&self, key: TokenKey) -> Option<&str> {
         self.strings
             .get(key.into_u32() as usize)
             .map(String::as_str)
+    }
+}
+
+impl<'tcx> Parsed<'tcx> {
+    /// Rebuild a session [`TraitDb`] from this dump's trait items, for
+    /// pipeline re-entry: register the builtins (their names intern into
+    /// this dump's own key space), then the dump's traits (two passes, so a
+    /// forward super-reference resolves) and impls. Dump-global generic ids
+    /// carry over unchanged, exactly like everywhere else in a re-entry.
+    ///
+    /// [`TraitDb`]: crate::semi::traits::TraitDb
+    pub fn rebuild_traits(&mut self, tcx: &TyCtxt<'tcx>) -> crate::semi::traits::TraitDb<'tcx> {
+        use crate::semi::traits::builtins::Builtins;
+        use crate::semi::traits::def::MethodSig;
+        use crate::semi::traits::{ImplDef, ImplId, Obligation, TraitDef, TraitId, TraitRef};
+
+        let mut db = crate::semi::traits::TraitDb::new();
+        let _ = Builtins::register(&mut db, &mut self.defs, &mut self.names, tcx);
+        let lookup_trait = |names: &mut Names, defs: &DefTable, path: &str| {
+            let segs: Vec<TokenKey> = path.split("::").map(|s| names.intern(s)).collect();
+            defs.lookup_trait(&segs)
+        };
+        for t in &self.traits {
+            if db.trait_by_def(t.def).is_some() {
+                continue;
+            }
+            let id = TraitId(db.traits_len() as u32);
+            let (&(self_param, _), params) = t
+                .generics
+                .split_first()
+                .expect("trait binders carry `Self` first");
+            let params: Vec<(TokenKey, GenericId)> = params
+                .iter()
+                .map(|(g, name)| (self.names.intern(name.as_deref().unwrap_or("_")), *g))
+                .collect();
+            db.add_trait(TraitDef {
+                id,
+                def: t.def,
+                visibility: if t.is_pub {
+                    surface::Visibility::Public
+                } else {
+                    surface::Visibility::Private
+                },
+                sealed: false,
+                self_param,
+                params,
+                supertraits: Vec::new(),
+                methods: Vec::new(),
+                assoc_tys: Vec::new(),
+                span: t.span,
+                file: t.file,
+            });
+        }
+        for t in &self.traits {
+            let Some(id) = db.trait_by_def(t.def) else {
+                continue;
+            };
+            let supertraits: Vec<TraitRef<'tcx>> = t
+                .supers
+                .iter()
+                .filter_map(|(path, args)| {
+                    let def = lookup_trait(&mut self.names, &self.defs, path)?;
+                    Some(TraitRef {
+                        trait_id: db.trait_by_def(def)?,
+                        args: args.clone(),
+                    })
+                })
+                .collect();
+            let methods: Vec<MethodSig<'tcx>> = t
+                .methods
+                .iter()
+                .map(|m| MethodSig {
+                    name: self.names.intern(&m.name),
+                    generics: m
+                        .generics
+                        .iter()
+                        .map(|(g, name)| (self.names.intern(name.as_deref().unwrap_or("_")), *g))
+                        .collect(),
+                    receiver: m.receiver,
+                    params: m.params.clone(),
+                    ret: m.ret,
+                    is_regional: m.regional,
+                    span: m.span,
+                })
+                .collect();
+            let def = db.trait_def_mut(id);
+            def.supertraits = supertraits;
+            def.methods = methods;
+        }
+        for i in &self.impls {
+            let Some(tid) = db.trait_by_def(i.trait_def) else {
+                continue;
+            };
+            let self_ty = i.args[0];
+            let methods: Vec<DefId> = i
+                .methods
+                .iter()
+                .filter_map(|p| {
+                    let segs: Vec<TokenKey> = p.split("::").map(|s| self.names.intern(s)).collect();
+                    self.defs.lookup_function(&segs)
+                })
+                .collect();
+            let where_clauses: Vec<Obligation<'tcx>> = i
+                .generics
+                .iter()
+                .flat_map(|&(g, _)| {
+                    self.generic_bounds
+                        .get(&g)
+                        .map(|bs| {
+                            bs.iter()
+                                .filter_map(|b| {
+                                    let def = lookup_trait(
+                                        &mut self.names,
+                                        &self.defs,
+                                        &b.trait_path().to_string(),
+                                    )?;
+                                    Some(Obligation::Trait(TraitRef {
+                                        trait_id: db.trait_by_def(def)?,
+                                        args: vec![tcx.mk_generic(g)],
+                                    }))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+            let id = ImplId(db.impls_len() as u32);
+            db.add_impl(ImplDef {
+                id,
+                generics: i.generics.iter().map(|&(g, _)| g).collect(),
+                trait_ref: TraitRef {
+                    trait_id: tid,
+                    args: i.args.clone(),
+                },
+                self_ty,
+                where_clauses,
+                methods,
+                span: i.span,
+                file: i.file,
+            });
+        }
+        db
     }
 }
 
