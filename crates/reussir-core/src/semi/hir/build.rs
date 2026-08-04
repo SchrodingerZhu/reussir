@@ -722,10 +722,11 @@ mod tests {
     /// equality.
     fn roundtrip(source: &str) {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();
@@ -772,10 +773,11 @@ mod tests {
     fn roundtrip_with_locations(source: &str) {
         use reussir_syntax::source::SourceCache;
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let cache = SourceCache::single("<test>", source);
@@ -834,10 +836,11 @@ mod tests {
         let file_name = r#"<quoted"path\name>"#;
 
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let mut cache = SourceCache::new();
@@ -1026,10 +1029,11 @@ mod tests {
     fn if_without_else_matches_explicit_empty_else() {
         fn printed_hir(source: &str) -> String {
             with_tcx(|tcx| {
-                let parse = reussir_syntax::parse(source);
+                let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+                let parse = reussir_syntax::parse_with_interner(source, interner.clone());
                 assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
                 let prog = surface::program(&parse.root);
-                let elab = elaborate(tcx, &prog, parse.resolver());
+                let elab = elaborate(tcx, &prog, &interner);
                 assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
                 let strings = elab.strings.entries();
                 Printer::new(&elab.defs, elab.resolver).program(
@@ -1081,10 +1085,11 @@ mod tests {
                           struct Hidden { value: i64 } \
                           pub fn get(d: Data) -> i64 { d.value } \
                           fn peek(h: Hidden) -> i64 { h.value }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();
@@ -1175,10 +1180,11 @@ mod tests {
                       fn f<T : Integral + Sync>(x: T) -> T { x }\n\
                       fn g<T>(x: T) -> T { x }";
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();
@@ -1246,10 +1252,11 @@ mod tests {
             let source = "pub struct [value] S { pub x: i64, y: i64 }\n\
                           pub struct T(pub i64, i64)\n\
                           pub struct [regional] R { pub c: [field] R, d: i64 }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
 
             let strings = elab.strings.entries();

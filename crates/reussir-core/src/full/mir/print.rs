@@ -719,10 +719,11 @@ mod tests {
 
     fn render(source: &str) -> String {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");

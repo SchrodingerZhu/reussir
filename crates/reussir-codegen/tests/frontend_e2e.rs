@@ -22,10 +22,11 @@ fn jit_run<R>(source: &str, run: impl FnOnce(&OrcJit) -> R) -> R {
     let context = testing::context();
     // Frontend + lowering, inside the arena scope; the module outlives it.
     let mut module = in_arena(|tcx| {
-        let parse = reussir_syntax::parse(source);
+        let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+        let parse = reussir_syntax::parse_with_interner(source, interner.clone());
         assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
         let prog = surface::program(&parse.root);
-        let elab = elaborate(tcx, &prog, parse.resolver());
+        let elab = elaborate(tcx, &prog, &interner);
         assert!(
             !elab.has_errors(),
             "elaboration errors: {:#?}",
@@ -210,10 +211,11 @@ fn lowers_variant_debug_info_through_the_pipeline() {
     "#;
     let context = testing::context();
     let mut module = in_arena(|tcx| {
-        let parse = reussir_syntax::parse(src);
+        let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+        let parse = reussir_syntax::parse_with_interner(src, interner.clone());
         assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
         let prog = surface::program(&parse.root);
-        let elab = elaborate(tcx, &prog, parse.resolver());
+        let elab = elaborate(tcx, &prog, &interner);
         assert!(
             !elab.has_errors(),
             "elaboration errors: {:#?}",

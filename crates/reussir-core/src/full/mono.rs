@@ -1681,10 +1681,11 @@ mod tests {
     /// the program to `f`.
     fn with_full<R>(source: &str, f: impl FnOnce(&mir::Program<'_>) -> R) -> R {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -1710,10 +1711,11 @@ mod tests {
     /// diagnostics' messages.
     fn mono_reports(source: &str) -> Vec<String> {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -1739,10 +1741,11 @@ mod tests {
             pub fn ground(x: i64) -> i64 { from_ground(x) }
         ";
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -1785,13 +1788,15 @@ mod tests {
     fn negative_zero_is_not_folded() {
         use crate::full::mir::print::Printer as MirPrinter;
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(
                 "pub fn nz() -> f64 { -0.0 } \
                  pub fn nn() -> f64 { -1.5 }",
+                interner.clone(),
             );
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "{:#?}", elab.reports);
             let (mir, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "{reports:#?}");
@@ -1854,10 +1859,11 @@ mod tests {
                       fn id<T>(x: T) -> T { x } \
                       pub fn mk(x: i32, y: i32) -> Pair { id(Pair { a: x, b: y }) }";
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "{:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "{:#?}", elab.reports);
 
             // Monomorphize the original elaboration.
@@ -1953,10 +1959,11 @@ mod tests {
 
         with_tcx(|tcx| {
             // ----- parse + semi-elaborate -----
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -2295,10 +2302,11 @@ mod tests {
             regional fn use_bad(p: Pair) -> i32 { foo(p) }
         "#;
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -2495,10 +2503,11 @@ mod tests {
             regional fn use_bad(w: [flex] Wrapper<Pair>) -> i32 { 0 }
         "#;
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -2838,10 +2847,11 @@ mod tests {
             regional fn use_bad(b: [flex] Box<Pair>, z: Nullable<Pair>) -> i32 { store(b, z) }
         "#;
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",

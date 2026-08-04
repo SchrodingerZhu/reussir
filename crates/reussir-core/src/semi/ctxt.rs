@@ -391,7 +391,6 @@ pub struct Elaborator<'a, 'tcx> {
     pub resolver: &'a dyn Resolver<TokenKey>,
     pub traits: TraitDb<'tcx>,
     pub builtins: Builtins,
-    pub trait_names: FxHashMap<&'static str, TraitId>,
     /// Resolution registry: item `DefId`s and their fully-qualified paths.
     pub defs: DefTable,
     /// Frequency-and-recency weight per name, accumulated as names resolve
@@ -485,6 +484,8 @@ pub struct Elaborator<'a, 'tcx> {
 pub struct Checkpoint {
     pub(super) defs: usize,
     pub(super) generics: usize,
+    pub(super) traits: usize,
+    pub(super) impls: usize,
     pub(super) trampolines: usize,
     pub(super) transform_anchors: usize,
     pub(super) transform_scripts: usize,
@@ -495,26 +496,24 @@ pub struct Checkpoint {
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
-    pub fn new(tcx: &'a TyCtxt<'tcx>, resolver: &'a dyn Resolver<TokenKey>) -> Self {
+    pub fn new(tcx: &'a TyCtxt<'tcx>, interner: &'a reussir_syntax::SessionInterner) -> Self {
+        // Builtin trait defs occupy the first DefIds, declared before any
+        // user or extern item and before the first REPL checkpoint — so
+        // rollback can never retract them. `Builtins::register` is generic
+        // over `&mut impl Interner` (it also serves owned tables, which
+        // genuinely mutate); the session table satisfies that spelling by
+        // a handle copy — an `Arc` clone, not a table copy.
+        let mut defs = DefTable::new();
         let mut traits = TraitDb::new();
-        let builtins = Builtins::register(&mut traits, tcx);
-        let trait_names = [
-            ("Num", builtins.num),
-            ("Integral", builtins.integral),
-            ("FloatingPoint", builtins.floating_point),
-            ("PtrLike", builtins.ptr_like),
-            ("Sync", builtins.sync),
-        ]
-        .into_iter()
-        .collect();
+        let mut handle = interner.clone();
+        let builtins = Builtins::register(&mut traits, &mut defs, &mut handle, tcx);
         Elaborator {
             tcx,
-            resolver,
-            defs: DefTable::new(),
+            resolver: &**interner,
+            defs,
             frecency: Frecency::new(),
             traits,
             builtins,
-            trait_names,
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
@@ -923,6 +922,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match kind {
             DefKind::Record => self.defs.lookup_record(&key),
             DefKind::Function => self.defs.lookup_function(&key),
+            DefKind::Trait => self.defs.lookup_trait(&key),
         }
     }
 
@@ -932,6 +932,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match self.defs.info(def).kind {
             DefKind::Record => self.records.get(&def).map(|r| r.visibility),
             DefKind::Function => self.functions.get(&def).map(|f| f.visibility),
+            DefKind::Trait => self
+                .traits
+                .trait_by_def(def)
+                .map(|id| self.traits.trait_def(id).visibility),
         }
     }
 
@@ -950,6 +954,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let what = match kind {
             DefKind::Record => "record",
             DefKind::Function => "function",
+            DefKind::Trait => "trait",
         };
         Some(format!(
             "{what} `{}` in package `{}` is private",
@@ -1063,7 +1068,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Hint for an unknown trait bound, drawn from the built-in trait names.
     /// Built-ins carry no usage history, so every candidate has zero frecency.
     pub(super) fn trait_suggestion(&self, name: &str) -> String {
-        self.fuzzy_hint(name, self.trait_names.keys().map(|&k| (k, 0.0)))
+        self.fuzzy_hint(
+            name,
+            self.defs
+                .trait_names()
+                .map(|k| (self.sym(k), self.frecency.score(k))),
+        )
     }
 
     /// Search `candidates` (each a `(name, frecency)` pair) for the best
@@ -1105,8 +1115,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Every bounded generic's bounds, for the HIR printer's binder
     /// serialization (`$0 (T): Num`). Derived data — no new elaborator
-    /// state. Builtin traits are root names, so each path is one segment;
-    /// user-declared traits will carry their full module path here.
+    /// state. Segments come from the trait's qualified path: builtin traits
+    /// live at the crate root, so their serialization stays one segment.
     pub fn bound_names(&self) -> FxHashMap<GenericId, Vec<hir::Bound>> {
         self.generics
             .iter()
@@ -1117,9 +1127,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     .bounds
                     .iter()
                     .map(|&t| {
-                        hir::Bound::Trait(hir::BoundPath {
-                            segments: vec![self.traits.trait_def(t).name.clone()],
-                        })
+                        let def = self.traits.trait_def(t).def;
+                        let segments = self
+                            .defs
+                            .path(def)
+                            .0
+                            .iter()
+                            .map(|&seg| self.sym(seg).to_owned())
+                            .collect();
+                        hir::Bound::Trait(hir::BoundPath { segments })
                     })
                     .collect();
                 (GenericId(i as u32), bounds)
@@ -1127,23 +1143,77 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect()
     }
 
-    /// Resolve a bound path (by basename) to a built-in trait.
-    pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
-        let name = self.sym(path.basename);
-        self.resolve_bound_name(name, span)
+    /// A trait's display name — its qualified path.
+    pub(super) fn trait_display(&self, id: TraitId) -> String {
+        self.defs
+            .path(self.traits.trait_def(id).def)
+            .display(self.resolver)
     }
 
-    /// Resolve a bound's basename against the builtin trait table — shared by
-    /// surface bounds and the extern reload of serialized interface bounds.
-    pub(super) fn resolve_bound_name(&mut self, name: &str, span: Option<Span>) -> Option<TraitId> {
-        match self.trait_names.get(name) {
-            Some(&id) => Some(id),
-            None => {
-                let hint = self.trait_suggestion(name);
-                self.error(span, format!("unknown trait bound `{name}`{hint}"));
-                None
+    /// Resolve a bound path to a trait, through the trait namespace: extern
+    /// heads gate on `pub`, bare names see the current module then the crate
+    /// root (where the builtins live), qualified paths resolve like any
+    /// other reference.
+    pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
+        let def = if self.extern_head(path).is_some() {
+            self.resolve_extern(path, DefKind::Trait)
+        } else if path.segments.is_empty() {
+            self.defs.resolve_trait(path.basename)
+        } else {
+            self.defs
+                .resolve_trait_path(&self.classify_segs(path), path.basename)
+        };
+        let Some(def) = def else {
+            if let Some(msg) = self.extern_private_msg(path, DefKind::Trait) {
+                self.error(span, msg);
+                return None;
             }
-        }
+            let hint = if path.segments.is_empty() {
+                self.trait_suggestion(self.sym(path.basename))
+            } else {
+                String::new()
+            };
+            let shown = self.path_display(path);
+            self.error(span, format!("unknown trait bound `{shown}`{hint}"));
+            return None;
+        };
+        self.record_use(path.basename);
+        Some(
+            self.traits
+                .trait_by_def(def)
+                .expect("every trait-namespace def has a TraitDb entry"),
+        )
+    }
+
+    /// Resolve a serialized bound's path segments (interned) — the `.rri`
+    /// reload side. Absolute lookup: a single segment is a crate-root name,
+    /// exactly where the builtins live.
+    pub(super) fn resolve_bound_segments(
+        &mut self,
+        segments: &[TokenKey],
+        span: Option<Span>,
+    ) -> Option<TraitId> {
+        let Some(def) = self.defs.lookup_trait(segments) else {
+            let shown = segments
+                .iter()
+                .map(|&s| self.sym(s))
+                .collect::<Vec<_>>()
+                .join("::");
+            let hint = if segments.len() == 1 {
+                self.trait_suggestion(self.sym(segments[0]))
+            } else {
+                String::new()
+            };
+            self.error(span, format!("unknown trait bound `{shown}`{hint}"));
+            return None;
+        };
+        Some(
+            self.traits
+                .trait_by_def(def)
+                .expect("every trait-namespace def has a TraitDb entry"),
+        )
     }
 
     fn resolve_bounds(&mut self, bounds: &[surface::Path], span: Option<Span>) -> Vec<TraitId> {
@@ -1177,13 +1247,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// deliberately left to grow — stale entries are unreachable once the
     /// defs that referenced them are retracted.
     ///
-    /// Any *future* accumulated state must be added here: notably, once
-    /// user-defined traits/impls land, `traits` stops being fixed at
-    /// construction and a rejected batch's impls must roll back too.
+    /// Any *future* accumulated state must be added here. The trait registry
+    /// is covered: `traits`/`impls` counters truncate the [`TraitDb`] tails
+    /// (dense ids), so a rejected batch's trait declarations and impls
+    /// retract with their defs.
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             defs: self.defs.len(),
             generics: self.generics.len(),
+            traits: self.traits.traits_len(),
+            impls: self.traits.impls_len(),
             trampolines: self.trampolines.len(),
             transform_anchors: self.transform_anchors.len(),
             transform_scripts: self.transform_scripts.len(),
@@ -1206,6 +1279,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.functions.retain(|def, _| def.0 < live);
         self.ffi_imports.retain(|def, _| def.0 < live);
         self.generics.truncate(cp.generics);
+        self.traits.truncate(cp.traits, cp.impls);
         self.trampolines.truncate(cp.trampolines);
         self.transform_anchors.truncate(cp.transform_anchors);
         self.transform_scripts.truncate(cp.transform_scripts);

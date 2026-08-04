@@ -37,21 +37,23 @@ pub use ctxt::{
 };
 pub use externs::ExternPackage;
 
-use reussir_syntax::Interner;
-use reussir_syntax::kind::{Resolver, TokenKey};
+use reussir_syntax::SessionInterner;
 
 use crate::surface;
 use ty::TyCtxt;
 
 /// Elaborate a whole surface program. Returns the elaborator holding the
-/// collected, type-checked items and any diagnostics. `resolver` turns the
-/// surface AST's interned token keys back into source text.
+/// collected, type-checked items and any diagnostics. `interner` is the
+/// shared session table the program was parsed with — it resolves the
+/// surface AST's token keys back to text *and* interns the elaborator's own
+/// names, both through `&self` (the threaded interner is interior-mutable,
+/// so sharing it is never `&mut`).
 pub fn elaborate<'a, 'tcx>(
     tcx: &'a TyCtxt<'tcx>,
     program: &surface::Program,
-    resolver: &'a dyn Resolver<TokenKey>,
+    interner: &'a SessionInterner,
 ) -> Elaborator<'a, 'tcx> {
-    let mut elab = Elaborator::new(tcx, resolver);
+    let mut elab = Elaborator::new(tcx, interner);
     elab.run(program);
     elab
 }
@@ -59,14 +61,14 @@ pub fn elaborate<'a, 'tcx>(
 /// Elaborate a whole package — one translation unit spanning many files, each
 /// under its own module path. All items are declared before any is resolved,
 /// so cross-file references work in any order. Every file must have been
-/// parsed with **one shared interner** (`resolver` resolves its keys):
-/// cross-file resolution compares interned keys.
+/// parsed with the **one shared session interner** passed here: cross-file
+/// resolution compares interned keys.
 pub fn elaborate_package<'a, 'tcx>(
     tcx: &'a TyCtxt<'tcx>,
     files: &[PackageFile<'_>],
-    resolver: &'a dyn Resolver<TokenKey>,
+    interner: &'a SessionInterner,
 ) -> Elaborator<'a, 'tcx> {
-    let mut elab = Elaborator::new(tcx, resolver);
+    let mut elab = Elaborator::new(tcx, interner);
     elab.run_package(files);
     elab
 }
@@ -74,18 +76,21 @@ pub fn elaborate_package<'a, 'tcx>(
 /// [`elaborate_package`] against loaded dependency interfaces: every extern
 /// package's items are declared first (the declare-only twin of the
 /// in-package scan, see [`externs`]), so consumer references `dep::item`
-/// resolve during the same run — `pub` items only. `interner` must back
-/// `resolver`: extern paths re-intern into the consumer's key space.
+/// resolve during the same run — `pub` items only. Extern paths re-intern
+/// into the session table.
 pub fn elaborate_package_with_externs<'a, 'tcx>(
     tcx: &'a TyCtxt<'tcx>,
     files: &[PackageFile<'_>],
-    resolver: &'a dyn Resolver<TokenKey>,
-    interner: &mut impl Interner<TokenKey>,
+    interner: &'a SessionInterner,
     externs: &[ExternPackage<'_, 'tcx>],
 ) -> Elaborator<'a, 'tcx> {
-    let mut elab = Elaborator::new(tcx, resolver);
+    let mut elab = Elaborator::new(tcx, interner);
     for ext in externs {
-        elab.declare_extern_package(interner, ext);
+        // The extern declare pass is generic over `&mut impl Interner` (it
+        // also serves owned tables); the session table satisfies that
+        // spelling by a handle copy — an `Arc` clone, not a table copy.
+        let mut handle = interner.clone();
+        elab.declare_extern_package(&mut handle, ext);
     }
     elab.run_package(files);
     elab
@@ -101,10 +106,11 @@ mod tests {
     /// on the resulting elaborator.
     fn check(source: &str, f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>, &TyCtxt<'tcx>)) {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 !elab.has_errors(),
                 "elaboration errors: {:#?}",
@@ -581,10 +587,11 @@ mod tests {
         with_tcx(|tcx| {
             let source = "pub struct [regional] R { pub v: i64 }\n\
                           impl R { fn bad(self: [flex] Self) -> i64 { self.v } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports.iter().any(|r| r
                     .message
@@ -600,10 +607,11 @@ mod tests {
         with_tcx(|tcx| {
             let source = "pub struct A { pub v: i64 }\npub struct B { pub v: i64 }\n\
                           impl A { fn bad(self: B) -> i64 { self.v } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports.iter().any(|r| r
                     .message
@@ -656,10 +664,11 @@ mod tests {
         with_tcx(|tcx| {
             let source = "pub struct P { pub x: i64 }\n\
                           impl P { fn bad(n: i64, self: Self) -> i64 { n } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports.iter().any(|r| r
                     .message
@@ -672,10 +681,11 @@ mod tests {
 
     fn elaborate_source(source: &str, f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>)) {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             f(&elab);
         });
     }
@@ -984,10 +994,11 @@ mod tests {
             // must report it instead of handing monomorphization a type
             // `subst_ty` would panic on.
             let source = "fn f() -> i64 { let x = Nullable::Null; 42 }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             let ambiguous: Vec<_> = elab
                 .reports
                 .iter()
@@ -1006,10 +1017,11 @@ mod tests {
                           struct P { z: f64 }\n\
                           fn f(a: i32) -> i32 { a }\n\
                           fn f(b: f64, c: f64) -> f64 { b }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
 
             let duplicates = elab
                 .reports
@@ -1294,10 +1306,11 @@ pub struct Rect { pub w: i64 }",
     fn pub_impl_block_rejected() {
         with_tcx(|tcx| {
             let source = "struct P { x: i64 }\npub impl P { fn get(p: P) -> i64 { p.x } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports.iter().any(|r| r
                     .message
@@ -1333,10 +1346,11 @@ pub struct Rect { pub w: i64 }",
         with_tcx(|tcx| {
             let source = "pub struct Box<T> { pub v: T }\n\
                           impl<T: Num> Box<T> { fn bad<T: Num>(b: Box<T>) -> i64 { 0 } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports
                     .iter()
@@ -1579,9 +1593,10 @@ pub struct Rect { pub w: i64 }",
     fn reports_type_mismatch() {
         with_tcx(|tcx| {
             let source = "fn bad() -> bool { 1 }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(elab.has_errors(), "expected a type mismatch error");
         });
     }
@@ -1592,10 +1607,11 @@ pub struct Rect { pub w: i64 }",
     fn if_without_else_requires_a_unit_then_branch() {
         with_tcx(|tcx| {
             let source = "fn bad(c: bool) -> i32 { if c { true } }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(elab.has_errors(), "expected a unit mismatch error");
             let messages = elab
                 .reports
@@ -1617,10 +1633,11 @@ pub struct Rect { pub w: i64 }",
     fn diagnostics_render_types_in_surface_syntax() {
         let messages = |source: &str| {
             with_tcx(|tcx| {
-                let parse = reussir_syntax::parse(source);
+                let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+                let parse = reussir_syntax::parse_with_interner(source, interner.clone());
                 assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
                 let prog = surface::program(&parse.root);
-                let elab = elaborate(tcx, &prog, parse.resolver());
+                let elab = elaborate(tcx, &prog, &interner);
                 assert!(elab.has_errors(), "expected an error");
                 elab.reports
                     .iter()
@@ -1739,9 +1756,10 @@ pub struct Rect { pub w: i64 }",
                     }
                 }
             "#;
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports
                     .iter()
@@ -1805,9 +1823,10 @@ pub struct Rect { pub w: i64 }",
                     Outer { inner: Inner { v: v }, tag: v }
                 }
             "#;
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports
                     .iter()
@@ -1822,9 +1841,10 @@ pub struct Rect { pub w: i64 }",
     fn rejects_regional_call_outside_region() {
         with_tcx(|tcx| {
             let source = "regional fn r() -> i32 { 0 }\nfn caller() -> i32 { r() }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports.iter().any(|r| r.message.contains("regional")),
                 "expected a regional-call error: {:#?}",
@@ -1840,9 +1860,10 @@ pub struct Rect { pub w: i64 }",
             // value record is rejected right at the declaration.
             let source = "struct Pair { a: i32 }\n\
                           struct [regional] Holder { item: [field] Pair }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports
                     .iter()
@@ -1860,9 +1881,10 @@ pub struct Rect { pub w: i64 }",
             // value cannot be materialized, so it cannot escape its region).
             let source = "struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> }\n\
                           regional fn f(c: [flex] TestCell<i32>) -> i32 { let g = || c; 0 }";
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(
                 elab.reports
                     .iter()
@@ -1879,10 +1901,11 @@ pub struct Rect { pub w: i64 }",
     /// program against its fully-qualified spelling.
     fn printed_hir(source: &str) -> String {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let strings = elab.strings.entries();
             crate::semi::hir::print::Printer::new(&elab.defs, elab.resolver).program(
@@ -2004,10 +2027,11 @@ pub struct Rect { pub w: i64 }",
     /// Elaborate a source string and return its diagnostics (for negative tests).
     fn reports_of(source: &str) -> Vec<crate::semi::Report> {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            elaborate(tcx, &prog, parse.resolver()).reports.clone()
+            elaborate(tcx, &prog, &interner).reports.clone()
         })
     }
 
@@ -2459,7 +2483,7 @@ pub struct Rect { pub w: i64 }",
             let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
             let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
                 &interner;
-            let mut elab = Elaborator::new(tcx, resolver);
+            let mut elab = Elaborator::new(tcx, &interner);
             for src in [
                 "struct Q { x: i64 }\nstruct S { p: Q }",
                 "fn f(s: Arc<S>) -> i32 { 0 }",

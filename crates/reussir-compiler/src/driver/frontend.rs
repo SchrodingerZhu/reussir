@@ -95,7 +95,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
             files,
         })
         .collect();
-    let elab = elaborate_package_with_externs(tcx, &files, interner, &mut keys, &extern_pkgs);
+    let elab = elaborate_package_with_externs(tcx, &files, interner, &extern_pkgs);
     if render_reports(&pkg.cache, &elab.reports) {
         return Err(String::new());
     }
@@ -218,7 +218,8 @@ pub(crate) fn frontend<'c, 'tcx>(
     let source = sources.source(FileId::ROOT);
     match input {
         Stage::Rr => {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             if !parse.ok() {
                 let color = std::io::stderr().is_terminal();
                 let _ = diagnostics::render_errors(
@@ -231,7 +232,7 @@ pub(crate) fn frontend<'c, 'tcx>(
                 return Err(String::new());
             }
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             if render_reports(sources, &elab.reports) {
                 return Err(String::new());
             }

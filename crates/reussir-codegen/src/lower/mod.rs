@@ -686,10 +686,11 @@ mod tests {
     fn lower_source(source: &str) -> String {
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -743,10 +744,11 @@ transform [{
 }];"#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let program = surface::program(&parse.root);
-            let elab = elaborate(tcx, &program, parse.resolver());
+            let elab = elaborate(tcx, &program, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -774,10 +776,11 @@ transform [{
         let src = "pub fn add(a: i64, b: i64) -> i64 { a + b }\n";
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -820,10 +823,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -876,10 +880,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -939,10 +944,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1195,10 +1201,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1332,10 +1339,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             let (full, _) = monomorphize(&elab.mono_input());
             let err = lower_program(&context, tcx, &full, None, None, LinkagePolicy::Jit, &[])
                 .expect_err("an arc over a non-shared record must not lower");
@@ -1357,10 +1365,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "{:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "{reports:#?}");
@@ -1386,10 +1395,11 @@ transform [{
         "#;
         let context = crate::testing::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1421,10 +1431,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1451,10 +1462,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1514,10 +1526,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1559,10 +1572,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1637,10 +1651,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");
@@ -1701,10 +1716,11 @@ transform [{
         "#;
         let context = reussir_backend::context();
         in_arena(|tcx| {
-            let parse = reussir_syntax::parse(src);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             assert!(!elab.has_errors(), "elab errors: {:#?}", elab.reports);
             let (full, reports) = monomorphize(&elab.mono_input());
             assert!(reports.is_empty(), "mono reports: {reports:#?}");

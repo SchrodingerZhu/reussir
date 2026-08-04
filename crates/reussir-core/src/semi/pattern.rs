@@ -965,10 +965,11 @@ mod tests {
     /// Elaborate a source string and return its diagnostics.
     fn reports_of(source: &str) -> Vec<crate::semi::Report> {
         with_tcx(|tcx| {
-            let parse = reussir_syntax::parse(source);
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
             let prog = surface::program(&parse.root);
-            let elab = elaborate(tcx, &prog, parse.resolver());
+            let elab = elaborate(tcx, &prog, &interner);
             elab.reports.clone()
         })
     }

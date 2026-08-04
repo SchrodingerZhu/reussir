@@ -91,12 +91,14 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                 let existing = match info.kind {
                     DefKind::Record => self.defs.lookup_record(&segs),
                     DefKind::Function => self.defs.lookup_function(&segs),
+                    DefKind::Trait => self.defs.lookup_trait(&segs),
                 };
                 let def = existing.unwrap_or_else(|| {
                     self.defs.set_module(module.to_vec());
                     match info.kind {
                         DefKind::Record => self.defs.declare_record(*name),
                         DefKind::Function => self.defs.declare_function(*name),
+                        DefKind::Trait => self.defs.declare_trait(*name),
                     }
                     .expect("a missed lookup cannot clash")
                 });
@@ -108,7 +110,8 @@ impl<'tcx> Elaborator<'_, 'tcx> {
 
         for (pdef, rec) in &parsed.records {
             let def = defs[pdef.0 as usize];
-            let generics = self.remap_generics(&rec.ty_params, &keys, &parsed.generic_bounds);
+            let generics =
+                self.remap_generics(&rec.ty_params, &keys, &parsed.generic_bounds, interner);
             let remap = Remapper {
                 tcx: self.tcx,
                 defs: &defs,
@@ -134,7 +137,8 @@ impl<'tcx> Elaborator<'_, 'tcx> {
 
         for func in &parsed.funcs {
             let def = defs[func.def.0 as usize];
-            let generics = self.remap_generics(&func.generics, &keys, &parsed.generic_bounds);
+            let generics =
+                self.remap_generics(&func.generics, &keys, &parsed.generic_bounds, interner);
             let remap = Remapper {
                 tcx: self.tcx,
                 defs: &defs,
@@ -213,6 +217,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
         binder: &[(TokenKey, GenericId)],
         keys: &[TokenKey],
         bounds: &FxHashMap<GenericId, Vec<crate::semi::hir::Bound>>,
+        interner: &mut impl Interner<TokenKey>,
     ) -> RemappedGenerics {
         let mut map = FxHashMap::default();
         let binder = binder
@@ -223,8 +228,16 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                     .map(|bs| {
                         bs.iter()
                             .filter_map(|bound| {
-                                let path = bound.trait_path();
-                                self.resolve_bound_name(path.basename(), None)
+                                // Serialized paths resolve absolutely: one
+                                // segment is a crate-root name, where the
+                                // builtins live.
+                                let segs: Vec<TokenKey> = bound
+                                    .trait_path()
+                                    .segments
+                                    .iter()
+                                    .map(|s| interner.get_or_intern(s))
+                                    .collect();
+                                self.resolve_bound_segments(&segs, None)
                             })
                             .collect()
                     })

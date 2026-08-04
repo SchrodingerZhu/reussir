@@ -29,6 +29,7 @@ use crate::semi::ty::DefId;
 pub enum DefKind {
     Record,
     Function,
+    Trait,
 }
 
 /// A fully-qualified item path: the enclosing module segments, then the item
@@ -80,10 +81,11 @@ pub struct DefTable {
     /// The module path items currently declare under and bare references
     /// resolve against (empty = crate root; `[pkg, sub]` inside a package).
     module: Vec<TokenKey>,
-    /// Type-namespace scope (records) and value-namespace scope (functions),
-    /// keyed by the item's full qualified path.
+    /// Type-namespace scope (records), value-namespace scope (functions),
+    /// and trait-namespace scope, keyed by the item's full qualified path.
     types: FxHashMap<Box<[TokenKey]>, DefId>,
     values: FxHashMap<Box<[TokenKey]>, DefId>,
+    traits: FxHashMap<Box<[TokenKey]>, DefId>,
 }
 
 impl DefTable {
@@ -133,6 +135,12 @@ impl DefTable {
         self.declare(|s| &mut s.values, name, DefKind::Function)
     }
 
+    /// Declare a trait in the current module's trait namespace. `None` on
+    /// clash.
+    pub fn declare_trait(&mut self, name: TokenKey) -> Option<DefId> {
+        self.declare(|s| &mut s.traits, name, DefKind::Trait)
+    }
+
     /// Look up an exact fully-qualified path in the type namespace.
     pub fn lookup_record(&self, path: &[TokenKey]) -> Option<DefId> {
         self.types.get(path).copied()
@@ -141,6 +149,11 @@ impl DefTable {
     /// Look up an exact fully-qualified path in the value namespace.
     pub fn lookup_function(&self, path: &[TokenKey]) -> Option<DefId> {
         self.values.get(path).copied()
+    }
+
+    /// Look up an exact fully-qualified path in the trait namespace.
+    pub fn lookup_trait(&self, path: &[TokenKey]) -> Option<DefId> {
+        self.traits.get(path).copied()
     }
 
     /// Resolve a *bare* type reference: the current module first, then the
@@ -153,6 +166,13 @@ impl DefTable {
     /// crate root.
     pub fn resolve_function(&self, name: TokenKey) -> Option<DefId> {
         self.resolve_bare(&self.values, name)
+    }
+
+    /// Resolve a *bare* trait reference: the current module first, then the
+    /// crate root (where the builtin traits live, giving them prelude
+    /// visibility that a same-named module-local trait shadows).
+    pub fn resolve_trait(&self, name: TokenKey) -> Option<DefId> {
+        self.resolve_bare(&self.traits, name)
     }
 
     fn resolve_bare(
@@ -176,6 +196,11 @@ impl DefTable {
     /// Resolve a *qualified* value reference (see [`Self::resolve_qualified`]).
     pub fn resolve_function_path(&self, segs: &[PathSeg], name: TokenKey) -> Option<DefId> {
         self.resolve_qualified(&self.values, segs, name)
+    }
+
+    /// Resolve a *qualified* trait reference (see [`Self::resolve_qualified`]).
+    pub fn resolve_trait_path(&self, segs: &[PathSeg], name: TokenKey) -> Option<DefId> {
+        self.resolve_qualified(&self.traits, segs, name)
     }
 
     /// Resolve `segs::name` against the current module:
@@ -262,6 +287,14 @@ impl DefTable {
             .map(|p| *p.last().expect("paths are never empty"))
     }
 
+    /// Every trait name (the item's own, unqualified name) in the trait
+    /// namespace, for "did you mean" suggestions.
+    pub fn trait_names(&self) -> impl Iterator<Item = TokenKey> + '_ {
+        self.traits
+            .keys()
+            .map(|p| *p.last().expect("paths are never empty"))
+    }
+
     /// The number of declared defs — a checkpoint for [`DefTable::truncate`].
     pub fn len(&self) -> usize {
         self.defs.len()
@@ -282,6 +315,7 @@ impl DefTable {
             let scope = match info.kind {
                 DefKind::Record => &mut self.types,
                 DefKind::Function => &mut self.values,
+                DefKind::Trait => &mut self.traits,
             };
             let removed = scope.remove(info.path.0.as_slice());
             debug_assert_eq!(removed, Some(id), "scope must point at the popped def");
@@ -417,6 +451,32 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn trait_namespace_is_independent() {
+        let mut t = DefTable::new();
+        let name = k(1);
+        let r = t.declare_record(name).expect("record");
+        let f = t.declare_function(name).expect("function");
+        let tr = t.declare_trait(name).expect("trait");
+        assert!(r != f && f != tr && r != tr);
+        assert_eq!(t.resolve_trait(name), Some(tr));
+        // A second trait of the same name in the same module clashes.
+        assert!(t.declare_trait(name).is_none());
+    }
+
+    #[test]
+    fn truncate_retracts_a_trait_def() {
+        let mut t = DefTable::new();
+        let name = k(1);
+        let live = t.len();
+        let tr = t.declare_trait(name).expect("trait");
+        assert_eq!(t.lookup_trait(&[name]), Some(tr));
+        t.truncate(live);
+        assert_eq!(t.lookup_trait(&[name]), None);
+        // The retracted name is reusable.
+        assert!(t.declare_trait(name).is_some());
     }
 
     #[test]
