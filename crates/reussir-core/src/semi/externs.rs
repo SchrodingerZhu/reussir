@@ -403,6 +403,17 @@ impl<'tcx> Remapper<'_, '_, 'tcx> {
                 args: self.exprs(args),
                 regional: *regional,
             },
+            ExprKind::TraitCall {
+                trait_def,
+                method,
+                ty_args,
+                args,
+            } => ExprKind::TraitCall {
+                trait_def: self.def(*trait_def),
+                method: *method,
+                ty_args: self.tys(ty_args),
+                args: self.exprs(args),
+            },
             ExprKind::CompoundCall {
                 target,
                 ty_args,

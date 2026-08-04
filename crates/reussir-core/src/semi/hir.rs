@@ -172,6 +172,23 @@ pub enum ExprKind<'tcx> {
         args: Vec<Expr<'tcx>>,
         regional: bool,
     },
+    /// A trait-method call whose receiver is a bare in-scope generic, so the
+    /// impl is unknowable until monomorphization grounds `Self` and selects
+    /// it. A call with any *ground-headed* receiver is resolved at check
+    /// time to the unique impl's method as an ordinary [`FuncCall`] —
+    /// coherence guarantees the choice — so this variant never reaches
+    /// codegen; monomorphization rewrites it.
+    TraitCall {
+        /// The trait's path-keyed identity (stable across serialization,
+        /// unlike the session-dense `TraitId`).
+        trait_def: DefId,
+        /// Index into the trait's method table (= the impl's method order).
+        method: u32,
+        /// `[Self] ++ trait args ++ the method's own generics`.
+        ty_args: Vec<Ty<'tcx>>,
+        /// The receiver first, then the remaining arguments.
+        args: Vec<Expr<'tcx>>,
+    },
     /// A struct (compound) constructor call.
     CompoundCall {
         target: DefId,

@@ -599,6 +599,10 @@ impl<'a> Printer<'a> {
     /// The bare form of a value node, without its `: ty` suffix.
     fn atom(&self, e: &Expr<'_>) -> Doc<'static> {
         match &e.kind {
+            ExprKind::TraitCall { .. } => unimplemented!(
+                "trait-method calls have no HIR text form yet; it lands with \
+                 trait serialization"
+            ),
             ExprKind::GlobalStr(s) => text(str_lit(s.words())),
             ExprKind::ConstInt(n) => text(format!("{n}")),
             ExprKind::ConstFloat(f) => text(f.to_string()),

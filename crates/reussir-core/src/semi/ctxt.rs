@@ -1165,17 +1165,25 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// heads gate on `pub`, bare names see the current module then the crate
     /// root (where the builtins live), qualified paths resolve like any
     /// other reference.
-    pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
-        let expanded = self.expand_path(path);
-        let path = expanded.as_ref().unwrap_or(path);
-        let def = if self.extern_head(path).is_some() {
+    /// Resolve a (possibly qualified) trait reference without reporting —
+    /// shared by [`Self::resolve_bound`] (which diagnoses on `None`) and
+    /// trait-path method calls (which fall back to other interpretations).
+    /// The path must already be import-expanded.
+    pub(super) fn resolve_trait_ref_quiet(&mut self, path: &surface::Path) -> Option<DefId> {
+        if self.extern_head(path).is_some() {
             self.resolve_extern(path, DefKind::Trait)
         } else if path.segments.is_empty() {
             self.defs.resolve_trait(path.basename)
         } else {
             self.defs
                 .resolve_trait_path(&self.classify_segs(path), path.basename)
-        };
+        }
+    }
+
+    pub fn resolve_bound(&mut self, path: &surface::Path, span: Option<Span>) -> Option<TraitId> {
+        let expanded = self.expand_path(path);
+        let path = expanded.as_ref().unwrap_or(path);
+        let def = self.resolve_trait_ref_quiet(path);
         let Some(def) = def else {
             if let Some(msg) = self.extern_private_msg(path, DefKind::Trait) {
                 self.error(span, msg);

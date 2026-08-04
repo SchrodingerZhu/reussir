@@ -274,19 +274,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 match select.select(&goal) {
                     Ok(_) => Discharge::Solved,
                     Err(SelectError::NoImpl(inner)) => {
-                        let name = self.trait_display(tref.trait_id);
-                        let mut msg =
-                            format!("`{}` does not implement `{name}`", self.ty_display(self_ty));
-                        // A where-clause failure on the chosen impl bubbles
-                        // the inner goal; name the root cause.
-                        if inner.trait_id != tref.trait_id || inner.self_ty() != self_ty {
-                            msg.push_str(&format!(
-                                ": `{}` does not implement `{}`",
-                                self.ty_display(inner.self_ty()),
-                                self.trait_display(inner.trait_id)
-                            ));
-                        }
-                        Discharge::Failed(msg)
+                        Discharge::Failed(self.no_impl_message(self_ty, tref.trait_id, &inner))
                     }
                     Err(SelectError::DepthLimit(g)) => {
                         Discharge::Failed(self.depth_limit_message(&g))
@@ -296,7 +284,30 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
     }
 
-    fn depth_limit_message(&self, goal: &TraitRef<'tcx>) -> String {
+    /// "`τ` does not implement `Trait`", with the bubbled inner goal named
+    /// as the root cause when a where-clause on the chosen impl failed.
+    /// Shared by obligation discharge and trait-method dispatch.
+    pub(super) fn no_impl_message(
+        &self,
+        self_ty: crate::semi::ty::Ty<'tcx>,
+        trait_id: crate::semi::traits::TraitId,
+        inner: &TraitRef<'tcx>,
+    ) -> String {
+        let name = self.trait_display(trait_id);
+        let mut msg = format!("`{}` does not implement `{name}`", self.ty_display(self_ty));
+        // A where-clause failure on the chosen impl bubbles the inner goal;
+        // name the root cause.
+        if inner.trait_id != trait_id || inner.self_ty() != self_ty {
+            msg.push_str(&format!(
+                ": `{}` does not implement `{}`",
+                self.ty_display(inner.self_ty()),
+                self.trait_display(inner.trait_id)
+            ));
+        }
+        msg
+    }
+
+    pub(super) fn depth_limit_message(&self, goal: &TraitRef<'tcx>) -> String {
         use crate::semi::traits::select::SELECT_DEPTH_LIMIT;
         format!(
             "overflow evaluating the bound `{}: {}` (depth limit {SELECT_DEPTH_LIMIT})",
