@@ -10,6 +10,9 @@
 //! import-stmt ::= 'import' path ('as' name)? ';'
 //! fn-stmt     ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)?
 //!                     (block | ';' | RAW-MLIR-LITERAL ';')
+//! trait-stmt  ::= 'trait' name generics? (':' path ('+' path)*)? '{' trait-method* '}'
+//! trait-method ::= 'regional'? 'fn' name generics? '(' params ')' ('->' '[flex]'? type)? ';'
+//! impl-stmt   ::= 'impl' generics? (type-atom 'for')? type-atom '{' (pub? regional? fn ...)* '}'
 //! struct-stmt ::= 'struct' capability? name generics? (named-fields | unnamed-fields | ';')
 //! enum-stmt   ::= 'enum' capability? name generics? '{' variant,* '}'
 //! mod-stmt    ::= 'mod' name ';'
@@ -46,7 +49,11 @@ impl Parser<'_> {
     pub(crate) fn source_file(&mut self) {
         let m = self.start();
         while !self.at_eof() {
-            if self.current().starts_stmt() || self.at_transform_stmt() || self.at_impl_stmt() {
+            if self.current().starts_stmt()
+                || self.at_transform_stmt()
+                || self.at_impl_stmt()
+                || self.at_trait_stmt()
+            {
                 self.stmt();
             } else {
                 // Statement-level recovery: collect the unexpected tokens
@@ -54,13 +61,14 @@ impl Parser<'_> {
                 // again.
                 let e = self.start();
                 self.error(format!(
-                    "expected a top-level item (fn, struct, enum, mod, extern, impl, transform, or import), found {}",
+                    "expected a top-level item (fn, struct, enum, mod, extern, impl, trait, transform, or import), found {}",
                     self.current().describe()
                 ));
                 while !self.at_eof()
                     && !self.current().starts_stmt()
                     && !self.at_transform_stmt()
                     && !self.at_impl_stmt()
+                    && !self.at_trait_stmt()
                 {
                     self.bump();
                 }
@@ -86,9 +94,10 @@ impl Parser<'_> {
             ImportKw => self.import_stmt(m),
             Ident if self.at_transform_stmt() => self.transform_stmt(m),
             Ident if self.at_impl_stmt() => self.impl_stmt(m),
+            Ident if self.at_trait_stmt() => self.trait_stmt(m),
             _ => {
                 self.error(format!(
-                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `impl`, `transform`, or `import` after visibility, found {}",
+                    "expected `fn`, `struct`, `enum`, `mod`, `extern`, `impl`, `trait`, `transform`, or `import` after visibility, found {}",
                     self.current().describe()
                 ));
                 // Consume nothing further; the outer loop recovers.
@@ -110,7 +119,97 @@ impl Parser<'_> {
             && (self.nth(1) == LAngle || (self.nth(1).is_ident_like() && self.nth(1) != AsKw))
     }
 
-    /// `impl generics? Type<args>? { (pub? (regional? fn ...))* }`.
+    /// `trait` is likewise contextual: it heads a declaration only when its
+    /// name follows — `trait + 1` stays an expression over a variable named
+    /// `trait`, `trait as i64` a cast of one. No generic-list case: the
+    /// trait's name precedes its generics (unlike `impl<T>`).
+    fn at_trait_stmt(&self) -> bool {
+        self.at_ctx_kw("trait") && self.nth(1).is_ident_like() && self.nth(1) != AsKw
+    }
+
+    /// `trait Name generics? (':' path ('+' path)*)? '{' trait-method* '}'`.
+    /// Supertraits are bare `+`-separated paths; members are signatures only.
+    fn trait_stmt(&mut self, m: Marker) {
+        self.bump(); // the `trait` ident
+        self.expect_ident("a trait name");
+        if self.at(LAngle) {
+            self.generic_param_list();
+        }
+        if self.at(Colon) {
+            self.bump();
+            self.path_type();
+            while self.at(Plus) {
+                self.bump();
+                self.path_type();
+            }
+        }
+        self.expect(LBrace);
+        while !self.at(RBrace) && !self.at_eof() {
+            if self.at(RegionalKw) || self.at(FnKw) {
+                let member = self.start();
+                self.trait_method(member);
+            } else {
+                // Member-level recovery: `pub` is not a member starter —
+                // trait methods take the trait's visibility.
+                let e = self.start();
+                self.error(format!(
+                    "expected `fn` or `regional fn` in a `trait` body, found {}",
+                    self.current().describe()
+                ));
+                while !self.at_eof() && !self.at(RBrace) && !self.at(RegionalKw) && !self.at(FnKw) {
+                    self.bump();
+                }
+                e.complete(self, ErrorNode);
+            }
+        }
+        self.expect(RBrace);
+        m.complete(self, TraitStmt);
+    }
+
+    /// A trait method signature — `fn_stmt`'s body-less twin, completing an
+    /// ordinary `FnStmt` node so downstream views project members uniformly.
+    fn trait_method(&mut self, m: Marker) {
+        if self.at(RegionalKw) {
+            self.bump();
+        }
+        self.expect(FnKw);
+        self.expect_ident("a method name");
+        if self.at(LAngle) {
+            self.generic_param_list();
+        }
+        self.param_list();
+        if self.at(Arrow) {
+            let r = self.start();
+            self.bump();
+            self.flex_flag_opt();
+            self.type_();
+            r.complete(self, RetType);
+        }
+        if self.at(Semicolon) {
+            self.bump();
+        } else if self.at(LBrace) {
+            self.error(
+                "trait methods are signatures; end the signature with `;`                  (default method bodies are not supported)",
+            );
+            // Consume the body losslessly so recovery continues at the next
+            // member instead of cascading.
+            self.block_expr();
+            if self.at(Semicolon) {
+                self.bump();
+            }
+        } else if self.at(RawMlirLiteral) {
+            self.error("trait methods cannot have a foreign body");
+            self.bump();
+            if self.at(Semicolon) {
+                self.bump();
+            }
+        } else {
+            self.error("expected `;` after a trait method signature");
+        }
+        m.complete(self, FnStmt);
+    }
+
+    /// `impl generics? (Trait<args> 'for')? Type<args>? { (pub? (regional? fn ...))* }`.
     fn impl_stmt(&mut self, m: Marker) {
         self.bump(); // the `impl` ident
         if self.at(LAngle) {
@@ -118,11 +217,31 @@ impl Parser<'_> {
         }
         if PRIM_TYPES.contains(&self.current_text()) {
             let e = self.start();
-            self.error("the target of `impl` must be a named type");
+            if self.nth_text(1) == "for" {
+                self.error("the trait of an `impl` must be a named trait");
+            } else {
+                self.error("the target of `impl` must be a named type");
+            }
             self.bump();
             e.complete(self, ErrorNode);
         } else if self.type_atom().is_none() {
             self.error("expected a type name as the `impl` target");
+        }
+        // `impl Trait<args> for Type`: a contextual `for` after the first
+        // head makes it the trait reference and the next atom the target.
+        // Greedy, single-shot: `impl for { }` is an inherent impl of a type
+        // named `for` (the first atom consumed it), `impl for for X { }` a
+        // trait named `for` implemented for `X`.
+        if self.at_ctx_kw("for") {
+            self.bump();
+            if PRIM_TYPES.contains(&self.current_text()) {
+                let e = self.start();
+                self.error("the target of `impl` must be a named type");
+                self.bump();
+                e.complete(self, ErrorNode);
+            } else if self.type_atom().is_none() {
+                self.error("expected a type name as the `impl` target after `for`");
+            }
         }
         self.expect(LBrace);
         while !self.at(RBrace) && !self.at_eof() {
@@ -571,6 +690,14 @@ impl Parser<'_> {
             self.bump();
             return Some(m.complete(self, PrimType));
         }
+        Some(self.path_type())
+    }
+
+    /// A named-type reference — a qualified path with optional type
+    /// arguments, completed as a `PathType` node. Shared by type atoms,
+    /// the `impl` heads, and supertrait references (which accept the same
+    /// shape; whether arguments are *admitted* there is semantics).
+    fn path_type(&mut self) -> CompletedMarker {
         let m = self.start();
         self.path();
         if self.at(LAngle) {
@@ -585,7 +712,7 @@ impl Parser<'_> {
             self.expect(RAngle);
             args.complete(self, TypeArgList);
         }
-        Some(m.complete(self, PathType))
+        m.complete(self, PathType)
     }
 
     /// A statically shaped array type: `[T; e1, e2, ...]` with one extent

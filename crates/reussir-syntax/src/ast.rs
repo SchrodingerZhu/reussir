@@ -145,6 +145,7 @@ impl Emitter<'_> {
             TransformStmt => self.transform_stmt(node),
             ImportStmt => self.import_stmt(node),
             ImplStmt => self.impl_stmt(node),
+            TraitStmt => self.trait_stmt(node),
             k => unreachable!("unexpected statement node {k:?}"),
         };
         tagged("SpannedStmt", self.with_node_span(node, inner))
@@ -339,9 +340,15 @@ impl Emitter<'_> {
     }
 
     fn impl_stmt(&self, node: &ResolvedNode) -> Value {
-        let target = nodes(node)
-            .find(|n| n.kind() == PathType)
-            .expect("impl target type");
+        // Two direct PathType heads iff the `for` separator was parsed: the
+        // first is then the trait reference, the second the target.
+        let mut heads = nodes(node).filter(|n| n.kind() == PathType);
+        let first = heads.next().expect("impl target type");
+        let second = heads.next();
+        let (trait_ref, target) = match second {
+            Some(second) => (Some(first), second),
+            None => (None, first),
+        };
         let members: Vec<Value> = nodes(node)
             .filter(|n| n.kind() == FnStmt)
             .map(|f| self.with_node_span(f, self.fn_stmt(f)))
@@ -351,8 +358,46 @@ impl Emitter<'_> {
             json!({
                 "implVisibility": self.visibility(node),
                 "implGenerics": self.generic_params(node),
+                "implTrait": trait_ref.map_or(Value::Null, |t| self.type_(t)),
                 "implTarget": self.type_(target),
                 "implMembers": members,
+            }),
+        )
+    }
+
+    fn trait_stmt(&self, node: &ResolvedNode) -> Value {
+        // The introducer lexes as a plain `Ident` spelled `trait`; the name
+        // is the first ident-like token after it (`pub trait trait` names a
+        // trait `trait` — PubKw is ident-like but not Ident-kind).
+        let mut seen_intro = false;
+        let mut name = None;
+        for t in tokens(node) {
+            if !seen_intro && t.kind() == Ident && t.text() == "trait" {
+                seen_intro = true;
+            } else if seen_intro && is_ident_like(t.kind()) {
+                name = Some(t);
+                break;
+            }
+        }
+        let name = name.expect("trait name");
+        // Supertrait references are path types, emitted exactly like the
+        // `impl` trait head so both spellings share one JSON shape.
+        let supers: Vec<Value> = nodes(node)
+            .filter(|n| n.kind() == PathType)
+            .map(|p| self.type_(p))
+            .collect();
+        let members: Vec<Value> = nodes(node)
+            .filter(|n| n.kind() == FnStmt)
+            .map(|f| self.with_node_span(f, self.fn_stmt(f)))
+            .collect();
+        tagged(
+            "TraitStmt",
+            json!({
+                "traitVisibility": self.visibility(node),
+                "traitName": name.text(),
+                "traitGenerics": self.generic_params(node),
+                "traitSupers": supers,
+                "traitMembers": members,
             }),
         )
     }

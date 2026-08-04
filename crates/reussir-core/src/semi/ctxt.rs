@@ -1344,7 +1344,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                                  mark individual members `pub` instead",
                             );
                         }
-                        impls.push((ib, span, scope));
+                        if ib.trait_ref.is_some() {
+                            // Not collected: members must not be declared as
+                            // inherent methods of the target.
+                            self.error(
+                                span,
+                                "trait implementations (`impl Trait for Type`) \
+                                 are not supported yet",
+                            );
+                        } else {
+                            impls.push((ib, span, scope));
+                        }
+                    }
+                    surface::StmtKind::Trait(_) => {
+                        self.validate_transform_anchor(&attrs, None);
+                        self.reject_ffi_attr(ffi, span);
+                        self.error(span, "`trait` declarations are not supported yet");
                     }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.

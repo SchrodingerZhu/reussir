@@ -1078,6 +1078,48 @@ mod tests {
         );
     }
 
+    /// Until the trait stacks land, trait items are rejected cleanly — and
+    /// a trait impl's members are never misattached as inherent methods.
+    #[test]
+    fn trait_items_are_rejected_for_now() {
+        elaborate_source("trait X { fn m(self: Self); }", |elab| {
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("`trait` declarations are not supported yet")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+        elaborate_source(
+            "pub struct P { pub x: i64 }
+             impl Show for P { fn show(self: Self) -> i64 { 1 } }
+             impl P { pub fn ok(self: Self) -> i64 { self.x } }",
+            |elab| {
+                assert_eq!(
+                    elab.reports.len(),
+                    1,
+                    "exactly the placeholder, no cascades: {:#?}",
+                    elab.reports
+                );
+                assert!(
+                    elab.reports[0].message.contains(
+                        "trait implementations (`impl Trait for Type`) are not supported yet"
+                    ),
+                    "{:#?}",
+                    elab.reports
+                );
+                // The trait impl's member was not declared as an inherent
+                // method, while the inherent block's member was.
+                assert!(
+                    !elab.functions.values().any(|f| elab.sym(f.name) == "show"),
+                    "misattached trait-impl member"
+                );
+                assert!(elab.functions.values().any(|f| elab.sym(f.name) == "ok"));
+            },
+        );
+    }
+
     #[test]
     fn impl_members_declare_under_type_path_and_resolve_cross_file() {
         check_package(

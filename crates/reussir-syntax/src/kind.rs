@@ -132,6 +132,9 @@ pub enum SyntaxKind {
     ImportStmt,
     /// `impl<T: B> Type<T> { fn ... }` — an inherent-method block.
     ImplStmt,
+    /// A trait declaration (method signatures only):
+    /// `trait Name<T>: A + B { fn m(...) -> U; }`.
+    TraitStmt,
     GenericParamList,
     GenericParam,
     ParamList,
