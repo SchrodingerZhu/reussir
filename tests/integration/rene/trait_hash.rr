@@ -1,11 +1,19 @@
-// The Hash/Hasher shape as a running program: a multi-module `rene build`
-// with the trait pair and a byte-splitting bounded generic at the package
-// root, Bernstein's djb2 in its own module, the hashable types (a ground
-// impl and a generic `Pair` whose impl recurses through both bounds) in
-// another, and the bounded API in a third — every bound spelled through a
-// qualified `super::` path. The printed values are the real djb2 digests
-// of the little-endian byte streams, pinned against an independent
-// reference computation.
+// The Hash/Hasher shape with its three roles in three packages, as a
+// running program: `hashkit` owns the traits (`Hash::hash` carrying its
+// own bounded generic, plus a byte-splitting bounded generic standing in
+// for a default method body); `hashables` implements them for local types
+// — Bernstein's djb2 and the hashable types (a ground `Point` impl and a
+// generic `Pair` impl recursing through both bounds), each in its own
+// module; and the app is a pure *user* — it implements nothing, names the
+// extern traits only in bounds, and dispatches through impls it never
+// wrote. The dependency graph is a diamond (app -> hashkit and app ->
+// hashables -> hashkit), so the trait items load both directly and via
+// the implementer's re-shipped interface — exercising idempotent trait
+// reload — while the app instantiates `hashables`' generic impl method
+// and `hashkit`'s shipped generic bodies at its own call shapes
+// (weak_odr), with the ground methods link-resolved from the archives.
+// The printed values are the real djb2 digests of the little-endian byte
+// streams, pinned against an independent reference computation.
 
 // RUN: %rene build --manifest-path %S/trait_hash/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
 

@@ -1,0 +1,27 @@
+// The std::hash shape, state-passing: `Hasher` consumes itself and returns
+// the advanced state, and `Hash::hash` carries its own bounded generic so
+// any hashable type can feed any hasher.
+
+pub trait Hasher {
+    fn write_u8(self: Self, byte: u64) -> Self;
+    fn finish(self: Self) -> u64;
+}
+
+pub trait Hash {
+    fn hash<H: Hasher>(self: Self, state: H) -> H;
+}
+
+// Byte-splitting over any hasher (default method bodies are deferred, so
+// this lives beside the trait as a bounded generic): feed `v`'s eight
+// little-endian bytes, extracted arithmetically.
+pub fn write_u64<H: Hasher>(state: H, v: u64) -> H {
+    write_bytes(state, v, 8)
+}
+
+fn write_bytes<H: Hasher>(state: H, v: u64, n: i64) -> H {
+    if n == 0 {
+        state
+    } else {
+        write_bytes(state.write_u8(v % 256), v / 256, n - 1)
+    }
+}

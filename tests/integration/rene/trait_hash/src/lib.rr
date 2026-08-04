@@ -1,41 +1,16 @@
-// The std::hash shape, state-passing: `Hasher` consumes itself and returns
-// the advanced state, and `Hash::hash` carries its own bounded generic so
-// any hashable type can feed any hasher.
+// The pure user: implements nothing — names the extern traits in a bound,
+// dispatches through impls it never wrote, and observes the digests.
 
-mod api;
-mod djb2;
-mod geo;
-
-pub trait Hasher {
-    fn write_u8(self: Self, byte: u64) -> Self;
-    fn finish(self: Self) -> u64;
-}
-
-pub trait Hash {
-    fn hash<H: Hasher>(self: Self, state: H) -> H;
-}
-
-// Byte-splitting over any hasher (default method bodies are deferred, so
-// this lives beside the trait as a bounded generic): feed `v`'s eight
-// little-endian bytes, extracted arithmetically.
-pub fn write_u64<H: Hasher>(state: H, v: u64) -> H {
-    write_bytes(state, v, 8)
-}
-
-fn write_bytes<H: Hasher>(state: H, v: u64, n: i64) -> H {
-    if n == 0 {
-        state
-    } else {
-        write_bytes(state.write_u8(v % 256), v / 256, n - 1)
-    }
+pub fn hash_of<T: hashkit::Hash>(v: T) -> u64 {
+    v.hash(hashables::djb2::new()).finish()
 }
 
 #[main]
 pub fn entry() {
-    console::print_u64(api::hash_of(geo::Point { x: 1, y: 2 }));
-    console::print_u64(api::hash_of(geo::Point { x: 3, y: 4 }));
-    console::print_u64(api::hash_of(geo::Pair {
-        a: geo::Point { x: 3, y: 4 },
-        b: geo::Point { x: 5, y: 6 },
+    console::print_u64(hash_of(hashables::geo::Point { x: 1, y: 2 }));
+    console::print_u64(hash_of(hashables::geo::Point { x: 3, y: 4 }));
+    console::print_u64(hash_of(hashables::geo::Pair {
+        a: hashables::geo::Point { x: 3, y: 4 },
+        b: hashables::geo::Point { x: 5, y: 6 },
     }));
 }
