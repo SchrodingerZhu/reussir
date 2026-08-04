@@ -1466,15 +1466,17 @@ mod tests {
     #[test]
     fn lang_markers_roundtrip() {
         roundtrip(
-            "#[lang(\"partial_eq\")]\n\
-                 pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }\n\
-                 #[lang(\"ordering\")]\n\
-                 pub enum Ordering { Less(), Equal(), Greater() }\n\
-                 #[sealed]\n\
-                 pub trait Machine { }\n\
-                 #[lang(\"ptr_like\")]\n\
-                 #[sealed]\n\
-                 pub trait Pointerish { }",
+            r#"
+            #[lang("partial_eq")]
+            pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+            #[lang("ordering")]
+            pub enum Ordering { Less(), Equal(), Greater() }
+            #[sealed]
+            pub trait Machine { }
+            #[lang("ptr_like")]
+            #[sealed]
+            pub trait Pointerish { }
+            "#,
         );
     }
 

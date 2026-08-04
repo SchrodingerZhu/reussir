@@ -1946,10 +1946,12 @@ mod tests {
     fn lang_items_declare_resolve_and_locate() {
         use crate::semi::lang::LangItem;
         check(
-            "#[lang(\"partial_eq\")]\n\
-             pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }\n\
-             #[lang(\"ordering\")]\n\
-             pub enum Ordering { Less(), Equal(), Greater() }",
+            r#"
+            #[lang("partial_eq")]
+            pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+            #[lang("ordering")]
+            pub enum Ordering { Less(), Equal(), Greater() }
+            "#,
             |elab, _| {
                 let pe = elab.lang.get(LangItem::PartialEq).expect("declared");
                 assert_eq!(elab.sym(elab.defs.path(pe).name()), "PartialEq");
@@ -1965,12 +1967,14 @@ mod tests {
     #[test]
     fn lang_item_diagnostics() {
         elaborate_source(
-            "#[lang(\"nope\")] pub trait A { fn a(self: Self) -> i64; }\n\
-             #[lang(\"eq\")] pub struct B { pub x: i64 }\n\
-             #[lang(\"ordering\")] pub trait C { fn c(self: Self) -> i64; }\n\
-             #[lang(\"partial_eq\")] pub trait D { fn d(self: Self) -> i64; }\n\
-             #[lang(\"partial_eq\")] pub trait E { fn e(self: Self) -> i64; }\n\
-             #[lang(\"ord\")] pub fn f() -> i64 { 1 }",
+            r#"
+            #[lang("nope")] pub trait A { fn a(self: Self) -> i64; }
+            #[lang("eq")] pub struct B { pub x: i64 }
+            #[lang("ordering")] pub trait C { fn c(self: Self) -> i64; }
+            #[lang("partial_eq")] pub trait D { fn d(self: Self) -> i64; }
+            #[lang("partial_eq")] pub trait E { fn e(self: Self) -> i64; }
+            #[lang("ord")] pub fn f() -> i64 { 1 }
+            "#,
             |elab| {
                 let has = |m: &str| elab.reports.iter().any(|r| r.message.contains(m));
                 assert!(has("unknown lang item `nope`"), "{:#?}", elab.reports);
@@ -2010,14 +2014,17 @@ mod tests {
             // A batch that declares a lang item but fails elsewhere retracts
             // the declaration with everything else…
             let p1 = parse(
-                "#[lang(\"partial_eq\")]\npub trait P { fn e(self: Self) -> bool; }\n\
-                 fn bad() -> i64 { nonexistent() }",
+                r#"
+                #[lang("partial_eq")]
+                pub trait P { fn e(self: Self) -> bool; }
+                fn bad() -> i64 { nonexistent() }
+                "#,
             );
             elab.try_extend(&surface::program(&p1.root))
                 .expect_err("batch fails");
             assert!(elab.lang.get(LangItem::PartialEq).is_none(), "retracted");
             // …so the clean re-declaration is fresh, not a duplicate.
-            let p2 = parse("#[lang(\"partial_eq\")]\npub trait P { fn e(self: Self) -> bool; }");
+            let p2 = parse(r#"#[lang("partial_eq")] pub trait P { fn e(self: Self) -> bool; }"#);
             elab.try_extend(&surface::program(&p2.root)).expect("clean");
             assert!(elab.lang.get(LangItem::PartialEq).is_some());
         });
