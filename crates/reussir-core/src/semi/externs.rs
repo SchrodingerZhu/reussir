@@ -892,7 +892,7 @@ mod tests {
     fn lang_items_reload_from_interfaces() {
         use crate::semi::lang::LangItem;
         check_with_dep(
-            "#[lang(\"partial_eq\")]\npub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }",
+            r#"#[lang("partial_eq")] pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }"#,
             &[(&[], "pub fn nop() -> i64 { 0 }")],
             |elab| {
                 assert!(!elab.has_errors(), "{:#?}", elab.reports);
