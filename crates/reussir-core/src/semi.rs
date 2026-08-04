@@ -1821,8 +1821,10 @@ mod tests {
         use crate::intrinsic::MathFn;
         use crate::semi::lang::{IntrinsicItem, LangItem};
         check(
-            "#[lang(\"core::intrinsic::math::sqrt\")]\n\
-             pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;",
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+            "#,
             |elab, _| {
                 let item = LangItem::Intrinsic(IntrinsicItem::Math(MathFn::Sqrt));
                 let def = elab.lang.get(item).expect("bound");
@@ -1835,8 +1837,10 @@ mod tests {
     #[test]
     fn intrinsic_prototypes_reject_bodies_and_value_uses() {
         elaborate_source(
-            "#[lang(\"core::intrinsic::math::sqrt\")]\n\
-             pub fn bad<F: FloatingPoint>(x: F, fastmath: i64) -> F { x }",
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn bad<F: FloatingPoint>(x: F, fastmath: i64) -> F { x }
+            "#,
             |elab| {
                 assert!(
                     elab.reports.iter().any(|r| r
@@ -1848,9 +1852,11 @@ mod tests {
             },
         );
         elaborate_source(
-            "#[lang(\"core::intrinsic::math::sqrt\")]\n\
-             pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;\n\
-             pub fn use_it() -> i64 { let g = my_sqrt; 0 }",
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+            pub fn use_it() -> i64 { let g = my_sqrt; 0 }
+            "#,
             |elab| {
                 assert!(
                     elab.reports.iter().any(|r| r
