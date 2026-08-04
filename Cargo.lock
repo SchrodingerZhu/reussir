@@ -3194,6 +3194,7 @@ dependencies = [
  "pprint",
  "rapidhash",
  "reussir-syntax",
+ "reussir-trait-dsl",
  "roaring",
  "rustc-hash",
  "smallvec",
