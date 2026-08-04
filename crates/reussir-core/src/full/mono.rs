@@ -69,7 +69,7 @@ use crate::semi::ctxt::{
     DefaultCap, Elaborator, FfiImport, FfiPrelude, Record, RecordFields, Report, Severity,
     TrampolineRoot, TransformScript,
 };
-use crate::semi::hir::{self, DecisionTree, Expr, ExprKind, Function, SwitchCases};
+use crate::semi::hir::{self, CmpOp, DecisionTree, Expr, ExprKind, Function, SwitchCases};
 use crate::semi::resolve::DefTable;
 use crate::semi::traits::sync::{SyncEnv, SyncVerdict, wf_arc};
 use crate::semi::ty::{DefId, Flexivity, Ty, TyCtxt, TyKind};
@@ -101,6 +101,11 @@ pub struct MonoInput<'a, 'tcx> {
     /// default-empty inputs monomorphize exactly as before trait items
     /// existed (dumps predating trait serialization keep their output).
     pub traits: MonoTraits<'a, 'tcx>,
+    /// The session's `#[lang]` bindings, def-keyed: `TraitCall` resolution
+    /// recognizes the comparison tower through them (a selected method-less
+    /// compiler impl of an operator trait lowers intrinsically). Empty for
+    /// re-entered dumps predating lang serialization.
+    pub lang: FxHashMap<DefId, crate::semi::lang::LangItem>,
 }
 
 /// The trait side of a [`MonoInput`]: the session registry (for resolving
@@ -167,6 +172,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 db: Some(&self.traits),
                 env: Some(&self.generics),
             },
+            lang: self.lang.declared_by_def(),
         }
     }
 }
@@ -334,6 +340,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         reports: Vec::new(),
         cur_file: FileId::ROOT,
         ids: mir::ExprIdGen::default(),
+        lang: &input.lang,
+        synthetic_cmps: FxHashMap::default(),
+        synthetic_fns: Vec::new(),
     };
 
     // Seed roots: every *local* non-generic function, then every trampoline
@@ -703,6 +712,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         }
     }
 
+    functions.extend(std::mem::take(&mut driver.synthetic_fns));
     let Driver {
         symbols, reports, ..
     } = driver;
@@ -834,6 +844,16 @@ fn int_ty_name(ty: IntTy) -> String {
 }
 
 /// The surface spelling of a float type, for diagnostics.
+fn scalar_ty_name(ty: Ty<'_>) -> String {
+    match *ty.kind() {
+        TyKind::Int(int) => int_ty_name(int),
+        TyKind::Fp(fp) => fp_ty_name(fp),
+        TyKind::Bool => "bool".into(),
+        TyKind::Char => "char".into(),
+        _ => unreachable!("guarded to scalars by the caller"),
+    }
+}
+
 fn fp_ty_name(ty: FpTy) -> String {
     match ty {
         FpTy::Ieee(w) => format!("f{w}"),
@@ -961,6 +981,28 @@ struct Driver<'a, 'tcx> {
     /// counter across the whole program: one semi expr may lower into many MIR
     /// exprs (once per instantiation), so semi ids are not reused.
     ids: mir::ExprIdGen,
+    /// The `#[lang]` bindings ([`MonoInput::lang`]).
+    lang: &'a FxHashMap<DefId, crate::semi::lang::LangItem>,
+    /// Synthesized three-way comparisons (`Ord::cmp` over a scalar), one
+    /// per scalar type; see [`Driver::three_way_call`].
+    synthetic_cmps: FxHashMap<Ty<'tcx>, mir::Symbol>,
+    synthetic_fns: Vec<mir::Function<'tcx>>,
+}
+
+/// What a [`hir::ExprKind::TraitCall`] resolves to at instance time.
+enum TraitCallTarget<'tcx> {
+    /// An impl method body: an ordinary call.
+    Call {
+        target: DefId,
+        ty_args: &'tcx [Ty<'tcx>],
+        regional: bool,
+    },
+    /// A method-less compiler impl of an operator trait: the boolean
+    /// comparison lowers straight to the intrinsic.
+    Intrinsic(CmpOp),
+    /// `Ord::cmp` over a scalar: a synthesized three-way comparison
+    /// returning `Ordering`.
+    ThreeWay,
 }
 
 impl<'a, 'tcx> Driver<'a, 'tcx> {
@@ -977,6 +1019,132 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     fn record_symbol(&mut self, def: DefId, args: &'tcx [Ty<'tcx>]) -> mir::Symbol {
         self.records.insert((def, args));
         self.symbol_of(def, args)
+    }
+
+    /// A synthesized MIR node (no source span; ids from the program-wide
+    /// counter like every lowered node).
+    fn synth_node(&mut self, kind: mir::ExprKind<'tcx>, ty: Ty<'tcx>) -> mir::Expr<'tcx> {
+        mir::Expr {
+            id: self.ids.fresh(),
+            kind,
+            ty,
+            span: None,
+        }
+    }
+
+    /// The symbol of the synthesized three-way comparison for `scalar` —
+    /// the body `Ord::cmp` would have if scalar impls could carry one:
+    /// `fn(a: S, b: S) -> Ordering { if a < b { Less } else if a == b { Equal } else { Greater } }`.
+    /// Synthesized once per scalar, `Private` (every package emits its own
+    /// internal copy), and registered like any lowered function.
+    fn three_way_call(
+        &mut self,
+        scalar: Ty<'tcx>,
+        trait_def: DefId,
+        method: u32,
+        span: Option<Span>,
+    ) -> Option<mir::Symbol> {
+        if let Some(&sym) = self.synthetic_cmps.get(&scalar) {
+            return Some(sym);
+        }
+        // Ground the method's return type — `Ordering` — exactly as the
+        // call site does, and resolve its variants by name.
+        let (ret, mname_key) = {
+            let db = self
+                .traits
+                .db
+                .expect("the trait call resolved through this db");
+            let tid = db.trait_by_def(trait_def).expect("resolved just before");
+            let tdef = db.trait_def(tid);
+            let sig = &tdef.methods[method as usize];
+            let mut sig_subst = Subst::default();
+            sig_subst.insert(tdef.self_param, scalar);
+            (subst_ty(self.tcx, sig.ret, &sig_subst), sig.name)
+        };
+        let TyKind::Record { def, args, .. } = *ret.kind() else {
+            self.error(span, "`cmp` must return `core`'s `Ordering`");
+            return None;
+        };
+        let variants = match self.record_defs.get(&def).and_then(|r| r.fields.as_ref()) {
+            Some(RecordFields::Variants(variants)) => variants,
+            _ => {
+                self.error(span, "`cmp` must return `core`'s `Ordering`");
+                return None;
+            }
+        };
+        let variant_of = |name: &str| -> Option<usize> {
+            variants
+                .iter()
+                .position(|v| self.resolver.try_resolve(v.name) == Some(name))
+        };
+        let (Some(less), Some(equal), Some(greater)) = (
+            variant_of("Less"),
+            variant_of("Equal"),
+            variant_of("Greater"),
+        ) else {
+            self.error(
+                span,
+                "`cmp` must return `core`'s `Ordering` (with variants `Less`, `Equal`, `Greater`)",
+            );
+            return None;
+        };
+        let record = self.record_symbol(def, args);
+        let name = format!("__reussir_ord_cmp_{}", scalar_ty_name(scalar));
+        let callee = mir::Symbol(self.symbols.get_or_intern(&name));
+
+        let bool_ty = self.tcx.mk_bool();
+        let var =
+            |slf: &mut Self, i: u32| slf.synth_node(mir::ExprKind::Var(hir::VarId(i)), scalar);
+        let cmp = |slf: &mut Self, op: CmpOp| {
+            let l = var(slf, 0);
+            let r = var(slf, 1);
+            let kind = mir::ExprKind::Cmp(slf.tcx.alloc(l), op, slf.tcx.alloc(r));
+            slf.synth_node(kind, bool_ty)
+        };
+        let ctor = |slf: &mut Self, variant: usize| {
+            let kind = mir::ExprKind::Variant {
+                record,
+                variant,
+                args: &[],
+            };
+            slf.synth_node(kind, ret)
+        };
+        let lt = cmp(self, CmpOp::Lt);
+        let eq = cmp(self, CmpOp::Eq);
+        let less = ctor(self, less);
+        let equal = ctor(self, equal);
+        let greater = ctor(self, greater);
+        let inner_kind = mir::ExprKind::If(
+            self.tcx.alloc(eq),
+            self.tcx.alloc(equal),
+            self.tcx.alloc(greater),
+        );
+        let inner = self.synth_node(inner_kind, ret);
+        let outer_kind = mir::ExprKind::If(
+            self.tcx.alloc(lt),
+            self.tcx.alloc(less),
+            self.tcx.alloc(inner),
+        );
+        let body = self.synth_node(outer_kind, ret);
+
+        let param = |i: u32| mir::Param {
+            name: mname_key,
+            var: hir::VarId(i),
+            ty: scalar,
+        };
+        self.synthetic_fns.push(mir::Function {
+            symbol: callee,
+            transform_anchor: false,
+            visibility: crate::surface::Visibility::Private,
+            mono_exported: false,
+            is_regional: false,
+            params: vec![param(0), param(1)],
+            return_ty: ret,
+            body: Some(self.tcx.alloc(body)),
+            file: FileId::ROOT,
+        });
+        self.synthetic_cmps.insert(scalar, callee);
+        Some(callee)
     }
 
     /// Push an `Error` diagnostic.
@@ -1015,7 +1183,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         method: u32,
         ty_args: &'tcx [Ty<'tcx>],
         span: Option<Span>,
-    ) -> Option<(DefId, &'tcx [Ty<'tcx>], bool)> {
+    ) -> Option<TraitCallTarget<'tcx>> {
         use crate::semi::traits::{Evidence, Obligation, SelectCtxt, SelectError, TraitRef};
         let path = |defs: &DefTable, def: DefId| defs.path(def).display(self.resolver);
         let Some(db) = self.traits.db else {
@@ -1052,6 +1220,26 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             Ok(Evidence::Impl { impl_id, args, .. }) => {
                 let imp = db.impl_def(impl_id);
                 let Some(&target) = imp.methods.get(method as usize) else {
+                    // Only the compiler registers method-less impls, and only
+                    // for the operator traits over the scalars: those calls
+                    // lower intrinsically instead of dispatching.
+                    let compiler_made = imp.span.is_none() && imp.file == FileId::ROOT;
+                    if compiler_made
+                        && self
+                            .lang
+                            .get(&tdef.def)
+                            .is_some_and(|item| item.is_cmp_trait())
+                    {
+                        match mname.as_str() {
+                            "eq" => return Some(TraitCallTarget::Intrinsic(CmpOp::Eq)),
+                            "lt" => return Some(TraitCallTarget::Intrinsic(CmpOp::Lt)),
+                            "le" => return Some(TraitCallTarget::Intrinsic(CmpOp::Le)),
+                            "gt" => return Some(TraitCallTarget::Intrinsic(CmpOp::Gt)),
+                            "ge" => return Some(TraitCallTarget::Intrinsic(CmpOp::Ge)),
+                            "cmp" => return Some(TraitCallTarget::ThreeWay),
+                            _ => {}
+                        }
+                    }
                     self.error(
                         span,
                         format!("the selected `impl {shown}` does not define method `{mname}`"),
@@ -1062,7 +1250,11 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                     .into_iter()
                     .chain(ty_args[1..].iter().copied())
                     .collect();
-                Some((target, self.tcx.alloc_slice(&callee), regional))
+                Some(TraitCallTarget::Call {
+                    target,
+                    ty_args: self.tcx.alloc_slice(&callee),
+                    regional,
+                })
             }
             Ok(_) => {
                 self.error(
@@ -1554,13 +1746,39 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             } => {
                 let ty_args = self.ground_args(ty_args, subst);
                 match self.resolve_trait_call(*trait_def, *method, ty_args, span) {
-                    Some((target, callee_args, regional)) => {
+                    Some(TraitCallTarget::Call {
+                        target,
+                        ty_args: callee_args,
+                        regional,
+                    }) => {
                         self.enqueue(target, callee_args, span);
                         let callee = self.symbol_of(target, callee_args);
                         M::Call {
                             callee,
                             args: self.lower_slice(args, subst),
                             regional,
+                        }
+                    }
+                    Some(TraitCallTarget::Intrinsic(op)) => {
+                        let lowered = self.lower_slice(args, subst);
+                        if let [l, r] = lowered {
+                            M::Cmp(l, op, r)
+                        } else {
+                            self.error(
+                                span,
+                                "an operator-trait method takes exactly a receiver and one operand",
+                            );
+                            M::Poison
+                        }
+                    }
+                    Some(TraitCallTarget::ThreeWay) => {
+                        match self.three_way_call(ty_args[0], *trait_def, *method, span) {
+                            Some(callee) => M::Call {
+                                callee,
+                                args: self.lower_slice(args, subst),
+                                regional: false,
+                            },
+                            None => M::Poison,
                         }
                     }
                     // The failure is already reported; poison keeps the
@@ -1593,6 +1811,26 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 M::Arith(self.lower_ref(l, subst), *op, self.lower_ref(r, subst))
             }
             ExprKind::Cmp(l, op, r) => {
+                // Only scalars lower intrinsically. A non-scalar can reach
+                // this expression when an operand's type was solved *after*
+                // the operator committed to the scalar path (a late-solved
+                // hole).
+                let ty = subst_ty(self.tcx, l.ty, subst);
+                if !ty.is_scalar() {
+                    let shown = match ty.kind() {
+                        TyKind::Record { def, .. } => self.defs.path(*def).display(self.resolver),
+                        _ => format!("{ty:?}"),
+                    };
+                    self.error(
+                        l.span,
+                        format!(
+                            "cannot compare `{shown}` intrinsically: the operand's \
+                             type was inferred after the operator chose the scalar \
+                             path; annotate the operand so the comparison dispatches \
+                             through the comparison traits"
+                        ),
+                    );
+                }
                 M::Cmp(self.lower_ref(l, subst), *op, self.lower_ref(r, subst))
             }
             ExprKind::Cast(e, t) => {
@@ -1886,6 +2124,99 @@ mod tests {
         })
     }
 
+    /// A source-declared comparison tower (`#[lang]`, method-carrying —
+    /// the same shape `core` ships), so operators on generics form
+    /// `TraitCall`s and monomorphization exercises the method-less
+    /// compiler-impl rewrites.
+    const CMP_TOWER: &str = r#"
+        #[lang("partial_eq")]
+        pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+        #[lang("eq")]
+        pub trait Eq: PartialEq {}
+        #[lang("partial_ord")]
+        pub trait PartialOrd: PartialEq {
+            fn lt(self: Self, other: Self) -> bool;
+            fn le(self: Self, other: Self) -> bool;
+            fn gt(self: Self, other: Self) -> bool;
+            fn ge(self: Self, other: Self) -> bool;
+        }
+        #[lang("ordering")]
+        pub enum [value] Ordering { Less, Equal, Greater }
+        #[lang("ord")]
+        pub trait Ord: Eq + PartialOrd { fn cmp(self: Self, other: Self) -> Ordering; }
+    "#;
+
+    /// Elaborate + monomorphize `source` (asserting both clean) and return
+    /// the printed MIR program.
+    fn mir_text(source: &str) -> String {
+        use crate::full::mir::print::Printer as MirPrinter;
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(source, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(
+                !elab.has_errors(),
+                "elaboration errors: {:#?}",
+                elab.reports
+            );
+            let (full, reports) = monomorphize(&elab.mono_input());
+            assert!(reports.is_empty(), "mono diagnostics: {reports:#?}");
+            MirPrinter::new(&elab.defs, elab.resolver).program(&full)
+        })
+    }
+
+    /// A `TraitCall` that selects a method-less compiler impl of an
+    /// operator trait lowers to the intrinsic comparison — no call, no
+    /// method instance, no `PartialOrd` symbol in the program.
+    #[test]
+    fn methodless_cmp_selection_lowers_intrinsically() {
+        let source = format!(
+            "{CMP_TOWER}
+            fn minim<T: Ord>(a: T, b: T) -> T {{ if a < b {{ a }} else {{ b }} }}
+            pub fn go(x: i64, y: i64) -> i64 {{ minim(x, y) }}"
+        );
+        let text = mir_text(&source);
+        let inst = mir_item(&text, "_RIC5minimxE");
+        assert!(
+            inst.contains(" < ") && !text.contains("PartialOrd"),
+            "expected an intrinsic `<` and no trait symbols:\n{text}"
+        );
+    }
+
+    /// `Ord::cmp` over a scalar synthesizes one private three-way helper
+    /// per scalar: `if a < b { Less } else if a == b { Equal } else
+    /// { Greater }`, returning the declared `Ordering`.
+    #[test]
+    fn ord_cmp_synthesizes_a_three_way_comparison() {
+        let source = format!(
+            "{CMP_TOWER}
+            fn tw<T: Ord>(a: T, b: T) -> Ordering {{ a.cmp(b) }}
+            pub fn go(x: i64, y: i64) -> Ordering {{ tw(x, y) }}"
+        );
+        let text = mir_text(&source);
+        let inst = mir_item(&text, "_RIC2twxE");
+        assert!(
+            inst.contains("__reussir_ord_cmp_i64"),
+            "the instance must call the synthesized helper:\n{inst}"
+        );
+        let helper = mir_item(&text, "__reussir_ord_cmp_i64");
+        for needle in [
+            " < ",
+            " == ",
+            "Ordering::#0",
+            "Ordering::#1",
+            "Ordering::#2",
+        ] {
+            assert!(helper.contains(needle), "missing {needle:?} in:\n{helper}");
+        }
+        assert!(
+            !helper.starts_with("pub "),
+            "the helper is package-private:\n{helper}"
+        );
+    }
+
     /// The mono-export set: private ground functions reachable from `pub`
     /// generic bodies — transitively through private generics — and nothing
     /// else. `pub` ground bodies do not seed (their code never leaves this
@@ -2052,6 +2383,7 @@ mod tests {
                 strings: parsed.strings.clone(),
                 externs: MonoExterns::default(),
                 traits: MonoTraits::default(),
+                lang: Default::default(),
             };
             let (mir1, r1) = monomorphize(&input);
             assert!(r1.is_empty(), "{r1:#?}");
@@ -2154,6 +2486,7 @@ mod tests {
                     db: Some(&trait_db),
                     env: None,
                 },
+                lang: Default::default(),
             };
             let (mir1, r1) = monomorphize(&input);
             assert!(r1.is_empty(), "{r1:#?}");
@@ -2210,6 +2543,7 @@ mod tests {
                 strings: parsed.strings.clone(),
                 externs: MonoExterns::default(),
                 traits: MonoTraits::default(),
+                lang: Default::default(),
             };
             let (_, reports) = monomorphize(&input);
             assert!(
@@ -2319,6 +2653,7 @@ mod tests {
                 strings: hir.strings.clone(),
                 externs: MonoExterns::default(),
                 traits: MonoTraits::default(),
+                lang: Default::default(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
             assert!(r_resumed.is_empty(), "resumed mono reports: {r_resumed:#?}");

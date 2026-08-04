@@ -32,6 +32,14 @@ use crate::utils::string::StringToken;
 
 use super::mono::{MonoInput, for_each_expr};
 
+/// Whether a trait belongs in an export closure at all: compiler-provided
+/// traits — the sealed builtins and the site-less comparison-tower
+/// fallback — never ship; a consumer session re-registers them from the
+/// compiler itself.
+fn exportable(t: &crate::semi::traits::def::TraitDef<'_>) -> bool {
+    !t.sealed && !t.compiler_provided()
+}
+
 /// The `.rri` format integer, bumped on any change to the textual grammar or
 /// its meaning. The header's `producer` string (the exact producing rrc
 /// version) gates the rest while the format is unstable.
@@ -92,12 +100,12 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
             queue.push_back(f.def);
         }
     }
-    // `pub` traits seed the trait closure (sealed builtins never ship; a
-    // consumer session re-registers them from the compiler).
+    // `pub` traits seed the trait closure (compiler-provided traits never
+    // ship — see `exportable`).
     if let Some(db) = db {
         for id in (0..db.traits_len() as u32).map(crate::semi::traits::TraitId) {
             let t = db.trait_def(id);
-            if !t.sealed && t.visibility == Visibility::Public && closure.traits.insert(t.def) {
+            if exportable(t) && t.visibility == Visibility::Public && closure.traits.insert(t.def) {
                 trait_queue.push_back(id);
             }
         }
@@ -122,7 +130,7 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
                         .unwrap_or(&[])
                     {
                         let t = db.trait_def(bound);
-                        if !t.sealed && closure.traits.insert(t.def) {
+                        if exportable(t) && closure.traits.insert(t.def) {
                             trait_queue.push_back(bound);
                         }
                     }
@@ -168,7 +176,7 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
         let t = db.trait_def(id);
         for sup in &t.supertraits {
             let s = db.trait_def(sup.trait_id);
-            if !s.sealed && closure.traits.insert(s.def) {
+            if exportable(s) && closure.traits.insert(s.def) {
                 trait_queue.push_back(sup.trait_id);
             }
         }
@@ -318,8 +326,10 @@ mod tests {
                 v
             };
             // `Show` is pub; `Used` rides the TraitCall in `go`; `BoundOnly`
-            // rides `constrained`'s binder bound. `Hidden` stays home and no
-            // sealed builtin (`Num` bounds the generic impl) ever ships.
+            // rides `constrained`'s binder bound. `Hidden` stays home, and
+            // nothing compiler-provided ever ships: not the sealed builtins
+            // (`Num` bounds the generic impl) nor the site-less
+            // comparison-tower fallback.
             assert_eq!(names(&closure.traits), ["BoundOnly", "Show", "Used"]);
             let bodies = names(&closure.bodies);
             assert!(

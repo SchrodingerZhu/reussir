@@ -354,7 +354,10 @@ pub fn trait_texts<'tcx>(
     let mut traits = Vec::new();
     for id in (0..db.traits_len() as u32).map(crate::semi::traits::TraitId) {
         let t = db.trait_def(id);
-        if t.sealed {
+        // Compiler-provided declarations (sealed builtins, the site-less
+        // comparison fallback and its scalar impls below) never serialize:
+        // every session re-registers its own.
+        if t.sealed || t.compiler_provided() {
             continue;
         }
         let mut generics = vec![(t.self_param, Some("Self".to_string()))];
@@ -396,7 +399,7 @@ pub fn trait_texts<'tcx>(
     }
     let mut impls = Vec::new();
     for imp in db.impls() {
-        if db.trait_def(imp.trait_ref.trait_id).sealed {
+        if db.trait_def(imp.trait_ref.trait_id).sealed || imp.compiler_provided() {
             continue;
         }
         impls.push(ImplText {

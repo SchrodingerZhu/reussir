@@ -570,7 +570,14 @@ impl<'a> Printer<'a> {
         file: reussir_syntax::source::FileId,
         span: Option<crate::surface::Span>,
     ) -> Doc<'static> {
-        if self.sources.is_none() {
+        let Some(cache) = self.sources else {
+            return Doc::Null;
+        };
+        // An item that reached this session from a dependency's interface
+        // references *that* package's sources, which this dump's file table
+        // does not carry. Its location lives in the owning interface; omit
+        // it here rather than emit a dangling index.
+        if !cache.ids().any(|id| id == file) {
             return Doc::Null;
         }
         text(format!(" in {}", file.index())) + self.span_doc(span)

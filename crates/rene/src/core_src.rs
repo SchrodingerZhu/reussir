@@ -19,6 +19,10 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/lib.rr"),
     ),
     (
+        "src/cmp.rr",
+        include_str!("../../../library/core/src/cmp.rr"),
+    ),
+    (
         "src/intrinsic/mod.rr",
         include_str!("../../../library/core/src/intrinsic/mod.rr"),
     ),

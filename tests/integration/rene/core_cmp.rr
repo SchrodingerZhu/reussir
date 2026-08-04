@@ -1,0 +1,35 @@
+// The `core::cmp` tower in a real build: the interface ships the
+// `#[lang]`-marked operator traits (method-carrying, with source
+// locations) and the `Ordering` enum — and no impls: the scalar impls are
+// compiler-provided, completed by every consuming session, and lowered
+// intrinsically. The app's operators dispatch through the tower: scalars
+// stay intrinsic, `Money` compares through its own impls, and one generic
+// `min`/`cmp` serves both.
+
+// RUN: %rene build --manifest-path %S/core_cmp/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}cmpdemo
+
+// RUN: %FileCheck %s --check-prefix=RRI < %t.bdir/dev/deps/core.rri
+
+// RRI: interface 1 package "core"
+// RRI-DAG: #[lang("partial_eq")] pub trait #core::cmp::PartialEq<{{.*}}(Self)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("partial_ord")] pub trait #core::cmp::PartialOrd<{{.*}}(Self)> : #core::cmp::PartialEq::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("ordering")] pub [value] enum #core::cmp::Ordering in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] { Less(), Equal(), Greater() };
+// RRI-DAG: #[lang("ord")] pub trait #core::cmp::Ord<{{.*}}(Self)> : #core::cmp::Eq::<{{.*}}>, #core::cmp::PartialOrd::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+
+// The compiler-provided scalar impls never serialize.
+// RUN: %FileCheck %s --check-prefix=NOIMPL < %t.bdir/dev/deps/core.rri
+// NOIMPL-NOT: impl {{.*}}PartialEq{{.*}}for i64
+
+// RUN: %t.bdir/dev/cmpdemo%exe_ext | %FileCheck %s --check-prefix=OUT
+
+// OUT: 1
+// OUT-NEXT: 1
+// OUT-NEXT: 1
+// OUT-NEXT: 4
+// OUT-NEXT: 300
+// OUT-NEXT: 1
+// OUT-NEXT: 0
+// OUT-NEXT: 2
+// OUT-NEXT: 1

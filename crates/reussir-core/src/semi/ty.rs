@@ -245,6 +245,16 @@ pub enum TyKind<'tcx> {
 pub struct Ty<'tcx>(&'tcx TyKind<'tcx>);
 
 impl<'tcx> Ty<'tcx> {
+    /// Whether this is a machine scalar (integer, float, `bool`, `char`) —
+    /// the types whose comparisons the backend lowers directly and whose
+    /// comparison-trait impls the compiler registers itself.
+    pub fn is_scalar(self) -> bool {
+        matches!(
+            self.kind(),
+            TyKind::Int(_) | TyKind::Fp(_) | TyKind::Bool | TyKind::Char
+        )
+    }
+
     /// The structure behind this handle.
     pub fn kind(self) -> &'tcx TyKind<'tcx> {
         self.0
