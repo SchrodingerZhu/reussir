@@ -268,9 +268,8 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                     _ => (expr, None),
                 };
                 let export = format!("__repl_expr_{}", self.counter);
-                let name = Interner::get_or_intern(&mut self.interner.clone(), &export);
-                let dec_name =
-                    Interner::get_or_intern(&mut self.interner.clone(), &format!("{export}_dec"));
+                let name = self.interner.intern(&export);
+                let dec_name = self.interner.intern(&format!("{export}_dec"));
                 let in_scope: Vec<_> = self.bindings.iter().map(|b| (b.name, b.ty)).collect();
                 match self.elab.try_repl_expr(
                     &reussir_core::semi::repl::ReplExprRequest {
@@ -458,8 +457,8 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         }
         let expr = surface::repl_expr(&parsed.parse.root);
         let cp = self.elab.checkpoint();
-        let name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe");
-        let dec_name = Interner::get_or_intern(&mut self.interner.clone(), "__repl_type_probe_dec");
+        let name = self.interner.intern("__repl_type_probe");
+        let dec_name = self.interner.intern("__repl_type_probe_dec");
         let in_scope: Vec<_> = self.bindings.iter().map(|b| (b.name, b.ty)).collect();
         let result = self.elab.try_repl_expr(
             &reussir_core::semi::repl::ReplExprRequest {

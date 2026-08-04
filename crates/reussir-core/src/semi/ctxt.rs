@@ -1,6 +1,7 @@
 //! The elaboration context: collected items, global + per-function state, and
 //! the scan/collect driver.
 
+use reussir_syntax::SharedInterner;
 use reussir_syntax::kind::{Resolver, TokenKey};
 use reussir_syntax::source::{FileId, SourceCache};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -464,6 +465,10 @@ pub struct Elaborator<'a, 'tcx> {
     /// accumulated — reset by `enter_function` and after signature eval, so
     /// no Checkpoint entry.
     pub(super) self_alias: Option<Ty<'tcx>>,
+    /// The interned spelling of `Self` — the display name given to each user
+    /// trait's implicit `Self` generic (interned once at construction; the
+    /// scan passes have no interner).
+    pub(super) self_name: TokenKey,
     pub inside_region: bool,
     /// Generics required to be regional, accumulated while checking the current
     /// function body (e.g. a generic assigned into a flex link). Seeded from the
@@ -507,6 +512,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut traits = TraitDb::new();
         let mut handle = interner.clone();
         let builtins = Builtins::register(&mut traits, &mut defs, &mut handle, tcx);
+        let self_name = interner.intern("Self");
         Elaborator {
             tcx,
             resolver: &**interner,
@@ -538,6 +544,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             vars: VarEnv::default(),
             generic_names: FxHashMap::default(),
             self_alias: None,
+            self_name,
             inside_region: false,
             regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
@@ -1356,6 +1363,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut functions = Vec::new();
         let mut trampolines = Vec::new();
         let mut impls = Vec::new();
+        let mut trait_decls = Vec::new();
         for (file, module, program) in files {
             for stmt in *program {
                 let scope = Scope {
@@ -1430,10 +1438,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                             impls.push((ib, span, scope));
                         }
                     }
-                    surface::StmtKind::Trait(_) => {
+                    surface::StmtKind::Trait(td) => {
                         self.validate_transform_anchor(&attrs, None);
                         self.reject_ffi_attr(ffi, span);
-                        self.error(span, "`trait` declarations are not supported yet");
+                        trait_decls.push((td, span, scope));
                     }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.
@@ -1462,6 +1470,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // re-resolving the name — so an item whose declaration failed (e.g. a
         // duplicate) is skipped instead of clobbering the previously declared
         // item's fields or checking a body against the wrong prototype.
+        // Phase A: trait stubs first — the record/function stub scans
+        // resolve generic bounds immediately, so every trait must already
+        // have a def and a TraitDb entry.
+        let trait_ids: Vec<Option<TraitId>> = trait_decls
+            .iter()
+            .map(|(td, span, scope)| {
+                self.set_current_file(scope.file);
+                self.defs.set_module(scope.module.to_vec());
+                self.scan_trait_stub(td, *span)
+            })
+            .collect();
         let record_defs: Vec<Option<DefId>> = records
             .iter()
             .map(|(rec, span, scope, ffi)| {
@@ -1470,6 +1489,27 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.scan_record(rec, ffi.clone(), *span)
             })
             .collect();
+        // Phase C, split: every trait's own binder first (a supertrait's
+        // arity gate reads the super's params, which a same-batch
+        // later-declared super would otherwise still be missing), then
+        // supertraits and member signatures (which need the record stubs).
+        for ((td, span, scope), id) in trait_decls.iter().zip(&trait_ids) {
+            if let Some(id) = id {
+                self.set_current_file(scope.file);
+                self.defs.set_module(scope.module.to_vec());
+                self.populate_trait_params(td, *id, *span);
+            }
+        }
+        for ((td, span, scope), id) in trait_decls.iter().zip(&trait_ids) {
+            if let Some(id) = id {
+                self.set_current_file(scope.file);
+                self.defs.set_module(scope.module.to_vec());
+                self.populate_trait_members(td, *id, *span);
+            }
+        }
+        // Phase D: reject (and sever) super-trait cycles — `reaches`
+        // recurses unguarded, so a surviving cycle would overflow.
+        self.reject_supertrait_cycles(trait_ids.iter().flatten().copied());
         let function_defs: Vec<Option<DefId>> = functions
             .iter()
             .map(|(func, span, scope, _, is_import, _)| {
@@ -2149,6 +2189,293 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         Some(def)
+    }
+
+    /// Phase A of the trait scan: declare the trait's def and register a
+    /// stub `TraitDef` so bounds resolve against it from the very first
+    /// record/function stub scan. Params, supertraits, and members fill in
+    /// during the populate phases.
+    fn scan_trait_stub(&mut self, td: &surface::TraitDecl, span: Option<Span>) -> Option<TraitId> {
+        let Some(def) = self.defs.declare_trait(td.name) else {
+            // The name is taken in this module's trait namespace: a sealed
+            // builtin (only reachable at the crate root) gets its own
+            // wording, everything else is an ordinary redeclaration.
+            let mut path = self.defs.module().to_vec();
+            path.push(td.name);
+            let existing = self
+                .defs
+                .lookup_trait(&path)
+                .and_then(|d| self.traits.trait_by_def(d));
+            let msg = match existing {
+                Some(id) if self.traits.trait_def(id).sealed => format!(
+                    "`{}` is a built-in trait and cannot be redeclared",
+                    self.sym(td.name)
+                ),
+                _ => format!("trait `{}` is defined more than once", self.sym(td.name)),
+            };
+            self.error(span, msg);
+            return None;
+        };
+        let id = TraitId(self.traits.traits_len() as u32);
+        self.traits.add_trait(crate::semi::traits::def::TraitDef {
+            id,
+            def,
+            visibility: td.visibility,
+            sealed: false,
+            // Placeholder until `populate_trait_params`; nothing reads a
+            // stub's binder before that phase runs.
+            self_param: GenericId(0),
+            params: Vec::new(),
+            supertraits: Vec::new(),
+            methods: Vec::new(),
+            assoc_tys: Vec::new(),
+            span,
+            file: self.current_file,
+        });
+        Some(id)
+    }
+
+    /// Phase C1: allocate the trait's own binder — the implicit `Self` and
+    /// the declared parameters — for every stub before any supertrait or
+    /// member resolves against it.
+    fn populate_trait_params(&mut self, td: &surface::TraitDecl, id: TraitId, span: Option<Span>) {
+        let self_param = self.fresh_generic(self.self_name, Vec::new());
+        if td.generics.iter().any(|&(name, _)| name == self.self_name) {
+            self.error(span, "`Self` is implicit in a trait; do not declare it");
+        }
+        let self_name = self.self_name;
+        let params: Vec<(TokenKey, GenericId)> = td
+            .generics
+            .iter()
+            .filter(|(name, _)| *name != self_name)
+            .map(|(name, bounds)| {
+                let bounds = self.resolve_bounds(bounds, span);
+                (*name, self.fresh_generic(*name, bounds))
+            })
+            .collect();
+        let def = self.traits.trait_def_mut(id);
+        def.self_param = self_param;
+        def.params = params;
+    }
+
+    /// Phase C2: resolve supertraits and member signatures (record stubs
+    /// exist by now, so signature types evaluate).
+    fn populate_trait_members(&mut self, td: &surface::TraitDecl, id: TraitId, span: Option<Span>) {
+        let self_param = self.traits.trait_def(id).self_param;
+        let trait_params = self.traits.trait_def(id).params.clone();
+        let self_ty = self.tcx.mk_generic(self_param);
+
+        let supertraits: Vec<crate::semi::traits::TraitRef<'tcx>> = td
+            .supertraits
+            .iter()
+            .filter_map(|sup_ref| {
+                // Trait references are not parameterized yet: the surface
+                // shape carries arguments (and the core `TraitRef`,
+                // serialization, and reload all plumb them), but admitting
+                // them here needs their evaluation under the trait's binder
+                // — deferred, so a spelled argument list is a clean
+                // rejection rather than a silent drop.
+                if !sup_ref.args.is_empty() {
+                    self.error(
+                        span,
+                        "parameterized supertrait references are not supported yet",
+                    );
+                    return None;
+                }
+                let sup = self.resolve_bound(&sup_ref.path, span)?;
+                let arity = self.traits.trait_def(sup).params.len();
+                if arity != 0 {
+                    self.error(
+                        span,
+                        format!(
+                            "trait `{}` takes {arity} type argument(s); parameterized \
+                             bounds are not supported here",
+                            self.trait_display(sup),
+                        ),
+                    );
+                    return None;
+                }
+                Some(crate::semi::traits::TraitRef {
+                    trait_id: sup,
+                    args: vec![self_ty],
+                })
+            })
+            .collect();
+
+        let mut methods: Vec<crate::semi::traits::def::MethodSig<'tcx>> = Vec::new();
+        for member in &td.members {
+            let mspan = Some(Span {
+                start: member.start,
+                end: member.end,
+            });
+            if methods.iter().any(|m| m.name == member.value.name) {
+                self.error(
+                    mspan,
+                    format!(
+                        "trait `{}` declares method `{}` more than once",
+                        self.sym(td.name),
+                        self.sym(member.value.name)
+                    ),
+                );
+                continue;
+            }
+            methods.extend(self.trait_method_sig(&member.value, mspan, &trait_params, self_ty));
+        }
+        let def = self.traits.trait_def_mut(id);
+        def.supertraits = supertraits;
+        def.methods = methods;
+    }
+
+    /// One member of a `trait` body as a [`MethodSig`]: allocate its own
+    /// binder after the trait's, evaluate the positional parameter types,
+    /// and derive the receiver form from the first parameter. `None` (with
+    /// a report) if no `self` receiver leads.
+    ///
+    /// [`MethodSig`]: crate::semi::traits::def::MethodSig
+    fn trait_method_sig(
+        &mut self,
+        func: &surface::Function,
+        mspan: Option<Span>,
+        trait_params: &[(TokenKey, GenericId)],
+        self_ty: Ty<'tcx>,
+    ) -> Option<crate::semi::traits::def::MethodSig<'tcx>> {
+        use crate::semi::traits::def::ReceiverForm;
+
+        // The member's binder: the trait's params, then its own.
+        self.generic_names = trait_params.iter().copied().collect();
+        let own: Vec<(TokenKey, GenericId)> = func
+            .generics
+            .iter()
+            .map(|(name, bounds)| {
+                if trait_params.iter().any(|(n, _)| n == name) {
+                    self.error(
+                        mspan,
+                        format!(
+                            "generic `{0}` on the method shadows the trait's generic `{0}`",
+                            self.sym(*name)
+                        ),
+                    );
+                }
+                let bounds = self.resolve_bounds(bounds, mspan);
+                let g = self.fresh_generic(*name, bounds);
+                self.generic_names.insert(*name, g);
+                (*name, g)
+            })
+            .collect();
+        self.self_alias = Some(self_ty);
+
+        let params: Vec<Ty<'tcx>> = func
+            .params
+            .iter()
+            .map(|(_, ty, flex)| self.eval_type_flex(ty, *flex))
+            .collect();
+        // The receiver is the leading parameter named `self`; its evaluated
+        // type (or the `[flex]` marker) picks the form.
+        let receiver = func
+            .params
+            .first()
+            .filter(|(pname, _, _)| self.sym(*pname) == "self")
+            .map(|&(_, _, flex)| {
+                if flex {
+                    ReceiverForm::Flex
+                } else {
+                    match params[0].kind() {
+                        TyKind::Arc(inner) if *inner == self_ty => ReceiverForm::Arc,
+                        _ if params[0] == self_ty => ReceiverForm::Value,
+                        _ => {
+                            self.error(
+                                mspan,
+                                "the receiver of a trait method must be `Self`, \
+                                 `Arc<Self>`, or `[flex] Self`",
+                            );
+                            ReceiverForm::Value
+                        }
+                    }
+                }
+            });
+        let ret = match &func.return_type {
+            Some((ty, flex)) => self.eval_type_flex(ty, *flex),
+            None => self.tcx.mk_unit(),
+        };
+        self.generic_names.clear();
+        self.self_alias = None;
+
+        let Some(receiver) = receiver else {
+            self.error(
+                mspan,
+                "a trait method must take `self` as its first parameter",
+            );
+            return None;
+        };
+        if receiver == ReceiverForm::Flex && !func.is_regional {
+            self.error(
+                mspan,
+                "a `[flex] Self` receiver requires a `regional fn`: a flex \
+                 value cannot escape its region",
+            );
+        }
+        Some(crate::semi::traits::def::MethodSig {
+            name: func.name,
+            generics: own,
+            receiver,
+            params,
+            ret,
+            is_regional: func.is_regional,
+            span: mspan,
+        })
+    }
+
+    /// Phase D: a tricolor DFS over the batch's supertrait edges. A back
+    /// edge is reported and SEVERED — `TraitDb::reaches` recurses without a
+    /// guard, so a surviving cycle would overflow the checker later.
+    fn reject_supertrait_cycles(&mut self, batch: impl Iterator<Item = TraitId>) {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Color {
+            White,
+            Gray,
+            Black,
+        }
+        let n = self.traits.traits_len();
+        let mut color = vec![Color::White; n];
+        for root in batch {
+            // Iterative DFS with an explicit stack of (node, next-edge).
+            let mut stack: Vec<(TraitId, usize)> = vec![(root, 0)];
+            if color[root.0 as usize] != Color::White {
+                continue;
+            }
+            color[root.0 as usize] = Color::Gray;
+            while let Some(&mut (node, ref mut edge)) = stack.last_mut() {
+                let supers = &self.traits.trait_def(node).supertraits;
+                if *edge >= supers.len() {
+                    color[node.0 as usize] = Color::Black;
+                    stack.pop();
+                    continue;
+                }
+                let next = supers[*edge].trait_id;
+                *edge += 1;
+                match color[next.0 as usize] {
+                    Color::White => {
+                        color[next.0 as usize] = Color::Gray;
+                        stack.push((next, 0));
+                    }
+                    Color::Gray => {
+                        // Back edge: node -> next closes a cycle.
+                        let span = self.traits.trait_def(node).span;
+                        let chain = format!(
+                            "trait `{0}` participates in a super-trait cycle: \
+                             `{0}`: `{1}`",
+                            self.trait_display(node),
+                            self.trait_display(next),
+                        );
+                        self.error(span, chain);
+                        let idx = *edge - 1;
+                        self.traits.trait_def_mut(node).supertraits.remove(idx);
+                        *stack.last_mut().map(|(_, e)| e).unwrap_or(&mut 0) -= 1;
+                    }
+                    Color::Black => {}
+                }
+            }
+        }
     }
 
     /// Allocate generics for a list of `(name, bounds)` declarations.

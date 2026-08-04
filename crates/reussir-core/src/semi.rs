@@ -1090,19 +1090,11 @@ mod tests {
         );
     }
 
-    /// Until the trait stacks land, trait items are rejected cleanly — and
-    /// a trait impl's members are never misattached as inherent methods.
+    /// Until the impl-for stack lands, trait implementations are rejected
+    /// cleanly — and their members are never misattached as inherent
+    /// methods. (Trait declarations themselves now elaborate.)
     #[test]
     fn trait_items_are_rejected_for_now() {
-        elaborate_source("trait X { fn m(self: Self); }", |elab| {
-            assert!(
-                elab.reports.iter().any(|r| r
-                    .message
-                    .contains("`trait` declarations are not supported yet")),
-                "{:#?}",
-                elab.reports
-            );
-        });
         elaborate_source(
             "pub struct P { pub x: i64 }
              impl Show for P { fn show(self: Self) -> i64 { 1 } }
@@ -1130,6 +1122,220 @@ mod tests {
                 assert!(elab.functions.values().any(|f| elab.sym(f.name) == "ok"));
             },
         );
+    }
+
+    #[test]
+    fn user_trait_bounds_resolve_and_imply_through_supertraits() {
+        // A user trait resolves as a bound; a user supertrait chain onto a
+        // builtin discharges the builtin obligation on the generic.
+        check(
+            "trait Show { fn norm(self: Self) -> f64; }
+             fn f<T: Show>(x: T) -> T { x }",
+            |elab, _| {
+                let f = elab
+                    .functions
+                    .values()
+                    .find(|p| elab.sym(p.name) == "f")
+                    .expect("f");
+                let (_, g) = f.generics[0];
+                assert_eq!(elab.generic_bounds(g).len(), 1);
+            },
+        );
+        check(
+            "trait Croppable: Num { fn crop(self: Self) -> Self; }
+             fn double<T: Croppable>(x: T) -> T { x + x }",
+            |elab, _| {
+                let _ = elab;
+            },
+        );
+    }
+
+    #[test]
+    fn parameterized_supertrait_references_are_rejected() {
+        // The surface shape carries the arguments; admitting them is the
+        // deferred half, so the reference is refused, not silently bared.
+        elaborate_source(
+            "pub trait A { fn a(self: Self) -> i64; }\n\
+             pub trait B : A<i64> { fn b(self: Self) -> i64; }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("parameterized supertrait references are not supported yet")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn supertrait_cycle_is_reported_and_severed() {
+        elaborate_source(
+            "trait A: B { fn a(self: Self); }
+             trait B: A { fn b(self: Self); }
+             fn f<T: A>(x: T) -> T { x }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("super-trait cycle")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn trait_redeclaration_diagnostics() {
+        elaborate_source(
+            "trait A { fn m(self: Self); }
+trait A { fn n(self: Self); }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("trait `A` is defined more than once")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        elaborate_source("trait Num { fn m(self: Self); }", |elab| {
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("`Num` is a built-in trait and cannot be redeclared")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn trait_member_rejections() {
+        elaborate_source("trait T { fn m(x: i64) -> i64; }", |elab| {
+            assert!(
+                elab.reports.iter().any(|r| r
+                    .message
+                    .contains("a trait method must take `self` as its first parameter")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+        elaborate_source(
+            "trait T { fn m(self: Self); fn m(self: Self) -> i64; }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("declares method `m` more than once")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        elaborate_source("trait T<Self> { fn m(self: Self); }", |elab| {
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("`Self` is implicit in a trait")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+        elaborate_source(
+            "trait Convert<T> { fn conv(self: Self) -> T; }
+             trait Bad: Convert { fn b(self: Self); }",
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("parameterized bounds are not supported here")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        elaborate_source("trait T<A> { fn m<A: Num>(self: Self, a: A); }", |elab| {
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("shadows the trait's generic")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+        elaborate_source("trait T { fn m(self: [flex] Self); }", |elab| {
+            assert!(
+                elab.reports
+                    .iter()
+                    .any(|r| r.message.contains("requires a `regional fn`")),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    #[test]
+    fn trait_method_receiver_forms_recorded() {
+        use crate::semi::traits::def::ReceiverForm;
+        check(
+            "trait Multi {
+                 fn v(self: Self) -> i64;
+                 fn a(self: Arc<Self>) -> i64;
+                 regional fn f(self: [flex] Self);
+             }",
+            |elab, _| {
+                let id = elab
+                    .traits
+                    .trait_by_def(
+                        (0..elab.defs.len() as u32)
+                            .map(crate::semi::ty::DefId)
+                            .find(|d| {
+                                elab.defs.info(*d).kind == crate::semi::resolve::DefKind::Trait
+                                    && elab.sym(elab.defs.path(*d).name()) == "Multi"
+                            })
+                            .expect("Multi def"),
+                    )
+                    .expect("registered");
+                let def = elab.traits.trait_def(id);
+                let forms: Vec<ReceiverForm> = def.methods.iter().map(|m| m.receiver).collect();
+                assert_eq!(
+                    forms,
+                    [ReceiverForm::Value, ReceiverForm::Arc, ReceiverForm::Flex]
+                );
+                assert!(def.methods[2].is_regional);
+            },
+        );
+    }
+
+    #[test]
+    fn rejected_batch_retracts_trait_decls() {
+        use std::sync::Arc;
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+
+            // A batch with an unknown supertrait is rejected wholesale …
+            let p1 = parse("trait Broken: Nope { fn m(self: Self); }");
+            elab.try_extend(&surface::program(&p1.root))
+                .expect_err("unknown supertrait");
+            assert!(!elab.has_errors());
+
+            // … and the same trait name declares cleanly next batch: the
+            // DefTable entry, the TraitDb stub, and its generics all rolled
+            // back.
+            let p2 = parse("trait Broken { fn m(self: Self); }");
+            elab.try_extend(&surface::program(&p2.root))
+                .expect("retracted name is reusable");
+        });
     }
 
     #[test]
@@ -2481,8 +2687,6 @@ pub struct Rect { pub w: i64 }",
         // batch's own sweep, or the error doubles.
         with_tcx(|tcx| {
             let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-            let resolver: &dyn reussir_syntax::kind::Resolver<reussir_syntax::kind::TokenKey> =
-                &interner;
             let mut elab = Elaborator::new(tcx, &interner);
             for src in [
                 "struct Q { x: i64 }\nstruct S { p: Q }",

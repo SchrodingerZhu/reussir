@@ -99,6 +99,13 @@ impl<'tcx> TraitDb<'tcx> {
         &self.traits[id.0 as usize]
     }
 
+    /// Mutable access for the elaborator's two-phase populate: trait stubs
+    /// register first (so bounds resolve during the record/function scans),
+    /// then supertraits and members fill in.
+    pub(crate) fn trait_def_mut(&mut self, id: TraitId) -> &mut TraitDef<'tcx> {
+        &mut self.traits[id.0 as usize]
+    }
+
     /// Does holding `have` imply holding `want`? True when they are equal or
     /// `want` is in `have`'s super-trait closure.
     pub fn implies(&self, have: TraitId, want: TraitId) -> bool {
@@ -216,10 +223,13 @@ mod tests {
                 def,
                 visibility: crate::surface::Visibility::Public,
                 sealed: false,
-                params: vec![crate::semi::ty::GenericId(0)],
+                self_param: crate::semi::ty::GenericId(0),
+                params: vec![],
                 supertraits: vec![],
                 methods: vec![],
                 assoc_tys: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             });
             let unit = tcx.mk_unit();
             db.add_impl(ImplDef {
@@ -245,10 +255,13 @@ mod tests {
                 def,
                 visibility: crate::surface::Visibility::Public,
                 sealed: false,
-                params: vec![crate::semi::ty::GenericId(0)],
+                self_param: crate::semi::ty::GenericId(0),
+                params: vec![],
                 supertraits: vec![],
                 methods: vec![],
                 assoc_tys: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             });
             assert_eq!(db.trait_by_def(def), Some(id));
         });
@@ -314,10 +327,13 @@ mod tests {
                 def: crate::semi::ty::DefId(def),
                 visibility: crate::surface::Visibility::Public,
                 sealed: false,
-                params: vec![self_g],
+                self_param: self_g,
+                params: vec![],
                 supertraits: supers,
                 methods: vec![],
                 assoc_tys: vec![],
+                span: None,
+                file: reussir_syntax::source::FileId::ROOT,
             };
             db.add_trait(def(top, 0, vec![]));
             db.add_trait(def(mid, 1, vec![self_ref(top)]));
