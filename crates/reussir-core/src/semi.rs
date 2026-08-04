@@ -2227,8 +2227,10 @@ mod tests {
                 surface::program(&parse.root)
             };
             let declare = batch(
-                "#[lang(\"num\")] #[sealed] pub trait MyNum: PartialOrd { }\n\
-                 fn d<T: Num>(a: T, b: T) -> bool { a + a < b }",
+                r#"
+                #[lang("num")] #[sealed] pub trait MyNum: PartialOrd { }
+                fn d<T: Num>(a: T, b: T) -> bool { a + a < b }
+                "#,
                 &interner,
             );
             let r = elab.try_extend(&declare);
@@ -2242,8 +2244,10 @@ mod tests {
             assert!(elab.traits.trait_def(declared).span.is_some());
 
             let broken = batch(
-                "#[lang(\"integral\")] pub trait MyIntegral { }\n\
-                 fn nope() -> i64 { missing() }",
+                r#"
+                #[lang("integral")] pub trait MyIntegral { }
+                fn nope() -> i64 { missing() }
+                "#,
                 &interner,
             );
             assert!(elab.try_extend(&broken).is_err());
