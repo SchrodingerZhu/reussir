@@ -1533,7 +1533,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
                 continue;
             }
-            let target = self.scan_impl_target(ib, *span);
+            let target = self.scan_impl_target(ib, false, *span);
             let impl_generics = target.map(|_| self.collect_generics(&ib.generics, *span));
             // The applied target type: `Self` inside the block. Evaluated
             // once, under the block-level generics.
@@ -2044,7 +2044,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return nones;
         }
 
-        let Some(target) = self.scan_impl_target(ib, span) else {
+        let Some(target) = self.scan_impl_target(ib, true, span) else {
             return nones;
         };
         let generics = self.collect_generics(&ib.generics, span);
@@ -2094,6 +2094,70 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             .collect::<Vec<_>>()
             .into_iter()
             .for_each(|msg| self.error(span, msg));
+
+        // ORPHAN (package granularity): the trait or the self type's head
+        // must be local — extern provenance is exactly the extern_defs map.
+        let trait_local = !self
+            .extern_defs
+            .contains_key(&self.traits.trait_def(tid).def);
+        let head_local = !self.extern_defs.contains_key(&target);
+        if !trait_local && !head_local {
+            self.error(
+                span,
+                format!(
+                    "cannot implement extern trait `{}` for extern type `{}`: \
+                     the trait or the self type's head must be local to this \
+                     package",
+                    self.trait_display(tid),
+                    self.defs.path(target).display(self.resolver)
+                ),
+            );
+            return nones;
+        }
+
+        // OVERLAP: within the (trait, head) bucket, two-sided unification —
+        // both impls' generics unifiable — so crossing generic heads
+        // (`Pair<T, i32>` vs `Pair<u8, U>`) conflict. Coherence is what
+        // makes selection's committed choice unique.
+        let head = crate::semi::traits::coherence::head_key(self_ty)
+            .expect("impl targets resolve to record heads");
+        let new_args: Vec<Ty<'tcx>> = std::iter::once(self_ty)
+            .chain(trait_args.iter().copied())
+            .collect();
+        let conflict = self
+            .traits
+            .impls_for(tid, head)
+            .iter()
+            .find_map(|&existing| {
+                let other = self.traits.impl_def(existing);
+                let vars: rustc_hash::FxHashSet<GenericId> = other
+                    .generics
+                    .iter()
+                    .chain(generics.iter().map(|(_, g)| g))
+                    .copied()
+                    .collect();
+                let mut subst = FxHashMap::default();
+                crate::semi::traits::coherence::unify_args(
+                    &other.trait_ref.args,
+                    &new_args,
+                    &vars,
+                    &mut subst,
+                )
+                .then_some(other.self_ty)
+            });
+        if let Some(other_self) = conflict {
+            self.error(
+                span,
+                format!(
+                    "conflicting implementations of trait `{}` for `{}`: \
+                     `{0}` is already implemented for `{}`",
+                    self.trait_display(tid),
+                    self.ty_display(self_ty),
+                    self.ty_display(other_self)
+                ),
+            );
+            return nones;
+        }
 
         // Members: declare + conformance, in member order; track coverage in
         // trait-method order for the missing-set diagnostic and the
@@ -2336,7 +2400,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Validate an `impl` block's target: it must resolve to a record this
     /// package defines, in the module the block appears in, with a fully
     /// applied generic head.
-    fn scan_impl_target(&mut self, ib: &surface::ImplBlock, span: Option<Span>) -> Option<DefId> {
+    fn scan_impl_target(
+        &mut self,
+        ib: &surface::ImplBlock,
+        extern_target_ok: bool,
+        span: Option<Span>,
+    ) -> Option<DefId> {
         let Some(def) = self.resolve_record_ref(&ib.target) else {
             // A private record of a loaded extern package reports access,
             // not absence — though methods for it are rejected either way.
@@ -2356,7 +2425,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             return None;
         };
-        if let Some(&head) = self.extern_defs.get(&def) {
+        if !extern_target_ok && let Some(&head) = self.extern_defs.get(&def) {
             self.error(
                 span,
                 format!(

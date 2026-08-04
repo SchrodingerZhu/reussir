@@ -98,6 +98,8 @@ pub fn elaborate_package_with_externs<'a, 'tcx>(
 
 #[cfg(test)]
 mod tests {
+    use reussir_syntax::SharedInterner;
+
     use super::*;
     use crate::semi::ty::{Flexivity, IntTy, TyKind};
     use crate::with_tcx;
@@ -1200,11 +1202,29 @@ mod tests {
 
     #[test]
     fn duplicate_ground_trait_impls_hit_the_guided_clash() {
+        // Identical impls are an overlap conflict (coherence speaks first)…
         elaborate_source(
             "pub trait Show { fn show(self: Self) -> i64; }\n\
              pub struct P { pub x: i64 }\n\
              impl Show for P { fn show(self: Self) -> i64 { 1 } }\n\
              impl Show for P { fn show(self: Self) -> i64 { 2 } }",
+            |elab| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("conflicting implementations of trait")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        // …while DISJOINT impls in one module collide only on the method
+        // path, and get steered toward a single parameterized impl.
+        elaborate_source(
+            "pub trait Show { fn show(self: Self) -> i64; }\n\
+             pub struct Box<T> { pub v: T }\n\
+             impl Show for Box<i32> { fn show(self: Self) -> i64 { 1 } }\n\
+             impl Show for Box<bool> { fn show(self: Self) -> i64 { 2 } }",
             |elab| {
                 assert!(
                     elab.reports.iter().any(|r| r
@@ -1246,6 +1266,201 @@ mod tests {
                     elab.reports
                         .iter()
                         .any(|r| r.message.contains("impl generic `T` is not constrained")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn cross_module_duplicate_impls_hit_overlap() {
+        // Different modules dodge the method-path clash; the (trait, head)
+        // bucket catches the conflict.
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod a; mod b;\n\
+                     pub trait Show { fn show(self: Self) -> i64; }\n\
+                     pub struct P { pub x: i64 }",
+                ),
+                (
+                    &["a"],
+                    "impl super::Show for super::P { fn show(self: Self) -> i64 { 1 } }",
+                ),
+                (
+                    &["b"],
+                    "impl super::Show for super::P { fn show(self: Self) -> i64 { 2 } }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("conflicting implementations of trait")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn crossing_generic_impls_overlap() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod a; mod b;\n\
+                     pub trait Show { fn show(self: Self) -> i64; }\n\
+                     pub struct Pair<A, B> { pub a: A, pub b: B }",
+                ),
+                (
+                    &["a"],
+                    "impl<T: Num> super::Show for super::Pair<T, i32> {\n\
+                         fn show(self: Self) -> i64 { 1 }\n\
+                     }",
+                ),
+                (
+                    &["b"],
+                    "impl<U: Num> super::Show for super::Pair<u8, U> {\n\
+                         fn show(self: Self) -> i64 { 2 }\n\
+                     }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("conflicting implementations of trait")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn disjoint_ground_impls_coexist_across_modules() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod a; mod b;\n\
+                     pub trait Show { fn show(self: Self) -> i64; }\n\
+                     pub struct Box<T> { pub v: T }",
+                ),
+                (
+                    &["a"],
+                    "impl super::Show for super::Box<i32> { fn show(self: Self) -> i64 { 1 } }",
+                ),
+                (
+                    &["b"],
+                    "impl super::Show for super::Box<bool> { fn show(self: Self) -> i64 { 2 } }",
+                ),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
+        );
+    }
+
+    #[test]
+    fn orphan_rule_package_granularity() {
+        use std::sync::Arc;
+        with_tcx(|tcx| {
+            let interner = Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = |src: &str| {
+                let p = reussir_syntax::parse_with_interner(src, interner.clone());
+                assert!(p.ok(), "parse errors for {src:?}: {:#?}", p.errors);
+                p
+            };
+            let mut elab = Elaborator::new(tcx, &interner);
+            let p1 = parse(
+                "pub trait Ext { fn e(self: Self) -> i64; }\n\
+                 pub struct Far { pub x: i64 }",
+            );
+            elab.try_extend(&surface::program(&p1.root)).expect("decls");
+            // Mark both as extern-owned, simulating .rri provenance (trait
+            // serialization lands in a later stack; the gate reads only the
+            // provenance map).
+            let head = interner.intern("dep");
+            let trait_def = (0..elab.defs.len() as u32)
+                .map(crate::semi::ty::DefId)
+                .find(|d| {
+                    elab.defs.info(*d).kind == crate::semi::resolve::DefKind::Trait
+                        && elab.sym(elab.defs.path(*d).name()) == "Ext"
+                })
+                .expect("trait def");
+            let far_def = (0..elab.defs.len() as u32)
+                .map(crate::semi::ty::DefId)
+                .find(|d| {
+                    elab.defs.info(*d).kind == crate::semi::resolve::DefKind::Record
+                        && elab.sym(elab.defs.path(*d).name()) == "Far"
+                })
+                .expect("record def");
+            elab.extern_defs.insert(trait_def, head);
+            elab.extern_defs.insert(far_def, head);
+
+            // Both extern: rejected by the orphan rule.
+            let p2 = parse("impl Ext for Far { fn e(self: Self) -> i64 { 1 } }");
+            let errs = elab
+                .try_extend(&surface::program(&p2.root))
+                .expect_err("orphan");
+            assert!(
+                errs.iter().any(|r| r
+                    .message
+                    .contains("the trait or the self type's head must be local")),
+                "{errs:#?}"
+            );
+
+            // A local trait for the extern type is admissible.
+            let p3 = parse(
+                "pub trait Local { fn l(self: Self) -> i64; }\n\
+                 impl Local for Far { fn l(self: Self) -> i64 { self.x } }",
+            );
+            elab.try_extend(&surface::program(&p3.root))
+                .expect("local trait, extern head");
+
+            // The extern trait for a local type is admissible too.
+            let p4 = parse(
+                "pub struct Near { pub y: i64 }\n\
+                 impl Ext for Near { fn e(self: Self) -> i64 { self.y } }",
+            );
+            elab.try_extend(&surface::program(&p4.root))
+                .expect("extern trait, local head");
+        });
+    }
+
+    #[test]
+    fn generic_impl_overlaps_its_ground_instance() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "mod a; mod b;\n\
+                     pub trait Show { fn show(self: Self) -> i64; }\n\
+                     pub struct Box<T> { pub v: T }",
+                ),
+                (
+                    &["a"],
+                    "impl<T: Num> super::Show for super::Box<T> {\n\
+                         fn show(self: Self) -> i64 { 1 }\n\
+                     }",
+                ),
+                (
+                    &["b"],
+                    "impl super::Show for super::Box<i32> { fn show(self: Self) -> i64 { 2 } }",
+                ),
+            ],
+            |elab, _| {
+                assert!(
+                    elab.reports
+                        .iter()
+                        .any(|r| r.message.contains("conflicting implementations of trait")),
                     "{:#?}",
                     elab.reports
                 );

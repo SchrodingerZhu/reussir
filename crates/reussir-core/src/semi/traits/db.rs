@@ -9,9 +9,11 @@
 //! [`TraitDb::select`] entry point.
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use crate::semi::ty::DefId;
 
+use super::coherence::{HeadKey, head_key};
 use super::def::{ImplDef, TraitDef};
 use super::{Evidence, ImplId, Obligation, TraitId, TraitRef};
 
@@ -22,6 +24,9 @@ pub struct TraitDb<'tcx> {
     impls: Vec<ImplDef<'tcx>>,
     /// The dense [`TraitId`] of each path-keyed trait def.
     by_def: FxHashMap<DefId, TraitId>,
+    /// Impls bucketed by `(trait, self-head)` — the candidate index for
+    /// overlap checking (and, in the selection stack, for `select`).
+    by_head: FxHashMap<(TraitId, HeadKey), SmallVec<[ImplId; 2]>>,
 }
 
 /// Why an obligation could not be discharged.
@@ -80,7 +85,19 @@ impl<'tcx> TraitDb<'tcx> {
                 "by_def must point at the popped trait"
             );
         }
-        self.impls.truncate(impls);
+        while self.impls.len() > impls {
+            let def = self.impls.pop().expect("len checked above");
+            let head = head_key(def.self_ty).expect("registered with a head");
+            let bucket = self
+                .by_head
+                .get_mut(&(def.trait_ref.trait_id, head))
+                .expect("registered impls have a bucket");
+            let popped = bucket.pop();
+            debug_assert_eq!(popped, Some(def.id), "buckets append in id order");
+            if bucket.is_empty() {
+                self.by_head.remove(&(def.trait_ref.trait_id, head));
+            }
+        }
     }
 
     pub fn add_impl(&mut self, def: ImplDef<'tcx>) -> ImplId {
@@ -91,8 +108,21 @@ impl<'tcx> TraitDb<'tcx> {
             "impl ids must be dense"
         );
         let id = def.id;
+        let head = head_key(def.self_ty).expect("blanket impls are rejected before registration");
+        self.by_head
+            .entry((def.trait_ref.trait_id, head))
+            .or_default()
+            .push(id);
         self.impls.push(def);
         id
+    }
+
+    /// The impls of `trait_id` whose self head is `head`.
+    pub fn impls_for(&self, trait_id: TraitId, head: HeadKey) -> &[ImplId] {
+        self.by_head
+            .get(&(trait_id, head))
+            .map(SmallVec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn trait_def(&self, id: TraitId) -> &TraitDef<'tcx> {
