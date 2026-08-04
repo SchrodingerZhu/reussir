@@ -54,6 +54,8 @@ pub enum Token<'a> {
     Trait,
     #[token("lang")]
     Lang,
+    #[token("sealed")]
+    Sealed,
     #[token("impl")]
     Impl,
     #[token("transform_anchor")]

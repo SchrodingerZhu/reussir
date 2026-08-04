@@ -171,15 +171,18 @@ Func: raw::Func =
 /// compiler wires into checking.
 LangAttr: String = "#" "[" "lang" "(" <s:"quoted"> ")" "]" => s.into();
 
+SealedAttr: () = "#" "[" "sealed" "]" => ();
+
 /// A trait item. The binder's first generic is the implicit `Self`; the
 /// super-references carry their full argument lists (args[0] = `Self`), so
 /// rebuilding involves no convention.
 TraitDecl: raw::TraitItem =
-    <lang:LangAttr?> <p:"pub"?> "trait" "#" <path:QPath> <generics:Generics>
+    <lang:LangAttr?> <sealed:SealedAttr?> <p:"pub"?> "trait" "#" <path:QPath> <generics:Generics>
     <supers:(":" <CommaPlus<SuperRef>>)?>
     <loc:ItemLoc?> "{" <methods:TraitMethodSig*> "}"
     => raw::TraitItem {
         lang,
+        sealed: sealed.is_some(),
         is_pub: p.is_some(),
         path,
         generics,
@@ -290,6 +293,7 @@ BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
 Name: &'input str = {
     <name:"ident"> => name,
     "lang" => "lang",
+    "sealed" => "sealed",
     "intrinsic" => "intrinsic",
     "array" => "array",
     "trait" => "trait",
@@ -543,6 +547,7 @@ extern {
         "transform" => Token::Transform,
         "trait" => Token::Trait,
         "lang" => Token::Lang,
+        "sealed" => Token::Sealed,
         "impl" => Token::Impl,
         "transform_anchor" => Token::TransformAnchor,
         "interface" => Token::Interface,

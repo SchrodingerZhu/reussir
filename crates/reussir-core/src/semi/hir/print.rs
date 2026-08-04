@@ -354,8 +354,9 @@ impl<'a> Printer<'a> {
 
     fn trait_item(&self, t: &super::TraitText<'_>) -> Doc<'static> {
         let vis = if t.is_pub { "pub " } else { "" };
+        let sealed = if t.sealed { "#[sealed] " } else { "" };
         let mut head = self.lang_prefix(t.def)
-            + text(format!("{vis}trait #{}", t.path))
+            + text(format!("{sealed}{vis}trait #{}", t.path))
             + self.text_binder(&t.generics);
         if !t.supers.is_empty() {
             let supers: Vec<Doc<'static>> = t

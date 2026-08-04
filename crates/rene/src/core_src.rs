@@ -23,6 +23,14 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/cmp.rr"),
     ),
     (
+        "src/num.rr",
+        include_str!("../../../library/core/src/num.rr"),
+    ),
+    (
+        "src/marker.rr",
+        include_str!("../../../library/core/src/marker.rr"),
+    ),
+    (
         "src/intrinsic/mod.rr",
         include_str!("../../../library/core/src/intrinsic/mod.rr"),
     ),

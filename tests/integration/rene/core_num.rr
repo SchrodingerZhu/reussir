@@ -1,0 +1,30 @@
+// The numeric tower as `core` source: `core.rri` ships the sealed,
+// `#[lang]`-bound declarations of `core::num` and `core::marker` with
+// real locations; the app's `T: Num`/`T: Integral`/`T: FloatingPoint`
+// generics resolve against them, `Num: PartialOrd` (declared in source)
+// keeps `T: Num` code comparing, and impls of the sealed tower stay
+// rejected.
+
+// RUN: %rene build --manifest-path %S/core_num/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}numdemo
+
+// RUN: %FileCheck %s --check-prefix=RRI < %t.bdir/dev/deps/core.rri
+
+// RRI: interface 1 package "core"
+// RRI-DAG: #[lang("num")] #[sealed] pub trait #core::num::Num<{{.*}}(Self)> : #core::cmp::PartialOrd::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("integral")] #[sealed] pub trait #core::num::Integral<{{.*}}(Self)> : #core::num::Num::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("floating_point")] #[sealed] pub trait #core::num::FloatingPoint<{{.*}}(Self)> : #core::num::Num::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("ptr_like")] #[sealed] pub trait #core::marker::PtrLike<{{.*}}(Self)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+// RRI-DAG: #[lang("sync")] #[sealed] pub trait #core::marker::Sync<{{.*}}(Self)> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
+
+// Intrinsic prototypes now bound against core's own tower.
+// RUN: %FileCheck %s --check-prefix=PROTO < %t.bdir/dev/deps/core.rri
+// PROTO: #[lang("core::intrinsic::math::sqrt")] pub fn #core::intrinsic::math::sqrt<{{.*}}: core::num::FloatingPoint>({{.*}}
+
+// RUN: %t.bdir/dev/numdemo%exe_ext | %FileCheck %s --check-prefix=OUT
+
+// OUT: 42
+// OUT-NEXT: 4
+// OUT-NEXT: 7
+// OUT-NEXT: 3

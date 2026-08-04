@@ -33,11 +33,12 @@ use crate::utils::string::StringToken;
 use super::mono::{MonoInput, for_each_expr};
 
 /// Whether a trait belongs in an export closure at all: compiler-provided
-/// traits — the sealed builtins and the site-less comparison-tower
-/// fallback — never ship; a consumer session re-registers them from the
-/// compiler itself.
+/// declarations — the construction-time builtins and the site-less
+/// comparison-tower fallback — never ship; a consumer session
+/// re-registers them from the compiler itself. A *declared* sealed trait
+/// (`core`'s numeric tower) ships like any other.
 fn exportable(t: &crate::semi::traits::def::TraitDef<'_>) -> bool {
-    !t.sealed && !t.compiler_provided()
+    !t.compiler_provided()
 }
 
 /// The `.rri` format integer, bumped on any change to the textual grammar or

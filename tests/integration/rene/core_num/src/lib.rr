@@ -1,0 +1,20 @@
+// The numeric tower from `core` in a real build: `T: Num` arithmetic and
+// comparison, `T: Integral` / `T: FloatingPoint` selection, and an
+// intrinsic dispatched through the bound — all against `core::num`'s
+// sealed, located declarations.
+
+fn double<T: Num>(x: T) -> T { x + x }
+
+fn smaller<T: Num>(a: T, b: T) -> T { if a < b { a } else { b } }
+
+fn wrap_int<T: Integral>(x: T) -> T { x }
+
+fn root<F: FloatingPoint>(x: F) -> F { core::intrinsic::math::sqrt(x, 0) }
+
+#[main]
+pub fn entry() {
+    console::print_u64(double(21 as u64));
+    console::print_u64(smaller(9 as u64, 4));
+    console::print_u64(wrap_int(7 as u64));
+    console::print_u64(root(9.0 as f64) as u64);
+}

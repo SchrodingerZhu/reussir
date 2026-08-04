@@ -479,7 +479,7 @@ pub struct Elaborator<'a, 'tcx> {
     /// `core` declares under its own modules still resolve unqualified;
     /// the fallback registration ([`Elaborator::ensure_cmp_fallback`])
     /// draws its declared names from the same table.
-    pub(super) prelude_names: [(TokenKey, crate::semi::lang::LangItem); 5],
+    pub(super) prelude_names: [(TokenKey, crate::semi::lang::LangItem); 10],
     /// The operator-method names (`eq`, `lt`, `le`, `gt`, `ge`), interned at
     /// construction: operator desugaring resolves the active trait's method
     /// *by name*, so method order in `core`'s declarations is not a
@@ -519,6 +519,10 @@ pub struct Checkpoint {
     /// *pre-existing* trait def (the `Num ⊴ PartialOrd` edge,
     /// [`Elaborator::ensure_num_partial_ord_edge`]); truncating restores it.
     pub(super) num_supers: usize,
+    /// The wired tower fields ([`crate::semi::lang::LangItems::fields`]) —
+    /// a batch that binds `#[lang("num")]` repoints them, so rollback must
+    /// restore the builtins.
+    pub(super) lang_fields: [TraitId; 5],
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -543,6 +547,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 ("PartialOrd", LangItem::PartialOrd),
                 ("Ord", LangItem::Ord),
                 ("Ordering", LangItem::Ordering),
+                ("Num", LangItem::Num),
+                ("Integral", LangItem::Integral),
+                ("FloatingPoint", LangItem::FloatingPoint),
+                ("PtrLike", LangItem::PtrLike),
+                ("Sync", LangItem::Sync),
             ]
             .map(|(name, item)| (interner.intern(name), item))
         };
@@ -1225,9 +1234,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if self.extern_head(path).is_some() {
             self.resolve_extern(path, DefKind::Trait)
         } else if path.segments.is_empty() {
-            self.defs.resolve_trait(path.basename).or_else(|| {
-                self.prelude_lookup(path.basename, crate::semi::lang::LangItemKind::Trait)
-            })
+            self.defs
+                .resolve_trait(path.basename)
+                .map(|def| self.lang.override_builtin(def, &self.traits))
+                .or_else(|| {
+                    self.prelude_lookup(path.basename, crate::semi::lang::LangItemKind::Trait)
+                })
         } else {
             self.defs
                 .resolve_trait_path(&self.classify_segs(path), path.basename)
@@ -1268,7 +1280,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         segments: &[TokenKey],
         span: Option<Span>,
     ) -> Option<TraitId> {
-        let Some(def) = self.defs.lookup_trait(segments) else {
+        let def = self.defs.lookup_trait(segments).map(|def| match segments {
+            [_] => self.lang.override_builtin(def, &self.traits),
+            _ => def,
+        });
+        let Some(def) = def else {
             let shown = segments
                 .iter()
                 .map(|&s| self.sym(s))
@@ -1339,6 +1355,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             lang: self.lang.len(),
             reports: self.reports.len(),
             num_supers: self.traits.trait_def(self.lang.num).supertraits.len(),
+            lang_fields: self.lang.fields(),
         }
     }
 
@@ -1363,6 +1380,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.elaborated.truncate(cp.elaborated);
         self.lang.truncate(cp.lang);
         self.reports.truncate(cp.reports);
+        self.lang.restore_fields(cp.lang_fields);
         self.traits
             .trait_def_mut(self.lang.num)
             .supertraits
@@ -1440,6 +1458,26 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         Some(item)
     }
 
+    /// The `#[sealed]` marker on a trait: no user impls (the compiler
+    /// provides them, as with the numeric tower). Bare — any argument is a
+    /// diagnostic.
+    fn sealed_attr(&mut self, attrs: &[surface::Attribute], span: Option<Span>) -> bool {
+        let Some(attr) = attrs.iter().find(|a| self.sym(a.name) == "sealed") else {
+            return false;
+        };
+        if !attr.literals.is_empty() {
+            self.error(span, "`#[sealed]` takes no arguments");
+        }
+        true
+    }
+
+    /// Reject `#[sealed]` on anything but a trait declaration.
+    fn reject_sealed_attr(&mut self, attrs: &[surface::Attribute], span: Option<Span>) {
+        if attrs.iter().any(|a| self.sym(a.name) == "sealed") {
+            self.error(span, "only a trait can be `#[sealed]`");
+        }
+    }
+
     /// Bind a scanned declaration to its lang item: kind check, then a
     /// duplicate check against the registry (first declaration wins).
     pub(super) fn declare_lang(
@@ -1468,6 +1506,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     item.name()
                 ),
             );
+            return;
+        }
+        // A declared numeric/marker-tower trait takes over its wired field.
+        if crate::semi::lang::LangItem::TOWER.contains(&item)
+            && let Some(id) = self.traits.trait_by_def(def)
+        {
+            self.lang.repoint(item, id);
         }
     }
 
@@ -1511,7 +1556,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // at the crate root.
         let module = self.defs.module().to_vec();
         self.defs.set_module(Vec::new());
-        let [pe_key, eq_key, po_key, ord_key, _] = self.prelude_names.map(|(key, _)| key);
+        let [pe_key, eq_key, po_key, ord_key, ..] = self.prelude_names.map(|(key, _)| key);
         // `None` from the chain means a prior batch squatted a tower name
         // without binding the lang item; the remaining traits stay absent
         // and comparisons degrade to the numeric constraint.
@@ -1568,10 +1613,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         .map(|fp| self.tcx.mk_fp(fp))
         .collect();
         let all = || ordered.iter().chain(&floats).copied();
+        // The numeric tower needs the same completion: the construction
+        // impls target the *builtin* ids, so once `core`'s declarations
+        // repoint the wired fields, `T: Integral` obligations select
+        // against the declared traits — which get their own method-less
+        // compiler impls here (idempotent; a no-op in plain sessions).
+        let ints = || ordered.iter().take(8).copied();
         all()
             .map(|ty| (pe, ty))
             .chain(all().map(|ty| (po, ty)))
             .chain(ordered.iter().copied().map(|ty| (ord, ty)))
+            .chain(ints().map(|ty| (self.lang.integral, ty)))
+            .chain(
+                floats
+                    .iter()
+                    .copied()
+                    .map(|ty| (self.lang.floating_point, ty)),
+            )
             .collect::<Vec<_>>()
             .into_iter()
             .for_each(|(trait_id, self_ty)| self.ensure_scalar_impl(trait_id, self_ty));
@@ -1717,6 +1775,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         self.validate_transform_anchor(&attrs, None);
                         let ffi = self.validate_ffi_record(&rec, ffi, span);
                         let lang = self.lang_attr(&attrs, span);
+                        self.reject_sealed_attr(&attrs, span);
                         records.push((rec, span, scope, ffi, lang));
                     }
                     surface::StmtKind::Function(func) => {
@@ -1725,6 +1784,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let is_import = self.validate_ffi_function(&func, ffi, span);
                         let is_main = self.validate_main_attr(&attrs, &func, span);
                         let lang = self.lang_attr(&attrs, span);
+                        self.reject_sealed_attr(&attrs, span);
                         if let Some(item) = lang
                             && item.kind() == crate::semi::lang::LangItemKind::Function
                             && func.body.is_some()
@@ -1785,7 +1845,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         self.validate_transform_anchor(&attrs, None);
                         self.reject_ffi_attr(ffi, span);
                         let lang = self.lang_attr(&attrs, span);
-                        trait_decls.push((td, span, scope, lang));
+                        let sealed = self.sealed_attr(&attrs, span);
+                        trait_decls.push((td, span, scope, lang, sealed));
                     }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.
@@ -1816,7 +1877,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // are about to bind.
         if !trait_decls
             .iter()
-            .any(|(_, _, _, lang)| lang.is_some_and(|item| item.is_cmp_trait()))
+            .any(|(_, _, _, lang, _)| lang.is_some_and(|item| item.is_cmp_trait()))
         {
             self.ensure_cmp_fallback();
         }
@@ -1829,10 +1890,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // have a def and a TraitDb entry.
         let trait_ids: Vec<Option<TraitId>> = trait_decls
             .iter()
-            .map(|(td, span, scope, lang)| {
+            .map(|(td, span, scope, lang, sealed)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                let id = self.scan_trait_stub(td, *span);
+                let id = self.scan_trait_stub(td, *sealed, *span);
                 if let (Some(item), Some(id)) = (lang, id) {
                     let def = self.traits.trait_def(id).def;
                     self.declare_lang(*item, def, crate::semi::lang::LangItemKind::Trait, *span);
@@ -1860,14 +1921,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // arity gate reads the super's params, which a same-batch
         // later-declared super would otherwise still be missing), then
         // supertraits and member signatures (which need the record stubs).
-        for ((td, span, scope, _), id) in trait_decls.iter().zip(&trait_ids) {
+        for ((td, span, scope, ..), id) in trait_decls.iter().zip(&trait_ids) {
             if let Some(id) = id {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
                 self.populate_trait_params(td, *id, *span);
             }
         }
-        for ((td, span, scope, _), id) in trait_decls.iter().zip(&trait_ids) {
+        for ((td, span, scope, ..), id) in trait_decls.iter().zip(&trait_ids) {
             if let Some(id) = id {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
@@ -2387,9 +2448,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let tdef = if self.extern_head(rpath).is_some() {
             self.resolve_extern(rpath, DefKind::Trait)
         } else if rpath.segments.is_empty() {
-            self.defs.resolve_trait(rpath.basename).or_else(|| {
-                self.prelude_lookup(rpath.basename, crate::semi::lang::LangItemKind::Trait)
-            })
+            self.defs
+                .resolve_trait(rpath.basename)
+                .map(|def| self.lang.override_builtin(def, &self.traits))
+                .or_else(|| {
+                    self.prelude_lookup(rpath.basename, crate::semi::lang::LangItemKind::Trait)
+                })
         } else {
             self.defs
                 .resolve_trait_path(&self.classify_segs(rpath), rpath.basename)
@@ -3059,7 +3123,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// stub `TraitDef` so bounds resolve against it from the very first
     /// record/function stub scan. Params, supertraits, and members fill in
     /// during the populate phases.
-    fn scan_trait_stub(&mut self, td: &surface::TraitDecl, span: Option<Span>) -> Option<TraitId> {
+    fn scan_trait_stub(
+        &mut self,
+        td: &surface::TraitDecl,
+        sealed: bool,
+        span: Option<Span>,
+    ) -> Option<TraitId> {
         let Some(def) = self.defs.declare_trait(td.name) else {
             // The name is taken in this module's trait namespace: a sealed
             // builtin (only reachable at the crate root) gets its own
@@ -3085,7 +3154,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             id,
             def,
             visibility: td.visibility,
-            sealed: false,
+            sealed,
             // Placeholder until `populate_trait_params`; nothing reads a
             // stub's binder before that phase runs.
             self_param: GenericId(0),
