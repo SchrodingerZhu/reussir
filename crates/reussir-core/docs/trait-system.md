@@ -414,6 +414,16 @@ not deferred.
 > single-shot `for` rule (`impl for { }` is an inherent impl of a type named
 > `for`); a primitive in either head position is rejected this cut. Typed
 > views: `surface::TraitDecl` and `ImplBlock::trait_ref`.
+>
+> **As built (dispatch):** dot calls resolve *method-first* — inherent
+> method, then trait method, then field — with `(e.f)(x)` forcing the
+> field; `Trait::method(recv, …)` is the path spelling and the
+> disambiguator when two traits provide a method. A ground-headed receiver
+> commits to the unique impl at check time (an ordinary call); only a
+> bare-generic receiver defers, as the serializable `ExprKind::TraitCall`
+> that monomorphization rewrites once `Self` grounds. Multi-parameter
+> traits never dot-dispatch (their non-`Self` arguments have no
+> instantiation source until trait-call turbofish lands).
 
 Flexivity bounds reuse the existing bound position. The names `Irrelevant`,
 `Regional`, `Flex`, `Rigid` in a bound list are recognized as built-in
@@ -423,6 +433,13 @@ bound position resolves to a `TraitRef`.
 ---
 
 ## 8. Staged plan
+
+> **As built:** Phases 0–2 landed (the 2026-08 trait stack), with the
+> capability predicate *removed* rather than ported (see §9) and the
+> builtin table declared through the `builtin_traits!` proc-macro DSL
+> (`reussir-trait-dsl`). Phase 3 remains future work, plus two recorded
+> cuts: default method bodies and `where` clauses (impl assumptions come
+> from inline binder bounds).
 
 - **Phase 0 — Foundations, behavior-preserving.** Port `Ty` + subst. Stand up
   `traits/` with `Obligation` (`Trait` + `Cap`) / `Evidence` and a trivial
@@ -450,14 +467,96 @@ bound position resolves to a `TraitRef`.
   dictionaries; `dyn Trait` is a deferred, additive phase (Evidence → vtable).
 - **Dispatch — DECIDED: static-only** for the first cut (follows from the
   model).
-- **Capabilities — DECIDED: capability is a bound.** The `Flexivity` lattice is
-  a built-in `Cap` predicate writable in bound position, discharged by lattice
-  subsumption (§5.6). Not a trait; closed; no orphan rule.
+- **Capabilities — REVISED: capability-as-a-bound was removed.** The `Cap`
+  predicate of §5.6 was taken out before the trait stack landed (its
+  non-total-order semantics were not settled); `Obligation` has a single
+  `Trait` variant today, and flexivity stays where it was. If it returns it
+  is a second obligation kind through the same `SelectCtxt::select` entry
+  point.
 - **Surface traits — DECIDED: in the first cut.** User-declared
   `trait`/`impl`/`where` from the start (Phase 1).
-- **F1 — Coherence model (open).** Global coherence + orphan rules (recommended;
-  what makes monomorphic resolution unambiguous) vs. scoped/local instances
-  (Scala-like; more flexible, much harder to monomorphize). Proposal: global
-  coherence.
+- **F1 — Coherence model — DECIDED: global coherence.** Orphan rule at
+  *package* granularity (provenance = the extern-defs map: the trait or the
+  self type's head must be local), overlap by two-sided unification within
+  `(trait, self-head)` buckets — both impls' generics unifiable, so crossing
+  heads like `Pair<T, i32>` vs `Pair<u8, U>` conflict — and blanket impls
+  rejected this cut. Selection reuses the same engine one-way (only the
+  candidate impl's generics as variables), which is what entitles it to
+  commit to the first match.
 - **F4 — Associated types (open).** Now or later. Proposal: later (Phase 3); the
   IR reserves room (`assoc_tys`).
+
+### 9.1 As-built decision record (the 2026-08 stack)
+
+- **D-A** Traits are a third def namespace (`DefKind::Trait`); the `TraitDb`
+  is keyed by `DefId` and the old name-table died (builtins resolve bare at
+  the crate root, prelude-style, shadowable per module).
+- **D-B** Coherence as in F1 above; supertrait cycles are reported and
+  severed; sealed builtins reject user impls.
+- **D-C** Ground receivers resolve to direct calls at check time; generic
+  receivers become `ExprKind::TraitCall`, resolved per instance at
+  monomorphization.
+- **D-D** Impl methods are ordinary functions at
+  `[impl-module‥, trait-path‥, head-name, method]` — unique by coherence,
+  never spelled at call sites.
+- **D-E** Dot dispatch is inherent-first, then trait (ambiguity is an error
+  steering to the `Trait::method` path form), then field.
+- **D-F** Multi-parameter traits are declarable; dispatch on them is deferred
+  (no instantiation source for non-`Self` args).
+- **D-G** Default bodies deferred; conformance is an exact positional match
+  under the `Self`/binder substitution, including receiver form and
+  regionality.
+- **D-H** `where` clauses deferred; `ImplDef.where_clauses` derive from the
+  inline binder bounds.
+- **D-I** Builtins are sealed; `Sync` is structural (answered by the checker,
+  impl-less by construction).
+- **D-J** The builtin table is a `builtin_traits!` declaration
+  (`reussir-trait-dsl`), contract-identical to the hand-written registration
+  it replaced.
+- **D-K** `RRI_FORMAT` stays 1: every serialized form is an additive grammar
+  production (§10).
+- **D-L** Monomorphization resolves `TraitCall`s with an empty assumption
+  environment; impl methods join the export closure (generic ones as
+  shipped bodies whose instances dedup `weak_odr`); the instantiation-depth
+  limit is a spanned diagnostic, not an assert.
+- **D-M** The REPL checkpoint covers the `TraitDb` (dense-id truncation of
+  traits, impls, and the `(trait, head)` buckets), so a rejected batch
+  retracts its trait items exactly.
+
+---
+
+## 10. Serialization
+
+Trait items and trait calls have textual HIR forms, additive under
+`RRI_FORMAT = 1` (old dumps parse unchanged):
+
+```
+pub trait #a::Show<$5 (Self), $6 (A)> : #a::Super<$5> in 0 [s..e] {
+    regional? fn show <$7 (U): Num> Arc|flex? (tys…) -> ty [s..e];
+}
+impl<$8: Num> #a::Show::<#a::Box::<$8>> in 0 [s..e] { #a::a::Show::Box::show }
+trait#a::Show::<$5>#0(recv, args…)
+```
+
+- The trait binder's first generic is `Self`; method parameters are
+  positional with the receiver at `[0]`, an `Arc`/`flex` tag restoring the
+  receiver form. An impl's trait reference carries its **full** argument
+  list (`args[0]` = the self type), and its body lists method definitions
+  by qualified path in trait-method order — the functions themselves
+  serialize as ordinary items. Impl `where` clauses are never printed; they
+  re-derive from binder bounds.
+- **Export closure:** `pub` traits seed; a shipped body's `TraitCall` and a
+  shipped binder's bound pull more; the set closes over supertraits. An
+  impl ships iff its trait does. Generic impl methods ship as walked bodies
+  (consumers instantiate them; `_RI` symbols dedup `weak_odr`), ground ones
+  as prototypes resolved by the producer's artifact at link time. Sealed
+  builtins never serialize — every session re-registers them from the
+  compiler.
+- **Reload:** loading a dependency interface rebuilds its trait items into
+  the consumer's session `TraitDb` (two passes, since a super-trait may
+  appear later in the dump than its sub-trait), re-allocating binders in
+  the consumer's generic table and running the coherence check against the
+  already-registered impls; re-loading is idempotent. Pipeline re-entry of
+  a plain dump uses the same reconstruction (`Parsed::rebuild_traits`), and
+  the resumability canary has a trait twin: a printed-and-reparsed trait
+  program monomorphizes to byte-identical MIR.

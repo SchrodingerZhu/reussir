@@ -994,6 +994,21 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
     /// and its full instantiation — the impl's own generics (derived by the
     /// one-way matcher inside selection) followed by the method's own
     /// arguments (the grounded tail of the `TraitCall`'s `ty_args`).
+    ///
+    /// This is the selection judgment of `semi/traits/select.rs` re-run with
+    /// an empty assumption environment (everything is ground here), driving
+    /// one rewrite:
+    ///
+    /// ```text
+    ///   ground(τ̄)    ∅; D ⊢ T⟨τ̄₀⟩ ⇓ Impl(I, θᾱ, _)    I.methods(m) = f
+    ///  ────────────────────────────────────────────────────────────────
+    ///   TraitCall{T, m, τ̄}(ē)  ⟶  Call f⟨θᾱ ++ τ̄₁‥⟩(ē)
+    /// ```
+    ///
+    /// Every other outcome — no trait tables, an unknown trait, non-`Impl`
+    /// evidence (the bound holds only through a sub-trait, so no direct
+    /// impl carries the body), `⊥`, or `↯` — is a spanned report and the
+    /// call lowers to poison.
     fn resolve_trait_call(
         &mut self,
         trait_def: DefId,

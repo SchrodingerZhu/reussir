@@ -1,0 +1,30 @@
+// The dependency behind trait_extern.rr: a pub trait with a ground and a
+// generic impl, and a pub bounded generic that dispatches through it.
+
+pub trait Show {
+    fn show(self: Self) -> i64;
+}
+
+pub struct P {
+    pub x: i64,
+}
+
+pub struct Box<T> {
+    pub v: T,
+}
+
+impl Show for P {
+    fn show(self: Self) -> i64 {
+        self.x
+    }
+}
+
+impl<T: Show> Show for Box<T> {
+    fn show(self: Self) -> i64 {
+        self.v.show()
+    }
+}
+
+pub fn describe<T: Show>(x: T) -> i64 {
+    x.show()
+}

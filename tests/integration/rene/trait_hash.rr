@@ -1,0 +1,29 @@
+// The Hash/Hasher shape with its three roles in three packages, as a
+// running program: `hashkit` owns the traits (`Hash::hash` carrying its
+// own bounded generic, plus a byte-splitting bounded generic standing in
+// for a default method body); `hashables` implements them for local types
+// — Bernstein's djb2 and the hashable types (a ground `Point` impl and a
+// generic `Pair` impl recursing through both bounds), each in its own
+// module; and the app is a pure *user* — it implements nothing, names the
+// extern traits only in bounds, and dispatches through impls it never
+// wrote. The dependency graph is a diamond (app -> hashkit and app ->
+// hashables -> hashkit), so the trait items load both directly and via
+// the implementer's re-shipped interface — exercising idempotent trait
+// reload — while the app instantiates `hashables`' generic impl method
+// and `hashkit`'s shipped generic bodies at its own call shapes
+// (weak_odr), with the ground methods link-resolved from the archives.
+// The printed values are the real djb2 digests of the little-endian byte
+// streams, pinned against an independent reference computation.
+
+// RUN: %rene build --manifest-path %S/trait_hash/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}hashdemo
+
+// RUN: %t.bdir/dev/hashdemo%exe_ext | %FileCheck %s --check-prefix=OUT
+
+// djb2 over LE(1) ++ LE(2)…
+// OUT: 7944528385982877352
+// …over LE(3) ++ LE(4)…
+// OUT-NEXT: 445791163684897836
+// …and Pair{Point(3,4), Point(5,6)} folds the same state onward.
+// OUT-NEXT: 5582476884098275031

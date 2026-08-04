@@ -1,0 +1,22 @@
+// Bernstein's djb2, faithfully: state 5381, then `h = h * 33 + byte` per
+// byte, wrapping mod 2^64.
+
+pub struct Djb2 {
+    pub state: u64,
+}
+
+pub fn new() -> Djb2 {
+    Djb2 { state: 5381 }
+}
+
+impl hashkit::Hasher for Djb2 {
+    fn write_u8(self: Self, byte: u64) -> Self {
+        Djb2 {
+            state: self.state * 33 + byte,
+        }
+    }
+
+    fn finish(self: Self) -> u64 {
+        self.state
+    }
+}

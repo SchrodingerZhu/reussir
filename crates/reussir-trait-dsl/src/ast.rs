@@ -46,6 +46,9 @@ pub(crate) struct MethodSig {
     pub ret: Option<TypeRef>,
 }
 
+/// Reserved with [`MethodSig`]'s signature fields for the method-carrying
+/// future: parsed, rejected in expansion, so nothing reads the payload yet.
+#[allow(dead_code)]
 pub(crate) enum TypeRef {
     SelfTy,
     Scalar(syn::Ident),

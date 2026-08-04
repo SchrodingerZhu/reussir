@@ -1,0 +1,21 @@
+pub struct Point {
+    pub x: u64,
+    pub y: u64,
+}
+
+impl hashkit::Hash for Point {
+    fn hash<H: hashkit::Hasher>(self: Self, state: H) -> H {
+        hashkit::write_u64(hashkit::write_u64(state, self.x), self.y)
+    }
+}
+
+pub struct Pair<A, B> {
+    pub a: A,
+    pub b: B,
+}
+
+impl<A: hashkit::Hash, B: hashkit::Hash> hashkit::Hash for Pair<A, B> {
+    fn hash<H: hashkit::Hasher>(self: Self, state: H) -> H {
+        self.b.hash(self.a.hash(state))
+    }
+}

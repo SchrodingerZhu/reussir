@@ -175,7 +175,7 @@ pub enum ExprKind<'tcx> {
     /// A trait-method call whose receiver is a bare in-scope generic, so the
     /// impl is unknowable until monomorphization grounds `Self` and selects
     /// it. A call with any *ground-headed* receiver is resolved at check
-    /// time to the unique impl's method as an ordinary [`FuncCall`] —
+    /// time to the unique impl's method as an ordinary [`ExprKind::FuncCall`] —
     /// coherence guarantees the choice — so this variant never reaches
     /// codegen; monomorphization rewrites it.
     TraitCall {

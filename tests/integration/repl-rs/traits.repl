@@ -1,0 +1,48 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror 2>&1 | %FileCheck %s
+
+// Traits in the session: declaration, impls, both dispatch spellings, and
+// JIT'd generic dispatch — plus the two interactive guarantees: sealed
+// builtins reject, and a *rejected batch retracts its impl* so the clean
+// re-declaration is not a conflict.
+
+pub trait Show { fn show(self : Self) -> i64; }
+// CHECK: Definition added.
+
+pub struct P { pub x : i64 }
+// CHECK: Definition added.
+
+impl Show for P { fn show(self : Self) -> i64 { self.x * 10 } }
+// CHECK: Definition added.
+
+P { x: 4 }.show()
+// CHECK: 40 : i64
+
+Show::show(P { x: 5 })
+// CHECK: 50 : i64
+
+fn poly<T : Show>(x : T) -> i64 { x.show() + 1 }
+// CHECK: Definition added.
+
+poly(P { x: 7 })
+// CHECK: 71 : i64
+
+impl Num for P { fn nope(self : Self) -> i64 { 0 } }
+// CHECK: `Num` is a built-in trait and cannot be implemented
+
+pub struct Q { pub y : i64 }
+// CHECK: Definition added.
+
+// A body error rejects the whole batch — including the impl registration…
+impl Show for Q { fn show(self : Self) -> i64 { nonexistent(self.y) } }
+// CHECK: unknown function `nonexistent`
+
+// …so declaring it again is a fresh impl, not a conflict.
+impl Show for Q { fn show(self : Self) -> i64 { self.y } }
+// CHECK: Definition added.
+
+poly(Q { y: 3 })
+// CHECK: 4 : i64
+
+Q { y: 6 }.show()
+// CHECK: 6 : i64

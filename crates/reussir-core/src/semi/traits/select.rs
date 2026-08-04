@@ -15,6 +15,75 @@
 //! fulfillment pass before selection runs, but a `Sync` clause reached
 //! *through* where-clause recursion has no structural hook here and reports
 //! no-impl; wiring the verdict into selection lands with dispatch.
+//!
+//! # Operational semantics
+//!
+//! Selection derives the judgment
+//!
+//! ```text
+//!     Δ; D ⊢ₖ G ⇓ ε
+//! ```
+//!
+//! read: under the assumption environment Δ (each in-scope generic's
+//! declared bounds — the [`ParamEnv`]) and the impl database D, the goal
+//! `G = T⟨τ̄⟩` (with `τ̄₀` the `Self` type) is discharged with evidence ε at
+//! remaining proof depth k. The two failure outcomes are `⊥(G′)` — no
+//! derivation, blamed on the *deepest* failing sub-goal `G′` (the root
+//! cause a diagnostic names) — and `↯(G)` when k is exhausted
+//! ([`SELECT_DEPTH_LIMIT`]; the code counts up, k here counts down).
+//!
+//! Notation: `ᾱ. I` is impl I binding its own generics ᾱ; `x̄ ≐_v ȳ ⇝ θ` is
+//! one-way matching — [`unify_args`] with vars = v, every other generic
+//! rigid; `head(τ)` is the [`head_key`] constructor and `D[T, h]`
+//! the candidate bucket; `B⟨ῡ⟩ ⇝* T⟨τ̄⟩ ∣ σ̄` says instantiating each
+//! declaring trait's binder along the super-edge path σ̄ (possibly empty)
+//! rewrites `B⟨ῡ⟩` to exactly `T⟨τ̄⟩`, and `π(σ̄)(ε)` wraps ε in one
+//! [`Evidence::Super`] hop per edge (identity for σ̄ = ∅).
+//!
+//! ```text
+//!   τ̄₀ = g      Δ(g)(i) = B      B⟨g⟩ ⇝* T⟨τ̄⟩ ∣ σ̄
+//!  ──────────────────────────────────────────────────────────── (assume)
+//!   Δ; D ⊢ₖ T⟨τ̄⟩ ⇓ π(σ̄)(Param(g, i))
+//!
+//!   head(τ̄₀) = h      (ᾱ. I) ∈ D[T, h]      I.args ≐_ᾱ τ̄ ⇝ θ
+//!   Δ; D ⊢ₖ₋₁ θW ⇓ εᵂ   for each W ∈ I.where, in order
+//!  ──────────────────────────────────────────────────────────── (impl)
+//!   Δ; D ⊢ₖ T⟨τ̄⟩ ⇓ Impl(I, θᾱ, ε̄)
+//!
+//!   head(τ̄₀) = h      (ᾱ. I) ∈ D[S, h]      S ≠ T      S ⊴⁺ T
+//!   I.self ≐_ᾱ τ̄₀ ⇝ θ      Δ; D ⊢ₖ₋₁ S⟨θ I.args⟩ ⇓ ε₀
+//!   S⟨θ I.args⟩ ⇝* T⟨τ̄⟩ ∣ σ̄
+//!  ──────────────────────────────────────────────────────────── (super)
+//!   Δ; D ⊢ₖ T⟨τ̄⟩ ⇓ π(σ̄)(ε₀)
+//!
+//!  ──────────────────── (overflow)
+//!   Δ; D ⊢₀ G ⇓ ↯(G)
+//! ```
+//!
+//! What turns the rules into an *algorithm*:
+//!
+//! * **Commit, don't backtrack.** Coherence guarantees at most one impl in
+//!   `D[T, h]` matches a given τ̄, so the first (impl) candidate whose match
+//!   succeeds is *the* candidate, and a failing where-premise is a hard
+//!   `⊥(θW′)` carrying the inner goal — never a cue to try the next
+//!   candidate. Only (super) probes restfully: a `⊥` sub-derivation moves
+//!   on to the next sub-impl, but `↯` aborts the whole search — a
+//!   depth-relative failure must not be relabeled "no impl".
+//! * **Rule order.** A bare-generic self (no head) can only be proved by
+//!   (assume) — blanket impls are rejected, so no impl applies; `Hole` and
+//!   `Bottom` have no head and no rule, failing as `⊥(G)` (the fulfillment
+//!   caller defers holes before selecting). A ground-headed self tries
+//!   (impl) before (super). Assumptions scan in declaration order and
+//!   (super) candidates in impl-registration order; the first derivation
+//!   wins, and coherence makes (impl) itself order-independent — the scan
+//!   orders only pin the (assume)/(super) tie-breaks deterministically.
+//! * **Memoization.** Derivations cache per session keyed on G — except
+//!   `↯`, which is relative to the depth it was probed at and would poison
+//!   shallower re-queries of the same goal.
+//!
+//! Fulfillment's per-obligation judgment (`semi/fulfill.rs`) delegates its
+//! (param) and (impl) outcomes to this one, and monomorphization re-runs it
+//! with Δ = ∅ to rewrite `TraitCall`s (`full/mono.rs`).
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -58,7 +127,8 @@ impl<'a, 'tcx> SelectCtxt<'a, 'tcx> {
         }
     }
 
-    /// Discharge an obligation, producing evidence.
+    /// Discharge an obligation, producing evidence — the entry point of the
+    /// judgment `Δ; D ⊢ G ⇓ ε` (module docs).
     pub fn select(
         &mut self,
         obligation: &Obligation<'tcx>,
@@ -67,6 +137,7 @@ impl<'a, 'tcx> SelectCtxt<'a, 'tcx> {
         self.select_trait(goal, 0)
     }
 
+    /// The (overflow) guard and the memo around one derivation step.
     fn select_trait(
         &mut self,
         goal: &TraitRef<'tcx>,
@@ -88,6 +159,8 @@ impl<'a, 'tcx> SelectCtxt<'a, 'tcx> {
         result
     }
 
+    /// One derivation step: (assume) for a bare-generic self, else (impl)
+    /// then (super), in the committed order the module docs lay out.
     fn select_uncached(
         &mut self,
         goal: &TraitRef<'tcx>,
@@ -198,9 +271,9 @@ impl<'a, 'tcx> SelectCtxt<'a, 'tcx> {
         Err(SelectError::NoImpl(goal.clone()))
     }
 
-    /// Prove a bare-generic goal from the environment: a declared bound that
-    /// *is* the goal yields [`Evidence::Param`]; a bound whose super-closure
-    /// contains the goal projects up from it.
+    /// The (assume) rule: a declared bound that *is* the goal yields
+    /// [`Evidence::Param`] (σ̄ = ∅); a bound whose super-closure reaches the
+    /// goal projects up from it.
     fn prove_by_assumption(
         &mut self,
         g: GenericId,
@@ -225,11 +298,12 @@ impl<'a, 'tcx> SelectCtxt<'a, 'tcx> {
             })
     }
 
-    /// Project `base` — evidence that the fully-instantiated `base_ref`
-    /// holds — up the super-trait closure to `goal`, one [`Evidence::Super`]
-    /// hop per edge. Args are carried through each hop by instantiating the
-    /// declaring trait's binder, so a multi-parameter super-reference stays
-    /// faithful.
+    /// The reach relation `base_ref ⇝* goal ∣ σ̄` with its evidence action
+    /// `π(σ̄)`: project `base` — evidence that the fully-instantiated
+    /// `base_ref` holds — up the super-trait closure to `goal`, one
+    /// [`Evidence::Super`] hop per edge. Args are carried through each hop
+    /// by instantiating the declaring trait's binder, so a multi-parameter
+    /// super-reference stays faithful.
     fn project_super(
         &self,
         base_ref: &TraitRef<'tcx>,

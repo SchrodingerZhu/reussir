@@ -1,0 +1,16 @@
+// The pure user: implements nothing — names the extern traits in a bound,
+// dispatches through impls it never wrote, and observes the digests.
+
+pub fn hash_of<T: hashkit::Hash>(v: T) -> u64 {
+    v.hash(hashables::djb2::new()).finish()
+}
+
+#[main]
+pub fn entry() {
+    console::print_u64(hash_of(hashables::geo::Point { x: 1, y: 2 }));
+    console::print_u64(hash_of(hashables::geo::Point { x: 3, y: 4 }));
+    console::print_u64(hash_of(hashables::geo::Pair {
+        a: hashables::geo::Point { x: 3, y: 4 },
+        b: hashables::geo::Point { x: 5, y: 6 },
+    }));
+}
