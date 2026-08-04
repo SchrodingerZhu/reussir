@@ -295,6 +295,9 @@ pub enum SwitchCases<'tcx> {
 /// [`trait_texts`]: crate::semi::hir::trait_texts
 #[derive(Clone, Debug)]
 pub struct TraitText<'tcx> {
+    /// The trait's def — identity for interface filtering and reload; not
+    /// itself printed (the path is).
+    pub def: DefId,
     pub is_pub: bool,
     pub path: String,
     /// Binders; `[0]` is the implicit `Self`. Names are display-only.
@@ -322,6 +325,8 @@ pub struct TraitMethodText<'tcx> {
 /// (`args[0]` = the self type) and method paths in trait-method order.
 #[derive(Clone, Debug)]
 pub struct ImplText<'tcx> {
+    /// The implemented trait's def (identity only, like [`TraitText::def`]).
+    pub trait_def: DefId,
     pub generics: Vec<(GenericId, Option<String>)>,
     pub trait_path: String,
     pub args: Vec<Ty<'tcx>>,
@@ -359,6 +364,7 @@ pub fn trait_texts<'tcx>(
                 .map(|&(name, g)| (g, Some(resolver.resolve(name).to_string()))),
         );
         traits.push(TraitText {
+            def: t.def,
             is_pub: t.visibility == crate::surface::Visibility::Public,
             path: path_of(t.def),
             generics,
@@ -394,6 +400,7 @@ pub fn trait_texts<'tcx>(
             continue;
         }
         impls.push(ImplText {
+            trait_def: db.trait_def(imp.trait_ref.trait_id).def,
             generics: imp.generics.iter().map(|&g| (g, None)).collect(),
             trait_path: path_of(db.trait_def(imp.trait_ref.trait_id).def),
             args: imp.trait_ref.args.clone(),

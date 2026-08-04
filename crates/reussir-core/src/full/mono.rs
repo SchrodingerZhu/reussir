@@ -97,6 +97,22 @@ pub struct MonoInput<'a, 'tcx> {
     /// The dependency-interface tables (`--extern`); empty defaults for a
     /// single-package compilation.
     pub externs: MonoExterns<'a, 'tcx>,
+    /// The trait tables `TraitCall` resolution and the export closure read;
+    /// default-empty inputs monomorphize exactly as before trait items
+    /// existed (dumps predating trait serialization keep their output).
+    pub traits: MonoTraits<'a, 'tcx>,
+}
+
+/// The trait side of a [`MonoInput`]: the session registry (for resolving
+/// `TraitCall`s and shipping impls) and the per-generic bound environment
+/// (for shipping bound-referenced traits).
+#[derive(Default, Clone, Copy)]
+pub struct MonoTraits<'a, 'tcx> {
+    /// `None` for inputs with no trait tables — a parsed dump until the
+    /// extern-reload pass rebuilds a registry from its trait items.
+    pub db: Option<&'a crate::semi::traits::TraitDb<'tcx>>,
+    /// Declared bounds per generic, dense by `GenericId`.
+    pub env: Option<&'a [crate::semi::ctxt::GenericInfo]>,
 }
 
 /// What loaded dependency interfaces contribute to monomorphization: the
@@ -146,6 +162,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 strings: &self.extern_strings,
                 ffi_imports: Some(&self.extern_ffi_imports),
                 ffi_preludes: &self.extern_ffi_preludes,
+            },
+            traits: MonoTraits {
+                db: Some(&self.traits),
+                env: Some(&self.generics),
             },
         }
     }
@@ -1895,6 +1915,7 @@ mod tests {
                 ffi_preludes: &parsed.ffi_preludes,
                 strings: parsed.strings.clone(),
                 externs: MonoExterns::default(),
+                traits: MonoTraits::default(),
             };
             let (mir1, r1) = monomorphize(&input);
             assert!(r1.is_empty(), "{r1:#?}");
@@ -2004,6 +2025,7 @@ mod tests {
                 ffi_preludes: &hir.ffi_preludes,
                 strings: hir.strings.clone(),
                 externs: MonoExterns::default(),
+                traits: MonoTraits::default(),
             };
             let (mir_resumed, r_resumed) = monomorphize(&resumed_input);
             assert!(r_resumed.is_empty(), "resumed mono reports: {r_resumed:#?}");
