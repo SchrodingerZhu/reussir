@@ -69,13 +69,145 @@ Both directions reduce to reference counts:
   mirroring the compiler's box header. `rc.dec` lowers to a call of the
   per-instance drop hook `<inst>_ffi_drop`, a generated Rust function that
   takes the value and drops it.
-* **Rust holding a Reussir value** (`Vec<List>`): the element is a generated
-  `#[repr(transparent)]` pointer wrapper named by the instance's v0 symbol,
-  whose `Clone`/`Drop` call compiler-emitted glue functions —
-  `<inst>_ffi_acquire` / `<inst>_ffi_release`, tiny Reussir functions
-  containing a single `rc.inc` / `rc.dec` (so fused headers, atomicity, and
-  drop dispatch are handled by the compiler's own lowering, uniformly for
-  structs and enums).
+* **Rust holding a Reussir value** (`Vec<List>`): the element is rendered as
+  `reussir_rt::bridge::Bridge<Inner>`. `Inner` is the generated
+  `#[repr(transparent)]` one-pointer wrapper named by the instance's v0
+  symbol. It remains the pointer's owner: its `Clone`/`Drop` call
+  compiler-emitted `<inst>_ffi_acquire` / `<inst>_ffi_release` functions,
+  tiny Reussir functions containing a single `rc.inc` / `rc.dec` (so fused
+  headers, atomicity, and drop dispatch are handled by the compiler's own
+  lowering, uniformly for structs and enums). `Bridge` is another transparent
+  layer; its `Clone` delegates to `Inner` and ordinary field destruction drops
+  `Inner`. It stores no descriptor, callback, or additional pointer.
+
+## Comparison bridges for foreign containers
+
+Rust containers place standard-trait bounds on their elements. For example,
+`std::collections::BTreeSet<T>` requires Rust's `Ord`, while a shared Reussir
+record implements Reussir's `core::cmp::Ord`. The two traits are distinct
+across the language boundary. Emitting every standard-trait adapter directly
+on every generated pointer wrapper would duplicate the generic Rust-facing
+part of the bridge in each PolyFFI texture.
+
+The runtime therefore owns a transparent adapter and four local behavior
+traits:
+
+```rust
+pub trait PartialEqBridge {
+    fn eq_bridge(&self, other: &Self) -> bool;
+}
+pub trait EqBridge: PartialEqBridge {}
+pub trait PartialOrdBridge: PartialEqBridge {
+    fn partial_cmp_bridge(&self, other: &Self) -> Option<std::cmp::Ordering>;
+}
+pub trait OrdBridge: EqBridge + PartialOrdBridge {
+    fn cmp_bridge(&self, other: &Self) -> std::cmp::Ordering;
+}
+
+#[repr(transparent)]
+pub struct Bridge<T>(T);
+
+impl<T: PartialEqBridge> PartialEq for Bridge<T> { /* delegate to T */ }
+impl<T: EqBridge> Eq for Bridge<T> {}
+impl<T: PartialOrdBridge> PartialOrd for Bridge<T> { /* delegate to T */ }
+impl<T: OrdBridge> Ord for Bridge<T> { /* delegate to T */ }
+```
+
+PolyFFI emits the Reussir-specific bridge-trait implementations on `Inner`,
+which is local to the generated texture; `reussir-rt` owns `Bridge` and the
+standard Rust implementations. This division satisfies Rust's coherence rules
+without a runtime trait object. `Bridge<Inner>` is still exactly one pointer.
+It does not use `reussir_rt::rc::Rc<Marker>`: that type owns a Rust `RcBox` and
+would run the wrong payload destruction for a compiler-owned Reussir record.
+
+### Uniform rendering and bound discovery
+
+A shared Reussir ground type is rendered uniformly as `Bridge<Inner>` at every
+position in a texture, whether or not a particular position supplied the
+comparison requirement. Thus an import such as
+
+```rust
+fn insert<T: Ord>(set: BTreeSet<T>, value: T) -> BTreeSet<T>
+```
+
+has one consistent Rust shape:
+
+```rust
+fn insert(
+    set: RuntimeBTreeSet<Bridge<KeyInner>>,
+    value: Bridge<KeyInner>,
+) -> RuntimeBTreeSet<Bridge<KeyInner>>
+```
+
+When rendering an opaque FFI record, the compiler matches its formal generic
+parameters to the ground arguments and examines their declared bounds.
+Comparison lang items are found through trait identity and supertrait
+implication, not by spelling. Requirements from repeated appearances of the
+same shared-record instance are unioned before its inner declaration is
+rendered. Primitive arguments keep their native Rust spelling and use Rust's
+built-in comparison implementations; they are never wrapped in `Bridge`.
+
+The comparison tower is normalized and only the necessary foreign entries are
+emitted:
+
+| Reussir requirement | generated behavior on `Inner` | foreign entries |
+|---------------------|--------------------------------|-----------------|
+| `PartialEq` | `PartialEqBridge` | `_ffi_eq` |
+| `Eq` | `PartialEqBridge`, `EqBridge` | `_ffi_eq` |
+| `PartialOrd` | `PartialEqBridge`, `PartialOrdBridge` | `_ffi_eq`, `_ffi_partial_cmp` |
+| `Ord` | all four bridge traits | `_ffi_eq`, `_ffi_cmp` |
+
+For `Ord`, `PartialOrdBridge::partial_cmp_bridge` returns `Some(cmp_bridge(...))`,
+so there is no separate partial-order entry. `EqBridge` is marker-only, matching
+Reussir's `Eq`; equality is supplied by `PartialEq`. A missing ground Reussir
+implementation is diagnosed during monomorphization, before the generated Rust
+is handed to `rustc`.
+
+### Borrowed comparison entries
+
+Rust's comparison methods borrow both operands, whereas Reussir's comparison
+methods consume shared values. Each generated entry therefore accepts two raw
+RC handles borrowed from `Inner`, performs exactly two compiler-side acquires
+(`rc.inc`, one per operand), and directly calls a synthesized semantic adapter.
+The adapter consumes those acquired values under the ordinary Reussir ownership
+rules and returns a scalar ABI code. The entry performs no matching release:
+the selected method and ownership lowering settle the two acquired references.
+There are no Rust-side clones, acquire callbacks, dictionaries, or allocations
+on this path, and optimized builds can inline through the linked texture.
+
+The scalar contracts are stable and independent of enum layout:
+
+* `_ffi_eq` returns `u8` zero or one after calling the selected
+  `PartialEq::eq` implementation;
+* `_ffi_cmp` calls `Ord::cmp` and classifies `Ordering` by variant name as
+  `Less = -1`, `Equal = 0`, `Greater = 1` in an `i8`;
+* `_ffi_partial_cmp` makes one foreign entry call and classifies through
+  `PartialEq::eq`, then `PartialOrd::lt`, then `PartialOrd::gt` as needed. Its
+  `i8` codes are `Less = -1`, `Equal = 0`, `Greater = 1`, and
+  `Incomparable = 2`; Rust maps the final code to `Option<Ordering>`.
+
+The semantic adapter is an ordinary monomorphic MIR function. Consequently its
+trait calls use the same selection, ownership, optimization, and diagnostics as
+source-level Reussir calls. The borrowed entry itself is small and direct: two
+increments, one adapter call, and one scalar return.
+
+### Comparison implementations from another package
+
+No comparison dictionary or global instance registry is added for PolyFFI.
+Suppose package A defines a public shared `A::Key` and implements the core
+comparison traits, while only package B instantiates
+`BTreeSet<A::Key>`. A's RRI already exports the relevant impl metadata and
+method prototypes or generic bodies. When B loads that interface, its ordinary
+trait database reconstructs those impls. Bridge synthesis in B performs normal
+ground trait selection, selects A's implementation, and enqueues the same
+method symbol an ordinary trait call would use.
+
+A ground implementation method resolves from A's linked archive; an exported
+generic body can be instantiated in B. `rene` supplies the transitive RRI and
+archive dependency cone, while a direct `rrc` invocation must pass the
+corresponding `--extern` interface and `--link-lib` archive. Bridge entry names
+derive from the ground record symbol and use coalescible linkage, so identical
+downstream bridge generation does not create a second instance mechanism.
 
 ## The boundary convention
 
@@ -112,6 +244,9 @@ valid v0 mangling is a prefix of another:
 | `<fn instance>_ffi`         | the Rust-side boundary wrapper          |
 | `<record instance>_ffi_drop`| an opaque instance's drop hook          |
 | `<record instance>_ffi_acquire` / `_ffi_release` | Reussir rc glue    |
+| `<record instance>_ffi_eq`  | borrowed equality entry (`u8`)          |
+| `<record instance>_ffi_partial_cmp` | borrowed partial classifier (`i8`) |
+| `<record instance>_ffi_cmp` | borrowed total-order entry (`i8`)       |
 
 ## Boundary types (v1)
 
@@ -161,11 +296,15 @@ gather polyffi modules yet and rejects programs containing them.
   (`ffi_attr`, `validate_ffi_record`, `validate_ffi_function`,
   `FfiPrelude`/`FfiImport` tables, `RecordFields::Opaque`);
 * rendering: `crates/reussir-core/src/full/ffi.rs` (Rust spellings,
-  classification, wrapper/drop textures), driven per instance from
-  `full/mono.rs`; MIR carries `ffi_imports`/`ffi_textures`/`ffi_rc_glue`
-  and `RecordLayout::Opaque`, round-tripping through both textual IRs;
+  comparison-bound discovery, `Bridge<Inner>` declarations,
+  wrapper/drop textures), driven per instance from `full/mono.rs` (ground
+  comparison selection and semantic adapters); MIR carries
+  `ffi_imports`/`ffi_textures`/`ffi_rc_glue`/`ffi_trait_glue` and
+  `RecordLayout::Opaque`, round-tripping through both textual IRs;
+* runtime adapters: `crates/reussir-rt/src/bridge.rs` (the four behavior
+  traits and transparent `Bridge<T>` standard-trait implementations);
 * codegen: `crates/reussir-codegen/src/lower/{mod,ty,expr}.rs` (rc'd
-  `ffi_object` types, polyffi/trampoline emission, glue and hook
-  functions);
+  `ffi_object` types, polyffi/trampoline emission, lifecycle glue, borrowed
+  comparison entries, and hook functions);
 * MLIR: `reussir.trampoline` import direction materializes the native
   marshaling body (`lib/Conversion/BasicOpsLowering/BasicOpsLowering.cpp`).
