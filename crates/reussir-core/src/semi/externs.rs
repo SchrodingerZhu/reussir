@@ -351,6 +351,18 @@ impl<'tcx> Elaborator<'_, 'tcx> {
             });
         }
 
+        // Lang markers: bind the loaded declarations into the session
+        // registry (kind re-derived from what the def actually is here).
+        for (&pdef, &item) in &parsed.lang {
+            let def = defs[pdef.0 as usize];
+            let actual = if self.traits.trait_by_def(def).is_some() {
+                crate::semi::lang::LangItemKind::Trait
+            } else {
+                crate::semi::lang::LangItemKind::Record
+            };
+            self.declare_lang(item, def, actual, None);
+        }
+
         for func in &parsed.funcs {
             let def = defs[func.def.0 as usize];
             let generics =
@@ -813,9 +825,11 @@ mod tests {
         let bounds = elab.bound_names();
         let (traits, impls) =
             crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+        let lang = elab.lang.declared_by_def();
         let text = Printer::new(&elab.defs, elab.resolver)
             .with_bounds(&bounds)
             .with_traits(&traits, &impls)
+            .with_lang(&lang)
             .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
         crate::semi::hir::build::parse_program(tcx, &text).expect("re-parse")
     }
@@ -868,6 +882,23 @@ mod tests {
             elab.run_package(&files);
             f(&elab);
         });
+    }
+
+    /// `#[lang]` markers travel through the interface: the consumer's
+    /// registry binds the dependency's declaration, locations included.
+    #[test]
+    fn lang_items_reload_from_interfaces() {
+        use crate::semi::lang::LangItem;
+        check_with_dep(
+            r#"#[lang("partial_eq")] pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }"#,
+            &[(&[], "pub fn nop() -> i64 { 0 }")],
+            |elab| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+                let def = elab.lang.get(LangItem::PartialEq).expect("reloaded");
+                assert_eq!(elab.sym(elab.defs.path(def).name()), "PartialEq");
+                assert!(elab.lang_item_site(LangItem::PartialEq).is_some());
+            },
+        );
     }
 
     const TRAIT_DEP: &str = "pub trait Show { fn show(self: Self) -> i64; }\n\
@@ -1072,7 +1103,7 @@ mod tests {
                 let (_, g) = api.generics[0];
                 assert_eq!(
                     elab.generic_bounds(g),
-                    [elab.builtins.num],
+                    [elab.lang.num],
                     "reloaded binder carries the serialized bound"
                 );
             },
@@ -1118,7 +1149,7 @@ mod tests {
                 let (_, g) = both.generics[0];
                 assert_eq!(
                     elab.generic_bounds(g),
-                    [elab.builtins.num, elab.builtins.sync],
+                    [elab.lang.num, elab.lang.sync],
                     "both bounds reload, in declaration order"
                 );
             },

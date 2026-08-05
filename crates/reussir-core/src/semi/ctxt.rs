@@ -395,7 +395,7 @@ pub struct Elaborator<'a, 'tcx> {
     /// Resolves the surface AST's interned token keys back into source text.
     pub resolver: &'a dyn Resolver<TokenKey>,
     pub traits: TraitDb<'tcx>,
-    pub builtins: Builtins,
+    pub lang: crate::semi::lang::LangItems,
     /// Resolution registry: item `DefId`s and their fully-qualified paths.
     pub defs: DefTable,
     /// Frequency-and-recency weight per name, accumulated as names resolve
@@ -502,6 +502,7 @@ pub struct Checkpoint {
     pub(super) imports: usize,
     pub(super) elaborated: usize,
     pub(super) reports: usize,
+    pub(super) lang: usize,
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -515,7 +516,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let mut defs = DefTable::new();
         let mut traits = TraitDb::new();
         let mut handle = interner.clone();
-        let builtins = Builtins::register(&mut traits, &mut defs, &mut handle, tcx);
+        let fallback = Builtins::register(&mut traits, &mut defs, &mut handle, tcx);
+        let lang = crate::semi::lang::LangItems::new(fallback);
         let self_name = interner.intern("Self");
         Elaborator {
             tcx,
@@ -523,7 +525,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             defs,
             frecency: Frecency::new(),
             traits,
-            builtins,
+            lang,
             trampolines: Vec::new(),
             transform_anchors: Vec::new(),
             transform_scripts: Vec::new(),
@@ -1282,6 +1284,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             ffi_preludes: self.ffi_preludes.len(),
             imports: self.imports.len(),
             elaborated: self.elaborated.len(),
+            lang: self.lang.len(),
             reports: self.reports.len(),
         }
     }
@@ -1305,6 +1308,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.ffi_preludes.truncate(cp.ffi_preludes);
         self.imports.truncate(cp.imports);
         self.elaborated.truncate(cp.elaborated);
+        self.lang.truncate(cp.lang);
         self.reports.truncate(cp.reports);
     }
 
@@ -1357,6 +1361,77 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// then populate record fields, check function bodies (each pass restores
     /// the owning item's file/module scope), and collect trampoline roots per
     /// file.
+    /// The `#[lang("…")]` marker on an item, validated: one string
+    /// argument naming a compiler-known lang item.
+    fn lang_attr(
+        &mut self,
+        attrs: &[surface::Attribute],
+        span: Option<Span>,
+    ) -> Option<crate::semi::lang::LangItem> {
+        let attr = attrs.iter().find(|a| self.sym(a.name) == "lang")?;
+        let [name] = attr.literals.as_slice() else {
+            self.error(
+                span,
+                "`#[lang]` takes exactly one string argument, e.g. `#[lang(\"partial_eq\")]`",
+            );
+            return None;
+        };
+        let Some(item) = crate::semi::lang::LangItem::from_name(name) else {
+            self.error(span, format!("unknown lang item `{name}`"));
+            return None;
+        };
+        Some(item)
+    }
+
+    /// Bind a scanned declaration to its lang item: kind check, then a
+    /// duplicate check against the registry (first declaration wins).
+    pub(super) fn declare_lang(
+        &mut self,
+        item: crate::semi::lang::LangItem,
+        def: DefId,
+        actual: crate::semi::lang::LangItemKind,
+        span: Option<Span>,
+    ) {
+        use crate::semi::lang::LangItemKind;
+        if item.kind() != actual {
+            let want = match item.kind() {
+                LangItemKind::Trait => "a trait",
+                LangItemKind::Record => "a struct or enum",
+            };
+            self.error(span, format!("lang item `{}` must be {want}", item.name()));
+            return;
+        }
+        if let Err(prior) = self.lang.declare(item, def) {
+            let shown = self.defs.path(prior).display(self.resolver);
+            self.error(
+                span,
+                format!(
+                    "lang item `{}` is already declared by `{shown}`",
+                    item.name()
+                ),
+            );
+        }
+    }
+
+    /// The declaration site of a lang item, for diagnostics, debug info,
+    /// and the LSP: the file and span of whichever declaration the
+    /// registry holds. `None` for fallback-registered items — they have no
+    /// source until their declarations live in `core`.
+    pub fn lang_item_site(
+        &self,
+        item: crate::semi::lang::LangItem,
+    ) -> Option<(FileId, Option<Span>)> {
+        let def = self.lang.get(item)?;
+        if let Some(tid) = self.traits.trait_by_def(def) {
+            let t = self.traits.trait_def(tid);
+            return Some((t.file, t.span));
+        }
+        if let Some(rec) = self.records.get(&def) {
+            return Some((rec.file, rec.span));
+        }
+        self.functions.get(&def).map(|f| (f.file, f.span))
+    }
+
     fn run_files(&mut self, files: &[(FileId, Vec<TokenKey>, &surface::Program)]) {
         // This batch's record fields are not populated yet, so `Arc` wf
         // checks (which need member types for the structural `Sync` half)
@@ -1390,13 +1465,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     surface::StmtKind::Record(rec) => {
                         self.validate_transform_anchor(&attrs, None);
                         let ffi = self.validate_ffi_record(&rec, ffi, span);
-                        records.push((rec, span, scope, ffi));
+                        let lang = self.lang_attr(&attrs, span);
+                        records.push((rec, span, scope, ffi, lang));
                     }
                     surface::StmtKind::Function(func) => {
                         let anchor =
                             self.validate_transform_anchor(&attrs, Some(func.body.is_some()));
                         let is_import = self.validate_ffi_function(&func, ffi, span);
                         let is_main = self.validate_main_attr(&attrs, &func, span);
+                        // No function-kinded lang item exists yet (intrinsic
+                        // prototypes arrive with the `core` scaffolding).
+                        if let Some(item) = self.lang_attr(&attrs, span) {
+                            let want = match item.kind() {
+                                crate::semi::lang::LangItemKind::Trait => "a trait",
+                                crate::semi::lang::LangItemKind::Record => "a struct or enum",
+                            };
+                            self.error(span, format!("lang item `{}` must be {want}", item.name()));
+                        }
                         functions.push((func, span, scope, anchor, is_import, is_main));
                     }
                     surface::StmtKind::ExternTrampoline(t) => {
@@ -1443,7 +1528,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     surface::StmtKind::Trait(td) => {
                         self.validate_transform_anchor(&attrs, None);
                         self.reject_ffi_attr(ffi, span);
-                        trait_decls.push((td, span, scope));
+                        let lang = self.lang_attr(&attrs, span);
+                        trait_decls.push((td, span, scope, lang));
                     }
                     // Foreign preludes register during this scan (like
                     // bindings) so they apply file-wide regardless of order.
@@ -1477,32 +1563,41 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // have a def and a TraitDb entry.
         let trait_ids: Vec<Option<TraitId>> = trait_decls
             .iter()
-            .map(|(td, span, scope)| {
+            .map(|(td, span, scope, lang)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_trait_stub(td, *span)
+                let id = self.scan_trait_stub(td, *span);
+                if let (Some(item), Some(id)) = (lang, id) {
+                    let def = self.traits.trait_def(id).def;
+                    self.declare_lang(*item, def, crate::semi::lang::LangItemKind::Trait, *span);
+                }
+                id
             })
             .collect();
         let record_defs: Vec<Option<DefId>> = records
             .iter()
-            .map(|(rec, span, scope, ffi)| {
+            .map(|(rec, span, scope, ffi, lang)| {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
-                self.scan_record(rec, ffi.clone(), *span)
+                let def = self.scan_record(rec, ffi.clone(), *span);
+                if let (Some(item), Some(def)) = (lang, def) {
+                    self.declare_lang(*item, def, crate::semi::lang::LangItemKind::Record, *span);
+                }
+                def
             })
             .collect();
         // Phase C, split: every trait's own binder first (a supertrait's
         // arity gate reads the super's params, which a same-batch
         // later-declared super would otherwise still be missing), then
         // supertraits and member signatures (which need the record stubs).
-        for ((td, span, scope), id) in trait_decls.iter().zip(&trait_ids) {
+        for ((td, span, scope, _), id) in trait_decls.iter().zip(&trait_ids) {
             if let Some(id) = id {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
                 self.populate_trait_params(td, *id, *span);
             }
         }
-        for ((td, span, scope), id) in trait_decls.iter().zip(&trait_ids) {
+        for ((td, span, scope, _), id) in trait_decls.iter().zip(&trait_ids) {
             if let Some(id) = id {
                 self.set_current_file(scope.file);
                 self.defs.set_module(scope.module.to_vec());
@@ -1601,7 +1696,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let record_defs: Vec<DefId> = records
             .iter()
             .zip(record_defs)
-            .filter_map(|((rec, _, _, _), def)| Some((rec, def?)))
+            .filter_map(|((rec, _, _, _, _), def)| Some((rec, def?)))
             .map(|(rec, def)| {
                 self.populate_record(rec, def);
                 def

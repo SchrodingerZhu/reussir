@@ -60,9 +60,10 @@ Span: raw::Span = "[" <s:"int"> ".." <e:"int"> "]" => (raw::small_u32(&s), raw::
 ItemLoc: (u32, Option<raw::Span>) = "in" <f:"int"> <sp:Span?> => (raw::small_u32(&f), sp);
 
 RecordDecl: raw::Record = {
-    <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <lang:LangAttr?> <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <ms:Comma<Member>> "}" ";"
     => raw::Record {
+        lang,
         is_pub: p.is_some(),
         default_cap,
         repr_fixed: false,
@@ -74,9 +75,10 @@ RecordDecl: raw::Record = {
         body: raw::RecordBody::Compound(ms),
     },
     // An opaque `#[ffi]` record: `[shared] struct #Vec<$0> { ffi "path" };`.
-    <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <lang:LangAttr?> <p:"pub"?> <default_cap:DefaultCap> "struct" "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" "ffi" <rust:"quoted"> "}" ";"
     => raw::Record {
+        lang,
         is_pub: p.is_some(),
         default_cap,
         repr_fixed: false,
@@ -88,9 +90,10 @@ RecordDecl: raw::Record = {
         body: raw::RecordBody::Opaque(unescape_debug_str(rust).into_owned()),
     },
     // Only an enum may carry the `fixed` marker (`#[repr(fixed)]`).
-    <p:"pub"?> <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
+    <lang:LangAttr?> <p:"pub"?> <default_cap:DefaultCap> "enum" <fixed:"fixed"?> "#" <path:QPath> <generics:Generics?> <loc:ItemLoc?>
     "{" <vs:Comma<Variant>> "}" ";"
     => raw::Record {
+        lang,
         is_pub: p.is_some(),
         default_cap,
         repr_fixed: fixed.is_some(),
@@ -163,13 +166,19 @@ Func: raw::Func =
         body,
     };
 
+/// The `#[lang("…")]` marker: the item is a language item the loading
+/// compiler wires into checking.
+LangAttr: String = "#" "[" "lang" "(" <s:"quoted"> ")" "]" => s.into();
+
 /// A trait item. The binder's first generic is the implicit `Self`; the
 /// super-references carry their full argument lists (args[0] = `Self`), so
 /// rebuilding involves no convention.
 TraitDecl: raw::TraitItem =
-    <p:"pub"?> "trait" "#" <path:QPath> <generics:Generics> <supers:(":" <CommaPlus<SuperRef>>)?>
+    <lang:LangAttr?> <p:"pub"?> "trait" "#" <path:QPath> <generics:Generics>
+    <supers:(":" <CommaPlus<SuperRef>>)?>
     <loc:ItemLoc?> "{" <methods:TraitMethodSig*> "}"
     => raw::TraitItem {
+        lang,
         is_pub: p.is_some(),
         path,
         generics,
@@ -279,6 +288,7 @@ BoundItem: Bound = <first:Name> <rest:("::" <Name>)*> => {
 /// Source identifiers remain legal when they spell a transform directive.
 Name: &'input str = {
     <name:"ident"> => name,
+    "lang" => "lang",
     "trait" => "trait",
     "impl" => "impl",
     "transform" => "transform",
@@ -529,6 +539,7 @@ extern {
         "glue" => Token::Glue,
         "transform" => Token::Transform,
         "trait" => Token::Trait,
+        "lang" => Token::Lang,
         "impl" => Token::Impl,
         "transform_anchor" => Token::TransformAnchor,
         "interface" => Token::Interface,

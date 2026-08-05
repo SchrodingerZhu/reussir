@@ -110,7 +110,8 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
         .with_bounds(&bounds);
         let (traits, impls) = hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
-        let printer = printer.with_traits(&traits, &impls);
+        let lang = elab.lang.declared_by_def();
+        let printer = printer.with_traits(&traits, &impls).with_lang(&lang);
         let strings = elab.strings.entries();
         // The dump describes the consumer package: extern-imported records
         // are filtered out (extern bodies never joined `elaborated`).
@@ -186,12 +187,11 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         let (mut traits, mut impls) = hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
         traits.retain(|t| closure.traits.contains(&t.def));
         impls.retain(|i| closure.traits.contains(&i.trait_def));
-        let text = printer.with_traits(&traits, &impls).program(
-            &elab.elaborated,
-            &strings,
-            &elab.records,
-            &[],
-        );
+        let lang = elab.lang.declared_by_def();
+        let text = printer
+            .with_traits(&traits, &impls)
+            .with_lang(&lang)
+            .program(&elab.elaborated, &strings, &elab.records, &[]);
         return Ok(Produced::Text(text));
     }
     let (full, reports) = monomorphize(&elab.mono_input());
@@ -257,7 +257,8 @@ pub(crate) fn frontend<'c, 'tcx>(
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .with_bounds(&bounds);
                 let (traits, impls) = hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
-                let printer = printer.with_traits(&traits, &impls);
+                let lang = elab.lang.declared_by_def();
+                let printer = printer.with_traits(&traits, &impls).with_lang(&lang);
                 let strings = elab.strings.entries();
                 let text =
                     printer.program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
@@ -307,7 +308,8 @@ pub(crate) fn frontend<'c, 'tcx>(
                 .with_transform_metadata(&parsed.transform_anchors, &parsed.transform_scripts)
                 .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .with_bounds(&parsed.generic_bounds)
-                .with_traits(&parsed.traits, &parsed.impls);
+                .with_traits(&parsed.traits, &parsed.impls)
+                .with_lang(&parsed.lang);
                 let text = printer.program(
                     &parsed.funcs,
                     &parsed.strings,

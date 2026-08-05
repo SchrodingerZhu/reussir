@@ -565,6 +565,9 @@ impl Parser<'_> {
                             self.bump();
                             self.expect(StringLit);
                         }
+                    } else if self.at(StringLit) {
+                        // A bare string argument (`#[lang("partial_eq")]`).
+                        self.bump();
                     } else {
                         self.error("expected an attribute argument");
                         break;

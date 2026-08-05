@@ -52,6 +52,8 @@ pub enum Token<'a> {
     Transform,
     #[token("trait")]
     Trait,
+    #[token("lang")]
+    Lang,
     #[token("impl")]
     Impl,
     #[token("transform_anchor")]

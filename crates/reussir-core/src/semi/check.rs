@@ -332,12 +332,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         match c {
             Const::ConstInt(i) => {
                 let hole = self.infer.new_hole_ty();
-                self.register_bound(self.builtins.integral, hole, span);
+                self.register_bound(self.lang.integral, hole, span);
                 self.mk_expr(ExprKind::ConstInt(self.tcx.alloc(i.clone())), hole, span)
             }
             Const::ConstFloat(f) => {
                 let hole = self.infer.new_hole_ty();
-                self.register_bound(self.builtins.floating_point, hole, span);
+                self.register_bound(self.lang.floating_point, hole, span);
                 self.mk_expr(ExprKind::ConstFloat(self.tcx.alloc(f.clone())), hole, span)
             }
             Const::ConstString(s) => {
@@ -516,7 +516,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 let l = self.infer_expr(l);
                 let ty = l.ty;
-                self.register_bound(self.builtins.num, ty, span);
+                self.register_bound(self.lang.num, ty, span);
                 let r = self.check_expr(r, ty);
                 let aop = arith_op(op);
                 self.mk_expr(ExprKind::Arith(Box::new(l), aop, Box::new(r)), ty, span)
@@ -536,7 +536,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let l = self.infer_expr(l);
                 let r = self.check_expr(r, l.ty);
                 if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte) {
-                    self.register_bound(self.builtins.num, l.ty, span);
+                    self.register_bound(self.lang.num, l.ty, span);
                 }
                 let bool_ty = self.tcx.mk_bool();
                 let cop = cmp_op(op);
@@ -552,7 +552,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             UnaryOp::Negate => {
                 let e = self.infer_expr(e);
                 let ty = e.ty;
-                self.register_bound(self.builtins.num, ty, span);
+                self.register_bound(self.lang.num, ty, span);
                 self.mk_expr(ExprKind::Negate(Box::new(e)), ty, span)
             }
             UnaryOp::Not => {
@@ -580,8 +580,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // concrete non-numeric operand fails in the fulfillment loop with a
         // clear diagnostic, instead of surviving to a lowering-time crash.
         let src_ty = self.infer.shallow_resolve(e.ty);
-        self.register_bound(self.builtins.num, target, span);
-        self.register_bound(self.builtins.num, src_ty, span);
+        self.register_bound(self.lang.num, target, span);
+        self.register_bound(self.lang.num, src_ty, span);
 
         // When the source is still an unconstrained hole and the target is a
         // concrete numeric type, treat the cast as a type annotation and pin the
@@ -1863,7 +1863,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return self.poison(span);
             }
         };
-        self.register_bound(self.builtins.floating_point, elem, span);
+        self.register_bound(self.lang.floating_point, elem, span);
 
         let kind = func.kind();
         let want = kind.value_args() + 1;

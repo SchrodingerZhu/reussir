@@ -871,12 +871,14 @@ fn let_name(node: &ResolvedNode) -> Option<&ResolvedToken> {
 
 /// An outer item attribute such as `#[transform_anchor]` or
 /// `#[ffi(import)]`. Bare arguments land in `args`; `key = "value"` pairs
-/// land in `values` (strings decoded).
+/// land in `values`; bare string arguments (`#[lang("partial_eq")]`) land
+/// in `literals` (all strings decoded).
 #[derive(Clone, Debug)]
 pub struct Attribute {
     pub name: TokenKey,
     pub args: Vec<TokenKey>,
     pub values: Vec<(TokenKey, String)>,
+    pub literals: Vec<String>,
     pub span: Span,
 }
 
@@ -1073,6 +1075,7 @@ fn attribute_of(node: &ResolvedNode) -> Attribute {
         .collect();
     let mut args = Vec::new();
     let mut values = Vec::new();
+    let mut literals = Vec::new();
     let mut idx = 1;
     while idx < toks.len() {
         let tok = toks[idx];
@@ -1089,6 +1092,8 @@ fn attribute_of(node: &ResolvedNode) -> Attribute {
         } else {
             if tok.kind().is_ident_like() {
                 args.push(key(tok));
+            } else if tok.kind() == StringLit {
+                literals.push(unescape_string(tok.text()));
             }
             idx += 1;
         }
@@ -1097,6 +1102,7 @@ fn attribute_of(node: &ResolvedNode) -> Attribute {
         name: key(toks.first().expect("attribute name")),
         args,
         values,
+        literals,
         span: node_span(node),
     }
 }

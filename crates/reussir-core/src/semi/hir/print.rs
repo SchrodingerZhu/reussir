@@ -56,6 +56,9 @@ pub struct Printer<'a> {
     /// program's views); empty for dumps that carry none.
     trait_items: &'a [super::TraitText<'a>],
     impl_items: &'a [super::ImplText<'a>],
+    /// `#[lang("…")]` markers by def (source- or interface-declared items
+    /// only; the compiler's fallback tower never serializes).
+    lang: Option<&'a rustc_hash::FxHashMap<DefId, crate::semi::lang::LangItem>>,
     interface: Option<InterfaceEmit<'a>>,
 }
 
@@ -96,6 +99,7 @@ impl<'a> Printer<'a> {
             bounds: None,
             trait_items: &[],
             impl_items: &[],
+            lang: None,
             interface: None,
         }
     }
@@ -117,6 +121,7 @@ impl<'a> Printer<'a> {
             bounds: None,
             trait_items: &[],
             impl_items: &[],
+            lang: None,
             interface: None,
         }
     }
@@ -153,6 +158,15 @@ impl<'a> Printer<'a> {
     ) -> Self {
         self.trait_items = traits;
         self.impl_items = impls;
+        self
+    }
+
+    /// Attach the `#[lang]` marker map.
+    pub fn with_lang(
+        mut self,
+        lang: &'a rustc_hash::FxHashMap<DefId, crate::semi::lang::LangItem>,
+    ) -> Self {
+        self.lang = Some(lang);
         self
     }
 
@@ -330,9 +344,19 @@ impl<'a> Printer<'a> {
         text("<") + comma_sep(parts) + text(">")
     }
 
+    /// The `#[lang("…")] ` prefix of a marked def, or nothing.
+    fn lang_prefix(&self, def: DefId) -> Doc<'static> {
+        match self.lang.and_then(|m| m.get(&def)) {
+            Some(item) => text(format!("#[lang({:?})] ", item.name())),
+            None => Doc::Null,
+        }
+    }
+
     fn trait_item(&self, t: &super::TraitText<'_>) -> Doc<'static> {
         let vis = if t.is_pub { "pub " } else { "" };
-        let mut head = text(format!("{vis}trait #{}", t.path)) + self.text_binder(&t.generics);
+        let mut head = self.lang_prefix(t.def)
+            + text(format!("{vis}trait #{}", t.path))
+            + self.text_binder(&t.generics);
         if !t.supers.is_empty() {
             let supers: Vec<Doc<'static>> = t
                 .supers
@@ -399,7 +423,8 @@ impl<'a> Printer<'a> {
             RecordKind::EnumKind if r.repr_fixed => "enum fixed #",
             RecordKind::EnumKind => "enum #",
         };
-        let head = text(format!("{vis}{cap}{kind}{}", self.path(r.def)))
+        let head = self.lang_prefix(r.def)
+            + text(format!("{vis}{cap}{kind}{}", self.path(r.def)))
             + self.generics_binder(&r.ty_params, &r.regional_generics)
             + self.item_loc(r.file, r.span);
         head + text(" { ") + self.record_body(r) + text(" };")

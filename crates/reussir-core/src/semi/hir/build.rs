@@ -47,6 +47,8 @@ pub struct Parsed<'tcx> {
     pub traits: Vec<TraitText<'tcx>>,
     /// Impl items, print-ready (method paths unresolved strings).
     pub impls: Vec<ImplText<'tcx>>,
+    /// `#[lang("…")]` markers by (this dump's) def — records and traits.
+    pub lang: FxHashMap<DefId, crate::semi::lang::LangItem>,
     pub transform_anchors: Vec<DefId>,
     pub transform_scripts: Vec<TransformScript>,
     pub strings: Vec<(StringToken, String)>,
@@ -299,6 +301,28 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
     // Records first so their `DefId`s exist before function bodies reference them.
     let records: FxHashMap<DefId, Record<'tcx>> = raw.records.iter().map(|r| b.record(r)).collect();
     let traits: Vec<TraitText<'tcx>> = raw.traits.iter().map(|t| b.trait_text(t)).collect();
+    // Lang markers: resolve names against this compiler's item set — an
+    // unknown name means the dump came from a newer compiler.
+    let mut lang: FxHashMap<DefId, crate::semi::lang::LangItem> = FxHashMap::default();
+    let mut mark = |def: DefId, marker: &str| {
+        crate::semi::lang::LangItem::from_name(marker)
+            .map(|item| {
+                lang.insert(def, item);
+            })
+            .ok_or_else(|| {
+                format!("unknown lang item `{marker}`; this interface needs a newer compiler")
+            })
+    };
+    for r in &raw.records {
+        if let Some(marker) = r.lang.as_deref() {
+            mark(b.record_def(&r.path), marker)?;
+        }
+    }
+    for t in &raw.traits {
+        if let Some(marker) = t.lang.as_deref() {
+            mark(b.trait_item_def(&t.path), marker)?;
+        }
+    }
     let impls: Vec<ImplText<'tcx>> = raw.impls.iter().map(|i| b.impl_text(i)).collect();
     let funcs: Vec<Function<'tcx>> = raw.funcs.iter().map(|f| b.func(f)).collect();
     let transform_anchors = raw
@@ -347,6 +371,7 @@ pub fn parse_program<'tcx>(tcx: &TyCtxt<'tcx>, text: &str) -> Result<Parsed<'tcx
         funcs,
         traits,
         impls,
+        lang,
         transform_anchors,
         transform_scripts,
         strings,
@@ -984,11 +1009,13 @@ mod tests {
             let bounds = elab.bound_names();
             let (traits, impls) =
                 crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let lang = elab.lang.declared_by_def();
             let text = Printer::new(&elab.defs, elab.resolver)
                 .with_transform_metadata(&elab.transform_anchors, &elab.transform_scripts)
                 .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
                 .with_bounds(&bounds)
                 .with_traits(&traits, &impls)
+                .with_lang(&lang)
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let parsed = parse_program(tcx, &text).expect("re-parse");
             assert_eq!(parsed.transform_anchors.len(), elab.transform_anchors.len());
@@ -1008,6 +1035,7 @@ mod tests {
                 .with_ffi_metadata(&parsed.ffi_preludes, &parsed.ffi_imports)
                 .with_bounds(&parsed.generic_bounds)
                 .with_traits(&parsed.traits, &parsed.impls)
+                .with_lang(&parsed.lang)
                 .program(
                     &parsed.funcs,
                     &parsed.strings,
@@ -1426,6 +1454,18 @@ mod tests {
             "pub struct [regional] TestCell<T> { v: T, next: [field] TestCell<T> } \
              regional fn foo<T>(bar: [flex] T) -> i32 { 0 } \
              regional fn use_ok(c: [flex] TestCell<i32>) -> i32 { foo(c) }",
+        );
+    }
+
+    #[test]
+    fn lang_markers_roundtrip() {
+        roundtrip(
+            r#"
+            #[lang("partial_eq")]
+            pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+            #[lang("ordering")]
+            pub enum Ordering { Less(), Equal(), Greater() }
+            "#,
         );
     }
 
