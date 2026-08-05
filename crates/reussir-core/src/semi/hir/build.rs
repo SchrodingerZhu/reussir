@@ -257,6 +257,81 @@ impl<'tcx> Parsed<'tcx> {
         }
         db
     }
+
+    /// Rebuild the per-generic bound environment this dump serialized, dense
+    /// by [`GenericId`] — the same table an elaborated session hands
+    /// monomorphization ([`crate::semi::ctxt::Ctxt::generics`]).
+    ///
+    /// A binder's declared bounds are not just checking material: they decide
+    /// which comparison bridges a PolyFFI texture renders and which traits the
+    /// interface export closure ships. Resuming without them is not a
+    /// conservative choice — it silently produces a *different* program. Pass
+    /// the [`TraitDb`] this dump's [`rebuild_traits`] returned, so bound paths
+    /// resolve against the same trait identities.
+    ///
+    /// Bounds naming a trait this dump does not carry are dropped: the
+    /// serialized program never mentioned it, so nothing downstream can select
+    /// through it either.
+    ///
+    /// [`TraitDb`]: crate::semi::traits::TraitDb
+    /// [`rebuild_traits`]: Self::rebuild_traits
+    pub fn rebuild_generic_env(
+        &mut self,
+        db: &crate::semi::traits::TraitDb<'tcx>,
+    ) -> Vec<crate::semi::ctxt::GenericInfo> {
+        use crate::semi::ctxt::GenericInfo;
+
+        // Binder names live on the items, the bounds in their own table; a
+        // generic that appears in neither still needs a dense slot.
+        let mut names: FxHashMap<GenericId, TokenKey> = FxHashMap::default();
+        let item_binders = self
+            .funcs
+            .iter()
+            .map(|f| f.generics.as_slice())
+            .chain(self.records.values().map(|r| r.ty_params.as_slice()));
+        for &(name, g) in item_binders.flatten() {
+            names.insert(g, name);
+        }
+        for t in &self.traits {
+            for (g, name) in &t.generics {
+                names.insert(*g, self.names.intern(name.as_deref().unwrap_or("_")));
+            }
+        }
+        let len = names
+            .keys()
+            .chain(self.generic_bounds.keys())
+            .map(|g| g.0 as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let anonymous = self.names.intern("_");
+        let mut env: Vec<GenericInfo> = (0..len)
+            .map(|i| GenericInfo {
+                name: names
+                    .get(&GenericId(i as u32))
+                    .copied()
+                    .unwrap_or(anonymous),
+                bounds: Vec::new(),
+            })
+            .collect();
+        for (&g, bounds) in &self.generic_bounds {
+            let Some(slot) = env.get_mut(g.0 as usize) else {
+                continue;
+            };
+            slot.bounds = bounds
+                .iter()
+                .filter_map(|b| {
+                    let segs: Vec<TokenKey> = b
+                        .trait_path()
+                        .to_string()
+                        .split("::")
+                        .map(|s| self.names.intern(s))
+                        .collect();
+                    db.trait_by_def(self.defs.lookup_trait(&segs)?)
+                })
+                .collect();
+        }
+        env
+    }
 }
 
 /// Parse `text` into a fresh HIR program (interning types into `tcx`).

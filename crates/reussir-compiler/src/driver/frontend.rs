@@ -319,6 +319,11 @@ pub(crate) fn frontend<'c, 'tcx>(
                 return Ok(Produced::Text(text));
             }
             let trait_db = parsed.rebuild_traits(tcx);
+            // The dump's own bound table, resolved against those rebuilt
+            // trait identities: bounds steer PolyFFI bridge rendering and the
+            // export closure, so dropping them would resume a different
+            // program rather than the serialized one.
+            let generic_env = parsed.rebuild_generic_env(&trait_db);
             let input = MonoInput {
                 tcx,
                 defs: &parsed.defs,
@@ -336,7 +341,7 @@ pub(crate) fn frontend<'c, 'tcx>(
                 externs: Default::default(),
                 traits: MonoTraits {
                     db: Some(&trait_db),
-                    env: None,
+                    env: Some(&generic_env),
                 },
                 // The dump's `#[lang]` markers, so re-entered comparison
                 // dispatch keeps its intrinsic lowering.

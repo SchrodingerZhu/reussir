@@ -151,6 +151,12 @@ same shared-record instance are unioned before its inner declaration is
 rendered. Primitive arguments keep their native Rust spelling and use Rust's
 built-in comparison implementations; they are never wrapped in `Bridge`.
 
+Discovery is therefore a property of the *serialized* program, not of one
+compilation: HIR dumps carry their binder bounds, and a resumed build rebuilds
+that table alongside the trait database before monomorphizing. A resume that
+dropped it would not render a weaker program — it would render Rust that no
+longer compiles.
+
 The comparison tower is normalized and only the necessary foreign entries are
 emitted:
 

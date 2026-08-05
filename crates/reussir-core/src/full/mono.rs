@@ -2745,6 +2745,107 @@ mod tests {
         assert_eq!(rejected.len(), 1, "{rejected:#?}");
     }
 
+    /// **Resumability, PolyFFI edition**: bridge rendering reads the binder
+    /// bounds a dump serializes, so a program resumed from its HIR must reach
+    /// the same MIR — the same textures and the same comparison entries — as
+    /// the one built from source. Losing the bound table does not degrade
+    /// gracefully: it silently resumes a *different* program whose textures
+    /// no longer compile.
+    #[test]
+    fn comparison_bridges_resume_from_parsed_hir() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        use crate::semi::hir::build::parse_program;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        // Both discovery routes at once: the container's declared `T: Ord`
+        // and the import binder's own `T: PartialEq`.
+        let source = format!(
+            r#"{CMP_TOWER}{ORD_KEY}
+            #[ffi(rust = "::std::collections::BTreeSet")]
+            pub struct BTreeSet<T: Ord>;
+
+            #[ffi(import)]
+            pub fn insert<T: Ord>(set: BTreeSet<T>, value: T) -> BTreeSet<T> [{{
+                set.insert(value)
+            }}];
+
+            #[ffi(import)]
+            pub fn same<T: PartialEq>(lhs: T, rhs: T) -> bool [{{ lhs == rhs }}];
+
+            pub fn run(set: BTreeSet<Key>, a: Key, b: Key) -> bool {{
+                let grown = insert(set, a);
+                same(a, b)
+            }}"#
+        );
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(&source, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+
+            let (mir0, r0) = monomorphize(&elab.mono_input());
+            assert!(r0.is_empty(), "{r0:#?}");
+            let text0 = MirPrinter::new(&elab.defs, elab.resolver).program(&mir0);
+
+            let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
+            let lang = elab.lang.declared_by_def();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_bounds(&bounds)
+                .with_traits(&traits, &impls)
+                .with_lang(&lang)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            let mut parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
+            let trait_db = parsed.rebuild_traits(tcx);
+            let generic_env = parsed.rebuild_generic_env(&trait_db);
+            let input = MonoInput {
+                tcx,
+                defs: &parsed.defs,
+                resolver: &parsed.names,
+                elaborated: &parsed.funcs,
+                records: &parsed.records,
+                trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
+                strings: parsed.strings.clone(),
+                externs: MonoExterns::default(),
+                traits: MonoTraits {
+                    db: Some(&trait_db),
+                    env: Some(&generic_env),
+                },
+                lang: parsed.lang.clone(),
+            };
+            let (mir1, r1) = monomorphize(&input);
+            assert!(r1.is_empty(), "{r1:#?}");
+            let text1 = MirPrinter::new(&parsed.defs, &parsed.names).program(&mir1);
+
+            // Non-vacuity: two empty programs would compare equal too.
+            for expected in [
+                "ffi trait glue",
+                "_ffi_cmp",
+                "_ffi_eq",
+                "bridge::OrdBridge for",
+                "bridge::PartialEqBridge for",
+            ] {
+                assert!(
+                    text1.contains(expected),
+                    "resumed MIR lost `{expected}`:\n{text1}"
+                );
+            }
+            assert_eq!(
+                text0, text1,
+                "resumed MIR differs from the original:\n=== original ===\n{text0}\n=== resumed ===\n{text1}"
+            );
+        });
+    }
+
     /// An opaque container reachable only through another record's field has
     /// no import texture to trigger bridge discovery. Record closure at the
     /// queue fixed point must still synthesize its comparison glue before
@@ -3123,6 +3224,7 @@ mod tests {
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let mut parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
             let trait_db = parsed.rebuild_traits(tcx);
+            let generic_env = parsed.rebuild_generic_env(&trait_db);
             let input = MonoInput {
                 tcx,
                 defs: &parsed.defs,
@@ -3138,7 +3240,7 @@ mod tests {
                 externs: MonoExterns::default(),
                 traits: MonoTraits {
                     db: Some(&trait_db),
-                    env: None,
+                    env: Some(&generic_env),
                 },
                 lang: Default::default(),
             };
