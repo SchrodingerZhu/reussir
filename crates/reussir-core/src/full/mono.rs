@@ -371,9 +371,46 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         std::collections::BTreeMap::new();
     let mut ffi_trait_glue: std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>> =
         std::collections::BTreeMap::new();
+    let mut bridge_scanned_records: FxHashSet<(DefId, &'tcx [Ty<'tcx>])> = FxHashSet::default();
+    let mut closed_record_count = 0;
 
     let mut functions = Vec::new();
-    while let Some(inst) = driver.queue.pop_front() {
+    while let Some(inst) = {
+        // Reaching an empty queue is a fixed-point opportunity: close ground
+        // layouts over fields, then discover bridge needs in every newly seen
+        // opaque instance. Selection may enqueue comparison methods, in which
+        // case this same loop resumes and drains them normally.
+        if driver.queue.is_empty() && driver.records.len() != closed_record_count {
+            driver.close_records_over_fields(input.records, tcx);
+            closed_record_count = driver.records.len();
+        }
+        if driver.queue.is_empty() {
+            let mut candidates: Vec<_> = driver.records.iter().copied().collect();
+            candidates.sort_by_cached_key(|(def, args)| instance_symbol(*def, args));
+            for (def, args) in candidates {
+                if !bridge_scanned_records.insert((def, args)) {
+                    continue;
+                }
+                let Some(record) = input.records.get(&def).filter(|r| r.ffi.is_some()) else {
+                    continue;
+                };
+                let fctx = FfiCtx {
+                    records: input.records,
+                    traits: input.traits.db,
+                    generic_env: input.traits.env,
+                    lang: &input.lang,
+                    instance_symbol: &instance_symbol,
+                };
+                let ty = tcx.mk_record(def, args, Flexivity::Irrelevant);
+                let mut decls = std::collections::BTreeMap::new();
+                if fctx.rust_name(ty, &mut decls).is_ok() {
+                    driver.cur_file = record.file;
+                    driver.register_ffi_bridges(&decls, record.span, &mut ffi_trait_glue);
+                }
+            }
+        }
+        driver.queue.pop_front()
+    } {
         let Some(func) = by_def.get(&inst.def) else {
             // Neither a local definition nor an imported body/prototype: with
             // externs in play a silent skip would manufacture an undefined
@@ -505,7 +542,6 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                         placeholders.insert(input.resolver.resolve(*gname), rendered);
                     }
                 }
-                driver.register_ffi_bridges(&decls, fimport.span, &mut ffi_trait_glue);
                 let body_text = ffi_render::substitute_placeholders(&fimport.body, &placeholders);
                 // File ids are one space (externs remap at declaration), so
                 // the per-file prelude pairing holds across both tables.
@@ -559,11 +595,6 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             file: func.file,
         });
     }
-
-    // Close the record set over fields before resolving layouts: a record used
-    // only as another record's field is otherwise never collected, leaving its
-    // layout unresolved.
-    driver.close_records_over_fields(input.records, tcx);
 
     // Reject inline-recursive record *instances* before resolving layouts: a
     // `[value]` record stored inside itself through a chain of inline members
@@ -1059,15 +1090,43 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         span: Option<Span>,
     ) -> Option<(mir::Symbol, Ty<'tcx>, TokenKey)> {
         let (trait_def, method, ret, name) = {
-            let db = self.traits.db?;
-            let (&trait_def, _) = self.lang.iter().find(|(_, found)| **found == item)?;
-            let tid = db.trait_by_def(trait_def)?;
+            let Some(db) = self.traits.db else {
+                self.error(span, "comparison-bound PolyFFI requires trait metadata");
+                return None;
+            };
+            let Some((&trait_def, _)) = self.lang.iter().find(|(_, found)| **found == item) else {
+                self.error(
+                    span,
+                    format!(
+                        "comparison-bound PolyFFI requires the `#[lang(\"{}\")]` trait",
+                        item.name()
+                    ),
+                );
+                return None;
+            };
+            let Some(tid) = db.trait_by_def(trait_def) else {
+                self.error(
+                    span,
+                    "comparison lang item is absent from the trait database",
+                );
+                return None;
+            };
             let tdef = db.trait_def(tid);
-            let (method, sig) = tdef
+            let Some((method, sig)) = tdef
                 .methods
                 .iter()
                 .enumerate()
-                .find(|(_, sig)| self.resolver.try_resolve(sig.name) == Some(method_name))?;
+                .find(|(_, sig)| self.resolver.try_resolve(sig.name) == Some(method_name))
+            else {
+                self.error(
+                    span,
+                    format!(
+                        "comparison lang trait `#[lang(\"{}\")]` does not define `{method_name}`",
+                        item.name()
+                    ),
+                );
+                return None;
+            };
             let mut subst = Subst::default();
             subst.insert(tdef.self_param, ty);
             (
@@ -2570,6 +2629,58 @@ mod tests {
             assert!(reports.is_empty(), "mono diagnostics: {reports:#?}");
             MirPrinter::new(&elab.defs, elab.resolver).program(&full)
         })
+    }
+
+    /// An opaque container reachable only through another record's field has
+    /// no import texture to trigger bridge discovery. Record closure at the
+    /// queue fixed point must still synthesize its comparison glue before
+    /// layouts and drop textures are emitted.
+    #[test]
+    fn opaque_drop_texture_discovers_nested_comparison_bridges() {
+        let source = format!(
+            r#"{CMP_TOWER}
+            #[ffi(rust = "::std::collections::BTreeSet")]
+            pub struct BTreeSet<T: Ord>;
+
+            pub struct Key {{ value: i64 }}
+            impl PartialEq for Key {{
+                fn eq(self: Self, other: Self) -> bool {{ self.value == other.value }}
+            }}
+            impl Eq for Key {{}}
+            impl PartialOrd for Key {{
+                fn lt(self: Self, other: Self) -> bool {{ self.value < other.value }}
+                fn le(self: Self, other: Self) -> bool {{ self.value <= other.value }}
+                fn gt(self: Self, other: Self) -> bool {{ self.value > other.value }}
+                fn ge(self: Self, other: Self) -> bool {{ self.value >= other.value }}
+            }}
+            impl Ord for Key {{
+                fn cmp(self: Self, other: Self) -> Ordering {{
+                    if self.value < other.value {{ Ordering::Less }} else {{
+                        if self.value == other.value {{ Ordering::Equal }}
+                        else {{ Ordering::Greater }}
+                    }}
+                }}
+            }}
+
+            pub struct Holder {{ set: BTreeSet<Key> }}
+            pub fn keep(value: Holder) -> Holder {{ value }}"#
+        );
+        with_full(&source, |full| {
+            assert!(
+                full.ffi_imports.is_empty(),
+                "the fixture has no import texture"
+            );
+            let entries: Vec<_> = full
+                .ffi_trait_glue
+                .iter()
+                .map(|glue| full.symbol(glue.entry))
+                .collect();
+            assert!(entries.iter().any(|entry| entry.ends_with("_ffi_eq")));
+            assert!(entries.iter().any(|entry| entry.ends_with("_ffi_cmp")));
+            assert!(full.ffi_textures.iter().any(|texture| {
+                texture.texture.contains("BTreeSet<") && texture.texture.contains("bridge::Bridge<")
+            }));
+        });
     }
 
     /// A `TraitCall` that selects a method-less compiler impl of an
