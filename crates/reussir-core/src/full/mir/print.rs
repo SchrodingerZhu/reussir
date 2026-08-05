@@ -135,6 +135,16 @@ impl<'a> Printer<'a> {
             )) + r.ty(glue.ty)
                 + text(";")
         }));
+        items.extend(program.ffi_trait_glue.iter().map(|glue| {
+            text(format!(
+                "ffi trait glue @{} = @{} : ",
+                r.sym(glue.entry),
+                r.sym(glue.target),
+            )) + r.ty(glue.ty)
+                + text(" => ")
+                + r.ty(glue.ret)
+                + text(";")
+        }));
 
         // One blank line between top-level items.
         let mut doc = Doc::Null;

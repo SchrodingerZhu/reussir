@@ -223,6 +223,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                 release: self.sym(&g.release),
             })
             .collect();
+        let ffi_trait_glue: Vec<mir::FfiTraitGlue<'tcx>> = raw
+            .ffi_trait_glue
+            .iter()
+            .map(|g| mir::FfiTraitGlue {
+                ty: self.ty(&g.ty),
+                ret: self.ty(&g.ret),
+                entry: self.sym(&g.entry),
+                target: self.sym(&g.target),
+            })
+            .collect();
         let functions: Vec<mir::Function<'tcx>> = raw.funcs.iter().map(|f| self.func(f)).collect();
         let transform_scripts = raw
             .transforms
@@ -251,6 +261,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             ffi_imports,
             ffi_textures,
             ffi_rc_glue,
+            ffi_trait_glue,
             symbols,
         }
     }

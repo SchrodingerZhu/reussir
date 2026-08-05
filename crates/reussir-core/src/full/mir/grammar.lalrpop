@@ -37,6 +37,8 @@ Item: raw::Item = {
         }),
     "ffi" "glue" "@" <acquire:Sym> "@" <release:Sym> ":" <t:Ty> ";"
         => raw::Item::FfiRcGlue(raw::FfiRcGlue { acquire, release, ty: t }),
+    "ffi" "trait" "glue" "@" <entry:Sym> "=" "@" <target:Sym> ":" <t:Ty> "=>" <ret:Ty> ";"
+        => raw::Item::FfiTraitGlue(raw::FfiTraitGlue { entry, target, ty: t, ret }),
 };
 
 /// One source-file table entry: `0 = "src/lib.rr";`. Spans are byte offsets
@@ -107,6 +109,7 @@ Name: &'input str = {
     "ffi" => "ffi",
     "texture" => "texture",
     "glue" => "glue",
+    "trait" => "trait",
 };
 
 /// A user debug name (parameter and let names, variant names). A name that
@@ -379,6 +382,7 @@ extern {
         "ffi" => Token::Ffi,
         "texture" => Token::Texture,
         "glue" => Token::Glue,
+        "trait" => Token::Trait,
         "transform" => Token::Transform,
         "transform_anchor" => Token::TransformAnchor,
         "interface" => Token::Interface,

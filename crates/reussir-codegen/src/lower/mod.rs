@@ -438,6 +438,14 @@ pub fn lower_unit<'c, 'tcx>(
             body.append_operation(op);
         }
     }
+    // Borrowed comparison entries are mergeable by their ground record symbol;
+    // each is defined in exactly one home unit and calls a normal MIR adapter.
+    for glue in &program.ffi_trait_glue {
+        if !unit.is_home(program.symbol(glue.entry)) {
+            continue;
+        }
+        body.append_operation(lowerer.ffi_trait_glue(glue)?);
+    }
     // Every opaque instance's drop hook is declared in every unit: the
     // `rc.dec` lowering calls it, and its verifier requires the symbol. The
     // definition arrives with the linked foreign bitcode.

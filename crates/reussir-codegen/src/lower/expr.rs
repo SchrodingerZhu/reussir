@@ -512,6 +512,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     ) -> Result<[Operation<'c>; 2]> {
         let loc = Location::unknown(self.context);
         let ty = self.tys.mlir_ty(glue.ty)?;
+        let attributes = self.ffi_glue_attributes();
         let build = |symbol: &str, inc: bool| -> Result<Operation<'c>> {
             let block = Block::new(&[(ty, loc)]);
             let arg = block
@@ -532,7 +533,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 StringAttribute::new(self.context, symbol),
                 TypeAttribute::new(FunctionType::new(self.context, &[ty], &[]).into()),
                 region,
-                &[],
+                &attributes,
                 loc,
             ))
         };
@@ -540,6 +541,67 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             build(self.program.symbol(glue.acquire), true)?,
             build(self.program.symbol(glue.release), false)?,
         ])
+    }
+
+    /// Build one borrowed comparison entry. The foreign caller retains both
+    /// operands; two increments turn them into the owned arguments consumed by
+    /// the ordinary semantic adapter. No decrement belongs here: ownership in
+    /// the target settles those acquired values.
+    pub(super) fn ffi_trait_glue(&self, glue: &mir::FfiTraitGlue<'tcx>) -> Result<Operation<'c>> {
+        let loc = Location::unknown(self.context);
+        let ty = self.tys.mlir_ty(glue.ty)?;
+        let ret = self.tys.mlir_ty(glue.ret)?;
+        let block = Block::new(&[(ty, loc), (ty, loc)]);
+        let lhs: Value<'c, '_> = block
+            .argument(0)
+            .map_err(|e| LoweringError(format!("missing trait-glue argument: {e}").into()))?
+            .into();
+        let rhs: Value<'c, '_> = block
+            .argument(1)
+            .map_err(|e| LoweringError(format!("missing trait-glue argument: {e}").into()))?
+            .into();
+        block.append_operation(dialect::rc_inc(self.context, lhs, loc).into());
+        block.append_operation(dialect::rc_inc(self.context, rhs, loc).into());
+        let target = FlatSymbolRefAttribute::new(self.context, self.program.symbol(glue.target));
+        let call =
+            block.append_operation(func::call(self.context, target, &[lhs, rhs], &[ret], loc));
+        let result = call
+            .result(0)
+            .map_err(|e| LoweringError(format!("missing trait-glue result: {e}").into()))?
+            .into();
+        block.append_operation(func::r#return(&[result], loc));
+        let region = Region::new();
+        region.append_block(block);
+
+        let attributes = self.ffi_glue_attributes();
+        Ok(func::func(
+            self.context,
+            StringAttribute::new(self.context, self.program.symbol(glue.entry)),
+            TypeAttribute::new(FunctionType::new(self.context, &[ty, ty], &[ret]).into()),
+            region,
+            &attributes,
+            loc,
+        ))
+    }
+
+    /// Ground FFI glue can be emitted independently by multiple downstream
+    /// packages. AOT links coalesce identical definitions; JIT keeps ordinary
+    /// external linkage, matching the generic-instance policy.
+    fn ffi_glue_attributes(&self) -> SmallVec<[(Identifier<'c>, Attribute<'c>); 1]> {
+        if matches!(
+            self.linkage,
+            LinkagePolicy::Aot {
+                dedup_instances: true
+            }
+        ) {
+            SmallVec::from_buf([(
+                Identifier::new(self.context, "llvm.linkage"),
+                Attribute::parse(self.context, "#llvm.linkage<weak_odr>")
+                    .expect("valid weak_odr linkage attribute"),
+            )])
+        } else {
+            SmallVec::new()
+        }
     }
 
     /// Declare an opaque instance's drop hook: `func.func private
@@ -583,7 +645,14 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         match self.linkage {
             LinkagePolicy::Jit => None,
             LinkagePolicy::Aot { dedup_instances } => {
-                if symbol.starts_with("_RI") {
+                if self
+                    .program
+                    .ffi_trait_glue
+                    .iter()
+                    .any(|glue| glue.target == func.symbol)
+                {
+                    dedup_instances.then_some("weak_odr")
+                } else if symbol.starts_with("_RI") {
                     // Another compilation unit may instantiate the same
                     // generic — emit the definition as mergeable. This holds
                     // for private generics too: a pub generic caller can force

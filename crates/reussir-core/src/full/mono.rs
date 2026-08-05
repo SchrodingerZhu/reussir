@@ -737,6 +737,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             ffi_imports: ffi_imports_out,
             ffi_textures,
             ffi_rc_glue,
+            ffi_trait_glue: Vec::new(),
             symbols,
         },
         reports,
