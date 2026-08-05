@@ -1,0 +1,71 @@
+// UNSUPPORTED: darwin
+// An `#[ffi(import)]` signature can be the only source of a comparison
+// requirement: no bounded container appears here, yet the Rust bodies compare
+// and order the rendered values directly. `Key` orders as the reverse of its
+// numeric payload, so `largest` answering with the numerically smaller value
+// proves Rust reached the Reussir implementation rather than any fallback.
+
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %s --package-name fnbound --extern core=%t.core.rri --emit mlir --no-source-locations -o %t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=TEXTURE --input-file=%t.texture.mlir
+// RUN: %rrc %s --package-name fnbound --extern core=%t.core.rri -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_cmp_bridge_fn_bound_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s --package-name fnbound --extern core=%t.core.rri -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_cmp_bridge_fn_bound_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+pub struct Key { value: i64 }
+
+impl PartialEq for Key {
+    fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+}
+
+impl Eq for Key {}
+
+// Deliberately the reverse of the numeric order.
+impl PartialOrd for Key {
+    fn lt(self: Self, other: Self) -> bool { self.value > other.value }
+    fn le(self: Self, other: Self) -> bool { self.value >= other.value }
+    fn gt(self: Self, other: Self) -> bool { self.value < other.value }
+    fn ge(self: Self, other: Self) -> bool { self.value <= other.value }
+}
+
+impl Ord for Key {
+    fn cmp(self: Self, other: Self) -> Ordering {
+        if self.value > other.value {
+            Ordering::Less
+        } else {
+            if self.value == other.value { Ordering::Equal }
+            else { Ordering::Greater }
+        }
+    }
+}
+
+#[ffi(import)]
+pub fn same<T: PartialEq>(lhs: T, rhs: T) -> bool [{ lhs == rhs }];
+
+#[ffi(import)]
+pub fn largest<T: Ord>(lhs: T, rhs: T) -> T [{ ::std::cmp::max(lhs, rhs) }];
+
+pub fn main() -> i64 {
+    let equal = same(Key{7}, Key{7});
+    let different = same(Key{7}, Key{8});
+
+    // Under the reversed order the greatest Key carries the smallest payload.
+    let top = largest(Key{2}, Key{5}).value;
+
+    if equal && !different && top == 2 { 42 } else { 0 }
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The `PartialEq` binder asks for equality alone; the `Ord` binder normalizes
+// over the whole tower. Both entries are borrowed comparison glue on the one
+// shared record the program declares.
+// TEXTURE-DAG: unsafe fn {{[A-Za-z0-9_]+}}_ffi_eq(
+// TEXTURE-DAG: unsafe fn {{[A-Za-z0-9_]+}}_ffi_cmp(
+// TEXTURE-DAG: impl ::reussir_rt::bridge::PartialEqBridge for
+// TEXTURE-DAG: impl ::reussir_rt::bridge::EqBridge for
+// TEXTURE-DAG: impl ::reussir_rt::bridge::PartialOrdBridge for
+// TEXTURE-DAG: impl ::reussir_rt::bridge::OrdBridge for

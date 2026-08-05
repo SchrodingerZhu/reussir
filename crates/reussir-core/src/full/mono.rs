@@ -342,6 +342,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         ids: mir::ExprIdGen::default(),
         lang: &input.lang,
         synthetic_cmps: FxHashMap::default(),
+        bridge_attempts: FxHashSet::default(),
         synthetic_fns: Vec::new(),
     };
 
@@ -535,10 +536,13 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                 let ret_direct =
                     matches!(*return_ty.kind(), TyKind::Unit) || fctx.integer_like(return_ty);
                 // `[:T:]` placeholders in the body substitute to the
-                // instance's Rust spellings.
+                // instance's Rust spellings. Each argument is rendered under
+                // its own binder's bounds: a signature that promises
+                // `T: PartialEq` must bridge that capability even when no
+                // bounded container in the signature mentions it.
                 let mut placeholders: FxHashMap<&str, String> = FxHashMap::default();
-                for ((gname, _), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
-                    if let Ok(rendered) = fctx.rust_name(ty, &mut decls) {
+                for ((gname, gid), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
+                    if let Ok(rendered) = fctx.rust_name_for_generic(ty, *gid, &mut decls) {
                         placeholders.insert(input.resolver.resolve(*gname), rendered);
                     }
                 }
@@ -575,6 +579,11 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                     target: symbol,
                     import: true,
                 });
+                // A capability introduced by the signature's own binders has
+                // no bounded container instance behind it, so the record scan
+                // never sees it: this texture is the only site that can
+                // demand its entries, and therefore must define them.
+                driver.register_ffi_bridges(&decls, fimport.span, &mut ffi_trait_glue);
                 for (sym, decl) in decls {
                     glue.entry(sym)
                         .and_modify(|old| old.needs.union(decl.needs))
@@ -1032,6 +1041,11 @@ struct Driver<'a, 'tcx> {
     /// Synthesized three-way comparisons (`Ord::cmp` over a scalar), one
     /// per scalar type; see [`Driver::three_way_call`].
     synthetic_cmps: FxHashMap<Ty<'tcx>, mir::Symbol>,
+    /// Comparison-bridge entries already attempted, by entry name. An import
+    /// texture and the ground record scan can demand the same entry, so the
+    /// set records *attempts*, not successes: a rejected bridge is diagnosed
+    /// once rather than once per site that wanted it.
+    bridge_attempts: FxHashSet<String>,
     synthetic_fns: Vec<mir::Function<'tcx>>,
 }
 
@@ -1273,7 +1287,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_eq");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((callee, method_ret, name)) =
@@ -1321,7 +1335,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_cmp");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((callee, ordering, name)) =
@@ -1401,7 +1415,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_partial_cmp");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((eq, eq_ret, name)) =
@@ -1482,7 +1496,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         for (base, decl) in decls {
-            if decl.needs.eq() {
+            // `Eq` carries no method to synthesize, so it has no entry of its
+            // own to dedup on; give it a marker key in the same set.
+            if decl.needs.eq() && self.bridge_attempts.insert(format!("{base}_ffi_eq_marker")) {
                 self.require_comparison_trait(crate::semi::lang::LangItem::Eq, decl.ty, span);
             }
             if decl.needs.partial_eq() {
@@ -2629,6 +2645,104 @@ mod tests {
             assert!(reports.is_empty(), "mono diagnostics: {reports:#?}");
             MirPrinter::new(&elab.defs, elab.resolver).program(&full)
         })
+    }
+
+    /// A shared record implementing the whole comparison tower — so what a
+    /// texture renders is decided by the *bound* it is reached through, never
+    /// by what the type happens to implement.
+    const ORD_KEY: &str = r#"
+        pub struct Key { value: i64 }
+        impl PartialEq for Key {
+            fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+        }
+        impl Eq for Key {}
+        impl PartialOrd for Key {
+            fn lt(self: Self, other: Self) -> bool { self.value < other.value }
+            fn le(self: Self, other: Self) -> bool { self.value <= other.value }
+            fn gt(self: Self, other: Self) -> bool { self.value > other.value }
+            fn ge(self: Self, other: Self) -> bool { self.value >= other.value }
+        }
+        impl Ord for Key {
+            fn cmp(self: Self, other: Self) -> Ordering {
+                if self.value < other.value { Ordering::Less } else {
+                    if self.value == other.value { Ordering::Equal }
+                    else { Ordering::Greater }
+                }
+            }
+        }
+    "#;
+
+    /// A bounded container is not the only source of a comparison
+    /// requirement: an `#[ffi(import)]` signature may bound its own generic,
+    /// and its Rust body then compares the rendered values directly. The
+    /// texture must carry that bridge — and exactly that one, even though
+    /// `Key` implements the whole tower.
+    #[test]
+    fn an_import_binder_bound_renders_its_own_bridge() {
+        let source = format!(
+            r#"{CMP_TOWER}{ORD_KEY}
+            #[ffi(import)]
+            pub fn same<T: PartialEq>(lhs: T, rhs: T) -> bool [{{ lhs == rhs }}];
+
+            pub fn run(a: Key, b: Key) -> bool {{ same(a, b) }}"#
+        );
+        with_full(&source, |full| {
+            let entries: Vec<_> = full
+                .ffi_trait_glue
+                .iter()
+                .map(|glue| full.symbol(glue.entry))
+                .collect();
+            assert!(
+                entries.iter().any(|entry| entry.ends_with("_ffi_eq")),
+                "the binder's `PartialEq` bound defines no equality entry: {entries:?}"
+            );
+            assert_eq!(entries.len(), 1, "extra comparison entries: {entries:?}");
+
+            let [texture] = full.ffi_imports.as_slice() else {
+                panic!("expected exactly one import texture");
+            };
+            let texture = &texture.texture;
+            assert!(
+                texture.contains("impl ::reussir_rt::bridge::PartialEqBridge for"),
+                "{texture}"
+            );
+            // Qualified: `EqBridge` is a suffix of `PartialEqBridge`, and
+            // `OrdBridge` of `PartialOrdBridge`.
+            for stronger in [
+                "bridge::EqBridge for",
+                "bridge::PartialOrdBridge for",
+                "bridge::OrdBridge for",
+            ] {
+                assert!(
+                    !texture.contains(stronger),
+                    "the bound is `PartialEq`, yet the texture grants {stronger}:\n{texture}"
+                );
+            }
+        });
+    }
+
+    /// An import texture and the ground record scan can demand the same
+    /// entry. A bridge the evidence rejects is then wanted twice, and the
+    /// programmer must still be told once.
+    #[test]
+    fn a_rejected_bridge_is_diagnosed_once() {
+        let source = format!(
+            r#"{CMP_TOWER}
+            #[ffi(rust = "::std::collections::BTreeSet")]
+            pub struct BTreeSet<T: Ord>;
+
+            pub struct Key {{ value: i64 }}
+
+            #[ffi(import)]
+            pub fn empty<T>() -> BTreeSet<T> [{{ Default::default() }}];
+
+            pub fn run() -> BTreeSet<Key> {{ empty<Key>() }}"#
+        );
+        let rejected: Vec<_> = mono_reports(&source)
+            .into_iter()
+            .filter(|report| report.starts_with("cannot synthesize a Rust FFI comparison bridge"))
+            .collect();
+        assert_eq!(rejected.len(), 1, "{rejected:#?}");
     }
 
     /// An opaque container reachable only through another record's field has

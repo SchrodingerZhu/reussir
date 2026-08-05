@@ -139,8 +139,12 @@ fn insert(
 ) -> RuntimeBTreeSet<Bridge<KeyInner>>
 ```
 
-When rendering an opaque FFI record, the compiler matches its formal generic
-parameters to the ground arguments and examines their declared bounds.
+A binder's declared bounds are what a rendered argument must satisfy, and
+both kinds of binder count. When rendering an opaque FFI record, the compiler
+matches its formal generic parameters to the ground arguments and examines
+their declared bounds. An `#[ffi(import)]` signature's own generics are the
+other source: `fn same<T: PartialEq>(lhs: T, rhs: T) -> bool` promises
+equality that its Rust body then uses directly, with no container in sight.
 Comparison lang items are found through trait identity and supertrait
 implication, not by spelling. Requirements from repeated appearances of the
 same shared-record instance are unioned before its inner declaration is
@@ -161,7 +165,8 @@ For `Ord`, `PartialOrdBridge::partial_cmp_bridge` returns `Some(cmp_bridge(...))
 so there is no separate partial-order entry. `EqBridge` is marker-only, matching
 Reussir's `Eq`; equality is supplied by `PartialEq`. A missing ground Reussir
 implementation is diagnosed during monomorphization, before the generated Rust
-is handed to `rustc`.
+is handed to `rustc` — once per rejected entry, however many textures and
+container instances wanted it.
 
 ### Borrowed comparison entries
 
