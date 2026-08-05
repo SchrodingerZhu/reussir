@@ -1252,6 +1252,85 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         );
     }
 
+    /// Convert `core::cmp::Ordering` to the stable Rust-facing `i8` ABI code.
+    /// Variant names, not source tag order, define the mapping.
+    fn synthesize_cmp_bridge(
+        &mut self,
+        base: &str,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+        out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
+    ) {
+        let entry_name = format!("{base}_ffi_cmp");
+        if out.contains_key(&entry_name) {
+            return;
+        }
+        let Some((callee, ordering, name)) =
+            self.comparison_callee(crate::semi::lang::LangItem::Ord, "cmp", ty, span)
+        else {
+            return;
+        };
+        let TyKind::Record { def, args, .. } = *ordering.kind() else {
+            self.error(span, "`Ord::cmp` must return `core`'s `Ordering`");
+            return;
+        };
+        let Some(RecordFields::Variants(variants)) =
+            self.record_defs.get(&def).and_then(|r| r.fields.as_ref())
+        else {
+            self.error(span, "`Ord::cmp` must return `core`'s `Ordering`");
+            return;
+        };
+        let codes: Option<Vec<i8>> = variants
+            .iter()
+            .map(|variant| match self.resolver.try_resolve(variant.name) {
+                Some("Less") => Some(-1),
+                Some("Equal") => Some(0),
+                Some("Greater") => Some(1),
+                _ => None,
+            })
+            .collect();
+        let Some(codes) = codes.filter(|codes| codes.len() == 3) else {
+            self.error(
+                span,
+                "`Ordering` must have exactly `Less`, `Equal`, and `Greater` variants",
+            );
+            return;
+        };
+        self.record_symbol(def, args);
+        let ret = self.tcx.mk_int(IntTy::Signed(8));
+        let call = self.bridge_call(callee, ty, ordering);
+        let arms: Vec<mir::DecisionTree<'tcx>> = codes
+            .into_iter()
+            .map(|code| {
+                let body = self.bridge_const(code, ret);
+                mir::DecisionTree::Leaf {
+                    body: self.tcx.alloc(body),
+                    bindings: &[],
+                }
+            })
+            .collect();
+        let tree = mir::DecisionTree::Switch {
+            scrutinee: &[],
+            cases: mir::SwitchCases::Ctor(self.tcx.alloc_slice(&arms)),
+        };
+        let body = self.synth_node(mir::ExprKind::Match(self.tcx.alloc(call), tree), ret);
+        let adapter = mir::Symbol(
+            self.symbols
+                .get_or_intern(format!("{base}_ffi_cmp_adapter")),
+        );
+        self.push_bridge_adapter(adapter, name, ty, ret, body);
+        let entry = mir::Symbol(self.symbols.get_or_intern(&entry_name));
+        out.insert(
+            entry_name,
+            mir::FfiTraitGlue {
+                ty,
+                ret,
+                entry,
+                target: adapter,
+            },
+        );
+    }
+
     fn register_ffi_bridges(
         &mut self,
         decls: &std::collections::BTreeMap<String, WrapperDecl<'tcx>>,
@@ -1264,6 +1343,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             if decl.needs.partial_eq() {
                 self.synthesize_eq_bridge(base, decl.ty, span, out);
+            }
+            if decl.needs.ord() {
+                self.synthesize_cmp_bridge(base, decl.ty, span, out);
             }
         }
     }
