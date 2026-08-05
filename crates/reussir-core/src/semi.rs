@@ -105,6 +105,220 @@ mod tests {
     use crate::semi::ty::{Flexivity, IntTy, TyKind};
     use crate::with_tcx;
 
+    /// Every session gets the comparison tower: the four lang traits
+    /// (method-less compiler stand-ins at the crate root), the
+    /// `Num ⊴ PartialOrd` edge, and the method-less scalar impls —
+    /// `PartialEq`/`PartialOrd` on every scalar directly, `Ord` on the
+    /// totally ordered ones, `Eq` answered purely by super-projection.
+    #[test]
+    fn cmp_fallback_tower_shape() {
+        use crate::semi::lang::LangItem;
+        check("pub fn f(x: i64) -> i64 { x }", |elab, _| {
+            let id_of = |item| {
+                let def = elab.lang.get(item).expect("ensured");
+                elab.traits.trait_by_def(def).expect("trait-kinded")
+            };
+            let (pe, eq, po, ord) = (
+                id_of(LangItem::PartialEq),
+                id_of(LangItem::Eq),
+                id_of(LangItem::PartialOrd),
+                id_of(LangItem::Ord),
+            );
+            for id in [pe, eq, po, ord] {
+                let t = elab.traits.trait_def(id);
+                assert!(!t.sealed && t.methods.is_empty() && t.compiler_provided());
+            }
+            let num_supers: Vec<_> = elab
+                .traits
+                .trait_def(elab.lang.num)
+                .supertraits
+                .iter()
+                .map(|s| s.trait_id)
+                .collect();
+            assert_eq!(num_supers, [po], "Num gains exactly the PartialOrd edge");
+            let count = |id| {
+                elab.traits
+                    .impls()
+                    .filter(|i| i.trait_ref.trait_id == id)
+                    .count()
+            };
+            assert_eq!(
+                (count(pe), count(po), count(ord), count(eq)),
+                (15, 15, 10, 0),
+                "impl completion: every scalar for PartialEq/PartialOrd, the ordered ten for Ord, none for Eq"
+            );
+            assert!(
+                elab.traits
+                    .impls()
+                    .filter(|i| [pe, po, ord].contains(&i.trait_ref.trait_id))
+                    .all(|i| i.methods.is_empty() && i.compiler_provided()),
+                "tower impls are method-less and compiler-provided"
+            );
+        });
+    }
+
+    /// Scalars and bounded generics keep the intrinsic path; the
+    /// `Num ⊴ PartialOrd` edge is what lets `T: Num` code compare.
+    #[test]
+    fn scalar_and_generic_comparisons_ground_intrinsically() {
+        check(
+            "pub fn c(a: char, b: char) -> bool { a < b }
+             pub fn b(a: bool, b: bool) -> bool { a == b }
+             fn m<T: Ord>(a: T, b: T) -> T { if a < b { a } else { b } }
+             fn e<T: Num>(a: T, b: T) -> bool { a != b }
+             pub fn go(x: i64, y: i64) -> bool { e(m(x, y), y) }",
+            |_, _| {},
+        );
+    }
+
+    /// Without `core`, comparing anything the compiler does not order
+    /// itself is a clean diagnostic, not a mislowering.
+    #[test]
+    fn non_scalar_comparisons_need_core() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let src = "pub struct P { pub x: i64 }
+                       pub fn s(a: str, b: str) -> bool { a == b }
+                       pub fn r(a: P, b: P) -> bool { a < b }";
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("`==` on `str` needs `core`'s `PartialEq`")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("`<` on `P` needs `core`'s `PartialOrd`")),
+                "{msgs:#?}"
+            );
+        });
+    }
+
+    /// The method-less stand-ins cannot be implemented: an impl would let
+    /// a non-scalar satisfy a comparison bound and reach the intrinsic
+    /// lowering. (`core`'s method-carrying declarations are implementable.)
+    #[test]
+    fn fallback_operator_traits_reject_impls() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let src = "pub struct P { pub x: i64 }
+                       impl PartialEq for P { }";
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(
+                elab.reports.iter().any(|r| r.message.contains(
+                    "cannot implement `PartialEq`: without `core` it is a method-less compiler fallback"
+                )),
+                "{:#?}",
+                elab.reports
+            );
+        });
+    }
+
+    /// A batch that declares the tower itself — `core` compiling itself —
+    /// suppresses the fallback: the `#[lang]` declarations bind (with
+    /// source spans), operators dispatch to their methods, `!=` negates
+    /// `eq`, and `Ordering` construction and matching work.
+    #[test]
+    fn declared_tower_binds_and_dispatches() {
+        use crate::semi::lang::LangItem;
+        check(
+            r#"
+            #[lang("partial_eq")]
+            pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
+            #[lang("eq")]
+            pub trait Eq: PartialEq {}
+            #[lang("partial_ord")]
+            pub trait PartialOrd: PartialEq {
+                fn lt(self: Self, other: Self) -> bool;
+                fn le(self: Self, other: Self) -> bool;
+                fn gt(self: Self, other: Self) -> bool;
+                fn ge(self: Self, other: Self) -> bool;
+            }
+            #[lang("ordering")]
+            pub enum [value] Ordering { Less, Equal, Greater }
+            #[lang("ord")]
+            pub trait Ord: Eq + PartialOrd { fn cmp(self: Self, other: Self) -> Ordering; }
+
+            pub struct P { pub x: i64 }
+            impl PartialEq for P { fn eq(self: Self, other: Self) -> bool { self.x == other.x } }
+            pub fn eqs(a: P, b: P) -> bool { a == b }
+            pub fn nes(a: P, b: P) -> bool { a != b }
+            fn tw<T: Ord>(a: T, b: T) -> Ordering { a.cmp(b) }
+            pub fn go(x: i64, y: i64) -> i64 {
+                match tw(x, y) { Ordering::Less => 0, Ordering::Equal => 1, Ordering::Greater => 2 }
+            }
+            "#,
+            |elab, _| {
+                let def = elab.lang.get(LangItem::PartialEq).expect("declared");
+                let id = elab.traits.trait_by_def(def).expect("trait-kinded");
+                let t = elab.traits.trait_def(id);
+                assert!(
+                    t.span.is_some() && !t.compiler_provided(),
+                    "declared, with a site"
+                );
+                assert_eq!(t.methods.len(), 1, "the declared trait keeps its method");
+                assert!(
+                    elab.lang_item_site(LangItem::Ordering).is_some(),
+                    "the enum binds with a site too"
+                );
+            },
+        );
+    }
+
+    /// The `Num ⊴ PartialOrd` edge and the fallback tower are checkpoint
+    /// state: a rejected batch retracts both, and the next batch re-ensures
+    /// them at the same dense ids.
+    #[test]
+    fn cmp_tower_is_checkpoint_covered() {
+        use crate::semi::lang::LangItem;
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let mut elab = Elaborator::new(tcx, &interner);
+            let batch = |src: &str, interner: &std::sync::Arc<_>| {
+                let parse =
+                    reussir_syntax::parse_with_interner(src, std::sync::Arc::clone(interner));
+                assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+                surface::program(&parse.root)
+            };
+            let broken = batch("pub fn f() -> i64 { missing() }", &interner);
+            assert!(elab.try_extend(&broken).is_err());
+            assert!(
+                elab.lang.get(LangItem::PartialEq).is_none()
+                    && elab.traits.trait_def(elab.lang.num).supertraits.is_empty(),
+                "a rejected batch retracts the tower and the edge"
+            );
+            let ok = batch("pub fn g(a: char, b: char) -> bool { a < b }", &interner);
+            assert!(elab.try_extend(&ok).is_ok());
+            assert!(elab.lang.get(LangItem::Ord).is_some());
+            assert_eq!(
+                elab.traits.trait_def(elab.lang.num).supertraits.len(),
+                1,
+                "the next batch re-ensures the edge exactly once"
+            );
+        });
+    }
+
+    #[test]
+    fn repl_batch_gets_the_cmp_tower() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let mut elab = Elaborator::new(tcx, &interner);
+            let src = "fn m<T: Ord>(a: T, b: T) -> T { if a < b { a } else { b } }";
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let r = elab.try_extend(&prog);
+            assert!(r.is_ok(), "batch rejected: {r:#?}");
+        });
+    }
+
     /// Parse + lower + elaborate, asserting there are no errors, then run `f`
     /// on the resulting elaborator.
     fn check(source: &str, f: impl for<'a, 'tcx> FnOnce(&Elaborator<'a, 'tcx>, &TyCtxt<'tcx>)) {
@@ -1881,6 +2095,7 @@ mod tests {
             "core",
             &[
                 (&[], include_str!("../../../library/core/src/lib.rr")),
+                (&["cmp"], include_str!("../../../library/core/src/cmp.rr")),
                 (
                     &["intrinsic"],
                     include_str!("../../../library/core/src/intrinsic/mod.rr"),
@@ -1900,7 +2115,46 @@ mod tests {
                         f.as_str()
                     );
                 }
+                // `core::cmp` binds the whole comparison tower, with sites.
+                for item in LangItem::CMP_TRAITS.into_iter().chain([LangItem::Ordering]) {
+                    let (_, span) = elab
+                        .lang_item_site(item)
+                        .unwrap_or_else(|| panic!("core does not declare `{}`", item.name()));
+                    assert!(span.is_some(), "`{}` has no source span", item.name());
+                }
+                // Suppression held: nothing compiler-provided was declared
+                // for the tower, and the declared traits carry methods.
+                let po = elab
+                    .traits
+                    .trait_by_def(elab.lang.get(LangItem::PartialOrd).expect("declared"))
+                    .expect("trait-kinded");
+                assert_eq!(elab.traits.trait_def(po).methods.len(), 4);
             },
+        );
+    }
+
+    /// Bare names resolve through the prelude: with the tower declared in
+    /// a module (exactly as `core` ships it), unqualified `PartialEq`,
+    /// `Ord`, and `Ordering` still resolve everywhere they can appear —
+    /// bounds, impl heads, signature types, constructors, and patterns.
+    #[test]
+    fn prelude_resolves_lang_names_across_modules() {
+        check_package(
+            "p",
+            &[
+                (
+                    &[],
+                    "pub struct P { pub x: i64 }\n\
+                     impl PartialEq for P { fn eq(self: Self, other: Self) -> bool { self.x == other.x } }\n\
+                     pub fn eqs(a: P, b: P) -> bool { a == b }\n\
+                     fn tw<T: Ord>(a: T, b: T) -> Ordering { a.cmp(b) }\n\
+                     pub fn go(x: i64, y: i64) -> i64 {\n\
+                         match tw(x, y) { Ordering::Less => 0, Ordering::Equal => 1, Ordering::Greater => 2 }\n\
+                     }",
+                ),
+                (&["cmp"], include_str!("../../../library/core/src/cmp.rr")),
+            ],
+            |elab, _| assert!(!elab.has_errors(), "{:#?}", elab.reports),
         );
     }
 

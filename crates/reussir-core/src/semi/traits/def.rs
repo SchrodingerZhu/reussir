@@ -94,3 +94,21 @@ pub struct ImplDef<'tcx> {
     pub span: Option<Span>,
     pub file: FileId,
 }
+
+impl TraitDef<'_> {
+    /// Whether this trait is compiler-provided — a sealed builtin or the
+    /// site-less comparison-tower fallback — rather than declared by
+    /// source or a loaded interface. Compiler-provided declarations never
+    /// serialize: every session re-registers its own.
+    pub fn compiler_provided(&self) -> bool {
+        self.span.is_none() && self.file == FileId::ROOT
+    }
+}
+
+impl ImplDef<'_> {
+    /// Whether this impl is compiler-provided (the method-less scalar
+    /// impls of the comparison tower); see [`TraitDef::compiler_provided`].
+    pub fn compiler_provided(&self) -> bool {
+        self.span.is_none() && self.file == FileId::ROOT
+    }
+}

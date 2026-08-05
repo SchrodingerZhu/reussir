@@ -473,6 +473,18 @@ pub struct Elaborator<'a, 'tcx> {
     /// trait's implicit `Self` generic (interned once at construction; the
     /// scan passes have no interner).
     pub(super) self_name: TokenKey,
+    /// The prelude's name → lang-item table (`PartialEq` … `Ordering`),
+    /// interned at construction like `self_name`. Bare-name resolution
+    /// falls back through it ([`Elaborator::prelude_lookup`]), so items
+    /// `core` declares under its own modules still resolve unqualified;
+    /// the fallback registration ([`Elaborator::ensure_cmp_fallback`])
+    /// draws its declared names from the same table.
+    pub(super) prelude_names: [(TokenKey, crate::semi::lang::LangItem); 5],
+    /// The operator-method names (`eq`, `lt`, `le`, `gt`, `ge`), interned at
+    /// construction: operator desugaring resolves the active trait's method
+    /// *by name*, so method order in `core`'s declarations is not a
+    /// compiler contract.
+    pub(super) cmp_method_names: [TokenKey; 5],
     pub inside_region: bool,
     /// Generics required to be regional, accumulated while checking the current
     /// function body (e.g. a generic assigned into a flex link). Seeded from the
@@ -503,6 +515,10 @@ pub struct Checkpoint {
     pub(super) elaborated: usize,
     pub(super) reports: usize,
     pub(super) lang: usize,
+    /// `Num`'s super-trait count — the one mutation a batch makes to a
+    /// *pre-existing* trait def (the `Num ⊴ PartialOrd` edge,
+    /// [`Elaborator::ensure_num_partial_ord_edge`]); truncating restores it.
+    pub(super) num_supers: usize,
 }
 
 impl<'a, 'tcx> Elaborator<'a, 'tcx> {
@@ -519,6 +535,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let fallback = Builtins::register(&mut traits, &mut defs, &mut handle, tcx);
         let lang = crate::semi::lang::LangItems::new(fallback);
         let self_name = interner.intern("Self");
+        let prelude_names = {
+            use crate::semi::lang::LangItem;
+            [
+                ("PartialEq", LangItem::PartialEq),
+                ("Eq", LangItem::Eq),
+                ("PartialOrd", LangItem::PartialOrd),
+                ("Ord", LangItem::Ord),
+                ("Ordering", LangItem::Ordering),
+            ]
+            .map(|(name, item)| (interner.intern(name), item))
+        };
+        let cmp_method_names = ["eq", "lt", "le", "gt", "ge"].map(|name| interner.intern(name));
         Elaborator {
             tcx,
             resolver: &**interner,
@@ -551,6 +579,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             generic_names: FxHashMap::default(),
             self_alias: None,
             self_name,
+            prelude_names,
+            cmp_method_names,
             inside_region: false,
             regional_generics: Vec::new(),
             fulfill: FulfillCtxt::default(),
@@ -846,6 +876,22 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         out
     }
 
+    /// The prelude: a bare name's lang-item def, kind-filtered (`Trait`
+    /// for bound positions, `Record` for type and constructor positions).
+    /// This is the resolution fallback that makes `core`'s declarations —
+    /// which live under core's own modules — usable unqualified, exactly
+    /// like the crate-root fallback tower they replace.
+    pub(super) fn prelude_lookup(
+        &self,
+        name: TokenKey,
+        kind: crate::semi::lang::LangItemKind,
+    ) -> Option<DefId> {
+        self.prelude_names
+            .iter()
+            .find(|&&(key, item)| key == name && item.kind() == kind)
+            .and_then(|&(_, item)| self.lang.get(item))
+    }
+
     /// Resolve a type reference: bare names in the current module (falling
     /// back to the crate root), qualified paths per the module-relative rules
     /// (see [`DefTable::resolve_record_path`]). The path is first expanded
@@ -859,7 +905,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.resolve_extern(path, DefKind::Record);
         }
         if path.segments.is_empty() {
-            self.defs.resolve_record(path.basename)
+            self.defs.resolve_record(path.basename).or_else(|| {
+                self.prelude_lookup(path.basename, crate::semi::lang::LangItemKind::Record)
+            })
         } else {
             self.defs
                 .resolve_record_path(&self.classify_segs(path), path.basename)
@@ -890,7 +938,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let path = expanded.as_ref().unwrap_or(path);
         let (&enum_name, mods) = path.segments.split_last()?;
         if mods.is_empty() {
-            self.defs.resolve_record(enum_name)
+            self.defs
+                .resolve_record(enum_name)
+                .or_else(|| self.prelude_lookup(enum_name, crate::semi::lang::LangItemKind::Record))
         } else {
             let mods_path = surface::Path {
                 basename: enum_name,
@@ -1175,7 +1225,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         if self.extern_head(path).is_some() {
             self.resolve_extern(path, DefKind::Trait)
         } else if path.segments.is_empty() {
-            self.defs.resolve_trait(path.basename)
+            self.defs.resolve_trait(path.basename).or_else(|| {
+                self.prelude_lookup(path.basename, crate::semi::lang::LangItemKind::Trait)
+            })
         } else {
             self.defs
                 .resolve_trait_path(&self.classify_segs(path), path.basename)
@@ -1286,6 +1338,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             elaborated: self.elaborated.len(),
             lang: self.lang.len(),
             reports: self.reports.len(),
+            num_supers: self.traits.trait_def(self.lang.num).supertraits.len(),
         }
     }
 
@@ -1310,6 +1363,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.elaborated.truncate(cp.elaborated);
         self.lang.truncate(cp.lang);
         self.reports.truncate(cp.reports);
+        self.traits
+            .trait_def_mut(self.lang.num)
+            .supertraits
+            .truncate(cp.num_supers);
     }
 
     /// Incrementally elaborate one batch of items against the accumulated
@@ -1431,6 +1488,199 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return Some((rec.file, rec.span));
         }
         self.functions.get(&def).map(|f| (f.file, f.span))
+    }
+
+    /// Ensure the comparison tower's *traits* exist: unsealed, method-less
+    /// `PartialEq`/`Eq`/`PartialOrd`/`Ord` at the crate root. Sessions
+    /// without `core` — unit tests, bare `rrc file.rr`, the REPL today —
+    /// keep every comparison operator working: the checker constrains
+    /// against these traits, and monomorphization lowers selections of
+    /// their method-less impls ([`Elaborator::ensure_cmp_scalar_impls`])
+    /// straight to the intrinsic comparison. Implementing them for user
+    /// types needs `core`'s real, method-carrying declarations.
+    ///
+    /// Idempotent per item, so a tower an interface declared fully is left
+    /// alone and a partially bound one is completed. Runs *before* the
+    /// batch's trait scan: a root-name collision is then always the user
+    /// declaration's error, exactly as with the numeric tower.
+    fn ensure_cmp_fallback(&mut self) {
+        use crate::semi::lang::LangItem;
+
+        // Resolve-or-declare the tower's traits: a declared item (a loaded
+        // `core` interface) wins; the fallback is a method-less stand-in
+        // at the crate root.
+        let module = self.defs.module().to_vec();
+        self.defs.set_module(Vec::new());
+        let [pe_key, eq_key, po_key, ord_key, _] = self.prelude_names.map(|(key, _)| key);
+        // `None` from the chain means a prior batch squatted a tower name
+        // without binding the lang item; the remaining traits stay absent
+        // and comparisons degrade to the numeric constraint.
+        let _ = (|| {
+            let pe = self.fallback_cmp_trait(LangItem::PartialEq, pe_key, &[])?;
+            let eq = self.fallback_cmp_trait(LangItem::Eq, eq_key, &[pe])?;
+            let po = self.fallback_cmp_trait(LangItem::PartialOrd, po_key, &[pe])?;
+            self.fallback_cmp_trait(LangItem::Ord, ord_key, &[eq, po])
+        })();
+        self.defs.set_module(module);
+    }
+
+    /// Complete the tower's method-less scalar impls, for *whichever*
+    /// tower is active — `core` declares no scalar impls (an `impl` target
+    /// must be a named type), so every session completes its own here and
+    /// monomorphization lowers their selections intrinsically.
+    /// `PartialEq`/`PartialOrd` cover every scalar *directly* — super-trait
+    /// projection would satisfy the bounds, but method dispatch needs a
+    /// direct impl — while `Ord` covers only the totally ordered ones (NaN
+    /// keeps the floats out of `Eq`/`Ord`; the super-trait closure answers
+    /// `Eq`, which is method-less everywhere and needs no impls). Runs
+    /// after the trait-stub scan so a tower the batch itself declares —
+    /// `core` compiling itself, a hand-declared REPL tower — completes the
+    /// same way as the fallback's or a loaded interface's.
+    fn ensure_cmp_scalar_impls(&mut self) {
+        use crate::semi::lang::LangItem;
+        use crate::semi::ty::{FpTy, IntTy};
+        let resolve = |el: &Self, item| {
+            el.lang
+                .get(item)
+                .and_then(|def| el.traits.trait_by_def(def))
+        };
+        let (Some(pe), Some(po), Some(ord)) = (
+            resolve(self, LangItem::PartialEq),
+            resolve(self, LangItem::PartialOrd),
+            resolve(self, LangItem::Ord),
+        ) else {
+            return;
+        };
+        let ordered: Vec<Ty<'tcx>> = [8u16, 16, 32, 64]
+            .into_iter()
+            .flat_map(|width| [IntTy::Signed(width), IntTy::Unsigned(width)])
+            .map(|int| self.tcx.mk_int(int))
+            .chain([self.tcx.mk_bool(), self.tcx.mk_char()])
+            .collect();
+        let floats: Vec<Ty<'tcx>> = [
+            FpTy::Ieee(16),
+            FpTy::Ieee(32),
+            FpTy::Ieee(64),
+            FpTy::BFloat16,
+            FpTy::Float8,
+        ]
+        .into_iter()
+        .map(|fp| self.tcx.mk_fp(fp))
+        .collect();
+        let all = || ordered.iter().chain(&floats).copied();
+        all()
+            .map(|ty| (pe, ty))
+            .chain(all().map(|ty| (po, ty)))
+            .chain(ordered.iter().copied().map(|ty| (ord, ty)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .for_each(|(trait_id, self_ty)| self.ensure_scalar_impl(trait_id, self_ty));
+    }
+
+    /// Resolve one comparison-tower item to its trait id, declaring the
+    /// method-less fallback trait when nothing has bound the item yet.
+    /// `None` when the root name is taken by a declaration that is not the
+    /// lang item.
+    fn fallback_cmp_trait(
+        &mut self,
+        item: crate::semi::lang::LangItem,
+        name: TokenKey,
+        supers: &[TraitId],
+    ) -> Option<TraitId> {
+        use crate::semi::traits::def::TraitDef;
+        if let Some(def) = self.lang.get(item) {
+            let id = self
+                .traits
+                .trait_by_def(def)
+                .expect("a trait-kinded lang item");
+            return Some(id);
+        }
+        let def = self.defs.declare_trait(name)?;
+        let self_g = GenericId(0);
+        let id = TraitId(self.traits.traits_len() as u32);
+        self.traits.add_trait(TraitDef {
+            id,
+            def,
+            visibility: surface::Visibility::Public,
+            sealed: false,
+            self_param: self_g,
+            params: Vec::new(),
+            supertraits: supers
+                .iter()
+                .map(|&trait_id| crate::semi::traits::TraitRef {
+                    trait_id,
+                    args: vec![self.tcx.mk_generic(self_g)],
+                })
+                .collect(),
+            methods: Vec::new(),
+            assoc_tys: Vec::new(),
+            span: None,
+            file: FileId::ROOT,
+        });
+        self.lang
+            .declare(item, def)
+            .expect("guarded by the `get` above");
+        Some(id)
+    }
+
+    /// Register the method-less compiler impl `self_ty : trait_id` unless
+    /// one with that head already exists (idempotence across batches; the
+    /// probe is exact under REPL rollback, unlike a flag would be).
+    fn ensure_scalar_impl(&mut self, trait_id: TraitId, self_ty: Ty<'tcx>) {
+        use crate::semi::traits::def::ImplDef;
+        let head = crate::semi::traits::coherence::head_key(self_ty).expect("scalars have heads");
+        if !self.traits.impls_for(trait_id, head).is_empty() {
+            return;
+        }
+        self.traits.add_impl(ImplDef {
+            id: crate::semi::traits::ImplId(self.traits.impls_len() as u32),
+            generics: Vec::new(),
+            trait_ref: crate::semi::traits::TraitRef {
+                trait_id,
+                args: vec![self_ty],
+            },
+            self_ty,
+            where_clauses: Vec::new(),
+            methods: Vec::new(),
+            span: None,
+            file: FileId::ROOT,
+        });
+    }
+
+    /// Push the `Num ⊴ PartialOrd` super-trait edge once `PartialOrd`
+    /// exists — every machine numeric is at least partially ordered, which
+    /// is what lets `T: Num` code keep comparing. Runs after the trait-stub
+    /// scan so the edge targets whichever `PartialOrd` is active: the
+    /// fallback's, a loaded interface's, or this very batch's (`core`
+    /// compiling itself). Checkpoint-covered by `num_supers`.
+    fn ensure_num_partial_ord_edge(&mut self) {
+        use crate::semi::lang::LangItem;
+        let Some(po) = self
+            .lang
+            .get(LangItem::PartialOrd)
+            .and_then(|def| self.traits.trait_by_def(def))
+        else {
+            return;
+        };
+        let num = self.lang.num;
+        if self
+            .traits
+            .trait_def(num)
+            .supertraits
+            .iter()
+            .any(|sup| sup.trait_id == po)
+        {
+            return;
+        }
+        let self_param = self.traits.trait_def(num).self_param;
+        let arg = self.tcx.mk_generic(self_param);
+        self.traits
+            .trait_def_mut(num)
+            .supertraits
+            .push(crate::semi::traits::TraitRef {
+                trait_id: po,
+                args: vec![arg],
+            });
     }
 
     fn run_files(&mut self, files: &[(FileId, Vec<TokenKey>, &surface::Program)]) {
@@ -1560,6 +1810,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
             }
         }
+        // The comparison tower must exist before any bound resolves. A batch
+        // that declares one of its traits — `core` compiling itself —
+        // suppresses the fallback wholesale: its own `#[lang]` declarations
+        // are about to bind.
+        if !trait_decls
+            .iter()
+            .any(|(_, _, _, lang)| lang.is_some_and(|item| item.is_cmp_trait()))
+        {
+            self.ensure_cmp_fallback();
+        }
         // The later passes are keyed by the DefId each scan returned — never by
         // re-resolving the name — so an item whose declaration failed (e.g. a
         // duplicate) is skipped instead of clobbering the previously declared
@@ -1580,6 +1840,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 id
             })
             .collect();
+        // Every provenance of the tower is in place now — fallback, loaded
+        // interface, or this very batch's stubs.
+        self.ensure_num_partial_ord_edge();
+        self.ensure_cmp_scalar_impls();
         let record_defs: Vec<Option<DefId>> = records
             .iter()
             .map(|(rec, span, scope, ffi, lang)| {
@@ -2123,7 +2387,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let tdef = if self.extern_head(rpath).is_some() {
             self.resolve_extern(rpath, DefKind::Trait)
         } else if rpath.segments.is_empty() {
-            self.defs.resolve_trait(rpath.basename)
+            self.defs.resolve_trait(rpath.basename).or_else(|| {
+                self.prelude_lookup(rpath.basename, crate::semi::lang::LangItemKind::Trait)
+            })
         } else {
             self.defs
                 .resolve_trait_path(&self.classify_segs(rpath), rpath.basename)
@@ -2155,6 +2421,33 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 ),
             );
             return nones;
+        }
+        // The operator-dispatch traits are implementable only through
+        // `core`'s method-carrying declarations. An impl of the compiler's
+        // method-less stand-in has nothing to conform to — and accepting one
+        // would let a non-scalar satisfy a comparison bound and reach the
+        // intrinsic lowering. (`Eq` stays free: it is a marker in `core`
+        // too, and no operator dispatches through it.)
+        {
+            use crate::semi::lang::LangItem;
+            let t = self.traits.trait_def(tid);
+            if t.methods.is_empty()
+                && matches!(
+                    self.lang.item_of(t.def),
+                    Some(LangItem::PartialEq | LangItem::PartialOrd | LangItem::Ord)
+                )
+            {
+                self.error(
+                    span,
+                    format!(
+                        "cannot implement `{}`: without `core` it is a \
+                         method-less compiler fallback; the operator traits \
+                         are implementable through `core`'s declarations",
+                        self.trait_display(tid)
+                    ),
+                );
+                return nones;
+            }
         }
 
         let Some(target) = self.scan_impl_target(ib, true, span) else {

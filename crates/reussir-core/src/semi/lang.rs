@@ -137,6 +137,19 @@ impl LangItem {
         Self::FIXED.into_iter().find(|item| item.name() == name)
     }
 
+    /// The comparison tower's traits, in declaration (and fallback
+    /// registration) order. `Ordering` is a record, not part of this set.
+    pub const CMP_TRAITS: [LangItem; 4] = [
+        LangItem::PartialEq,
+        LangItem::Eq,
+        LangItem::PartialOrd,
+        LangItem::Ord,
+    ];
+
+    pub fn is_cmp_trait(self) -> bool {
+        Self::CMP_TRAITS.contains(&self)
+    }
+
     pub fn kind(self) -> LangItemKind {
         match self {
             LangItem::Ordering => LangItemKind::Record,
@@ -205,6 +218,14 @@ impl LangItems {
             .iter()
             .map(|&(item, def)| (def, item))
             .collect()
+    }
+
+    /// The lang item bound to `def`, if any.
+    pub fn item_of(&self, def: DefId) -> Option<LangItem> {
+        self.declared
+            .iter()
+            .find(|&&(_, d)| d == def)
+            .map(|&(item, _)| item)
     }
 
     /// Whether `def` is a bound intrinsic prototype — a location anchor,

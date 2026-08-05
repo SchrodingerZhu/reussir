@@ -1,5 +1,7 @@
 // The built-in core package. `core::intrinsic` holds the declaration sites
-// of the compiler's intrinsic operations; the language-coupled traits and
-// types (`core::cmp`, the prelude) land here as the library grows.
+// of the compiler's intrinsic operations, `core::cmp` the comparison
+// tower; the rest of the language-coupled surface (the numeric tower, the
+// prelude) lands here as the library grows.
 
+pub mod cmp;
 pub mod intrinsic;

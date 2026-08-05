@@ -338,6 +338,9 @@ pub(crate) fn frontend<'c, 'tcx>(
                     db: Some(&trait_db),
                     env: None,
                 },
+                // The dump's `#[lang]` markers, so re-entered comparison
+                // dispatch keeps its intrinsic lowering.
+                lang: parsed.lang.clone(),
             };
             let (full, reports) = monomorphize(&input);
             match &dump_sources {

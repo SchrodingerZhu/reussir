@@ -506,8 +506,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Binary operators synthesize:
     /// (ARITH) `op∈{+,-,*,/,%}`: `l ⇒ T`, `Num ⊳ T`, `r ⇐ T`, result `T`.
     /// (LOGIC) `op∈{&&,||}`: `l ⇐ Bool`, `r ⇐ Bool`, result `Bool`.
-    /// (CMP) comparisons: `l ⇒ T`, `r ⇐ T`, result `Bool`; ordering comparisons also
-    /// require `Num ⊳ T` (equality/inequality do not).
+    /// (CMP-SCALAR) comparisons with `l ⇒ T` for scalar-or-hole `T`: `r ⇐ T`, result
+    /// `Bool`, lowered intrinsically; equality registers `PartialEq ⊳ T`, orderings
+    /// `PartialOrd ⊳ T`.
+    /// (CMP-DISPATCH) any other `T` desugars to the operator method of the active
+    /// comparison trait: `l == r` ⇒ `PartialEq::eq(l, r)`, `l != r` ⇒ its negation,
+    /// each ordering its own `PartialOrd` method — four methods, never an operand
+    /// swap, so evaluation order is always source order.
     fn infer_binop(
         &mut self,
         op: BinOp,
@@ -537,15 +542,113 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             _ => {
                 let l = self.infer_expr(l);
-                let r = self.check_expr(r, l.ty);
-                if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte) {
-                    self.register_bound(self.lang.num, l.ty, span);
+                let ty = self.infer.shallow_resolve(l.ty);
+                if ty.is_scalar() || matches!(ty.kind(), TyKind::Hole(_)) {
+                    let r = self.check_expr(r, l.ty);
+                    self.register_cmp_bound(op, ty, span);
+                    let bool_ty = self.tcx.mk_bool();
+                    let cop = cmp_op(op);
+                    self.mk_expr(ExprKind::Cmp(Box::new(l), cop, Box::new(r)), bool_ty, span)
+                } else {
+                    self.dispatch_cmp_operator(op, l, r, span)
                 }
-                let bool_ty = self.tcx.mk_bool();
-                let cop = cmp_op(op);
-                self.mk_expr(ExprKind::Cmp(Box::new(l), cop, Box::new(r)), bool_ty, span)
             }
         }
+    }
+
+    /// The active comparison-tower trait for `item`, through the lang
+    /// registry (fallback or `core`-declared alike — both register).
+    fn cmp_lang_trait(&self, item: crate::semi::lang::LangItem) -> Option<TraitId> {
+        self.lang
+            .get(item)
+            .and_then(|def| self.traits.trait_by_def(def))
+    }
+
+    /// (CMP-SCALAR)'s obligation: `PartialEq ⊳ T` for equality,
+    /// `PartialOrd ⊳ T` for orderings. Without a comparison tower (its
+    /// root names were squatted before it could register), orderings
+    /// degrade to the numeric constraint.
+    fn register_cmp_bound(&mut self, op: BinOp, ty: Ty<'tcx>, span: Option<Span>) {
+        use crate::semi::lang::LangItem;
+        let ordering = matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte);
+        let item = if ordering {
+            LangItem::PartialOrd
+        } else {
+            LangItem::PartialEq
+        };
+        match self.cmp_lang_trait(item) {
+            Some(tid) => self.register_bound(tid, ty, span),
+            None if ordering => self.register_bound(self.lang.num, ty, span),
+            None => {}
+        }
+    }
+
+    /// (CMP-DISPATCH): desugar a comparison on a non-scalar operand into
+    /// the operator method of the active comparison trait, resolved by
+    /// name. The fallback traits are method-less, so operator overloading
+    /// needs `core`'s declarations — dispatch on them reports as much.
+    fn dispatch_cmp_operator(
+        &mut self,
+        op: BinOp,
+        l: Expr<'tcx>,
+        r: &surface::Expr,
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        use crate::semi::lang::LangItem;
+        let (item, name_idx, negate) = match op {
+            BinOp::Equ => (LangItem::PartialEq, 0, false),
+            BinOp::Neq => (LangItem::PartialEq, 0, true),
+            BinOp::Lt => (LangItem::PartialOrd, 1, false),
+            BinOp::Lte => (LangItem::PartialOrd, 2, false),
+            BinOp::Gt => (LangItem::PartialOrd, 3, false),
+            BinOp::Gte => (LangItem::PartialOrd, 4, false),
+            _ => unreachable!("arith and logic ops are handled above"),
+        };
+        let sym = cmp_symbol(op);
+        let shown_ty = self.ty_display(l.ty);
+        let Some(tid) = self.cmp_lang_trait(item) else {
+            self.error(
+                span,
+                format!(
+                    "`{sym}` is not defined for `{shown_ty}`: the `{}` lang trait                      is not available in this session",
+                    item.name()
+                ),
+            );
+            return self.poison(span);
+        };
+        let name = self.cmp_method_names[name_idx];
+        let methods = &self.traits.trait_def(tid).methods;
+        let Some(midx) = methods.iter().position(|m| m.name == name) else {
+            // The method-less fallback tower. A generic operand keeps the
+            // intrinsic path — its comparison bound admits only scalar
+            // instantiations (the fallback impls cover nothing else), so
+            // monomorphization grounds this `Cmp` to a scalar one. Anything
+            // concrete needs `core`.
+            if matches!(self.infer.shallow_resolve(l.ty).kind(), TyKind::Generic(_)) {
+                let r = self.check_expr(r, l.ty);
+                self.register_bound(tid, l.ty, span);
+                let bool_ty = self.tcx.mk_bool();
+                let cop = cmp_op(op);
+                return self.mk_expr(ExprKind::Cmp(Box::new(l), cop, Box::new(r)), bool_ty, span);
+            }
+            let shown_trait = self.trait_display(tid);
+            self.error(
+                span,
+                format!(
+                    "`{sym}` on `{shown_ty}` needs `core`'s `{shown_trait}` — the \
+                     compiler's fallback `{shown_trait}` is a method-less marker"
+                ),
+            );
+            return self.poison(span);
+        };
+        let call = self.dispatch_trait_method(tid, midx, l, std::slice::from_ref(r), span);
+        if !negate {
+            return call;
+        }
+        // `!=` is `!(l == r)`; `eq`'s conformance-checked signature returns
+        // `Bool`, and an errored dispatch is already poison.
+        let bool_ty = self.tcx.mk_bool();
+        self.mk_expr(ExprKind::Not(Box::new(call)), bool_ty, span)
     }
 
     /// Unary operators synthesize: (NEG) `-e ⇒ (Negate he : T)` with `e ⇒ T` and
@@ -2563,7 +2666,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[(Option<TokenKey>, surface::Expr)],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let Some(def) = self.defs.resolve_record(name) else {
+        let resolved = self
+            .defs
+            .resolve_record(name)
+            .or_else(|| self.prelude_lookup(name, crate::semi::lang::LangItemKind::Record));
+        let Some(def) = resolved else {
             let hint = self.record_suggestion(name);
             self.error(span, format!("unknown type `{}`{hint}", self.sym(name)));
             return self.poison(span);
@@ -3133,6 +3240,18 @@ fn arith_op(op: BinOp) -> ArithOp {
         BinOp::And => ArithOp::And,
         BinOp::Or => ArithOp::Or,
         _ => unreachable!("not an arithmetic operator"),
+    }
+}
+
+fn cmp_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Equ => "==",
+        BinOp::Neq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Gt => ">",
+        BinOp::Lte => "<=",
+        BinOp::Gte => ">=",
+        _ => unreachable!("not a comparison"),
     }
 }
 

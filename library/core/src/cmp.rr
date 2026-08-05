@@ -1,0 +1,44 @@
+//! Comparison: the operator traits and `Ordering`.
+//!
+//! The `#[lang]` markers bind these declarations to the compiler: the
+//! comparison operators constrain and dispatch through them. Their scalar
+//! impls are compiler-registered (an `impl` target must be a named type,
+//! so `i64 : Ord` cannot be written in source) and lower intrinsically;
+//! user types implement the traits like any other.
+
+/// Partial equivalence: `==` and `!=`. `eq` is `==`; `!=` is its negation.
+#[lang("partial_eq")]
+pub trait PartialEq {
+    fn eq(self: Self, other: Self) -> bool;
+}
+
+/// Full equivalence, as a marker on top of `PartialEq`: every value equals
+/// itself. Floats are `PartialEq` but not `Eq` (`NaN != NaN`).
+#[lang("eq")]
+pub trait Eq: PartialEq {}
+
+/// Partial order: `<`, `<=`, `>`, `>=`, one method per operator — an
+/// operator never swaps its operands, so evaluation order stays source
+/// order even for `>` and `>=`.
+#[lang("partial_ord")]
+pub trait PartialOrd: PartialEq {
+    fn lt(self: Self, other: Self) -> bool;
+    fn le(self: Self, other: Self) -> bool;
+    fn gt(self: Self, other: Self) -> bool;
+    fn ge(self: Self, other: Self) -> bool;
+}
+
+/// The result of a total comparison. A `[value]` enum: three fieldless
+/// variants, passed and matched without any reference counting.
+#[lang("ordering")]
+pub enum [value] Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
+/// Total order.
+#[lang("ord")]
+pub trait Ord: Eq + PartialOrd {
+    fn cmp(self: Self, other: Self) -> Ordering;
+}

@@ -1,0 +1,58 @@
+// The comparison tower from `core` in a real build: scalar operators stay
+// intrinsic, user impls make records ordered, and one generic `min` serves
+// both worlds — compiler-provided scalar impls and the user's `Ord`.
+
+pub struct Money { pub cents: i64 }
+
+impl PartialEq for Money {
+    fn eq(self: Self, other: Self) -> bool { self.cents == other.cents }
+}
+impl Eq for Money { }
+impl PartialOrd for Money {
+    fn lt(self: Self, other: Self) -> bool { self.cents < other.cents }
+    fn le(self: Self, other: Self) -> bool { self.cents <= other.cents }
+    fn gt(self: Self, other: Self) -> bool { self.cents > other.cents }
+    fn ge(self: Self, other: Self) -> bool { self.cents >= other.cents }
+}
+impl Ord for Money {
+    fn cmp(self: Self, other: Self) -> Ordering {
+        if self.cents < other.cents {
+            Ordering::Less
+        } else {
+            if self.cents == other.cents {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+    }
+}
+
+fn min<T: Ord>(a: T, b: T) -> T { if a <= b { a } else { b } }
+
+fn ordv(o: Ordering) -> u64 {
+    match o {
+        Ordering::Less => 0,
+        Ordering::Equal => 1,
+        Ordering::Greater => 2
+    }
+}
+
+fn cmp_of<T: Ord>(a: T, b: T) -> u64 { ordv(a.cmp(b)) }
+
+fn flag(b: bool) -> u64 { if b { 1 } else { 0 } }
+
+fn cheaper(a: Money, b: Money) -> i64 { min(a, b).cents }
+
+#[main]
+pub fn entry() {
+    console::print_u64(flag(3 as i64 < 4));
+    console::print_u64(flag('a' < 'b'));
+    console::print_u64(flag(2.5 as f64 <= 2.5));
+    console::print_u64(min(9 as i64, 4) as u64);
+    console::print_u64(cheaper(Money { cents: 700 }, Money { cents: 300 }) as u64);
+    console::print_u64(cmp_of(5 as i64, 5));
+    console::print_u64(cmp_of(2 as i64, 9));
+    console::print_u64(cmp_of(Money { cents: 300 }, Money { cents: 200 }));
+    console::print_u64(flag(Money { cents: 1 } != Money { cents: 2 }));
+}
