@@ -1331,6 +1331,91 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         );
     }
 
+    /// Reussir exposes partial-order predicates rather than `partial_cmp`.
+    /// Classify them inside one semantic adapter so Rust crosses the boundary
+    /// once; `2` is the stable ABI code for incomparable values (`None`).
+    fn synthesize_partial_cmp_bridge(
+        &mut self,
+        base: &str,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+        out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
+    ) {
+        let entry_name = format!("{base}_ffi_partial_cmp");
+        if out.contains_key(&entry_name) {
+            return;
+        }
+        let Some((eq, eq_ret, name)) =
+            self.comparison_callee(crate::semi::lang::LangItem::PartialEq, "eq", ty, span)
+        else {
+            return;
+        };
+        let Some((lt, lt_ret, _)) =
+            self.comparison_callee(crate::semi::lang::LangItem::PartialOrd, "lt", ty, span)
+        else {
+            return;
+        };
+        let Some((gt, gt_ret, _)) =
+            self.comparison_callee(crate::semi::lang::LangItem::PartialOrd, "gt", ty, span)
+        else {
+            return;
+        };
+        if [eq_ret, lt_ret, gt_ret]
+            .into_iter()
+            .any(|ret| !matches!(*ret.kind(), TyKind::Bool))
+        {
+            self.error(span, "comparison predicate methods must return `bool`");
+            return;
+        }
+        let ret = self.tcx.mk_int(IntTy::Signed(8));
+        let gt_call = self.bridge_call(gt, ty, gt_ret);
+        let greater = self.bridge_const(1, ret);
+        let unordered = self.bridge_const(2, ret);
+        let gt_body = self.synth_node(
+            mir::ExprKind::If(
+                self.tcx.alloc(gt_call),
+                self.tcx.alloc(greater),
+                self.tcx.alloc(unordered),
+            ),
+            ret,
+        );
+        let lt_call = self.bridge_call(lt, ty, lt_ret);
+        let less = self.bridge_const(-1, ret);
+        let lt_body = self.synth_node(
+            mir::ExprKind::If(
+                self.tcx.alloc(lt_call),
+                self.tcx.alloc(less),
+                self.tcx.alloc(gt_body),
+            ),
+            ret,
+        );
+        let eq_call = self.bridge_call(eq, ty, eq_ret);
+        let equal = self.bridge_const(0, ret);
+        let body = self.synth_node(
+            mir::ExprKind::If(
+                self.tcx.alloc(eq_call),
+                self.tcx.alloc(equal),
+                self.tcx.alloc(lt_body),
+            ),
+            ret,
+        );
+        let adapter = mir::Symbol(
+            self.symbols
+                .get_or_intern(format!("{base}_ffi_partial_cmp_adapter")),
+        );
+        self.push_bridge_adapter(adapter, name, ty, ret, body);
+        let entry = mir::Symbol(self.symbols.get_or_intern(&entry_name));
+        out.insert(
+            entry_name,
+            mir::FfiTraitGlue {
+                ty,
+                ret,
+                entry,
+                target: adapter,
+            },
+        );
+    }
+
     fn register_ffi_bridges(
         &mut self,
         decls: &std::collections::BTreeMap<String, WrapperDecl<'tcx>>,
@@ -1343,6 +1428,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             }
             if decl.needs.partial_eq() {
                 self.synthesize_eq_bridge(base, decl.ty, span, out);
+            }
+            if decl.needs.partial_ord() && !decl.needs.ord() {
+                self.synthesize_partial_cmp_bridge(base, decl.ty, span, out);
             }
             if decl.needs.ord() {
                 self.synthesize_cmp_bridge(base, decl.ty, span, out);
