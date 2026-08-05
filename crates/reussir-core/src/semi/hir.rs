@@ -405,7 +405,10 @@ pub fn trait_texts<'tcx>(
     }
     let mut impls = Vec::new();
     for imp in db.impls() {
-        if db.trait_def(imp.trait_ref.trait_id).sealed || imp.compiler_provided() {
+        // Compiler-provided impls (the no-`core` fallback's) never
+        // serialize; source-declared builtin impls — including those of the
+        // sealed numeric tower — ship like any other.
+        if imp.compiler_provided() {
             continue;
         }
         impls.push(ImplText {

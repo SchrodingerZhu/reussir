@@ -234,12 +234,11 @@ impl Parser<'_> {
         // trait named `for` implemented for `X`.
         if self.at_ctx_kw("for") {
             self.bump();
-            if PRIM_TYPES.contains(&self.current_text()) {
-                let e = self.start();
-                self.error("the target of `impl` must be a named type");
-                self.bump();
-                e.complete(self, ErrorNode);
-            } else if self.type_atom().is_none() {
+            // A primitive name is a legal trait-impl target (`impl PartialEq
+            // for i64`): `core` declares the builtin impls this way. It
+            // parses as an ordinary named atom; the semantic layer resolves
+            // it to the scalar type.
+            if self.type_atom().is_none() {
                 self.error("expected a type name as the `impl` target after `for`");
             }
         }

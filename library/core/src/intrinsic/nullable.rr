@@ -1,0 +1,5 @@
+//! Anchor for the built-in nullable former: `Nullable<T>` encodes its
+//! null case in the pointer representation of a pointer-like `T`.
+
+#[lang("nullable")]
+pub struct Nullable<T> { }

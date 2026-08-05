@@ -1196,7 +1196,16 @@ fn source_block_of(node: &ResolvedNode) -> Option<SourceBlock> {
 /// Split a `PathType` node into its qualified path and type arguments —
 /// the projection behind every [`TraitRef`] and `impl` head.
 fn path_type_parts(ty: &ResolvedNode) -> (Path, SmallVec<[Type; 2]>) {
-    let path = path_of(child_node(ty, PathKind).expect("type path"));
+    // A primitive head (`impl PartialEq for i64`) has no path node: its
+    // single token becomes a bare path whose basename spells the
+    // primitive; the semantic layer resolves it to the scalar type.
+    let path = match child_node(ty, PathKind) {
+        Some(node) => path_of(node),
+        None => Path {
+            basename: key(tokens(ty).next().expect("a primitive type token")),
+            segments: SmallVec::new(),
+        },
+    };
     let args = child_node(ty, TypeArgList)
         .map(|l| {
             nodes(l)
@@ -1214,9 +1223,13 @@ fn trait_ref_of(ty: &ResolvedNode) -> TraitRef {
 }
 
 fn impl_of(node: &ResolvedNode) -> ImplBlock {
-    // Two direct PathType heads iff the `for` separator was parsed: the
-    // first is then the trait reference, the second the target.
-    let mut heads = nodes(node).filter(|n| n.kind() == PathType);
+    // Two direct type heads iff the `for` separator was parsed: the first
+    // is then the trait reference, the second the target. The target may
+    // be a primitive (`impl PartialEq for i64` — `core`'s builtin impls);
+    // it projects as a bare path whose basename spells the primitive, and
+    // the semantic layer resolves it to the scalar type. The trait head is
+    // always a named reference (the parser rejects a primitive there).
+    let mut heads = nodes(node).filter(|n| matches!(n.kind(), PathType | PrimType));
     let first = heads.next().expect("impl target type");
     let (trait_ref, (target, target_args)) = match heads.next() {
         Some(second) => (Some(trait_ref_of(first)), path_type_parts(second)),

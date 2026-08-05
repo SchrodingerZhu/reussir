@@ -55,4 +55,8 @@ pub fn entry() {
     console::print_u64(cmp_of(2 as i64, 9));
     console::print_u64(cmp_of(Money { cents: 300 }, Money { cents: 200 }));
     console::print_u64(flag(Money { cents: 1 } != Money { cents: 2 }));
+    // Method syntax on scalars: the builtin impl's members are the
+    // intrinsics themselves.
+    console::print_u64(flag((5 as i64).eq(5)));
+    console::print_u64(ordv((9 as i64).cmp(4)));
 }

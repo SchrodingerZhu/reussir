@@ -101,6 +101,15 @@ pub fn export_closure(input: &MonoInput<'_, '_>) -> ExportClosure {
             queue.push_back(f.def);
         }
     }
+    // Lang-bound records — the former anchors, `Ordering` — always ship:
+    // they are declaration sites consumers bind, whether or not a shipped
+    // type mentions them.
+    closure.records.extend(
+        input
+            .lang
+            .keys()
+            .filter(|def| input.records.contains_key(def)),
+    );
     // `pub` traits seed the trait closure (compiler-provided traits never
     // ship — see `exportable`).
     if let Some(db) = db {

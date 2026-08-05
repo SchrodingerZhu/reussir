@@ -1,0 +1,29 @@
+//! Anchors for the cell formers: `Cell<T>`, `RefCell<T>`, `Atomic<T>`,
+//! `Mutex<T>`, `FlatLock<T>`, and `RwLock<T>` stay wired in the compiler
+//! (their bare names resolve as a prelude, the canonical spellings here);
+//! the anchors bind their declaration sites for diagnostics, debug info,
+//! and the LSP.
+
+/// Whole-element `get`/`set`, no synchronization.
+#[lang("cell")]
+pub struct Cell<T> { }
+
+/// Adds the guarded `rmw` move-out region and the `in_use` observation.
+#[lang("ref_cell")]
+pub struct RefCell<T> { }
+
+/// An inline atomic arithmetic scalar.
+#[lang("atomic")]
+pub struct Atomic<T> { }
+
+/// Accesses run inside a mutex critical section.
+#[lang("mutex")]
+pub struct Mutex<T> { }
+
+/// A spinning flat-combining lock.
+#[lang("flat_lock")]
+pub struct FlatLock<T> { }
+
+/// A reader-writer lock.
+#[lang("rw_lock")]
+pub struct RwLock<T> { }

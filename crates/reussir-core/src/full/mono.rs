@@ -1220,15 +1220,14 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             Ok(Evidence::Impl { impl_id, args, .. }) => {
                 let imp = db.impl_def(impl_id);
                 let Some(&target) = imp.methods.get(method as usize) else {
-                    // Only the compiler registers method-less impls, and only
-                    // for the operator traits over the scalars: those calls
-                    // lower intrinsically instead of dispatching.
-                    let compiler_made = imp.span.is_none() && imp.file == FileId::ROOT;
-                    if compiler_made
-                        && self
-                            .lang
-                            .get(&tdef.def)
-                            .is_some_and(|item| item.is_cmp_trait())
+                    // A method-less impl of an operator trait is the builtin
+                    // form — `core`'s source-declared scalar impls and the
+                    // compiler's no-`core` fallback twins alike: the call
+                    // lowers intrinsically instead of dispatching.
+                    if self
+                        .lang
+                        .get(&tdef.def)
+                        .is_some_and(|item| item.is_cmp_trait())
                     {
                         match mname.as_str() {
                             "eq" => return Some(TraitCallTarget::Intrinsic(CmpOp::Eq)),
@@ -2214,6 +2213,30 @@ mod tests {
         assert!(
             !helper.starts_with("pub "),
             "the helper is package-private:\n{helper}"
+        );
+    }
+
+    /// Method syntax on a scalar receiver dispatches through the builtin
+    /// impl and lowers intrinsically at *check* time: `x.eq(y)` is the
+    /// `Cmp` node, `x.cmp(y)` the let-bound three-way — no call, no
+    /// synthesized helper in the program.
+    #[test]
+    fn scalar_method_syntax_lowers_intrinsically() {
+        let source = format!(
+            "{CMP_TOWER}
+            pub fn m(x: i64, y: i64) -> bool {{ x.eq(y) }}
+            pub fn t(x: i64, y: i64) -> Ordering {{ x.cmp(y) }}"
+        );
+        let text = mir_text(&source);
+        let m = mir_item(&text, "_RC1m");
+        assert!(
+            m.contains(" == ") && !m.contains("Call"),
+            "expected an inline intrinsic `==`:\n{m}"
+        );
+        let t = mir_item(&text, "_RC1t");
+        assert!(
+            t.contains(" < ") && t.contains("Ordering") && !text.contains("__reussir_ord_cmp"),
+            "expected an inline three-way, no synthesized helper:\n{t}"
         );
     }
 

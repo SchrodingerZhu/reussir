@@ -18,9 +18,13 @@
 // RRI-DAG: #[lang("ordering")] pub [value] enum #core::cmp::Ordering in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] { Less(), Equal(), Greater() };
 // RRI-DAG: #[lang("ord")] pub trait #core::cmp::Ord<{{.*}}(Self)> : #core::cmp::Eq::<{{.*}}>, #core::cmp::PartialOrd::<{{.*}}> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {
 
-// The compiler-provided scalar impls never serialize.
-// RUN: %FileCheck %s --check-prefix=NOIMPL < %t.bdir/dev/deps/core.rri
-// NOIMPL-NOT: impl {{.*}}PartialEq{{.*}}for i64
+// The builtin impls are core source now — declared in their special form
+// (`impl PartialEq for i64 { }`, members compiler-provided) and shipped
+// with locations.
+// RUN: %FileCheck %s --check-prefix=IMPLS < %t.bdir/dev/deps/core.rri
+// IMPLS-DAG: impl #core::cmp::PartialEq::<i64> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  }
+// IMPLS-DAG: impl #core::cmp::Ord::<char> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  }
+// IMPLS-DAG: impl #core::cmp::PartialOrd::<f64> in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}] {  }
 
 // RUN: %t.bdir/dev/cmpdemo%exe_ext | %FileCheck %s --check-prefix=OUT
 
@@ -33,3 +37,5 @@
 // OUT-NEXT: 0
 // OUT-NEXT: 2
 // OUT-NEXT: 1
+// OUT-NEXT: 1
+// OUT-NEXT: 2

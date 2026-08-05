@@ -42,3 +42,65 @@ pub enum [value] Ordering {
 pub trait Ord: Eq + PartialOrd {
     fn cmp(self: Self, other: Self) -> Ordering;
 }
+
+// The builtin impls, in their special form: an `impl` for a primitive
+// target with an empty body. The members are compiler-provided — selection
+// of a method-less impl lowers the call intrinsically — and these
+// declarations are their source of truth: located, serialized in the
+// interface, and completing the operator dispatch for every scalar.
+// Floats stop at `PartialOrd` (NaN); everything totally ordered carries
+// the full tower.
+
+impl PartialEq for i8 { }
+impl PartialEq for i16 { }
+impl PartialEq for i32 { }
+impl PartialEq for i64 { }
+impl PartialEq for u8 { }
+impl PartialEq for u16 { }
+impl PartialEq for u32 { }
+impl PartialEq for u64 { }
+impl PartialEq for f16 { }
+impl PartialEq for f32 { }
+impl PartialEq for f64 { }
+impl PartialEq for bfloat16 { }
+impl PartialEq for float8 { }
+impl PartialEq for bool { }
+impl PartialEq for char { }
+
+impl Eq for i8 { }
+impl Eq for i16 { }
+impl Eq for i32 { }
+impl Eq for i64 { }
+impl Eq for u8 { }
+impl Eq for u16 { }
+impl Eq for u32 { }
+impl Eq for u64 { }
+impl Eq for bool { }
+impl Eq for char { }
+
+impl PartialOrd for i8 { }
+impl PartialOrd for i16 { }
+impl PartialOrd for i32 { }
+impl PartialOrd for i64 { }
+impl PartialOrd for u8 { }
+impl PartialOrd for u16 { }
+impl PartialOrd for u32 { }
+impl PartialOrd for u64 { }
+impl PartialOrd for f16 { }
+impl PartialOrd for f32 { }
+impl PartialOrd for f64 { }
+impl PartialOrd for bfloat16 { }
+impl PartialOrd for float8 { }
+impl PartialOrd for bool { }
+impl PartialOrd for char { }
+
+impl Ord for i8 { }
+impl Ord for i16 { }
+impl Ord for i32 { }
+impl Ord for i64 { }
+impl Ord for u8 { }
+impl Ord for u16 { }
+impl Ord for u32 { }
+impl Ord for u64 { }
+impl Ord for bool { }
+impl Ord for char { }

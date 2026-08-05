@@ -856,17 +856,11 @@ mod tests {
 
     #[test]
     fn impl_for_prim_positions() {
+        // A primitive impl *target* is legal — `core` declares the builtin
+        // impls with it. A primitive trait head stays rejected.
         let source = "impl Show for i64 { }";
         let parse = super::parse(source);
-        assert!(!parse.ok());
-        assert!(
-            parse
-                .errors
-                .iter()
-                .any(|e| e.message.contains("must be a named type")),
-            "{:#?}",
-            parse.errors
-        );
+        assert!(parse.ok(), "{:#?}", parse.errors);
         assert_eq!(parse.root.text(), source);
 
         let source = "impl i64 for X { }";

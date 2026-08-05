@@ -1,7 +1,12 @@
-// Declaration sites for `core::intrinsic::<family>::<op>`. The operations
-// themselves are checked and lowered by the compiler; these prototypes bind
-// each one to a location via its `#[lang]` marker. The `array` and `cell`
-// families' signatures (variadic indices, cell-kind polymorphism) are not
-// yet expressible as prototypes and keep their compiler-only status.
+// Declaration sites for `core::intrinsic::<family>::<op>` and the
+// built-in type formers. The operations and formers themselves are
+// checked and lowered by the compiler; the prototypes and anchors here
+// bind each one to a location via its `#[lang]` marker. The `array` and
+// `cell` operation families' signatures (variadic indices, cell-kind
+// polymorphism) are not yet expressible as prototypes and keep their
+// compiler-only status.
 
+pub mod arc;
+pub mod cell;
 pub mod math;
+pub mod nullable;
