@@ -1,0 +1,13 @@
+// REQUIRES: asan
+// UNSUPPORTED: darwin
+// ASan+LSan gate over frontend/ffi_btree_set_record_e2e.rr. The old/new
+// BTreeSet versions force Rust-side COW, bridged comparisons temporarily
+// acquire their borrowed Reussir operands, and a duplicate key is rejected.
+// Instrumenting the linked Rust bitcode together with the Reussir IR catches
+// leaks, double releases, and use-after-free across all of those paths.
+
+// RUN: %rrc --package-root %S/../../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %S/../../frontend/ffi_btree_set_record_e2e.rr --package-name btreeset_asan --extern core=%t.core.rri -o %t.ll -t llvm-ir --relocation-mode pic -Odefault
+// RUN: %cc %asan_flags -c -x ir %t.ll -o %t.o
+// RUN: %cc %asan_flags %t.o %S/../../frontend/ffi_btree_set_record_e2e.c %reussir_rt_asan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.exe
