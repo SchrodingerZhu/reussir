@@ -170,7 +170,7 @@ impl WrapperDecl<'_> {
             let _ = write!(
                 d,
                 "impl ::reussir_rt::bridge::PartialOrdBridge for {sym} {{\n\
-                 \x20   fn partial_cmp_bridge(&self, other: &Self) -> Option<::core::cmp::Ordering> {{\n"
+                 \x20   fn partial_cmp_bridge(&self, other: &Self) -> Option<::std::cmp::Ordering> {{\n"
             );
             if self.needs.ord() {
                 let _ = write!(
@@ -181,9 +181,9 @@ impl WrapperDecl<'_> {
                 let _ = write!(
                     d,
                     "        match unsafe {{ {sym}_ffi_partial_cmp(self.0, other.0) }} {{\n\
-                     \x20           n if n < 0 => Some(::core::cmp::Ordering::Less),\n\
-                     \x20           0 => Some(::core::cmp::Ordering::Equal),\n\
-                     \x20           1 => Some(::core::cmp::Ordering::Greater),\n\
+                     \x20           n if n < 0 => Some(::std::cmp::Ordering::Less),\n\
+                     \x20           0 => Some(::std::cmp::Ordering::Equal),\n\
+                     \x20           1 => Some(::std::cmp::Ordering::Greater),\n\
                      \x20           _ => None,\n\
                      \x20       }}\n"
                 );
@@ -194,11 +194,11 @@ impl WrapperDecl<'_> {
             let _ = write!(
                 d,
                 "impl ::reussir_rt::bridge::OrdBridge for {sym} {{\n\
-                 \x20   fn cmp_bridge(&self, other: &Self) -> ::core::cmp::Ordering {{\n\
+                 \x20   fn cmp_bridge(&self, other: &Self) -> ::std::cmp::Ordering {{\n\
                  \x20       match unsafe {{ {sym}_ffi_cmp(self.0, other.0) }} {{\n\
-                 \x20           n if n < 0 => ::core::cmp::Ordering::Less,\n\
-                 \x20           0 => ::core::cmp::Ordering::Equal,\n\
-                 \x20           _ => ::core::cmp::Ordering::Greater,\n\
+                 \x20           n if n < 0 => ::std::cmp::Ordering::Less,\n\
+                 \x20           0 => ::std::cmp::Ordering::Equal,\n\
+                 \x20           _ => ::std::cmp::Ordering::Greater,\n\
                  \x20       }}\n\
                  \x20   }}\n\
                  }}\n"

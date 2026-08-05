@@ -369,6 +369,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     // symbol (deterministic order) — each becomes one acquire/release pair.
     let mut glue: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
         std::collections::BTreeMap::new();
+    let mut ffi_trait_glue: std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>> =
+        std::collections::BTreeMap::new();
 
     let mut functions = Vec::new();
     while let Some(inst) = driver.queue.pop_front() {
@@ -503,6 +505,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                         placeholders.insert(input.resolver.resolve(*gname), rendered);
                     }
                 }
+                driver.register_ffi_bridges(&decls, fimport.span, &mut ffi_trait_glue);
                 let body_text = ffi_render::substitute_placeholders(&fimport.body, &placeholders);
                 // File ids are one space (externs remap at declaration), so
                 // the per-file prelude pairing holds across both tables.
@@ -737,7 +740,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
             ffi_imports: ffi_imports_out,
             ffi_textures,
             ffi_rc_glue,
-            ffi_trait_glue: Vec::new(),
+            ffi_trait_glue: ffi_trait_glue.into_values().collect(),
             symbols,
         },
         reports,
@@ -1041,6 +1044,227 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             kind,
             ty,
             span: None,
+        }
+    }
+
+    /// Select one ground comparison method and enqueue its concrete body or
+    /// prototype. Bridge synthesis uses the same judgment as an ordinary
+    /// `TraitCall`, so implementations loaded from dependency interfaces work
+    /// without a second instance mechanism.
+    fn comparison_callee(
+        &mut self,
+        item: crate::semi::lang::LangItem,
+        method_name: &str,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+    ) -> Option<(mir::Symbol, Ty<'tcx>, TokenKey)> {
+        let (trait_def, method, ret, name) = {
+            let db = self.traits.db?;
+            let (&trait_def, _) = self.lang.iter().find(|(_, found)| **found == item)?;
+            let tid = db.trait_by_def(trait_def)?;
+            let tdef = db.trait_def(tid);
+            let (method, sig) = tdef
+                .methods
+                .iter()
+                .enumerate()
+                .find(|(_, sig)| self.resolver.try_resolve(sig.name) == Some(method_name))?;
+            let mut subst = Subst::default();
+            subst.insert(tdef.self_param, ty);
+            (
+                trait_def,
+                method as u32,
+                subst_ty(self.tcx, sig.ret, &subst),
+                sig.name,
+            )
+        };
+        match self.resolve_trait_call(trait_def, method, self.tcx.intern_tys(&[ty]), span)? {
+            TraitCallTarget::Call {
+                target,
+                ty_args,
+                regional: false,
+            } => {
+                self.enqueue(target, ty_args, span);
+                Some((self.symbol_of(target, ty_args), ret, name))
+            }
+            _ => {
+                self.error(
+                    span,
+                    format!(
+                        "a PolyFFI comparison bridge for a shared record requires a \
+                         non-regional implementation of `{method_name}`"
+                    ),
+                );
+                None
+            }
+        }
+    }
+
+    /// Validate a marker-only ground bound (currently `Eq`) before Rust source
+    /// is emitted, producing a Reussir diagnostic instead of deferring failure
+    /// to an `OrdBridge is not implemented` rustc message.
+    fn require_comparison_trait(
+        &mut self,
+        item: crate::semi::lang::LangItem,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+    ) -> bool {
+        use crate::semi::traits::{Obligation, SelectCtxt, SelectError, TraitRef};
+        let Some(db) = self.traits.db else {
+            self.error(span, "comparison-bound PolyFFI requires trait metadata");
+            return false;
+        };
+        let Some((&trait_def, _)) = self.lang.iter().find(|(_, found)| **found == item) else {
+            self.error(
+                span,
+                format!(
+                    "comparison-bound PolyFFI requires the `#[lang(\"{}\")]` trait",
+                    item.name()
+                ),
+            );
+            return false;
+        };
+        let Some(tid) = db.trait_by_def(trait_def) else {
+            self.error(
+                span,
+                "comparison lang item is absent from the trait database",
+            );
+            return false;
+        };
+        let goal = Obligation::Trait(TraitRef {
+            trait_id: tid,
+            args: vec![ty],
+        });
+        match SelectCtxt::new(db, self.tcx, &[]).select(&goal) {
+            Ok(_) => true,
+            Err(error) => {
+                let record = match *ty.kind() {
+                    TyKind::Record { def, .. } => {
+                        self.defs.path(def).display(self.resolver).to_string()
+                    }
+                    _ => format!("{ty:?}"),
+                };
+                let required = self.defs.path(trait_def).display(self.resolver);
+                let reason = match error {
+                    SelectError::NoImpl(_) => "has no applicable implementation",
+                    SelectError::DepthLimit(_) => "overflowed trait selection",
+                };
+                self.error(
+                    span,
+                    format!(
+                        "cannot synthesize a Rust FFI comparison bridge for `{record}`: \
+                         required Reussir trait `{required}` {reason}"
+                    ),
+                );
+                false
+            }
+        }
+    }
+
+    fn bridge_call(
+        &mut self,
+        callee: mir::Symbol,
+        arg_ty: Ty<'tcx>,
+        ret: Ty<'tcx>,
+    ) -> mir::Expr<'tcx> {
+        let lhs = self.synth_node(mir::ExprKind::Var(hir::VarId(0)), arg_ty);
+        let rhs = self.synth_node(mir::ExprKind::Var(hir::VarId(1)), arg_ty);
+        let args = self.tcx.alloc_slice(&[lhs, rhs]);
+        self.synth_node(
+            mir::ExprKind::Call {
+                callee,
+                args,
+                regional: false,
+            },
+            ret,
+        )
+    }
+
+    fn bridge_const(&mut self, value: i8, ty: Ty<'tcx>) -> mir::Expr<'tcx> {
+        let value = self.tcx.alloc(literal::Integer::from(value));
+        self.synth_node(mir::ExprKind::ConstInt(value), ty)
+    }
+
+    fn push_bridge_adapter(
+        &mut self,
+        symbol: mir::Symbol,
+        name: TokenKey,
+        ty: Ty<'tcx>,
+        ret: Ty<'tcx>,
+        body: mir::Expr<'tcx>,
+    ) {
+        let param = |var| mir::Param { name, var, ty };
+        self.synthetic_fns.push(mir::Function {
+            symbol,
+            transform_anchor: false,
+            visibility: crate::surface::Visibility::Private,
+            mono_exported: false,
+            is_regional: false,
+            params: vec![param(hir::VarId(0)), param(hir::VarId(1))],
+            return_ty: ret,
+            body: Some(self.tcx.alloc(body)),
+            file: self.cur_file,
+        });
+    }
+
+    fn synthesize_eq_bridge(
+        &mut self,
+        base: &str,
+        ty: Ty<'tcx>,
+        span: Option<Span>,
+        out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
+    ) {
+        let entry_name = format!("{base}_ffi_eq");
+        if out.contains_key(&entry_name) {
+            return;
+        }
+        let Some((callee, method_ret, name)) =
+            self.comparison_callee(crate::semi::lang::LangItem::PartialEq, "eq", ty, span)
+        else {
+            return;
+        };
+        if !matches!(*method_ret.kind(), TyKind::Bool) {
+            self.error(span, "`PartialEq::eq` must return `bool`");
+            return;
+        }
+        let ret = self.tcx.mk_int(IntTy::Unsigned(8));
+        let call = self.bridge_call(callee, ty, method_ret);
+        let one = self.bridge_const(1, ret);
+        let zero = self.bridge_const(0, ret);
+        let body = self.synth_node(
+            mir::ExprKind::If(
+                self.tcx.alloc(call),
+                self.tcx.alloc(one),
+                self.tcx.alloc(zero),
+            ),
+            ret,
+        );
+        let adapter = mir::Symbol(self.symbols.get_or_intern(format!("{base}_ffi_eq_adapter")));
+        self.push_bridge_adapter(adapter, name, ty, ret, body);
+        let entry = mir::Symbol(self.symbols.get_or_intern(&entry_name));
+        out.insert(
+            entry_name,
+            mir::FfiTraitGlue {
+                ty,
+                ret,
+                entry,
+                target: adapter,
+            },
+        );
+    }
+
+    fn register_ffi_bridges(
+        &mut self,
+        decls: &std::collections::BTreeMap<String, WrapperDecl<'tcx>>,
+        span: Option<Span>,
+        out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
+    ) {
+        for (base, decl) in decls {
+            if decl.needs.eq() {
+                self.require_comparison_trait(crate::semi::lang::LangItem::Eq, decl.ty, span);
+            }
+            if decl.needs.partial_eq() {
+                self.synthesize_eq_bridge(base, decl.ty, span, out);
+            }
         }
     }
 
