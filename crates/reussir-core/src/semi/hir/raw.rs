@@ -35,6 +35,8 @@ pub struct Program {
 pub struct TraitItem {
     /// A `#[lang("…")]` marker naming the language item this declares.
     pub lang: Option<String>,
+    /// `#[sealed]`: no user impls; the compiler provides them.
+    pub sealed: bool,
     pub is_pub: bool,
     pub path: String,
     pub generics: Vec<Generic>,

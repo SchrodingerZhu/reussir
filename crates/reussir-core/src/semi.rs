@@ -2096,6 +2096,11 @@ mod tests {
             &[
                 (&[], include_str!("../../../library/core/src/lib.rr")),
                 (&["cmp"], include_str!("../../../library/core/src/cmp.rr")),
+                (&["num"], include_str!("../../../library/core/src/num.rr")),
+                (
+                    &["marker"],
+                    include_str!("../../../library/core/src/marker.rr"),
+                ),
                 (
                     &["intrinsic"],
                     include_str!("../../../library/core/src/intrinsic/mod.rr"),
@@ -2129,8 +2134,129 @@ mod tests {
                     .trait_by_def(elab.lang.get(LangItem::PartialOrd).expect("declared"))
                     .expect("trait-kinded");
                 assert_eq!(elab.traits.trait_def(po).methods.len(), 4);
+                // The numeric/marker tower: declared, sealed, sited, and
+                // the wired fields repointed onto the declarations.
+                for (item, field) in LangItem::TOWER.into_iter().zip([
+                    elab.lang.num,
+                    elab.lang.integral,
+                    elab.lang.floating_point,
+                    elab.lang.ptr_like,
+                    elab.lang.sync,
+                ]) {
+                    let def = elab
+                        .lang
+                        .get(item)
+                        .unwrap_or_else(|| panic!("core does not declare `{}`", item.name()));
+                    assert_eq!(
+                        elab.traits.trait_by_def(def),
+                        Some(field),
+                        "`{}`'s wired field must follow the declaration",
+                        item.name()
+                    );
+                    let t = elab.traits.trait_def(field);
+                    assert!(t.sealed && t.span.is_some(), "`{}`", item.name());
+                }
+                // `Num ⊴ PartialOrd` comes from source, targeting core's
+                // own PartialOrd.
+                assert!(
+                    elab.traits
+                        .trait_def(elab.lang.num)
+                        .supertraits
+                        .iter()
+                        .any(|s| s.trait_id == po)
+                );
             },
         );
+    }
+
+    /// `#[sealed]`: declarable on traits only, argument-free, and an
+    /// impl of a sealed trait is rejected wherever it was declared.
+    #[test]
+    fn sealed_attr_matrix() {
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let src = r#"
+                #[sealed]
+                pub trait Machine { }
+                pub struct P { pub x: i64 }
+                impl Machine for P { }
+                #[sealed]
+                pub struct Q { pub x: i64 }
+                #[sealed("x")]
+                pub trait Noisy { }
+            "#;
+            let parse = reussir_syntax::parse_with_interner(src, interner.clone());
+            assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("`Machine` is a built-in trait and cannot be implemented")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("only a trait can be `#[sealed]`")),
+                "{msgs:#?}"
+            );
+            assert!(
+                msgs.iter()
+                    .any(|m| m.contains("`#[sealed]` takes no arguments")),
+                "{msgs:#?}"
+            );
+        });
+    }
+
+    /// Declaring a numeric/marker-tower lang item repoints its wired field
+    /// — everything the checker routes through `lang.num`/…: literal
+    /// bounds, arithmetic, defaulting, the `Num ⊴ PartialOrd` edge — and a
+    /// rejected batch restores the builtins.
+    #[test]
+    fn declared_tower_repoints_and_rolls_back() {
+        use crate::semi::lang::LangItem;
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let mut elab = Elaborator::new(tcx, &interner);
+            let builtin_num = elab.lang.num;
+            let builtin_integral = elab.lang.integral;
+            let batch = |src: &str, interner: &std::sync::Arc<_>| {
+                let parse =
+                    reussir_syntax::parse_with_interner(src, std::sync::Arc::clone(interner));
+                assert!(parse.ok(), "parse errors: {:#?}", parse.errors);
+                surface::program(&parse.root)
+            };
+            let declare = batch(
+                r#"
+                #[lang("num")] #[sealed] pub trait MyNum: PartialOrd { }
+                fn d<T: Num>(a: T, b: T) -> bool { a + a < b }
+                "#,
+                &interner,
+            );
+            let r = elab.try_extend(&declare);
+            assert!(r.is_ok(), "batch rejected: {r:#?}");
+            let declared = elab
+                .traits
+                .trait_by_def(elab.lang.get(LangItem::Num).expect("declared"))
+                .expect("trait-kinded");
+            assert_ne!(declared, builtin_num, "the wired field repoints");
+            assert_eq!(elab.lang.num, declared);
+            assert!(elab.traits.trait_def(declared).span.is_some());
+
+            let broken = batch(
+                r#"
+                #[lang("integral")] pub trait MyIntegral { }
+                fn nope() -> i64 { missing() }
+                "#,
+                &interner,
+            );
+            assert!(elab.try_extend(&broken).is_err());
+            assert_eq!(
+                elab.lang.integral, builtin_integral,
+                "a rejected batch restores the builtin field"
+            );
+            assert_eq!(elab.lang.num, declared, "accepted repoints survive");
+        });
     }
 
     /// Bare names resolve through the prelude: with the tower declared in

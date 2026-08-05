@@ -157,7 +157,7 @@ impl<'tcx> Parsed<'tcx> {
                 } else {
                     surface::Visibility::Private
                 },
-                sealed: false,
+                sealed: t.sealed,
                 self_param,
                 params,
                 supertraits: Vec::new(),
@@ -603,6 +603,7 @@ impl<'tcx> Builder<'_, 'tcx> {
         TraitText {
             def,
             is_pub: t.is_pub,
+            sealed: t.sealed,
             path: t.path.clone(),
             generics: self.text_generics(&t.generics),
             supers: t
@@ -1470,6 +1471,11 @@ mod tests {
             pub trait PartialEq { fn eq(self: Self, other: Self) -> bool; }
             #[lang("ordering")]
             pub enum Ordering { Less(), Equal(), Greater() }
+            #[sealed]
+            pub trait Machine { }
+            #[lang("ptr_like")]
+            #[sealed]
+            pub trait Pointerish { }
             "#,
         );
     }

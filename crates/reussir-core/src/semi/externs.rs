@@ -172,7 +172,7 @@ impl<'tcx> Elaborator<'_, 'tcx> {
                 } else {
                     crate::surface::Visibility::Private
                 },
-                sealed: false,
+                sealed: t.sealed,
                 self_param,
                 params: params.to_vec(),
                 supertraits: Vec::new(),

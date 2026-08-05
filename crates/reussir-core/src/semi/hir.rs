@@ -299,6 +299,9 @@ pub struct TraitText<'tcx> {
     /// itself printed (the path is).
     pub def: DefId,
     pub is_pub: bool,
+    /// `#[sealed]`: no user impls; serialized so a consumer session
+    /// enforces the same rule.
+    pub sealed: bool,
     pub path: String,
     /// Binders; `[0]` is the implicit `Self`. Names are display-only.
     pub generics: Vec<(GenericId, Option<String>)>,
@@ -354,10 +357,12 @@ pub fn trait_texts<'tcx>(
     let mut traits = Vec::new();
     for id in (0..db.traits_len() as u32).map(crate::semi::traits::TraitId) {
         let t = db.trait_def(id);
-        // Compiler-provided declarations (sealed builtins, the site-less
-        // comparison fallback and its scalar impls below) never serialize:
-        // every session re-registers its own.
-        if t.sealed || t.compiler_provided() {
+        // Compiler-provided declarations (the construction-time builtins,
+        // the site-less comparison fallback, and the scalar impls below)
+        // never serialize: every session re-registers its own. A *declared*
+        // sealed trait — `core`'s numeric tower — ships, `#[sealed]` and
+        // all.
+        if t.compiler_provided() {
             continue;
         }
         let mut generics = vec![(t.self_param, Some("Self".to_string()))];
@@ -369,6 +374,7 @@ pub fn trait_texts<'tcx>(
         traits.push(TraitText {
             def: t.def,
             is_pub: t.visibility == crate::surface::Visibility::Public,
+            sealed: t.sealed,
             path: path_of(t.def),
             generics,
             supers: t

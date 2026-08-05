@@ -95,6 +95,16 @@ pub enum LangItemKind {
 }
 
 impl LangItem {
+    /// The wired numeric/marker tower, in `Builtins` field order — the
+    /// items whose [`LangItems`] fields repoint when a declaration binds.
+    pub const TOWER: [LangItem; 5] = [
+        LangItem::Num,
+        LangItem::Integral,
+        LangItem::FloatingPoint,
+        LangItem::PtrLike,
+        LangItem::Sync,
+    ];
+
     /// The fixed (non-intrinsic) items, for enumeration.
     pub const FIXED: [LangItem; 10] = [
         LangItem::Num,
@@ -172,6 +182,10 @@ pub struct LangItems {
     /// Marker (auto) trait: a value may be reached from any thread,
     /// concurrently; answered structurally, never by impl search.
     pub sync: TraitId,
+    /// The construction-time builtin ids, in [`LangItem::TOWER`] order —
+    /// retained after the wired fields repoint, so bare-name resolution
+    /// can recognize (and substitute) a builtin hit.
+    builtin: [TraitId; 5],
     declared: Vec<(LangItem, DefId)>,
 }
 
@@ -184,8 +198,68 @@ impl LangItems {
             floating_point: fallback.floating_point,
             ptr_like: fallback.ptr_like,
             sync: fallback.sync,
+            builtin: [
+                fallback.num,
+                fallback.integral,
+                fallback.floating_point,
+                fallback.ptr_like,
+                fallback.sync,
+            ],
             declared: Vec::new(),
         }
+    }
+
+    /// Point a wired tower field at `id` — the declared trait (`core`'s)
+    /// takes over from the construction builtin, so everything the checker
+    /// wires through the field (literal bounds, arithmetic obligations,
+    /// defaulting, the structural `Sync` answer, the `Num ⊴ PartialOrd`
+    /// edge) follows the declaration.
+    pub(crate) fn repoint(&mut self, item: LangItem, id: TraitId) {
+        match item {
+            LangItem::Num => self.num = id,
+            LangItem::Integral => self.integral = id,
+            LangItem::FloatingPoint => self.floating_point = id,
+            LangItem::PtrLike => self.ptr_like = id,
+            LangItem::Sync => self.sync = id,
+            _ => {}
+        }
+    }
+
+    /// The wired fields, in [`LangItem::TOWER`] order — the REPL
+    /// checkpoint's snapshot (a rejected batch that repointed them must
+    /// restore the builtins).
+    pub(crate) fn fields(&self) -> [TraitId; 5] {
+        [
+            self.num,
+            self.integral,
+            self.floating_point,
+            self.ptr_like,
+            self.sync,
+        ]
+    }
+
+    pub(crate) fn restore_fields(&mut self, fields: [TraitId; 5]) {
+        [
+            self.num,
+            self.integral,
+            self.floating_point,
+            self.ptr_like,
+            self.sync,
+        ] = fields;
+    }
+
+    /// Substitute a bare-name hit on a *construction builtin* with the
+    /// declared tower item, when one is bound: `T: Num` keeps resolving at
+    /// the crate root in plain sessions, and resolves to `core`'s
+    /// declaration the moment an interface (or the batch itself) binds it.
+    /// Module-local shadows are their own defs and pass through untouched.
+    pub fn override_builtin(&self, def: DefId, db: &crate::semi::traits::TraitDb<'_>) -> DefId {
+        LangItem::TOWER
+            .iter()
+            .zip(self.builtin)
+            .find(|&(_, builtin_id)| db.trait_def(builtin_id).def == def)
+            .and_then(|(&item, _)| self.get(item))
+            .unwrap_or(def)
     }
 
     /// Bind `item` to `def`. `Err` returns the prior declaration for the

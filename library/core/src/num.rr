@@ -1,0 +1,22 @@
+//! The numeric tower: the sealed classes arithmetic, numeric literals,
+//! and casts wire to.
+//!
+//! `#[sealed]`: membership is fixed — the compiler provides the scalar
+//! impls (an `impl` target must be a named type, so `i64 : Integral`
+//! cannot be written in source) and lowers everything intrinsically.
+//! `Num: PartialOrd` is the compatibility edge that keeps `T: Num` code
+//! comparing.
+
+#[lang("num")]
+#[sealed]
+pub trait Num: PartialOrd {}
+
+/// Whole-number scalars: `i8`…`i64`, `u8`…`u64`.
+#[lang("integral")]
+#[sealed]
+pub trait Integral: Num {}
+
+/// Floating-point scalars: `f16`, `f32`, `f64`, `bf16`, `f8`.
+#[lang("floating_point")]
+#[sealed]
+pub trait FloatingPoint: Num {}
