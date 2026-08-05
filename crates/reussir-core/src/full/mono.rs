@@ -367,7 +367,8 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     let mut import_trampolines: Vec<mir::Trampoline> = Vec::new();
     // Shared-record wrappers referenced by any texture, keyed by instance
     // symbol (deterministic order) — each becomes one acquire/release pair.
-    let mut glue: std::collections::BTreeMap<String, Ty<'tcx>> = std::collections::BTreeMap::new();
+    let mut glue: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
+        std::collections::BTreeMap::new();
 
     let mut functions = Vec::new();
     while let Some(inst) = driver.queue.pop_front() {
@@ -450,6 +451,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         if let Some(fimport) = ffi_import {
             let fctx = FfiCtx {
                 records: input.records,
+                traits: input.traits.db,
+                generic_env: input.traits.env,
+                lang: &input.lang,
                 instance_symbol: &instance_symbol,
             };
             let mut decls: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
@@ -533,7 +537,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                     import: true,
                 });
                 for (sym, decl) in decls {
-                    glue.entry(sym).or_insert(decl.ty);
+                    glue.entry(sym)
+                        .and_modify(|old| old.needs.union(decl.needs))
+                        .or_insert(decl);
                 }
             }
         }
@@ -600,6 +606,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         if let Some(record) = input.records.get(&def).filter(|r| r.ffi.is_some()) {
             let fctx = FfiCtx {
                 records: input.records,
+                traits: input.traits.db,
+                generic_env: input.traits.env,
+                lang: &input.lang,
                 instance_symbol: &instance_symbol,
             };
             let mut decls: std::collections::BTreeMap<String, WrapperDecl<'tcx>> =
@@ -617,7 +626,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                         texture,
                     });
                     for (sym, decl) in decls {
-                        glue.entry(sym).or_insert(decl.ty);
+                        glue.entry(sym)
+                            .and_modify(|old| old.needs.union(decl.needs))
+                            .or_insert(decl);
                     }
                     layout
                 }
@@ -686,9 +697,9 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
     // referenced. The wrapped instances were noted during rendering, so
     // their layouts are resolved above.
     let ffi_rc_glue: Vec<mir::FfiRcGlue<'tcx>> = glue
-        .into_iter()
-        .map(|(sym, ty)| mir::FfiRcGlue {
-            ty,
+        .iter()
+        .map(|(sym, decl)| mir::FfiRcGlue {
+            ty: decl.ty,
             acquire: mir::Symbol(driver.symbols.get_or_intern(format!("{sym}_ffi_acquire"))),
             release: mir::Symbol(driver.symbols.get_or_intern(format!("{sym}_ffi_release"))),
         })
