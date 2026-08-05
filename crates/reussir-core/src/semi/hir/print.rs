@@ -511,6 +511,9 @@ impl<'a> Printer<'a> {
 
     fn function(&self, f: &Function<'_>) -> Doc<'static> {
         let mut head = String::new();
+        if let Some(item) = self.lang.and_then(|m| m.get(&f.def)) {
+            head.push_str(&format!("#[lang({:?})] ", item.name()));
+        }
         if self.transform_anchors.contains(&f.def) {
             head.push_str("#[transform_anchor] ");
         }

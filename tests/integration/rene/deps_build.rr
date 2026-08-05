@@ -39,7 +39,7 @@
 // RUN: %FileCheck %s --check-prefix=FRESH < %t.fresh.log
 // RUN: diff %t.listing %t.fresh.listing
 
-// FRESH: dependencies ready built=0 fresh=2
+// FRESH: dependencies ready built=0 fresh=3
 
 // The plan dump agrees: every node current, by name.
 // RUN: %rene inspect --manifest-path %S/deps/rene.ncl --build-dir %t.bdir --frozen --commands %rrc_linker | %FileCheck %s --check-prefix=STATE

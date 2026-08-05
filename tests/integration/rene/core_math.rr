@@ -1,0 +1,24 @@
+// The bundled core in a real build: the app's manifest names only
+// `console`, yet the build graph carries the implicit `core` node — built
+// first with the reserved name lifted, its interface shipping the
+// `#[lang]`-marked intrinsic prototypes with real source locations — and
+// the app's intrinsic calls keep their compiler-intercepted checking and
+// lowering all the way to a running binary.
+
+// RUN: %rene build --manifest-path %S/core_math/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=LISTING
+
+// LISTING: {{[/\\]}}dev{{[/\\]}}mathdemo
+
+// The baked interface: the package header, and located, lang-marked
+// prototypes.
+// RUN: %FileCheck %s --check-prefix=RRI < %t.bdir/dev/deps/core.rri
+
+// RRI: interface 1 package "core"
+// RRI-DAG: #[lang("core::intrinsic::math::sqrt")] pub fn #core::intrinsic::math::sqrt<{{.*}}: FloatingPoint>({{.*}}) -> {{.*}} in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}];
+// RRI-DAG: #[lang("core::intrinsic::math::powf")]
+
+// RUN: %t.bdir/dev/mathdemo%exe_ext | %FileCheck %s --check-prefix=OUT
+
+// sqrt(9) == 3, powf(2, 10) == 1024.
+// OUT: 1
+// OUT-NEXT: 1

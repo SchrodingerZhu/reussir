@@ -249,12 +249,18 @@ pub async fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String>
         ));
     }
     tracing::debug!(rrc = %rrc.display(), root = %root.display(), "scanning dependencies");
-    let out = compio::process::Command::new(&rrc)
-        .arg("--package-root")
+    let mut cmd = compio::process::Command::new(&rrc);
+    cmd.arg("--package-root")
         .arg(root)
         .arg("--package-name")
         .arg(package)
-        .arg("--scan-deps")
+        .arg("--scan-deps");
+    // The bundled core carries the reserved name; scanning it needs the
+    // same lift its compile commands get.
+    if package == "core" {
+        cmd.arg("--core");
+    }
+    let out = cmd
         // compio inherits stdio unless told otherwise; the graph arrives on
         // stdout while rrc's diagnostics stream through on stderr.
         .stdout(Stdio::piped())

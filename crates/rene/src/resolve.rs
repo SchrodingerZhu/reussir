@@ -52,6 +52,14 @@ pub struct Solution {
 
 /// Load the transitive graph rooted at `root`'s manifest.
 pub fn load_graph(root: &Loaded) -> Result<Graph, String> {
+    load_graph_with(root, None)
+}
+
+/// [`load_graph`], with the bundled `core` package (at `core_dir`) grafted
+/// in: loaded like any other node and made an implicit dependency of every
+/// package that does not set `package.no_core`. Its edge carries no
+/// manifest entry, so constraint lookups fall back to `*`.
+pub fn load_graph_with(root: &Loaded, core_dir: Option<&Path>) -> Result<Graph, String> {
     let mut nodes: BTreeMap<String, Node> = BTreeMap::new();
     let root_name = root.manifest.package.name.clone();
     let mut queue: Vec<(String, Loaded)> = vec![(root_name.clone(), root.clone())];
@@ -102,6 +110,31 @@ pub fn load_graph(root: &Loaded) -> Result<Graph, String> {
             },
         );
     }
+    if let Some(core_dir) = core_dir
+        && !nodes.contains_key("core")
+    {
+        let manifest = core_dir.join(manifest::MANIFEST_FILE);
+        let loaded = manifest::load(&manifest)
+            .map_err(|e| format!("loading the bundled core package: {e}"))?;
+        let version = declared_version(&loaded)?;
+        nodes.insert(
+            "core".to_owned(),
+            Node {
+                dir: core_dir.to_path_buf(),
+                version,
+                loaded,
+                dependencies: Vec::new(),
+            },
+        );
+        for (name, node) in nodes.iter_mut() {
+            if name != "core"
+                && !node.loaded.manifest.package.no_core
+                && !node.dependencies.contains(&"core".to_owned())
+            {
+                node.dependencies.push("core".to_owned());
+            }
+        }
+    }
     Ok(Graph {
         root: root_name,
         nodes,
@@ -116,9 +149,13 @@ pub fn check(graph: &Graph) -> Result<Solution, String> {
             .dependencies
             .iter()
             .map(|dep_name| {
-                let constraint = node.loaded.manifest.dependencies[dep_name]
-                    .version
-                    .as_deref();
+                // An implicit `core` edge has no manifest entry: any version.
+                let constraint = node
+                    .loaded
+                    .manifest
+                    .dependencies
+                    .get(dep_name)
+                    .and_then(|d| d.version.as_deref());
                 Ok((dep_name.clone(), parse_constraint(constraint)?))
             })
             .collect::<Result<_, String>>()?;

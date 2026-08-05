@@ -62,6 +62,16 @@ pub fn load_package(
     name: &str,
     interner: &Arc<MultiThreadedTokenInterner>,
 ) -> Result<PackageSource, PackageError> {
+    load_package_with(root, name, interner, false)
+}
+
+/// [`load_package`], with the `core` reservation lifted for `rrc --core`.
+pub fn load_package_with(
+    root: &Path,
+    name: &str,
+    interner: &Arc<MultiThreadedTokenInterner>,
+    allow_core: bool,
+) -> Result<PackageSource, PackageError> {
     let root = root.canonicalize().map_err(|e| {
         PackageError::Message(format!("cannot open package root {}: {e}", root.display()))
     })?;
@@ -72,7 +82,7 @@ pub fn load_package(
             root.display()
         )));
     }
-    load_package_rooted(&lib, name, interner)
+    load_package_rooted_with(&lib, name, interner, allow_core)
 }
 
 /// Load the package whose crate root is the file `root_file` under `name`:
@@ -85,7 +95,18 @@ pub fn load_package_rooted(
     name: &str,
     interner: &Arc<MultiThreadedTokenInterner>,
 ) -> Result<PackageSource, PackageError> {
-    if name == "core" {
+    load_package_rooted_with(root_file, name, interner, false)
+}
+
+/// [`load_package_rooted`], with the `core` reservation lifted when the
+/// caller *is* building the built-in core package (`rrc --core`).
+pub fn load_package_rooted_with(
+    root_file: &Path,
+    name: &str,
+    interner: &Arc<MultiThreadedTokenInterner>,
+    allow_core: bool,
+) -> Result<PackageSource, PackageError> {
+    if name == "core" && !allow_core {
         return Err(PackageError::Message(
             "package name 'core' is reserved for the built-in core package".into(),
         ));

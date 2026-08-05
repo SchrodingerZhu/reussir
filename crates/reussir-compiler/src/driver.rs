@@ -241,7 +241,7 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         }
         let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-        let mut pkg = match load_package_or_render(&root, &pkg_name, &interner) {
+        let mut pkg = match load_package_or_render(&root, &pkg_name, &interner, cli.core) {
             Ok(pkg) => pkg,
             Err(msg) if msg.is_empty() => return Ok(false),
             Err(msg) => return Err(msg),
@@ -352,10 +352,13 @@ fn load_package_or_render(
     root: &PackageRoot,
     name: &str,
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
+    allow_core: bool,
 ) -> Result<package::PackageSource, String> {
     let loaded = match root {
-        PackageRoot::Dir(dir) => package::load_package(dir, name, interner),
-        PackageRoot::File(file) => package::load_package_rooted(file, name, interner),
+        PackageRoot::Dir(dir) => package::load_package_with(dir, name, interner, allow_core),
+        PackageRoot::File(file) => {
+            package::load_package_rooted_with(file, name, interner, allow_core)
+        }
     };
     match loaded {
         Ok(pkg) => Ok(pkg),
@@ -386,7 +389,7 @@ fn scan_deps(cli: &Cli, package: Option<&(PackageRoot, String)>) -> Result<bool,
         );
     };
     let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-    let pkg = match load_package_or_render(root, pkg_name, &interner) {
+    let pkg = match load_package_or_render(root, pkg_name, &interner, cli.core) {
         Ok(pkg) => pkg,
         Err(msg) if msg.is_empty() => return Ok(false),
         Err(msg) => return Err(msg),

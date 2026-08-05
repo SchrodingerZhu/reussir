@@ -26,7 +26,7 @@ use std::process::ExitCode;
 use palc::Parser;
 
 use rene::db::{self, BuildDir, CleanOutcome};
-use rene::{compile, deps, exec, fresh, manifest, new, plan, pool, resolve, rt};
+use rene::{compile, core_src, deps, exec, fresh, manifest, new, plan, pool, resolve, rt};
 
 /// The default build directory name, next to the manifest.
 const BUILD_DIR: &str = "reussir-build";
@@ -333,7 +333,8 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // together (each package exists in exactly one version today, so this is
     // a feasibility check; see `resolve`). A dependency-less package is a
     // one-node graph through the same machinery.
-    let graph = resolve::load_graph(&loaded)?;
+    let core_dir = core_src::unpack(&resolve_build_dir(location)?)?;
+    let graph = resolve::load_graph_with(&loaded, Some(&core_dir))?;
     if graph.nodes.len() > 1 {
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
@@ -494,7 +495,8 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
     // The dependency-graph sections, on demand. One load serves all three;
     // `--solved` additionally requires the feasibility check to hold.
     if args.solved || args.graph || args.commands {
-        let graph = resolve::load_graph(&loaded)?;
+        let core_dir = core_src::unpack(&root)?;
+        let graph = resolve::load_graph_with(&loaded, Some(&core_dir))?;
         if args.solved {
             let solution = resolve::check(&graph)?;
             report["resolution"] = solution
@@ -519,9 +521,12 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
                                 .iter()
                                 .map(|dep| serde_json::json!({
                                     "package": dep,
-                                    "constraint": node.loaded.manifest.dependencies[dep]
-                                        .version
-                                        .as_deref()
+                                    "constraint": node
+                                        .loaded
+                                        .manifest
+                                        .dependencies
+                                        .get(dep)
+                                        .and_then(|d| d.version.as_deref())
                                         .unwrap_or("*"),
                                 }))
                                 .collect::<Vec<_>>(),

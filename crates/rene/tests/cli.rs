@@ -271,6 +271,17 @@ impl Fakes {
         }
     }
 
+    /// [`compiles`](Self::compiles) without the implicit `core` package's
+    /// invocations — most expectations are about the packages a test
+    /// declares, with core's two compiles (interface + archive) asserted
+    /// where the injection itself is the subject.
+    fn package_compiles(&self) -> Vec<String> {
+        self.compiles()
+            .into_iter()
+            .filter(|l| !l.contains("--package-name core"))
+            .collect()
+    }
+
     /// The cargo bake invocations, one argv line each.
     fn cargo_invocations(&self) -> Vec<String> {
         match std::fs::read_to_string(self.dir.join("cargo-args")) {
@@ -435,7 +446,7 @@ fn build_resolves_the_target_and_keeps_each_runtime_bake() {
             "build --release --target aarch64-unknown-linux-gnu --message-format=json-render-diagnostics",
         ]
     );
-    let compiles = fakes.compiles();
+    let compiles = fakes.package_compiles();
     assert_eq!(compiles.len(), 2, "{compiles:#?}");
     assert!(
         compiles[0].contains("--target-triple wasm32-unknown-unknown"),
@@ -474,7 +485,7 @@ fn build_resolves_the_target_and_keeps_each_runtime_bake() {
         stderr(&default_again)
     );
     assert_eq!(fakes.runs("cargo"), 2, "the default target was rebaked");
-    let compiles = fakes.compiles();
+    let compiles = fakes.package_compiles();
     assert_eq!(compiles.len(), 3, "{compiles:#?}");
     assert!(
         compiles[2].contains("--target-triple wasm32-unknown-unknown"),
@@ -780,7 +791,17 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
         assert!(Path::new(line).is_file(), "no artifact at {line}");
     }
 
-    let compiles = fakes.compiles();
+    // The implicit core built once, ahead of everything: its interface and
+    // archive, each with the reserved name lifted.
+    let core: Vec<String> = fakes
+        .compiles()
+        .into_iter()
+        .filter(|l| l.contains("--package-name core"))
+        .collect();
+    assert_eq!(core.len(), 2, "{core:#?}");
+    assert!(core.iter().all(|l| l.contains("--core")), "{core:#?}");
+
+    let compiles = fakes.package_compiles();
     assert_eq!(compiles.len(), 3, "{compiles:#?}");
     for line in &compiles {
         // The package, the profile's codegen knobs (the built-in's opt
@@ -817,7 +838,11 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     let again = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(again.status.success(), "stderr: {}", stderr(&again));
     assert_eq!(String::from_utf8(again.stdout).unwrap(), stdout);
-    assert_eq!(fakes.compiles().len(), 3, "a fresh build re-compiled");
+    assert_eq!(
+        fakes.package_compiles().len(),
+        3,
+        "a fresh build re-compiled"
+    );
 
     // A source edit re-fingerprints every product of the profile.
     std::fs::write(
@@ -827,7 +852,7 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     .unwrap();
     let rebuilt = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(rebuilt.status.success(), "stderr: {}", stderr(&rebuilt));
-    assert_eq!(fakes.compiles().len(), 6, "the edit must rebuild");
+    assert_eq!(fakes.package_compiles().len(), 6, "the edit must rebuild");
 }
 
 /// `--linker` pins one linker end to end: cargo's target-specific
@@ -854,7 +879,7 @@ fn build_pins_the_linker_through_the_bake_and_the_compiles() {
     assert_eq!(cargo_env.trim(), format!("linker={linker}"));
 
     // …and every linked compile got `--linker`; the archive did not.
-    let compiles = fakes.compiles();
+    let compiles = fakes.package_compiles();
     assert_eq!(compiles.len(), 3, "{compiles:#?}");
     for line in &compiles {
         let linked = !line.contains("--emit staticlib");
@@ -885,7 +910,7 @@ fn build_selects_bins_and_libs_and_refuses_invalid_names() {
         stdout.lines().collect::<Vec<_>>(),
         [root.join("dev").join("demo").display().to_string()]
     );
-    let compiles = fakes.compiles();
+    let compiles = fakes.package_compiles();
     assert_eq!(compiles.len(), 1, "{compiles:#?}");
     // The dev built-in: unoptimized, debug info on.
     assert!(compiles[0].contains("-O none"), "{}", compiles[0]);
@@ -905,7 +930,7 @@ fn build_selects_bins_and_libs_and_refuses_invalid_names() {
             root.join("dev").join("libarchive.a").display().to_string(),
         ]
     );
-    assert_eq!(fakes.compiles().len(), 3);
+    assert_eq!(fakes.package_compiles().len(), 3);
 
     let out = fakes.rene(&["build", "--bin", "bogus"], &manifest, &root);
     assert_eq!(out.status.code(), Some(1));
@@ -987,7 +1012,7 @@ fn build_honors_a_single_job_cap() {
     for line in stdout.lines() {
         assert!(Path::new(line).is_file(), "no artifact at {line}");
     }
-    assert_eq!(fakes.compiles().len(), 3);
+    assert_eq!(fakes.package_compiles().len(), 3);
 }
 
 /// The pool needs at least one process: `-j 0` is a usage error (exit 2),
@@ -1100,7 +1125,7 @@ fn build_runs_the_dependency_pipeline() {
     let out = fakes.rene(&["build"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
 
-    let compiles = fakes.compiles();
+    let compiles = fakes.package_compiles();
     // Dependency interface, dependency archive, root target — in order.
     assert_eq!(compiles.len(), 3, "{compiles:#?}");
     assert!(compiles[0].contains("--package-name util"), "{compiles:#?}");
@@ -1130,19 +1155,20 @@ fn build_runs_the_dependency_pipeline() {
         )),
         "{compiles:#?}"
     );
-    // The dependency's compiles never see link flags or their own extern.
+    // The dependency's compiles never see link flags or their own extern
+    // (the implicit `core` is the one interface every compile gets).
     assert!(!compiles[0].contains("--link-lib"), "{compiles:#?}");
-    assert!(!compiles[1].contains("--extern"), "{compiles:#?}");
+    assert!(!compiles[1].contains("--extern util"), "{compiles:#?}");
 
     // Everything is recorded: the second build compiles nothing.
     let out = fakes.rene(&["build"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(
-        fakes.compiles().len(),
+        fakes.package_compiles().len(),
         3,
         "stderr: {}\n{:#?}",
         stderr(&out),
-        fakes.compiles()
+        fakes.package_compiles()
     );
 
     // A touched dependency source re-runs its two compiles. The root's
@@ -1157,7 +1183,7 @@ fn build_runs_the_dependency_pipeline() {
     .unwrap();
     let out = fakes.rene(&["build"], &manifest, &root);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let after = fakes.compiles();
+    let after = fakes.package_compiles();
     assert_eq!(after.len(), 5, "{after:#?}");
     assert!(after[3].contains("--emit rri"), "{after:#?}");
     assert!(after[4].contains("--emit staticlib"), "{after:#?}");

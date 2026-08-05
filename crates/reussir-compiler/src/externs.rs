@@ -137,8 +137,10 @@ impl LoadedExtern<'_> {
 
 /// Load every interface, gating each header: it must be present (a plain
 /// HIR dump is not an interface), carry the supported format, and describe
-/// the package the flag named. `core` and the compiling package's own name
-/// are reserved.
+/// the package the flag named. The compiling package's own name is
+/// reserved; `core` loads like any other dependency (rene injects the
+/// bundled one), with `core::intrinsic` calls still intercepted by the
+/// checker ahead of resolution.
 pub fn load<'tcx>(
     tcx: &TyCtxt<'tcx>,
     specs: &[ExternSpec],
@@ -146,9 +148,6 @@ pub fn load<'tcx>(
 ) -> Result<Vec<LoadedExtern<'tcx>>, String> {
     let mut loaded = Vec::with_capacity(specs.len());
     for spec in specs {
-        if spec.name == "core" {
-            return Err("`--extern core=...`: `core` is the builtin package".into());
-        }
         if Some(spec.name.as_str()) == root_package {
             return Err(format!(
                 "`--extern {}=...` shadows the package being compiled",

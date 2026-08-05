@@ -1817,6 +1817,94 @@ mod tests {
     }
 
     #[test]
+    fn intrinsic_lang_items_bind_prototypes() {
+        use crate::intrinsic::MathFn;
+        use crate::semi::lang::{IntrinsicItem, LangItem};
+        check(
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+            "#,
+            |elab, _| {
+                let item = LangItem::Intrinsic(IntrinsicItem::Math(MathFn::Sqrt));
+                let def = elab.lang.get(item).expect("bound");
+                assert!(elab.lang.is_intrinsic_def(def));
+                assert!(elab.lang_item_site(item).is_some());
+            },
+        );
+    }
+
+    #[test]
+    fn intrinsic_prototypes_reject_bodies_and_value_uses() {
+        elaborate_source(
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn bad<F: FloatingPoint>(x: F, fastmath: i64) -> F { x }
+            "#,
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("an intrinsic prototype must not have a body")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+        elaborate_source(
+            r#"
+            #[lang("core::intrinsic::math::sqrt")]
+            pub fn my_sqrt<F: FloatingPoint>(x: F, fastmath: i64) -> F;
+            pub fn use_it() -> i64 { let g = my_sqrt; 0 }
+            "#,
+            |elab| {
+                assert!(
+                    elab.reports.iter().any(|r| r
+                        .message
+                        .contains("is an intrinsic and cannot be used as a value")),
+                    "{:#?}",
+                    elab.reports
+                );
+            },
+        );
+    }
+
+    /// The bundled `library/core` sources stay honest: they elaborate
+    /// cleanly and bind a prototype for *every* math intrinsic the
+    /// compiler surfaces — a new `MathFn` without a core declaration (or
+    /// vice versa) fails here, in `cargo test`, before any rene build.
+    #[test]
+    fn bundled_core_covers_every_math_intrinsic() {
+        use crate::intrinsic::MathFn;
+        use crate::semi::lang::{IntrinsicItem, LangItem};
+        check_package(
+            "core",
+            &[
+                (&[], include_str!("../../../library/core/src/lib.rr")),
+                (
+                    &["intrinsic"],
+                    include_str!("../../../library/core/src/intrinsic/mod.rr"),
+                ),
+                (
+                    &["intrinsic", "math"],
+                    include_str!("../../../library/core/src/intrinsic/math.rr"),
+                ),
+            ],
+            |elab, _| {
+                assert!(!elab.has_errors(), "{:#?}", elab.reports);
+                for &f in MathFn::ALL {
+                    let item = LangItem::Intrinsic(IntrinsicItem::Math(f));
+                    assert!(
+                        elab.lang.get(item).is_some(),
+                        "core declares no prototype for `{}`",
+                        f.as_str()
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
     fn rejected_batch_retracts_trait_impls() {
         use std::sync::Arc;
         with_tcx(|tcx| {

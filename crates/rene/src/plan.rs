@@ -192,7 +192,7 @@ pub fn render(
 
 /// The invocation prefix shared by every command of a package.
 fn package_args(node: &crate::resolve::Node, out: &Path, emit: &str) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "--package-root".to_owned(),
         node.dir.join("src").display().to_string(),
         "--package-name".to_owned(),
@@ -201,7 +201,13 @@ fn package_args(node: &crate::resolve::Node, out: &Path, emit: &str) -> Vec<Stri
         emit.to_owned(),
         "-o".to_owned(),
         out.display().to_string(),
-    ]
+    ];
+    // The bundled core carries the reserved name; `--core` lifts the
+    // reservation for exactly this build.
+    if node.loaded.manifest.package.name == "core" {
+        args.push("--core".to_owned());
+    }
+    args
 }
 
 /// `--extern`/`--extern-src` pairs for a package's (transitive) dependency
