@@ -686,6 +686,7 @@ fn byte_offset_at(text: &str, line: usize, column: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use reussir_backend::melior::ir::operation::OperationLike;
+    use reussir_core::full::mir::build::parse_program;
     use reussir_core::full::mono::monomorphize;
     use reussir_core::{in_arena, semi::elaborate, surface};
 
@@ -941,6 +942,129 @@ transform [{
         // The assignment is a pure function of the symbol (deterministic).
         let unit = CodegenUnit { index: 1, count: 3 };
         assert_eq!(unit.is_home("_RNvC1p1a"), unit.is_home("_RNvC1p1a"));
+    }
+
+    #[test]
+    fn lowers_borrowed_ffi_trait_glue_once_with_dedup_linkage() {
+        const CASES: [(&str, &str, &str); 2] = [
+            // MLIR integers are signless, so Reussir u8 and i8 both lower to i8.
+            ("_RC3Key_ffi_eq", "_RC11semantic_eq", "i8"),
+            ("_RC3Key_ffi_cmp", "_RC12semantic_cmp", "i8"),
+        ];
+        let text = concat!(
+            "record @_RC3Key : shared struct Key { \"value\": i64 };\n\n",
+            "fn @_RC11semantic_eq(v0 (lhs): Key, v1 (rhs): Key) -> u8 {\n",
+            "    1 : u8\n",
+            "}\n\n",
+            "fn @_RC12semantic_cmp(v0 (lhs): Key, v1 (rhs): Key) -> i8 {\n",
+            "    0 : i8\n",
+            "}\n\n",
+            "ffi trait glue @_RC3Key_ffi_eq = @_RC11semantic_eq : Key => u8;\n\n",
+            "ffi trait glue @_RC3Key_ffi_cmp = @_RC12semantic_cmp : Key => i8;\n",
+        );
+        let context = crate::testing::context();
+
+        in_arena(|tcx| {
+            let parsed = parse_program(tcx, text).expect("parse trait-glue MIR");
+            let defined_function = |mlir: &str, symbol: &str| {
+                let marker = format!("@{symbol}(");
+                let symbol_start = mlir
+                    .find(&marker)
+                    .unwrap_or_else(|| panic!("missing {symbol}:\n{mlir}"));
+                let start = mlir[..symbol_start].rfind('\n').map_or(0, |line| line + 1);
+                let rest = &mlir[start..];
+                let end = rest
+                    .find("\n  }")
+                    .unwrap_or_else(|| panic!("missing body end for {symbol}:\n{rest}"))
+                    + 4;
+                rest[..end].to_owned()
+            };
+            let lower = |policy| {
+                let module = lower_program(&context, tcx, &parsed.program, None, None, policy, &[])
+                    .expect("lower trait glue");
+                assert!(
+                    module.as_operation().verify(),
+                    "trait-glue module verifies:\n{}",
+                    module.as_operation()
+                );
+                module.as_operation().to_string()
+            };
+
+            let deduplicated = lower(LinkagePolicy::Aot {
+                dedup_instances: true,
+            });
+            for (entry, target, ret) in CASES {
+                let borrowed_entry = defined_function(&deduplicated, entry);
+                assert_eq!(borrowed_entry.matches("reussir.rc.inc").count(), 2);
+                assert_eq!(
+                    borrowed_entry.matches(&format!("call @{target}")).count(),
+                    1
+                );
+                assert!(
+                    !borrowed_entry.contains("reussir.rc.dec"),
+                    "{borrowed_entry}"
+                );
+                let return_line = borrowed_entry
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("return "))
+                    .expect("scalar glue return");
+                assert!(return_line.contains(&format!(": {ret}")), "{return_line}");
+                assert!(
+                    borrowed_entry
+                        .lines()
+                        .next()
+                        .is_some_and(|head| head.contains("#llvm.linkage<weak_odr>")),
+                    "{borrowed_entry}"
+                );
+
+                let adapter = defined_function(&deduplicated, target);
+                assert!(adapter.contains("reussir.rc.dec"), "{adapter}");
+                assert!(
+                    adapter
+                        .lines()
+                        .next()
+                        .is_some_and(|head| head.contains("#llvm.linkage<weak_odr>")),
+                    "{adapter}"
+                );
+            }
+
+            let non_deduplicated = lower(LinkagePolicy::Aot {
+                dedup_instances: false,
+            });
+            for (entry, target, _) in CASES {
+                for symbol in [entry, target] {
+                    let function = defined_function(&non_deduplicated, symbol);
+                    let head = function.lines().next().expect("function head");
+                    assert!(!head.contains("llvm.linkage"), "{head}");
+                }
+            }
+
+            for (entry, _, _) in CASES {
+                let definitions = (0..3)
+                    .map(|index| {
+                        let module = lower_unit(
+                            &context,
+                            tcx,
+                            &parsed.program,
+                            None,
+                            None,
+                            CodegenUnit { index, count: 3 },
+                            LinkagePolicy::Aot {
+                                dedup_instances: true,
+                            },
+                            &[],
+                        )
+                        .expect("lower partitioned trait glue");
+                        module
+                            .as_operation()
+                            .to_string()
+                            .matches(&format!("func.func @{entry}"))
+                            .count()
+                    })
+                    .sum::<usize>();
+                assert_eq!(definitions, 1, "trait glue has exactly one home unit");
+            }
+        });
     }
 
     #[test]
