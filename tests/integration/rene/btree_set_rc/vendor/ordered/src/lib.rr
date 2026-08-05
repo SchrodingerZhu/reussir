@@ -1,0 +1,34 @@
+// A public shared record whose ordering is intentionally the reverse of its
+// numeric payload. The consumer can therefore observe whether foreign code
+// reached these imported implementations rather than a local fallback.
+
+pub struct Key {
+    pub value: i64,
+}
+
+impl PartialEq for Key {
+    fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+}
+
+impl Eq for Key {}
+
+impl PartialOrd for Key {
+    fn lt(self: Self, other: Self) -> bool { self.value > other.value }
+    fn le(self: Self, other: Self) -> bool { self.value >= other.value }
+    fn gt(self: Self, other: Self) -> bool { self.value < other.value }
+    fn ge(self: Self, other: Self) -> bool { self.value <= other.value }
+}
+
+impl Ord for Key {
+    fn cmp(self: Self, other: Self) -> Ordering {
+        if self.value > other.value {
+            Ordering::Less
+        } else {
+            if self.value == other.value {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+    }
+}

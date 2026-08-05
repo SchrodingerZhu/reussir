@@ -1,0 +1,29 @@
+// A comparison implementation can live in a dependency even when only its
+// consumer instantiates an FFI container requiring that comparison evidence.
+// `ordered` owns the shared Key record and all four comparison impls, while
+// this root package alone declares and uses the Rust-backed BTreeSet.
+//
+// The app retains the old set while deriving the changed set, forcing the
+// runtime BTreeSet's copy-on-write path to clone bridged Key values. Key's
+// reverse ordering makes first() observable as the greatest numeric value.
+
+// UNSUPPORTED: darwin
+
+// RUN: %rene build --manifest-path %S/btree_set_rc/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=DEV
+// DEV: {{[/\\]}}dev{{[/\\]}}btree_rc
+
+// The implementer's interface must carry every comparison capability even
+// though that package never mentions BTreeSet.
+// RUN: %FileCheck %s --check-prefix=RRI < %t.bdir/dev/deps/ordered.rri
+// RRI: interface 1 package "ordered"
+// RRI-DAG: impl #core::cmp::PartialEq::<#ordered::Key> in
+// RRI-DAG: impl #core::cmp::Eq::<#ordered::Key> in
+// RRI-DAG: impl #core::cmp::PartialOrd::<#ordered::Key> in
+// RRI-DAG: impl #core::cmp::Ord::<#ordered::Key> in
+
+// RUN: %t.bdir/dev/btree_rc%exe_ext | %FileCheck %s --check-prefix=OUT
+// OUT: 2445
+
+// RUN: %rene build --manifest-path %S/btree_set_rc/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RELEASE: {{[/\\]}}release{{[/\\]}}btree_rc
+// RUN: %t.bdir/release/btree_rc%exe_ext | %FileCheck %s --check-prefix=OUT
