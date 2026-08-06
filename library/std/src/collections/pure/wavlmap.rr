@@ -4,6 +4,19 @@
 //! rationale for choosing WAVL in its recursive formulation): ranks with
 //! differences of 1 or 2, leaves at rank 0, at most two rotations per
 //! update. Nodes additionally carry the mapped value.
+//!
+//! Unlike `wavlset`, the map stores the rank as a **field** rather than
+//! encoding its parity in the variant tag, and that difference is
+//! measured rather than accidental. Parity encoding pays for itself only
+//! when the word it saves moves the node into a smaller allocator bin.
+//! With word-sized keys and values, a rank node is 48 B and a parity node
+//! 40 B — both land in mimalloc's 48-byte bin, so the encoding buys no
+//! locality while costing ~13% more instructions for the parity
+//! bookkeeping; it measured ~1.07x *slower* on bulk insert. The set's
+//! nodes cross 40 B -> 32 B, an actual bin change, which is why it uses
+//! the parity form. (For a map with narrower keys and values — an
+//! `i32`-to-`i32` map is 40 B against 32 B — the arithmetic favours
+//! parity again; revisit this if such maps become the common case.)
 
 import std::option::Option;
 import std::collections::pure::list::List;
