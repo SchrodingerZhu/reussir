@@ -1,0 +1,52 @@
+pub enum Option<T> {
+    Some(T),
+    None
+}
+
+impl<T> Option<T> {
+    pub fn is_some(self: Self) -> bool {
+        match self {
+            Some(_) => true,
+            None => false
+        }
+    }
+    pub fn is_none(self: Self) -> bool {
+        !self.is_some()
+    }
+    pub fn and<U>(self : Self, other : Option<U>) -> Option<U> {
+	match self {
+	    Some(_) => other,
+            None => Option::None
+	}
+    }
+    pub fn or(self : Self, other : Self) -> Self {
+        match self {
+            Some(_) => self,
+            None => other
+        }
+    }
+    pub fn map<U>(self : Self, f : T -> U) -> Option<U> {
+	match self {
+            Some(x) => Option::Some { f(x) },
+            None => Option::None
+        }
+    }
+    pub fn and_then<U>(self : Self, f : T -> Option<U>) -> Option<U> {
+	match self {
+            Some(x) => f(x),
+            None => Option::None
+        }
+    }
+    pub fn unwrap_or(self : Self, y : T) -> T {
+        match self {
+            Some(x) => x,
+            _ => y
+        }
+    }
+    pub fn unwrap_or_panic(self : Self) -> T {
+        match self {
+            Some(x) => x,
+            _ => core::intrinsic::panic::panic()
+        }
+    }
+}

@@ -1,0 +1,157 @@
+import std::collections::pure::rtqueue::Pop;
+import std::collections::pure::rtqueue::Queue;
+
+fn empty_queue() -> Queue<i32> {
+    Queue::new()
+}
+
+fn write_bool(value : bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+fn test_new() {
+    let queue = empty_queue();
+    write_bool(queue.is_empty());
+    write_bool(queue.len() == 0);
+    write_bool(queue.front().is_none());
+    write_bool(match queue.uncons() {
+        Pop::Empty => true,
+        Pop::Pop(_, _) => false
+    });
+}
+
+fn test_snoc() {
+    let queue = empty_queue().snoc(10).snoc(20).snoc(30);
+    test_utils::io::write_i32(queue.front().unwrap_or(-1));
+    write_bool(queue.len() == 3);
+    write_bool(queue.is_empty());
+}
+
+fn test_uncons() {
+    let queue = empty_queue().snoc(1).snoc(2).snoc(3);
+    match queue.uncons() {
+        Pop::Pop(first, rest1) => {
+            test_utils::io::write_i32(first);
+            match rest1.uncons() {
+                Pop::Pop(second, rest2) => {
+                    test_utils::io::write_i32(second);
+                    match rest2.uncons() {
+                        Pop::Pop(third, rest3) => {
+                            test_utils::io::write_i32(third);
+                            write_bool(match rest3.uncons() {
+                                Pop::Empty => true,
+                                Pop::Pop(_, _) => false
+                            });
+                        },
+                        Pop::Empty => core::intrinsic::panic::panic()
+                    }
+                },
+                Pop::Empty => core::intrinsic::panic::panic()
+            }
+        },
+        Pop::Empty => core::intrinsic::panic::panic()
+    }
+}
+
+fn drain_decimal(remaining : i32, queue : Queue<i32>, acc : i32) -> i32 {
+    if remaining == 0 {
+        acc
+    } else {
+        match queue.uncons() {
+            Pop::Pop(value, rest) =>
+                drain_decimal(remaining - 1, rest, acc * 10 + value),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+fn test_persistence() {
+    let base = empty_queue().snoc(4).snoc(5);
+    let extended = base.snoc(6);
+    write_bool(base.len() == 2);
+    write_bool(extended.len() == 3);
+    test_utils::io::write_i32(base.front().unwrap_or(-1));
+    test_utils::io::write_i32(extended.front().unwrap_or(-1));
+    test_utils::io::write_i32(drain_decimal(3, extended, 0));
+}
+
+fn build(next : i32, end : i32, queue : Queue<i32>) -> Queue<i32> {
+    if next == end {
+        queue
+    } else {
+        build(next + 1, end, queue.snoc(next))
+    }
+}
+
+fn test_bulk_rotation() {
+    let queue = build(0, 8, empty_queue());
+    write_bool(queue.len() == 8);
+    test_utils::io::write_i32(queue.front().unwrap_or(-1));
+    test_utils::io::write_i32(drain_decimal(8, queue, 0));
+}
+
+fn drain_sum(remaining : i32, queue : Queue<i32>, acc : i32) -> i32 {
+    if remaining == 0 {
+        acc
+    } else {
+        match queue.uncons() {
+            Pop::Pop(value, rest) => drain_sum(remaining - 1, rest, acc + value),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+fn pump(index : i32, rounds : i32, queue : Queue<i32>, acc : i32) -> i32 {
+    if index == rounds {
+        drain_sum(rounds, queue, acc)
+    } else {
+        match queue.snoc(index * 2).snoc(index * 2 + 1).uncons() {
+            Pop::Pop(value, rest) =>
+                pump(index + 1, rounds, rest, acc + value),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+fn test_interleaved_rotation() {
+    test_utils::io::write_i32(pump(0, 64, empty_queue(), 0));
+}
+
+struct Item {
+    value : i32
+}
+
+fn empty_item_queue() -> Queue<Item> {
+    Queue::new()
+}
+
+fn test_shared_payload() {
+    let queue = empty_item_queue().snoc(Item { value: 7 }).snoc(Item { value: 11 });
+    match queue.uncons() {
+        Pop::Pop(first, rest1) => {
+            test_utils::io::write_i32(first.value);
+            match rest1.uncons() {
+                Pop::Pop(second, rest2) => {
+                    test_utils::io::write_i32(second.value);
+                    write_bool(rest2.is_empty());
+                },
+                Pop::Empty => core::intrinsic::panic::panic()
+            }
+        },
+        Pop::Empty => core::intrinsic::panic::panic()
+    }
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_new(),
+        1 => test_snoc(),
+        2 => test_uncons(),
+        3 => test_persistence(),
+        4 => test_bulk_rotation(),
+        5 => test_interleaved_rotation(),
+        6 => test_shared_payload(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

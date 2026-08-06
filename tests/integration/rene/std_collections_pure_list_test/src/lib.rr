@@ -1,0 +1,145 @@
+import std::collections::pure::list::List;
+
+fn sample_list() -> List<i32> {
+    List::Cons {
+        3,
+        List::Cons { 1, List::Cons { 2, List::Nil } }
+    }
+}
+
+fn empty_list() -> List<i32> {
+    List::Nil
+}
+
+fn write_bool(value: bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+fn test_len() {
+    write_bool(empty_list().len() == 0);
+    write_bool(sample_list().len() == 3);
+}
+
+fn test_head() {
+    test_utils::io::write_i32(sample_list().head().unwrap_or(-1));
+    test_utils::io::write_i32(empty_list().head().unwrap_or(-1));
+}
+
+fn test_tail() {
+    test_utils::io::write_i32(sample_list().tail().head().unwrap_or(-1));
+    write_bool(empty_list().tail().is_nil());
+}
+
+fn test_is_nil() {
+    write_bool(empty_list().is_nil());
+    write_bool(sample_list().is_nil());
+}
+
+fn test_is_cons() {
+    write_bool(empty_list().is_cons());
+    write_bool(sample_list().is_cons());
+}
+
+fn test_reverse() {
+    test_utils::io::write_i32(sample_list().reverse().head().unwrap_or(-1));
+    test_utils::io::write_i32(
+        sample_list().reverse().tail().head().unwrap_or(-1)
+    );
+    test_utils::io::write_i32(
+        sample_list().reverse().tail().tail().head().unwrap_or(-1)
+    );
+}
+
+fn test_map() {
+    let increment = |x: i32| x + 1;
+    test_utils::io::write_i32(sample_list().map(increment).head().unwrap_or(-1));
+    test_utils::io::write_i32(
+        sample_list().map(increment).tail().head().unwrap_or(-1)
+    );
+    test_utils::io::write_i32(
+        sample_list().map(increment).tail().tail().head().unwrap_or(-1)
+    );
+}
+
+fn test_min() {
+    test_utils::io::write_i32(sample_list().min().unwrap_or(-1));
+    test_utils::io::write_i32(empty_list().min().unwrap_or(-1));
+}
+
+fn test_max() {
+    test_utils::io::write_i32(sample_list().max().unwrap_or(-1));
+    test_utils::io::write_i32(sample_list().tail().max().unwrap_or(-1));
+    test_utils::io::write_i32(empty_list().max().unwrap_or(-1));
+}
+
+fn test_contains() {
+    write_bool(sample_list().contains(1));
+    write_bool(sample_list().contains(9));
+    write_bool(empty_list().contains(1));
+}
+
+fn test_fold_left() {
+    test_utils::io::write_i32(
+        sample_list().fold_left(0, |acc: i32, x: i32| acc * 10 + x)
+    );
+    test_utils::io::write_i32(
+        empty_list().fold_left(7, |acc: i32, x: i32| acc + x)
+    );
+}
+
+fn test_count_if() {
+    write_bool(sample_list().count_if(|x: i32| x >= 2) == 2);
+    write_bool(empty_list().count_if(|x: i32| x >= 2) == 0);
+}
+
+fn test_find_first() {
+    test_utils::io::write_i32(
+        sample_list().find_first(|x: i32| x < 3).unwrap_or(-1)
+    );
+    test_utils::io::write_i32(
+        sample_list().find_first(|x: i32| x > 3).unwrap_or(-1)
+    );
+}
+
+fn test_filter() {
+    let filtered = sample_list().filter(|x: i32| x % 2 != 0);
+    test_utils::io::write_i32(filtered.head().unwrap_or(-1));
+    test_utils::io::write_i32(filtered.tail().head().unwrap_or(-1));
+    write_bool(filtered.tail().tail().is_nil());
+    write_bool(empty_list().filter(|x: i32| x > 0).is_nil());
+}
+
+fn test_any() {
+    write_bool(sample_list().any(|x: i32| x < 2));
+    write_bool(sample_list().any(|x: i32| x > 3));
+    write_bool(empty_list().any(|x: i32| x > 0));
+}
+
+fn test_all() {
+    write_bool(sample_list().all(|x: i32| x > 0));
+    write_bool(sample_list().all(|x: i32| x < 3));
+    write_bool(empty_list().all(|x: i32| x > 0));
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_len(),
+        1 => test_head(),
+        2 => test_tail(),
+        3 => test_is_nil(),
+        4 => test_is_cons(),
+        5 => test_reverse(),
+        6 => test_map(),
+        7 => test_min(),
+        8 => test_max(),
+        9 => test_contains(),
+        10 => test_fold_left(),
+        11 => test_count_if(),
+        12 => test_find_first(),
+        13 => test_filter(),
+        14 => test_any(),
+        15 => test_all(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

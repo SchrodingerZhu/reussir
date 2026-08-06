@@ -1,0 +1,13 @@
+#[ffi(import)]
+pub fn read_i32() -> i32 [{
+    {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        line.trim().parse::<i32>().unwrap()
+    }
+}];
+
+#[ffi(import)]
+pub fn write_i32(value: i32) [{
+    println!("{value}")
+}];

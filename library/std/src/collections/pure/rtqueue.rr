@@ -1,0 +1,182 @@
+import std::collections::pure::list::List;
+import std::option::Option;
+
+/// Incremental state for the strict Hood-Melville rotation schedule.
+///
+/// This stays shared because each queue operation replaces the state while
+/// retaining its list tails. Only the nonrecursive `Pop` result is inline.
+pub enum Rotation<T> {
+    Idle,
+    Reversing(i64, List<T>, List<T>, List<T>, List<T>),
+    Appending(i64, List<T>, List<T>),
+    Done(List<T>)
+}
+
+/// A persistent FIFO queue with worst-case constant-time incremental work.
+pub struct Queue<T> {
+    len_front : u64,
+    front : List<T>,
+    rotation : Rotation<T>,
+    len_rear : u64,
+    rear : List<T>
+}
+
+/// The result of removing the first queue element.
+pub enum [value] Pop<T> {
+    Pop(T, Queue<T>),
+    Empty
+}
+
+fn exec<T>(rotation : Rotation<T>) -> Rotation<T> {
+    match rotation {
+        Rotation::Reversing(
+            ok,
+            List::Cons(x, front),
+            front_reversed,
+            List::Cons(y, rear),
+            rear_reversed
+        ) => Rotation::Reversing {
+            ok + 1,
+            front,
+            List::Cons { x, front_reversed },
+            rear,
+            List::Cons { y, rear_reversed }
+        },
+        Rotation::Reversing(
+            ok,
+            List::Nil,
+            front_reversed,
+            List::Cons(y, List::Nil),
+            rear_reversed
+        ) => Rotation::Appending {
+            ok,
+            front_reversed,
+            List::Cons { y, rear_reversed }
+        },
+        Rotation::Appending(0, _, rear_reversed) =>
+            Rotation::Done { rear_reversed },
+        Rotation::Appending(
+            ok,
+            List::Cons(x, front_reversed),
+            rear_reversed
+        ) => Rotation::Appending {
+            ok - 1,
+            front_reversed,
+            List::Cons { x, rear_reversed }
+        },
+        other => other
+    }
+}
+
+fn invalidate<T>(rotation : Rotation<T>) -> Rotation<T> {
+    match rotation {
+        Rotation::Reversing(ok, front, front_reversed, rear, rear_reversed) =>
+            Rotation::Reversing {
+                ok - 1,
+                front,
+                front_reversed,
+                rear,
+                rear_reversed
+            },
+        Rotation::Appending(0, _, List::Cons(_, rear_reversed)) =>
+            Rotation::Done { rear_reversed },
+        Rotation::Appending(ok, front_reversed, rear_reversed) =>
+            Rotation::Appending { ok - 1, front_reversed, rear_reversed },
+        other => other
+    }
+}
+
+fn exec_twice<T>(queue : Queue<T>) -> Queue<T> {
+    match exec(exec(queue.rotation)) {
+        Rotation::Done(front) => Queue {
+            len_front: queue.len_front,
+            front,
+            rotation: Rotation::Idle,
+            len_rear: queue.len_rear,
+            rear: queue.rear
+        },
+        rotation => Queue {
+            len_front: queue.len_front,
+            front: queue.front,
+            rotation,
+            len_rear: queue.len_rear,
+            rear: queue.rear
+        }
+    }
+}
+
+fn check<T>(queue : Queue<T>) -> Queue<T> {
+    if queue.len_rear <= queue.len_front {
+        exec_twice(queue)
+    } else {
+        exec_twice(Queue {
+            len_front: queue.len_front + queue.len_rear,
+            front: queue.front,
+            rotation: Rotation::Reversing {
+                0,
+                queue.front,
+                List::Nil,
+                queue.rear,
+                List::Nil
+            },
+            len_rear: 0,
+            rear: List::Nil
+        })
+    }
+}
+
+impl<T> Queue<T> {
+    /// Creates an empty queue.
+    pub fn new() -> Self {
+        Queue {
+            len_front: 0,
+            front: List::Nil,
+            rotation: Rotation::Idle,
+            len_rear: 0,
+            rear: List::Nil
+        }
+    }
+
+    /// Returns the number of elements in the queue.
+    pub fn len(self : Self) -> u64 {
+        self.len_front + self.len_rear
+    }
+
+    /// Returns true when the queue contains no elements.
+    pub fn is_empty(self : Self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the first element without removing it.
+    pub fn front(self : Self) -> Option<T> {
+        self.front.head()
+    }
+
+    /// Adds `value` at the back of the queue.
+    pub fn snoc(self : Self, value : T) -> Self {
+        check(Queue {
+            len_front: self.len_front,
+            front: self.front,
+            rotation: self.rotation,
+            len_rear: self.len_rear + 1,
+            rear: List::Cons { value, self.rear }
+        })
+    }
+
+    /// Removes the first element, preserving the previous queue value.
+    pub fn uncons(self : Self) -> Pop<T> {
+        match self.front {
+            List::Cons(value, front) => Pop::Pop {
+                value,
+                check(Queue {
+                    len_front: self.len_front - 1,
+                    front,
+                    rotation: invalidate(self.rotation),
+                    len_rear: self.len_rear,
+                    rear: self.rear
+                })
+            },
+            List::Nil => Pop::Empty
+        }
+    }
+}
