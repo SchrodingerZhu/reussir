@@ -342,6 +342,7 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
         ids: mir::ExprIdGen::default(),
         lang: &input.lang,
         synthetic_cmps: FxHashMap::default(),
+        bridge_attempts: FxHashSet::default(),
         synthetic_fns: Vec::new(),
     };
 
@@ -535,10 +536,13 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                 let ret_direct =
                     matches!(*return_ty.kind(), TyKind::Unit) || fctx.integer_like(return_ty);
                 // `[:T:]` placeholders in the body substitute to the
-                // instance's Rust spellings.
+                // instance's Rust spellings. Each argument is rendered under
+                // its own binder's bounds: a signature that promises
+                // `T: PartialEq` must bridge that capability even when no
+                // bounded container in the signature mentions it.
                 let mut placeholders: FxHashMap<&str, String> = FxHashMap::default();
-                for ((gname, _), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
-                    if let Ok(rendered) = fctx.rust_name(ty, &mut decls) {
+                for ((gname, gid), &ty) in func.generics.iter().zip(inst.ty_args.iter()) {
+                    if let Ok(rendered) = fctx.rust_name_for_generic(ty, *gid, &mut decls) {
                         placeholders.insert(input.resolver.resolve(*gname), rendered);
                     }
                 }
@@ -575,6 +579,11 @@ pub fn monomorphize<'a, 'tcx>(input: &MonoInput<'a, 'tcx>) -> (mir::Program<'tcx
                     target: symbol,
                     import: true,
                 });
+                // A capability introduced by the signature's own binders has
+                // no bounded container instance behind it, so the record scan
+                // never sees it: this texture is the only site that can
+                // demand its entries, and therefore must define them.
+                driver.register_ffi_bridges(&decls, fimport.span, &mut ffi_trait_glue);
                 for (sym, decl) in decls {
                     glue.entry(sym)
                         .and_modify(|old| old.needs.union(decl.needs))
@@ -1032,6 +1041,11 @@ struct Driver<'a, 'tcx> {
     /// Synthesized three-way comparisons (`Ord::cmp` over a scalar), one
     /// per scalar type; see [`Driver::three_way_call`].
     synthetic_cmps: FxHashMap<Ty<'tcx>, mir::Symbol>,
+    /// Comparison-bridge entries already attempted, by entry name. An import
+    /// texture and the ground record scan can demand the same entry, so the
+    /// set records *attempts*, not successes: a rejected bridge is diagnosed
+    /// once rather than once per site that wanted it.
+    bridge_attempts: FxHashSet<String>,
     synthetic_fns: Vec<mir::Function<'tcx>>,
 }
 
@@ -1273,7 +1287,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_eq");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((callee, method_ret, name)) =
@@ -1321,7 +1335,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_cmp");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((callee, ordering, name)) =
@@ -1401,7 +1415,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         let entry_name = format!("{base}_ffi_partial_cmp");
-        if out.contains_key(&entry_name) {
+        if !self.bridge_attempts.insert(entry_name.clone()) {
             return;
         }
         let Some((eq, eq_ret, name)) =
@@ -1482,7 +1496,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         out: &mut std::collections::BTreeMap<String, mir::FfiTraitGlue<'tcx>>,
     ) {
         for (base, decl) in decls {
-            if decl.needs.eq() {
+            // `Eq` carries no method to synthesize, so it has no entry of its
+            // own to dedup on; give it a marker key in the same set.
+            if decl.needs.eq() && self.bridge_attempts.insert(format!("{base}_ffi_eq_marker")) {
                 self.require_comparison_trait(crate::semi::lang::LangItem::Eq, decl.ty, span);
             }
             if decl.needs.partial_eq() {
@@ -2631,6 +2647,205 @@ mod tests {
         })
     }
 
+    /// A shared record implementing the whole comparison tower — so what a
+    /// texture renders is decided by the *bound* it is reached through, never
+    /// by what the type happens to implement.
+    const ORD_KEY: &str = r#"
+        pub struct Key { value: i64 }
+        impl PartialEq for Key {
+            fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+        }
+        impl Eq for Key {}
+        impl PartialOrd for Key {
+            fn lt(self: Self, other: Self) -> bool { self.value < other.value }
+            fn le(self: Self, other: Self) -> bool { self.value <= other.value }
+            fn gt(self: Self, other: Self) -> bool { self.value > other.value }
+            fn ge(self: Self, other: Self) -> bool { self.value >= other.value }
+        }
+        impl Ord for Key {
+            fn cmp(self: Self, other: Self) -> Ordering {
+                if self.value < other.value { Ordering::Less } else {
+                    if self.value == other.value { Ordering::Equal }
+                    else { Ordering::Greater }
+                }
+            }
+        }
+    "#;
+
+    /// A bounded container is not the only source of a comparison
+    /// requirement: an `#[ffi(import)]` signature may bound its own generic,
+    /// and its Rust body then compares the rendered values directly. The
+    /// texture must carry that bridge — and exactly that one, even though
+    /// `Key` implements the whole tower.
+    #[test]
+    fn an_import_binder_bound_renders_its_own_bridge() {
+        let source = format!(
+            r#"{CMP_TOWER}{ORD_KEY}
+            #[ffi(import)]
+            pub fn same<T: PartialEq>(lhs: T, rhs: T) -> bool [{{ lhs == rhs }}];
+
+            pub fn run(a: Key, b: Key) -> bool {{ same(a, b) }}"#
+        );
+        with_full(&source, |full| {
+            let entries: Vec<_> = full
+                .ffi_trait_glue
+                .iter()
+                .map(|glue| full.symbol(glue.entry))
+                .collect();
+            assert!(
+                entries.iter().any(|entry| entry.ends_with("_ffi_eq")),
+                "the binder's `PartialEq` bound defines no equality entry: {entries:?}"
+            );
+            assert_eq!(entries.len(), 1, "extra comparison entries: {entries:?}");
+
+            let [texture] = full.ffi_imports.as_slice() else {
+                panic!("expected exactly one import texture");
+            };
+            let texture = &texture.texture;
+            assert!(
+                texture.contains("impl ::reussir_rt::bridge::PartialEqBridge for"),
+                "{texture}"
+            );
+            // Qualified: `EqBridge` is a suffix of `PartialEqBridge`, and
+            // `OrdBridge` of `PartialOrdBridge`.
+            for stronger in [
+                "bridge::EqBridge for",
+                "bridge::PartialOrdBridge for",
+                "bridge::OrdBridge for",
+            ] {
+                assert!(
+                    !texture.contains(stronger),
+                    "the bound is `PartialEq`, yet the texture grants {stronger}:\n{texture}"
+                );
+            }
+        });
+    }
+
+    /// An import texture and the ground record scan can demand the same
+    /// entry. A bridge the evidence rejects is then wanted twice, and the
+    /// programmer must still be told once.
+    #[test]
+    fn a_rejected_bridge_is_diagnosed_once() {
+        let source = format!(
+            r#"{CMP_TOWER}
+            #[ffi(rust = "::std::collections::BTreeSet")]
+            pub struct BTreeSet<T: Ord>;
+
+            pub struct Key {{ value: i64 }}
+
+            #[ffi(import)]
+            pub fn empty<T>() -> BTreeSet<T> [{{ Default::default() }}];
+
+            pub fn run() -> BTreeSet<Key> {{ empty<Key>() }}"#
+        );
+        let rejected: Vec<_> = mono_reports(&source)
+            .into_iter()
+            .filter(|report| report.starts_with("cannot synthesize a Rust FFI comparison bridge"))
+            .collect();
+        assert_eq!(rejected.len(), 1, "{rejected:#?}");
+    }
+
+    /// **Resumability, PolyFFI edition**: bridge rendering reads the binder
+    /// bounds a dump serializes, so a program resumed from its HIR must reach
+    /// the same MIR — the same textures and the same comparison entries — as
+    /// the one built from source. Losing the bound table does not degrade
+    /// gracefully: it silently resumes a *different* program whose textures
+    /// no longer compile.
+    #[test]
+    fn comparison_bridges_resume_from_parsed_hir() {
+        use crate::full::mir::print::Printer as MirPrinter;
+        use crate::semi::hir::build::parse_program;
+        use crate::semi::hir::print::Printer as HirPrinter;
+
+        // Both discovery routes at once: the container's declared `T: Ord`
+        // and the import binder's own `T: PartialEq`.
+        let source = format!(
+            r#"{CMP_TOWER}{ORD_KEY}
+            #[ffi(rust = "::std::collections::BTreeSet")]
+            pub struct BTreeSet<T: Ord>;
+
+            #[ffi(import)]
+            pub fn insert<T: Ord>(set: BTreeSet<T>, value: T) -> BTreeSet<T> [{{
+                set.insert(value)
+            }}];
+
+            #[ffi(import)]
+            pub fn same<T: PartialEq>(lhs: T, rhs: T) -> bool [{{ lhs == rhs }}];
+
+            pub fn run(set: BTreeSet<Key>, a: Key, b: Key) -> bool {{
+                let grown = insert(set, a);
+                same(a, b)
+            }}"#
+        );
+        with_tcx(|tcx| {
+            let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            let parse = reussir_syntax::parse_with_interner(&source, interner.clone());
+            assert!(parse.ok(), "{:#?}", parse.errors);
+            let prog = surface::program(&parse.root);
+            let elab = elaborate(tcx, &prog, &interner);
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+
+            let (mir0, r0) = monomorphize(&elab.mono_input());
+            assert!(r0.is_empty(), "{r0:#?}");
+            let text0 = MirPrinter::new(&elab.defs, elab.resolver).program(&mir0);
+
+            let strings = elab.strings.entries();
+            let bounds = elab.bound_names();
+            let lang = elab.lang.declared_by_def();
+            let (traits, impls) =
+                crate::semi::hir::trait_texts(&elab.traits, &elab.defs, elab.resolver);
+            let hir_text = HirPrinter::new(&elab.defs, elab.resolver)
+                .with_bounds(&bounds)
+                .with_traits(&traits, &impls)
+                .with_lang(&lang)
+                .with_ffi_metadata(&elab.ffi_preludes, &elab.ffi_imports)
+                .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
+            let mut parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
+            let trait_db = parsed.rebuild_traits(tcx);
+            let generic_env = parsed.rebuild_generic_env(&trait_db);
+            let input = MonoInput {
+                tcx,
+                defs: &parsed.defs,
+                resolver: &parsed.names,
+                elaborated: &parsed.funcs,
+                records: &parsed.records,
+                trampolines: &parsed.trampolines,
+                transform_anchors: &parsed.transform_anchors,
+                transform_scripts: &parsed.transform_scripts,
+                ffi_imports: &parsed.ffi_imports,
+                ffi_preludes: &parsed.ffi_preludes,
+                strings: parsed.strings.clone(),
+                externs: MonoExterns::default(),
+                traits: MonoTraits {
+                    db: Some(&trait_db),
+                    env: Some(&generic_env),
+                },
+                lang: parsed.lang.clone(),
+            };
+            let (mir1, r1) = monomorphize(&input);
+            assert!(r1.is_empty(), "{r1:#?}");
+            let text1 = MirPrinter::new(&parsed.defs, &parsed.names).program(&mir1);
+
+            // Non-vacuity: two empty programs would compare equal too.
+            for expected in [
+                "ffi trait glue",
+                "_ffi_cmp",
+                "_ffi_eq",
+                "bridge::OrdBridge for",
+                "bridge::PartialEqBridge for",
+            ] {
+                assert!(
+                    text1.contains(expected),
+                    "resumed MIR lost `{expected}`:\n{text1}"
+                );
+            }
+            assert_eq!(
+                text0, text1,
+                "resumed MIR differs from the original:\n=== original ===\n{text0}\n=== resumed ===\n{text1}"
+            );
+        });
+    }
+
     /// An opaque container reachable only through another record's field has
     /// no import texture to trigger bridge discovery. Record closure at the
     /// queue fixed point must still synthesize its comparison glue before
@@ -3009,6 +3224,7 @@ mod tests {
                 .program(&elab.elaborated, &strings, &elab.records, &elab.trampolines);
             let mut parsed = parse_program(tcx, &hir_text).expect("re-parse HIR");
             let trait_db = parsed.rebuild_traits(tcx);
+            let generic_env = parsed.rebuild_generic_env(&trait_db);
             let input = MonoInput {
                 tcx,
                 defs: &parsed.defs,
@@ -3024,7 +3240,7 @@ mod tests {
                 externs: MonoExterns::default(),
                 traits: MonoTraits {
                     db: Some(&trait_db),
-                    env: None,
+                    env: Some(&generic_env),
                 },
                 lang: Default::default(),
             };

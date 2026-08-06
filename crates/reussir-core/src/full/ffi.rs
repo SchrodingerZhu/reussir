@@ -231,6 +231,24 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
         self.rust_name_with_needs(ty, ComparisonBridgeNeeds::default(), decls)
     }
 
+    /// The Rust spelling of the ground argument one *binder* was instantiated
+    /// at, carrying that binder's own declared comparison bounds.
+    ///
+    /// A bounded container is not the only source of a comparison
+    /// requirement: an `#[ffi(import)]` signature may bound its own generic
+    /// (`fn same<T: PartialEq>(lhs: T, rhs: T) -> bool`), and its Rust body
+    /// then compares the rendered values directly. Without the bridge those
+    /// bodies fail inside `rustc` on a `Bridge<_>: PartialEq` bound instead of
+    /// using the implementation the signature already promised.
+    pub fn rust_name_for_generic(
+        &self,
+        ty: Ty<'tcx>,
+        generic: crate::semi::ty::GenericId,
+        decls: &mut BTreeMap<String, WrapperDecl<'tcx>>,
+    ) -> Result<String, String> {
+        self.rust_name_with_needs(ty, self.generic_bridge_needs(generic), decls)
+    }
+
     fn rust_name_with_needs(
         &self,
         ty: Ty<'tcx>,

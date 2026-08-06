@@ -6,20 +6,13 @@
 // The three distinct element types ensure the bridge does not accidentally
 // grant a stronger Rust comparison trait than the Reussir implementation.
 
+// The absent patterns run as their own prefix over the same texture rather
+// than through `--implicit-check-not`: the Python `filecheck` replacement used
+// on Windows rejects that flag.
 // RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
-// RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=TEXTURE \
-// RUN:   --implicit-check-not="bridge::EqBridge for _RNvC7cmpcaps6PeqKey" \
-// RUN:   --implicit-check-not="bridge::PartialOrdBridge for _RNvC7cmpcaps6PeqKey" \
-// RUN:   --implicit-check-not="bridge::OrdBridge for _RNvC7cmpcaps6PeqKey" \
-// RUN:   --implicit-check-not="bridge::PartialOrdBridge for _RNvC7cmpcaps5EqKey" \
-// RUN:   --implicit-check-not="bridge::OrdBridge for _RNvC7cmpcaps5EqKey" \
-// RUN:   --implicit-check-not="bridge::EqBridge for _RNvC7cmpcaps7PordKey" \
-// RUN:   --implicit-check-not="bridge::OrdBridge for _RNvC7cmpcaps7PordKey" \
-// RUN:   --implicit-check-not="_RNvC7cmpcaps6PeqKey_ffi_partial_cmp" \
-// RUN:   --implicit-check-not="_RNvC7cmpcaps6PeqKey_ffi_cmp" \
-// RUN:   --implicit-check-not="_RNvC7cmpcaps5EqKey_ffi_partial_cmp" \
-// RUN:   --implicit-check-not="_RNvC7cmpcaps5EqKey_ffi_cmp" \
-// RUN:   --implicit-check-not="_RNvC7cmpcaps7PordKey_ffi_cmp"
+// RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri --emit mlir --no-source-locations -o %t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=TEXTURE --input-file=%t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=ABSENT --input-file=%t.texture.mlir
 // RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/ffi_cmp_bridge_capabilities_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
@@ -168,3 +161,18 @@ extern "C" trampoline "reussir_main" = main;
 // A partial order has equality plus the four-state partial comparison bridge,
 // but neither the Eq marker nor the total-order bridge.
 // TEXTURE-DAG: reussir.polyffi texture("{{.*}}unsafe fn _RNvC7cmpcaps7PordKey_ffi_eq({{.*}}unsafe fn _RNvC7cmpcaps7PordKey_ffi_partial_cmp({{.*}}impl ::reussir_rt::bridge::PartialEqBridge for _RNvC7cmpcaps7PordKey{{.*}}impl ::reussir_rt::bridge::PartialOrdBridge for _RNvC7cmpcaps7PordKey{{.*}}fn _RINvC7cmpcaps8pord_cmpNvC7cmpcaps7PordKeyE_ffi(r#value: ::reussir_rt::bridge::Bridge<_RNvC7cmpcaps7PordKey>, r#values: ::reussir_rt::collections::vec::Vec<::reussir_rt::bridge::Bridge<_RNvC7cmpcaps7PordKey>>)
+
+// No probe may grant a Rust comparison trait, or synthesize the glue behind
+// one, that its element's Reussir implementations do not justify.
+// ABSENT-NOT: bridge::EqBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::PartialOrdBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::PartialOrdBridge for _RNvC7cmpcaps5EqKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps5EqKey
+// ABSENT-NOT: bridge::EqBridge for _RNvC7cmpcaps7PordKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps7PordKey
+// ABSENT-NOT: _RNvC7cmpcaps6PeqKey_ffi_partial_cmp
+// ABSENT-NOT: _RNvC7cmpcaps6PeqKey_ffi_cmp
+// ABSENT-NOT: _RNvC7cmpcaps5EqKey_ffi_partial_cmp
+// ABSENT-NOT: _RNvC7cmpcaps5EqKey_ffi_cmp
+// ABSENT-NOT: _RNvC7cmpcaps7PordKey_ffi_cmp

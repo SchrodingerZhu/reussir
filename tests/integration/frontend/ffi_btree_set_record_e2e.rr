@@ -5,14 +5,13 @@
 // clones every element through its compiler-emitted acquire glue. The
 // duplicate insertion also exercises equality without changing the length.
 
+// The absent patterns run as their own prefix over the same texture rather
+// than through `--implicit-check-not`: the Python `filecheck` replacement used
+// on Windows rejects that flag.
 // RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
-// RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=TEXTURE \
-// RUN:   --implicit-check-not="::reussir_rt::bridge::Bridge<i64>" \
-// RUN:   --implicit-check-not="_RNvC8btreeset3Key_ffi_partial_cmp" \
-// RUN:   --implicit-check-not="impl ::std::cmp::PartialEq for _RNvC8btreeset3Key" \
-// RUN:   --implicit-check-not="impl ::std::cmp::Eq for _RNvC8btreeset3Key" \
-// RUN:   --implicit-check-not="impl ::std::cmp::PartialOrd for _RNvC8btreeset3Key" \
-// RUN:   --implicit-check-not="impl ::std::cmp::Ord for _RNvC8btreeset3Key"
+// RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri --emit mlir --no-source-locations -o %t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=TEXTURE --input-file=%t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=ABSENT --input-file=%t.texture.mlir
 // RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri -o %t.o --relocation-mode pic
 // RUN: %cc %t.o %S/ffi_btree_set_record_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
 // RUN: %t.exe
@@ -111,3 +110,13 @@ extern "C" trampoline "reussir_main" = main;
 
 // Primitive keys remain unwrapped.
 // TEXTURE-DAG: ::reussir_rt::collections::btree_set::BTreeSet<i64>
+
+// A primitive element never grows bridge glue, a total order never falls back
+// to the four-state partial comparison, and the standard comparison traits are
+// implemented for `Bridge` in the runtime — never for the inner wrapper.
+// ABSENT-NOT: ::reussir_rt::bridge::Bridge<i64>
+// ABSENT-NOT: _RNvC8btreeset3Key_ffi_partial_cmp
+// ABSENT-NOT: impl ::std::cmp::PartialEq for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::Eq for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::PartialOrd for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::Ord for _RNvC8btreeset3Key
