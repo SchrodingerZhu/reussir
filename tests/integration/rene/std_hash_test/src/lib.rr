@@ -1,0 +1,106 @@
+// Exercises std::hash end to end: user `Hash` impls dispatching through
+// the `Hasher` trait into the rapidhash-backed hashers, the scalar
+// write helpers, seeding, and the one-shot entry points.
+//
+// The pinned digests are rapidhash's own output for the same writes,
+// computed independently with the upstream crate — so a change in the
+// marshalling, the write widths, or the variant selection shows up here
+// as a changed number rather than as silently different hashes.
+
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::hash::FastHasher;
+import std::hash::StrongHasher;
+
+#[ffi(import)]
+fn print_u64(value: u64) [{ println!("{value}") }];
+
+fn wb(v : bool) { test_utils::io::write_i32(if v { 1 } else { 0 }) }
+
+pub struct Point { pub x : i64, pub y : i64 }
+
+impl Hash for Point {
+    fn hash<H: Hasher>(self: Self, state: H) -> H {
+        state.write_i64(self.x).write_i64(self.y)
+    }
+}
+
+// A generic composite recursing through both bounds, so the impl is
+// instantiated at the user's call shape rather than pre-monomorphized.
+pub struct Pair<A, B> { pub a : A, pub b : B }
+
+impl<A : Hash, B : Hash> Hash for Pair<A, B> {
+    fn hash<H: Hasher>(self: Self, state: H) -> H {
+        state.write(self.a).write(self.b)
+    }
+}
+
+fn test_reference_vectors() {
+    // Point { 1, 2 } is two u64 writes.
+    print_u64(std::hash::fast_hash(Point { x: 1, y: 2 }));
+    print_u64(std::hash::strong_hash(Point { x: 1, y: 2 }));
+    // One-shot, default seed.
+    print_u64(std::hash::fast_hash_u64(42));
+    print_u64(std::hash::strong_hash_u64(42));
+    // One-shot, explicit seed.
+    print_u64(std::hash::fast_hash_u64_seeded(42, 12345));
+    print_u64(std::hash::strong_hash_u64_seeded(42, 12345));
+    // Mixed widths plus bool and char, through the streaming hasher.
+    print_u64(std::hash::fast_hasher()
+        .write_u32(7).write_u16(8).write_u8(9).write_bool(true).write_char('z')
+        .finish());
+    // Streaming with an explicit seed.
+    print_u64(std::hash::fast_hasher_seeded(99).write_u64(5).finish());
+}
+
+fn test_properties() {
+    // Equal values hash equally; different ones differ.
+    wb(std::hash::fast_hash(Point { x: 3, y: 4 }) ==
+        std::hash::fast_hash(Point { x: 3, y: 4 }));
+    wb(std::hash::fast_hash(Point { x: 3, y: 4 }) !=
+        std::hash::fast_hash(Point { x: 4, y: 3 }));
+    // The two variants are distinct functions.
+    wb(std::hash::fast_hash(Point { x: 3, y: 4 }) !=
+        std::hash::strong_hash(Point { x: 3, y: 4 }));
+    // Seeding changes the digest, and the default seed round-trips.
+    wb(std::hash::fast_hash_u64_seeded(5, 1) !=
+        std::hash::fast_hash_u64_seeded(5, 2));
+    // One-shot agrees with the streaming equivalent.
+    wb(std::hash::fast_hash_u64(1234) ==
+        std::hash::fast_hasher().write_u64(1234).finish());
+    wb(std::hash::strong_hash_u64(1234) ==
+        std::hash::strong_hasher().write_u64(1234).finish());
+    // The generic impl composes: Pair folds one state through both fields.
+    wb(std::hash::fast_hash(Pair {
+        a: Point { x: 1, y: 2 },
+        b: Point { x: 3, y: 4 }
+    }) == std::hash::fast_hash(Pair {
+        a: Point { x: 1, y: 2 },
+        b: Point { x: 3, y: 4 }
+    }));
+    wb(std::hash::fast_hash(Pair {
+        a: Point { x: 1, y: 2 },
+        b: Point { x: 3, y: 4 }
+    }) != std::hash::fast_hash(Pair {
+        a: Point { x: 3, y: 4 },
+        b: Point { x: 1, y: 2 }
+    }));
+    // Field order matters: writing x then y differs from y then x.
+    wb(std::hash::fast_hasher().write_i64(1).write_i64(2).finish() !=
+        std::hash::fast_hasher().write_i64(2).write_i64(1).finish());
+    // Signed writes reinterpret, so -1i64 and u64::MAX agree.
+    wb(std::hash::fast_hasher().write_i64(0 - 1).finish() ==
+        std::hash::fast_hasher().write_u64(18446744073709551615).finish());
+    // A hasher is a value: reusing an earlier state does not observe
+    // writes made to a later one.
+    let base = std::hash::fast_hasher().write_u64(1);
+    let branch = base.write_u64(2).finish();
+    wb(base.finish() == std::hash::fast_hasher().write_u64(1).finish());
+    wb(branch != base.finish());
+}
+
+#[main]
+pub fn main() {
+    let case = test_utils::io::read_i32();
+    if case == 1 { test_reference_vectors() } else { test_properties() }
+}

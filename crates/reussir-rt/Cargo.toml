@@ -29,6 +29,11 @@ libmimalloc-sys = { version = "0.1.44", optional = true, features = ["extended"]
 # fine unconditionally because the workspace pins a nightly toolchain.
 mlir_sync = { git = "https://github.com/reussir-lang/mlir-sync.git", rev = "5e9721da4911c5b256a67922193a96e8dd417692", features = ["nightly"] }
 num_enum = "0.7.4"
+# rapidhash backs `std::hash`. `default-features = false` keeps the runtime
+# free of the crate's `std` glue (RandomState, HashMap aliases) — the two
+# hashers and their one-shot entry points are all that crosses the FFI
+# boundary, and a no-std-shaped dependency keeps the wasm target viable.
+rapidhash = { version = "4.5", default-features = false }
 smallvec = "1.15.1"
 stacker.workspace = true
 

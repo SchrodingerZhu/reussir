@@ -1,4 +1,5 @@
 pub mod collections;
+pub mod hash;
 pub mod option;
 pub mod process;
 pub mod result;
