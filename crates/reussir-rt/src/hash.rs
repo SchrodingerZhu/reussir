@@ -9,18 +9,15 @@
 //! here, only marshalled.
 //!
 //! Reussir's `Hasher` trait is state-passing — each write consumes the
-//! hasher and returns the advanced one — so the state has to survive
-//! across calls. `RapidHasher` is `Copy` but its fields are private, so
-//! the state cannot be handed across the boundary as loose scalars
-//! without reimplementing rapidhash's streaming protocol. It is instead
-//! held behind the opaque-FFI contract (a `#[repr(transparent)]` wrapper
-//! over [`Rc`]): one allocation when the hasher is created, and in-place
-//! writes thereafter, since a linearly threaded hasher is uniquely owned
-//! and `make_mut` sees a count of one.
+//! hasher and returns the advanced one — so the state survives across
+//! calls behind the opaque-FFI contract: a `#[repr(transparent)]`
+//! wrapper over [`Rc`], so the compiler manages it as an ordinary
+//! rc object. Writes go in place while the box is uniquely owned, which
+//! it is when the hasher is threaded linearly; `make_mut` copies if it
+//! has been shared.
 //!
-//! For hashing a single value the streaming hasher is unnecessary
-//! overhead, so one-shot entry points are provided alongside; they
-//! allocate nothing.
+//! One-shot entry points sit alongside for hashing a single value, where
+//! building a hasher would be pure overhead.
 
 use std::hash::Hasher as _;
 

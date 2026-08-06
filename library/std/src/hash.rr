@@ -38,10 +38,9 @@
 //!   change detection and fingerprinting, checksums over structures,
 //!   sharding across nodes, or when digests are compared or stored.
 //!
-//! **Choose on quality, not speed.** The two differ measurably only on
-//! the one-shot path (2.8 ns against 4.4 ns per `u64` here); through a
-//! streaming hasher they are indistinguishable, because the hasher's own
-//! allocation costs more than the avalanche step (see below).
+//! Pick on quality: the two differ measurably only on the one-shot path
+//! (2.8 ns against 4.4 ns per `u64`), and through a streaming hasher the
+//! difference is in the noise.
 //!
 //! Neither is keyed with a random seed by default, so neither is a
 //! defense against an adversary choosing colliding keys; pass an explicit
@@ -50,30 +49,10 @@
 //!
 //! # Cost
 //!
-//! A hasher holds its state in the runtime behind a reference-counted
-//! handle: one heap allocation when it is created, then in-place writes
-//! while it stays uniquely owned, which is the case when it is threaded
-//! linearly as above.
-//!
-//! That allocation dominates short hashes. Measured on `i64` data,
-//! creating a hasher, writing four values and finishing costs ~26 ns,
-//! of which roughly a third is the allocator round trip for a 40-byte
-//! block that lives four writes; the one-shot `fast_hash_u64` is ~2.8 ns.
-//! Two consequences worth planning around:
-//!
-//! - **Hashing one scalar should not build a hasher.** `fast_hash_u64`
-//!   and `strong_hash_u64` are one-shot and allocate nothing — about 9x
-//!   cheaper than the streaming equivalent.
-//! - **Bulk work should thread one hasher** across many values and
-//!   finish once, rather than paying a fresh allocation per value as
-//!   `fast_hash`/`strong_hash` do.
-//!
-//! The allocation is not an artifact of this binding: rapidhash's hasher
-//! keeps its state in private fields, so the state cannot be carried
-//! across the boundary as loose scalars without reimplementing its
-//! streaming protocol — which would be a different hash function wearing
-//! the same name. Faithfulness was preferred; the one-shot entry points
-//! exist to cover the case where the cost would otherwise bite.
+//! A hasher is an rc-managed runtime object: creating one allocates, and
+//! writes go in place while it stays uniquely owned — which it does when
+//! threaded linearly as above. Hashing a single scalar needs no hasher
+//! at all: `fast_hash_u64` and `strong_hash_u64` are one-shot.
 
 extern "rust" [{
     use reussir_rt::hash::{FastHasher as RFast, StrongHasher as RStrong};
