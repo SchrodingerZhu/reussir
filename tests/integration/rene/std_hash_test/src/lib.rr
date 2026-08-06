@@ -21,7 +21,7 @@ pub struct Point { pub x : i64, pub y : i64 }
 
 impl Hash for Point {
     fn hash<H: Hasher>(self: Self, state: H) -> H {
-        std::hash::write_i64(std::hash::write_i64(state, self.x), self.y)
+        state.write_i64(self.x).write_i64(self.y)
     }
 }
 
@@ -31,7 +31,7 @@ pub struct Pair<A, B> { pub a : A, pub b : B }
 
 impl<A : Hash, B : Hash> Hash for Pair<A, B> {
     fn hash<H: Hasher>(self: Self, state: H) -> H {
-        self.b.hash(self.a.hash(state))
+        state.write(self.a).write(self.b)
     }
 }
 
@@ -46,15 +46,11 @@ fn test_reference_vectors() {
     print_u64(std::hash::fast_hash_u64_seeded(42, 12345));
     print_u64(std::hash::strong_hash_u64_seeded(42, 12345));
     // Mixed widths plus bool and char, through the streaming hasher.
-    print_u64(std::hash::write_char(
-        std::hash::write_bool(
-            std::hash::write_u8(
-                std::hash::write_u16(
-                    std::hash::write_u32(std::hash::fast_hasher(), 7), 8), 9),
-            true),
-        'z').finish());
+    print_u64(std::hash::fast_hasher()
+        .write_u32(7).write_u16(8).write_u8(9).write_bool(true).write_char('z')
+        .finish());
     // Streaming with an explicit seed.
-    print_u64(std::hash::write_u64(std::hash::fast_hasher_seeded(99), 5).finish());
+    print_u64(std::hash::fast_hasher_seeded(99).write_u64(5).finish());
 }
 
 fn test_properties() {
@@ -71,9 +67,9 @@ fn test_properties() {
         std::hash::fast_hash_u64_seeded(5, 2));
     // One-shot agrees with the streaming equivalent.
     wb(std::hash::fast_hash_u64(1234) ==
-        std::hash::write_u64(std::hash::fast_hasher(), 1234).finish());
+        std::hash::fast_hasher().write_u64(1234).finish());
     wb(std::hash::strong_hash_u64(1234) ==
-        std::hash::write_u64(std::hash::strong_hasher(), 1234).finish());
+        std::hash::strong_hasher().write_u64(1234).finish());
     // The generic impl composes: Pair folds one state through both fields.
     wb(std::hash::fast_hash(Pair {
         a: Point { x: 1, y: 2 },
@@ -90,19 +86,16 @@ fn test_properties() {
         b: Point { x: 1, y: 2 }
     }));
     // Field order matters: writing x then y differs from y then x.
-    wb(std::hash::write_i64(std::hash::write_i64(std::hash::fast_hasher(), 1), 2)
-        .finish() !=
-        std::hash::write_i64(std::hash::write_i64(std::hash::fast_hasher(), 2), 1)
-        .finish());
+    wb(std::hash::fast_hasher().write_i64(1).write_i64(2).finish() !=
+        std::hash::fast_hasher().write_i64(2).write_i64(1).finish());
     // Signed writes reinterpret, so -1i64 and u64::MAX agree.
-    wb(std::hash::write_i64(std::hash::fast_hasher(), 0 - 1).finish() ==
-        std::hash::write_u64(std::hash::fast_hasher(), 18446744073709551615).finish());
+    wb(std::hash::fast_hasher().write_i64(0 - 1).finish() ==
+        std::hash::fast_hasher().write_u64(18446744073709551615).finish());
     // A hasher is a value: reusing an earlier state does not observe
     // writes made to a later one.
-    let base = std::hash::write_u64(std::hash::fast_hasher(), 1);
-    let branch = std::hash::write_u64(base, 2).finish();
-    wb(base.finish() ==
-        std::hash::write_u64(std::hash::fast_hasher(), 1).finish());
+    let base = std::hash::fast_hasher().write_u64(1);
+    let branch = base.write_u64(2).finish();
+    wb(base.finish() == std::hash::fast_hasher().write_u64(1).finish());
     wb(branch != base.finish());
 }
 

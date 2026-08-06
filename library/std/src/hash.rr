@@ -10,17 +10,16 @@
 //! ```text
 //! impl Hash for Point {
 //!     fn hash<H: Hasher>(self: Self, state: H) -> H {
-//!         write_i64(write_i64(state, self.x), self.y)
+//!         state.write_i64(self.x).write_i64(self.y)
 //!     }
 //! }
 //!
-//! let digest = FastHasher::new().hash_of(point);
+//! let digest = fast_hash(point);
 //! ```
 //!
-//! Scalars are hashed through the `write_*` free functions rather than
-//! `Hash` impls, because an `impl` target must be a named type — `i64 :
-//! Hash` cannot be written in source. Each is a bounded generic over the
-//! hasher, so it works with both hashers and with any user-written one.
+//! Every write is a method on the hasher, including `write` for nested
+//! hashable values, so a composite hashes as one chain rather than a
+//! nest of calls.
 //!
 //! # Choosing a hasher
 //!
@@ -60,15 +59,31 @@ extern "rust" [{
 
 /// A hash state that absorbs values and produces a digest.
 ///
-/// Implementations consume `self` and return the advanced state. The
-/// four `write_*` methods are the primitive vocabulary; the free
-/// functions below build the remaining scalar types on top of them, so
-/// an implementation only has to provide these.
+/// Every method consumes `self` and returns the advanced state, so
+/// writes chain:
+///
+/// ```text
+/// state.write_i64(self.x).write_i64(self.y)
+/// ```
+///
+/// Signed writes reinterpret as unsigned of the same width, so `-1i64`
+/// and `u64::MAX` hash alike — they have the same bits, and nothing here
+/// promises otherwise.
 pub trait Hasher {
     fn write_u64(self: Self, value: u64) -> Self;
     fn write_u32(self: Self, value: u32) -> Self;
     fn write_u16(self: Self, value: u16) -> Self;
     fn write_u8(self: Self, value: u8) -> Self;
+    fn write_i64(self: Self, value: i64) -> Self;
+    fn write_i32(self: Self, value: i32) -> Self;
+    fn write_i16(self: Self, value: i16) -> Self;
+    fn write_i8(self: Self, value: i8) -> Self;
+    /// Writes one byte: 1 for true, 0 for false.
+    fn write_bool(self: Self, value: bool) -> Self;
+    /// Writes the character's code point as a 32-bit value.
+    fn write_char(self: Self, value: char) -> Self;
+    /// Writes any hashable value, so nested fields chain like scalars.
+    fn write<T: Hash>(self: Self, value: T) -> Self;
     /// The digest of everything written so far.
     fn finish(self: Self) -> u64;
 }
@@ -81,58 +96,11 @@ pub trait Hash {
     fn hash<H: Hasher>(self: Self, state: H) -> H;
 }
 
-// Scalar writes, as bounded generics over the hasher. Signed types are
-// reinterpreted as unsigned of the same width, so `-1i64` and
-// `u64::MAX` hash alike — they have the same bits, and nothing here
-// promises otherwise.
-
-pub fn write_u64<H: Hasher>(state: H, value: u64) -> H {
-    state.write_u64(value)
-}
-
-pub fn write_u32<H: Hasher>(state: H, value: u32) -> H {
-    state.write_u32(value)
-}
-
-pub fn write_u16<H: Hasher>(state: H, value: u16) -> H {
-    state.write_u16(value)
-}
-
-pub fn write_u8<H: Hasher>(state: H, value: u8) -> H {
-    state.write_u8(value)
-}
-
-pub fn write_i64<H: Hasher>(state: H, value: i64) -> H {
-    state.write_u64(value as u64)
-}
-
-pub fn write_i32<H: Hasher>(state: H, value: i32) -> H {
-    state.write_u32(value as u32)
-}
-
-pub fn write_i16<H: Hasher>(state: H, value: i16) -> H {
-    state.write_u16(value as u16)
-}
-
-pub fn write_i8<H: Hasher>(state: H, value: i8) -> H {
-    state.write_u8(value as u8)
-}
-
-/// Writes one byte: 1 for true, 0 for false.
-pub fn write_bool<H: Hasher>(state: H, value: bool) -> H {
-    state.write_u8(if value { 1 } else { 0 })
-}
-
 // `char` carries no `Num` bound, so the language's `as` casts do not
 // apply to it; the code point is obtained across the FFI instead, where
 // a Reussir `char` is rendered as a Rust `char`.
 #[ffi(import)]
 fn char_code(value: char) -> u32 [{ value as u32 }];
-
-/// Writes the character's code point as a 32-bit value.
-pub fn write_char<H: Hasher>(state: H, value: char) -> H {
-    state.write_u32(char_code(value))
-}
 
 // ---------------------------------------------------------------- FastHasher
 
@@ -174,6 +142,17 @@ impl Hasher for FastHasher {
     fn write_u32(self: Self, value: u32) -> Self { fast_write_u32(self, value) }
     fn write_u16(self: Self, value: u16) -> Self { fast_write_u16(self, value) }
     fn write_u8(self: Self, value: u8) -> Self { fast_write_u8(self, value) }
+    fn write_i64(self: Self, value: i64) -> Self { fast_write_u64(self, value as u64) }
+    fn write_i32(self: Self, value: i32) -> Self { fast_write_u32(self, value as u32) }
+    fn write_i16(self: Self, value: i16) -> Self { fast_write_u16(self, value as u16) }
+    fn write_i8(self: Self, value: i8) -> Self { fast_write_u8(self, value as u8) }
+    fn write_bool(self: Self, value: bool) -> Self {
+        fast_write_u8(self, if value { 1 } else { 0 })
+    }
+    fn write_char(self: Self, value: char) -> Self {
+        fast_write_u32(self, char_code(value))
+    }
+    fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { fast_finish(self) }
 }
 
@@ -227,6 +206,17 @@ impl Hasher for StrongHasher {
     fn write_u32(self: Self, value: u32) -> Self { strong_write_u32(self, value) }
     fn write_u16(self: Self, value: u16) -> Self { strong_write_u16(self, value) }
     fn write_u8(self: Self, value: u8) -> Self { strong_write_u8(self, value) }
+    fn write_i64(self: Self, value: i64) -> Self { strong_write_u64(self, value as u64) }
+    fn write_i32(self: Self, value: i32) -> Self { strong_write_u32(self, value as u32) }
+    fn write_i16(self: Self, value: i16) -> Self { strong_write_u16(self, value as u16) }
+    fn write_i8(self: Self, value: i8) -> Self { strong_write_u8(self, value as u8) }
+    fn write_bool(self: Self, value: bool) -> Self {
+        strong_write_u8(self, if value { 1 } else { 0 })
+    }
+    fn write_char(self: Self, value: char) -> Self {
+        strong_write_u32(self, char_code(value))
+    }
+    fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { strong_finish(self) }
 }
 
