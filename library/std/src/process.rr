@@ -1,0 +1,9 @@
+#[ffi(import)]
+fn exit_ffi(code: i32) [{ std::process::exit(code) }];
+
+/// Terminate the current process with `code` without running destructors.
+/// This function never returns, so its result may be used as any type `T`.
+pub fn exit<T>(code: i32) -> T {
+    exit_ffi(code);
+    core::intrinsic::panic::panic()
+}
