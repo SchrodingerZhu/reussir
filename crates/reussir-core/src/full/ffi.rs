@@ -173,9 +173,9 @@ impl WrapperDecl<'_> {
                  \x20   fn partial_cmp_bridge(&self, other: &Self) -> Option<::std::cmp::Ordering> {{\n"
             );
             if self.needs.ord() {
-                let _ = write!(
+                let _ = writeln!(
                     d,
-                    "        Some(<Self as ::reussir_rt::bridge::OrdBridge>::cmp_bridge(self, other))\n"
+                    "        Some(<Self as ::reussir_rt::bridge::OrdBridge>::cmp_bridge(self, other))"
                 );
             } else {
                 let _ = write!(

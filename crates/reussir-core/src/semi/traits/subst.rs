@@ -28,11 +28,7 @@ pub fn replace_generics<'tcx>(
             let n = replace_generics(tcx, elem, map);
             if n == elem { ty } else { tcx.mk_cell(n, kind) }
         }
-        TyKind::Record {
-            def,
-            ref args,
-            flex,
-        } => {
+        TyKind::Record { def, args, flex } => {
             let new: Vec<Ty> = args
                 .iter()
                 .map(|&a| replace_generics(tcx, a, map))
@@ -43,7 +39,7 @@ pub fn replace_generics<'tcx>(
                 tcx.mk_record(def, &new, flex)
             }
         }
-        TyKind::Closure { ref params, ret } => {
+        TyKind::Closure { params, ret } => {
             let new: Vec<Ty> = params
                 .iter()
                 .map(|&p| replace_generics(tcx, p, map))
@@ -55,7 +51,7 @@ pub fn replace_generics<'tcx>(
                 tcx.mk_closure(&new, r)
             }
         }
-        TyKind::Array { elem, ref dims } => {
+        TyKind::Array { elem, dims } => {
             let n = replace_generics(tcx, elem, map);
             if n == elem { ty } else { tcx.mk_array(n, dims) }
         }
@@ -71,8 +67,8 @@ pub fn collect_generics_of(ty: Ty<'_>, out: &mut rustc_hash::FxHashSet<GenericId
         }
         TyKind::Nullable(inner) | TyKind::Arc(inner) => collect_generics_of(inner, out),
         TyKind::Cell { elem, .. } => collect_generics_of(elem, out),
-        TyKind::Record { ref args, .. } => args.iter().for_each(|&a| collect_generics_of(a, out)),
-        TyKind::Closure { ref params, ret } => {
+        TyKind::Record { args, .. } => args.iter().for_each(|&a| collect_generics_of(a, out)),
+        TyKind::Closure { params, ret } => {
             params.iter().for_each(|&p| collect_generics_of(p, out));
             collect_generics_of(ret, out);
         }
