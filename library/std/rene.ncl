@@ -1,0 +1,44 @@
+# `std`'s package manifest, evaluated by `rene`. The manifest is a full
+# Nickel program (https://nickel-lang.org): `let` bindings, string
+# interpolation, imports, contracts, and merging all run before `rene` reads
+# the result, and fields beyond the schema pass through for other tools.
+#
+# NOTE: fields must not reference sibling record fields by bare name —
+# Nickel records are recursive, so `name = name` is infinite recursion; bind
+# shared values with `let` instead (like `pkg_name` below).
+let pkg_name = "std" in
+{
+  package = {
+    # The package's name: the first segment of every item's module path
+    # (`rrc --package-name`).
+    name | String = pkg_name,
+    # Checked against dependents' `version` constraints during resolution.
+    version = "0.1.0",
+  },
+
+  # The products `rene build` compiles, by name — the name is yours to edit
+  # and becomes the artifact's file stem (`app` -> `app`/`app.exe`,
+  # `libapp.so`, `libapp.a`, ...). Kinds: 'executable, 'dynlib (shared
+  # library), 'staticlib (archive). A package declaring no targets still
+  # builds: `rene build` bakes the runtime and prints the library
+  # directories to pass to `rrc --polyffi-libdir` by hand.
+  targets = {
+    std_static = { kind = 'staticlib },
+  },
+
+  # Dependencies by name — file-system paths only today, relative to this
+  # file; `version` ("1.2.3" exact, "^1.2" compatible, "1" prefix, "*" any)
+  # is checked against the dependency's declared `package.version`.
+  #
+  # dependencies = {
+  #   utils = { path = "../utils", version = "^0.1" },
+  # },
+
+  # Named sets of build knobs, selected with `rene build --profile`; a
+  # profile named like a built-in (`dev`, `release`) refines it, and the
+  # values mirror `rrc`'s flags one for one (see `rrc --help`).
+  #
+  # profiles = {
+  #   release = { lto = "thin", codegen_units = 1 },
+  # },
+}

@@ -3703,7 +3703,9 @@ void ensureRuntimeFunctions(mlir::ModuleOp module,
 
   // currently this will abort execution after printing the message and
   // stacktrace. No unwinding is attempted yet.
-  addRuntimeFunction(body, "__reussir_panic", {llvmPtrType, indexType}, {});
+  auto panicFunc =
+      addRuntimeFunction(body, "__reussir_panic", {llvmPtrType, indexType}, {});
+  panicFunc->setAttr("passthrough", builder.getStrArrayAttr({"noreturn"}));
 }
 
 // Debug info conversion logic has been moved to DbgInfoConversion.cpp

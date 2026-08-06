@@ -1,0 +1,73 @@
+import std::option::Option;
+
+pub enum List<T> {
+    Cons(T, List<T>),
+    Nil
+}
+
+impl<T> List<T> {
+    fn len_impl(self: Self, acc : u64) -> u64 {
+        match self {
+            Nil => acc,
+            Cons(_, tail) => tail.len_impl(acc + 1)
+        }
+    }
+    pub fn len(self: Self) -> u64 {
+        self.len_impl(0)
+    }
+    pub fn head(self: Self) -> Option<T> {
+	match self {
+            Nil => Option::None,
+            Cons(h, _) => Option::Some { h }
+        }
+    }
+    pub fn tail(self : Self) -> List<T> {
+	match self {
+	    Nil => List::Nil,
+            Cons(_, t) => t
+	}
+    }
+    pub fn is_nil(self : Self) -> bool {
+        match self {
+            Nil => true,
+            Cons(_, _) => false
+        }
+    }
+    pub fn is_cons(self : Self) -> bool {
+        !self.is_nil()
+    }
+    fn reverse_impl(self : Self, acc : Self) -> Self {
+        match self {
+            Nil => acc,
+            Cons(h, t) => t.reverse_impl(List::Cons { h, acc })
+        }
+    }
+    pub fn reverse(self : Self) -> Self {
+        self.reverse_impl(List::Nil)
+    }
+    pub fn map<U>(self : Self, f : T -> U) -> List<U> {
+        match self {
+            Nil => List::Nil,
+            Cons(h, t) => List::Cons { f(h), t.map(f) }
+        }
+    }
+}
+
+enum [value] Helper<X, Y> { Pair(X, Y) }
+
+impl<T : Ord> List<T> {
+   fn min_impl(self : Self, candidate : Option<T>) -> Option<T> {
+       match (Helper::Pair {self, candidate}) {
+           Pair(Nil, _) => candidate,
+           Pair(Cons(h, t), Some(x)) if x < h => t.min_impl(Option::Some { x }),
+           Pair(Cons(h, t), _) => t.min_impl(Option::Some { h })
+       }
+   }
+   pub fn min(self : Self) -> Option<T> {
+       self.min_impl(Option::None)
+   }
+}
+
+pub fn min_list_u32(x : List<u32>) -> u32 {
+   x.min().unwrap_or_panic()
+}
