@@ -16,6 +16,7 @@
 // RRI: interface 1 package "core"
 // RRI-DAG: #[lang("core::intrinsic::math::sqrt")] pub fn #core::intrinsic::math::sqrt<{{.*}}: core::num::FloatingPoint>({{.*}}) -> {{.*}} in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}];
 // RRI-DAG: #[lang("core::intrinsic::math::powf")]
+// RRI-DAG: #[lang("core::intrinsic::panic::panic")] pub fn #core::intrinsic::panic::panic<{{.*}}>() -> {{.*}} in {{[0-9]+}} [{{[0-9]+}}..{{[0-9]+}}];
 
 // RUN: %t.bdir/dev/mathdemo%exe_ext | %FileCheck %s --check-prefix=OUT
 

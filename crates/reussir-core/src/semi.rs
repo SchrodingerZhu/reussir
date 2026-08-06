@@ -700,6 +700,60 @@ mod tests {
         assert!(m.contains("expects 2 argument(s)"), "{m}");
     }
 
+    #[test]
+    fn panic_intrinsic_uses_the_contextual_result_type() {
+        check(
+            r#"
+                fn integer() -> i64 { core::intrinsic::panic::panic() }
+                fn boolean() -> bool { core::intrinsic::panic::panic() }
+                fn explicit() -> i32 { core::intrinsic::panic::panic<i32>() }
+                fn generic<T>() -> T { core::intrinsic::panic::panic() }
+                fn unit() { core::intrinsic::panic::panic() }
+            "#,
+            |elab, tcx| {
+                use crate::intrinsic::IntrinsicOp;
+                use crate::semi::hir::ExprKind;
+
+                for name in ["integer", "boolean", "explicit", "generic", "unit"] {
+                    let function = function(elab, name);
+                    let body = function.body.as_ref().expect("panic function has a body");
+                    let ExprKind::Intrinsic { op, args } = &body.kind else {
+                        panic!("{name} body is the panic intrinsic: {body:#?}");
+                    };
+                    assert_eq!(*op, IntrinsicOp::Panic);
+                    assert!(args.is_empty());
+                    assert_eq!(body.ty, function.return_ty);
+                }
+                assert_eq!(
+                    function(elab, "integer").return_ty,
+                    tcx.mk_int(IntTy::Signed(64))
+                );
+                assert_eq!(function(elab, "boolean").return_ty, tcx.mk_bool());
+                assert_eq!(function(elab, "unit").return_ty, tcx.mk_unit());
+            },
+        );
+    }
+
+    #[test]
+    fn panic_intrinsic_rejects_arguments_and_unknown_operations() {
+        let messages = |source| {
+            reports_of(source)
+                .into_iter()
+                .map(|r| r.message)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let m = messages("fn f() -> i64 { core::intrinsic::panic::panic(1) }");
+        assert!(m.contains("`panic` expects 0 arguments, got 1"), "{m}");
+        let m = messages("fn f() -> i64 { core::intrinsic::panic::panic<i64, bool>() }");
+        assert!(m.contains("takes at most one type argument"), "{m}");
+        let m = messages("fn f() -> i64 { core::intrinsic::panic::abort() }");
+        assert!(
+            m.contains("unknown panic intrinsic `core::intrinsic::panic::abort`"),
+            "{m}"
+        );
+    }
+
     /// Impl members ride the ordinary defs/generics/functions tables, so the
     /// Checkpoint's truncate-and-retain rollback is sufficient: a rejected
     /// batch retracts them and the method name is reusable.
@@ -2085,11 +2139,11 @@ mod tests {
     }
 
     /// The bundled `library/core` sources stay honest: they elaborate
-    /// cleanly and bind a prototype for *every* math intrinsic the
-    /// compiler surfaces — a new `MathFn` without a core declaration (or
-    /// vice versa) fails here, in `cargo test`, before any rene build.
+    /// cleanly and bind prototypes for the surfaced intrinsics. A new
+    /// intrinsic without a core declaration (or vice versa) fails here, in
+    /// `cargo test`, before any rene build.
     #[test]
-    fn bundled_core_covers_every_math_intrinsic() {
+    fn bundled_core_covers_surfaced_intrinsics() {
         use crate::intrinsic::MathFn;
         use crate::semi::lang::{IntrinsicItem, LangItem};
         check_package(
@@ -2122,6 +2176,10 @@ mod tests {
                     &["intrinsic", "nullable"],
                     include_str!("../../../library/core/src/intrinsic/nullable.rr"),
                 ),
+                (
+                    &["intrinsic", "panic"],
+                    include_str!("../../../library/core/src/intrinsic/panic.rr"),
+                ),
             ],
             |elab, _| {
                 assert!(!elab.has_errors(), "{:#?}", elab.reports);
@@ -2133,6 +2191,15 @@ mod tests {
                         f.as_str()
                     );
                 }
+                let panic_item = LangItem::Intrinsic(IntrinsicItem::Panic);
+                assert!(
+                    elab.lang.get(panic_item).is_some(),
+                    "core declares no prototype for `panic`"
+                );
+                assert!(
+                    elab.lang_item_site(panic_item).is_some(),
+                    "core's `panic` prototype has no declaration site"
+                );
                 // `core::cmp` binds the whole comparison tower, with sites.
                 for item in LangItem::CMP_TRAITS.into_iter().chain([LangItem::Ordering]) {
                     let (_, span) = elab

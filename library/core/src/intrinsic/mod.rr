@@ -10,3 +10,4 @@ pub mod arc;
 pub mod cell;
 pub mod math;
 pub mod nullable;
+pub mod panic;

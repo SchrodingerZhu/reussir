@@ -1,0 +1,86 @@
+// The zero-argument panic intrinsic never returns, so contextual inference may
+// assign it any result type. Its typed HIR form survives serialization, and
+// code generation emits the existing aborting dialect operation followed by a
+// poison value solely to keep the surrounding SSA structurally well-formed.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o - | %FileCheck %s --check-prefix=HIR
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %rrc %t.hir --from hir --emit mir --no-source-locations -o - | %FileCheck %s --check-prefix=MIR
+// RUN: %rrc %s --emit mlir --no-source-locations -o - | %FileCheck %s --check-prefix=MLIR
+// RUN: %rrc %s --emit mlir-llvm --no-source-locations -O none -o - | %FileCheck %s --check-prefix=LLVM
+// RUN: %rrc %s -o %t.o
+
+import core::intrinsic::panic;
+
+// HIR-LABEL: pub fn #integer() -> i64 {
+// HIR-NEXT: intrinsic#panic#panic#0() : i64
+// HIR-NEXT: }
+// HIR-LABEL: pub fn #boolean() -> bool {
+// HIR-NEXT: intrinsic#panic#panic#0() : bool
+// HIR-NEXT: }
+// HIR-LABEL: pub fn #aggregate() -> #Pair {
+// HIR-NEXT: intrinsic#panic#panic#0() : #Pair
+// HIR-NEXT: }
+// HIR-LABEL: pub fn #generic<$0 (T)>() -> $0 {
+// HIR-NEXT: intrinsic#panic#panic#0() : $0
+// HIR-NEXT: }
+// HIR-LABEL: pub fn #unit() -> () {
+// HIR-NEXT: intrinsic#panic#panic#0() : ()
+// HIR-NEXT: }
+
+// The MIR run consumes the serialized HIR, exercising textual round-tripping.
+// MIR-LABEL: pub fn @_RC4unit() -> () {
+// MIR-NEXT: intrinsic#panic#panic#0() : ()
+// MIR-NEXT: }
+// MIR-LABEL: pub fn @_RC7boolean() -> bool {
+// MIR-NEXT: intrinsic#panic#panic#0() : bool
+// MIR-NEXT: }
+// MIR-LABEL: pub fn @_RC7integer() -> i64 {
+// MIR-NEXT: intrinsic#panic#panic#0() : i64
+// MIR-NEXT: }
+// MIR-LABEL: pub fn @_RC9aggregate() -> Pair {
+// MIR-NEXT: intrinsic#panic#panic#0() : Pair
+// MIR-NEXT: }
+
+// MLIR-LABEL: func.func @_RC4unit()
+// MLIR-NEXT: reussir.panic "explicit panic"
+// MLIR-NEXT: return
+// MLIR-LABEL: func.func @_RC7boolean() -> i1
+// MLIR-NEXT: reussir.panic "explicit panic"
+// MLIR-NEXT: %{{.+}} = ub.poison : i1
+// MLIR-LABEL: func.func @_RC7integer() -> i64
+// MLIR-NEXT: reussir.panic "explicit panic"
+// MLIR-NEXT: %{{.+}} = ub.poison : i64
+// MLIR-LABEL: func.func @_RC9aggregate()
+// MLIR-NEXT: reussir.panic "explicit panic"
+// MLIR-NEXT: %{{.+}} = ub.poison : !reussir.record<compound "_RC4Pair" [value] {i64, i1}>
+
+// LLVM: llvm.func @__reussir_panic(!llvm.ptr, i64)
+// LLVM-LABEL: llvm.func @_RC7integer() -> i64
+// LLVM: llvm.mlir.poison : i64
+// LLVM: llvm.call @__reussir_panic
+
+pub struct [value] Pair {
+    number: i64,
+    flag: bool
+}
+
+pub fn integer() -> i64 {
+    panic::panic()
+}
+
+pub fn boolean() -> bool {
+    core::intrinsic::panic::panic()
+}
+
+pub fn aggregate() -> Pair {
+    panic::panic<Pair>()
+}
+
+pub fn generic<T>() -> T {
+    panic::panic()
+}
+
+pub fn unit() {
+    panic::panic()
+}

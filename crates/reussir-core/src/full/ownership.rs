@@ -616,7 +616,8 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 crate::intrinsic::IntrinsicOp::Cell { func } => {
                     self.place_cell_intrinsic(e, func, args, live_after)
                 }
-                crate::intrinsic::IntrinsicOp::Math { .. } => self.place_args(args, live_after),
+                crate::intrinsic::IntrinsicOp::Math { .. }
+                | crate::intrinsic::IntrinsicOp::Panic => self.place_args(args, live_after),
             },
             ExprKind::NullableCall(opt) => {
                 if let Some(x) = opt {
