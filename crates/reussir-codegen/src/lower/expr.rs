@@ -787,6 +787,18 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             // dialect ops and attributes; the backend pipeline's dialect
             // conversions take the emitted op from there.
             Intrinsic { op, args } => match op {
+                IntrinsicOp::Panic => {
+                    debug_assert!(args.is_empty(), "panic has no value operands");
+                    block.append_operation(
+                        dialect::panic(
+                            self.context,
+                            StringAttribute::new(self.context, "explicit panic"),
+                            loc,
+                        )
+                        .into(),
+                    );
+                    self.poison_value(block, e.ty)
+                }
                 IntrinsicOp::Math { func, flag } => {
                     let mut operands = Vec::with_capacity(args.len());
                     for a in args.iter() {
@@ -1377,7 +1389,9 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             // A non-exhaustive gap or a redundant arm: both were already diagnosed
             // by the frontend, so this position is dead — a poison of the result
             // type terminates it without observing an undefined value.
-            DecisionTree::Uncovered | DecisionTree::Unreachable => self.dead_arm(block, result_ty),
+            DecisionTree::Uncovered | DecisionTree::Unreachable => {
+                self.poison_value(block, result_ty)
+            }
         }
     }
 
@@ -1965,9 +1979,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         Ok(())
     }
 
-    /// Terminate a provably-dead decision position with a poison value of the
-    /// result type (or nothing for a unit match).
-    fn dead_arm<'b>(
+    /// Produce a poison value of `result_ty`, or no SSA value for unit. This
+    /// keeps typed control flow structurally valid after an aborting operation
+    /// or at a decision-tree position proven unreachable by the frontend.
+    fn poison_value<'b>(
         &self,
         block: &'b Block<'c>,
         result_ty: Ty<'tcx>,

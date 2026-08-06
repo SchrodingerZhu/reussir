@@ -5,6 +5,12 @@ fn is_f64(x: f64, want: f64) -> u64 {
     if x == want { 1 } else { 0 }
 }
 
+// Keep a polymorphic panic call in this real core-backed package without
+// invoking it from the executable's entry point.
+fn impossible() -> i64 {
+    core::intrinsic::panic::panic()
+}
+
 #[main]
 pub fn entry() {
     console::print_u64(is_f64(core::intrinsic::math::sqrt(9.0, 0), 3.0));

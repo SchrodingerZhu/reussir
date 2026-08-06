@@ -298,6 +298,9 @@ impl ArrayFn {
 /// rebuilds the typed op from that triple.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IntrinsicOp {
+    /// `core::intrinsic::panic::panic()`: aborts execution and inhabits the
+    /// contextually expected result type.
+    Panic,
     /// `core::intrinsic::math::<func>`, with an `arith.fastmath` flag.
     Math { func: MathFn, flag: u32 },
     /// `core::intrinsic::cell::<func>`; cell operations have no immediates
@@ -309,6 +312,7 @@ impl IntrinsicOp {
     /// The family segment under `core::intrinsic::` (`math`, …).
     pub fn family(self) -> &'static str {
         match self {
+            IntrinsicOp::Panic => "panic",
             IntrinsicOp::Math { .. } => "math",
             IntrinsicOp::Cell { .. } => "cell",
         }
@@ -317,6 +321,7 @@ impl IntrinsicOp {
     /// The op's name within its family (also the dialect mnemonic).
     pub fn name(self) -> &'static str {
         match self {
+            IntrinsicOp::Panic => "panic",
             IntrinsicOp::Math { func, .. } => func.as_str(),
             IntrinsicOp::Cell { func, .. } => func.as_str(),
         }
@@ -325,6 +330,7 @@ impl IntrinsicOp {
     /// The family's packed immediate, as printed in the textual IR.
     pub fn imm(self) -> u32 {
         match self {
+            IntrinsicOp::Panic => 0,
             IntrinsicOp::Math { flag, .. } => flag,
             IntrinsicOp::Cell { .. } => 0,
         }
@@ -334,6 +340,7 @@ impl IntrinsicOp {
     /// `None` if the family or name is unknown.
     pub fn parse(family: &str, name: &str, imm: u32) -> Option<IntrinsicOp> {
         match family {
+            "panic" if name == "panic" && imm == 0 => Some(IntrinsicOp::Panic),
             "math" => Some(IntrinsicOp::Math {
                 func: MathFn::parse(name)?,
                 flag: imm,
@@ -353,6 +360,7 @@ mod tests {
     #[test]
     fn intrinsic_op_round_trips_through_textual_triple() {
         for op in [
+            IntrinsicOp::Panic,
             IntrinsicOp::Math {
                 func: MathFn::Sqrt,
                 flag: 0,
@@ -375,6 +383,8 @@ mod tests {
             );
         }
         assert_eq!(IntrinsicOp::parse("math", "nope", 0), None);
+        assert_eq!(IntrinsicOp::parse("panic", "panic", 1), None);
+        assert_eq!(IntrinsicOp::parse("panic", "abort", 0), None);
         assert_eq!(IntrinsicOp::parse("cell", "get", 1), None);
         assert!(
             IntrinsicOp::parse("cell", "in_use", 0).is_some(),

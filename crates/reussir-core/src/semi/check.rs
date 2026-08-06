@@ -2177,6 +2177,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return Some(self.poison(span));
         };
         match *family {
+            "panic" => Some(self.infer_panic_intrinsic(fc, span)),
             "math" => Some(self.infer_math_intrinsic(fc, span)),
             "array" => Some(self.infer_array_intrinsic(fc, span)),
             "cell" => Some(self.infer_cell_intrinsic(fc, span)),
@@ -2188,6 +2189,50 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 Some(self.poison(span))
             }
         }
+    }
+
+    /// (PANIC) `core::intrinsic::panic::panic::<T?>()`: emit an aborting
+    /// operation and inhabit the explicitly supplied or contextually expected
+    /// result type. A fresh inference variable is deliberate here: unlike the
+    /// error-recovery-only bottom type, it is solved by the surrounding
+    /// expression and therefore reaches code generation as a concrete type.
+    fn infer_panic_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::IntrinsicOp;
+
+        let name = self.sym(fc.name.basename);
+        if name != "panic" {
+            self.error(
+                span,
+                format!("unknown panic intrinsic `core::intrinsic::panic::{name}`"),
+            );
+            return self.poison(span);
+        }
+        if !fc.args.is_empty() {
+            self.error(
+                span,
+                format!("`panic` expects 0 arguments, got {}", fc.args.len()),
+            );
+            return self.poison(span);
+        }
+        let result = match fc.ty_args.as_slice() {
+            [] | [None] => self.infer.new_hole_ty(),
+            [Some(t)] => self.eval_type(t),
+            _ => {
+                self.error(
+                    span,
+                    "`panic` takes at most one type argument (the result type)",
+                );
+                return self.poison(span);
+            }
+        };
+        self.mk_expr(
+            ExprKind::Intrinsic {
+                op: IntrinsicOp::Panic,
+                args: Vec::new(),
+            },
+            result,
+            span,
+        )
     }
 
     /// (MATH) `core::intrinsic::math::<fn>::<T?>(args…, flag)`: the value

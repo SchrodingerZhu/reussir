@@ -1,0 +1,6 @@
+//! Operations that terminate execution.
+
+/// Abort execution. Because this function never returns, its result may be
+/// used wherever any type `T` is expected.
+#[lang("core::intrinsic::panic::panic")]
+pub fn panic<T>() -> T;
