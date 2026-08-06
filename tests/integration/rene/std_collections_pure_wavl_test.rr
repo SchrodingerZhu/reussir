@@ -1,0 +1,40 @@
+// A downstream package instantiates the generic WAVL set and map. Cases
+// cover the public API, ascending iteration, persistence of shared trees,
+// and a pseudorandom insert/remove churn cross-checked against a
+// sorted-list model.
+
+// RUN: %rene build --manifest-path %S/std_collections_pure_wavl_test/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}std_collections_pure_wavl_test
+
+// RUN: %t.bdir/release/std_collections_pure_wavl_test%exe_ext < %S/std_collections_pure_wavl_test/set_basics.in | %FileCheck %s --check-prefix=SET
+// SET:      1
+// SET-NEXT: 1
+// SET-NEXT: 1
+// SET-NEXT: 1
+// SET-NEXT: 1
+// SET-NEXT: 1
+// SET-NEXT: 1
+
+// RUN: %t.bdir/release/std_collections_pure_wavl_test%exe_ext < %S/std_collections_pure_wavl_test/map_basics.in | %FileCheck %s --check-prefix=MAP
+// MAP:      1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+// MAP-NEXT: 1
+
+// RUN: %t.bdir/release/std_collections_pure_wavl_test%exe_ext < %S/std_collections_pure_wavl_test/set_order.in | %FileCheck %s --check-prefix=SETORD
+// SETORD:      1
+// SETORD-NEXT: 1
+// SETORD-NEXT: 1
+
+// RUN: %t.bdir/release/std_collections_pure_wavl_test%exe_ext < %S/std_collections_pure_wavl_test/map_order.in | %FileCheck %s --check-prefix=MAPORD
+// MAPORD:      1
+// MAPORD-NEXT: 1
+// MAPORD-NEXT: 1
+
+// RUN: %t.bdir/release/std_collections_pure_wavl_test%exe_ext < %S/std_collections_pure_wavl_test/churn.in | %FileCheck %s --check-prefix=CHURN
+// CHURN:      1
+// CHURN-NEXT: 1

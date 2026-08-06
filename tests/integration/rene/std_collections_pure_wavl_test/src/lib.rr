@@ -1,0 +1,154 @@
+// A downstream executable package exercises the generic WAVL set and map.
+// Each input selects one test case; case 5 churns pseudorandom
+// insert/remove sequences and checks membership against a sorted-list
+// model plus ascending iteration order.
+
+import std::option::Option;
+import std::collections::pure::wavlset::WavlSet;
+import std::collections::pure::wavlmap::WavlMap;
+import std::collections::pure::wavlmap::Entry;
+import std::collections::pure::list::List;
+
+fn wb(v : bool) { test_utils::io::write_i32(if v { 1 } else { 0 }) }
+
+fn lcg(seed : i64) -> i64 {
+    (seed * 1103515245 + 12345) % 2147483648
+}
+
+fn test_set_basics() {
+    let s : WavlSet<i64> = WavlSet::new().insert(5).insert(1).insert(9).insert(5);
+    wb(s.len() == 3);
+    wb(s.contains(5) && s.contains(1) && s.contains(9) && !s.contains(2));
+    let removed = s.remove(5).remove(42);
+    wb(removed.len() == 2 && !removed.contains(5));
+    // the original set is unaffected
+    wb(s.contains(5));
+    wb(s.min().unwrap_or(0) == 1 && s.max().unwrap_or(0) == 9);
+    let empty : WavlSet<i64> = WavlSet::new();
+    wb(empty.is_empty());
+    let empty2 : WavlSet<i64> = WavlSet::new();
+    wb(empty2.min().is_none());
+}
+
+fn test_map_basics() {
+    let m : WavlMap<i64, i64> = WavlMap::new().insert(3, 30).insert(1, 10).insert(3, 33);
+    wb(m.len() == 2);
+    wb(m.get(3 as i64).unwrap_or(0) == 33);
+    wb(m.get(1 as i64).unwrap_or(0) == 10);
+    wb(m.get(9 as i64).is_none());
+    let removed = m.remove(1 as i64);
+    wb(removed.len() == 1 && !removed.contains_key(1 as i64));
+    wb(m.contains_key(1 as i64));
+    wb(match m.min() { Option::Some(e) => e.key == 1, Option::None => false });
+    wb(match m.max() { Option::Some(e) => e.key == 3, Option::None => false });
+}
+
+fn sorted_strict(l : List<i64>) -> bool {
+    match l {
+        List::Nil => true,
+        List::Cons(_, List::Nil) => true,
+        List::Cons(a, List::Cons(b, rest)) =>
+            a < b && sorted_strict(List::Cons { b, rest })
+    }
+}
+
+fn keys_sorted(l : List<Entry<i64, i64>>) -> bool {
+    match l {
+        List::Nil => true,
+        List::Cons(_, List::Nil) => true,
+        List::Cons(a, List::Cons(b, rest)) =>
+            a.key < b.key && keys_sorted(List::Cons { b, rest })
+    }
+}
+
+fn test_set_order() {
+    let s = WavlSet::new().insert(4 as i64).insert(2).insert(9).insert(7)
+        .insert(1).insert(8).insert(3);
+    wb(sorted_strict(s.to_list()));
+    wb(s.fold_left(0, |acc, x| acc * 10 + x) == 1234789);
+    wb(WavlSet::from_list(s.to_list()).len() == s.len());
+}
+
+fn test_map_order() {
+    let m = WavlMap::new().insert(4 as i64, 40 as i64).insert(2, 20)
+        .insert(9, 90).insert(7, 70);
+    wb(keys_sorted(m.to_list()));
+    wb(m.fold_left(0, |acc, k, v| acc + k * 100 + v) == 2420);
+    wb(WavlMap::from_list(m.to_list()).get(9 as i64).unwrap_or(0) == 90);
+}
+
+// Sorted-list reference model for the churn case.
+fn model_insert(l : List<i64>, x : i64) -> List<i64> {
+    match l {
+        List::Nil => List::Cons { x, List::Nil },
+        List::Cons(h, t) => {
+            if x < h {
+                List::Cons { x, List::Cons { h, t } }
+            } else {
+                if x == h {
+                    List::Cons { h, t }
+                } else {
+                    List::Cons { h, model_insert(t, x) }
+                }
+            }
+        }
+    }
+}
+
+fn model_remove(l : List<i64>, x : i64) -> List<i64> {
+    match l {
+        List::Nil => List::Nil,
+        List::Cons(h, t) =>
+            if x == h { t } else { List::Cons { h, model_remove(t, x) } }
+    }
+}
+
+fn model_equal(a : List<i64>, b : List<i64>) -> bool {
+    match a {
+        List::Nil => b.is_nil(),
+        List::Cons(h, t) => match b {
+            List::Nil => false,
+            List::Cons(h2, t2) => h == h2 && model_equal(t, t2)
+        }
+    }
+}
+
+fn churn(
+    ops : i64,
+    seed : i64,
+    set : WavlSet<i64>,
+    model : List<i64>
+) -> bool {
+    if ops == 0 {
+        model_equal(set.to_list(), model) && sorted_strict(set.to_list())
+    } else {
+        let s1 = lcg(seed);
+        let k = s1 % 128;
+        if s1 % 3 == 0 {
+            churn(ops - 1, s1, set.remove(k), model_remove(model, k))
+        } else {
+            churn(ops - 1, s1, set.insert(k), model_insert(model, k))
+        }
+    }
+}
+
+fn test_churn() {
+    wb(churn(3000, 7, WavlSet::new(), List::Nil));
+    wb(churn(3000, 99, WavlSet::new(), List::Nil));
+}
+
+#[main]
+pub fn main() {
+    let case = test_utils::io::read_i32();
+    if case == 1 { test_set_basics() }
+    else {
+        if case == 2 { test_map_basics() }
+        else {
+            if case == 3 { test_set_order() }
+            else {
+                if case == 4 { test_map_order() }
+                else { test_churn() }
+            }
+        }
+    }
+}
