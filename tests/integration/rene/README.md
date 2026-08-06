@@ -21,5 +21,6 @@ program exercises.
 | `std_option_test.rr` | numbered unit-case dispatcher for `std::option::Option` methods |
 | `std_collections_pure_list_test.rr` | numbered unit-case dispatcher for persistent `std` list methods |
 | `std_collections_pure_rtqueue_test.rr` | generic Hood-Melville queue API, persistence, and incremental rotations |
+| `std_collections_pure_fingertree_test.rr` | measured finger tree: both ends, random access, split, concat, editing, transforms, and persistence |
 | `wasi_examples.rr` | the packages above cross-built for `wasm32-wasip1`, run on wasmer |
 | `wasi_threads.rr` | `wasm32-wasip1-threads`: real threads over a shared map   |

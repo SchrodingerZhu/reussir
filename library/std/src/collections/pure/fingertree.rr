@@ -1,0 +1,1331 @@
+import std::collections::pure::list::List;
+import std::option::Option;
+
+/// A leaf or a cached-size internal 2–3 node.
+///
+/// `Element` and `Digit` are public because `FingerTree` stores them in its
+/// recursive representation. Construct sequences through `FingerTree` so the
+/// cached measures remain valid.
+pub enum Element<T> {
+    Value(T),
+    Node2(u64, Element<T>, Element<T>),
+    Node3(u64, Element<T>, Element<T>, Element<T>)
+}
+
+/// A nonempty finger containing between one and four elements.
+pub enum Digit<T> {
+    One(Element<T>),
+    Two(Element<T>, Element<T>),
+    Three(Element<T>, Element<T>, Element<T>),
+    Four(Element<T>, Element<T>, Element<T>, Element<T>)
+}
+
+/// A persistent random-access sequence represented by a measured 2–3 tree.
+pub enum FingerTree<T> {
+    Empty,
+    Single(Element<T>),
+    Deep(u64, Digit<T>, FingerTree<T>, Digit<T>)
+}
+
+/// The empty or first-element view of a finger tree.
+pub enum ViewLeft<T> {
+    Empty,
+    Cons(T, FingerTree<T>)
+}
+
+/// The empty or last-element view of a finger tree.
+pub enum ViewRight<T> {
+    Empty,
+    Snoc(FingerTree<T>, T)
+}
+
+/// Two persistent sequences produced by a split operation.
+/// This stays inline because both payloads are shared tree references.
+pub enum [value] Split<T> {
+    Split(FingerTree<T>, FingerTree<T>)
+}
+
+/// The result of removing a value at an index.
+pub enum Remove<T> {
+    Removed(T, FingerTree<T>),
+    OutOfBounds(FingerTree<T>)
+}
+
+// These view carriers contain exactly two shared references. Keeping them
+// inline avoids an allocation at every recursive digit rotation.
+enum [value] ElementViewLeft<T> {
+    Empty,
+    Cons(Element<T>, FingerTree<T>)
+}
+
+enum [value] ElementViewRight<T> {
+    Empty,
+    Snoc(FingerTree<T>, Element<T>)
+}
+
+// An affix contains at most three shared element references.
+enum [value] Affix<T> {
+    Zero,
+    One(Element<T>),
+    Two(Element<T>, Element<T>),
+    Three(Element<T>, Element<T>, Element<T>)
+}
+
+// This embeds two affixes and can be large, so use the shared representation.
+enum ElementSplit<T> {
+    Split(Affix<T>, Element<T>, Affix<T>)
+}
+
+// Three shared references make this a small fixed-size transient result.
+enum [value] TreeSplit<T> {
+    Split(FingerTree<T>, Element<T>, FingerTree<T>)
+}
+
+fn element_measure<T>(element : Element<T>) -> u64 {
+    match element {
+        Element::Value(_) => 1,
+        Element::Node2(measure, _, _) => measure,
+        Element::Node3(measure, _, _, _) => measure
+    }
+}
+
+fn digit_measure<T>(digit : Digit<T>) -> u64 {
+    match digit {
+        Digit::One(a) => element_measure(a),
+        Digit::Two(a, b) => element_measure(a) + element_measure(b),
+        Digit::Three(a, b, c) =>
+            element_measure(a) + element_measure(b) + element_measure(c),
+        Digit::Four(a, b, c, d) =>
+            element_measure(a) + element_measure(b) +
+            element_measure(c) + element_measure(d)
+    }
+}
+
+fn tree_measure<T>(tree : FingerTree<T>) -> u64 {
+    match tree {
+        FingerTree::Empty => 0,
+        FingerTree::Single(element) => element_measure(element),
+        FingerTree::Deep(measure, _, _, _) => measure
+    }
+}
+
+fn node2<T>(a : Element<T>, b : Element<T>) -> Element<T> {
+    Element::Node2 { element_measure(a) + element_measure(b), a, b }
+}
+
+fn node3<T>(a : Element<T>, b : Element<T>, c : Element<T>) -> Element<T> {
+    Element::Node3 {
+        element_measure(a) + element_measure(b) + element_measure(c),
+        a,
+        b,
+        c
+    }
+}
+
+fn deep<T>(prefix : Digit<T>, middle : FingerTree<T>, suffix : Digit<T>) -> FingerTree<T> {
+    FingerTree::Deep {
+        digit_measure(prefix) + tree_measure(middle) + digit_measure(suffix),
+        prefix,
+        middle,
+        suffix
+    }
+}
+
+fn element_value<T>(element : Element<T>) -> T {
+    match element {
+        Element::Value(value) => value,
+        _ => core::intrinsic::panic::panic()
+    }
+}
+
+fn node_to_digit<T>(node : Element<T>) -> Digit<T> {
+    match node {
+        Element::Node2(_, a, b) => Digit::Two { a, b },
+        Element::Node3(_, a, b, c) => Digit::Three { a, b, c },
+        Element::Value(_) => core::intrinsic::panic::panic()
+    }
+}
+
+fn digit_to_tree<T>(digit : Digit<T>) -> FingerTree<T> {
+    match digit {
+        Digit::One(a) => FingerTree::Single { a },
+        Digit::Two(a, b) => deep(
+            Digit::One { a },
+            FingerTree::Empty,
+            Digit::One { b }
+        ),
+        Digit::Three(a, b, c) => deep(
+            Digit::Two { a, b },
+            FingerTree::Empty,
+            Digit::One { c }
+        ),
+        Digit::Four(a, b, c, d) => deep(
+            Digit::Two { a, b },
+            FingerTree::Empty,
+            Digit::Two { c, d }
+        )
+    }
+}
+
+fn affix_to_tree<T>(affix : Affix<T>) -> FingerTree<T> {
+    match affix {
+        Affix::Zero => FingerTree::Empty,
+        Affix::One(a) => FingerTree::Single { a },
+        Affix::Two(a, b) => deep(
+            Digit::One { a },
+            FingerTree::Empty,
+            Digit::One { b }
+        ),
+        Affix::Three(a, b, c) => deep(
+            Digit::Two { a, b },
+            FingerTree::Empty,
+            Digit::One { c }
+        )
+    }
+}
+
+fn digit_first<T>(digit : Digit<T>) -> Element<T> {
+    match digit {
+        Digit::One(a) => a,
+        Digit::Two(a, _) => a,
+        Digit::Three(a, _, _) => a,
+        Digit::Four(a, _, _, _) => a
+    }
+}
+
+fn digit_last<T>(digit : Digit<T>) -> Element<T> {
+    match digit {
+        Digit::One(a) => a,
+        Digit::Two(_, b) => b,
+        Digit::Three(_, _, c) => c,
+        Digit::Four(_, _, _, d) => d
+    }
+}
+
+fn cons_element<T>(value : Element<T>, tree : FingerTree<T>) -> FingerTree<T> {
+    match tree {
+        FingerTree::Empty => FingerTree::Single { value },
+        FingerTree::Single(a) => deep(
+            Digit::One { value },
+            FingerTree::Empty,
+            Digit::One { a }
+        ),
+        FingerTree::Deep(_, Digit::Four(a, b, c, d), middle, suffix) => deep(
+            Digit::Two { value, a },
+            cons_element(node3(b, c, d), middle),
+            suffix
+        ),
+        FingerTree::Deep(_, Digit::One(a), middle, suffix) => deep(
+            Digit::Two { value, a },
+            middle,
+            suffix
+        ),
+        FingerTree::Deep(_, Digit::Two(a, b), middle, suffix) => deep(
+            Digit::Three { value, a, b },
+            middle,
+            suffix
+        ),
+        FingerTree::Deep(_, Digit::Three(a, b, c), middle, suffix) => deep(
+            Digit::Four { value, a, b, c },
+            middle,
+            suffix
+        )
+    }
+}
+
+fn snoc_element<T>(tree : FingerTree<T>, value : Element<T>) -> FingerTree<T> {
+    match tree {
+        FingerTree::Empty => FingerTree::Single { value },
+        FingerTree::Single(a) => deep(
+            Digit::One { a },
+            FingerTree::Empty,
+            Digit::One { value }
+        ),
+        FingerTree::Deep(_, prefix, middle, Digit::Four(a, b, c, d)) => deep(
+            prefix,
+            snoc_element(middle, node3(a, b, c)),
+            Digit::Two { d, value }
+        ),
+        FingerTree::Deep(_, prefix, middle, Digit::One(a)) => deep(
+            prefix,
+            middle,
+            Digit::Two { a, value }
+        ),
+        FingerTree::Deep(_, prefix, middle, Digit::Two(a, b)) => deep(
+            prefix,
+            middle,
+            Digit::Three { a, b, value }
+        ),
+        FingerTree::Deep(_, prefix, middle, Digit::Three(a, b, c)) => deep(
+            prefix,
+            middle,
+            Digit::Four { a, b, c, value }
+        )
+    }
+}
+
+fn view_left_tree<T>(tree : FingerTree<T>) -> ElementViewLeft<T> {
+    match tree {
+        FingerTree::Empty => ElementViewLeft::Empty,
+        FingerTree::Single(value) => ElementViewLeft::Cons { value, FingerTree::Empty },
+        FingerTree::Deep(_, Digit::One(value), middle, suffix) =>
+            match view_left_tree(middle) {
+                ElementViewLeft::Empty => ElementViewLeft::Cons {
+                    value,
+                    digit_to_tree(suffix)
+                },
+                ElementViewLeft::Cons(node, middle_rest) =>
+                    ElementViewLeft::Cons {
+                        value,
+                        deep(node_to_digit(node), middle_rest, suffix)
+                    }
+            },
+        FingerTree::Deep(_, Digit::Two(a, b), middle, suffix) =>
+            ElementViewLeft::Cons {
+                a,
+                deep(Digit::One { b }, middle, suffix)
+            },
+        FingerTree::Deep(_, Digit::Three(a, b, c), middle, suffix) =>
+            ElementViewLeft::Cons {
+                a,
+                deep(Digit::Two { b, c }, middle, suffix)
+            },
+        FingerTree::Deep(_, Digit::Four(a, b, c, d), middle, suffix) =>
+            ElementViewLeft::Cons {
+                a,
+                deep(Digit::Three { b, c, d }, middle, suffix)
+            }
+    }
+}
+
+fn view_right_tree<T>(tree : FingerTree<T>) -> ElementViewRight<T> {
+    match tree {
+        FingerTree::Empty => ElementViewRight::Empty,
+        FingerTree::Single(value) => ElementViewRight::Snoc { FingerTree::Empty, value },
+        FingerTree::Deep(_, prefix, middle, Digit::One(value)) =>
+            match view_right_tree(middle) {
+                ElementViewRight::Empty => ElementViewRight::Snoc {
+                    digit_to_tree(prefix),
+                    value
+                },
+                ElementViewRight::Snoc(middle_rest, node) =>
+                    ElementViewRight::Snoc {
+                        deep(prefix, middle_rest, node_to_digit(node)),
+                        value
+                    }
+            },
+        FingerTree::Deep(_, prefix, middle, Digit::Two(a, b)) =>
+            ElementViewRight::Snoc {
+                deep(prefix, middle, Digit::One { a }),
+                b
+            },
+        FingerTree::Deep(_, prefix, middle, Digit::Three(a, b, c)) =>
+            ElementViewRight::Snoc {
+                deep(prefix, middle, Digit::Two { a, b }),
+                c
+            },
+        FingerTree::Deep(_, prefix, middle, Digit::Four(a, b, c, d)) =>
+            ElementViewRight::Snoc {
+                deep(prefix, middle, Digit::Three { a, b, c }),
+                d
+            }
+    }
+}
+
+fn deep_left<T>(
+    prefix : Affix<T>,
+    middle : FingerTree<T>,
+    suffix : Digit<T>
+) -> FingerTree<T> {
+    match prefix {
+        Affix::Zero => match view_left_tree(middle) {
+            ElementViewLeft::Empty => digit_to_tree(suffix),
+            ElementViewLeft::Cons(node, rest) =>
+                deep(node_to_digit(node), rest, suffix)
+        },
+        Affix::One(a) => deep(Digit::One { a }, middle, suffix),
+        Affix::Two(a, b) => deep(Digit::Two { a, b }, middle, suffix),
+        Affix::Three(a, b, c) =>
+            deep(Digit::Three { a, b, c }, middle, suffix)
+    }
+}
+
+fn deep_right<T>(
+    prefix : Digit<T>,
+    middle : FingerTree<T>,
+    suffix : Affix<T>
+) -> FingerTree<T> {
+    match suffix {
+        Affix::Zero => match view_right_tree(middle) {
+            ElementViewRight::Empty => digit_to_tree(prefix),
+            ElementViewRight::Snoc(rest, node) =>
+                deep(prefix, rest, node_to_digit(node))
+        },
+        Affix::One(a) => deep(prefix, middle, Digit::One { a }),
+        Affix::Two(a, b) => deep(prefix, middle, Digit::Two { a, b }),
+        Affix::Three(a, b, c) =>
+            deep(prefix, middle, Digit::Three { a, b, c })
+    }
+}
+
+fn lookup_element<T>(index : u64, element : Element<T>) -> T {
+    match element {
+        Element::Value(value) => value,
+        Element::Node2(_, a, b) => {
+            let a_measure = element_measure(a);
+            if index < a_measure {
+                lookup_element(index, a)
+            } else {
+                lookup_element(index - a_measure, b)
+            }
+        },
+        Element::Node3(_, a, b, c) => {
+            let a_measure = element_measure(a);
+            let b_measure = element_measure(b);
+            if index < a_measure {
+                lookup_element(index, a)
+            } else {
+                if index < a_measure + b_measure {
+                    lookup_element(index - a_measure, b)
+                } else {
+                    lookup_element(index - a_measure - b_measure, c)
+                }
+            }
+        }
+    }
+}
+
+fn lookup_digit<T>(index : u64, digit : Digit<T>) -> T {
+    match digit {
+        Digit::One(a) => lookup_element(index, a),
+        Digit::Two(a, b) => {
+            let a_measure = element_measure(a);
+            if index < a_measure {
+                lookup_element(index, a)
+            } else {
+                lookup_element(index - a_measure, b)
+            }
+        },
+        Digit::Three(a, b, c) => {
+            let a_measure = element_measure(a);
+            let b_measure = element_measure(b);
+            if index < a_measure {
+                lookup_element(index, a)
+            } else {
+                if index < a_measure + b_measure {
+                    lookup_element(index - a_measure, b)
+                } else {
+                    lookup_element(index - a_measure - b_measure, c)
+                }
+            }
+        },
+        Digit::Four(a, b, c, d) => {
+            let a_measure = element_measure(a);
+            let b_measure = element_measure(b);
+            let c_measure = element_measure(c);
+            if index < a_measure {
+                lookup_element(index, a)
+            } else {
+                if index < a_measure + b_measure {
+                    lookup_element(index - a_measure, b)
+                } else {
+                    if index < a_measure + b_measure + c_measure {
+                        lookup_element(index - a_measure - b_measure, c)
+                    } else {
+                        lookup_element(
+                            index - a_measure - b_measure - c_measure,
+                            d
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn lookup_tree<T>(index : u64, tree : FingerTree<T>) -> T {
+    match tree {
+        FingerTree::Empty => core::intrinsic::panic::panic(),
+        FingerTree::Single(element) => lookup_element(index, element),
+        FingerTree::Deep(_, prefix, middle, suffix) => {
+            let prefix_measure = digit_measure(prefix);
+            let middle_measure = tree_measure(middle);
+            if index < prefix_measure {
+                lookup_digit(index, prefix)
+            } else {
+                if index < prefix_measure + middle_measure {
+                    lookup_tree(index - prefix_measure, middle)
+                } else {
+                    lookup_digit(
+                        index - prefix_measure - middle_measure,
+                        suffix
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn split_element<T>(index : u64, element : Element<T>) -> ElementSplit<T> {
+    match element {
+        Element::Value(value) => ElementSplit::Split {
+            Affix::Zero,
+            Element::Value { value },
+            Affix::Zero
+        },
+        Element::Node2(_, a, b) => {
+            if index < element_measure(a) {
+                ElementSplit::Split { Affix::Zero, a, Affix::One { b } }
+            } else {
+                ElementSplit::Split { Affix::One { a }, b, Affix::Zero }
+            }
+        },
+        Element::Node3(_, a, b, c) => {
+            let a_measure = element_measure(a);
+            if index < a_measure {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Two { b, c }
+                }
+            } else {
+                if index < a_measure + element_measure(b) {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::One { c }
+                    }
+                } else {
+                    ElementSplit::Split {
+                        Affix::Two { a, b },
+                        c,
+                        Affix::Zero
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn split_digit<T>(index : u64, digit : Digit<T>) -> ElementSplit<T> {
+    match digit {
+        Digit::One(a) =>
+            ElementSplit::Split { Affix::Zero, a, Affix::Zero },
+        Digit::Two(a, b) => {
+            if index < element_measure(a) {
+                ElementSplit::Split { Affix::Zero, a, Affix::One { b } }
+            } else {
+                ElementSplit::Split { Affix::One { a }, b, Affix::Zero }
+            }
+        },
+        Digit::Three(a, b, c) => {
+            let a_measure = element_measure(a);
+            if index < a_measure {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Two { b, c }
+                }
+            } else {
+                if index < a_measure + element_measure(b) {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::One { c }
+                    }
+                } else {
+                    ElementSplit::Split {
+                        Affix::Two { a, b },
+                        c,
+                        Affix::Zero
+                    }
+                }
+            }
+        },
+        Digit::Four(a, b, c, d) => {
+            let a_measure = element_measure(a);
+            let b_measure = element_measure(b);
+            if index < a_measure {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Three { b, c, d }
+                }
+            } else {
+                if index < a_measure + b_measure {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::Two { c, d }
+                    }
+                } else {
+                    if index < a_measure + b_measure + element_measure(c) {
+                        ElementSplit::Split {
+                            Affix::Two { a, b },
+                            c,
+                            Affix::One { d }
+                        }
+                    } else {
+                        ElementSplit::Split {
+                            Affix::Three { a, b, c },
+                            d,
+                            Affix::Zero
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn split_tree<T>(index : u64, tree : FingerTree<T>) -> TreeSplit<T> {
+    match tree {
+        FingerTree::Empty => core::intrinsic::panic::panic(),
+        FingerTree::Single(element) =>
+            TreeSplit::Split { FingerTree::Empty, element, FingerTree::Empty },
+        FingerTree::Deep(_, prefix, middle, suffix) => {
+            let prefix_measure = digit_measure(prefix);
+            let middle_measure = tree_measure(middle);
+            if index < prefix_measure {
+                match split_digit(index, prefix) {
+                    ElementSplit::Split(left, pivot, right) => TreeSplit::Split {
+                        affix_to_tree(left),
+                        pivot,
+                        deep_left(right, middle, suffix)
+                    }
+                }
+            } else {
+                if index < prefix_measure + middle_measure {
+                    match split_tree(index - prefix_measure, middle) {
+                        TreeSplit::Split(middle_left, node, middle_right) => {
+                            let node_index = index - prefix_measure -
+                                tree_measure(middle_left);
+                            match split_element(node_index, node) {
+                                ElementSplit::Split(
+                                    node_left,
+                                    pivot,
+                                    node_right
+                                ) => TreeSplit::Split {
+                                    deep_right(
+                                        prefix,
+                                        middle_left,
+                                        node_left
+                                    ),
+                                    pivot,
+                                    deep_left(
+                                        node_right,
+                                        middle_right,
+                                        suffix
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    match split_digit(
+                        index - prefix_measure - middle_measure,
+                        suffix
+                    ) {
+                        ElementSplit::Split(left, pivot, right) =>
+                            TreeSplit::Split {
+                                deep_right(prefix, middle, left),
+                                pivot,
+                                affix_to_tree(right)
+                            }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn split_element_by<T>(
+    predicate : u64 -> bool,
+    before : u64,
+    element : Element<T>
+) -> ElementSplit<T> {
+    match element {
+        Element::Value(value) => ElementSplit::Split {
+            Affix::Zero,
+            Element::Value { value },
+            Affix::Zero
+        },
+        Element::Node2(_, a, b) => {
+            if predicate(before + element_measure(a)) {
+                ElementSplit::Split { Affix::Zero, a, Affix::One { b } }
+            } else {
+                ElementSplit::Split { Affix::One { a }, b, Affix::Zero }
+            }
+        },
+        Element::Node3(_, a, b, c) => {
+            let after_a = before + element_measure(a);
+            let after_b = after_a + element_measure(b);
+            if predicate(after_a) {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Two { b, c }
+                }
+            } else {
+                if predicate(after_b) {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::One { c }
+                    }
+                } else {
+                    ElementSplit::Split {
+                        Affix::Two { a, b },
+                        c,
+                        Affix::Zero
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn split_digit_by<T>(
+    predicate : u64 -> bool,
+    before : u64,
+    digit : Digit<T>
+) -> ElementSplit<T> {
+    match digit {
+        Digit::One(a) =>
+            ElementSplit::Split { Affix::Zero, a, Affix::Zero },
+        Digit::Two(a, b) => {
+            if predicate(before + element_measure(a)) {
+                ElementSplit::Split { Affix::Zero, a, Affix::One { b } }
+            } else {
+                ElementSplit::Split { Affix::One { a }, b, Affix::Zero }
+            }
+        },
+        Digit::Three(a, b, c) => {
+            let after_a = before + element_measure(a);
+            let after_b = after_a + element_measure(b);
+            if predicate(after_a) {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Two { b, c }
+                }
+            } else {
+                if predicate(after_b) {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::One { c }
+                    }
+                } else {
+                    ElementSplit::Split {
+                        Affix::Two { a, b },
+                        c,
+                        Affix::Zero
+                    }
+                }
+            }
+        },
+        Digit::Four(a, b, c, d) => {
+            let after_a = before + element_measure(a);
+            let after_b = after_a + element_measure(b);
+            let after_c = after_b + element_measure(c);
+            if predicate(after_a) {
+                ElementSplit::Split {
+                    Affix::Zero,
+                    a,
+                    Affix::Three { b, c, d }
+                }
+            } else {
+                if predicate(after_b) {
+                    ElementSplit::Split {
+                        Affix::One { a },
+                        b,
+                        Affix::Two { c, d }
+                    }
+                } else {
+                    if predicate(after_c) {
+                        ElementSplit::Split {
+                            Affix::Two { a, b },
+                            c,
+                            Affix::One { d }
+                        }
+                    } else {
+                        ElementSplit::Split {
+                            Affix::Three { a, b, c },
+                            d,
+                            Affix::Zero
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn split_tree_by<T>(
+    predicate : u64 -> bool,
+    before : u64,
+    tree : FingerTree<T>
+) -> TreeSplit<T> {
+    match tree {
+        FingerTree::Empty => core::intrinsic::panic::panic(),
+        FingerTree::Single(element) =>
+            TreeSplit::Split { FingerTree::Empty, element, FingerTree::Empty },
+        FingerTree::Deep(_, prefix, middle, suffix) => {
+            let after_prefix = before + digit_measure(prefix);
+            let after_middle = after_prefix + tree_measure(middle);
+            if predicate(after_prefix) {
+                match split_digit_by(predicate, before, prefix) {
+                    ElementSplit::Split(left, pivot, right) => TreeSplit::Split {
+                        affix_to_tree(left),
+                        pivot,
+                        deep_left(right, middle, suffix)
+                    }
+                }
+            } else {
+                if predicate(after_middle) {
+                    match split_tree_by(predicate, after_prefix, middle) {
+                        TreeSplit::Split(middle_left, node, middle_right) => {
+                            let before_node = after_prefix +
+                                tree_measure(middle_left);
+                            match split_element_by(predicate, before_node, node) {
+                                ElementSplit::Split(
+                                    node_left,
+                                    pivot,
+                                    node_right
+                                ) => TreeSplit::Split {
+                                    deep_right(
+                                        prefix,
+                                        middle_left,
+                                        node_left
+                                    ),
+                                    pivot,
+                                    deep_left(
+                                        node_right,
+                                        middle_right,
+                                        suffix
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    match split_digit_by(predicate, after_middle, suffix) {
+                        ElementSplit::Split(left, pivot, right) =>
+                            TreeSplit::Split {
+                                deep_right(prefix, middle, left),
+                                pivot,
+                                affix_to_tree(right)
+                            }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn list_append<T>(left : List<T>, right : List<T>) -> List<T> {
+    match left {
+        List::Nil => right,
+        List::Cons(value, rest) =>
+            List::Cons { value, list_append(rest, right) }
+    }
+}
+
+fn digit_to_list<T>(digit : Digit<T>) -> List<Element<T>> {
+    match digit {
+        Digit::One(a) => List::Cons { a, List::Nil },
+        Digit::Two(a, b) => List::Cons {
+            a,
+            List::Cons { b, List::Nil }
+        },
+        Digit::Three(a, b, c) => List::Cons {
+            a,
+            List::Cons { b, List::Cons { c, List::Nil } }
+        },
+        Digit::Four(a, b, c, d) => List::Cons {
+            a,
+            List::Cons {
+                b,
+                List::Cons { c, List::Cons { d, List::Nil } }
+            }
+        }
+    }
+}
+
+fn nodes<T>(elements : List<Element<T>>) -> List<Element<T>> {
+    match elements {
+        List::Cons(a, List::Cons(b, List::Nil)) =>
+            List::Cons { node2(a, b), List::Nil },
+        List::Cons(a, List::Cons(b, List::Cons(c, List::Nil))) =>
+            List::Cons { node3(a, b, c), List::Nil },
+        List::Cons(
+            a,
+            List::Cons(b, List::Cons(c, List::Cons(d, List::Nil)))
+        ) => List::Cons {
+            node2(a, b),
+            List::Cons { node2(c, d), List::Nil }
+        },
+        List::Cons(a, List::Cons(b, List::Cons(c, rest))) =>
+            List::Cons { node3(a, b, c), nodes(rest) },
+        _ => core::intrinsic::panic::panic()
+    }
+}
+
+fn prepend_elements<T>(elements : List<Element<T>>, tree : FingerTree<T>) -> FingerTree<T> {
+    match elements {
+        List::Nil => tree,
+        List::Cons(value, rest) =>
+            cons_element(value, prepend_elements(rest, tree))
+    }
+}
+
+fn append_elements<T>(tree : FingerTree<T>, elements : List<Element<T>>) -> FingerTree<T> {
+    match elements {
+        List::Nil => tree,
+        List::Cons(value, rest) =>
+            append_elements(snoc_element(tree, value), rest)
+    }
+}
+
+fn app3<T>(
+    left : FingerTree<T>,
+    between : List<Element<T>>,
+    right : FingerTree<T>
+) -> FingerTree<T> {
+    match left {
+        FingerTree::Empty => prepend_elements(between, right),
+        FingerTree::Single(value) =>
+            cons_element(value, prepend_elements(between, right)),
+        FingerTree::Deep(_, left_prefix, left_middle, left_suffix) => match right {
+            FingerTree::Empty => append_elements(
+                deep(left_prefix, left_middle, left_suffix),
+                between
+            ),
+            FingerTree::Single(value) => snoc_element(
+                append_elements(
+                    deep(left_prefix, left_middle, left_suffix),
+                    between
+                ),
+                value
+            ),
+            FingerTree::Deep(_, right_prefix, right_middle, right_suffix) => deep(
+                left_prefix,
+                app3(
+                    left_middle,
+                    nodes(list_append(
+                        digit_to_list(left_suffix),
+                        list_append(between, digit_to_list(right_prefix))
+                    )),
+                    right_middle
+                ),
+                right_suffix
+            )
+        }
+    }
+}
+
+fn map_element<T, U>(element : Element<T>, f : T -> U) -> Element<U> {
+    match element {
+        Element::Value(value) => Element::Value { f(value) },
+        Element::Node2(_, a, b) => node2(map_element(a, f), map_element(b, f)),
+        Element::Node3(_, a, b, c) => node3(
+            map_element(a, f),
+            map_element(b, f),
+            map_element(c, f)
+        )
+    }
+}
+
+fn map_digit<T, U>(digit : Digit<T>, f : T -> U) -> Digit<U> {
+    match digit {
+        Digit::One(a) => Digit::One { map_element(a, f) },
+        Digit::Two(a, b) => Digit::Two {
+            map_element(a, f),
+            map_element(b, f)
+        },
+        Digit::Three(a, b, c) => Digit::Three {
+            map_element(a, f),
+            map_element(b, f),
+            map_element(c, f)
+        },
+        Digit::Four(a, b, c, d) => Digit::Four {
+            map_element(a, f),
+            map_element(b, f),
+            map_element(c, f),
+            map_element(d, f)
+        }
+    }
+}
+
+fn map_tree<T, U>(tree : FingerTree<T>, f : T -> U) -> FingerTree<U> {
+    match tree {
+        FingerTree::Empty => FingerTree::Empty,
+        FingerTree::Single(element) => FingerTree::Single { map_element(element, f) },
+        FingerTree::Deep(_, prefix, middle, suffix) => deep(
+            map_digit(prefix, f),
+            map_tree(middle, f),
+            map_digit(suffix, f)
+        )
+    }
+}
+
+fn reverse_element<T>(element : Element<T>) -> Element<T> {
+    match element {
+        Element::Value(value) => Element::Value { value },
+        Element::Node2(_, a, b) => node2(
+            reverse_element(b),
+            reverse_element(a)
+        ),
+        Element::Node3(_, a, b, c) => node3(
+            reverse_element(c),
+            reverse_element(b),
+            reverse_element(a)
+        )
+    }
+}
+
+fn reverse_digit<T>(digit : Digit<T>) -> Digit<T> {
+    match digit {
+        Digit::One(a) => Digit::One { reverse_element(a) },
+        Digit::Two(a, b) => Digit::Two {
+            reverse_element(b),
+            reverse_element(a)
+        },
+        Digit::Three(a, b, c) => Digit::Three {
+            reverse_element(c),
+            reverse_element(b),
+            reverse_element(a)
+        },
+        Digit::Four(a, b, c, d) => Digit::Four {
+            reverse_element(d),
+            reverse_element(c),
+            reverse_element(b),
+            reverse_element(a)
+        }
+    }
+}
+
+fn reverse_tree<T>(tree : FingerTree<T>) -> FingerTree<T> {
+    match tree {
+        FingerTree::Empty => FingerTree::Empty,
+        FingerTree::Single(element) => FingerTree::Single { reverse_element(element) },
+        FingerTree::Deep(_, prefix, middle, suffix) => deep(
+            reverse_digit(suffix),
+            reverse_tree(middle),
+            reverse_digit(prefix)
+        )
+    }
+}
+
+impl<T> FingerTree<T> {
+    /// Creates an empty finger tree. O(1).
+    pub fn new() -> Self {
+        FingerTree::Empty
+    }
+
+    /// Creates a finger tree containing only `value`. O(1).
+    pub fn singleton(value : T) -> Self {
+        FingerTree::Single { Element::Value { value } }
+    }
+
+    /// Creates a finger tree from values in list order. O(n).
+    pub fn from_list(values : List<T>) -> Self {
+        match values {
+            List::Nil => FingerTree::new(),
+            List::Cons(value, rest) => FingerTree::from_list(rest).cons(value)
+        }
+    }
+
+    /// Returns the number of stored values from the cached measure. O(1).
+    pub fn len(self : Self) -> u64 {
+        tree_measure(self)
+    }
+
+    /// Returns true when the tree contains no values. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the first value without removing it. O(1).
+    pub fn front(self : Self) -> Option<T> {
+        match self {
+            FingerTree::Empty => Option::None,
+            FingerTree::Single(value) => Option::Some { element_value(value) },
+            FingerTree::Deep(_, prefix, _, _) =>
+                Option::Some { element_value(digit_first(prefix)) }
+        }
+    }
+
+    /// Returns the last value without removing it. O(1).
+    pub fn back(self : Self) -> Option<T> {
+        match self {
+            FingerTree::Empty => Option::None,
+            FingerTree::Single(value) => Option::Some { element_value(value) },
+            FingerTree::Deep(_, _, _, suffix) =>
+                Option::Some { element_value(digit_last(suffix)) }
+        }
+    }
+
+    /// Adds `value` at the front. Amortized O(1).
+    pub fn cons(self : Self, value : T) -> Self {
+        cons_element(Element::Value { value }, self)
+    }
+
+    /// Adds `value` at the back. Amortized O(1).
+    pub fn snoc(self : Self, value : T) -> Self {
+        snoc_element(self, Element::Value { value })
+    }
+
+    /// Removes and returns the first value when nonempty. Amortized O(1).
+    pub fn view_left(self : Self) -> ViewLeft<T> {
+        match view_left_tree(self) {
+            ElementViewLeft::Empty => ViewLeft::Empty,
+            ElementViewLeft::Cons(element, rest) => ViewLeft::Cons {
+                element_value(element),
+                rest
+            }
+        }
+    }
+
+    /// Removes and returns the last value when nonempty. Amortized O(1).
+    pub fn view_right(self : Self) -> ViewRight<T> {
+        match view_right_tree(self) {
+            ElementViewRight::Empty => ViewRight::Empty,
+            ElementViewRight::Snoc(rest, element) => ViewRight::Snoc {
+                rest,
+                element_value(element)
+            }
+        }
+    }
+
+    /// Concatenates two trees in sequence order. O(log(min(n, m))).
+    pub fn concat(self : Self, right : Self) -> Self {
+        app3(self, List::Nil, right)
+    }
+
+    /// Returns the value at `index`, or `None` when out of bounds. O(log n).
+    pub fn get(self : Self, index : u64) -> Option<T> {
+        if index < self.len() {
+            Option::Some { lookup_tree(index, self) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Splits before the first prefix whose cached length satisfies a predicate.
+    ///
+    /// `predicate` must be monotone from false to true. The matching value is
+    /// the first value of the right tree. O(log n).
+    pub fn split(self : Self, predicate : u64 -> bool) -> Split<T> {
+        if self.is_empty() || !predicate(self.len()) {
+            Split::Split { self, FingerTree::new() }
+        } else {
+            if predicate(0) {
+                Split::Split { FingerTree::new(), self }
+            } else {
+                match split_tree_by(predicate, 0, self) {
+                    TreeSplit::Split(left, pivot, right) => Split::Split {
+                        left,
+                        cons_element(pivot, right)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Splits at a zero-based boundary, clamping boundaries past the end. O(log n).
+    pub fn split_at(self : Self, index : u64) -> Split<T> {
+        if index == 0 {
+            Split::Split { FingerTree::new(), self }
+        } else {
+            if index >= self.len() {
+                Split::Split { self, FingerTree::new() }
+            } else {
+                match split_tree(index, self) {
+                    TreeSplit::Split(left, pivot, right) => Split::Split {
+                        left,
+                        cons_element(pivot, right)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the first `count` values, or the whole tree if shorter. O(log n).
+    pub fn take(self : Self, count : u64) -> Self {
+        match self.split_at(count) {
+            Split::Split(left, _) => left
+        }
+    }
+
+    /// Drops the first `count` values, returning empty if shorter. O(log n).
+    pub fn drop(self : Self, count : u64) -> Self {
+        match self.split_at(count) {
+            Split::Split(_, right) => right
+        }
+    }
+
+    /// Inserts before `index`, appending when `index` is past the end. O(log n).
+    pub fn insert_at(self : Self, index : u64, value : T) -> Self {
+        match self.split_at(index) {
+            Split::Split(left, right) => left.snoc(value).concat(right)
+        }
+    }
+
+    /// Removes and returns the value at `index`. O(log n).
+    pub fn remove_at(self : Self, index : u64) -> Remove<T> {
+        if index >= self.len() {
+            Remove::OutOfBounds { self }
+        } else {
+            match self.split_at(index) {
+                Split::Split(left, right) => match right.view_left() {
+                    ViewLeft::Cons(value, rest) =>
+                        Remove::Removed { value, left.concat(rest) },
+                    ViewLeft::Empty => core::intrinsic::panic::panic()
+                }
+            }
+        }
+    }
+
+    /// Deletes the value at `index`, leaving an out-of-range tree unchanged. O(log n).
+    pub fn delete_at(self : Self, index : u64) -> Self {
+        match self.remove_at(index) {
+            Remove::Removed(_, rest) => rest,
+            Remove::OutOfBounds(original) => original
+        }
+    }
+
+    /// Replaces the value at `index`, leaving an out-of-range tree unchanged. O(log n).
+    pub fn set(self : Self, index : u64, value : T) -> Self {
+        if index >= self.len() {
+            self
+        } else {
+            match self.split_at(index) {
+                Split::Split(left, right) => match right.view_left() {
+                    ViewLeft::Cons(_, rest) => left.snoc(value).concat(rest),
+                    ViewLeft::Empty => core::intrinsic::panic::panic()
+                }
+            }
+        }
+    }
+
+    /// Applies `f` at `index`, leaving an out-of-range tree unchanged. O(log n).
+    pub fn adjust(self : Self, index : u64, f : T -> T) -> Self {
+        if index >= self.len() {
+            self
+        } else {
+            match self.split_at(index) {
+                Split::Split(left, right) => match right.view_left() {
+                    ViewLeft::Cons(value, rest) =>
+                        left.snoc(f(value)).concat(rest),
+                    ViewLeft::Empty => core::intrinsic::panic::panic()
+                }
+            }
+        }
+    }
+
+    /// Returns the values as a list in sequence order. O(n).
+    pub fn to_list(self : Self) -> List<T> {
+        match self.view_left() {
+            ViewLeft::Empty => List::Nil,
+            ViewLeft::Cons(value, rest) =>
+                List::Cons { value, rest.to_list() }
+        }
+    }
+
+    /// Reverses the sequence while preserving cached measures. O(n).
+    pub fn reverse(self : Self) -> Self {
+        reverse_tree(self)
+    }
+
+    /// Maps every value while preserving the tree shape. O(n).
+    pub fn map<U>(self : Self, f : T -> U) -> FingerTree<U> {
+        map_tree(self, f)
+    }
+
+    /// Folds values from left to right. O(n).
+    pub fn fold_left<U>(self : Self, initial : U, f : (U, T) -> U) -> U {
+        match self.view_left() {
+            ViewLeft::Empty => initial,
+            ViewLeft::Cons(value, rest) =>
+                rest.fold_left(f(initial, value), f)
+        }
+    }
+
+    /// Folds values from right to left. O(n).
+    pub fn fold_right<U>(self : Self, initial : U, f : (T, U) -> U) -> U {
+        match self.view_right() {
+            ViewRight::Empty => initial,
+            ViewRight::Snoc(rest, value) =>
+                rest.fold_right(f(value, initial), f)
+        }
+    }
+
+    /// Retains matching values in their original order. O(n).
+    pub fn filter(self : Self, predicate : T -> bool) -> Self {
+        match self.view_left() {
+            ViewLeft::Empty => FingerTree::new(),
+            ViewLeft::Cons(value, rest) if predicate(value) =>
+                rest.filter(predicate).cons(value),
+            ViewLeft::Cons(_, rest) => rest.filter(predicate)
+        }
+    }
+
+    /// Counts values for which `predicate` returns true. O(n).
+    pub fn count_if(self : Self, predicate : T -> bool) -> u64 {
+        self.fold_left(0, |count, value| {
+            if predicate(value) { count + 1 } else { count }
+        })
+    }
+
+    /// Returns the first matching value. O(n).
+    pub fn find_first(self : Self, predicate : T -> bool) -> Option<T> {
+        match self.view_left() {
+            ViewLeft::Empty => Option::None,
+            ViewLeft::Cons(value, _) if predicate(value) =>
+                Option::Some { value },
+            ViewLeft::Cons(_, rest) => rest.find_first(predicate)
+        }
+    }
+
+    /// Returns the last matching value. O(n).
+    pub fn find_last(self : Self, predicate : T -> bool) -> Option<T> {
+        match self.view_right() {
+            ViewRight::Empty => Option::None,
+            ViewRight::Snoc(_, value) if predicate(value) =>
+                Option::Some { value },
+            ViewRight::Snoc(rest, _) => rest.find_last(predicate)
+        }
+    }
+
+    /// Returns true if any value satisfies `predicate`. O(n).
+    pub fn any(self : Self, predicate : T -> bool) -> bool {
+        match self.view_left() {
+            ViewLeft::Empty => false,
+            ViewLeft::Cons(value, _) if predicate(value) => true,
+            ViewLeft::Cons(_, rest) => rest.any(predicate)
+        }
+    }
+
+    /// Returns true if every value satisfies `predicate`. O(n).
+    pub fn all(self : Self, predicate : T -> bool) -> bool {
+        match self.view_left() {
+            ViewLeft::Empty => true,
+            ViewLeft::Cons(value, rest) if predicate(value) =>
+                rest.all(predicate),
+            ViewLeft::Cons(_, _) => false
+        }
+    }
+}
+
+impl<T : Eq> FingerTree<T> {
+    /// Returns true if a value compares equal to `needle`. O(n).
+    pub fn contains(self : Self, needle : T) -> bool {
+        match self.view_left() {
+            ViewLeft::Empty => false,
+            ViewLeft::Cons(value, _) if value == needle => true,
+            ViewLeft::Cons(_, rest) => rest.contains(needle)
+        }
+    }
+}
