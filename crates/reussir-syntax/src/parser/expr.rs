@@ -2,15 +2,16 @@
 //!
 //! Operator table (tightest to loosest):
 //!
-//! | level | operators                                      | associativity |
-//! |-------|------------------------------------------------|---------------|
-//! | 6     | prefix `-` `!`; postfix `as T` or suffix chain | one prefix and one postfix application per term |
-//! | 5     | `*` `/` `%`                                    | left          |
-//! | 4     | `+` `-`                                        | left          |
-//! | 3     | `==` `!=` `<` `>` `<=` `>=`                    | none          |
-//! | 2     | `&&`                                           | left          |
-//! | 1     | `\|\|`                                         | left          |
-//! | 0     | `lhs -> field := rhs`                          | none          |
+//! | level | operators                     | associativity |
+//! |-------|-------------------------------|---------------|
+//! | 7     | call / access suffix chain    | left          |
+//! | 6     | prefix `-` `!`; postfix `as T` | one each      |
+//! | 5     | `*` `/` `%`                   | left          |
+//! | 4     | `+` `-`                       | left          |
+//! | 3     | `==` `!=` `<` `>` `<=` `>=`   | none          |
+//! | 2     | `&&`                          | left          |
+//! | 1     | `\|\|`                        | left          |
+//! | 0     | `lhs -> field := rhs`         | none          |
 //!
 //! ## The algorithm: precedence climbing
 //!
@@ -61,10 +62,9 @@
 //!
 //! * a lambda is only recognized at full-expression entry points, never as
 //!   an operand of a binary operator — `1 + |x| x` is not an expression;
-//! * each term takes at most one prefix and one postfix application, and
-//!   the postfix applies on top of the prefix: `- x as i32` is
-//!   `Cast(i32, Negate x)`, while `x.f as i32` needs parentheses because a
-//!   suffix chain and a cast are alternative postfixes;
+//! * a call / access suffix chain binds inside a prefix operator, while a
+//!   cast binds outside it: `!x.f()` is `Not(Call(Access(x, f)))`, and
+//!   `-x.f as i32` is `Cast(i32, Negate(Access(x, f)))`;
 //! * consecutive `.a.b` accesses group into a single access-chain node,
 //!   while every call suffix creates its own node;
 //! * struct-literal constructors are suppressed in scrutinee/condition
@@ -210,36 +210,46 @@ impl Parser<'_> {
         Some(lhs)
     }
 
-    /// One term: at most one prefix and one postfix application; the
-    /// postfix applies to the prefixed atom.
+    /// One term: a call / access suffix chain binds more tightly than an
+    /// optional prefix, while an optional cast binds more loosely.
     fn unary_term(&mut self, allow_struct: bool) -> Option<CompletedMarker> {
         stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW, || {
             let base = if self.at(Minus) || self.at(Bang) {
                 let m = self.start();
                 self.bump();
-                if self.atom(allow_struct).is_none() {
-                    self.error(format!(
-                        "expected an expression after the unary operator, found {}",
-                        self.current().describe()
-                    ));
+                match self.atom(allow_struct) {
+                    Some(operand) => {
+                        self.suffix_chain(operand);
+                    }
+                    None => {
+                        self.error(format!(
+                            "expected an expression after the unary operator, found {}",
+                            self.current().describe()
+                        ));
+                    }
                 }
                 m.complete(self, PrefixExpr)
             } else {
-                self.atom(allow_struct)?
+                let atom = self.atom(allow_struct)?;
+                self.suffix_chain(atom)
             };
-            Some(self.postfix_opt(base))
+            Some(self.cast_opt(base))
         })
     }
 
-    /// One postfix application: either a cast (`as T`) or a chain of call /
-    /// access suffixes.
-    fn postfix_opt(&mut self, mut e: CompletedMarker) -> CompletedMarker {
+    /// An optional cast, which applies outside a prefix expression.
+    fn cast_opt(&mut self, e: CompletedMarker) -> CompletedMarker {
         if self.at(AsKw) {
             let m = e.precede(self);
             self.bump();
             self.type_();
             return m.complete(self, CastExpr);
         }
+        e
+    }
+
+    /// A left-to-right chain of call / access suffixes.
+    fn suffix_chain(&mut self, mut e: CompletedMarker) -> CompletedMarker {
         loop {
             if self.at(LParen) {
                 let m = e.precede(self);

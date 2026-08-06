@@ -1,0 +1,25 @@
+// A call / access suffix chain binds more tightly than unary `!`: the method
+// returns `bool`, and that result is the operand of `!`.
+// RUN: %rrc %s --package-name precedence --emit hir --no-source-locations -o - | %FileCheck %s
+
+pub enum Option<T> {
+    Some(T),
+    None
+}
+
+impl<T> Option<T> {
+    pub fn is_some(self: Self) -> bool {
+        match self {
+            Option::Some(_) => true,
+            None => false
+        }
+    }
+
+    pub fn is_none(self: Self) -> bool {
+        !self.is_some()
+    }
+}
+
+// CHECK: pub fn #precedence::Option::is_none<$1 (T)>(v0 (self): #precedence::Option::<$1>) -> bool {
+// CHECK-NEXT:     !(#precedence::Option::is_some::<$1>(v0 : #precedence::Option::<$1>) : bool) : bool
+// CHECK-NEXT: }
