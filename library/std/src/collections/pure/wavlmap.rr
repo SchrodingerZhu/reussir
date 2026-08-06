@@ -1,0 +1,520 @@
+//! A persistent ordered map on a WAVL (weak AVL) tree.
+//!
+//! Same tree discipline as `wavlset` (see there for the measured
+//! rationale for choosing WAVL in its recursive formulation): ranks with
+//! differences of 1 or 2, leaves at rank 0, at most two rotations per
+//! update. Nodes additionally carry the mapped value.
+//!
+//! Unlike `wavlset`, the map stores the rank as a **field** rather than
+//! encoding its parity in the variant tag, and that difference is
+//! measured rather than accidental. Parity encoding pays for itself only
+//! when the word it saves moves the node into a smaller allocator bin.
+//! With word-sized keys and values, a rank node is 48 B and a parity node
+//! 40 B — both land in mimalloc's 48-byte bin, so the encoding buys no
+//! locality while costing ~13% more instructions for the parity
+//! bookkeeping; it measured ~1.07x *slower* on bulk insert. The set's
+//! nodes cross 40 B -> 32 B, an actual bin change, which is why it uses
+//! the parity form. (For a map with narrower keys and values — an
+//! `i32`-to-`i32` map is 40 B against 32 B — the arithmetic favours
+//! parity again; revisit this if such maps become the common case.)
+
+import std::option::Option;
+import std::collections::pure::list::List;
+
+/// The rank-carrying tree node. Public because `WavlMap` stores it in
+/// its representation; construct maps through `WavlMap` so the rank and
+/// size invariants hold.
+pub enum Tree<K, V> {
+    Leaf,
+    Node(i64, Tree<K, V>, K, V, Tree<K, V>)
+}
+
+/// A key-value pair, as stored and produced by `WavlMap`.
+pub struct [value] Entry<K, V> {
+    pub key : K,
+    pub value : V
+}
+
+/// A persistent ordered map with O(log n) insert, remove, and lookup.
+pub struct WavlMap<K, V> {
+    size : u64,
+    root : Tree<K, V>
+}
+
+fn rank<K, V>(t : Tree<K, V>) -> i64 {
+    match t {
+        Tree::Leaf => 0 - 1,
+        Tree::Node(r, _, _, _, _) => r
+    }
+}
+
+fn bal_left_ins<K, V>(
+    r : i64,
+    l : Tree<K, V>,
+    k : K,
+    v : V,
+    rt : Tree<K, V>
+) -> Tree<K, V> {
+    match l {
+        Tree::Leaf => Tree::Node { r, Tree::Leaf, k, v, rt },
+        Tree::Node(lrank, ll, lk, lv, lrt) => {
+            if r - lrank >= 1 {
+                Tree::Node { r, Tree::Node { lrank, ll, lk, lv, lrt }, k, v, rt }
+            } else {
+                if r - rank(rt) == 1 {
+                    Tree::Node {
+                        r + 1,
+                        Tree::Node { lrank, ll, lk, lv, lrt },
+                        k,
+                        v,
+                        rt
+                    }
+                } else {
+                    if lrank - rank(lrt) == 2 {
+                        Tree::Node {
+                            lrank,
+                            ll,
+                            lk,
+                            lv,
+                            Tree::Node { r - 1, lrt, k, v, rt }
+                        }
+                    } else {
+                        match lrt {
+                            Tree::Node(_, lrl, lrk, lrv, lrr) => Tree::Node {
+                                r,
+                                Tree::Node { r - 1, ll, lk, lv, lrl },
+                                lrk,
+                                lrv,
+                                Tree::Node { r - 1, lrr, k, v, rt }
+                            },
+                            Tree::Leaf => core::intrinsic::panic::panic()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn bal_right_ins<K, V>(
+    r : i64,
+    l : Tree<K, V>,
+    k : K,
+    v : V,
+    rt : Tree<K, V>
+) -> Tree<K, V> {
+    match rt {
+        Tree::Leaf => Tree::Node { r, l, k, v, Tree::Leaf },
+        Tree::Node(rrank, rl, rk, rv, rr) => {
+            if r - rrank >= 1 {
+                Tree::Node { r, l, k, v, Tree::Node { rrank, rl, rk, rv, rr } }
+            } else {
+                if r - rank(l) == 1 {
+                    Tree::Node {
+                        r + 1,
+                        l,
+                        k,
+                        v,
+                        Tree::Node { rrank, rl, rk, rv, rr }
+                    }
+                } else {
+                    if rrank - rank(rl) == 2 {
+                        Tree::Node {
+                            rrank,
+                            Tree::Node { r - 1, l, k, v, rl },
+                            rk,
+                            rv,
+                            rr
+                        }
+                    } else {
+                        match rl {
+                            Tree::Node(_, rll, rlk, rlv, rlr) => Tree::Node {
+                                r,
+                                Tree::Node { r - 1, l, k, v, rll },
+                                rlk,
+                                rlv,
+                                Tree::Node { r - 1, rlr, rk, rv, rr }
+                            },
+                            Tree::Leaf => core::intrinsic::panic::panic()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum [value] Changed<K, V> { C(Tree<K, V>, bool) }
+
+fn ins<K : Ord, V>(t : Tree<K, V>, x : K, xv : V) -> Changed<K, V> {
+    match t {
+        Tree::Leaf => Changed::C {
+            Tree::Node { 0, Tree::Leaf, x, xv, Tree::Leaf },
+            true
+        },
+        Tree::Node(r, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Less => match ins(l, x, xv) {
+                Changed::C(l2, added) => Changed::C {
+                    if added {
+                        bal_left_ins(r, l2, k, v, rt)
+                    } else {
+                        Tree::Node { r, l2, k, v, rt }
+                    },
+                    added
+                }
+            },
+            Ordering::Greater => match ins(rt, x, xv) {
+                Changed::C(rt2, added) => Changed::C {
+                    if added {
+                        bal_right_ins(r, l, k, v, rt2)
+                    } else {
+                        Tree::Node { r, l, k, v, rt2 }
+                    },
+                    added
+                }
+            },
+            Ordering::Equal => Changed::C {
+                Tree::Node { r, l, k, xv, rt },
+                false
+            }
+        }
+    }
+}
+
+fn bal_left_del<K, V>(
+    r : i64,
+    l : Tree<K, V>,
+    k : K,
+    v : V,
+    rt : Tree<K, V>
+) -> Tree<K, V> {
+    let rl = rank(l);
+    if r - rl <= 2 {
+        if r == 1 && rl == 0 - 1 && rank(rt) == 0 - 1 {
+            Tree::Node { 0, l, k, v, rt }
+        } else {
+            Tree::Node { r, l, k, v, rt }
+        }
+    } else {
+        match rt {
+            Tree::Node(yrank, yl, yk, yv, yr) => {
+                if r - yrank == 2 {
+                    Tree::Node {
+                        r - 1,
+                        l,
+                        k,
+                        v,
+                        Tree::Node { yrank, yl, yk, yv, yr }
+                    }
+                } else {
+                    let dyl = yrank - rank(yl);
+                    let dyr = yrank - rank(yr);
+                    if dyl == 2 && dyr == 2 {
+                        Tree::Node {
+                            r - 1,
+                            l,
+                            k,
+                            v,
+                            Tree::Node { yrank - 1, yl, yk, yv, yr }
+                        }
+                    } else {
+                        if dyr == 1 {
+                            let xrank = if rank(l) == 0 - 1 && rank(yl) == 0 - 1 {
+                                0
+                            } else {
+                                r - 1
+                            };
+                            Tree::Node {
+                                r,
+                                Tree::Node { xrank, l, k, v, yl },
+                                yk,
+                                yv,
+                                yr
+                            }
+                        } else {
+                            match yl {
+                                Tree::Node(_, zl, zk, zv, zr) => Tree::Node {
+                                    r,
+                                    Tree::Node { r - 2, l, k, v, zl },
+                                    zk,
+                                    zv,
+                                    Tree::Node { r - 2, zr, yk, yv, yr }
+                                },
+                                Tree::Leaf => core::intrinsic::panic::panic()
+                            }
+                        }
+                    }
+                }
+            },
+            Tree::Leaf => core::intrinsic::panic::panic()
+        }
+    }
+}
+
+fn bal_right_del<K, V>(
+    r : i64,
+    l : Tree<K, V>,
+    k : K,
+    v : V,
+    rt : Tree<K, V>
+) -> Tree<K, V> {
+    let rr = rank(rt);
+    if r - rr <= 2 {
+        if r == 1 && rr == 0 - 1 && rank(l) == 0 - 1 {
+            Tree::Node { 0, l, k, v, rt }
+        } else {
+            Tree::Node { r, l, k, v, rt }
+        }
+    } else {
+        match l {
+            Tree::Node(yrank, yl, yk, yv, yr) => {
+                if r - yrank == 2 {
+                    Tree::Node {
+                        r - 1,
+                        Tree::Node { yrank, yl, yk, yv, yr },
+                        k,
+                        v,
+                        rt
+                    }
+                } else {
+                    let dyl = yrank - rank(yl);
+                    let dyr = yrank - rank(yr);
+                    if dyl == 2 && dyr == 2 {
+                        Tree::Node {
+                            r - 1,
+                            Tree::Node { yrank - 1, yl, yk, yv, yr },
+                            k,
+                            v,
+                            rt
+                        }
+                    } else {
+                        if dyl == 1 {
+                            let xrank = if rank(rt) == 0 - 1 && rank(yr) == 0 - 1 {
+                                0
+                            } else {
+                                r - 1
+                            };
+                            Tree::Node {
+                                r,
+                                yl,
+                                yk,
+                                yv,
+                                Tree::Node { xrank, yr, k, v, rt }
+                            }
+                        } else {
+                            match yr {
+                                Tree::Node(_, zl, zk, zv, zr) => Tree::Node {
+                                    r,
+                                    Tree::Node { r - 2, yl, yk, yv, zl },
+                                    zk,
+                                    zv,
+                                    Tree::Node { r - 2, zr, k, v, rt }
+                                },
+                                Tree::Leaf => core::intrinsic::panic::panic()
+                            }
+                        }
+                    }
+                }
+            },
+            Tree::Leaf => core::intrinsic::panic::panic()
+        }
+    }
+}
+
+enum [value] DelMin<K, V> { D(K, V, Tree<K, V>) }
+
+fn del_min<K, V>(t : Tree<K, V>) -> DelMin<K, V> {
+    match t {
+        Tree::Node(_, Tree::Leaf, k, v, rt) => DelMin::D { k, v, rt },
+        Tree::Node(r, l, k, v, rt) => match del_min(l) {
+            DelMin::D(m, mv, l2) =>
+                DelMin::D { m, mv, bal_left_del(r, l2, k, v, rt) }
+        },
+        Tree::Leaf => core::intrinsic::panic::panic()
+    }
+}
+
+fn remove_root<K, V>(r : i64, l : Tree<K, V>, rt : Tree<K, V>) -> Tree<K, V> {
+    match l {
+        Tree::Leaf => rt,
+        Tree::Node(lrank, ll, lk, lv, lr) => match rt {
+            Tree::Leaf => Tree::Node { lrank, ll, lk, lv, lr },
+            Tree::Node(rrank, rl, rk, rv, rr) =>
+                match del_min(Tree::Node { rrank, rl, rk, rv, rr }) {
+                    DelMin::D(m, mv, rt2) => bal_right_del(
+                        r,
+                        Tree::Node { lrank, ll, lk, lv, lr },
+                        m,
+                        mv,
+                        rt2
+                    )
+                }
+        }
+    }
+}
+
+fn del<K : Ord, V>(t : Tree<K, V>, x : K) -> Changed<K, V> {
+    match t {
+        Tree::Leaf => Changed::C { Tree::Leaf, false },
+        Tree::Node(r, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Less => match del(l, x) {
+                Changed::C(l2, found) => Changed::C {
+                    if found {
+                        bal_left_del(r, l2, k, v, rt)
+                    } else {
+                        Tree::Node { r, l2, k, v, rt }
+                    },
+                    found
+                }
+            },
+            Ordering::Greater => match del(rt, x) {
+                Changed::C(rt2, found) => Changed::C {
+                    if found {
+                        bal_right_del(r, l, k, v, rt2)
+                    } else {
+                        Tree::Node { r, l, k, v, rt2 }
+                    },
+                    found
+                }
+            },
+            Ordering::Equal => Changed::C { remove_root(r, l, rt), true }
+        }
+    }
+}
+
+fn lookup<K : Ord, V>(t : Tree<K, V>, x : K) -> Option<V> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Less => lookup(l, x),
+            Ordering::Greater => lookup(rt, x),
+            Ordering::Equal => Option::Some { v }
+        }
+    }
+}
+
+fn min_tree<K, V>(t : Tree<K, V>) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, Tree::Leaf, k, v, _) =>
+            Option::Some { Entry { key: k, value: v } },
+        Tree::Node(_, l, _, _, _) => min_tree(l)
+    }
+}
+
+fn max_tree<K, V>(t : Tree<K, V>) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, _, k, v, Tree::Leaf) =>
+            Option::Some { Entry { key: k, value: v } },
+        Tree::Node(_, _, _, _, rt) => max_tree(rt)
+    }
+}
+
+fn to_list_acc<K, V>(
+    t : Tree<K, V>,
+    acc : List<Entry<K, V>>
+) -> List<Entry<K, V>> {
+    match t {
+        Tree::Leaf => acc,
+        Tree::Node(_, l, k, v, rt) => to_list_acc(
+            l,
+            List::Cons { Entry { key: k, value: v }, to_list_acc(rt, acc) }
+        )
+    }
+}
+
+fn fold_tree<U, K, V>(
+    t : Tree<K, V>,
+    initial : U,
+    f : (U, K, V) -> U
+) -> U {
+    match t {
+        Tree::Leaf => initial,
+        Tree::Node(_, l, k, v, rt) =>
+            fold_tree(rt, f(fold_tree(l, initial, f), k, v), f)
+    }
+}
+
+fn from_list_impl<K : Ord, V>(
+    values : List<Entry<K, V>>,
+    acc : WavlMap<K, V>
+) -> WavlMap<K, V> {
+    match values {
+        List::Nil => acc,
+        List::Cons(entry, rest) =>
+            from_list_impl(rest, acc.insert(entry.key, entry.value))
+    }
+}
+
+impl<K : Ord, V> WavlMap<K, V> {
+    /// Creates an empty map. O(1).
+    pub fn new() -> Self {
+        WavlMap { size: 0, root: Tree::Leaf }
+    }
+
+    /// Returns the number of entries. O(1).
+    pub fn len(self : Self) -> u64 {
+        self.size
+    }
+
+    /// Returns true when the map contains no entries. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        self.size == 0
+    }
+
+    /// Adds or replaces the entry for `key`. O(log n).
+    pub fn insert(self : Self, key : K, value : V) -> Self {
+        match ins(self.root, key, value) {
+            Changed::C(root, added) => WavlMap {
+                size: if added { self.size + 1 } else { self.size },
+                root
+            }
+        }
+    }
+
+    /// Removes the entry for `key` when present. O(log n).
+    pub fn remove(self : Self, key : K) -> Self {
+        match del(self.root, key) {
+            Changed::C(root, found) => WavlMap {
+                size: if found { self.size - 1 } else { self.size },
+                root
+            }
+        }
+    }
+
+    /// Returns the value stored for `key`. O(log n).
+    pub fn get(self : Self, key : K) -> Option<V> {
+        lookup(self.root, key)
+    }
+
+    /// Returns true if an entry exists for `key`. O(log n).
+    pub fn contains_key(self : Self, key : K) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Returns the entry with the least key. O(log n).
+    pub fn min(self : Self) -> Option<Entry<K, V>> {
+        min_tree(self.root)
+    }
+
+    /// Returns the entry with the greatest key. O(log n).
+    pub fn max(self : Self) -> Option<Entry<K, V>> {
+        max_tree(self.root)
+    }
+
+    /// Returns the entries in ascending key order. O(n).
+    pub fn to_list(self : Self) -> List<Entry<K, V>> {
+        to_list_acc(self.root, List::Nil)
+    }
+
+    /// Folds the entries in ascending key order. O(n).
+    pub fn fold_left<U>(self : Self, initial : U, f : (U, K, V) -> U) -> U {
+        fold_tree(self.root, initial, f)
+    }
+
+    /// Creates a map from entries, later duplicates replacing earlier ones. O(n log n).
+    pub fn from_list(values : List<Entry<K, V>>) -> Self {
+        from_list_impl(values, WavlMap::new())
+    }
+}

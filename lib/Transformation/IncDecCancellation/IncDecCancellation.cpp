@@ -65,6 +65,15 @@ ReussirRcDecOp findPostDominantAliasedRcDec(
 }
 
 void eraseOrReplaceDecOp(ReussirRcDecOp decOp) {
+  // A destructuring release does more than drop the box's count: it also
+  // transfers a retain to each bound member (`reussir-rc-dispatch-fusion`
+  // folded the member's own `rc.inc` into the release). Cancelling keeps
+  // the box alive, but the members still owe their references — reissue
+  // them at the release's position before it disappears.
+  if (decOp.isDestructuring()) {
+    mlir::OpBuilder builder(decOp);
+    decOp.rematerializeBoundRetains(builder);
+  }
   if (decOp.use_empty())
     decOp.erase();
   else {
@@ -161,13 +170,8 @@ bool cancelIntoDispatch(ReussirRcIncOp incOp, ReussirRecordDispatchOp dispatch,
                                releases))
       return false;
 
-  for (ReussirRcDecOp dec : releases) {
-    if (dec.isDestructuring()) {
-      mlir::OpBuilder builder(dec);
-      dec.rematerializeBoundRetains(builder);
-    }
+  for (ReussirRcDecOp dec : releases)
     eraseOrReplaceDecOp(dec);
-  }
   incOp.erase();
   return true;
 }
