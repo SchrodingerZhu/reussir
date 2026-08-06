@@ -165,19 +165,18 @@ fn min_root<T : Ord>(ts : List<Tree<T>>) -> Option<T> {
 }
 
 // The minimum-rooted tree pulled out of the forest, and the rest.
-enum [value] Split<T> { S(Tree<T>, List<Tree<T>>) }
+struct [value] Split<T> { tree : Tree<T>, rest : List<Tree<T>> }
 
 fn remove_min_tree<T : Ord>(ts : List<Tree<T>>) -> Split<T> {
     match ts {
         List::Nil => core::intrinsic::panic::panic(),
-        List::Cons(t, List::Nil) => Split::S { t, List::Nil },
-        List::Cons(t, rest) => match remove_min_tree(rest) {
-            Split::S(t2, rest2) => {
-                if root(t) <= root(t2) {
-                    Split::S { t, rest }
-                } else {
-                    Split::S { t2, List::Cons { t, rest2 } }
-                }
+        List::Cons(t, List::Nil) => Split { tree: t, rest: List::Nil },
+        List::Cons(t, rest) => {
+            let below = remove_min_tree(rest);
+            if root(t) <= root(below.tree) {
+                Split { tree: t, rest }
+            } else {
+                Split { tree: below.tree, rest: List::Cons { t, below.rest } }
             }
         }
     }
@@ -197,11 +196,10 @@ fn reverse_trees<T>(
 // children run high-to-low rank, so they are reversed before merging back
 // into the increasing-rank forest.
 fn without_min<T : Ord>(ts : List<Tree<T>>) -> List<Tree<T>> {
-    match remove_min_tree(ts) {
-        Split::S(t, rest) => match t {
-            Tree::Node(_, _, cs) =>
-                merge_trees(reverse_trees(cs, List::Nil), rest)
-        }
+    let split = remove_min_tree(ts);
+    match split.tree {
+        Tree::Node(_, _, cs) =>
+            merge_trees(reverse_trees(cs, List::Nil), split.rest)
     }
 }
 
