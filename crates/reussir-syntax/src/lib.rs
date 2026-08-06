@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn casts_and_prefix() {
-        // The postfix cast applies on top of the prefixed atom:
+        // A cast remains outside the prefix:
         // `-x as f64` is `Cast f64 (Negate x)`.
         let v = json_of("fn f(x: i32) -> f64 { -x as f64 }");
         let body = &unwrap_span(&v[0])["contents"]["funcBody"];
@@ -693,6 +693,21 @@ mod tests {
             "UnaryOpExpr",
             "{v}"
         );
+    }
+
+    #[test]
+    fn suffix_chain_binds_tighter_than_prefix() {
+        let v = json_of("fn f(x: Option<i32>) -> bool { !x.is_some() }");
+        let body = &unwrap_span(&v[0])["contents"]["funcBody"];
+        let seq = &unwrap_span(body)["contents"][0];
+        let not = unwrap_span(seq);
+        assert_eq!(not["tag"], "UnaryOpExpr", "{v}");
+        assert_eq!(not["contents"][0], "Not", "{v}");
+
+        let call = unwrap_span(&not["contents"][1]);
+        assert_eq!(call["tag"], "CallExpr", "{v}");
+        let access = unwrap_span(&call["contents"][0]);
+        assert_eq!(access["tag"], "AccessChain", "{v}");
     }
 
     /// Strip a `SpannedExpr` / `SpannedStmt` / `TypeSpanned` wrapper.
