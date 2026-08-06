@@ -2,29 +2,52 @@
 //!
 //! Pairing heaps (Fredman, Sedgewick, Sleator & Tarjan 1986; Okasaki
 //! 1998 ch. 5.5) are multiway trees kept heap-ordered by merging.
-//! `insert`, `merge` and `peek_min` are O(1); `delete_min` is amortized
-//! O(log n).
 //!
-//! ## Choosing between this and `binomial_heap`
+//! | operation | cost |
+//! | --- | --- |
+//! | `insert`, `merge`, `peek_min`, `len` | O(1) |
+//! | `delete_min`, `pop_min` | O(log n) amortized |
 //!
-//! This is the faster queue for the ordinary *linear* usage where each
-//! heap version is used once — building, draining, heapsort, scheduling
-//! loops. Measured against `binomial_heap` on `i64`: insert 2.5x,
-//! delete-min 1.8x, merge 1.6x, peek 3.4x.
+//! ## Use this heap when
 //!
-//! Its bounds are **amortized**, though, and this is a persistent
-//! structure, so the classic caveat applies: work charged against credit
-//! built up by earlier operations is paid again whenever an *old*
-//! version is reused. Deleting repeatedly from the same version is the
-//! adversarial case, and it is not a small constant — each call pays
-//! the full O(n) restructuring the amortized analysis would have spread
-//! out. Measured at 2000 deletes from one 200k-element version: 3429 ms
-//! here against 22 ms for `binomial_heap`, and the gap widens with n.
+//! **The queue is threaded linearly** — each version is produced,
+//! used, and left behind, which is what nearly all queue code does:
 //!
-//! So: reach for this heap by default, and for `binomial_heap` when the
-//! program keeps old versions alive and deletes from them — persistent
-//! rollback, speculative search, or handing the same queue to several
-//! consumers.
+//! - graph search with a frontier: Dijkstra, A*, Prim's algorithm;
+//! - discrete-event simulation, where every step pops the next event
+//!   and pushes the ones it schedules;
+//! - task and job scheduling by priority;
+//! - heapsort and top-k selection (`to_sorted_list` is built on this);
+//! - Huffman coding, and k-way merging of sorted inputs — both lean on
+//!   `merge` being O(1) here.
+//!
+//! It is the faster queue for all of these, by a wide margin on the
+//! insert- and merge-heavy ones. Measured against `binomial_heap` at
+//! 200k `i64` elements: insert 2.5x, delete-min 1.8x, merge 1.6x, peek
+//! 3.4x. Under callgrind an insert costs 2 allocations against
+//! binomial's 3, and 20.9M instructions against 38.9M per 100k inserts.
+//!
+//! ## Prefer `binomial_heap` when
+//!
+//! **Old versions stay alive and get operated on** — persistent undo or
+//! rollback, speculative or backtracking search that revisits an earlier
+//! frontier, or handing one queue to several consumers that each evolve
+//! it separately. Also prefer it when a *single* operation's cost
+//! matters rather than the total, since its bounds are worst case.
+//!
+//! The reason is that this heap's `delete_min` bound is **amortized**:
+//! it is cheap on average because earlier operations left behind an
+//! unbalanced root whose restructuring cost was charged forward. Reusing
+//! an old version replays that charge — the credit was already spent, so
+//! each delete from the same version pays the full O(n) restructuring
+//! instead of its amortized share. This is Okasaki's amortization-versus
+//! persistence problem, and here it is not a small constant: 2000
+//! deletes from one 200k-element version take 3429 ms against 22 ms for
+//! `binomial_heap`, and the gap widens with n.
+//!
+//! Note this is about *reusing* an old version, not about holding one.
+//! Keeping earlier versions around is free; only deleting from them
+//! repeatedly re-pays the cost.
 
 import std::option::Option;
 import std::collections::pure::list::List;

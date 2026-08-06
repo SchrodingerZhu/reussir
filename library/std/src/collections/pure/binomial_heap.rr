@@ -2,27 +2,55 @@
 //!
 //! Binomial heaps (Vuillemin 1978; Okasaki 1998 ch. 3.2) are forests of
 //! heap-ordered binomial trees at strictly increasing ranks, so the
-//! forest mirrors the binary representation of the size. `insert` is
-//! amortized O(1) and O(log n) worst case; `merge`, `peek_min` and
-//! `delete_min` are O(log n) worst case.
+//! forest mirrors the binary representation of the size.
 //!
-//! ## Choosing between this and `pairing_heap`
+//! | operation | cost |
+//! | --- | --- |
+//! | `len`, `is_empty` | O(1) |
+//! | `insert` | O(1) amortized, O(log n) worst case |
+//! | `merge`, `peek_min`, `delete_min`, `pop_min` | O(log n) worst case |
 //!
-//! `pairing_heap` is faster for ordinary linear usage — measured at 2.5x
-//! on insert and 1.8x on delete-min — and should be the default. This
-//! heap earns its place when a program keeps **old versions alive and
-//! deletes from them**: persistent rollback, speculative search, or
-//! sharing one queue among several consumers.
+//! Every bound is worst case per operation, with no amortization to
+//! lose. That is the whole reason this heap exists next to
+//! `pairing_heap`, which is faster but only on average.
 //!
-//! That is the case where the pairing heap's amortized bound stops
-//! holding, because work charged against previously built credit is paid
-//! again on every reuse of the same version. These bounds are worst case
-//! per operation, so no such collapse exists. Measured at 2000 deletes
-//! from a single 200k-element version: 22 ms here against 3429 ms for
-//! `pairing_heap`, with the gap widening as n grows.
+//! ## Use this heap when
 //!
-//! `peek_min` is O(log n) rather than O(1) — the minimum is found by
-//! scanning the forest roots, of which there are at most `log2(n) + 1`.
+//! **Old versions stay alive and get operated on.** Because the queue is
+//! persistent, nothing stops a program from keeping an earlier version
+//! and deleting from it again:
+//!
+//! - undo/rollback over a priority queue, where each step retains the
+//!   previous state;
+//! - speculative or backtracking search that returns to an earlier
+//!   frontier and explores a different continuation;
+//! - handing one queue to several consumers that each evolve it
+//!   independently;
+//! - any place a queue version is stored and reused rather than
+//!   consumed once.
+//!
+//! `pairing_heap` collapses on exactly this pattern — its amortized
+//! bound assumes the credit built by earlier operations is spent once,
+//! and reusing a version spends it twice. Measured at 2000 deletes from
+//! a single 200k-element version: 22 ms here against 3429 ms there, and
+//! the gap widens with n.
+//!
+//! **A single operation's cost matters**, not just the total: with worst
+//! case bounds no individual `delete_min` can degrade into a long
+//! restructuring pause, which matters for latency-sensitive loops or
+//! when the operation sequence is chosen adversarially.
+//!
+//! ## Prefer `pairing_heap` when
+//!
+//! The queue is threaded linearly — each version produced, used, and
+//! left behind — which covers most queue code: graph search frontiers,
+//! event simulation, scheduling, heapsort. It is measurably faster
+//! there: insert 2.5x, delete-min 1.8x, merge 1.6x, peek 3.4x at 200k
+//! `i64` elements.
+//!
+//! Also prefer it when `peek_min` is hot. Here the minimum is found by
+//! scanning the forest roots — at most `log2(n) + 1` of them, so
+//! O(log n) rather than the pairing heap's O(1).
 
 import std::option::Option;
 import std::collections::pure::list::List;
