@@ -145,7 +145,3 @@ impl<T : Eq> List<T> {
         }
     }
 }
-
-pub fn min_list_u32(x : List<u32>) -> u32 {
-   x.min().unwrap_or_panic()
-}
