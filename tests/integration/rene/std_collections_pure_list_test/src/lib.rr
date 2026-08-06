@@ -66,6 +66,61 @@ fn test_min() {
     test_utils::io::write_i32(empty_list().min().unwrap_or(-1));
 }
 
+fn test_max() {
+    test_utils::io::write_i32(sample_list().max().unwrap_or(-1));
+    test_utils::io::write_i32(sample_list().tail().max().unwrap_or(-1));
+    test_utils::io::write_i32(empty_list().max().unwrap_or(-1));
+}
+
+fn test_contains() {
+    write_bool(sample_list().contains(1));
+    write_bool(sample_list().contains(9));
+    write_bool(empty_list().contains(1));
+}
+
+fn test_fold_left() {
+    test_utils::io::write_i32(
+        sample_list().fold_left(0, |acc: i32, x: i32| acc * 10 + x)
+    );
+    test_utils::io::write_i32(
+        empty_list().fold_left(7, |acc: i32, x: i32| acc + x)
+    );
+}
+
+fn test_count_if() {
+    write_bool(sample_list().count_if(|x: i32| x >= 2) == 2);
+    write_bool(empty_list().count_if(|x: i32| x >= 2) == 0);
+}
+
+fn test_find_first() {
+    test_utils::io::write_i32(
+        sample_list().find_first(|x: i32| x < 3).unwrap_or(-1)
+    );
+    test_utils::io::write_i32(
+        sample_list().find_first(|x: i32| x > 3).unwrap_or(-1)
+    );
+}
+
+fn test_filter() {
+    let filtered = sample_list().filter(|x: i32| x % 2 != 0);
+    test_utils::io::write_i32(filtered.head().unwrap_or(-1));
+    test_utils::io::write_i32(filtered.tail().head().unwrap_or(-1));
+    write_bool(filtered.tail().tail().is_nil());
+    write_bool(empty_list().filter(|x: i32| x > 0).is_nil());
+}
+
+fn test_any() {
+    write_bool(sample_list().any(|x: i32| x < 2));
+    write_bool(sample_list().any(|x: i32| x > 3));
+    write_bool(empty_list().any(|x: i32| x > 0));
+}
+
+fn test_all() {
+    write_bool(sample_list().all(|x: i32| x > 0));
+    write_bool(sample_list().all(|x: i32| x < 3));
+    write_bool(empty_list().all(|x: i32| x > 0));
+}
+
 #[main]
 pub fn entry() {
     match test_utils::io::read_i32() {
@@ -77,6 +132,14 @@ pub fn entry() {
         5 => test_reverse(),
         6 => test_map(),
         7 => test_min(),
+        8 => test_max(),
+        9 => test_contains(),
+        10 => test_fold_left(),
+        11 => test_count_if(),
+        12 => test_find_first(),
+        13 => test_filter(),
+        14 => test_any(),
+        15 => test_all(),
         _ => core::intrinsic::panic::panic()
     }
 }

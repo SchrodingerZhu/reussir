@@ -51,6 +51,62 @@ impl<T> List<T> {
             Cons(h, t) => List::Cons { f(h), t.map(f) }
         }
     }
+    /// Combines the elements from head to tail while threading an accumulator.
+    pub fn fold_left<U>(self : Self, initial : U, f : (U, T) -> U) -> U {
+        match self {
+            Nil => initial,
+            Cons(h, t) => t.fold_left(f(initial, h), f)
+        }
+    }
+    fn count_if_impl(
+        self : Self,
+        predicate : T -> bool,
+        count : u64
+    ) -> u64 {
+        match self {
+            Nil => count,
+            Cons(h, t) => t.count_if_impl(
+                predicate,
+                if predicate(h) { count + 1 } else { count }
+            )
+        }
+    }
+    /// Counts the elements for which `predicate` returns true.
+    pub fn count_if(self : Self, predicate : T -> bool) -> u64 {
+        self.count_if_impl(predicate, 0)
+    }
+    /// Returns the first element for which `predicate` returns true.
+    pub fn find_first(self : Self, predicate : T -> bool) -> Option<T> {
+        match self {
+            Nil => Option::None,
+            Cons(h, _) if predicate(h) => Option::Some { h },
+            Cons(_, t) => t.find_first(predicate)
+        }
+    }
+    /// Retains matching elements in their original order.
+    pub fn filter(self : Self, predicate : T -> bool) -> Self {
+        match self {
+            Nil => List::Nil,
+            Cons(h, t) if predicate(h) => List::Cons { h, t.filter(predicate) },
+            Cons(_, t) => t.filter(predicate)
+        }
+    }
+    /// Returns true if at least one element satisfies `predicate`.
+    pub fn any(self : Self, predicate : T -> bool) -> bool {
+        match self {
+            Nil => false,
+            Cons(h, _) if predicate(h) => true,
+            Cons(_, t) => t.any(predicate)
+        }
+    }
+    /// Returns true if every element satisfies `predicate`.
+    pub fn all(self : Self, predicate : T -> bool) -> bool {
+        match self {
+            Nil => true,
+            Cons(h, t) if predicate(h) => t.all(predicate),
+            Cons(_, _) => false
+        }
+    }
 }
 
 enum [value] Helper<X, Y> { Pair(X, Y) }
@@ -66,6 +122,28 @@ impl<T : Ord> List<T> {
    pub fn min(self : Self) -> Option<T> {
        self.min_impl(Option::None)
    }
+   fn max_impl(self : Self, candidate : Option<T>) -> Option<T> {
+       match (Helper::Pair {self, candidate}) {
+           Pair(Nil, _) => candidate,
+           Pair(Cons(h, t), Some(x)) if x > h => t.max_impl(Option::Some { x }),
+           Pair(Cons(h, t), _) => t.max_impl(Option::Some { h })
+       }
+   }
+   /// Returns the greatest element, or `None` when the list is empty.
+   pub fn max(self : Self) -> Option<T> {
+       self.max_impl(Option::None)
+   }
+}
+
+impl<T : Eq> List<T> {
+    /// Returns true if an element compares equal to `value`.
+    pub fn contains(self : Self, value : T) -> bool {
+        match self {
+            Nil => false,
+            Cons(h, _) if h == value => true,
+            Cons(_, t) => t.contains(value)
+        }
+    }
 }
 
 pub fn min_list_u32(x : List<u32>) -> u32 {
