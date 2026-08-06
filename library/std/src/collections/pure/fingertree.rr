@@ -28,13 +28,16 @@ pub enum FingerTree<T> {
 }
 
 /// The empty or first-element view of a finger tree.
-pub enum ViewLeft<T> {
+/// This stays inline because callers destructure it immediately; a shared
+/// box would cost an allocation on every step of the O(n) traversals.
+pub enum [value] ViewLeft<T> {
     Empty,
     Cons(T, FingerTree<T>)
 }
 
 /// The empty or last-element view of a finger tree.
-pub enum ViewRight<T> {
+/// This stays inline for the same reason as `ViewLeft`.
+pub enum [value] ViewRight<T> {
     Empty,
     Snoc(FingerTree<T>, T)
 }
@@ -46,7 +49,9 @@ pub enum [value] Split<T> {
 }
 
 /// The result of removing a value at an index.
-pub enum Remove<T> {
+/// This stays inline because it is a transient result destructured
+/// immediately, like `ViewLeft`.
+pub enum [value] Remove<T> {
     Removed(T, FingerTree<T>),
     OutOfBounds(FingerTree<T>)
 }
@@ -1006,6 +1011,17 @@ fn reverse_digit<T>(digit : Digit<T>) -> Digit<T> {
     }
 }
 
+// Building by `snoc` keeps the recursion in tail position, so the loop
+// conversion applies and construction runs in constant stack; the naive
+// `from_list(rest).cons(value)` shape pins a frame per element because the
+// recursive result flows through another call.
+fn from_list_impl<T>(values : List<T>, acc : FingerTree<T>) -> FingerTree<T> {
+    match values {
+        List::Nil => acc,
+        List::Cons(value, rest) => from_list_impl(rest, acc.snoc(value))
+    }
+}
+
 fn reverse_tree<T>(tree : FingerTree<T>) -> FingerTree<T> {
     match tree {
         FingerTree::Empty => FingerTree::Empty,
@@ -1031,10 +1047,7 @@ impl<T> FingerTree<T> {
 
     /// Creates a finger tree from values in list order. O(n).
     pub fn from_list(values : List<T>) -> Self {
-        match values {
-            List::Nil => FingerTree::new(),
-            List::Cons(value, rest) => FingerTree::from_list(rest).cons(value)
-        }
+        from_list_impl(values, FingerTree::new())
     }
 
     /// Returns the number of stored values from the cached measure. O(1).
