@@ -1,5 +1,7 @@
+pub mod binomial_heap;
 pub mod fingertree;
 pub mod list;
+pub mod pairing_heap;
 pub mod rtqueue;
 pub mod wavlmap;
 pub mod wavlset;

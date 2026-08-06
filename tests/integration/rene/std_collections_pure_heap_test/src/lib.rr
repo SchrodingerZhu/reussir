@@ -1,0 +1,210 @@
+// A downstream executable package exercises both persistent priority
+// queues. Each input selects one case; case 5 checks a pseudorandom
+// insert/delete-min sequence against a sorted-list model, and case 6
+// checks that the two heaps agree element for element after a large
+// build (they implement the same abstraction by different means).
+
+import std::option::Option;
+import std::collections::pure::pairing_heap::PairingHeap;
+import std::collections::pure::binomial_heap::BinomialHeap;
+import std::collections::pure::list::List;
+
+fn wb(v : bool) { test_utils::io::write_i32(if v { 1 } else { 0 }) }
+
+fn lcg(seed : i64) -> i64 {
+    (seed * 1103515245 + 12345) % 2147483648
+}
+
+fn sorted_nondescending(l : List<i64>) -> bool {
+    match l {
+        List::Nil => true,
+        List::Cons(_, List::Nil) => true,
+        List::Cons(a, List::Cons(b, rest)) =>
+            a <= b && sorted_nondescending(List::Cons { b, rest })
+    }
+}
+
+fn list_eq(a : List<i64>, b : List<i64>) -> bool {
+    match a {
+        List::Nil => b.is_nil(),
+        List::Cons(x, xs) => match b {
+            List::Nil => false,
+            List::Cons(y, ys) => x == y && list_eq(xs, ys)
+        }
+    }
+}
+
+fn model_insert(l : List<i64>, x : i64) -> List<i64> {
+    match l {
+        List::Nil => List::Cons { x, List::Nil },
+        List::Cons(h, t) =>
+            if x <= h {
+                List::Cons { x, List::Cons { h, t } }
+            } else {
+                List::Cons { h, model_insert(t, x) }
+            }
+    }
+}
+
+fn model_tail(l : List<i64>) -> List<i64> {
+    match l {
+        List::Nil => List::Nil,
+        List::Cons(_, t) => t
+    }
+}
+
+fn opt_eq_head(o : Option<i64>, l : List<i64>) -> bool {
+    match o {
+        Option::None => l.is_nil(),
+        Option::Some(x) => match l {
+            List::Nil => false,
+            List::Cons(h, _) => x == h
+        }
+    }
+}
+
+fn test_pairing_basics() {
+    let h : PairingHeap<i64> = PairingHeap::new().insert(5).insert(1).insert(9);
+    wb(h.len() == 3 && !h.is_empty());
+    wb(h.peek_min().unwrap_or(0) == 1);
+    wb(h.delete_min().peek_min().unwrap_or(0) == 5);
+    // the original version is unaffected
+    wb(h.peek_min().unwrap_or(0) == 1 && h.len() == 3);
+    let empty : PairingHeap<i64> = PairingHeap::new();
+    wb(empty.is_empty() && empty.peek_min().is_none());
+    wb(empty.delete_min().len() == 0);
+    let merged = h.merge(PairingHeap::new().insert(0 - 3));
+    wb(merged.len() == 4 && merged.peek_min().unwrap_or(0) == 0 - 3);
+}
+
+fn test_binomial_basics() {
+    let h : BinomialHeap<i64> = BinomialHeap::new().insert(5).insert(1).insert(9);
+    wb(h.len() == 3 && !h.is_empty());
+    wb(h.peek_min().unwrap_or(0) == 1);
+    wb(h.delete_min().peek_min().unwrap_or(0) == 5);
+    wb(h.peek_min().unwrap_or(0) == 1 && h.len() == 3);
+    let empty : BinomialHeap<i64> = BinomialHeap::new();
+    wb(empty.is_empty() && empty.peek_min().is_none());
+    wb(empty.delete_min().len() == 0);
+    let merged = h.merge(BinomialHeap::new().insert(0 - 3));
+    wb(merged.len() == 4 && merged.peek_min().unwrap_or(0) == 0 - 3);
+}
+
+fn build_pairing(n : i64, seed : i64, h : PairingHeap<i64>) -> PairingHeap<i64> {
+    if n == 0 {
+        h
+    } else {
+        let s = lcg(seed);
+        build_pairing(n - 1, s, h.insert(s % 100000))
+    }
+}
+
+fn build_binomial(n : i64, seed : i64, h : BinomialHeap<i64>) -> BinomialHeap<i64> {
+    if n == 0 {
+        h
+    } else {
+        let s = lcg(seed);
+        build_binomial(n - 1, s, h.insert(s % 100000))
+    }
+}
+
+fn test_pairing_sort() {
+    let h = build_pairing(5000, 7, PairingHeap::new());
+    wb(h.len() == 5000);
+    wb(sorted_nondescending(h.to_sorted_list()));
+    wb(PairingHeap::from_list(h.to_sorted_list()).len() == 5000);
+}
+
+fn test_binomial_sort() {
+    let h = build_binomial(5000, 7, BinomialHeap::new());
+    wb(h.len() == 5000);
+    wb(sorted_nondescending(h.to_sorted_list()));
+    wb(BinomialHeap::from_list(h.to_sorted_list()).len() == 5000);
+}
+
+// Interleaved insert/delete-min against a sorted-list model, checking the
+// reported minimum after every step.
+fn churn_pairing(
+    ops : i64,
+    seed : i64,
+    h : PairingHeap<i64>,
+    model : List<i64>
+) -> bool {
+    if ops == 0 {
+        list_eq(h.to_sorted_list(), model)
+    } else {
+        let s = lcg(seed);
+        let k = s % 512;
+        if s % 3 == 0 {
+            let h2 = h.delete_min();
+            let m2 = model_tail(model);
+            opt_eq_head(h2.peek_min(), m2) &&
+                churn_pairing(ops - 1, s, h2, m2)
+        } else {
+            let h2 = h.insert(k);
+            let m2 = model_insert(model, k);
+            opt_eq_head(h2.peek_min(), m2) &&
+                churn_pairing(ops - 1, s, h2, m2)
+        }
+    }
+}
+
+fn churn_binomial(
+    ops : i64,
+    seed : i64,
+    h : BinomialHeap<i64>,
+    model : List<i64>
+) -> bool {
+    if ops == 0 {
+        list_eq(h.to_sorted_list(), model)
+    } else {
+        let s = lcg(seed);
+        let k = s % 512;
+        if s % 3 == 0 {
+            let h2 = h.delete_min();
+            let m2 = model_tail(model);
+            opt_eq_head(h2.peek_min(), m2) &&
+                churn_binomial(ops - 1, s, h2, m2)
+        } else {
+            let h2 = h.insert(k);
+            let m2 = model_insert(model, k);
+            opt_eq_head(h2.peek_min(), m2) &&
+                churn_binomial(ops - 1, s, h2, m2)
+        }
+    }
+}
+
+fn test_churn() {
+    wb(churn_pairing(2000, 7, PairingHeap::new(), List::Nil));
+    wb(churn_binomial(2000, 7, BinomialHeap::new(), List::Nil));
+    wb(churn_pairing(2000, 31, PairingHeap::new(), List::Nil));
+    wb(churn_binomial(2000, 31, BinomialHeap::new(), List::Nil));
+}
+
+// Both heaps implement the same abstraction, so the same inputs must
+// drain to the same sequence.
+fn test_agreement() {
+    let p = build_pairing(4000, 11, PairingHeap::new());
+    let b = build_binomial(4000, 11, BinomialHeap::new());
+    wb(p.len() == b.len());
+    wb(list_eq(p.to_sorted_list(), b.to_sorted_list()));
+}
+
+#[main]
+pub fn main() {
+    let case = test_utils::io::read_i32();
+    if case == 1 { test_pairing_basics() }
+    else {
+        if case == 2 { test_binomial_basics() }
+        else {
+            if case == 3 { test_pairing_sort() }
+            else {
+                if case == 4 { test_binomial_sort() }
+                else {
+                    if case == 5 { test_churn() }
+                    else { test_agreement() }
+                }
+            }
+        }
+    }
+}
