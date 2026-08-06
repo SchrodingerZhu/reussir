@@ -46,21 +46,175 @@ use std::fmt::Write as _;
 
 use rustc_hash::FxHashMap;
 
-use crate::semi::ctxt::{DefaultCap, Record};
+use crate::semi::ctxt::{DefaultCap, GenericInfo, Record};
+use crate::semi::lang::LangItem;
+use crate::semi::traits::TraitDb;
 use crate::semi::ty::{DefId, FpTy, IntTy, Ty, TyKind};
 
-/// A shared-record boundary wrapper collected while rendering: its Rust
-/// declaration text and the instance type its rc glue operates on. Keyed by
-/// the instance's v0 symbol in a `BTreeMap` for deterministic emission.
+/// Which Rust comparison capabilities a foreign container requires from a
+/// shared Reussir type. The bits are normalized over the comparison
+/// super-trait tower, so `Ord` includes all four capabilities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComparisonBridgeNeeds(u8);
+
+impl ComparisonBridgeNeeds {
+    const PARTIAL_EQ: u8 = 1 << 0;
+    const EQ: u8 = 1 << 1;
+    const PARTIAL_ORD: u8 = 1 << 2;
+    const ORD: u8 = 1 << 3;
+
+    fn insert_lang(&mut self, item: LangItem) {
+        self.0 |= match item {
+            LangItem::PartialEq => Self::PARTIAL_EQ,
+            LangItem::Eq => Self::PARTIAL_EQ | Self::EQ,
+            LangItem::PartialOrd => Self::PARTIAL_EQ | Self::PARTIAL_ORD,
+            LangItem::Ord => Self::PARTIAL_EQ | Self::EQ | Self::PARTIAL_ORD | Self::ORD,
+            _ => 0,
+        };
+    }
+
+    pub fn union(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    pub fn partial_eq(self) -> bool {
+        self.0 & Self::PARTIAL_EQ != 0
+    }
+
+    pub fn eq(self) -> bool {
+        self.0 & Self::EQ != 0
+    }
+
+    pub fn partial_ord(self) -> bool {
+        self.0 & Self::PARTIAL_ORD != 0
+    }
+
+    pub fn ord(self) -> bool {
+        self.0 & Self::ORD != 0
+    }
+}
+
+/// A shared-record boundary wrapper collected while rendering. Its declaration
+/// is rendered only after all mentions have unioned their comparison needs.
+/// Keyed by the instance's v0 symbol in a `BTreeMap` for deterministic output.
+#[derive(Clone)]
 pub struct WrapperDecl<'tcx> {
-    pub decl: String,
+    pub symbol: String,
     pub ty: Ty<'tcx>,
+    pub needs: ComparisonBridgeNeeds,
+}
+
+impl WrapperDecl<'_> {
+    /// Render the existing one-pointer owner plus the comparison behavior its
+    /// enclosing foreign types require. Standard Rust comparison traits live
+    /// on `reussir_rt::bridge::Bridge<T>`; this inner type implements only the
+    /// local bridge traits, preserving the orphan-rule boundary.
+    pub fn render(&self) -> String {
+        let sym = &self.symbol;
+        let mut d = String::new();
+        let _ = write!(
+            d,
+            "#[repr(transparent)]\n\
+             pub struct {sym}(*mut ::std::ffi::c_void);\n\
+             unsafe extern \"C\" {{\n\
+             \x20   unsafe fn {sym}_ffi_acquire(this: *mut ::std::ffi::c_void);\n\
+             \x20   unsafe fn {sym}_ffi_release(this: *mut ::std::ffi::c_void);\n"
+        );
+        if self.needs.partial_eq() {
+            let _ = writeln!(
+                d,
+                "    unsafe fn {sym}_ffi_eq(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> u8;"
+            );
+        }
+        if self.needs.partial_ord() && !self.needs.ord() {
+            let _ = writeln!(
+                d,
+                "    unsafe fn {sym}_ffi_partial_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i8;"
+            );
+        }
+        if self.needs.ord() {
+            let _ = writeln!(
+                d,
+                "    unsafe fn {sym}_ffi_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i8;"
+            );
+        }
+        let _ = write!(
+            d,
+            "}}\n\
+             impl Clone for {sym} {{\n\
+             \x20   fn clone(&self) -> Self {{\n\
+             \x20       unsafe {{ {sym}_ffi_acquire(self.0) }};\n\
+             \x20       Self(self.0)\n\
+             \x20   }}\n\
+             }}\n\
+             impl Drop for {sym} {{\n\
+             \x20   fn drop(&mut self) {{\n\
+             \x20       unsafe {{ {sym}_ffi_release(self.0) }};\n\
+             \x20   }}\n\
+             }}\n"
+        );
+        if self.needs.partial_eq() {
+            let _ = write!(
+                d,
+                "impl ::reussir_rt::bridge::PartialEqBridge for {sym} {{\n\
+                 \x20   fn eq_bridge(&self, other: &Self) -> bool {{\n\
+                 \x20       unsafe {{ {sym}_ffi_eq(self.0, other.0) != 0 }}\n\
+                 \x20   }}\n\
+                 }}\n"
+            );
+        }
+        if self.needs.eq() {
+            let _ = writeln!(d, "impl ::reussir_rt::bridge::EqBridge for {sym} {{}}");
+        }
+        if self.needs.partial_ord() {
+            let _ = write!(
+                d,
+                "impl ::reussir_rt::bridge::PartialOrdBridge for {sym} {{\n\
+                 \x20   fn partial_cmp_bridge(&self, other: &Self) -> Option<::std::cmp::Ordering> {{\n"
+            );
+            if self.needs.ord() {
+                let _ = writeln!(
+                    d,
+                    "        Some(<Self as ::reussir_rt::bridge::OrdBridge>::cmp_bridge(self, other))"
+                );
+            } else {
+                let _ = write!(
+                    d,
+                    "        match unsafe {{ {sym}_ffi_partial_cmp(self.0, other.0) }} {{\n\
+                     \x20           n if n < 0 => Some(::std::cmp::Ordering::Less),\n\
+                     \x20           0 => Some(::std::cmp::Ordering::Equal),\n\
+                     \x20           1 => Some(::std::cmp::Ordering::Greater),\n\
+                     \x20           _ => None,\n\
+                     \x20       }}\n"
+                );
+            }
+            let _ = write!(d, "    }}\n}}\n");
+        }
+        if self.needs.ord() {
+            let _ = write!(
+                d,
+                "impl ::reussir_rt::bridge::OrdBridge for {sym} {{\n\
+                 \x20   fn cmp_bridge(&self, other: &Self) -> ::std::cmp::Ordering {{\n\
+                 \x20       match unsafe {{ {sym}_ffi_cmp(self.0, other.0) }} {{\n\
+                 \x20           n if n < 0 => ::std::cmp::Ordering::Less,\n\
+                 \x20           0 => ::std::cmp::Ordering::Equal,\n\
+                 \x20           _ => ::std::cmp::Ordering::Greater,\n\
+                 \x20       }}\n\
+                 \x20   }}\n\
+                 }}\n"
+            );
+        }
+        d
+    }
 }
 
 /// Rendering context: the elaborated record table (capabilities, `#[ffi]`
 /// templates, generic parameter names) and a symbol source for instances.
 pub struct FfiCtx<'a, 'tcx> {
     pub records: &'a FxHashMap<DefId, Record<'tcx>>,
+    pub traits: Option<&'a TraitDb<'tcx>>,
+    pub generic_env: Option<&'a [GenericInfo]>,
+    pub lang: &'a FxHashMap<DefId, LangItem>,
     /// Mangle a ground record instance to its v0 symbol.
     pub instance_symbol: &'a dyn Fn(DefId, &'tcx [Ty<'tcx>]) -> String,
 }
@@ -72,6 +226,33 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
     pub fn rust_name(
         &self,
         ty: Ty<'tcx>,
+        decls: &mut BTreeMap<String, WrapperDecl<'tcx>>,
+    ) -> Result<String, String> {
+        self.rust_name_with_needs(ty, ComparisonBridgeNeeds::default(), decls)
+    }
+
+    /// The Rust spelling of the ground argument one *binder* was instantiated
+    /// at, carrying that binder's own declared comparison bounds.
+    ///
+    /// A bounded container is not the only source of a comparison
+    /// requirement: an `#[ffi(import)]` signature may bound its own generic
+    /// (`fn same<T: PartialEq>(lhs: T, rhs: T) -> bool`), and its Rust body
+    /// then compares the rendered values directly. Without the bridge those
+    /// bodies fail inside `rustc` on a `Bridge<_>: PartialEq` bound instead of
+    /// using the implementation the signature already promised.
+    pub fn rust_name_for_generic(
+        &self,
+        ty: Ty<'tcx>,
+        generic: crate::semi::ty::GenericId,
+        decls: &mut BTreeMap<String, WrapperDecl<'tcx>>,
+    ) -> Result<String, String> {
+        self.rust_name_with_needs(ty, self.generic_bridge_needs(generic), decls)
+    }
+
+    fn rust_name_with_needs(
+        &self,
+        ty: Ty<'tcx>,
+        needs: ComparisonBridgeNeeds,
         decls: &mut BTreeMap<String, WrapperDecl<'tcx>>,
     ) -> Result<String, String> {
         match *ty.kind() {
@@ -93,14 +274,20 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
                             if i > 0 {
                                 name.push_str(", ");
                             }
-                            name.push_str(&self.rust_name(arg, decls)?);
+                            let arg_needs = record
+                                .ty_params
+                                .get(i)
+                                .map_or_else(ComparisonBridgeNeeds::default, |(_, gid)| {
+                                    self.generic_bridge_needs(*gid)
+                                });
+                            name.push_str(&self.rust_name_with_needs(arg, arg_needs, decls)?);
                         }
                         name.push('>');
                     }
                     return Ok(name);
                 }
                 match record.default_cap {
-                    DefaultCap::Shared => Ok(self.shared_wrapper(def, args, ty, decls)),
+                    DefaultCap::Shared => Ok(self.shared_wrapper(def, args, ty, needs, decls)),
                     DefaultCap::Value => {
                         Err("a `[value]` record cannot cross the FFI boundary yet".into())
                     }
@@ -122,6 +309,31 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
         }
     }
 
+    /// Comparison lang items implied by the declared bounds on one generic.
+    /// A custom bound such as `T: Sorted` is recognized when `Sorted: Ord`.
+    fn generic_bridge_needs(&self, generic: crate::semi::ty::GenericId) -> ComparisonBridgeNeeds {
+        let (Some(db), Some(info)) = (
+            self.traits,
+            self.generic_env.and_then(|env| env.get(generic.0 as usize)),
+        ) else {
+            return ComparisonBridgeNeeds::default();
+        };
+        let mut needs = ComparisonBridgeNeeds::default();
+        for item in LangItem::CMP_TRAITS {
+            let Some(target) = self
+                .lang
+                .iter()
+                .find_map(|(&def, &bound)| (bound == item).then(|| db.trait_by_def(def)).flatten())
+            else {
+                continue;
+            };
+            if info.bounds.iter().any(|&have| db.implies(have, target)) {
+                needs.insert_lang(item);
+            }
+        }
+        needs
+    }
+
     /// The `#[repr(transparent)]` pointer wrapper for a shared Reussir
     /// record instance, registering its declaration (and thereby its rc-glue
     /// requirement) under the instance symbol.
@@ -130,34 +342,19 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
         def: DefId,
         args: &'tcx [Ty<'tcx>],
         ty: Ty<'tcx>,
+        needs: ComparisonBridgeNeeds,
         decls: &mut BTreeMap<String, WrapperDecl<'tcx>>,
     ) -> String {
         let sym = (self.instance_symbol)(def, args);
-        if !decls.contains_key(&sym) {
-            let mut d = String::new();
-            let _ = write!(
-                d,
-                "#[repr(transparent)]\n\
-                 pub struct {sym}(*mut ::std::ffi::c_void);\n\
-                 unsafe extern \"C\" {{\n\
-                 \x20   unsafe fn {sym}_ffi_acquire(this: *mut ::std::ffi::c_void);\n\
-                 \x20   unsafe fn {sym}_ffi_release(this: *mut ::std::ffi::c_void);\n\
-                 }}\n\
-                 impl Clone for {sym} {{\n\
-                 \x20   fn clone(&self) -> Self {{\n\
-                 \x20       unsafe {{ {sym}_ffi_acquire(self.0) }};\n\
-                 \x20       Self(self.0)\n\
-                 \x20   }}\n\
-                 }}\n\
-                 impl Drop for {sym} {{\n\
-                 \x20   fn drop(&mut self) {{\n\
-                 \x20       unsafe {{ {sym}_ffi_release(self.0) }};\n\
-                 \x20   }}\n\
-                 }}\n"
-            );
-            decls.insert(sym.clone(), WrapperDecl { decl: d, ty });
-        }
-        sym
+        decls
+            .entry(sym.clone())
+            .and_modify(|decl| decl.needs.union(needs))
+            .or_insert_with(|| WrapperDecl {
+                symbol: sym.clone(),
+                ty,
+                needs,
+            });
+        format!("::reussir_rt::bridge::Bridge<{sym}>")
     }
 
     /// Whether the type lowers to an LLVM integer or pointer at the
@@ -245,7 +442,7 @@ pub fn import_texture(
 ) -> String {
     let mut out = texture_head(preludes);
     for decl in decls.values() {
-        out.push_str(&decl.decl);
+        out.push_str(&decl.render());
     }
     let attrs = "#[linkage = \"weak_odr\"]\n#[unsafe(no_mangle)]\n";
     if trivial {
@@ -323,7 +520,7 @@ pub fn drop_texture(
 ) -> String {
     let mut out = texture_head(&[]);
     for decl in decls.values() {
-        out.push_str(&decl.decl);
+        out.push_str(&decl.render());
     }
     let _ = write!(
         out,

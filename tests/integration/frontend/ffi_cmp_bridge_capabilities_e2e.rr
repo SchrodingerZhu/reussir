@@ -1,0 +1,178 @@
+// UNSUPPORTED: darwin
+// Exact comparison capabilities on compiler-owned shared values crossing
+// PolyFFI. Each probe takes the element before its bounded Vec: rendering the
+// element first creates an unqualified wrapper request, then rendering the
+// container must union the stronger request before the texture is emitted.
+// The three distinct element types ensure the bridge does not accidentally
+// grant a stronger Rust comparison trait than the Reussir implementation.
+
+// The absent patterns run as their own prefix over the same texture rather
+// than through `--implicit-check-not`: the Python `filecheck` replacement used
+// on Windows rejects that flag.
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri --emit mlir --no-source-locations -o %t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=TEXTURE --input-file=%t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=ABSENT --input-file=%t.texture.mlir
+// RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_cmp_bridge_capabilities_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s --package-name cmpcaps --extern core=%t.core.rri -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_cmp_bridge_capabilities_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct PartialEqVec<T: PartialEq>;
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct EqVec<T: Eq>;
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct PartialOrdVec<T: PartialOrd>;
+
+pub struct PeqKey { value: i64 }
+
+impl PartialEq for PeqKey {
+    fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+}
+
+pub struct EqKey { value: i64 }
+
+impl PartialEq for EqKey {
+    fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+}
+
+impl Eq for EqKey {}
+
+pub struct PordKey { group: i64, value: i64 }
+
+impl PartialEq for PordKey {
+    fn eq(self: Self, other: Self) -> bool {
+        self.group == other.group && self.value == other.value
+    }
+}
+
+impl PartialOrd for PordKey {
+    fn lt(self: Self, other: Self) -> bool {
+        self.group == other.group && self.value < other.value
+    }
+
+    fn le(self: Self, other: Self) -> bool {
+        self.group == other.group && self.value <= other.value
+    }
+
+    fn gt(self: Self, other: Self) -> bool {
+        self.group == other.group && self.value > other.value
+    }
+
+    fn ge(self: Self, other: Self) -> bool {
+        self.group == other.group && self.value >= other.value
+    }
+}
+
+#[ffi(import)]
+pub fn peq_new<T: PartialEq>() -> PartialEqVec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn peq_push<T: PartialEq>(
+    values: PartialEqVec<T>,
+    value: T,
+) -> PartialEqVec<T> [{ values.push(value) }];
+
+#[ffi(import)]
+pub fn peq_same<T: PartialEq>(value: T, values: PartialEqVec<T>) -> bool [{
+    value == values.get(0).unwrap()
+}];
+
+#[ffi(import)]
+pub fn eq_new<T: Eq>() -> EqVec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn eq_push<T: Eq>(values: EqVec<T>, value: T) -> EqVec<T> [{
+    values.push(value)
+}];
+
+#[ffi(import)]
+pub fn eq_same<T: Eq>(value: T, values: EqVec<T>) -> bool [{
+    fn requires_eq<T: Eq>(lhs: &T, rhs: &T) -> bool { lhs == rhs }
+    let first = values.get(0).unwrap();
+    requires_eq(&value, &first)
+}];
+
+#[ffi(import)]
+pub fn pord_new<T: PartialOrd>() -> PartialOrdVec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn pord_push<T: PartialOrd>(
+    values: PartialOrdVec<T>,
+    value: T,
+) -> PartialOrdVec<T> [{ values.push(value) }];
+
+#[ffi(import)]
+pub fn pord_cmp<T: PartialOrd>(value: T, values: PartialOrdVec<T>) -> i64 [{
+    let first = values.get(0).unwrap();
+    match value.partial_cmp(&first) {
+        Some(::std::cmp::Ordering::Less) => -1,
+        Some(::std::cmp::Ordering::Equal) => 0,
+        Some(::std::cmp::Ordering::Greater) => 1,
+        None => 2,
+    }
+}];
+
+pub fn main() -> i64 {
+    let peq_values = peq_push(peq_new<PeqKey>(), PeqKey{7});
+    let peq_equal = peq_same(PeqKey{7}, peq_values);
+    let peq_different = peq_same(PeqKey{8}, peq_values);
+
+    let eq_values = eq_push(eq_new<EqKey>(), EqKey{11});
+    let eq_equal = eq_same(EqKey{11}, eq_values);
+    let eq_different = eq_same(EqKey{12}, eq_values);
+
+    let pord_values = pord_push(
+        pord_new<PordKey>(),
+        PordKey{group: 0, value: 20},
+    );
+    let less = pord_cmp(PordKey{group: 0, value: 10}, pord_values);
+    let equal = pord_cmp(PordKey{group: 0, value: 20}, pord_values);
+    let greater = pord_cmp(PordKey{group: 0, value: 30}, pord_values);
+    let incomparable = pord_cmp(PordKey{group: 1, value: 20}, pord_values);
+
+    if peq_equal && !peq_different
+        && eq_equal && !eq_different
+        && less == -1 && equal == 0 && greater == 1 && incomparable == 2 {
+        42
+    } else {
+        0
+    }
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The element is rendered before the container in each probe texture, yet the
+// final declaration has the exact capability requested by the later container.
+// TEXTURE-DAG: reussir.polyffi texture("{{.*}}unsafe fn _RNvC7cmpcaps6PeqKey_ffi_eq({{.*}}impl ::reussir_rt::bridge::PartialEqBridge for _RNvC7cmpcaps6PeqKey{{.*}}fn _RINvC7cmpcaps8peq_sameNvC7cmpcaps6PeqKeyE_ffi(r#value: ::reussir_rt::bridge::Bridge<_RNvC7cmpcaps6PeqKey>, r#values: ::reussir_rt::collections::vec::Vec<::reussir_rt::bridge::Bridge<_RNvC7cmpcaps6PeqKey>>)
+
+// Eq adds only its marker to PartialEq; it must not synthesize ordering glue.
+// TEXTURE-DAG: reussir.polyffi texture("{{.*}}unsafe fn _RNvC7cmpcaps5EqKey_ffi_eq({{.*}}impl ::reussir_rt::bridge::PartialEqBridge for _RNvC7cmpcaps5EqKey{{.*}}impl ::reussir_rt::bridge::EqBridge for _RNvC7cmpcaps5EqKey{{.*}}fn _RINvC7cmpcaps7eq_sameNvC7cmpcaps5EqKeyE_ffi(r#value: ::reussir_rt::bridge::Bridge<_RNvC7cmpcaps5EqKey>, r#values: ::reussir_rt::collections::vec::Vec<::reussir_rt::bridge::Bridge<_RNvC7cmpcaps5EqKey>>)
+
+// A partial order has equality plus the four-state partial comparison bridge,
+// but neither the Eq marker nor the total-order bridge.
+// TEXTURE-DAG: reussir.polyffi texture("{{.*}}unsafe fn _RNvC7cmpcaps7PordKey_ffi_eq({{.*}}unsafe fn _RNvC7cmpcaps7PordKey_ffi_partial_cmp({{.*}}impl ::reussir_rt::bridge::PartialEqBridge for _RNvC7cmpcaps7PordKey{{.*}}impl ::reussir_rt::bridge::PartialOrdBridge for _RNvC7cmpcaps7PordKey{{.*}}fn _RINvC7cmpcaps8pord_cmpNvC7cmpcaps7PordKeyE_ffi(r#value: ::reussir_rt::bridge::Bridge<_RNvC7cmpcaps7PordKey>, r#values: ::reussir_rt::collections::vec::Vec<::reussir_rt::bridge::Bridge<_RNvC7cmpcaps7PordKey>>)
+
+// No probe may grant a Rust comparison trait, or synthesize the glue behind
+// one, that its element's Reussir implementations do not justify.
+// ABSENT-NOT: bridge::EqBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::PartialOrdBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps6PeqKey
+// ABSENT-NOT: bridge::PartialOrdBridge for _RNvC7cmpcaps5EqKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps5EqKey
+// ABSENT-NOT: bridge::EqBridge for _RNvC7cmpcaps7PordKey
+// ABSENT-NOT: bridge::OrdBridge for _RNvC7cmpcaps7PordKey
+// ABSENT-NOT: _RNvC7cmpcaps6PeqKey_ffi_partial_cmp
+// ABSENT-NOT: _RNvC7cmpcaps6PeqKey_ffi_cmp
+// ABSENT-NOT: _RNvC7cmpcaps5EqKey_ffi_partial_cmp
+// ABSENT-NOT: _RNvC7cmpcaps5EqKey_ffi_cmp
+// ABSENT-NOT: _RNvC7cmpcaps7PordKey_ffi_cmp

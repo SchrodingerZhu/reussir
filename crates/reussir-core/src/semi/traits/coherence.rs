@@ -100,8 +100,8 @@ fn occurs(g: GenericId, ty: Ty<'_>, subst: &FxHashMap<GenericId, Ty<'_>>) -> boo
         TyKind::Generic(h) => g == h,
         TyKind::Nullable(inner) | TyKind::Arc(inner) => occurs(g, inner, subst),
         TyKind::Cell { elem, .. } | TyKind::Array { elem, .. } => occurs(g, elem, subst),
-        TyKind::Record { ref args, .. } => args.iter().any(|&a| occurs(g, a, subst)),
-        TyKind::Closure { ref params, ret } => {
+        TyKind::Record { args, .. } => args.iter().any(|&a| occurs(g, a, subst)),
+        TyKind::Closure { params, ret } => {
             params.iter().any(|&p| occurs(g, p, subst)) || occurs(g, ret, subst)
         }
         _ => false,

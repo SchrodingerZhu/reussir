@@ -165,7 +165,7 @@ impl<'tcx> TraitDb<'tcx> {
 mod tests {
     use super::*;
     use crate::semi::traits::builtins::Builtins;
-    use crate::semi::ty::{FpTy, IntTy, Ty, TyCtxt};
+    use crate::semi::ty::TyCtxt;
     use crate::with_tcx;
 
     #[test]

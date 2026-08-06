@@ -72,6 +72,7 @@ pub struct Program {
     pub ffi_imports: Vec<FfiImport>,
     pub ffi_textures: Vec<FfiTexture>,
     pub ffi_rc_glue: Vec<FfiRcGlue>,
+    pub ffi_trait_glue: Vec<FfiTraitGlue>,
 }
 
 /// One top-level item, as the grammar yields them before partitioning.
@@ -86,6 +87,7 @@ pub enum Item {
     FfiImport(FfiImport),
     FfiTexture(FfiTexture),
     FfiRcGlue(FfiRcGlue),
+    FfiTraitGlue(FfiTraitGlue),
 }
 
 /// A ground record declaration: its v0 symbol, the capability it declares by
@@ -158,6 +160,7 @@ impl Program {
             ffi_imports: Vec::new(),
             ffi_textures: Vec::new(),
             ffi_rc_glue: Vec::new(),
+            ffi_trait_glue: Vec::new(),
         };
         for item in items {
             match item {
@@ -170,6 +173,7 @@ impl Program {
                 Item::FfiImport(f) => p.ffi_imports.push(f),
                 Item::FfiTexture(t) => p.ffi_textures.push(t),
                 Item::FfiRcGlue(g) => p.ffi_rc_glue.push(g),
+                Item::FfiTraitGlue(g) => p.ffi_trait_glue.push(g),
             }
         }
         p
@@ -226,6 +230,16 @@ pub struct FfiRcGlue {
     pub acquire: String,
     pub release: String,
     pub ty: Ty,
+}
+
+/// Borrowed comparison glue:
+/// `ffi trait glue @entry = @target : ty => ret;`.
+#[derive(Clone, Debug)]
+pub struct FfiTraitGlue {
+    pub entry: String,
+    pub target: String,
+    pub ty: Ty,
+    pub ret: Ty,
 }
 
 #[derive(Clone, Debug)]

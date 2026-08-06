@@ -1,0 +1,24 @@
+// Ground bridge validation must report a Reussir trait-selection error before
+// the generated Rust texture reaches rustc. This deliberately exploits the
+// current opaque-record application gap: `empty` omits `T: Ord`, so `Key`
+// reaches monomorphization without satisfying BTreeSet's declared bound.
+
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %not %rrc %s --package-name cmpbridge_error --extern core=%t.core.rri --emit mir -o - 2>&1 | %FileCheck %s
+
+#[ffi(rust = "::reussir_rt::collections::btree_set::BTreeSet")]
+pub struct BTreeSet<T: Ord>;
+
+pub struct Key { value: i64 }
+
+#[ffi(import)]
+pub fn empty<T>() -> BTreeSet<T> [{
+    ::reussir_rt::collections::btree_set::BTreeSet::new()
+}];
+
+pub fn main() -> BTreeSet<Key> { empty<Key>() }
+
+// CHECK-DAG: cannot synthesize a Rust FFI comparison bridge for `cmpbridge_error::Key`: required Reussir trait `core::cmp::Eq` has no applicable implementation
+// CHECK-DAG: no implementation of `core::cmp::PartialEq` applies in this instantiation
+// CHECK-DAG: no implementation of `core::cmp::Ord` applies in this instantiation
+// CHECK-NOT: OrdBridge is not implemented

@@ -1,0 +1,122 @@
+// UNSUPPORTED: darwin
+// A Rust BTreeSet orders compiler-owned Reussir records through the Ord
+// bridge. Keeping `old` live while deriving `new` shares the runtime set;
+// the first insertion into `new` therefore takes the copy-on-write path and
+// clones every element through its compiler-emitted acquire glue. The
+// duplicate insertion also exercises equality without changing the length.
+
+// The absent patterns run as their own prefix over the same texture rather
+// than through `--implicit-check-not`: the Python `filecheck` replacement used
+// on Windows rejects that flag.
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri --emit mlir --no-source-locations -o %t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=TEXTURE --input-file=%t.texture.mlir
+// RUN: %FileCheck %s --check-prefix=ABSENT --input-file=%t.texture.mlir
+// RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/ffi_btree_set_record_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s --package-name btreeset --extern core=%t.core.rri -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/ffi_btree_set_record_e2e.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+extern "rust" [{
+    use reussir_rt::collections::btree_set::BTreeSet as RBTreeSet;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::btree_set::BTreeSet")]
+pub struct BTreeSet<T: Ord>;
+
+pub struct Key { value: i64 }
+
+impl PartialEq for Key {
+    fn eq(self: Self, other: Self) -> bool { self.value == other.value }
+}
+
+impl Eq for Key {}
+
+impl PartialOrd for Key {
+    fn lt(self: Self, other: Self) -> bool { self.value < other.value }
+    fn le(self: Self, other: Self) -> bool { self.value <= other.value }
+    fn gt(self: Self, other: Self) -> bool { self.value > other.value }
+    fn ge(self: Self, other: Self) -> bool { self.value >= other.value }
+}
+
+impl Ord for Key {
+    fn cmp(self: Self, other: Self) -> Ordering {
+        if self.value < other.value {
+            Ordering::Less
+        } else {
+            if self.value == other.value {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+    }
+}
+
+// Repeat the bound on every operation: opaque record application alone does
+// not establish the ground evidence needed by a generated bridge.
+#[ffi(import)]
+pub fn new<T: Ord>() -> BTreeSet<T> [{ RBTreeSet::new() }];
+
+#[ffi(import)]
+pub fn insert<T: Ord>(set: BTreeSet<T>, value: T) -> BTreeSet<T> [{
+    set.insert(value)
+}];
+
+#[ffi(import)]
+pub fn len<T: Ord>(set: BTreeSet<T>) -> i64 [{ set.len() as i64 }];
+
+#[ffi(import)]
+pub fn first<T: Ord>(set: BTreeSet<T>) -> T [{ set.first().unwrap() }];
+
+pub fn main() -> i64 {
+    let old = insert(insert(new<Key>(), Key{2}), Key{4});
+
+    // `old` remains live below, so deriving `new` first shares the outer
+    // Rust Rc. Inserting 1 clones the old tree and its bridged Key elements.
+    let changed = insert(old, Key{1});
+    let changed = insert(changed, Key{3});
+    let changed = insert(changed, Key{2});
+
+    let old_first = first(old).value;
+    let old_len = len(old);
+    let new_len = len(changed);
+    let new_first = first(changed).value;
+
+    // Also instantiate the same opaque container with a primitive key. It
+    // must use Rust's native Ord implementation and emit no Bridge<i64>.
+    let primitive_len = len(insert(new<i64>(), 9));
+    if primitive_len == 1 {
+        old_first * 1000 + old_len * 100 + new_len * 10 + new_first
+    } else {
+        0
+    }
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// Shared Key is rendered uniformly through Bridge<Inner>, including as the
+// BTreeSet element. PolyFFI emits only local bridge behavior on the inner
+// wrapper; the Rust standard comparison implementations remain in Bridge.
+// TEXTURE-DAG: ::reussir_rt::collections::btree_set::BTreeSet<::reussir_rt::bridge::Bridge<_RNvC8btreeset3Key>>
+// TEXTURE-DAG: unsafe fn _RNvC8btreeset3Key_ffi_eq(
+// TEXTURE-DAG: unsafe fn _RNvC8btreeset3Key_ffi_cmp(
+// TEXTURE-DAG: impl ::reussir_rt::bridge::PartialEqBridge for _RNvC8btreeset3Key
+// TEXTURE-DAG: impl ::reussir_rt::bridge::EqBridge for _RNvC8btreeset3Key
+// TEXTURE-DAG: impl ::reussir_rt::bridge::PartialOrdBridge for _RNvC8btreeset3Key
+// TEXTURE-DAG: impl ::reussir_rt::bridge::OrdBridge for _RNvC8btreeset3Key
+
+// Primitive keys remain unwrapped.
+// TEXTURE-DAG: ::reussir_rt::collections::btree_set::BTreeSet<i64>
+
+// A primitive element never grows bridge glue, a total order never falls back
+// to the four-state partial comparison, and the standard comparison traits are
+// implemented for `Bridge` in the runtime — never for the inner wrapper.
+// ABSENT-NOT: ::reussir_rt::bridge::Bridge<i64>
+// ABSENT-NOT: _RNvC8btreeset3Key_ffi_partial_cmp
+// ABSENT-NOT: impl ::std::cmp::PartialEq for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::Eq for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::PartialOrd for _RNvC8btreeset3Key
+// ABSENT-NOT: impl ::std::cmp::Ord for _RNvC8btreeset3Key

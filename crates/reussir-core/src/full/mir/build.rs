@@ -223,6 +223,16 @@ impl<'tcx> Builder<'_, 'tcx> {
                 release: self.sym(&g.release),
             })
             .collect();
+        let ffi_trait_glue: Vec<mir::FfiTraitGlue<'tcx>> = raw
+            .ffi_trait_glue
+            .iter()
+            .map(|g| mir::FfiTraitGlue {
+                ty: self.ty(&g.ty),
+                ret: self.ty(&g.ret),
+                entry: self.sym(&g.entry),
+                target: self.sym(&g.target),
+            })
+            .collect();
         let functions: Vec<mir::Function<'tcx>> = raw.funcs.iter().map(|f| self.func(f)).collect();
         let transform_scripts = raw
             .transforms
@@ -251,6 +261,7 @@ impl<'tcx> Builder<'_, 'tcx> {
             ffi_imports,
             ffi_textures,
             ffi_rc_glue,
+            ffi_trait_glue,
             symbols,
         }
     }
@@ -817,6 +828,43 @@ mod tests {
             pub fn use_it() -> Vec<Item> { push(new<Item>(), Item{1}) }
             "#,
         );
+    }
+
+    #[test]
+    fn roundtrips_ffi_trait_glue() {
+        let text = concat!(
+            "record @_RC3Key : shared struct Key { \"value\": i64 };\n\n",
+            "ffi trait glue @_RC3Key_ffi_eq = @_RC11semantic_eq : Key => u8;\n\n",
+            "ffi trait glue @_RC3Key_ffi_cmp = @_RC12semantic_cmp : Key => i8;\n",
+        );
+
+        with_tcx(|tcx| {
+            let parsed = parse_program(tcx, text).expect("parse trait glue");
+            assert_eq!(parsed.program.ffi_trait_glue.len(), 2);
+            let [eq, cmp] = parsed.program.ffi_trait_glue.as_slice() else {
+                unreachable!()
+            };
+            assert_eq!(parsed.program.symbol(eq.entry), "_RC3Key_ffi_eq");
+            assert_eq!(parsed.program.symbol(eq.target), "_RC11semantic_eq");
+            assert_eq!(parsed.program.symbol(cmp.entry), "_RC3Key_ffi_cmp");
+            assert_eq!(parsed.program.symbol(cmp.target), "_RC12semantic_cmp");
+            assert_eq!(eq.ty, cmp.ty);
+            assert!(matches!(
+                *eq.ret.kind(),
+                crate::semi::ty::TyKind::Int(crate::semi::ty::IntTy::Unsigned(8))
+            ));
+            assert!(matches!(
+                *cmp.ret.kind(),
+                crate::semi::ty::TyKind::Int(crate::semi::ty::IntTy::Signed(8))
+            ));
+
+            let printed = Printer::new(&parsed.defs, &parsed.names).program(&parsed.program);
+            assert_eq!(printed, text);
+            let reparsed = parse_program(tcx, &printed).expect("re-parse trait glue");
+            let printed_again =
+                Printer::new(&reparsed.defs, &reparsed.names).program(&reparsed.program);
+            assert_eq!(printed_again, printed);
+        });
     }
 
     #[test]

@@ -1,0 +1,48 @@
+// The pure container consumer: Key and its comparison implementations come
+// from `ordered`; this package alone declares the Rust-backed BTreeSet.
+
+extern "rust" [{
+    use reussir_rt::collections::btree_set::BTreeSet as RBTreeSet;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::btree_set::BTreeSet")]
+pub struct BTreeSet<T: Ord>;
+
+// Repeat the bound at each operation so every ground FFI instantiation has
+// explicit trait evidence available when its comparison bridge is emitted.
+#[ffi(import)]
+pub fn new<T: Ord>() -> BTreeSet<T> [{ RBTreeSet::new() }];
+
+#[ffi(import)]
+pub fn insert<T: Ord>(set: BTreeSet<T>, value: T) -> BTreeSet<T> [{
+    set.insert(value)
+}];
+
+#[ffi(import)]
+pub fn len<T: Ord>(set: BTreeSet<T>) -> i64 [{ set.len() as i64 }];
+
+#[ffi(import)]
+pub fn first<T: Ord>(set: BTreeSet<T>) -> T [{ set.first().unwrap() }];
+
+#[ffi(import)]
+fn print_i64(value: i64) [{ println!("{value}") }];
+
+#[main]
+pub fn entry() {
+    let old = insert(insert(new<ordered::Key>(), ordered::Key { value: 1 }),
+                     ordered::Key { value: 4 });
+
+    // `old` remains live below, so the first insertion into `changed` clones
+    // the shared Rust tree and its compiler-owned Key elements.
+    let changed = insert(old, ordered::Key { value: 2 });
+    let changed = insert(changed, ordered::Key { value: 5 });
+    let changed = insert(changed, ordered::Key { value: 1 });
+
+    let old_len = len(old);
+    let new_len = len(changed);
+    let old_first = first(old).value;
+    let new_first = first(changed).value;
+
+    // old={4,1}, changed={5,4,2,1} in reverse comparison order.
+    print_i64(old_len * 1000 + new_len * 100 + old_first * 10 + new_first);
+}

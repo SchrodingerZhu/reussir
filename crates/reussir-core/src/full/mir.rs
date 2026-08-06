@@ -68,6 +68,9 @@ pub struct Program<'tcx> {
     /// Reussir-side rc glue exposed to foreign wrappers: per shared-record
     /// instance crossing the boundary, tiny acquire/release functions.
     pub ffi_rc_glue: Vec<FfiRcGlue<'tcx>>,
+    /// Borrowed comparison entries exposed to foreign `Bridge<T>` wrappers.
+    /// Each acquires both operands, then calls its ground semantic target.
+    pub ffi_trait_glue: Vec<FfiTraitGlue<'tcx>>,
     /// Interner backing every [`Symbol`] in this program.
     pub symbols: Rodeo,
 }
@@ -214,6 +217,18 @@ pub struct FfiRcGlue<'tcx> {
     pub ty: Ty<'tcx>,
     pub acquire: Symbol,
     pub release: Symbol,
+}
+
+/// Reussir-side comparison glue for one shared record instance. Rust lends two
+/// pointers, so lowering increments each exactly once before calling `target`,
+/// whose ordinary Reussir signature consumes the resulting owned values and
+/// returns the scalar `ret` ABI type.
+#[derive(Clone, Copy, Debug)]
+pub struct FfiTraitGlue<'tcx> {
+    pub ty: Ty<'tcx>,
+    pub ret: Ty<'tcx>,
+    pub entry: Symbol,
+    pub target: Symbol,
 }
 
 /// A monomorphized expression: a ground type, the structure, and a source span.
