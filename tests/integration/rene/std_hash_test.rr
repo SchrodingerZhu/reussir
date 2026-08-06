@@ -1,0 +1,42 @@
+// std::hash end to end: user `Hash` impls (ground and generic)
+// dispatching through the `Hasher` trait into the rapidhash-backed
+// hashers, the scalar write helpers, seeding, and the one-shot entry
+// points.
+//
+// The VECTORS digests are pinned against rapidhash's own output for the
+// same writes, computed independently with the upstream crate. They are
+// the guard on the FFI marshalling: a change in write widths, variant
+// selection, or state handling shows up here as a changed number rather
+// than as quietly different hashes.
+
+// RUN: %rene build --manifest-path %S/std_hash_test/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}std_hash_test
+
+// RUN: %t.bdir/release/std_hash_test%exe_ext < %S/std_hash_test/vectors.in | %FileCheck %s --check-prefix=VECTORS
+// fast/quality over LE(1) ++ LE(2)
+// VECTORS:      9756377032591095270
+// VECTORS-NEXT: 9699471013212420431
+// one-shot u64 42, default seed
+// VECTORS-NEXT: 11138757646667810241
+// VECTORS-NEXT: 5567737706932154203
+// one-shot u64 42, seed 12345
+// VECTORS-NEXT: 5434751366192830511
+// VECTORS-NEXT: 7414903670081581243
+// u32 7, u16 8, u8 9, bool true, char 'z'
+// VECTORS-NEXT: 9041477760855790469
+// streaming u64 5 under seed 99
+// VECTORS-NEXT: 6823169812760490557
+
+// RUN: %t.bdir/release/std_hash_test%exe_ext < %S/std_hash_test/properties.in | %FileCheck %s --check-prefix=PROPS
+// PROPS:      1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1

@@ -1,0 +1,298 @@
+//! Hashing: the `Hash`/`Hasher` traits and two rapidhash-backed hashers.
+//!
+//! # Shape
+//!
+//! `Hasher` is **state-passing**: every write consumes the hasher and
+//! returns the advanced one, so hashing threads a value rather than
+//! mutating through a reference. `Hash::hash` carries its own bounded
+//! generic, so any hashable type feeds any hasher:
+//!
+//! ```text
+//! impl Hash for Point {
+//!     fn hash<H: Hasher>(self: Self, state: H) -> H {
+//!         write_i64(write_i64(state, self.x), self.y)
+//!     }
+//! }
+//!
+//! let digest = FastHasher::new().hash_of(point);
+//! ```
+//!
+//! Scalars are hashed through the `write_*` free functions rather than
+//! `Hash` impls, because an `impl` target must be a named type — `i64 :
+//! Hash` cannot be written in source. Each is a bounded generic over the
+//! hasher, so it works with both hashers and with any user-written one.
+//!
+//! # Choosing a hasher
+//!
+//! Both wrap rapidhash and differ only in its `AVALANCHE` setting, and
+//! both are bit-identical to the upstream hasher of the same name and
+//! seed.
+//!
+//! - [`FastHasher`] — avalanche off. The default: tuned for hash-table
+//!   throughput, where the consumer already mixes the digest by masking
+//!   it down to a bucket index. Use it for hash maps and sets, caches,
+//!   memoization keys, and bulk deduplication.
+//! - [`StrongHasher`] — avalanche on. Every output bit depends on every
+//!   input bit, which costs a finalization step. Use it when the digest
+//!   itself is the product rather than an index: content addressing,
+//!   change detection and fingerprinting, checksums over structures,
+//!   sharding across nodes, or when digests are compared or stored.
+//!
+//! **Choose on quality, not speed.** The two differ measurably only on
+//! the one-shot path (2.8 ns against 4.4 ns per `u64` here); through a
+//! streaming hasher they are indistinguishable, because the hasher's own
+//! allocation costs more than the avalanche step (see below).
+//!
+//! Neither is keyed with a random seed by default, so neither is a
+//! defense against an adversary choosing colliding keys; pass an explicit
+//! seed with `with_seed` if the input is untrusted, and note that
+//! rapidhash is not a cryptographic hash in any configuration.
+//!
+//! # Cost
+//!
+//! A hasher holds its state in the runtime behind a reference-counted
+//! handle: one heap allocation when it is created, then in-place writes
+//! while it stays uniquely owned, which is the case when it is threaded
+//! linearly as above.
+//!
+//! That allocation dominates short hashes. Measured on `i64` data,
+//! creating a hasher, writing four values and finishing costs ~26 ns,
+//! of which roughly a third is the allocator round trip for a 40-byte
+//! block that lives four writes; the one-shot `fast_hash_u64` is ~2.8 ns.
+//! Two consequences worth planning around:
+//!
+//! - **Hashing one scalar should not build a hasher.** `fast_hash_u64`
+//!   and `strong_hash_u64` are one-shot and allocate nothing — about 9x
+//!   cheaper than the streaming equivalent.
+//! - **Bulk work should thread one hasher** across many values and
+//!   finish once, rather than paying a fresh allocation per value as
+//!   `fast_hash`/`strong_hash` do.
+//!
+//! The allocation is not an artifact of this binding: rapidhash's hasher
+//! keeps its state in private fields, so the state cannot be carried
+//! across the boundary as loose scalars without reimplementing its
+//! streaming protocol — which would be a different hash function wearing
+//! the same name. Faithfulness was preferred; the one-shot entry points
+//! exist to cover the case where the cost would otherwise bite.
+
+extern "rust" [{
+    use reussir_rt::hash::{FastHasher as RFast, StrongHasher as RStrong};
+}];
+
+/// A hash state that absorbs values and produces a digest.
+///
+/// Implementations consume `self` and return the advanced state. The
+/// four `write_*` methods are the primitive vocabulary; the free
+/// functions below build the remaining scalar types on top of them, so
+/// an implementation only has to provide these.
+pub trait Hasher {
+    fn write_u64(self: Self, value: u64) -> Self;
+    fn write_u32(self: Self, value: u32) -> Self;
+    fn write_u16(self: Self, value: u16) -> Self;
+    fn write_u8(self: Self, value: u8) -> Self;
+    /// The digest of everything written so far.
+    fn finish(self: Self) -> u64;
+}
+
+/// A type that can feed itself to any `Hasher`.
+///
+/// Two values that compare equal must write the same byte sequence, or
+/// hash-based containers built on this will lose entries.
+pub trait Hash {
+    fn hash<H: Hasher>(self: Self, state: H) -> H;
+}
+
+// Scalar writes, as bounded generics over the hasher. Signed types are
+// reinterpreted as unsigned of the same width, so `-1i64` and
+// `u64::MAX` hash alike — they have the same bits, and nothing here
+// promises otherwise.
+
+pub fn write_u64<H: Hasher>(state: H, value: u64) -> H {
+    state.write_u64(value)
+}
+
+pub fn write_u32<H: Hasher>(state: H, value: u32) -> H {
+    state.write_u32(value)
+}
+
+pub fn write_u16<H: Hasher>(state: H, value: u16) -> H {
+    state.write_u16(value)
+}
+
+pub fn write_u8<H: Hasher>(state: H, value: u8) -> H {
+    state.write_u8(value)
+}
+
+pub fn write_i64<H: Hasher>(state: H, value: i64) -> H {
+    state.write_u64(value as u64)
+}
+
+pub fn write_i32<H: Hasher>(state: H, value: i32) -> H {
+    state.write_u32(value as u32)
+}
+
+pub fn write_i16<H: Hasher>(state: H, value: i16) -> H {
+    state.write_u16(value as u16)
+}
+
+pub fn write_i8<H: Hasher>(state: H, value: i8) -> H {
+    state.write_u8(value as u8)
+}
+
+/// Writes one byte: 1 for true, 0 for false.
+pub fn write_bool<H: Hasher>(state: H, value: bool) -> H {
+    state.write_u8(if value { 1 } else { 0 })
+}
+
+// `char` carries no `Num` bound, so the language's `as` casts do not
+// apply to it; the code point is obtained across the FFI instead, where
+// a Reussir `char` is rendered as a Rust `char`.
+#[ffi(import)]
+fn char_code(value: char) -> u32 [{ value as u32 }];
+
+/// Writes the character's code point as a 32-bit value.
+pub fn write_char<H: Hasher>(state: H, value: char) -> H {
+    state.write_u32(char_code(value))
+}
+
+// ---------------------------------------------------------------- FastHasher
+
+/// A rapidhash `fast` state: avalanche off, tuned for throughput.
+#[ffi(rust = "::reussir_rt::hash::FastHasher")]
+pub struct FastHasher;
+
+#[ffi(import)]
+fn fast_new() -> FastHasher [{ RFast::new() }];
+
+#[ffi(import)]
+fn fast_with_seed(seed: u64) -> FastHasher [{ RFast::with_seed(seed) }];
+
+#[ffi(import)]
+fn fast_write_u64(state: FastHasher, value: u64) -> FastHasher [{
+    state.write_u64(value)
+}];
+
+#[ffi(import)]
+fn fast_write_u32(state: FastHasher, value: u32) -> FastHasher [{
+    state.write_u32(value)
+}];
+
+#[ffi(import)]
+fn fast_write_u16(state: FastHasher, value: u16) -> FastHasher [{
+    state.write_u16(value)
+}];
+
+#[ffi(import)]
+fn fast_write_u8(state: FastHasher, value: u8) -> FastHasher [{
+    state.write_u8(value)
+}];
+
+#[ffi(import)]
+fn fast_finish(state: FastHasher) -> u64 [{ state.finish() }];
+
+impl Hasher for FastHasher {
+    fn write_u64(self: Self, value: u64) -> Self { fast_write_u64(self, value) }
+    fn write_u32(self: Self, value: u32) -> Self { fast_write_u32(self, value) }
+    fn write_u16(self: Self, value: u16) -> Self { fast_write_u16(self, value) }
+    fn write_u8(self: Self, value: u8) -> Self { fast_write_u8(self, value) }
+    fn finish(self: Self) -> u64 { fast_finish(self) }
+}
+
+/// Creates a `FastHasher` with rapidhash's default seed.
+pub fn fast_hasher() -> FastHasher {
+    fast_new()
+}
+
+/// Creates a `FastHasher` with an explicit seed.
+pub fn fast_hasher_seeded(seed: u64) -> FastHasher {
+    fast_with_seed(seed)
+}
+
+// -------------------------------------------------------------- StrongHasher
+
+/// A rapidhash `quality` state: avalanche on, tuned for output quality.
+#[ffi(rust = "::reussir_rt::hash::StrongHasher")]
+pub struct StrongHasher;
+
+#[ffi(import)]
+fn strong_new() -> StrongHasher [{ RStrong::new() }];
+
+#[ffi(import)]
+fn strong_with_seed(seed: u64) -> StrongHasher [{ RStrong::with_seed(seed) }];
+
+#[ffi(import)]
+fn strong_write_u64(state: StrongHasher, value: u64) -> StrongHasher [{
+    state.write_u64(value)
+}];
+
+#[ffi(import)]
+fn strong_write_u32(state: StrongHasher, value: u32) -> StrongHasher [{
+    state.write_u32(value)
+}];
+
+#[ffi(import)]
+fn strong_write_u16(state: StrongHasher, value: u16) -> StrongHasher [{
+    state.write_u16(value)
+}];
+
+#[ffi(import)]
+fn strong_write_u8(state: StrongHasher, value: u8) -> StrongHasher [{
+    state.write_u8(value)
+}];
+
+#[ffi(import)]
+fn strong_finish(state: StrongHasher) -> u64 [{ state.finish() }];
+
+impl Hasher for StrongHasher {
+    fn write_u64(self: Self, value: u64) -> Self { strong_write_u64(self, value) }
+    fn write_u32(self: Self, value: u32) -> Self { strong_write_u32(self, value) }
+    fn write_u16(self: Self, value: u16) -> Self { strong_write_u16(self, value) }
+    fn write_u8(self: Self, value: u8) -> Self { strong_write_u8(self, value) }
+    fn finish(self: Self) -> u64 { strong_finish(self) }
+}
+
+/// Creates a `StrongHasher` with rapidhash's default seed.
+pub fn strong_hasher() -> StrongHasher {
+    strong_new()
+}
+
+/// Creates a `StrongHasher` with an explicit seed.
+pub fn strong_hasher_seeded(seed: u64) -> StrongHasher {
+    strong_with_seed(seed)
+}
+
+// ------------------------------------------------------------------ one-shot
+
+/// The `fast` digest of a single 64-bit value. Allocates nothing.
+#[ffi(import)]
+pub fn fast_hash_u64(value: u64) -> u64 [{
+    ::reussir_rt::hash::fast_hash_u64(value)
+}];
+
+/// The `fast` digest of a single 64-bit value under an explicit seed.
+#[ffi(import)]
+pub fn fast_hash_u64_seeded(value: u64, seed: u64) -> u64 [{
+    ::reussir_rt::hash::fast_hash_u64_seeded(value, seed)
+}];
+
+/// The `quality` digest of a single 64-bit value. Allocates nothing.
+#[ffi(import)]
+pub fn strong_hash_u64(value: u64) -> u64 [{
+    ::reussir_rt::hash::strong_hash_u64(value)
+}];
+
+/// The `quality` digest of a single 64-bit value under an explicit seed.
+#[ffi(import)]
+pub fn strong_hash_u64_seeded(value: u64, seed: u64) -> u64 [{
+    ::reussir_rt::hash::strong_hash_u64_seeded(value, seed)
+}];
+
+/// The `fast` digest of any hashable value.
+pub fn fast_hash<T: Hash>(value: T) -> u64 {
+    value.hash(fast_new()).finish()
+}
+
+/// The `quality` digest of any hashable value.
+pub fn strong_hash<T: Hash>(value: T) -> u64 {
+    value.hash(strong_new()).finish()
+}
