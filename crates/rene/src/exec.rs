@@ -42,6 +42,8 @@ pub struct Options<'a> {
     /// `rene build -j`: the process admission bound (held by the [`Pool`]).
     pub jobs: Option<NonZeroUsize>,
     pub build_dir: &'a Path,
+    /// Whether buffered rrc diagnostics retain ANSI styling.
+    pub color: bool,
 }
 
 /// Build every dependency of the graph through the pool, each dispatched
@@ -159,8 +161,9 @@ async fn build_node(
     // next run's freshness walk has something to compare against.
     let src_root = graph.nodes[name].dir.join("src");
     let package = name.to_owned();
+    let color = opts.color;
     let mut sources = pool
-        .run(move || async move { deps::scan(&src_root, &package).await })
+        .run(move || async move { deps::scan(&src_root, &package, color).await })
         .await??;
     sources.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -173,8 +176,11 @@ async fn build_node(
     };
     for command in plan::node_commands(graph, name, &plan_opts, Some(rt)) {
         bar.set_message(format!("{name}: {}", command.emit));
-        let invocation = compile::Invocation::from_planned(command, &rt.rustc);
-        pool.run(move || invocation.run()).await??;
+        let invocation = compile::Invocation::from_planned(command, &rt.rustc, opts.color);
+        let completed = pool.run(move || invocation.run()).await??;
+        // Clear/redraw every active bar around the indivisible diagnostic
+        // block. `suspend` also serializes these callbacks on the scheduler.
+        progress.suspend(|| completed.report())?;
     }
     fresh::record_dep(graph, name, &ctx, rt, &sources)?;
     bar.finish_and_clear();

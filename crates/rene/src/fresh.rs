@@ -284,6 +284,8 @@ fn root_state(
             linker: ctx.linker.map(Path::to_path_buf),
             upstream,
             jobs: None,
+            // Output policy is deliberately absent from the fingerprint.
+            color: false,
         },
     );
     let out_dir = ctx.build_dir.join(ctx.profile_name);

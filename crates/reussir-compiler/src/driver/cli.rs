@@ -11,6 +11,27 @@ use reussir_codegen::source::SourceCache;
 use super::stage::{Lto, RuntimeLinkage, SanitizerCli, Stage, VariantEncoding};
 use crate::RelocMode;
 
+/// When diagnostics and tracing should carry ANSI styling.
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+pub(crate) enum ColorChoice {
+    /// Color only when stderr is a terminal.
+    Auto,
+    /// Always emit ANSI color codes, including through a pipe.
+    Always,
+    /// Never emit ANSI color codes.
+    Never,
+}
+
+impl ColorChoice {
+    fn enabled(self, terminal: bool) -> bool {
+        match self {
+            ColorChoice::Auto => terminal,
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+        }
+    }
+}
+
 /// Reussir compiler driver.
 #[derive(Parser)]
 #[command(name = "rrc", version)]
@@ -240,10 +261,24 @@ pub(crate) struct Cli {
     #[arg(long = "no-source-locations")]
     pub(crate) no_source_locations: bool,
 
+    /// Diagnostic colors: `auto` (when stderr is a terminal), `always`, or
+    /// `never`.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
+
     /// Log the lowering/backend `tracing` events (to stderr) at DEBUG level.
     /// `RUST_LOG`, if set, takes precedence over this.
     #[arg(short = 'v', long = "verbose")]
     pub(crate) verbose: bool,
+}
+
+impl Cli {
+    /// Resolve the CLI color policy against this process's stderr.
+    pub(crate) fn use_color(&self) -> bool {
+        use std::io::IsTerminal;
+
+        self.color.enabled(std::io::stderr().is_terminal())
+    }
 }
 
 /// The stage the input enters at: `--from` if given, else the extension. `-`
@@ -356,12 +391,13 @@ pub(crate) fn write_text(path: &Path, text: &str) -> Result<(), String> {
 /// Install a `tracing` subscriber writing to **stderr** (so it never corrupts a
 /// `-o -` stdout dump). `RUST_LOG` wins if set; otherwise `-v` selects DEBUG and
 /// the default is quiet (WARN).
-pub(crate) fn init_tracing(verbose: bool) {
+pub(crate) fn init_tracing(verbose: bool, color: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "warn" }));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(color)
         .with_writer(std::io::stderr)
         .try_init();
 }

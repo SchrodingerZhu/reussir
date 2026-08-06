@@ -14,7 +14,9 @@
 //! graph's content digests, the toolchain, and the CLI overrides. A build
 //! whose fingerprint matches and whose artifact still exists reruns nothing.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,9 @@ pub struct Options {
     pub upstream: std::collections::BTreeMap<String, String>,
     /// `rene build -j`: the bound on concurrent compile processes.
     pub jobs: Option<std::num::NonZeroUsize>,
+    /// Whether compiler diagnostics should retain ANSI styling while they
+    /// are buffered away from the terminal.
+    pub color: bool,
 }
 
 /// A built (or reused) product.
@@ -143,14 +148,32 @@ pub async fn build(
         let command = planned
             .remove(*name)
             .ok_or_else(|| format!("target `{name}` missing from the plan"))?;
-        invocations.push(Invocation::from_planned(command, &rt.rustc));
+        invocations.push(Invocation::from_planned(command, &rt.rustc, opts.color));
     }
-    futures_util::future::try_join_all(
+    // Every child owns a private stderr pipe. Wait for all jobs, then replay
+    // each complete diagnostic block in declaration order: target compiles
+    // remain concurrent, but their ANSI escape sequences can never interleave.
+    let completed = futures_util::future::join_all(
         invocations
             .into_iter()
-            .map(|invocation| async move { pool.run(move || invocation.run()).await? }),
+            .map(|invocation| pool.run(move || invocation.run())),
     )
-    .await?;
+    .await;
+    let mut failure = None;
+    for result in completed {
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result.and_then(CompletedInvocation::report)
+            && failure.is_none()
+        {
+            failure = Some(error);
+        }
+    }
+    if let Some(error) = failure {
+        return Err(error);
+    }
     let mut products = Vec::with_capacity(plan.len());
     for (name, _, path, key, current) in plan {
         if !current {
@@ -231,12 +254,19 @@ pub(crate) struct Invocation {
     envs: Vec<(&'static str, OsString)>,
     /// What the failure message names.
     out: PathBuf,
+    /// The parent terminal's resolved color policy. The child writes to a
+    /// pipe, so `auto` inside rrc would otherwise discard styling.
+    color: bool,
 }
 
 impl Invocation {
     /// An `rrc` invocation from a planned command: the real program
     /// resolved, the baking toolchain pinned through `REUSSIR_RUSTC`.
-    pub(crate) fn from_planned(command: plan::PlannedCommand, rustc: &Path) -> Invocation {
+    pub(crate) fn from_planned(
+        command: plan::PlannedCommand,
+        rustc: &Path,
+        color: bool,
+    ) -> Invocation {
         Invocation {
             program: deps::resolve_rrc(),
             args: command.args.into_iter().map(OsString::from).collect(),
@@ -244,28 +274,63 @@ impl Invocation {
             // and the polyffi texture compiles must agree with.
             envs: vec![("REUSSIR_RUSTC", rustc.into())],
             out: command.out,
+            color,
         }
     }
 
-    /// Spawn and await the process (on whichever runtime polls this).
-    /// rrc's diagnostics stream straight through to the user.
-    pub(crate) async fn run(self) -> Result<(), String> {
+    /// Spawn and await the process (on whichever runtime polls this), keeping
+    /// its diagnostics private until the scheduler can replay them as one
+    /// indivisible block.
+    pub(crate) async fn run(self) -> Result<CompletedInvocation, String> {
         let mut cmd = compio::process::Command::new(&self.program);
         cmd.args(&self.args);
-        // A verbose `rene` runs a verbose `rrc`: the child's DEBUG phase
-        // events land on the same stderr, so a wedged compile names the
-        // phase it wedged in rather than just the package.
+        // A verbose `rene` runs a verbose `rrc`; its DEBUG phase events join
+        // the same private diagnostic block and are replayed intact.
         if tracing::enabled!(tracing::Level::DEBUG) {
             cmd.arg("-v");
         }
         for (key, value) in &self.envs {
             cmd.env(key, value);
         }
-        let status = cmd
-            .status()
+        // rrc sees a pipe here, so carry the already-resolved parent policy
+        // explicitly. This preserves terminal color without leaking escapes
+        // into redirected logs.
+        cmd.arg("--color")
+            .arg(if self.color { "always" } else { "never" });
+        let output = cmd
+            .stderr(Stdio::piped())
+            .expect("pipe rrc stderr")
+            .output()
             .await
             .map_err(|e| format!("cannot run `{}`: {e}", self.program.display()))?;
-        if !status.success() {
+        Ok(CompletedInvocation {
+            status: output.status,
+            diagnostics: output.stderr,
+            out: self.out,
+        })
+    }
+}
+
+/// One finished compiler process. Diagnostics stay as raw bytes so ANSI
+/// sequences and any non-UTF-8 tool output survive the buffering unchanged.
+pub(crate) struct CompletedInvocation {
+    status: ExitStatus,
+    diagnostics: Vec<u8>,
+    out: PathBuf,
+}
+
+impl CompletedInvocation {
+    /// Replay the complete diagnostic block under stderr's process-wide lock,
+    /// then turn a failing exit status into rene's target-level error.
+    pub(crate) fn report(self) -> Result<(), String> {
+        if !self.diagnostics.is_empty() {
+            let mut stderr = std::io::stderr().lock();
+            stderr
+                .write_all(&self.diagnostics)
+                .and_then(|()| stderr.flush())
+                .map_err(|e| format!("cannot write rrc diagnostics: {e}"))?;
+        }
+        if !self.status.success() {
             return Err(format!(
                 "compiling `{}` failed (see rrc's diagnostics above)",
                 self.out.display()

@@ -20,6 +20,7 @@
 //! machine-readable listing. Exit 0 on success, 1 on a failed command, 2 on
 //! a usage error.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -38,8 +39,30 @@ struct Cli {
     #[arg(short = 'v', long)]
     verbose: bool,
 
+    /// Output colors: `auto` (when stderr is a terminal), `always`, or
+    /// `never`. The resolved policy is forwarded to rrc diagnostics.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
+    color: ColorChoice,
+
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, palc::ValueEnum)]
+enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorChoice {
+    fn resolve(self, terminal: bool) -> bool {
+        match self {
+            ColorChoice::Auto => terminal,
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+        }
+    }
 }
 
 /// Arguments shared by every command that touches the build directory.
@@ -224,7 +247,8 @@ fn main() -> ExitCode {
             }
         },
     };
-    init_tracing(cli.verbose);
+    let color = cli.color.resolve(std::io::stderr().is_terminal());
+    init_tracing(cli.verbose, color);
     // One completion-based runtime (io_uring/IOCP) drives the whole command:
     // child processes and file reads await on it, and independent work —
     // digests, target compiles — runs concurrently on the single thread.
@@ -237,9 +261,9 @@ fn main() -> ExitCode {
     };
     let result = runtime.block_on(async {
         match cli.command {
-            Command::Build(args) => build(&args).await,
+            Command::Build(args) => build(&args, color).await,
             Command::Clean(args) => clean(&args.location),
-            Command::Inspect(args) => inspect(&args).await,
+            Command::Inspect(args) => inspect(&args, color).await,
             Command::New(args) => new::run(&new::Options {
                 path: args.path,
                 name: args.name,
@@ -264,7 +288,7 @@ fn main() -> ExitCode {
 /// Install a `tracing` subscriber writing to **stderr** (stdout carries the
 /// machine-readable output). `RUST_LOG` wins if set; otherwise `-v` selects
 /// DEBUG and the default shows build progress (INFO).
-fn init_tracing(verbose: bool) {
+fn init_tracing(verbose: bool, color: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
         // pubgrub narrates every solver step at INFO; that is solver
@@ -278,9 +302,9 @@ fn init_tracing(verbose: bool) {
         });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        // Plain text off-terminal: CI logs and FileCheck'd stderr must not
-        // carry ANSI escapes.
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        // Plain text off-terminal by default; `--color` can explicitly
+        // override that for tools which capture and re-display the stream.
+        .with_ansi(color)
         .with_writer(std::io::stderr)
         .try_init();
 }
@@ -315,7 +339,7 @@ fn locate_manifest(flag: &Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-async fn build(args: &BuildArgs) -> Result<(), String> {
+async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
     let location = &args.location;
     let manifest_path = locate_manifest(&location.manifest_path)?;
     let loaded = manifest::load(&manifest_path).map_err(|e| e.to_string())?;
@@ -352,7 +376,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
     // The source graph first: it is cheap, it fails fast on a broken package,
     // and a build that finds nothing moved skips straight to the freshness
     // checks below.
-    let sources = deps::prepare(&dir, &loaded).await?;
+    let sources = deps::prepare(&dir, &loaded, color).await?;
     // The bake links the runtime dylib with the same linker pinning the
     // driver-level links get: the CLI override first, then the profile's.
     // The progress surface exists from here on: the bake's spinner first,
@@ -397,6 +421,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
             linker: args.linker.as_deref(),
             jobs: args.jobs,
             build_dir: &root,
+            color,
         },
         &pool,
         &progress,
@@ -432,6 +457,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
                 &target,
             ),
             jobs: args.jobs,
+            color,
         },
         &graph,
         &pool,
@@ -450,7 +476,7 @@ async fn build(args: &BuildArgs) -> Result<(), String> {
 /// default a stale record is refreshed first (the same scan `build` runs, but
 /// without the runtime bake), so the report describes the package as it is
 /// now; `--frozen` reports what is on record and never writes.
-async fn inspect(args: &InspectArgs) -> Result<(), String> {
+async fn inspect(args: &InspectArgs, color: bool) -> Result<(), String> {
     let location = &args.location;
     let frozen = args.frozen;
     let manifest_path = locate_manifest(&location.manifest_path)?;
@@ -476,7 +502,7 @@ async fn inspect(args: &InspectArgs) -> Result<(), String> {
         if dir.is_cleaning().map_err(|e| e.to_string())? {
             return Err(pending_clean(&root));
         }
-        let prepared = deps::prepare(&dir, &loaded).await?;
+        let prepared = deps::prepare(&dir, &loaded, color).await?;
         // After a refresh the record is by construction current; report that
         // rather than the reason it was rebuilt (which the log already
         // carries).

@@ -1,0 +1,5 @@
+pub struct [value] LibVersion(i64, i64, i64)
+
+pub fn library_version() -> LibVersion {
+    Version { 0, 1, 0 }
+}

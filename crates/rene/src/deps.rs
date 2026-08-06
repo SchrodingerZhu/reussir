@@ -212,7 +212,7 @@ impl Prepared {
 /// Bring the recorded source graph up to date, re-scanning through `rrc` when
 /// it cannot be trusted. A run where every recorded file still matches does
 /// nothing at all — no subprocess, no write.
-pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String> {
+pub async fn prepare(dir: &BuildDir, loaded: &Loaded, color: bool) -> Result<Prepared, String> {
     let hash = config_hash(&loaded.dump);
     let reason = staleness(dir, &hash)?;
     if reason.is_up_to_date() {
@@ -225,7 +225,7 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String
 
     tracing::debug!(%reason, "scanning the package source graph");
     let root = source_root(loaded);
-    let mut files = scan(&root, &loaded.manifest.package.name).await?;
+    let mut files = scan(&root, &loaded.manifest.package.name, color).await?;
     // Order by path, the order the table reads back in, so what this returns
     // does not depend on whether it came from the scan or the record.
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -238,7 +238,7 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded) -> Result<Prepared, String
 
 /// Ask `rrc --scan-deps` for the package's source graph and stat every file
 /// it names.
-pub async fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String> {
+pub async fn scan(root: &Path, package: &str, color: bool) -> Result<Vec<SourceFile>, String> {
     let rrc = resolve_rrc();
     if !root.is_dir() {
         return Err(format!(
@@ -254,23 +254,29 @@ pub async fn scan(root: &Path, package: &str) -> Result<Vec<SourceFile>, String>
         .arg(root)
         .arg("--package-name")
         .arg(package)
-        .arg("--scan-deps");
+        .arg("--scan-deps")
+        // Both streams are captured below. Preserve the parent CLI's resolved
+        // color policy while rrc renders into its private stderr pipe.
+        .arg("--color")
+        .arg(if color { "always" } else { "never" });
     // The bundled core carries the reserved name; scanning it needs the
     // same lift its compile commands get.
     if package == "core" {
         cmd.arg("--core");
     }
     let out = cmd
-        // compio inherits stdio unless told otherwise; the graph arrives on
-        // stdout while rrc's diagnostics stream through on stderr.
+        // Keep the JSON and diagnostics on separate private pipes. A failed
+        // scan returns the latter as one block to its scheduler.
         .stdout(Stdio::piped())
         .expect("pipe stdout")
+        .stderr(Stdio::piped())
+        .expect("pipe stderr")
         .output()
         .await
         .map_err(|e| format!("cannot run `{}`: {e}", rrc.display()))?;
     if !out.status.success() {
-        // rrc has already rendered its diagnostics to stderr; pass them on
-        // rather than paraphrasing.
+        // rrc has already rendered its diagnostics; pass them on rather than
+        // paraphrasing.
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stderr = stderr.trim();
         return Err(if stderr.is_empty() {

@@ -72,3 +72,10 @@
 
 // NOPROFILE: no profile named `bogus`
 // NOTARGET: no binary target named `bogus`
+
+// A real parallel failure is buffered per rrc process: both diagnostics keep
+// their ANSI prefixes even though rrc sees a pipe, and each reaches stderr as
+// a complete block. Reuse this test's runtime bake; only the package changes.
+// RUN: %not %rene --color always build --manifest-path %S/diagnostics/rene.ncl --build-dir %t.bdir -j 2 2> %t.color.log
+// RUN: printf '// COLOR-COUNT-2: \033[31mError:' > %t.color.check
+// RUN: %FileCheck --check-prefix=COLOR %t.color.check < %t.color.log
