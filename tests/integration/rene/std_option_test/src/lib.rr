@@ -1,0 +1,71 @@
+import std::option::Option;
+
+fn some(value: i32) -> Option<i32> {
+    Option::Some { value }
+}
+
+fn none() -> Option<i32> {
+    Option::None
+}
+
+fn write_bool(value: bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+fn test_is_some() {
+    write_bool(some(4).is_some());
+    write_bool(none().is_some());
+}
+
+fn test_is_none() {
+    write_bool(some(4).is_none());
+    write_bool(none().is_none());
+}
+
+fn test_and() {
+    test_utils::io::write_i32(some(4).and(some(9)).unwrap_or(-1));
+    test_utils::io::write_i32(none().and(some(9)).unwrap_or(-1));
+}
+
+fn test_or() {
+    test_utils::io::write_i32(some(4).or(some(9)).unwrap_or(-1));
+    test_utils::io::write_i32(none().or(some(9)).unwrap_or(-1));
+}
+
+fn test_map() {
+    test_utils::io::write_i32(some(4).map(|x: i32| x + 1).unwrap_or(9));
+    test_utils::io::write_i32(none().map(|x: i32| x + 1).unwrap_or(9));
+}
+
+fn test_and_then() {
+    test_utils::io::write_i32(
+        some(4).and_then(|x: i32| some(x * 2)).unwrap_or(9)
+    );
+    test_utils::io::write_i32(
+        none().and_then(|x: i32| some(x * 2)).unwrap_or(9)
+    );
+}
+
+fn test_unwrap_or() {
+    test_utils::io::write_i32(some(4).unwrap_or(9));
+    test_utils::io::write_i32(none().unwrap_or(9));
+}
+
+fn test_unwrap_or_panic() {
+    test_utils::io::write_i32(some(4).unwrap_or_panic());
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_is_some(),
+        1 => test_is_none(),
+        2 => test_and(),
+        3 => test_or(),
+        4 => test_map(),
+        5 => test_and_then(),
+        6 => test_unwrap_or(),
+        7 => test_unwrap_or_panic(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

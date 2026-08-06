@@ -1,0 +1,36 @@
+// Each input selects one Option unit case through the executable's dispatcher.
+// Adding coverage only requires a test function, a match arm, and an input run.
+
+// RUN: %rene build --manifest-path %S/std_option_test/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}std_option_test
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/is_some.in | %FileCheck %s --check-prefix=IS-SOME
+// IS-SOME:      1
+// IS-SOME-NEXT: 0
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/is_none.in | %FileCheck %s --check-prefix=IS-NONE
+// IS-NONE:      0
+// IS-NONE-NEXT: 1
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/and.in | %FileCheck %s --check-prefix=AND
+// AND:      9
+// AND-NEXT: -1
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/or.in | %FileCheck %s --check-prefix=OR
+// OR:      4
+// OR-NEXT: 9
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/map.in | %FileCheck %s --check-prefix=MAP
+// MAP:      5
+// MAP-NEXT: 9
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/and_then.in | %FileCheck %s --check-prefix=AND-THEN
+// AND-THEN:      8
+// AND-THEN-NEXT: 9
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/unwrap_or.in | %FileCheck %s --check-prefix=UNWRAP-OR
+// UNWRAP-OR:      4
+// UNWRAP-OR-NEXT: 9
+
+// RUN: %t.bdir/release/std_option_test%exe_ext < %S/std_option_test/unwrap_or_panic.in | %FileCheck %s --check-prefix=UNWRAP-OR-PANIC
+// UNWRAP-OR-PANIC: 4
