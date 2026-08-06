@@ -222,28 +222,55 @@ impl Fakes {
         // fabricates the `-o` artifact.
         let rrc = script(
             "fake-rrc",
-            "root=\"\"; out=\"\"; prev=\"\"; scan=no\n\
-             for arg in \"$@\"; do\n\
-               [ \"$prev\" = \"--package-root\" ] && root=\"$arg\"\n\
-               [ \"$prev\" = \"-o\" ] && out=\"$arg\"\n\
-               [ \"$arg\" = \"--scan-deps\" ] && scan=yes\n\
-               prev=\"$arg\"\n\
-             done\n\
-             if [ \"$scan\" = no ]; then\n\
-               echo \"$* rustc=$REUSSIR_RUSTC\" >> \"$(dirname \"$0\")/rrc-compiles\"\n\
-               echo compiled > \"$out\"\n\
-               exit 0\n\
-             fi\n\
-             echo run >> \"$(dirname \"$0\")/rrc-runs\"\n\
-             printf '{\"package\":\"pkg\",\"files\":[{\"path\":\"%s\",\"module\":[\"pkg\"]}' \"$root/lib.rr\"\n\
-             for f in \"$root\"/*.rr; do\n\
-               case \"$f\" in */lib.rr) continue;; esac\n\
-               [ -f \"$f\" ] || continue\n\
-               base=$(basename \"$f\" .rr)\n\
-               printf ',{\"path\":\"%s\",\"module\":[\"pkg\",\"%s\"]}' \"$f\" \"$base\"\n\
-             done\n\
-             printf ']}\\n'\n"
-                .to_owned(),
+            r#"root=""; out=""; package=""; color=auto; prev=""; scan=no
+for arg in "$@"; do
+  [ "$prev" = "--package-root" ] && root="$arg"
+  [ "$prev" = "--package-name" ] && package="$arg"
+  [ "$prev" = "-o" ] && out="$arg"
+  [ "$prev" = "--color" ] && color="$arg"
+  [ "$arg" = "--scan-deps" ] && scan=yes
+  prev="$arg"
+done
+if [ "$scan" = no ]; then
+  echo "$* rustc=$REUSSIR_RUSTC" >> "$(dirname "$0")/rrc-compiles"
+  if [ "$FAKE_RRC_FRAGMENTED_DIAGNOSTIC" = yes ] && [ "$package" != core ]; then
+    if [ "$color" = always ]; then
+      sync="$(dirname "$0")/diagnostic-sync"
+      id=$(basename "$out")
+      mkdir -p "$sync"
+      touch "$sync/ready.$id"
+      while :; do
+        set -- "$sync"/ready.*
+        [ -e "$1" ] && [ "$#" -ge 2 ] && break
+        sleep 0.01
+      done
+      printf '\033[' >&2
+      touch "$sync/escape.$id"
+      while :; do
+        set -- "$sync"/escape.*
+        [ -e "$1" ] && [ "$#" -ge 2 ] && break
+        sleep 0.01
+      done
+      printf '31mDIAGNOSTIC\033[0m\n' >&2
+    else
+      printf 'DIAGNOSTIC\n' >&2
+    fi
+    exit 1
+  fi
+  echo compiled > "$out"
+  exit 0
+fi
+echo run >> "$(dirname "$0")/rrc-runs"
+printf '{"package":"pkg","files":[{"path":"%s","module":["pkg"]}' "$root/lib.rr"
+for f in "$root"/*.rr; do
+  case "$f" in */lib.rr) continue;; esac
+  [ -f "$f" ] || continue
+  base=$(basename "$f" .rr)
+  printf ',{"path":"%s","module":["pkg","%s"]}' "$f" "$base"
+done
+printf ']}\n'
+"#
+            .to_owned(),
         );
 
         Fakes {
@@ -1013,6 +1040,69 @@ fn build_honors_a_single_job_cap() {
         assert!(Path::new(line).is_file(), "no artifact at {line}");
     }
     assert_eq!(fakes.package_compiles().len(), 3);
+}
+
+/// Parallel rrc jobs write into private pipes. Even deliberately fragmented
+/// ANSI sequences are replayed as whole diagnostic blocks, with rene's color
+/// policy forwarded through the pipe.
+#[cfg(unix)]
+#[test]
+fn build_keeps_parallel_colored_diagnostics_intact() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    package(&tmp, "demo");
+    let manifest = tmp.join("rene.ncl");
+    std::fs::write(
+        &manifest,
+        "{ package = { name = \"demo\", version = \"0.1.0\" },\n\
+         \x20 targets.shared = { kind = 'dynlib },\n\
+         \x20 targets.archive = { kind = 'staticlib } }\n",
+    )
+    .unwrap();
+    let fakes = Fakes::new(&tmp);
+
+    let out = run(rene(&["--color", "always", "build", "--jobs", "2"])
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--build-dir")
+        .arg(&root)
+        .env("REUSSIR_RRC", &fakes.rrc)
+        .env("REUSSIR_CARGO", &fakes.cargo)
+        .env("REUSSIR_RUSTC", &fakes.rustc)
+        .env("FAKE_RRC_FRAGMENTED_DIAGNOSTIC", "yes"));
+    assert_eq!(out.status.code(), Some(1), "stderr: {}", stderr(&out));
+
+    let colored_stderr = stderr(&out);
+    let block = "\x1b[31mDIAGNOSTIC\x1b[0m\n";
+    assert_eq!(
+        colored_stderr.match_indices(block).count(),
+        2,
+        "parallel diagnostics were corrupted:\n{colored_stderr:?}"
+    );
+    assert!(
+        !colored_stderr.contains("\x1b[\x1b["),
+        "ANSI prefixes interleaved:\n{colored_stderr:?}"
+    );
+
+    // The default resolves against rene's stderr, not the child's pipe. The
+    // test harness captures stderr, so the same failed build must be plain.
+    let plain = run(rene(&["build", "--jobs", "2"])
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .arg("--build-dir")
+        .arg(&root)
+        .env("REUSSIR_RRC", &fakes.rrc)
+        .env("REUSSIR_CARGO", &fakes.cargo)
+        .env("REUSSIR_RUSTC", &fakes.rustc)
+        .env("FAKE_RRC_FRAGMENTED_DIAGNOSTIC", "yes"));
+    assert_eq!(plain.status.code(), Some(1), "stderr: {}", stderr(&plain));
+    assert!(
+        !plain.stderr.contains(&b'\x1b'),
+        "auto color polluted redirected stderr: {:?}",
+        plain.stderr
+    );
+    assert_eq!(stderr(&plain).match_indices("DIAGNOSTIC\n").count(), 2);
 }
 
 /// The pool needs at least one process: `-j 0` is a usage error (exit 2),

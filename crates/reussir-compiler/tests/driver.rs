@@ -75,6 +75,46 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
+/// `--color` is an explicit contract, not just TTY autodetection. This is
+/// what lets a parent such as rene buffer complete diagnostics and replay
+/// them later without losing their styling.
+#[test]
+fn color_policy_controls_redirected_diagnostics() {
+    let dir = scratch("color");
+    let src = dir.path().join("broken.rr");
+    std::fs::write(&src, "pub fn broken( -> i64 { 0 }\n").expect("write invalid source");
+
+    let run = |choice: &str| {
+        rrc(&[
+            &src,
+            Path::new("--emit"),
+            Path::new("hir"),
+            Path::new("-o"),
+            Path::new("-"),
+            Path::new("--color"),
+            Path::new(choice),
+        ])
+    };
+
+    let always = run("always");
+    assert_eq!(always.status.code(), Some(1));
+    assert!(
+        always.stderr.windows(2).any(|bytes| bytes == b"\x1b["),
+        "--color always emitted no ANSI styling:\n{}",
+        String::from_utf8_lossy(&always.stderr)
+    );
+
+    for choice in ["auto", "never"] {
+        let output = run(choice);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            !output.stderr.contains(&b'\x1b'),
+            "--color {choice} polluted redirected stderr: {:?}",
+            output.stderr
+        );
+    }
+}
+
 /// Write `PROGRAM` to a `.rr` file in a fresh scratch dir. The returned
 /// [`TempDir`] must be kept alive for the test's duration (it cleans up on drop).
 fn source(tag: &str) -> (TempDir, PathBuf) {

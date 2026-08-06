@@ -3,7 +3,6 @@
 //! whichever stage `--emit` requests: a text dump (HIR, the `.rri`
 //! interface, MIR) or the lowered module(s) handed to the back leg.
 
-use std::io::IsTerminal;
 use std::path::Path;
 
 use reussir_codegen::lower::{
@@ -16,7 +15,7 @@ use reussir_core::full::mono::{MonoInput, MonoTraits, monomorphize};
 use reussir_core::semi::hir;
 use reussir_core::semi::resolve::DefTable;
 use reussir_core::semi::ty::TyCtxt;
-use reussir_core::semi::{elaborate, render_reports};
+use reussir_core::semi::{Report, elaborate, render_reports_to};
 use reussir_core::surface;
 use reussir_syntax::diagnostics;
 use reussir_syntax::kind::{Resolver, TokenKey};
@@ -26,6 +25,11 @@ use crate::package;
 use super::Produced;
 use super::cli::Cli;
 use super::stage::Stage;
+
+/// Render middle-end reports with the driver's explicit color policy.
+fn render_reports(cli: &Cli, cache: &SourceCache, reports: &[Report]) -> bool {
+    render_reports_to(cache, reports, cli.use_color(), std::io::stderr().lock())
+}
 
 /// The arena-scoped front leg for package mode: elaborate every discovered
 /// file as one translation unit, then continue exactly as the single-file
@@ -96,7 +100,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         })
         .collect();
     let elab = elaborate_package_with_externs(tcx, &files, interner, &extern_pkgs);
-    if render_reports(&pkg.cache, &elab.reports) {
+    if render_reports(cli, &pkg.cache, &elab.reports) {
         return Err(String::new());
     }
     if target == Stage::Hir {
@@ -195,7 +199,7 @@ pub(crate) fn frontend_package<'c, 'tcx>(
         return Ok(Produced::Text(text));
     }
     let (full, reports) = monomorphize(&elab.mono_input());
-    if render_reports(&pkg.cache, &reports) {
+    if render_reports(cli, &pkg.cache, &reports) {
         return Err(String::new());
     }
     finish_mir(
@@ -231,19 +235,18 @@ pub(crate) fn frontend<'c, 'tcx>(
             let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
             let parse = reussir_syntax::parse_with_interner(source, interner.clone());
             if !parse.ok() {
-                let color = std::io::stderr().is_terminal();
                 let _ = diagnostics::render_errors(
                     sources,
                     FileId::ROOT,
                     &parse.errors,
-                    color,
+                    cli.use_color(),
                     std::io::stderr().lock(),
                 );
                 return Err(String::new());
             }
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, &interner);
-            if render_reports(sources, &elab.reports) {
+            if render_reports(cli, sources, &elab.reports) {
                 return Err(String::new());
             }
             if target == Stage::Hir {
@@ -265,7 +268,7 @@ pub(crate) fn frontend<'c, 'tcx>(
                 return Ok(Produced::Text(text));
             }
             let (full, reports) = monomorphize(&elab.mono_input());
-            if render_reports(sources, &reports) {
+            if render_reports(cli, sources, &reports) {
                 return Err(String::new());
             }
             finish_mir(
@@ -350,12 +353,12 @@ pub(crate) fn frontend<'c, 'tcx>(
             let (full, reports) = monomorphize(&input);
             match &dump_sources {
                 Some(cache) => {
-                    if render_reports(cache, &reports) {
+                    if render_reports(cli, cache, &reports) {
                         return Err(String::new());
                     }
                 }
                 None => {
-                    if render_reports(sources, &reports) {
+                    if render_reports(cli, sources, &reports) {
                         return Err(String::new());
                     }
                 }
@@ -419,6 +422,7 @@ pub(crate) fn lower_or_render<T>(
     result: std::result::Result<T, LoweringError>,
     sources: Option<&SourceCache>,
     name: &str,
+    color: bool,
 ) -> Result<T, String> {
     match result {
         Ok(value) => Ok(value),
@@ -432,7 +436,6 @@ pub(crate) fn lower_or_render<T>(
                     severity: diagnostics::Severity::Error,
                     message: error.message(),
                 };
-                let color = std::io::stderr().is_terminal();
                 let _ = diagnostics::render(
                     sources,
                     std::slice::from_ref(&diagnostic),
@@ -505,6 +508,7 @@ pub(crate) fn finish_mir<'c, 'tcx>(
                 ),
                 sources,
                 name,
+                cli.use_color(),
             )?;
             units.push(module);
         }
@@ -514,6 +518,7 @@ pub(crate) fn finish_mir<'c, 'tcx>(
         lower_program(context, tcx, program, sources, names, linkage, &sanitizers),
         sources,
         name,
+        cli.use_color(),
     )?;
     Ok(Produced::Module(module, Some(exports)))
 }

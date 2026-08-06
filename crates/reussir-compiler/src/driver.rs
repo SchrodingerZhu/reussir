@@ -14,7 +14,6 @@
 //! fed back in isolation. Exit 0 on success, 1 on a compile error, 2 on a usage
 //! or I/O error.
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -77,7 +76,7 @@ pub fn main() -> ExitCode {
             }
         },
     };
-    init_tracing(cli.verbose);
+    init_tracing(cli.verbose, cli.use_color());
     match run(&cli) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -241,11 +240,12 @@ fn run(cli: &Cli) -> Result<bool, String> {
             }
         }
         let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-        let mut pkg = match load_package_or_render(&root, &pkg_name, &interner, cli.core) {
-            Ok(pkg) => pkg,
-            Err(msg) if msg.is_empty() => return Ok(false),
-            Err(msg) => return Err(msg),
-        };
+        let mut pkg =
+            match load_package_or_render(&root, &pkg_name, &interner, cli.core, cli.use_color()) {
+                Ok(pkg) => pkg,
+                Err(msg) if msg.is_empty() => return Ok(false),
+                Err(msg) => return Err(msg),
+            };
         let name = pkg.cache.name(FileId::ROOT).to_owned();
         let context = reussir_backend::context();
         if cli.disable_backend_multithreading {
@@ -353,6 +353,7 @@ fn load_package_or_render(
     name: &str,
     interner: &std::sync::Arc<reussir_syntax::MultiThreadedTokenInterner>,
     allow_core: bool,
+    color: bool,
 ) -> Result<package::PackageSource, String> {
     let loaded = match root {
         PackageRoot::Dir(dir) => package::load_package_with(dir, name, interner, allow_core),
@@ -368,7 +369,6 @@ fn load_package_or_render(
             file,
             errors,
         }) => {
-            let color = std::io::stderr().is_terminal();
             let _ =
                 diagnostics::render_errors(&cache, file, &errors, color, std::io::stderr().lock());
             Err(String::new())
@@ -389,7 +389,7 @@ fn scan_deps(cli: &Cli, package: Option<&(PackageRoot, String)>) -> Result<bool,
         );
     };
     let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
-    let pkg = match load_package_or_render(root, pkg_name, &interner, cli.core) {
+    let pkg = match load_package_or_render(root, pkg_name, &interner, cli.core, cli.use_color()) {
         Ok(pkg) => pkg,
         Err(msg) if msg.is_empty() => return Ok(false),
         Err(msg) => return Err(msg),
