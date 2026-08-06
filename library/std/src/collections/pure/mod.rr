@@ -1,5 +1,26 @@
+//! Persistent collections: every operation returns a new version and
+//! leaves the old one intact and usable.
+//!
+//! - `list` — a singly linked list.
+//! - `rtqueue` — a FIFO queue with worst-case constant-time operations.
+//! - `fingertree` — a random-access sequence: both ends, indexing,
+//!   splitting, and concatenation.
+//! - `wavlset`, `wavlmap` — ordered set and map on a balanced tree.
+//! - `pairing_heap`, `binomial_heap` — min-priority queues.
+//!
+//! The two priority queues implement the same API and differ in which
+//! usage they are fast for. Reach for `pairing_heap` by default: it is
+//! the faster queue when each version is used once and discarded, which
+//! is what queue code normally does. Reach for `binomial_heap` when old
+//! versions are kept and operated on again, or when the cost of a single
+//! operation matters — its bounds are worst case, where the pairing
+//! heap's are amortized and degrade sharply if a version is reused.
+//! Each module's header gives the concrete cases and the measurements.
+
+pub mod binomial_heap;
 pub mod fingertree;
 pub mod list;
+pub mod pairing_heap;
 pub mod rtqueue;
 pub mod wavlmap;
 pub mod wavlset;
