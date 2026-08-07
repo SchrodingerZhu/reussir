@@ -255,6 +255,22 @@ add_custom_target(check
           reussir-syntax rrc rrepl rene
   USES_TERMINAL)
 
+# Rust compiler caches need an explicit content key for native archives. The
+# probe rebuilds a tiny archive at the same path and checks that the cached Rust
+# crate observes the new contents. Keep it in the normal check graph wherever
+# sccache is available, including the Windows job where the regression occurred.
+find_program(reussir_sccache_path NAMES sccache)
+if(reussir_sccache_path)
+  add_custom_target(check-native-archive-cache
+    COMMAND ${CMAKE_COMMAND} -E env
+            "REUSSIR_SCCACHE=${reussir_sccache_path}"
+            ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/build/native-archive-cache/run.py
+    COMMENT "Testing native archive cache invalidation"
+    USES_TERMINAL)
+  add_dependencies(check check-native-archive-cache)
+endif()
+
 if(REUSSIR_SANITIZED_RUNTIME_TARGETS)
   add_custom_target(check-sanitizer
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v --filter "sanitizer/"

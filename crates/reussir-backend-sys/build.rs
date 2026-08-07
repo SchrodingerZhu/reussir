@@ -1,7 +1,6 @@
+mod native_archive;
+
 use std::env;
-use std::fs::File;
-use std::io::{self, Read};
-use std::path::Path;
 use std::path::PathBuf;
 
 // Locates the directory holding the staged Reussir static archives
@@ -67,72 +66,17 @@ const REUSSIR_ARCHIVES: &[&str] = &[
 // references to them, so they are simply skipped.
 const TPDE_ARCHIVES: &[&str] = &["tpde_llvm", "tpde", "spdlog", "fadec", "disarm64"];
 
-fn archive_candidates(lib_dir: &Path, archive: &str) -> [PathBuf; 3] {
-    [
-        lib_dir.join(format!("lib{archive}.a")),
-        lib_dir.join(format!("{archive}.lib")),
-        lib_dir.join(format!("lib{archive}.lib")),
-    ]
-}
-
-fn archive_exists(lib_dir: &Path, archive: &str) -> bool {
-    archive_candidates(lib_dir, archive)
-        .into_iter()
-        .any(|path| path.is_file())
-}
-
-fn hash_file(hasher: &mut blake3::Hasher, path: &Path) -> io::Result<()> {
-    let mut file = File::open(path)?;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            return Ok(());
-        }
-        hasher.update(&buffer[..read]);
-    }
-}
-
-fn native_archive_fingerprint(lib_dir: &Path) -> io::Result<blake3::Hash> {
-    let mut hasher = blake3::Hasher::new();
-    for archive in std::iter::once("ReussirCAPI")
+fn linked_archives() -> Vec<&'static str> {
+    std::iter::once("ReussirCAPI")
         .chain(REUSSIR_ARCHIVES.iter().copied())
         .chain(TPDE_ARCHIVES.iter().copied())
-    {
-        for path in archive_candidates(lib_dir, archive) {
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .expect("archive candidate has a file name")
-                .as_encoded_bytes();
-            hasher.update(&(name.len() as u64).to_le_bytes());
-            hasher.update(name);
-            hasher.update(&path.metadata()?.len().to_le_bytes());
-            hash_file(&mut hasher, &path)?;
-        }
-    }
-    Ok(hasher.finalize())
-}
-
-fn watch_archive(lib_dir: &Path, archive: &str) {
-    for path in archive_candidates(lib_dir, archive) {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
+        .collect()
 }
 
 fn main() {
     let lib_dir = capi_lib_dir();
-    let fingerprint = native_archive_fingerprint(&lib_dir)
+    native_archive::track(&lib_dir, &linked_archives())
         .expect("failed to fingerprint native Reussir archives");
-
-    // Cargo notices the archive changes below and invokes rustc again, but a
-    // compiler cache can otherwise reuse the old final-link result because the
-    // rustc command line only names each archive; it does not contain its
-    // contents. Put the contents in rustc's arguments so that cache key changes
-    // whenever any linked native archive does.
-    println!("cargo:rustc-cfg=reussir_native_archive_fingerprint_{fingerprint}");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
     // ReussirCAPI (dialect handle + pass factories + helpers) and the Reussir
@@ -144,7 +88,7 @@ fn main() {
         println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
     }
     for archive in TPDE_ARCHIVES {
-        if archive_exists(&lib_dir, archive) {
+        if native_archive::archive_exists(&lib_dir, archive) {
             println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
         }
     }
@@ -154,13 +98,5 @@ fn main() {
     // only the C++ side (libReussirCAPI.a / the component archives) is rebuilt.
     // Declaring each archive as a build input makes Cargo request a relink when
     // it changes; the fingerprint above makes that request miss compiler caches.
-    watch_archive(&lib_dir, "ReussirCAPI");
-    for archive in REUSSIR_ARCHIVES {
-        watch_archive(&lib_dir, archive);
-    }
-    for archive in TPDE_ARCHIVES {
-        watch_archive(&lib_dir, archive);
-    }
-
     println!("cargo:rerun-if-env-changed=REUSSIR_CAPI_LIB_DIR");
 }
