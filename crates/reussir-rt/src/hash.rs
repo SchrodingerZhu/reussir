@@ -18,6 +18,15 @@
 //!
 //! One-shot entry points sit alongside for hashing a single value, where
 //! building a hasher would be pure overhead.
+//!
+//! Everything reachable from a PolyFFI texture is `#[inline]`. A texture
+//! is compiled as its own crate, and these wrappers are the first
+//! non-generic runtime functions a texture calls — generic APIs
+//! monomorphize into the texture and inline for free, while a bare
+//! non-generic call would survive as a real cross-crate call on the
+//! hashing hot path. The attribute exports their MIR so they inline the
+//! same way, leaving one-shot digests and per-write marshalling with no
+//! call overhead over upstream rapidhash.
 
 use std::hash::Hasher as _;
 
@@ -35,40 +44,48 @@ pub const DEFAULT_SEED: u64 = fast::RapidHasher::DEFAULT_SEED;
 pub struct FastHasher(Rc<fast::RapidHasher<'static>>);
 
 impl Default for FastHasher {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl FastHasher {
+    #[inline]
     pub fn new() -> Self {
         Self(Rc::new(fast::RapidHasher::default_const()))
     }
 
+    #[inline]
     pub fn with_seed(seed: u64) -> Self {
         Self(Rc::new(fast::RapidHasher::new(seed)))
     }
 
+    #[inline]
     pub fn write_u64(mut self, value: u64) -> Self {
         self.0.make_mut().write_u64(value);
         self
     }
 
+    #[inline]
     pub fn write_u32(mut self, value: u32) -> Self {
         self.0.make_mut().write_u32(value);
         self
     }
 
+    #[inline]
     pub fn write_u16(mut self, value: u16) -> Self {
         self.0.make_mut().write_u16(value);
         self
     }
 
+    #[inline]
     pub fn write_u8(mut self, value: u8) -> Self {
         self.0.make_mut().write_u8(value);
         self
     }
 
+    #[inline]
     pub fn finish(&self) -> u64 {
         self.0.data_ref().finish()
     }
@@ -81,40 +98,48 @@ impl FastHasher {
 pub struct StrongHasher(Rc<quality::RapidHasher<'static>>);
 
 impl Default for StrongHasher {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl StrongHasher {
+    #[inline]
     pub fn new() -> Self {
         Self(Rc::new(quality::RapidHasher::default_const()))
     }
 
+    #[inline]
     pub fn with_seed(seed: u64) -> Self {
         Self(Rc::new(quality::RapidHasher::new(seed)))
     }
 
+    #[inline]
     pub fn write_u64(mut self, value: u64) -> Self {
         self.0.make_mut().write_u64(value);
         self
     }
 
+    #[inline]
     pub fn write_u32(mut self, value: u32) -> Self {
         self.0.make_mut().write_u32(value);
         self
     }
 
+    #[inline]
     pub fn write_u16(mut self, value: u16) -> Self {
         self.0.make_mut().write_u16(value);
         self
     }
 
+    #[inline]
     pub fn write_u8(mut self, value: u8) -> Self {
         self.0.make_mut().write_u8(value);
         self
     }
 
+    #[inline]
     pub fn finish(&self) -> u64 {
         self.0.data_ref().finish()
     }
@@ -123,6 +148,7 @@ impl StrongHasher {
 /// One-shot: the `fast` digest of a single 64-bit value under the default
 /// seed. Equivalent to creating a hasher, writing, and finishing, without
 /// the allocation.
+#[inline]
 pub fn fast_hash_u64(value: u64) -> u64 {
     let mut h = fast::RapidHasher::default_const();
     h.write_u64(value);
@@ -130,6 +156,7 @@ pub fn fast_hash_u64(value: u64) -> u64 {
 }
 
 /// One-shot `fast` digest under an explicit seed.
+#[inline]
 pub fn fast_hash_u64_seeded(value: u64, seed: u64) -> u64 {
     let mut h = fast::RapidHasher::new(seed);
     h.write_u64(value);
@@ -138,6 +165,7 @@ pub fn fast_hash_u64_seeded(value: u64, seed: u64) -> u64 {
 
 /// One-shot: the `quality` digest of a single 64-bit value under the
 /// default seed.
+#[inline]
 pub fn strong_hash_u64(value: u64) -> u64 {
     let mut h = quality::RapidHasher::default_const();
     h.write_u64(value);
@@ -145,6 +173,7 @@ pub fn strong_hash_u64(value: u64) -> u64 {
 }
 
 /// One-shot `quality` digest under an explicit seed.
+#[inline]
 pub fn strong_hash_u64_seeded(value: u64, seed: u64) -> u64 {
     let mut h = quality::RapidHasher::new(seed);
     h.write_u64(value);
