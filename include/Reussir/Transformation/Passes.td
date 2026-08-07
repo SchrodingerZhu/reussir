@@ -98,6 +98,29 @@ def ReussirRcCreateFusionPass
 }
 
 //===----------------------------------------------------------------------===//
+// PartialMove
+//===----------------------------------------------------------------------===//
+def ReussirPartialMovePass
+    : Pass<"reussir-partial-move", "::mlir::func::FuncOp"> {
+  let summary = "recognize and materialize partial moves";
+  let description = [{
+    `reussir-partial-move` recognizes a projection-only compound owner whose
+    last projection appears after an earlier extracted member is consumed.
+    When all nontrivial top-level members transfer, it gathers the canonical
+    extraction chains at the first consuming use and advances the root
+    decrement to that ownership cut. It rejects control flow and any crossed
+    count observation that may alias the root. Complete transfer is required
+    because an unbound member's early drop may invoke observable cleanup glue.
+
+    The already-adjacent retain/decrement pattern is the degenerate case. Both
+    forms materialize as a tagless destructuring decrement whose
+    `boundMembers` transfer on the unique path and rematerialize their retains
+    on the shared path.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // RcDispatchFusion
 //===----------------------------------------------------------------------===//
 def ReussirRcDispatchFusionPass
@@ -114,13 +137,6 @@ def ReussirRcDispatchFusionPass
     cancels against the destructuring decrement in
     `reussir-inc-dec-cancellation` by rematerializing the bound retains.
 
-    The pass also recognizes a projection-only compound owner whose last
-    projection appears after an earlier extracted member is consumed. When all
-    nontrivial top-level members transfer, it gathers the canonical extraction
-    chains at the first consuming use and advances a tagless destructuring
-    decrement to that ownership cut. It rejects control flow and any crossed
-    count observation that may alias the root. Complete transfer is required
-    because an unbound member's early drop may invoke observable cleanup glue.
   }];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }

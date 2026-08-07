@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-rc-dispatch-fusion | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-partial-move | %FileCheck %s
 
 // A rebuild-style consumption of a compound box: fields are loaded and
 // retained, then the box is released. The fusion folds the retains into a

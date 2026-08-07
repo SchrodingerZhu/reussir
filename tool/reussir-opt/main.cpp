@@ -68,6 +68,9 @@ int main(int argc, char **argv) {
     return reussir::createReussirRcDispatchFusionPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return reussir::createReussirPartialMovePass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return reussir::createReussirRegionPatternsPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {

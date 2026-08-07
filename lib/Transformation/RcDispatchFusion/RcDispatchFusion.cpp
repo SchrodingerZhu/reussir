@@ -66,7 +66,9 @@
 #include "Reussir/Transformation/Passes.h"
 
 #include <llvm/ADT/DenseSet.h>
+#include <llvm/ADT/SmallDenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <mlir/Analysis/AliasAnalysis.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
@@ -77,6 +79,7 @@
 namespace reussir {
 
 #define GEN_PASS_DEF_REUSSIRRCDISPATCHFUSIONPASS
+#define GEN_PASS_DEF_REUSSIRPARTIALMOVEPASS
 #include "Reussir/Transformation/Passes.h.inc"
 
 namespace {
@@ -230,7 +233,8 @@ matchCompoundExtraction(ReussirRefProjectOp project,
       !load->isBeforeInBlock(terminalDec))
     return std::nullopt;
 
-  CompoundExtraction extraction{project.getIndex().getSExtValue(), load};
+  CompoundExtraction extraction{
+      project.getIndex().getSExtValue(), load, nullptr, {}};
   extraction.chain.push_back(project);
   extraction.chain.push_back(load);
 
@@ -416,7 +420,7 @@ bool scheduleCompleteCompoundMove(ReussirRcDecOp dec,
     return false;
 
   mlir::Operation *cut = nullptr;
-  for (const CompoundExtraction &extraction : extractions) {
+  for (CompoundExtraction &extraction : extractions) {
     for (mlir::Operation *user : extraction.load.getValue().getUsers()) {
       if (chainOps.contains(user))
         continue;
@@ -494,12 +498,18 @@ bool scheduleCompleteCompoundMove(ReussirRcDecOp dec,
     if (user == dec)
       continue;
     auto borrow = llvm::cast<ReussirRcBorrowOp>(user);
-    assert(borrow->isBeforeInBlock(dec));
+    if (!borrow->isBeforeInBlock(dec))
+      llvm::report_fatal_error("partial move left a borrow after its root dec");
     for (mlir::Operation *borrowUser : borrow.getBorrowed().getUsers()) {
       auto project = llvm::cast<ReussirRefProjectOp>(borrowUser);
-      assert(project->isBeforeInBlock(dec));
+      if (!project->isBeforeInBlock(dec))
+        llvm::report_fatal_error(
+            "partial move left a projection after its root dec");
       for (mlir::Operation *projectUser : project.getProjected().getUsers())
-        assert(projectUser->isBeforeInBlock(dec));
+        if (!projectUser->isBeforeInBlock(dec))
+          llvm::report_fatal_error(
+              "partial move left a projected reference live after its root "
+              "dec");
     }
   }
   return true;
@@ -522,8 +532,15 @@ void fuseCompoundConsumption(ReussirRcDecOp dec) {
       !recordType.hasNoRegionalFields())
     return;
 
-  llvm::SmallVector<mlir::Operation *> retains;
+  llvm::SmallDenseMap<int64_t, llvm::SmallVector<mlir::Operation *, 2>, 4>
+      retainsByMember;
   llvm::SmallVector<int64_t> bound;
+  auto rememberRetain = [&](int64_t index, mlir::Operation *retain) {
+    auto &memberRetains = retainsByMember[index];
+    if (memberRetains.empty())
+      bound.push_back(index);
+    memberRetains.push_back(retain);
+  };
   for (mlir::Operation *cursor = dec->getPrevNode(); cursor;
        cursor = cursor->getPrevNode()) {
     if (auto inc = llvm::dyn_cast<ReussirRcIncOp>(cursor)) {
@@ -531,17 +548,13 @@ void fuseCompoundConsumption(ReussirRcDecOp dec) {
       // cancellation; do not shadow it.
       if (inc.getRcPtr() == dec.getRcPtr())
         return;
-      if (auto idx = loadedMemberIndex(inc.getRcPtr(), dec.getRcPtr())) {
-        retains.push_back(cursor);
-        bound.push_back(*idx);
-      }
+      if (auto idx = loadedMemberIndex(inc.getRcPtr(), dec.getRcPtr()))
+        rememberRetain(*idx, cursor);
       continue;
     }
     if (auto acquire = llvm::dyn_cast<ReussirRefAcquireOp>(cursor)) {
-      if (auto idx = acquiredMemberIndex(acquire, dec.getRcPtr())) {
-        retains.push_back(cursor);
-        bound.push_back(*idx);
-      }
+      if (auto idx = acquiredMemberIndex(acquire, dec.getRcPtr()))
+        rememberRetain(*idx, cursor);
       continue;
     }
     // Reads of any box and spills of loaded values commute with the
@@ -559,8 +572,11 @@ void fuseCompoundConsumption(ReussirRcDecOp dec) {
 
   mlir::OpBuilder builder(dec);
   dec.setBoundMembersAttr(builder.getDenseI64ArrayAttr(bound));
-  for (mlir::Operation *retain : retains)
-    retain->erase();
+  // The box owns one reference per field, so at most one retain per member
+  // can be replaced by that transferred owner. Duplicate projections are
+  // additional real copies and keep their remaining retains.
+  for (int64_t index : bound)
+    retainsByMember[index].front()->erase();
 }
 
 struct RcDispatchFusionPass
@@ -568,8 +584,6 @@ struct RcDispatchFusionPass
   using Base::Base;
 
   void runOnOperation() override {
-    mlir::AliasAnalysis aliasAnalysis(getOperation());
-    registerAliasAnalysisImplementations(aliasAnalysis);
     getOperation()->walk([&](ReussirRecordDispatchOp dispatch) {
       auto borrow = llvm::dyn_cast_if_present<ReussirRcBorrowOp>(
           dispatch.getVariant().getDefiningOp());
@@ -597,6 +611,16 @@ struct RcDispatchFusionPass
         fuseArm(region, tagSet[0], scrutinee);
       }
     });
+  }
+};
+
+struct PartialMovePass
+    : public impl::ReussirPartialMovePassBase<PartialMovePass> {
+  using Base::Base;
+
+  void runOnOperation() override {
+    mlir::AliasAnalysis aliasAnalysis(getOperation());
+    registerAliasAnalysisImplementations(aliasAnalysis);
     llvm::SmallVector<ReussirRcDecOp> decrements;
     getOperation()->walk(
         [&](ReussirRcDecOp dec) { decrements.push_back(dec); });
