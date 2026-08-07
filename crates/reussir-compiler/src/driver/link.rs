@@ -67,6 +67,85 @@ impl ScratchMembers {
     pub(crate) fn finish(self, output: &Path, triple: &str) -> Result<(), String> {
         write_archive(output, &self.members, triple)
     }
+
+    /// Archive the members for a linked product, keeping the scratch
+    /// directory alive until rustc has consumed it.
+    pub(crate) fn link_archive(&self, triple: &str) -> Result<PathBuf, String> {
+        let name = if triple.contains("-windows") && triple.contains("msvc") {
+            format!("{}-link-input.lib", self.stem)
+        } else {
+            format!("lib{}-link-input.a", self.stem)
+        };
+        let path = self.dir.path().join(name);
+        write_archive(&path, &self.members, triple)?;
+        Ok(path)
+    }
+}
+
+/// Hand an archive to rustc as a native static library. Native libraries are
+/// ordered before Rust dependency rlibs in the final linker invocation;
+/// `-C link-arg=<archive>` is appended after them instead, which leaves GNU
+/// BFD unable to revisit an earlier runtime rlib when the archive introduces a
+/// new reference.
+fn add_native_staticlib(
+    cmd: &mut std::process::Command,
+    archive: &Path,
+    whole_archive: bool,
+    triple: &str,
+) -> Result<(), String> {
+    // ld64 implements neither the GNU `-l:exact-file` form rustc's
+    // `+verbatim` modifier selects nor anything like it, so the native-library
+    // spelling cannot name these archives on Apple targets at all. It does not
+    // need to: ld64 resolves archive members regardless of command-line
+    // position, so the ordering problem this function exists to fix is a
+    // GNU-BFD-only problem, and the direct-path spelling is sound there.
+    // `-force_load` carries the whole-archive semantics.
+    if triple.contains("-apple-") {
+        if whole_archive {
+            cmd.arg(format!("-Clink-arg=-Wl,-force_load,{}", archive.display()));
+        } else {
+            cmd.arg(format!("-Clink-arg={}", archive.display()));
+        }
+        return Ok(());
+    }
+    let name = archive.file_name().ok_or_else(|| {
+        format!(
+            "cannot link archive `{}` without a file name",
+            archive.display()
+        )
+    })?;
+    let parent = archive
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    cmd.arg("-L").arg(format!("native={}", parent.display()));
+    let name = name.to_string_lossy();
+    // wasm-ld does not implement the GNU `-l:exact-file` form rustc's
+    // `+verbatim` modifier selects. Rene's wasm archives use the conventional
+    // `lib<name>.a` spelling, so hand rustc the logical library name there.
+    let (modifiers, name) = if triple.starts_with("wasm") {
+        let name = name
+            .strip_prefix("lib")
+            .and_then(|name| name.strip_suffix(".a"))
+            .ok_or_else(|| {
+                format!(
+                    "wasm static archive `{}` must be named `lib<name>.a`",
+                    archive.display()
+                )
+            })?;
+        let modifiers = if whole_archive {
+            "static:+whole-archive"
+        } else {
+            "static"
+        };
+        (modifiers, name)
+    } else if whole_archive {
+        ("static:+whole-archive,+verbatim", name.as_ref())
+    } else {
+        ("static:+verbatim", name.as_ref())
+    };
+    cmd.arg("-l").arg(format!("{modifiers}={name}"));
+    Ok(())
 }
 
 /// The launcher a Reussir executable is built around, embedded at compile
@@ -166,16 +245,26 @@ pub(crate) fn link_product(
         }
         cmd.arg(format!("-Clinker={}", linker.display()));
     }
-    for member in &scratch.members {
-        cmd.arg(format!("-Clink-arg={}", member.display()));
-    }
+    // Put this compilation's objects into one whole-archived native library.
+    // The launcher references `__reussir_main`, but a dynlib's empty shim has
+    // no reference that would extract its exports; whole-archive preserves the
+    // previous direct-object behavior for both products. More importantly,
+    // rustc places native libraries before dependency rlibs, giving the linker
+    // the dependency order it needs: product, Reussir packages, runtime. This
+    // is a DAG requirement: rene terminates on dependency cycles but does not
+    // reject them, and no linear archive order can resolve a cycle under a
+    // single-pass linker. Manual `--link-lib` callers share the documented
+    // dependency-order contract and the same limitation.
+    let product_archive = scratch.link_archive(triple)?;
+    add_native_staticlib(&mut cmd, &product_archive, true, triple)?;
     // Dependency staticlibs (`--link-lib`), after this compilation's own
     // members: declared extern symbols — dependency ground functions, and
-    // the mono-exported private helpers their shipped bodies reach —
-    // resolve here. Named by path like the runtime archive below, and for
-    // the same reason.
+    // the mono-exported private helpers their shipped bodies reach — resolve
+    // here. These must be native libraries rather than trailing raw link args:
+    // the runtime rlib follows them and resolves the references they add even
+    // under a single-pass archive linker such as GNU BFD.
     for lib in &cli.link_libs {
-        cmd.arg(format!("-Clink-arg={}", lib.display()));
+        add_native_staticlib(&mut cmd, lib, false, triple)?;
     }
 
     // The runtime.
