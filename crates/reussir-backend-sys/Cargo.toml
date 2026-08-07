@@ -12,3 +12,6 @@ name = "reussir_backend_sys"
 
 [dependencies]
 mlir-sys.workspace = true
+
+[build-dependencies]
+blake3.workspace = true

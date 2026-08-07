@@ -3135,6 +3135,7 @@ dependencies = [
 name = "reussir-backend-sys"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "mlir-sys",
 ]
 
