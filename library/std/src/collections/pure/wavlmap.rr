@@ -144,38 +144,44 @@ fn bal_right_ins<K, V>(
     }
 }
 
-enum [value] Changed<K, V> { C(Tree<K, V>, bool) }
+struct [value] Changed<K, V> { tree : Tree<K, V>, changed : bool }
 
 fn ins<K : Ord, V>(t : Tree<K, V>, x : K, xv : V) -> Changed<K, V> {
     match t {
-        Tree::Leaf => Changed::C {
-            Tree::Node { 0, Tree::Leaf, x, xv, Tree::Leaf },
-            true
+        Tree::Leaf => Changed {
+            tree: Tree::Node { 0, Tree::Leaf, x, xv, Tree::Leaf },
+            changed: true
         },
         Tree::Node(r, l, k, v, rt) => match x.cmp(k) {
-            Ordering::Less => match ins(l, x, xv) {
-                Changed::C(l2, added) => Changed::C {
-                    if added {
-                        bal_left_ins(r, l2, k, v, rt)
+            Ordering::Less => {
+                let below = ins(l, x, xv);
+                let sub = below.tree;
+                let changed = below.changed;
+                Changed {
+                    tree: if changed {
+                        bal_left_ins(r, sub, k, v, rt)
                     } else {
-                        Tree::Node { r, l2, k, v, rt }
+                        Tree::Node { r, sub, k, v, rt }
                     },
-                    added
+                    changed
                 }
             },
-            Ordering::Greater => match ins(rt, x, xv) {
-                Changed::C(rt2, added) => Changed::C {
-                    if added {
-                        bal_right_ins(r, l, k, v, rt2)
+            Ordering::Greater => {
+                let below = ins(rt, x, xv);
+                let sub = below.tree;
+                let changed = below.changed;
+                Changed {
+                    tree: if changed {
+                        bal_right_ins(r, l, k, v, sub)
                     } else {
-                        Tree::Node { r, l, k, v, rt2 }
+                        Tree::Node { r, l, k, v, sub }
                     },
-                    added
+                    changed
                 }
             },
-            Ordering::Equal => Changed::C {
-                Tree::Node { r, l, k, xv, rt },
-                false
+            Ordering::Equal => Changed {
+                tree: Tree::Node { r, l, k, xv, rt },
+                changed: false
             }
         }
     }
@@ -321,14 +327,18 @@ fn bal_right_del<K, V>(
     }
 }
 
-enum [value] DelMin<K, V> { D(K, V, Tree<K, V>) }
+struct [value] DelMin<K, V> { key : K, value : V, tree : Tree<K, V> }
 
 fn del_min<K, V>(t : Tree<K, V>) -> DelMin<K, V> {
     match t {
-        Tree::Node(_, Tree::Leaf, k, v, rt) => DelMin::D { k, v, rt },
-        Tree::Node(r, l, k, v, rt) => match del_min(l) {
-            DelMin::D(m, mv, l2) =>
-                DelMin::D { m, mv, bal_left_del(r, l2, k, v, rt) }
+        Tree::Node(_, Tree::Leaf, k, v, rt) =>
+            DelMin { key: k, value: v, tree: rt },
+        Tree::Node(r, l, k, v, rt) => {
+            let least = del_min(l);
+            let m = least.key;
+            let mv = least.value;
+            let sub = least.tree;
+            DelMin { key: m, value: mv, tree: bal_left_del(r, sub, k, v, rt) }
         },
         Tree::Leaf => core::intrinsic::panic::panic()
     }
@@ -339,45 +349,55 @@ fn remove_root<K, V>(r : i64, l : Tree<K, V>, rt : Tree<K, V>) -> Tree<K, V> {
         Tree::Leaf => rt,
         Tree::Node(lrank, ll, lk, lv, lr) => match rt {
             Tree::Leaf => Tree::Node { lrank, ll, lk, lv, lr },
-            Tree::Node(rrank, rl, rk, rv, rr) =>
-                match del_min(Tree::Node { rrank, rl, rk, rv, rr }) {
-                    DelMin::D(m, mv, rt2) => bal_right_del(
-                        r,
-                        Tree::Node { lrank, ll, lk, lv, lr },
-                        m,
-                        mv,
-                        rt2
-                    )
-                }
+            Tree::Node(rrank, rl, rk, rv, rr) => {
+                let least = del_min(Tree::Node { rrank, rl, rk, rv, rr });
+                let m = least.key;
+                let mv = least.value;
+                let sub = least.tree;
+                bal_right_del(
+                    r,
+                    Tree::Node { lrank, ll, lk, lv, lr },
+                    m,
+                    mv,
+                    sub
+                )
+            }
         }
     }
 }
 
 fn del<K : Ord, V>(t : Tree<K, V>, x : K) -> Changed<K, V> {
     match t {
-        Tree::Leaf => Changed::C { Tree::Leaf, false },
+        Tree::Leaf => Changed { tree: Tree::Leaf, changed: false },
         Tree::Node(r, l, k, v, rt) => match x.cmp(k) {
-            Ordering::Less => match del(l, x) {
-                Changed::C(l2, found) => Changed::C {
-                    if found {
-                        bal_left_del(r, l2, k, v, rt)
+            Ordering::Less => {
+                let below = del(l, x);
+                let sub = below.tree;
+                let changed = below.changed;
+                Changed {
+                    tree: if changed {
+                        bal_left_del(r, sub, k, v, rt)
                     } else {
-                        Tree::Node { r, l2, k, v, rt }
+                        Tree::Node { r, sub, k, v, rt }
                     },
-                    found
+                    changed
                 }
             },
-            Ordering::Greater => match del(rt, x) {
-                Changed::C(rt2, found) => Changed::C {
-                    if found {
-                        bal_right_del(r, l, k, v, rt2)
+            Ordering::Greater => {
+                let below = del(rt, x);
+                let sub = below.tree;
+                let changed = below.changed;
+                Changed {
+                    tree: if changed {
+                        bal_right_del(r, l, k, v, sub)
                     } else {
-                        Tree::Node { r, l, k, v, rt2 }
+                        Tree::Node { r, l, k, v, sub }
                     },
-                    found
+                    changed
                 }
             },
-            Ordering::Equal => Changed::C { remove_root(r, l, rt), true }
+            Ordering::Equal =>
+                Changed { tree: remove_root(r, l, rt), changed: true }
         }
     }
 }
@@ -465,21 +485,19 @@ impl<K : Ord, V> WavlMap<K, V> {
 
     /// Adds or replaces the entry for `key`. O(log n).
     pub fn insert(self : Self, key : K, value : V) -> Self {
-        match ins(self.root, key, value) {
-            Changed::C(root, added) => WavlMap {
-                size: if added { self.size + 1 } else { self.size },
-                root
-            }
+        let r = ins(self.root, key, value);
+        WavlMap {
+            size: if r.changed { self.size + 1 } else { self.size },
+            root: r.tree
         }
     }
 
     /// Removes the entry for `key` when present. O(log n).
     pub fn remove(self : Self, key : K) -> Self {
-        match del(self.root, key) {
-            Changed::C(root, found) => WavlMap {
-                size: if found { self.size - 1 } else { self.size },
-                root
-            }
+        let r = del(self.root, key);
+        WavlMap {
+            size: if r.changed { self.size - 1 } else { self.size },
+            root: r.tree
         }
     }
 

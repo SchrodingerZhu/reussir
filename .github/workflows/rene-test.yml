@@ -54,6 +54,35 @@ jobs:
           toolchain: nightly-2026-02-15
           components: clippy
 
+      # sailfish's derive serializes template compilation on a lock file under
+      # `target/`, and a process that loses the race gives up after only
+      # 100 * 10ms = 1s, panicking with "Lock file ... is stuck" — which then
+      # cascades into a bogus unsatisfied-trait-bound error for the template
+      # struct. Two things conspire to blow that budget here:
+      #
+      #   * `--all-targets` builds rene's lib and its test harness as two
+      #     concurrent rustc processes, and both expand the same derive.
+      #   * The templates are recompiled on *every* run even with `target/`
+      #     restored from cache: sailfish stamps each output back to its
+      #     input's mtime, and a fresh checkout stamps the sources newer than
+      #     any cached output, so `input_filetime > output_filetime` always
+      #     holds.
+      #
+      # So the winner does the full compile while the loser waits on a
+      # one-second fuse. Compiling the templates once, on their own, leaves
+      # the parallel pass with nothing to do but a timestamp check.
+      #
+      # Separately, a build killed while the lock is held leaks the file, and
+      # the cache restores it on the next run — at which point nobody is ever
+      # going to remove it. Clearing it is safe (pure build state), and has to
+      # come first, or the warm-up is what trips over it.
+      - name: Clear stale sailfish template locks
+        shell: bash
+        run: find target -path '*sailfish-compiler*/out/templates/*.lock' -delete 2>/dev/null || true
+
+      - name: Warm the sailfish template cache
+        run: cargo clippy -p rene --lib
+
       - name: Clippy
         run: cargo clippy -p rene --all-targets -- -D warnings
 

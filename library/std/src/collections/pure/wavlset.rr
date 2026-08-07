@@ -95,12 +95,12 @@ fn view<T>(t : Tree<T>) -> View<T> {
 
 // A rebalanced subtree plus whether its own rank moved (raised on the
 // insertion path, dropped on the deletion path).
-enum [value] Reb<T> { R(Tree<T>, bool) }
+struct [value] Reb<T> { tree : Tree<T>, moved : bool }
 
 // The subtree, whether the set changed, and whether the rank moved.
-enum [value] Ins<T> { I(Tree<T>, bool, bool) }
-enum [value] Del<T> { D(Tree<T>, bool, bool) }
-enum [value] Min<T> { M(T, Tree<T>, bool) }
+struct [value] Ins<T> { tree : Tree<T>, added : bool, raised : bool }
+struct [value] Del<T> { tree : Tree<T>, found : bool, dropped : bool }
+struct [value] Min<T> { key : T, tree : Tree<T>, dropped : bool }
 
 // Rebalance after an insertion into the left child raised its rank:
 // promote while the sibling difference is 1, otherwise rotate once or
@@ -113,33 +113,36 @@ fn bal_left_ins<T>(
     raised : bool
 ) -> Reb<T> {
     if !raised {
-        Reb::R { mk(p, l, k, rt), false }
+        Reb { tree: mk(p, l, k, rt), moved: false }
     } else {
         if p != parity(l) {
             // The difference was 2 and is now 1: still legal, stop here.
-            Reb::R { mk(p, l, k, rt), false }
+            Reb { tree: mk(p, l, k, rt), moved: false }
         } else {
             if p != parity(rt) {
                 // Left difference hit 0 with a 1-difference sibling: promote.
-                Reb::R { mk(!p, l, k, rt), true }
+                Reb { tree: mk(!p, l, k, rt), moved: true }
             } else {
                 match view(l) {
                     View::Node(_, ll, lk, lr) => {
                         if parity(lr) == p {
                             // The left child is (1,2): one right rotation.
-                            Reb::R { mk(p, ll, lk, mk(!p, lr, k, rt)), false }
+                            Reb {
+                                tree: mk(p, ll, lk, mk(!p, lr, k, rt)),
+                                moved: false
+                            }
                         } else {
                             // The left child is (2,1): rotate through its
                             // inner grandchild.
                             match view(lr) {
-                                View::Node(_, zl, zk, zr) => Reb::R {
-                                    mk(
+                                View::Node(_, zl, zk, zr) => Reb {
+                                    tree: mk(
                                         p,
                                         mk(!p, ll, lk, zl),
                                         zk,
                                         mk(!p, zr, k, rt)
                                     ),
-                                    false
+                                    moved: false
                                 },
                                 View::Leaf => core::intrinsic::panic::panic()
                             }
@@ -160,28 +163,31 @@ fn bal_right_ins<T>(
     raised : bool
 ) -> Reb<T> {
     if !raised {
-        Reb::R { mk(p, l, k, rt), false }
+        Reb { tree: mk(p, l, k, rt), moved: false }
     } else {
         if p != parity(rt) {
-            Reb::R { mk(p, l, k, rt), false }
+            Reb { tree: mk(p, l, k, rt), moved: false }
         } else {
             if p != parity(l) {
-                Reb::R { mk(!p, l, k, rt), true }
+                Reb { tree: mk(!p, l, k, rt), moved: true }
             } else {
                 match view(rt) {
                     View::Node(_, rl, rk, rr) => {
                         if parity(rl) == p {
-                            Reb::R { mk(p, mk(!p, l, k, rl), rk, rr), false }
+                            Reb {
+                                tree: mk(p, mk(!p, l, k, rl), rk, rr),
+                                moved: false
+                            }
                         } else {
                             match view(rl) {
-                                View::Node(_, zl, zk, zr) => Reb::R {
-                                    mk(
+                                View::Node(_, zl, zk, zr) => Reb {
+                                    tree: mk(
                                         p,
                                         mk(!p, l, k, zl),
                                         zk,
                                         mk(!p, zr, rk, rr)
                                     ),
-                                    false
+                                    moved: false
                                 },
                                 View::Leaf => core::intrinsic::panic::panic()
                             }
@@ -198,21 +204,33 @@ fn ins<T : Ord>(t : Tree<T>, x : T) -> Ins<T> {
     match view(t) {
         View::Leaf =>
             // A fresh leaf has rank 0: even, and it raises its parent.
-            Ins::I { mk(false, Tree::Leaf, x, Tree::Leaf), true, true },
+            Ins {
+                tree: mk(false, Tree::Leaf, x, Tree::Leaf),
+                added: true,
+                raised: true
+            },
         View::Node(p, l, k, rt) => match x.cmp(k) {
-            Ordering::Less => match ins(l, x) {
-                Ins::I(l2, added, raised) =>
-                    match bal_left_ins(p, l2, k, rt, raised) {
-                        Reb::R(t2, raised2) => Ins::I { t2, added, raised2 }
-                    }
+            Ordering::Less => {
+                // Project the whole carrier before the call: leaving a
+                // field unread across it would keep the carrier alive and
+                // make the subtree a second reference, costing a retain.
+                let below = ins(l, x);
+                let sub = below.tree;
+                let added = below.added;
+                let raised = below.raised;
+                let reb = bal_left_ins(p, sub, k, rt, raised);
+                Ins { tree: reb.tree, added, raised: reb.moved }
             },
-            Ordering::Greater => match ins(rt, x) {
-                Ins::I(rt2, added, raised) =>
-                    match bal_right_ins(p, l, k, rt2, raised) {
-                        Reb::R(t2, raised2) => Ins::I { t2, added, raised2 }
-                    }
+            Ordering::Greater => {
+                let below = ins(rt, x);
+                let sub = below.tree;
+                let added = below.added;
+                let raised = below.raised;
+                let reb = bal_right_ins(p, l, k, sub, raised);
+                Ins { tree: reb.tree, added, raised: reb.moved }
             },
-            Ordering::Equal => Ins::I { mk(p, l, k, rt), false, false }
+            Ordering::Equal =>
+                Ins { tree: mk(p, l, k, rt), added: false, raised: false }
         }
     }
 }
@@ -228,28 +246,34 @@ fn bal_left_del<T>(
     dropped : bool
 ) -> Reb<T> {
     if !dropped {
-        Reb::R { mk(p, l, k, rt), false }
+        Reb { tree: mk(p, l, k, rt), moved: false }
     } else {
         if p == parity(l) {
             // The difference was 1 and is now 2, which is legal unless a
             // (2,2) leaf formed — that must demote to rank 0.
             if is_leaf(l) && is_leaf(rt) {
-                Reb::R { mk(false, l, k, rt), true }
+                Reb { tree: mk(false, l, k, rt), moved: true }
             } else {
-                Reb::R { mk(p, l, k, rt), false }
+                Reb { tree: mk(p, l, k, rt), moved: false }
             }
         } else {
             match view(rt) {
                 View::Node(py, yl, yk, yr) => {
                     if py == p {
                         // The sibling is a 2-child: demote and keep climbing.
-                        Reb::R { mk(!p, l, k, mk(py, yl, yk, yr)), true }
+                        Reb {
+                            tree: mk(!p, l, k, mk(py, yl, yk, yr)),
+                            moved: true
+                        }
                     } else {
                         let same_yl = parity(yl) == py;
                         let same_yr = parity(yr) == py;
                         if same_yl && same_yr {
                             // The sibling is (2,2): demote both, keep climbing.
-                            Reb::R { mk(!p, l, k, mk(p, yl, yk, yr)), true }
+                            Reb {
+                                tree: mk(!p, l, k, mk(p, yl, yk, yr)),
+                                moved: true
+                            }
                         } else {
                             if !same_yr {
                                 // One left rotation. The demoted pivot may
@@ -259,20 +283,20 @@ fn bal_left_del<T>(
                                 } else {
                                     !p
                                 };
-                                Reb::R {
-                                    mk(p, mk(xp, l, k, yl), yk, yr),
-                                    false
+                                Reb {
+                                    tree: mk(p, mk(xp, l, k, yl), yk, yr),
+                                    moved: false
                                 }
                             } else {
                                 match view(yl) {
-                                    View::Node(_, zl, zk, zr) => Reb::R {
-                                        mk(
+                                    View::Node(_, zl, zk, zr) => Reb {
+                                        tree: mk(
                                             p,
                                             mk(p, l, k, zl),
                                             zk,
                                             mk(p, zr, yk, yr)
                                         ),
-                                        false
+                                        moved: false
                                     },
                                     View::Leaf =>
                                         core::intrinsic::panic::panic()
@@ -295,24 +319,30 @@ fn bal_right_del<T>(
     dropped : bool
 ) -> Reb<T> {
     if !dropped {
-        Reb::R { mk(p, l, k, rt), false }
+        Reb { tree: mk(p, l, k, rt), moved: false }
     } else {
         if p == parity(rt) {
             if is_leaf(l) && is_leaf(rt) {
-                Reb::R { mk(false, l, k, rt), true }
+                Reb { tree: mk(false, l, k, rt), moved: true }
             } else {
-                Reb::R { mk(p, l, k, rt), false }
+                Reb { tree: mk(p, l, k, rt), moved: false }
             }
         } else {
             match view(l) {
                 View::Node(py, yl, yk, yr) => {
                     if py == p {
-                        Reb::R { mk(!p, mk(py, yl, yk, yr), k, rt), true }
+                        Reb {
+                            tree: mk(!p, mk(py, yl, yk, yr), k, rt),
+                            moved: true
+                        }
                     } else {
                         let same_yl = parity(yl) == py;
                         let same_yr = parity(yr) == py;
                         if same_yl && same_yr {
-                            Reb::R { mk(!p, mk(p, yl, yk, yr), k, rt), true }
+                            Reb {
+                                tree: mk(!p, mk(p, yl, yk, yr), k, rt),
+                                moved: true
+                            }
                         } else {
                             if !same_yl {
                                 let xp = if is_leaf(yr) && is_leaf(rt) {
@@ -320,20 +350,20 @@ fn bal_right_del<T>(
                                 } else {
                                     !p
                                 };
-                                Reb::R {
-                                    mk(p, yl, yk, mk(xp, yr, k, rt)),
-                                    false
+                                Reb {
+                                    tree: mk(p, yl, yk, mk(xp, yr, k, rt)),
+                                    moved: false
                                 }
                             } else {
                                 match view(yr) {
-                                    View::Node(_, zl, zk, zr) => Reb::R {
-                                        mk(
+                                    View::Node(_, zl, zk, zr) => Reb {
+                                        tree: mk(
                                             p,
                                             mk(p, yl, yk, zl),
                                             zk,
                                             mk(p, zr, k, rt)
                                         ),
-                                        false
+                                        moved: false
                                     },
                                     View::Leaf =>
                                         core::intrinsic::panic::panic()
@@ -353,13 +383,14 @@ fn del_min<T>(t : Tree<T>) -> Min<T> {
         View::Node(p, l, k, rt) => {
             if is_leaf(l) {
                 // A leaf or right-unary node: removing it drops the rank.
-                Min::M { k, rt, true }
+                Min { key: k, tree: rt, dropped: true }
             } else {
-                match del_min(l) {
-                    Min::M(m, l2, d) => match bal_left_del(p, l2, k, rt, d) {
-                        Reb::R(t2, d2) => Min::M { m, t2, d2 }
-                    }
-                }
+                let least = del_min(l);
+                let m = least.key;
+                let sub = least.tree;
+                let dropped = least.dropped;
+                let reb = bal_left_del(p, sub, k, rt, dropped);
+                Min { key: m, tree: reb.tree, dropped: reb.moved }
             }
         },
         View::Leaf => core::intrinsic::panic::panic()
@@ -368,36 +399,43 @@ fn del_min<T>(t : Tree<T>) -> Min<T> {
 
 fn remove_root<T>(p : bool, l : Tree<T>, rt : Tree<T>) -> Reb<T> {
     if is_leaf(l) {
-        Reb::R { rt, true }
+        Reb { tree: rt, moved: true }
     } else {
         if is_leaf(rt) {
-            Reb::R { l, true }
+            Reb { tree: l, moved: true }
         } else {
-            match del_min(rt) {
-                Min::M(m, rt2, d) => bal_right_del(p, l, m, rt2, d)
-            }
+            let least = del_min(rt);
+            let m = least.key;
+            let sub = least.tree;
+            let dropped = least.dropped;
+            bal_right_del(p, l, m, sub, dropped)
         }
     }
 }
 
 fn del<T : Ord>(t : Tree<T>, x : T) -> Del<T> {
     match view(t) {
-        View::Leaf => Del::D { Tree::Leaf, false, false },
+        View::Leaf => Del { tree: Tree::Leaf, found: false, dropped: false },
         View::Node(p, l, k, rt) => match x.cmp(k) {
-            Ordering::Less => match del(l, x) {
-                Del::D(l2, found, dropped) =>
-                    match bal_left_del(p, l2, k, rt, dropped) {
-                        Reb::R(t2, d2) => Del::D { t2, found, d2 }
-                    }
+            Ordering::Less => {
+                let below = del(l, x);
+                let sub = below.tree;
+                let found = below.found;
+                let dropped = below.dropped;
+                let reb = bal_left_del(p, sub, k, rt, dropped);
+                Del { tree: reb.tree, found, dropped: reb.moved }
             },
-            Ordering::Greater => match del(rt, x) {
-                Del::D(rt2, found, dropped) =>
-                    match bal_right_del(p, l, k, rt2, dropped) {
-                        Reb::R(t2, d2) => Del::D { t2, found, d2 }
-                    }
+            Ordering::Greater => {
+                let below = del(rt, x);
+                let sub = below.tree;
+                let found = below.found;
+                let dropped = below.dropped;
+                let reb = bal_right_del(p, l, k, sub, dropped);
+                Del { tree: reb.tree, found, dropped: reb.moved }
             },
-            Ordering::Equal => match remove_root(p, l, rt) {
-                Reb::R(t2, d2) => Del::D { t2, true, d2 }
+            Ordering::Equal => {
+                let reb = remove_root(p, l, rt);
+                Del { tree: reb.tree, found: true, dropped: reb.moved }
             }
         }
     }
@@ -471,21 +509,19 @@ impl<T : Ord> WavlSet<T> {
 
     /// Adds `value`, keeping the existing element on equality. O(log n).
     pub fn insert(self : Self, value : T) -> Self {
-        match ins(self.root, value) {
-            Ins::I(root, added, _) => WavlSet {
-                size: if added { self.size + 1 } else { self.size },
-                root
-            }
+        let r = ins(self.root, value);
+        WavlSet {
+            size: if r.added { self.size + 1 } else { self.size },
+            root: r.tree
         }
     }
 
     /// Removes `value` when present. O(log n).
     pub fn remove(self : Self, value : T) -> Self {
-        match del(self.root, value) {
-            Del::D(root, found, _) => WavlSet {
-                size: if found { self.size - 1 } else { self.size },
-                root
-            }
+        let r = del(self.root, value);
+        WavlSet {
+            size: if r.found { self.size - 1 } else { self.size },
+            root: r.tree
         }
     }
 
