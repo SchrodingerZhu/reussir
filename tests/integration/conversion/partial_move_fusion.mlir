@@ -16,8 +16,8 @@ func.func private @consume_one(!rc_tree)
 
 // CHECK-LABEL: func.func @lazy_projection(
 // CHECK: %[[ROOT_REF:.+]] = reussir.rc.borrow
-// CHECK: %[[TREE_SLOT:.+]] = reussir.ref.project (%[[ROOT_REF]]
-// CHECK: %[[TREE:.+]] = reussir.ref.load (%[[TREE_SLOT]]
+// CHECK: %[[TREE_SLOT:.+]] = reussir.ref.project(%[[ROOT_REF]]
+// CHECK: %[[TREE:.+]] = reussir.ref.load(%[[TREE_SLOT]]
 // CHECK-NOT: reussir.rc.inc
 // CHECK: reussir.ref.project
 // CHECK: reussir.ref.load
@@ -88,14 +88,38 @@ func.func @incomplete_transfer(%carrier: !rc_two_trees) -> i1 {
   return %late : i1
 }
 
-// A count observer on a same-typed MayAlias value blocks the advanced release.
+// A count observer on a same-typed MayAlias value inside the crossed interval
+// blocks the advanced release.
 // CHECK-LABEL: func.func @count_observer(
 // CHECK: reussir.rc.inc
-// CHECK: reussir.rc.is_unique
 // CHECK: call @consume_one
+// CHECK: reussir.rc.is_unique
 // CHECK: reussir.rc.dec
 // CHECK-NOT: boundMembers
 func.func @count_observer(%carrier: !rc_carrier, %alias: !rc_carrier) -> i1 {
+  %ref = reussir.rc.borrow (%carrier : !rc_carrier) : !reussir.ref<!carrier>
+  %tree_slot = reussir.ref.project (%ref : !reussir.ref<!carrier>) [0] : !reussir.ref<!rc_tree>
+  %tree = reussir.ref.load (%tree_slot : !reussir.ref<!rc_tree>) : !rc_tree
+  reussir.rc.inc (%tree : !rc_tree)
+  func.call @consume_one(%tree) : (!rc_tree) -> ()
+  %unique = reussir.rc.is_unique (%alias : !rc_carrier) : i1
+  %late_slot = reussir.ref.project (%ref : !reussir.ref<!carrier>) [2] : !reussir.ref<i1>
+  %late = reussir.ref.load (%late_slot : !reussir.ref<i1>) : i1
+  reussir.rc.dec (%carrier : !rc_carrier)
+  reussir.rc.dec (%alias : !rc_carrier)
+  return %late : i1
+}
+
+// An observer before the cut is not crossed: the release may still advance to
+// the cut after it without changing the observer's count.
+// CHECK-LABEL: func.func @count_observer_before_cut(
+// CHECK: reussir.rc.is_unique
+// CHECK-NOT: reussir.rc.inc
+// CHECK: reussir.rc.dec
+// CHECK-SAME: boundMembers = array<i64: 0>
+// CHECK-NEXT: call @consume_one
+func.func @count_observer_before_cut(%carrier: !rc_carrier,
+                                     %alias: !rc_carrier) -> i1 {
   %ref = reussir.rc.borrow (%carrier : !rc_carrier) : !reussir.ref<!carrier>
   %tree_slot = reussir.ref.project (%ref : !reussir.ref<!carrier>) [0] : !reussir.ref<!rc_tree>
   %tree = reussir.ref.load (%tree_slot : !reussir.ref<!rc_tree>) : !rc_tree
