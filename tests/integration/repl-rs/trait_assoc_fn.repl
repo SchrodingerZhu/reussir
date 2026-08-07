@@ -1,0 +1,66 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror -Onone | %FileCheck %s
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+:{
+pub trait Maker {
+    fn make() -> Self;
+    fn make_with(seed: i64) -> Self;
+    fn get(self: Self) -> i64;
+}
+}:
+// CHECK: Definition added.
+
+:{
+pub struct Box { value: i64 }
+}:
+// CHECK: Definition added.
+
+:{
+impl Maker for Box {
+    fn make() -> Self { Box { value: 7 } }
+    fn make_with(seed: i64) -> Self { Box { value: seed } }
+    fn get(self: Self) -> i64 { self.value }
+}
+}:
+// CHECK: Definition added.
+
+// `Type::f(…)`: `Self` named by the path prefix.
+Box::make().get()
+// CHECK: 7 : i64
+
+Box::make_with(41).get()
+// CHECK: 41 : i64
+
+// `Trait::f()`: `Self` solved from the annotated binding.
+:{
+fn trait_form() -> i64 {
+    let b : Box = Maker::make();
+    b.get()
+}
+}:
+// CHECK: Definition added.
+
+trait_form()
+// CHECK: 7 : i64
+
+// `G::f()`: per-instance resolution at monomorphization.
+:{
+fn fresh<M: Maker>(seed: i64) -> M { M::make_with(seed) }
+}:
+// CHECK: Definition added.
+
+:{
+fn generic_form() -> i64 {
+    let b : Box = fresh(11);
+    b.get()
+}
+}:
+// CHECK: Definition added.
+
+generic_form()
+// CHECK: 11 : i64
+
+// UFCS through the type prefix reaches ordinary methods too.
+Box::get(Box::make_with(5))
+// CHECK: 5 : i64

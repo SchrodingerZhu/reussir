@@ -2971,27 +2971,33 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return;
         }
         // Receiver: form parity, not type equality (flexivity refinement and
-        // the arc peel make the spellings differ structurally).
-        let impl_form = {
-            let (_, pty) = &proto.params[0];
-            match pty.kind() {
-                TyKind::Arc(_) => ReceiverForm::Arc,
-                _ if self.is_flex(*pty) => ReceiverForm::Flex,
-                _ => ReceiverForm::Value,
-            }
-        };
-        if impl_form != sig.receiver {
-            let want = match sig.receiver {
-                ReceiverForm::Value => "self: Self",
-                ReceiverForm::Arc => "self: Arc<Self>",
-                ReceiverForm::Flex => "self: [flex] Self",
+        // the arc peel make the spellings differ structurally). An associated
+        // function (no receiver in the trait) has no slot to compare — every
+        // parameter is positional, and a stray `self`-typed first parameter
+        // would already fail the positional type check below.
+        if let Some(sig_form) = sig.receiver {
+            let impl_form = {
+                let (_, pty) = &proto.params[0];
+                match pty.kind() {
+                    TyKind::Arc(_) => ReceiverForm::Arc,
+                    _ if self.is_flex(*pty) => ReceiverForm::Flex,
+                    _ => ReceiverForm::Value,
+                }
             };
-            self.error(
-                span,
-                format!("the receiver of `{name}` must be `{want}` to match trait `{tr}`"),
-            );
+            if impl_form != sig_form {
+                let want = match sig_form {
+                    ReceiverForm::Value => "self: Self",
+                    ReceiverForm::Arc => "self: Arc<Self>",
+                    ReceiverForm::Flex => "self: [flex] Self",
+                };
+                self.error(
+                    span,
+                    format!("the receiver of `{name}` must be `{want}` to match trait `{tr}`"),
+                );
+            }
         }
-        for (i, ((_, ity), &sty)) in proto.params.iter().zip(&sig.params).enumerate().skip(1) {
+        let skip = sig.receiver.is_some() as usize;
+        for (i, ((_, ity), &sty)) in proto.params.iter().zip(&sig.params).enumerate().skip(skip) {
             let want = crate::semi::traits::subst::replace_generics(self.tcx, sty, &map);
             if *ity != want {
                 self.error(
@@ -3495,14 +3501,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.generic_names.clear();
         self.self_alias = None;
 
-        let Some(receiver) = receiver else {
-            self.error(
-                mspan,
-                "a trait method must take `self` as its first parameter",
-            );
-            return None;
-        };
-        if receiver == ReceiverForm::Flex && !func.is_regional {
+        // No leading `self` parameter is an *associated function*: every
+        // parameter is ordinary, and the call forms are `Trait::f(…)`,
+        // `Type::f(…)`, and `G::f(…)` rather than dot dispatch.
+        if receiver == Some(ReceiverForm::Flex) && !func.is_regional {
             self.error(
                 mspan,
                 "a `[flex] Self` receiver requires a `regional fn`: a flex \

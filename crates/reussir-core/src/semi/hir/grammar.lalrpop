@@ -213,6 +213,9 @@ TraitMethodSig: raw::TraitMethodItem =
 RecvForm: raw::RecvForm = {
     "Arc" => raw::RecvForm::Arc,
     "flex" => raw::RecvForm::Flex,
+    // An associated function: no receiver at all (`fn f !(…)`), as opposed
+    // to the unmarked by-value `self`.
+    "!" => raw::RecvForm::None,
 };
 
 /// An impl item: the trait reference carries its full argument list

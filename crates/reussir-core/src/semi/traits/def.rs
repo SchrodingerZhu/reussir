@@ -24,18 +24,30 @@ pub enum ReceiverForm {
 }
 
 /// A method declared by a trait. Bodies live on the impl side (Phase 1+).
-/// Parameters are positional (`params[0]` is the receiver): conformance is
-/// positional and no bodies exist, so names would serialize dead weight.
+/// Parameters are positional (`params[0]` is the receiver when one exists):
+/// conformance is positional and no bodies exist, so names would serialize
+/// dead weight.
 #[derive(Clone, Debug)]
 pub struct MethodSig<'tcx> {
     pub name: TokenKey,
     /// The method's own generics, following the trait's in the binder.
     pub generics: Vec<(TokenKey, GenericId)>,
-    pub receiver: ReceiverForm,
+    /// `None` is an associated function: no receiver, every parameter
+    /// ordinary, called as `Trait::f(…)` / `Type::f(…)` rather than by dot
+    /// dispatch.
+    pub receiver: Option<ReceiverForm>,
     pub params: Vec<Ty<'tcx>>,
     pub ret: Ty<'tcx>,
     pub is_regional: bool,
     pub span: Option<Span>,
+}
+
+impl<'tcx> MethodSig<'tcx> {
+    /// The non-receiver parameters: everything after the receiver slot, or
+    /// all of them for an associated function.
+    pub fn value_params(&self) -> &[Ty<'tcx>] {
+        &self.params[self.receiver.is_some() as usize..]
+    }
 }
 
 /// An associated type declaration. Reserved so the IR can grow into projections

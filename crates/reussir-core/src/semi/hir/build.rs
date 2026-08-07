@@ -694,9 +694,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                     name: m.name.clone(),
                     generics: self.text_generics(&m.generics),
                     receiver: match m.receiver {
-                        raw::RecvForm::Value => ReceiverForm::Value,
-                        raw::RecvForm::Arc => ReceiverForm::Arc,
-                        raw::RecvForm::Flex => ReceiverForm::Flex,
+                        raw::RecvForm::Value => Some(ReceiverForm::Value),
+                        raw::RecvForm::Arc => Some(ReceiverForm::Arc),
+                        raw::RecvForm::Flex => Some(ReceiverForm::Flex),
+                        raw::RecvForm::None => None,
                     },
                     params: self.tys(&m.params),
                     ret: self.ty(&m.ret),

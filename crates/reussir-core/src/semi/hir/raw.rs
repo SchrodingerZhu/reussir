@@ -61,12 +61,14 @@ pub struct TraitMethodItem {
     pub span: Option<Span>,
 }
 
-/// The serialized receiver form tag; `Value` is the unmarked default.
+/// The serialized receiver form tag; `Value` is the unmarked default, and
+/// `None` (spelled `!`) is an associated function without a receiver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecvForm {
     Value,
     Arc,
     Flex,
+    None,
 }
 
 /// An impl item: trait path + full argument list (`args[0]` = self type)
