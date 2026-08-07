@@ -113,6 +113,14 @@ def ReussirRcDispatchFusionPass
     on the shared path the bound members are retained. A preceding increment
     cancels against the destructuring decrement in
     `reussir-inc-dec-cancellation` by rematerializing the bound retains.
+
+    The pass also recognizes a projection-only compound owner whose last
+    projection appears after an earlier extracted member is consumed. When all
+    nontrivial top-level members transfer, it gathers the canonical extraction
+    chains at the first consuming use and advances a tagless destructuring
+    decrement to that ownership cut. It rejects control flow and any crossed
+    count observation that may alias the root. Complete transfer is required
+    because an unbound member's early drop may invoke observable cleanup glue.
   }];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }
