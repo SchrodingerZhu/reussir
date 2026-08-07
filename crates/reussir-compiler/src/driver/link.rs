@@ -93,6 +93,21 @@ fn add_native_staticlib(
     whole_archive: bool,
     triple: &str,
 ) -> Result<(), String> {
+    // ld64 implements neither the GNU `-l:exact-file` form rustc's
+    // `+verbatim` modifier selects nor anything like it, so the native-library
+    // spelling cannot name these archives on Apple targets at all. It does not
+    // need to: ld64 resolves archive members regardless of command-line
+    // position, so the ordering problem this function exists to fix is a
+    // GNU-BFD-only problem, and the direct-path spelling is sound there.
+    // `-force_load` carries the whole-archive semantics.
+    if triple.contains("-apple-") {
+        if whole_archive {
+            cmd.arg(format!("-Clink-arg=-Wl,-force_load,{}", archive.display()));
+        } else {
+            cmd.arg(format!("-Clink-arg={}", archive.display()));
+        }
+        return Ok(());
+    }
     let name = archive.file_name().ok_or_else(|| {
         format!(
             "cannot link archive `{}` without a file name",

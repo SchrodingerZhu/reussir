@@ -522,8 +522,10 @@ fn passes_the_target_to_linking_rustc() {
 /// Product and package archives must reach rustc as native static libraries,
 /// before the runtime rlib. A trailing `-C link-arg=<archive>` makes GNU BFD
 /// scan the runtime first and never revisit it when the package archive adds a
-/// new runtime reference.
-#[cfg(unix)]
+/// new runtime reference. Not on Apple hosts: ld64 has no `-l:exact-file`
+/// form, resolves archives regardless of position, and keeps the direct-path
+/// spelling — covered by `passes_link_inputs_as_paths_on_apple` below.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn passes_link_inputs_before_the_runtime_rlib() {
     let dir = scratch("link-archive-order");
@@ -600,6 +602,77 @@ fn passes_link_inputs_before_the_runtime_rlib() {
             .iter()
             .any(|arg| arg == &format!("-Clink-arg={}", dependency.display())),
         "dependency archive remained a trailing raw link arg: {args:#?}"
+    );
+}
+
+/// The Apple spelling of the same link: ld64 cannot be handed exact archive
+/// names through `-l` (no GNU `-l:` form), and does not need the reordering —
+/// it resolves archive members regardless of position. Product archives keep
+/// whole-archive semantics through `-force_load`; package archives stay
+/// direct paths.
+#[cfg(target_os = "macos")]
+#[test]
+fn passes_link_inputs_as_paths_on_apple() {
+    let dir = scratch("link-archive-apple");
+    let input = dir.path().join("program.ll");
+    std::fs::write(&input, "define void @__reussir_main() {\n  ret void\n}\n")
+        .expect("write LLVM IR");
+    let runtime = dir.path().join("libreussir_rt.rlib");
+    std::fs::write(&runtime, "").expect("write fake runtime");
+    let deps = dir.path().join("deps");
+    std::fs::create_dir(&deps).expect("create dependency directory");
+    let dependency = deps.join("libdependency.a");
+    std::fs::write(&dependency, "").expect("write fake dependency archive");
+    let rustc = shell_script(
+        dir.path(),
+        "record-link-rustc",
+        "printf '%s\n' \"$@\" > \"$FAKE_RUSTC_LOG\"\n\
+         previous=''\n\
+         for arg in \"$@\"; do\n\
+           if [ \"$previous\" = '-o' ]; then : > \"$arg\"; fi\n\
+           previous=\"$arg\"\n\
+         done\n",
+    );
+    let log = dir.path().join("rustc-args");
+    let output_path = dir.path().join("program");
+    let output = Command::new(env!("CARGO_BIN_EXE_rrc"))
+        .args([
+            input.as_os_str(),
+            "-o".as_ref(),
+            output_path.as_os_str(),
+            "--emit".as_ref(),
+            "executable".as_ref(),
+            "--polyffi-rust-path".as_ref(),
+            rustc.as_os_str(),
+            "--polyffi-libdir".as_ref(),
+            dir.path().as_os_str(),
+            "--link-lib".as_ref(),
+            dependency.as_os_str(),
+        ])
+        .env("FAKE_RUSTC_LOG", &log)
+        .output()
+        .expect("spawn rrc");
+    assert!(
+        output.status.success(),
+        "link driver failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let args: Vec<_> = read(&log).lines().map(str::to_owned).collect();
+    assert!(
+        args.iter().any(|arg| {
+            arg.starts_with("-Clink-arg=-Wl,-force_load,") && arg.ends_with("-link-input.a")
+        }),
+        "no force-loaded product archive: {args:#?}"
+    );
+    assert!(
+        args.iter()
+            .any(|arg| arg == &format!("-Clink-arg={}", dependency.display())),
+        "dependency archive not passed by path: {args:#?}"
+    );
+    assert!(
+        !args.iter().any(|arg| arg.contains("+verbatim")),
+        "verbatim native-library spelling reached an Apple link: {args:#?}"
     );
 }
 
