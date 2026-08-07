@@ -1,0 +1,149 @@
+// RUN: %rrc %s -o %t.o --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %t.o %S/wavl_fold_traverse.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// Folding a tree must not consume it: a fold borrows the structure, so any
+// traversal that follows has to see every node intact. This is the shape that
+// regressed pre-#534 (heap-use-after-free: a destructuring decrement in the
+// fold released nodes the next traversal read), and the shape the ordinary
+// suite could not pin — the wrong value only surfaces when the allocator
+// reuses the freed block. The sanitizer gate over this file is the guard;
+// this run only checks the values.
+//
+// The structure mirrors `std::collections::pure::wavlset`: a two-variant
+// rank-encoded tree, a `[value]` view unifying the variants behind a call,
+// and fold/traversal both matching on that view. The view indirection is
+// load-bearing — it is what turned the fold's release into a destructuring
+// decrement of a still-shared node.
+//
+// Each observation is reported separately (packed one digit per check), so a
+// future failure names the observation that broke instead of collapsing into
+// one boolean: digit 0 = list length after fold, digit 1 = fold result,
+// digit 2 = re-traversal after a second fold. The two controls localize a
+// failure to the fold: `to_list` twice with no fold, and fold followed by a
+// traversal-free read.
+
+enum Tree {
+    Leaf,
+    Even(Tree, i64, Tree),
+    Odd(Tree, i64, Tree)
+}
+
+enum [value] View {
+    VLeaf,
+    VNode(bool, Tree, i64, Tree)
+}
+
+enum List {
+    Nil,
+    Cons(i64, List)
+}
+
+fn view(t : Tree) -> View {
+    match t {
+        Tree::Leaf => View::VLeaf,
+        Tree::Even(l, k, r) => View::VNode { false, l, k, r },
+        Tree::Odd(l, k, r) => View::VNode { true, l, k, r }
+    }
+}
+
+// Unbalanced insertion: rebalancing is irrelevant to the defect shape (a
+// single node reproduced it), and keeping it out keeps the test readable.
+fn ins(t : Tree, x : i64) -> Tree {
+    match view(t) {
+        View::VLeaf => Tree::Even { Tree::Leaf, x, Tree::Leaf },
+        View::VNode(p, l, k, r) =>
+            if x < k {
+                if p { Tree::Odd { ins(l, x), k, r } }
+                else { Tree::Even { ins(l, x), k, r } }
+            } else {
+                if x > k {
+                    if p { Tree::Odd { l, k, ins(r, x) } }
+                    else { Tree::Even { l, k, ins(r, x) } }
+                } else {
+                    if p { Tree::Odd { l, k, r } } else { Tree::Even { l, k, r } }
+                }
+            }
+    }
+}
+
+fn to_list_acc(t : Tree, acc : List) -> List {
+    match view(t) {
+        View::VLeaf => acc,
+        View::VNode(_, l, k, r) =>
+            to_list_acc(l, List::Cons { k, to_list_acc(r, acc) })
+    }
+}
+
+fn fold_tree<U>(t : Tree, initial : U, f : (U, i64) -> U) -> U {
+    match view(t) {
+        View::VLeaf => initial,
+        View::VNode(_, l, k, r) =>
+            fold_tree(r, f(fold_tree(l, initial, f), k), f)
+    }
+}
+
+fn list_len(l : List, acc : i64) -> i64 {
+    match l {
+        List::Nil => acc,
+        List::Cons(_, rest) => list_len(rest, acc + 1)
+    }
+}
+
+struct Set {
+    size : u64,
+    root : Tree
+}
+
+fn insert(s : Set, x : i64) -> Set {
+    Set { size: s.size + 1, root: ins(s.root, x) }
+}
+
+fn set_fold<U>(s : Set, initial : U, f : (U, i64) -> U) -> U {
+    fold_tree(s.root, initial, f)
+}
+
+fn set_to_list(s : Set) -> List {
+    to_list_acc(s.root, List::Nil)
+}
+
+fn build7() -> Set {
+    let e = Set { size: 0, root: Tree::Leaf };
+    insert(insert(insert(insert(insert(insert(insert(e, 4), 2), 9), 7), 1), 8), 3)
+}
+
+// Fold, then traverse: the tree must still be whole. Packed one digit per
+// observation so the harness can name the one that broke.
+fn fold_then_traverse() -> i64 {
+    let t = build7();
+    let sum = set_fold(t, 0, |acc, x| acc + x);
+    let len = list_len(set_to_list(t), 0);
+    let sum2 = set_fold(t, 0, |acc, x| acc * 10 + x);
+    let len2 = list_len(set_to_list(t), 0);
+    // len = 7, sum = 34, sum2 = 1234789 (sorted digits), len2 = 7
+    let d0 = if len == 7 { 1 } else { 0 };
+    let d1 = if sum == 34 { 1 } else { 0 };
+    let d2 = if sum2 == 1234789 { 1 } else { 0 };
+    let d3 = if len2 == 7 { 1 } else { 0 };
+    d0 * 1000 + d1 * 100 + d2 * 10 + d3
+}
+
+// Control: two traversals with no fold — isolates traversal and storage.
+fn traverse_twice() -> i64 {
+    let t = build7();
+    let a = list_len(set_to_list(t), 0);
+    let b = list_len(set_to_list(t), 0);
+    if a == 7 { 1 } else { 0 } * 10 + (if b == 7 { 1 } else { 0 })
+}
+
+// Control: fold followed by a traversal-free use — isolates the fold itself.
+fn fold_then_peek() -> i64 {
+    let t = build7();
+    let sum = set_fold(t, 0, |acc, x| acc + x);
+    let rooted = match view(t.root) { View::VLeaf => 0, View::VNode(_, _, _, _) => 1 };
+    (if sum == 34 { 1 } else { 0 }) * 10 + rooted
+}
+
+extern "C" trampoline "fold_then_traverse_ffi" = fold_then_traverse;
+extern "C" trampoline "traverse_twice_ffi" = traverse_twice;
+extern "C" trampoline "fold_then_peek_ffi" = fold_then_peek;

@@ -1,0 +1,15 @@
+// REQUIRES: asan
+// ASan gate over frontend/wavl_fold_traverse.rr — the fold-then-traverse
+// shape. A fold borrows the tree; pre-#534 a destructuring decrement in the
+// fold freed nodes the following traversal read (heap-use-after-free in
+// `fold_tree`/`to_list_acc`). The ordinary run of that file cannot pin this
+// class: the wrong value only appears when the allocator reuses the freed
+// block, so it passed green on some hosts with the defect present. ASan over
+// the platform-allocator runtime reports the free-then-read regardless of
+// reuse timing; this gate is the guard, verified to fire on the last pre-fix
+// compiler and stay silent on the fixed one.
+
+// RUN: %rrc %S/../frontend/wavl_fold_traverse.rr -o %t.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call --sanitizer address --nullary-variant-encoding arch-independent
+// RUN: %cc %asan_flags -c -x ir %t.ll -o %t.o
+// RUN: %cc %asan_flags %t.o %S/../frontend/wavl_fold_traverse.c %reussir_rt_asan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.exe

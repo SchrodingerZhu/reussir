@@ -11,6 +11,22 @@ import std::collections::pure::list::List;
 
 fn wb(v : bool) { test_utils::io::write_i32(if v { 1 } else { 0 }) }
 
+fn w(v : i64) { test_utils::io::write_i32(v as i32) }
+
+fn list_len(l : List<i64>, acc : i64) -> i64 {
+    match l {
+        List::Nil => acc,
+        List::Cons(_, t) => list_len(t, acc + 1)
+    }
+}
+
+fn entry_list_len(l : List<Entry<i64, i64>>, acc : i64) -> i64 {
+    match l {
+        List::Nil => acc,
+        List::Cons(_, t) => entry_list_len(t, acc + 1)
+    }
+}
+
 fn lcg(seed : i64) -> i64 {
     (seed * 1103515245 + 12345) % 2147483648
 }
@@ -61,20 +77,36 @@ fn keys_sorted(l : List<Entry<i64, i64>>) -> bool {
     }
 }
 
+// The ordering cases print their observations rather than collapsing each to
+// a boolean. Two reasons, both learned the hard way from this file:
+//
+//   - `sorted_strict` is vacuously true on an empty list, so a container that
+//     silently yields nothing passes the ordering check. A printed length
+//     cannot hide that.
+//   - a boolean names no value, so a failure says only "something in this
+//     block is wrong". Printing each observation makes the log say which.
+//
+// The two traversals bracket the fold deliberately: `fold_left` walks the
+// tree while `to_list` materializes it, and a bug that disturbs the tree
+// during the fold shows up as a second length that disagrees with the first.
 fn test_set_order() {
     let s = WavlSet::new().insert(4 as i64).insert(2).insert(9).insert(7)
         .insert(1).insert(8).insert(3);
+    w(list_len(s.to_list(), 0));                  // before any fold
+    w(s.fold_left(0, |acc, x| acc * 10 + x));
+    w(list_len(s.to_list(), 0));                  // after the fold
+    w(WavlSet::from_list(s.to_list()).len() as i64);
     wb(sorted_strict(s.to_list()));
-    wb(s.fold_left(0, |acc, x| acc * 10 + x) == 1234789);
-    wb(WavlSet::from_list(s.to_list()).len() == s.len());
 }
 
 fn test_map_order() {
     let m = WavlMap::new().insert(4 as i64, 40 as i64).insert(2, 20)
         .insert(9, 90).insert(7, 70);
+    w(entry_list_len(m.to_list(), 0));            // before any fold
+    w(m.fold_left(0, |acc, k, v| acc + k * 100 + v));
+    w(entry_list_len(m.to_list(), 0));            // after the fold
+    w(WavlMap::from_list(m.to_list()).get(9 as i64).unwrap_or(0));
     wb(keys_sorted(m.to_list()));
-    wb(m.fold_left(0, |acc, k, v| acc + k * 100 + v) == 2420);
-    wb(WavlMap::from_list(m.to_list()).get(9 as i64).unwrap_or(0) == 90);
 }
 
 // Sorted-list reference model for the churn case.

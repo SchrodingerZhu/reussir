@@ -105,7 +105,19 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
     set(target_dir "${CMAKE_BINARY_DIR}/target-${suffix}")
     set(output_lib "${REUSSIR_RT_OUTPUT_DIR}/sanitizers/${REUSSIR_RT_SHARED_PREFIX}.${suffix}.${REUSSIR_RT_SHARED_EXT}")
     set(rustflags "-Awarnings -Zsanitizer=${sanitizer}")
-    set(target_linker "CARGO_TARGET_${RUST_CARGO_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}")
+    # Point rustc at the C compiler as its linker driver, so the sanitizer
+    # runtime it asks for is the one this Clang ships. That is wrong on an
+    # `*-pc-windows-msvc` target: rustc emits MSVC-style linker arguments
+    # there (`/NOLOGO`, `/OUT:…`, bare `kernel32.lib`), and handing those to
+    # the clang driver fails immediately with "no such file or directory:
+    # '/NOLOGO'". Leave the target's own linker in place on MSVC — rustc
+    # resolves `link.exe` itself and links the ASan runtime from its
+    # `-Zsanitizer` support.
+    if(MSVC OR RUST_HOST_TRIPLE MATCHES "windows-msvc")
+        set(target_linker "")
+    else()
+        set(target_linker "CARGO_TARGET_${RUST_CARGO_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}")
+    endif()
     set(target_rustflags "CARGO_TARGET_${RUST_CARGO_TARGET_ENV}_RUSTFLAGS=${rustflags}")
     set(cargo_extra_args "")
 

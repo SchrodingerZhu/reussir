@@ -1,11 +1,13 @@
+mod native_archive;
+
 use std::env;
 use std::path::PathBuf;
 
 // Locates the directory holding the staged Reussir static archives
-// (libReussirCAPI.a plus the libMLIRReussir* and libMLIRSync* component
-// archives). CMake sets REUSSIR_CAPI_LIB_DIR when it drives the build; a direct
-// `cargo` invocation falls back to the in-tree `build/lib` next to the workspace
-// root.
+// (libReussirCAPI.a/ReussirCAPI.lib plus the MLIRReussir* and MLIRSync*
+// component archives). CMake sets REUSSIR_CAPI_LIB_DIR when it drives the build;
+// a direct `cargo` invocation falls back to the in-tree `build/lib` next to the
+// workspace root.
 fn capi_lib_dir() -> PathBuf {
     if let Ok(dir) = env::var("REUSSIR_CAPI_LIB_DIR") {
         return PathBuf::from(dir);
@@ -64,8 +66,17 @@ const REUSSIR_ARCHIVES: &[&str] = &[
 // references to them, so they are simply skipped.
 const TPDE_ARCHIVES: &[&str] = &["tpde_llvm", "tpde", "spdlog", "fadec", "disarm64"];
 
+fn linked_archives() -> Vec<&'static str> {
+    std::iter::once("ReussirCAPI")
+        .chain(REUSSIR_ARCHIVES.iter().copied())
+        .chain(TPDE_ARCHIVES.iter().copied())
+        .collect()
+}
+
 fn main() {
     let lib_dir = capi_lib_dir();
+    native_archive::track(&lib_dir, &linked_archives())
+        .expect("failed to fingerprint native Reussir archives");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
     // ReussirCAPI (dialect handle + pass factories + helpers) and the Reussir
@@ -77,7 +88,7 @@ fn main() {
         println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
     }
     for archive in TPDE_ARCHIVES {
-        if lib_dir.join(format!("lib{archive}.a")).exists() {
+        if native_archive::archive_exists(&lib_dir, archive) {
             println!("cargo:rustc-link-lib=static:+whole-archive={archive}");
         }
     }
@@ -85,23 +96,7 @@ fn main() {
     // Cargo does not track the contents of native static libraries, so without
     // this it keeps reusing a binary linked against an out-of-date archive when
     // only the C++ side (libReussirCAPI.a / the component archives) is rebuilt.
-    // Declaring each archive as a build input forces a relink when it changes.
-    println!(
-        "cargo:rerun-if-changed={}",
-        lib_dir.join("libReussirCAPI.a").display()
-    );
-    for archive in REUSSIR_ARCHIVES {
-        println!(
-            "cargo:rerun-if-changed={}",
-            lib_dir.join(format!("lib{archive}.a")).display()
-        );
-    }
-    for archive in TPDE_ARCHIVES {
-        let path = lib_dir.join(format!("lib{archive}.a"));
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-    }
-
+    // Declaring each archive as a build input makes Cargo request a relink when
+    // it changes; the fingerprint above makes that request miss compiler caches.
     println!("cargo:rerun-if-env-changed=REUSSIR_CAPI_LIB_DIR");
 }
