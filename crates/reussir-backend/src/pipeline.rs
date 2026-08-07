@@ -368,8 +368,8 @@ pub fn run_lowering_pipeline(
         // the cancellation pass (which cancels `inc; destructuring dec` into
         // borrow semantics) and the decrement expansion (which expands the
         // tagged decs shallowly).
-        func:   sys::reussirCreatePartialMovePass();
         func:   sys::reussirCreateRcDispatchFusionPass();
+        func:   sys::reussirCreatePartialMovePass();
         func:   sys::reussirCreateIncDecCancellationPass();
         module: sys::reussirCreateRcDecrementExpansionPass();
         func:   sys::reussirCreateInferVariantTagPass();
