@@ -1820,9 +1820,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 );
                 return Some(self.poison(span));
             };
-            // The receiver's own type drives dispatch (it may be `Arc<Self>`
-            // or `[flex] Self`); the prefix only selected the candidate.
+            // The prefix constrains the receiver: unify them — up to the arc
+            // peel, and carrying the receiver's own flexivity refinement —
+            // so `Box::get(p)` on a `Pair` errors rather than silently
+            // dispatching on `Pair`'s impl after selecting by `Box`.
             let receiver = self.infer_expr(recv_src);
+            let resolved = self.infer.shallow_resolve(receiver.ty);
+            let peeled = self.peel_arc(resolved);
+            let expected = match (self_ty.kind(), peeled.kind()) {
+                (TyKind::Record { def, args, .. }, TyKind::Record { flex, .. }) => {
+                    self.tcx.mk_record(*def, args, *flex)
+                }
+                _ => self_ty,
+            };
+            self.expect(peeled, expected, span);
             return Some(self.dispatch_trait_method(tid, midx, receiver, &fc.args[1..], span));
         }
         Some(self.assoc_trait_call(tid, midx, self_ty, &fc.args, span))

@@ -25,6 +25,16 @@ pub fn unsolved() -> i64 {
     0
 }
 
+// The UFCS prefix constrains the receiver: selecting by one type and
+// dispatching on another is an error, not a silent re-selection.
+pub struct Duo { a: i64 }
+impl Maker for Duo {
+    fn make() -> Self { Duo { a: 1 } }
+    fn get(self: Self) -> i64 { self.a }
+}
+// CHECK-DAG: type mismatch: expected `Box`, found `Duo`
+pub fn wrong_prefix(d : Duo) -> i64 { Box::get(d) }
+
 // The implementation must actually provide the receiver-less form: an impl
 // method with a receiver against a receiver-less trait signature is a
 // parameter-count mismatch.
