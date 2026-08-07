@@ -1,0 +1,74 @@
+// Integer bitwise operators and the bit-counting intrinsics, through every
+// textual stage: the HIR and MIR forms round-trip (shifts print as adjacent
+// angle tokens and re-parse), and the LLVM lowering picks the shift by the
+// operand's signedness — `ashr` for signed, `lshr` for unsigned.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %FileCheck %s --check-prefix=HIR < %t.hir
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.mir
+// RUN: %FileCheck %s --check-prefix=MIR < %t.mir
+// RUN: %rrc %t.hir --emit mir --no-source-locations -o -
+// RUN: %rrc %t.mir --emit llvm-ir -Onone -o %t.ll
+// RUN: %FileCheck %s --check-prefix=LLVM < %t.ll
+
+import core::intrinsic::math;
+
+// HIR: fn #combine
+// HIR-DAG: {{.*}} & {{.*}}
+// HIR-DAG: {{.*}} | {{.*}}
+// HIR-DAG: {{.*}} ^ {{.*}}
+// MIR: fn @{{.*}}combine
+// LLVM-LABEL: combine
+// LLVM-DAG: and i64
+// LLVM-DAG: or i64
+// LLVM-DAG: xor i64
+pub fn combine(a : i64, b : i64) -> i64 {
+    (a & b) + (a | b) + (a ^ b)
+}
+
+// The MIR text spells a shift as two adjacent angle tokens (`<<`), and the
+// re-entry RUN lines above prove the printed form parses back.
+// HIR: fn #shifts
+// HIR-DAG: {{.*}} << {{.*}}
+// HIR-DAG: {{.*}} >> {{.*}}
+// LLVM-LABEL: shifts
+// LLVM-DAG: shl i64
+// LLVM-DAG: ashr i64
+pub fn shifts(x : i64, n : i64) -> i64 {
+    (x << n) + (x >> n)
+}
+
+// LLVM-LABEL: shifts_unsigned
+// LLVM: lshr i64
+pub fn shifts_unsigned(x : u64, n : u64) -> u64 {
+    x >> n
+}
+
+// LLVM-LABEL: counts
+// LLVM-DAG: llvm.ctpop.i32
+// LLVM-DAG: llvm.ctlz.i32
+// LLVM-DAG: llvm.cttz.i32
+pub fn counts(x : u32) -> u32 {
+    math::ctpop(x) + math::ctlz(x) + math::cttz(x)
+}
+
+// The operators still coexist with the syntax they share tokens with:
+// lambdas after `|`, generic closers alongside the shift gluing.
+enum Pair<T> { P(T, T) }
+
+pub fn mixed(x : u32) -> u32 {
+    let p = Pair::P { x | 1, x & 7 };
+    match p {
+        Pair::P(a, b) => {
+            let dbl = |v : u32| v << 1;
+            dbl(a) + b
+        }
+    }
+}
+
+// The hash-trie rank idiom the intrinsics exist for.
+// LLVM-LABEL: rank
+// LLVM: llvm.ctpop.i32
+pub fn rank(bitmap : u32, bit : u32) -> u32 {
+    math::ctpop(bitmap & (bit - 1))
+}

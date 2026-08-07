@@ -1,0 +1,79 @@
+// REQUIRES: rrepl
+// RUN: %rrepl -i %s -lerror -Onone | %FileCheck %s
+// RUN: %rrepl -i %s -lerror | %FileCheck %s
+
+// The bitwise ladder sits between comparisons and arithmetic, Rust's
+// order: `&` binds tighter than `==`, `+` binds tighter than the shifts.
+
+12 & 10
+// CHECK: 8 : i64
+
+12 | 3
+// CHECK: 15 : i64
+
+12 ^ 10
+// CHECK: 6 : i64
+
+1 << 10
+// CHECK: 1024 : i64
+
+// A right shift follows the operand's signedness: arithmetic on signed …
+-16 >> 2
+// CHECK: -4 : i64
+
+// … logical on unsigned (the sign bit shifts in as zero; an arithmetic
+// shift here would smear it into 18446744073709551608).
+1 as u64 << 63 >> 60
+// CHECK: 8 : u64
+
+// `&` over `==`: `(6 & 2) == 2`, not C's `6 & (2 == 2)`.
+6 & 2 == 2
+// CHECK: true : bool
+
+// Arithmetic over shifts: `1 << (1 + 2)`.
+1 << 1 + 2
+// CHECK: 8 : i64
+
+// Shifts over `&`: `(32 >> 2) & 12`.
+32 >> 2 & 12
+// CHECK: 8 : i64
+
+// `&` over `^` over `|`: `(1 | (2 ^ (2 & 3)))`.
+1 | 2 ^ 2 & 3
+// CHECK: 1 : i64
+
+// Left association: `(256 >> 4) >> 2`.
+256 >> 4 >> 2
+// CHECK: 16 : i64
+
+// Shifts glue two adjacent angle tokens, so generic calls and
+// comparisons keep working around them.
+fn same<T>(x: T) -> T { x }
+// CHECK: Definition added.
+
+same(3) << same(2)
+// CHECK: 24 : i64
+
+1 << 3 > 7
+// CHECK: true : bool
+
+// The bit-counting intrinsics.
+core::intrinsic::math::ctpop(255 as u8)
+// CHECK: 8 : u8
+
+core::intrinsic::math::ctpop(2863311530 as u32)
+// CHECK: 16 : u32
+
+core::intrinsic::math::ctlz(1 as u32)
+// CHECK: 31 : u32
+
+core::intrinsic::math::cttz(64 as u32)
+// CHECK: 6 : u32
+
+core::intrinsic::math::cttz(0 as u16)
+// CHECK: 16 : u16
+
+// The hash-trie rank idiom: how many occupied slots sit below slot 6 of
+// an occupancy bitmap — `ctpop(bitmap & (bit - 1))`.
+core::intrinsic::math::ctpop((1 as u32 << 1 | 1 << 4 | 1 << 6) & ((1 << 6) - 1))
+// CHECK: 2 : u32

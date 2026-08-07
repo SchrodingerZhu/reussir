@@ -105,6 +105,11 @@ pub enum BinOp {
     Neq,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,8 +358,24 @@ fn binary_op(kind: SyntaxKind) -> Option<BinOp> {
         BangEq => BinOp::Neq,
         AmpAmp => BinOp::And,
         PipePipe => BinOp::Or,
+        Amp => BinOp::BitAnd,
+        Pipe => BinOp::BitOr,
+        Caret => BinOp::BitXor,
         _ => return None,
     })
+}
+
+/// The operator of a `BinExpr` node. Shifts have no token of their own —
+/// the parser glues two adjacent angle tokens — so a pair of operator
+/// tokens reads as the shift, and a single token maps directly.
+fn bin_expr_op(node: &ResolvedNode) -> Option<BinOp> {
+    let mut ops = tokens(node).filter_map(|t| Some((t.kind(), binary_op(t.kind())?)));
+    let (first_kind, first) = ops.next()?;
+    match (first_kind, ops.next()) {
+        (LAngle, Some((LAngle, _))) => Some(BinOp::Shl),
+        (RAngle, Some((RAngle, _))) => Some(BinOp::Shr),
+        _ => Some(first),
+    }
 }
 
 fn prim_type(text: &str) -> TypeKind {
@@ -764,9 +785,7 @@ impl Expr {
                 ExprKind::Lambda(Box::new(Lambda { args, body, ret_ty }))
             }
             BinExpr => {
-                let op = tokens(node)
-                    .find_map(|t| binary_op(t.kind()))
-                    .expect("binary operator");
+                let op = bin_expr_op(node).expect("binary operator");
                 let mut operands = expr_children(node);
                 let lhs = Expr::new(operands.next().expect("lhs"));
                 let rhs = Expr::new(operands.next().expect("rhs"));

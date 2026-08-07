@@ -707,6 +707,11 @@ fn arith_sym(op: ArithOp) -> &'static str {
         ArithOp::Mod => "%",
         ArithOp::And => "&&",
         ArithOp::Or => "||",
+        ArithOp::BitAnd => "&",
+        ArithOp::BitOr => "|",
+        ArithOp::BitXor => "^",
+        ArithOp::Shl => "<<",
+        ArithOp::Shr => ">>",
     }
 }
 

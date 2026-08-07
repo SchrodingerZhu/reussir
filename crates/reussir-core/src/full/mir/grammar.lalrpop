@@ -328,6 +328,13 @@ ArithOp: raw::ArithOp = {
     "%" => raw::ArithOp::Mod,
     "&&" => raw::ArithOp::And,
     "||" => raw::ArithOp::Or,
+    "&" => raw::ArithOp::BitAnd,
+    "|" => raw::ArithOp::BitOr,
+    "^" => raw::ArithOp::BitXor,
+    // Shifts are two adjacent angle tokens: a `<<`/`>>` token would make
+    // the lexer eat nested generic closers (`List<List<i64>>`) whole.
+    "<" "<" => raw::ArithOp::Shl,
+    ">" ">" => raw::ArithOp::Shr,
 };
 
 CmpOp: raw::CmpOp = {
@@ -453,6 +460,9 @@ extern {
         "%" => Token::Percent,
         "&&" => Token::AndAnd,
         "||" => Token::OrOr,
+        "&" => Token::Amp,
+        "|" => Token::Pipe,
+        "^" => Token::Caret,
         "<=" => Token::Le,
         ">=" => Token::Ge,
         "==" => Token::EqEq,

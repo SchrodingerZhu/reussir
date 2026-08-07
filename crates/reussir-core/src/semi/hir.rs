@@ -81,7 +81,7 @@ pub struct VarId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ExprId(pub u32);
 
-/// Arithmetic / boolean binary operators.
+/// Arithmetic / boolean / bitwise binary operators.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArithOp {
     Add,
@@ -91,6 +91,11 @@ pub enum ArithOp {
     Mod,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 /// Comparison operators (all produce `bool`).

@@ -611,6 +611,11 @@ fn arith(op: raw::ArithOp) -> ArithOp {
         raw::ArithOp::Mod => ArithOp::Mod,
         raw::ArithOp::And => ArithOp::And,
         raw::ArithOp::Or => ArithOp::Or,
+        raw::ArithOp::BitAnd => ArithOp::BitAnd,
+        raw::ArithOp::BitOr => ArithOp::BitOr,
+        raw::ArithOp::BitXor => ArithOp::BitXor,
+        raw::ArithOp::Shl => ArithOp::Shl,
+        raw::ArithOp::Shr => ArithOp::Shr,
     }
 }
 

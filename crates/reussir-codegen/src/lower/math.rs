@@ -115,5 +115,19 @@ pub(super) fn math_operation<'c>(
                 None => b.build().into(),
             }
         }
+        // The integer ops carry no fastmath attribute (the checker never
+        // passes one), and their result type is inferable.
+        MathFn::Ctpop => math::CtPopOperationBuilder::new(context, location)
+            .operand(operands[0])
+            .build()
+            .into(),
+        MathFn::Ctlz => math::CountLeadingZerosOperationBuilder::new(context, location)
+            .operand(operands[0])
+            .build()
+            .into(),
+        MathFn::Cttz => math::CountTrailingZerosOperationBuilder::new(context, location)
+            .operand(operands[0])
+            .build()
+            .into(),
     }
 }

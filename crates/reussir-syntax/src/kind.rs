@@ -104,6 +104,10 @@ pub enum SyntaxKind {
     Bang,
     /// `|`
     Pipe,
+    /// `&`
+    Amp,
+    /// `^`
+    Caret,
     /// `#`
     Pound,
     /// `_`
@@ -315,6 +319,8 @@ impl SyntaxKind {
             Percent => "`%`",
             Bang => "`!`",
             Pipe => "`|`",
+            Amp => "`&`",
+            Caret => "`^`",
             Pound => "`#`",
             Underscore => "`_`",
             Eof => "the end of the input",

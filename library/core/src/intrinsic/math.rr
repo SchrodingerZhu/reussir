@@ -121,3 +121,20 @@ pub fn fma<F: FloatingPoint>(x: F, y: F, z: F, fastmath: i64) -> F;
 
 #[lang("core::intrinsic::math::fpowi")]
 pub fn fpowi<F: FloatingPoint>(x: F, e: i32, fastmath: i64) -> F;
+
+// The integer bit-counting operations. Unlike the floating-point family
+// they take no fast-math flag: their MLIR forms carry no such attribute.
+
+/// Population count: the number of set bits in `x`.
+#[lang("core::intrinsic::math::ctpop")]
+pub fn ctpop<I: Integral>(x: I) -> I;
+
+/// Count of leading zero bits, from the most significant end. `ctlz(0)`
+/// is the operand's bit width.
+#[lang("core::intrinsic::math::ctlz")]
+pub fn ctlz<I: Integral>(x: I) -> I;
+
+/// Count of trailing zero bits, from the least significant end. `cttz(0)`
+/// is the operand's bit width.
+#[lang("core::intrinsic::math::cttz")]
+pub fn cttz<I: Integral>(x: I) -> I;
