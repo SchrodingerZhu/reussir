@@ -25,6 +25,7 @@
 #include <bit>
 #include <cstddef>
 #include <functional>
+#include <tuple>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include <immer/set.hpp>
@@ -204,14 +205,38 @@ ValueSet intersect(const ValueSet &lhs, const ValueSet &rhs) {
   return res;
 }
 
-unsigned
-getDfsOrder(const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder,
-            mlir::Value token) {
-  if (auto *defOp = token.getDefiningOp())
-    return dfsOrder.lookup(defOp);
+// A total order over token values. The DFS number alone is not one: the
+// sibling results of a widened expanded-decrement `scf.if` share a defining
+// op and therefore a DFS number, so an equal-score comparison keyed on DFS
+// alone stays tied and the winner falls through to `availableTokens`'s
+// iteration order — a pointer-hash order that varies with ASLR, making the
+// chosen donor (and the emitted IR) differ between runs on the same input.
+// Extending the key with the result/argument number breaks every such tie
+// deterministically; the leading DFS component is unchanged, so the
+// heuristic's "prefer the most recent producer" behavior is preserved.
+std::tuple<unsigned, unsigned, unsigned>
+tokenOrderKey(const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder,
+              mlir::Value token) {
+  if (auto result = mlir::dyn_cast<mlir::OpResult>(token))
+    return {dfsOrder.lookup(result.getOwner()), 0, result.getResultNumber()};
   if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(token))
-    return dfsOrder.lookup(blockArg.getOwner()->getParentOp());
-  return 0;
+    return {dfsOrder.lookup(blockArg.getOwner()->getParentOp()), 1,
+            blockArg.getArgNumber()};
+  return {0, 2, 0};
+}
+
+// Materialize a pending-token set before any order-sensitive action. Besides
+// donor selection, frees recorded at calls, branch exits, and region exits
+// become operations in this order; iterating the pointer-hashed set directly
+// would make otherwise identical compilations emit different IR.
+llvm::SmallVector<mlir::Value> tokensInStableOrder(
+    const ValueSet &tokens,
+    const mlir::DenseMap<mlir::Operation *, unsigned> &dfsOrder) {
+  llvm::SmallVector<mlir::Value> ordered(tokens.begin(), tokens.end());
+  llvm::sort(ordered, [&](mlir::Value lhs, mlir::Value rhs) {
+    return tokenOrderKey(dfsOrder, lhs) < tokenOrderKey(dfsOrder, rhs);
+  });
+  return ordered;
 }
 
 // A call sits in tail position when nothing observable runs after it on any
@@ -402,7 +427,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
         // skip intrinsic calls
         if (!funcCall ||
             !funcCall.getCallee().starts_with("core::intrinsic::")) {
-          for (auto token : availableTokens)
+          for (mlir::Value token :
+               tokensInStableOrder(availableTokens, dfsOrder))
             frees.push_back({token, &op});
           availableTokens = {};
           for (auto &nestedRegion : op.getRegions())
@@ -426,7 +452,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
             intersection = intersect(intersection, branchResults[i]);
 
           for (size_t i = 0; i < branchResults.size(); ++i) {
-            for (auto val : branchResults[i]) {
+            for (mlir::Value val :
+                 tokensInStableOrder(branchResults[i], dfsOrder)) {
               if (!intersection.count(val)) {
                 mlir::Block &block = op.getRegion(i).front();
                 frees.push_back({val, block.getTerminator()});
@@ -476,8 +503,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                                     acceptor, aliasAnalyzer);
               if (score >= 0 && (score > bestScore ||
                                  (score == bestScore && bestToken &&
-                                  getDfsOrder(dfsOrder, tokenVal) >
-                                      getDfsOrder(dfsOrder, bestToken)))) {
+                                  tokenOrderKey(dfsOrder, tokenVal) >
+                                      tokenOrderKey(dfsOrder, bestToken)))) {
                 bestScore = score;
                 bestToken = tokenVal;
                 bestRealloc = (score < kReallocEnsureCutoff);
@@ -500,8 +527,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                                       aliasAnalyzer);
                 if (score >= 0 && (score > bestScore ||
                                    (score == bestScore && bestToken &&
-                                    getDfsOrder(dfsOrder, tokenVal) >
-                                        getDfsOrder(dfsOrder, bestToken)))) {
+                                    tokenOrderKey(dfsOrder, tokenVal) >
+                                        tokenOrderKey(dfsOrder, bestToken)))) {
                   bestScore = score;
                   bestToken = tokenVal;
                   bestRealloc = (score < kReallocEnsureCutoff);
@@ -532,15 +559,16 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
     // Collect tokens to free first, then erase them. Modifying the immer::set
     // during iteration would invalidate iterators (use-after-free).
     llvm::SmallVector<mlir::Value> tokensToFree;
-    for (auto token : availableTokens) {
+    for (mlir::Value token : tokensInStableOrder(availableTokens, dfsOrder)) {
       if (!region.getParentOp() ||
           !domInfo.properlyDominates(token, region.getParentOp())) {
-        frees.push_back({token, terminator});
         tokensToFree.push_back(token);
       }
     }
-    for (auto token : tokensToFree)
+    for (auto token : tokensToFree) {
+      frees.push_back({token, terminator});
       availableTokens = availableTokens.erase(token);
+    }
     return availableTokens;
   }
 

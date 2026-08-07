@@ -23,11 +23,14 @@ module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<
     // CHECK: } else {
     // CHECK: scf.yield %{{.+}}, %{{.+}} :
     // CHECK: } {reussir.expanded_decrement}
-    // Both creates reuse: one token each, no fresh allocation.
-    // CHECK: reussir.token.ensure
+    // Both creates reuse: equal-score sibling results are selected in stable
+    // token order (later result first), never pointer-hash iteration order.
+    // CHECK: %[[ENSURE_A:.+]] = reussir.token.ensure(%[[TOKS]]#1
     // CHECK-NEXT: reussir.rc.create
-    // CHECK: reussir.token.ensure
+    // CHECK-SAME: token(%[[ENSURE_A]]
+    // CHECK: %[[ENSURE_B:.+]] = reussir.token.ensure(%[[TOKS]]#0
     // CHECK-NEXT: reussir.rc.create
+    // CHECK-SAME: token(%[[ENSURE_B]]
     // CHECK-NOT: reussir.token.alloc
     func.func @escape(%o: !rcOuter, %va: !inner, %vb: !inner) -> (!rcInner, !rcInner) {
         %prev = reussir.rc.fetch (%o : !rcOuter) : index
@@ -67,5 +70,26 @@ module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<
         %tkb = reussir.token.alloc : !tk
         %b = reussir.rc.create value(%vb : !inner) token(%tkb : !tk) : !rcInner
         return %a, %b : !rcInner, !rcInner
+    }
+
+    // Unconsumed sibling tokens are recorded and emitted in the same stable
+    // result-number order. Both frees sink into the unique branch; the
+    // pointer-hash order of the pending-token set must not swap them.
+    // CHECK-LABEL: func.func @stable_free_order
+    // CHECK-SAME: (%{{.+}}: i1, %[[A:.+]]: !reussir.token{{.*}}, %[[B:.+]]: !reussir.token
+    // CHECK: scf.if
+    // CHECK: reussir.token.free(%[[A]] : !reussir.token
+    // CHECK-NEXT: reussir.token.free(%[[B]] : !reussir.token
+    func.func @stable_free_order(%condition: i1, %a: !tk, %b: !tk) {
+        %tokens:2 = scf.if %condition -> (!reussir.nullable<!tk>, !reussir.nullable<!tk>) {
+            %na = reussir.nullable.create (%a : !tk) : !reussir.nullable<!tk>
+            %nb = reussir.nullable.create (%b : !tk) : !reussir.nullable<!tk>
+            scf.yield %na, %nb : !reussir.nullable<!tk>, !reussir.nullable<!tk>
+        } else {
+            %nulla = reussir.nullable.create : !reussir.nullable<!tk>
+            %nullb = reussir.nullable.create : !reussir.nullable<!tk>
+            scf.yield %nulla, %nullb : !reussir.nullable<!tk>, !reussir.nullable<!tk>
+        } {reussir.expanded_decrement}
+        return
     }
 }
