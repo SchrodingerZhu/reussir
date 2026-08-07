@@ -173,10 +173,12 @@ fn remove_min_tree<T : Ord>(ts : List<Tree<T>>) -> Split<T> {
         List::Cons(t, List::Nil) => Split { tree: t, rest: List::Nil },
         List::Cons(t, rest) => {
             let below = remove_min_tree(rest);
-            if root(t) <= root(below.tree) {
+            let best = below.tree;
+            let others = below.rest;
+            if root(t) <= root(best) {
                 Split { tree: t, rest }
             } else {
-                Split { tree: below.tree, rest: List::Cons { t, below.rest } }
+                Split { tree: best, rest: List::Cons { t, others } }
             }
         }
     }
@@ -197,9 +199,11 @@ fn reverse_trees<T>(
 // into the increasing-rank forest.
 fn without_min<T : Ord>(ts : List<Tree<T>>) -> List<Tree<T>> {
     let split = remove_min_tree(ts);
-    match split.tree {
+    let best = split.tree;
+    let others = split.rest;
+    match best {
         Tree::Node(_, _, cs) =>
-            merge_trees(reverse_trees(cs, List::Nil), split.rest)
+            merge_trees(reverse_trees(cs, List::Nil), others)
     }
 }
 

@@ -211,14 +211,23 @@ fn ins<T : Ord>(t : Tree<T>, x : T) -> Ins<T> {
             },
         View::Node(p, l, k, rt) => match x.cmp(k) {
             Ordering::Less => {
+                // Project the whole carrier before the call: leaving a
+                // field unread across it would keep the carrier alive and
+                // make the subtree a second reference, costing a retain.
                 let below = ins(l, x);
-                let reb = bal_left_ins(p, below.tree, k, rt, below.raised);
-                Ins { tree: reb.tree, added: below.added, raised: reb.moved }
+                let sub = below.tree;
+                let added = below.added;
+                let raised = below.raised;
+                let reb = bal_left_ins(p, sub, k, rt, raised);
+                Ins { tree: reb.tree, added, raised: reb.moved }
             },
             Ordering::Greater => {
                 let below = ins(rt, x);
-                let reb = bal_right_ins(p, l, k, below.tree, below.raised);
-                Ins { tree: reb.tree, added: below.added, raised: reb.moved }
+                let sub = below.tree;
+                let added = below.added;
+                let raised = below.raised;
+                let reb = bal_right_ins(p, l, k, sub, raised);
+                Ins { tree: reb.tree, added, raised: reb.moved }
             },
             Ordering::Equal =>
                 Ins { tree: mk(p, l, k, rt), added: false, raised: false }
@@ -377,8 +386,11 @@ fn del_min<T>(t : Tree<T>) -> Min<T> {
                 Min { key: k, tree: rt, dropped: true }
             } else {
                 let least = del_min(l);
-                let reb = bal_left_del(p, least.tree, k, rt, least.dropped);
-                Min { key: least.key, tree: reb.tree, dropped: reb.moved }
+                let m = least.key;
+                let sub = least.tree;
+                let dropped = least.dropped;
+                let reb = bal_left_del(p, sub, k, rt, dropped);
+                Min { key: m, tree: reb.tree, dropped: reb.moved }
             }
         },
         View::Leaf => core::intrinsic::panic::panic()
@@ -393,7 +405,10 @@ fn remove_root<T>(p : bool, l : Tree<T>, rt : Tree<T>) -> Reb<T> {
             Reb { tree: l, moved: true }
         } else {
             let least = del_min(rt);
-            bal_right_del(p, l, least.key, least.tree, least.dropped)
+            let m = least.key;
+            let sub = least.tree;
+            let dropped = least.dropped;
+            bal_right_del(p, l, m, sub, dropped)
         }
     }
 }
@@ -404,13 +419,19 @@ fn del<T : Ord>(t : Tree<T>, x : T) -> Del<T> {
         View::Node(p, l, k, rt) => match x.cmp(k) {
             Ordering::Less => {
                 let below = del(l, x);
-                let reb = bal_left_del(p, below.tree, k, rt, below.dropped);
-                Del { tree: reb.tree, found: below.found, dropped: reb.moved }
+                let sub = below.tree;
+                let found = below.found;
+                let dropped = below.dropped;
+                let reb = bal_left_del(p, sub, k, rt, dropped);
+                Del { tree: reb.tree, found, dropped: reb.moved }
             },
             Ordering::Greater => {
                 let below = del(rt, x);
-                let reb = bal_right_del(p, l, k, below.tree, below.dropped);
-                Del { tree: reb.tree, found: below.found, dropped: reb.moved }
+                let sub = below.tree;
+                let found = below.found;
+                let dropped = below.dropped;
+                let reb = bal_right_del(p, l, k, sub, dropped);
+                Del { tree: reb.tree, found, dropped: reb.moved }
             },
             Ordering::Equal => {
                 let reb = remove_root(p, l, rt);
