@@ -66,7 +66,7 @@
 #include "Reussir/Transformation/Passes.h"
 
 #include <llvm/ADT/DenseSet.h>
-#include <llvm/ADT/SmallDenseMap.h>
+#include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <mlir/Analysis/AliasAnalysis.h>
