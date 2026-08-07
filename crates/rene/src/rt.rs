@@ -189,6 +189,22 @@ fn target_should_disable_mimalloc(target: &str) -> bool {
     matches!(target.split('-').next(), Some("wasm32" | "wasm64"))
 }
 
+/// Whether `RENE_RT_PLATFORM_ALLOCATOR` forces the platform-allocator backend
+/// on every target.
+///
+/// mimalloc's private heap is invisible to the sanitizers, so a program built
+/// through rene cannot be checked with ASan/LSan/MSan while the runtime keeps
+/// its default backend — the allocation and free events never reach
+/// compiler-rt. This is the escape hatch for that: it selects the same
+/// `--no-default-features` backend the wasm targets take, whose libc/UCRT
+/// allocation the sanitizers do interpose.
+///
+/// Any value other than `0` enables it. It changes which allocator a built
+/// program uses, so it is a diagnostic knob, not a supported build mode.
+fn platform_allocator_forced() -> bool {
+    std::env::var_os("RENE_RT_PLATFORM_ALLOCATOR").is_some_and(|value| value != "0")
+}
+
 async fn capture(program: &Path, args: &[&str]) -> Result<String, String> {
     let out = compio::process::Command::new(program)
         .args(args)
@@ -334,7 +350,7 @@ async fn cargo_build(
     // The bundled mimalloc backend builds C code and is not yet a WebAssembly
     // allocator. WASI supplies the libc malloc family used by the runtime's
     // size-recovering fallback, so select that backend for wasm targets.
-    if target_should_disable_mimalloc(&toolchain.target) {
+    if target_should_disable_mimalloc(&toolchain.target) || platform_allocator_forced() {
         cmd.arg("--no-default-features");
     }
     cmd.arg("--message-format=json-render-diagnostics")
