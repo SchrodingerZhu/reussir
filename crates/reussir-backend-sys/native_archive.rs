@@ -58,8 +58,24 @@ pub fn track(lib_dir: &Path, archives: &[&str]) -> io::Result<()> {
     // whenever any linked native archive does.
     println!("cargo:rustc-cfg=reussir_native_archive_fingerprint_{fingerprint}");
 
+    // Only the candidates that exist, mirroring `fingerprint()`. Cargo cannot
+    // stat a path that is not there and treats it as changed, so declaring all
+    // three re-runs this script on *every* build — and at least two of the
+    // three are always absent, on every platform (`lib<x>.a` off Windows,
+    // `<x>.lib`/`lib<x>.lib` off Unix). Measured on Windows before this guard:
+    // a second build with no source changes re-ran the script and relinked
+    // rrc, 56s of work for nothing.
+    //
+    // The trade: an archive appearing where none existed at this script's last
+    // run is not noticed by itself. That is fine here because CMake builds the
+    // native archives before it invokes cargo, so an archive that is going to
+    // exist already does — and if one is later added to `archives`, the
+    // fingerprint in the emitted cfg changes and re-runs the link anyway.
     for archive in archives {
         for path in archive_candidates(lib_dir, archive) {
+            if !path.is_file() {
+                continue;
+            }
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
