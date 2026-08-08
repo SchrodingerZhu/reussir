@@ -347,9 +347,9 @@ pub fn run_lowering_pipeline(
             if options.opt == OptLevel::Aggressive => {
                 module: sys::reussirCreateUniqueCarryingRecursionAnalysisPass();
             }
-            // Schedule complete carrier moves and fresh owned constructions
-            // while source-level call structure is still present. The late
-            // phase remains responsible for post-dispatch fusion.
+            // Schedule fresh owned constructions while source-level call
+            // structure is still present. Complete-owner scheduling and
+            // fusion remain in the late post-dispatch phase.
             func:   sys::reussirCreateEarlyPartialMovePass();
             module: sys::reussirCreateDefaultInlinerPass();
             // Beta-reduce the closure chains the inliner just made visible:

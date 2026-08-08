@@ -72,6 +72,7 @@
 #include <mlir/Analysis/AliasAnalysis.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/Dominance.h>
 #include <mlir/Interfaces/CallInterfaces.h>
 #include <mlir/Interfaces/ControlFlowInterfaces.h>
 #include <mlir/Pass/Pass.h>
@@ -720,10 +721,7 @@ struct EarlyPartialMovePass
     : public impl::ReussirEarlyPartialMovePassBase<EarlyPartialMovePass> {
   using Base::Base;
 
-  void runOnOperation() override {
-    scheduleOwnedConstructions(getOperation());
-    scheduleCompleteMoves(getOperation());
-  }
+  void runOnOperation() override { scheduleOwnedConstructions(getOperation()); }
 };
 
 struct PartialMovePass

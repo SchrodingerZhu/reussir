@@ -1,5 +1,4 @@
 // RUN: %reussir-opt %s --reussir-rc-dispatch-fusion --reussir-partial-move | %FileCheck %s
-// RUN: %reussir-opt %s --reussir-early-partial-move | %FileCheck %s
 
 // Projection-only compound owners can move at their first consuming use even
 // when a late scalar projection originally kept the carrier alive across a
