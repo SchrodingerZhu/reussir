@@ -367,8 +367,11 @@ pub fn run_lowering_pipeline(
         // Fuse pattern-match consumption into destructuring decrements before
         // the cancellation pass (which cancels `inc; destructuring dec` into
         // borrow semantics) and the decrement expansion (which expands the
-        // tagged decs shallowly).
+        // tagged decs shallowly). PartialMove must follow dispatch fusion:
+        // variant fusion exposes adjacent compound-consumption sites that the
+        // old combined pass handled in that order.
         func:   sys::reussirCreateRcDispatchFusionPass();
+        func:   sys::reussirCreatePartialMovePass();
         func:   sys::reussirCreateIncDecCancellationPass();
         module: sys::reussirCreateRcDecrementExpansionPass();
         func:   sys::reussirCreateInferVariantTagPass();

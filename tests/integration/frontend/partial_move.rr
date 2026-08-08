@@ -1,0 +1,53 @@
+// RUN: %rrc %s --emit mlir -O none --no-source-locations -o %t.mlir
+// RUN: %reussir-opt %t.mlir --reussir-partial-move | %FileCheck %s
+
+// This is the source-level shape that motivated partial-move materialization:
+// a nontrivial member is consumed by a call while scalar projections keep the
+// carrier live until afterward. The pass must move all projections to the cut,
+// transfer the carrier's ownership of `tree`, and erase its retain.
+
+struct Leaf {
+    value: i64
+}
+
+struct Carrier {
+    tree: Leaf,
+    early: i64,
+    late: i64
+}
+
+fn consume(tree: Leaf, delta: i64) -> Leaf {
+    Leaf { value: tree.value + delta }
+}
+
+fn natural(carrier: Carrier) -> i64 {
+    let updated = consume(carrier.tree, carrier.early);
+    updated.value + carrier.late
+}
+
+// CHECK-LABEL: func.func private @_RC7natural(
+// CHECK: %[[ROOT_REF:.+]] = reussir.rc.borrow
+// CHECK: %[[TREE_SLOT:.+]] = reussir.ref.project(%[[ROOT_REF]]
+// CHECK: %[[TREE:.+]] = reussir.ref.load(%[[TREE_SLOT]]
+// CHECK-NOT: reussir.rc.inc
+// CHECK: reussir.ref.project
+// CHECK: reussir.ref.load
+// CHECK: reussir.ref.project
+// CHECK: %[[LATE:.+]] = reussir.ref.load
+// CHECK: reussir.rc.dec
+// CHECK-SAME: boundMembers = array<i64: {{[0-9]+}}>
+// CHECK-NEXT: %{{.+}} = call @_RC7consume(%[[TREE]],
+
+// Projecting `tree` twice creates two owned copies. Only the carrier's one
+// reference transfers; the retain for the second copy must survive.
+fn duplicate(carrier: Carrier) -> Leaf {
+    let first = consume(carrier.tree, carrier.early);
+    consume(carrier.tree, first.value + carrier.late)
+}
+
+// CHECK-LABEL: func.func private @_RC9duplicate(
+// CHECK: reussir.rc.inc
+// CHECK-NOT: reussir.rc.inc
+// CHECK: reussir.rc.dec
+// CHECK-SAME: boundMembers = array<i64: {{[0-9]+}}>
+// CHECK: call @_RC7consume

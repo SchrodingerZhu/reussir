@@ -112,6 +112,9 @@ MlirPass reussirCreateRcCreateSinkPass(void) {
 MlirPass reussirCreateRcDispatchFusionPass(void) {
   return wrapOwned(reussir::createReussirRcDispatchFusionPass());
 }
+MlirPass reussirCreatePartialMovePass(void) {
+  return wrapOwned(reussir::createReussirPartialMovePass());
+}
 MlirPass reussirCreateRcCreateFusionPass(void) {
   return wrapOwned(reussir::createReussirRcCreateFusionPass());
 }
@@ -200,9 +203,8 @@ bool reussirCompilePolymorphicFFI(MlirModule module, bool optimized,
   dirs.reserve(nLibDirs);
   for (intptr_t i = 0; i < nLibDirs; ++i)
     dirs.push_back(unwrap(libDirs[i]));
-  return succeeded(reussir::compilePolymorphicFFI(unwrap(module), optimized,
-                                                  unwrap(rustPath), dirs,
-                                                  unwrap(targetTriple)));
+  return succeeded(reussir::compilePolymorphicFFI(
+      unwrap(module), optimized, unwrap(rustPath), dirs, unwrap(targetTriple)));
 }
 
 LLVMModuleRef reussirGatherCompiledModules(MlirModule module,
