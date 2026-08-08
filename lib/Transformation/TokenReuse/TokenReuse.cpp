@@ -324,72 +324,81 @@ mlir::TypedValue<RcType> expandedDecProducerRc(mlir::scf::IfOp scfIf,
   return nullptr;
 }
 
-bool escapeTrappedTokensOnce(mlir::func::FuncOp func) {
+bool escapeTrappedTokensSweep(mlir::func::FuncOp func) {
   llvm::SmallVector<mlir::scf::IfOp> worklist;
-  func.walk([&](mlir::scf::IfOp op) {
+  func.walk<mlir::WalkOrder::PostOrder>([&](mlir::scf::IfOp op) {
     if (op->hasAttr(kExpandedDecrementAttr))
       worklist.push_back(op);
   });
+  bool changed = false;
   for (mlir::scf::IfOp outer : worklist) {
-    // Trapped producers: expanded decrements sitting directly in one of the
-    // outer decrement's blocks, with unconsumed token results.
-    llvm::SmallVector<mlir::Value> escaped;
-    mlir::Block *homeBlock = nullptr;
-    for (mlir::Region &region : outer->getRegions()) {
-      for (mlir::Operation &op : region.front()) {
-        auto inner = llvm::dyn_cast<mlir::scf::IfOp>(op);
-        if (!inner || !inner->hasAttr(kExpandedDecrementAttr))
-          continue;
-        for (mlir::OpResult result : inner.getResults())
-          if (isEscapableTokenResult(result)) {
-            if (homeBlock && homeBlock != &region.front())
-              continue; // one home region per widening round; rare
-            homeBlock = &region.front();
-            escaped.push_back(result);
-          }
+    // Keep widening this decrement until neither home region contains a
+    // trapped producer. The post-order worklist then lets its parent consume
+    // the newly exposed results in the same sweep. This is the same
+    // child-before-parent fixed point as the old one-rewrite-per-full-walk
+    // loop, without rescanning the whole function after every widening.
+    while (true) {
+      // Trapped producers: expanded decrements sitting directly in one of the
+      // outer decrement's blocks, with unconsumed token results.
+      llvm::SmallVector<mlir::Value> escaped;
+      mlir::Block *homeBlock = nullptr;
+      for (mlir::Region &region : outer->getRegions()) {
+        for (mlir::Operation &op : region.front()) {
+          auto inner = llvm::dyn_cast<mlir::scf::IfOp>(op);
+          if (!inner || !inner->hasAttr(kExpandedDecrementAttr))
+            continue;
+          for (mlir::OpResult result : inner.getResults())
+            if (isEscapableTokenResult(result)) {
+              if (homeBlock && homeBlock != &region.front())
+                continue; // one home region per widening round; rare
+              homeBlock = &region.front();
+              escaped.push_back(result);
+            }
+        }
       }
-    }
-    if (escaped.empty())
-      continue;
+      if (escaped.empty())
+        break;
 
-    mlir::OpBuilder builder(outer);
-    llvm::SmallVector<mlir::Type> resultTypes(outer.getResultTypes().begin(),
-                                              outer.getResultTypes().end());
-    for (mlir::Value token : escaped)
-      resultTypes.push_back(token.getType());
-    auto widened = mlir::scf::IfOp::create(
-        builder, outer.getLoc(), resultTypes, outer.getCondition(),
-        /*addThenRegion=*/true, /*addElseRegion=*/true);
-    widened->setAttrs(outer->getAttrs());
-    widened.getThenRegion().takeBody(outer.getThenRegion());
-    widened.getElseRegion().takeBody(outer.getElseRegion());
+      mlir::OpBuilder builder(outer);
+      llvm::SmallVector<mlir::Type> resultTypes(outer.getResultTypes().begin(),
+                                                outer.getResultTypes().end());
+      for (mlir::Value token : escaped)
+        resultTypes.push_back(token.getType());
+      auto widened = mlir::scf::IfOp::create(
+          builder, outer.getLoc(), resultTypes, outer.getCondition(),
+          /*addThenRegion=*/true, /*addElseRegion=*/true);
+      widened->setAttrs(outer->getAttrs());
+      widened.getThenRegion().takeBody(outer.getThenRegion());
+      widened.getElseRegion().takeBody(outer.getElseRegion());
 
-    for (mlir::Region &region : widened->getRegions()) {
-      mlir::Operation *yield = region.front().getTerminator();
-      llvm::SmallVector<mlir::Value> operands(yield->getOperands());
-      if (&region.front() == homeBlock) {
-        operands.append(escaped.begin(), escaped.end());
-      } else {
+      for (mlir::Region &region : widened->getRegions()) {
+        mlir::Operation *yield = region.front().getTerminator();
+        llvm::SmallVector<mlir::Value> operands(yield->getOperands());
+        if (&region.front() == homeBlock) {
+          operands.append(escaped.begin(), escaped.end());
+        } else {
+          builder.setInsertionPoint(yield);
+          for (mlir::Value token : escaped)
+            operands.push_back(ReussirNullableCreateOp::create(
+                builder, outer.getLoc(), token.getType(), nullptr));
+        }
         builder.setInsertionPoint(yield);
-        for (mlir::Value token : escaped)
-          operands.push_back(ReussirNullableCreateOp::create(
-              builder, outer.getLoc(), token.getType(), nullptr));
+        mlir::scf::YieldOp::create(builder, yield->getLoc(), operands);
+        yield->erase();
       }
-      builder.setInsertionPoint(yield);
-      mlir::scf::YieldOp::create(builder, yield->getLoc(), operands);
-      yield->erase();
-    }
 
-    for (auto [index, oldResult] : llvm::enumerate(outer.getResults()))
-      oldResult.replaceAllUsesWith(widened.getResult(index));
-    outer.erase();
-    return true;
+      for (auto [index, oldResult] : llvm::enumerate(outer.getResults()))
+        oldResult.replaceAllUsesWith(widened.getResult(index));
+      outer.erase();
+      outer = widened;
+      changed = true;
+    }
   }
-  return false;
+  return changed;
 }
 
 void escapeTrappedTokens(mlir::func::FuncOp func) {
-  while (escapeTrappedTokensOnce(func)) {
+  while (escapeTrappedTokensSweep(func)) {
   }
 }
 
