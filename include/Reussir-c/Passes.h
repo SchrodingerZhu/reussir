@@ -61,6 +61,7 @@ MlirPass reussirCreateSpecialPointerTagPass(bool archIndependent);
 /// `begin` without an `end` names it). Intended for verbose/diagnostic runs.
 void reussirPassManagerAttachPhaseLogger(MlirPassManager pm);
 MlirPass reussirCreateRcDispatchFusionPass(void);
+MlirPass reussirCreateEarlyPartialMovePass(void);
 MlirPass reussirCreatePartialMovePass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);

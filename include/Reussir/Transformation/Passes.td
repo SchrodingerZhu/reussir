@@ -100,6 +100,29 @@ def ReussirRcCreateFusionPass
 //===----------------------------------------------------------------------===//
 // PartialMove
 //===----------------------------------------------------------------------===//
+def ReussirEarlyPartialMovePass
+    : Pass<"reussir-early-partial-move", "::mlir::func::FuncOp"> {
+  let summary = "schedule complete partial moves before inlining";
+  let description = [{
+    `reussir-early-partial-move` runs the scheduling half of PartialMove while
+    source-level call structure is still present. It gathers every projection
+    of a compound owner at the first consuming use, transfers all nontrivial
+    top-level members, and ends the owner before a crossed call.
+
+    The early phase also recognizes a closed fresh-owned construction placed
+    immediately after a call despite all inputs being available before it. If
+    the chain consumes a retained projected owner, it moves the compound,
+    variant, and allocation before the call. This changes placement rather
+    than RC volume and recovers the ordering available to hand-scheduled
+    source.
+
+    This pass deliberately omits adjacent retain/decrement fusion. That
+    canonical late rewrite remains in `reussir-partial-move`, after dispatch
+    fusion has exposed additional sites.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
 def ReussirPartialMovePass
     : Pass<"reussir-partial-move", "::mlir::func::FuncOp"> {
   let summary = "recognize and materialize partial moves";
@@ -112,10 +135,10 @@ def ReussirPartialMovePass
     count observation that may alias the root. Complete transfer is required
     because an unbound member's early drop may invoke observable cleanup glue.
 
-    The already-adjacent retain/decrement pattern is the degenerate case. Both
-    forms materialize as a tagless destructuring decrement whose
-    `boundMembers` transfer on the unique path and rematerialize their retains
-    on the shared path.
+    For shared boxed owners, the already-adjacent retain/decrement pattern is
+    the degenerate case. Both forms materialize as a tagless destructuring
+    decrement whose `boundMembers` transfer on the unique path and
+    rematerialize their retains on the shared path.
   }];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }

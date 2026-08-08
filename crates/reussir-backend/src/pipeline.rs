@@ -347,6 +347,10 @@ pub fn run_lowering_pipeline(
             if options.opt == OptLevel::Aggressive => {
                 module: sys::reussirCreateUniqueCarryingRecursionAnalysisPass();
             }
+            // Schedule complete carrier moves and fresh owned constructions
+            // while source-level call structure is still present. The late
+            // phase remains responsible for post-dispatch fusion.
+            func:   sys::reussirCreateEarlyPartialMovePass();
             module: sys::reussirCreateDefaultInlinerPass();
             // Beta-reduce the closure chains the inliner just made visible:
             // create→apply→eval collapses to the spliced body, and chained
@@ -367,9 +371,9 @@ pub fn run_lowering_pipeline(
         // Fuse pattern-match consumption into destructuring decrements before
         // the cancellation pass (which cancels `inc; destructuring dec` into
         // borrow semantics) and the decrement expansion (which expands the
-        // tagged decs shallowly). PartialMove must follow dispatch fusion:
-        // variant fusion exposes adjacent compound-consumption sites that the
-        // old combined pass handled in that order.
+        // tagged decs shallowly). The late PartialMove phase must follow
+        // dispatch fusion: variant fusion exposes adjacent
+        // compound-consumption sites that do not exist in the early IR.
         func:   sys::reussirCreateRcDispatchFusionPass();
         func:   sys::reussirCreatePartialMovePass();
         func:   sys::reussirCreateIncDecCancellationPass();
