@@ -19,13 +19,14 @@
 // it, and `Inputs/` is where the suite keeps its C drivers.
 
 // RUN: %cc %asan_flags %S/Inputs/runtime_allocator_uaf.c %reussir_rt_asan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
-// DIAGNOSTIC, REMOVE ONCE CLASSIFIED: the x86_64 Linux CI child exits
-// nonzero with no output at all. `%not` cannot distinguish a signal death
-// from an early return, and piping into FileCheck discards the evidence
-// either way. Run it directly, record the raw status, print everything,
-// then fail on purpose so lit shows what was captured.
-// RUN: %asan_env ASAN_OPTIONS=verbosity=1:abort_on_error=0:halt_on_error=1 %t.exe > %t.diag 2>&1; echo "RAW_EXIT=$?" >> %t.diag; cat %t.diag; false
-// RUN-DISABLED: %asan_env %not %t.exe 2>&1 | %FileCheck %s
+// The suite-wide `%asan_env` sets `abort_on_error=1`, which loses this
+// report entirely on Linux: the child dies by SIGABRT and the pipeline
+// delivers nothing to FileCheck, so this case failed with empty output on
+// both Linux arches while passing on Windows. What it needs is the report
+// itself rather than the abort, so it sets its own options —
+// `halt_on_error=1` still stops at the first error, and ASan's nonzero
+// exit is what `%not` consumes.
+// RUN: ASAN_OPTIONS=abort_on_error=0:halt_on_error=1 %asan_path %not %t.exe 2>&1 | %FileCheck %s
 
 // CHECK: ERROR: AddressSanitizer: heap-use-after-free
 // CHECK: READ of size 1
