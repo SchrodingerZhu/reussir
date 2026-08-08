@@ -323,7 +323,8 @@ pub struct TraitMethodText<'tcx> {
     pub regional: bool,
     pub name: String,
     pub generics: Vec<(GenericId, Option<String>)>,
-    pub receiver: crate::semi::traits::def::ReceiverForm,
+    /// `None` is an associated function (no receiver).
+    pub receiver: Option<crate::semi::traits::def::ReceiverForm>,
     pub params: Vec<Ty<'tcx>>,
     pub ret: Ty<'tcx>,
     pub span: Option<Span>,

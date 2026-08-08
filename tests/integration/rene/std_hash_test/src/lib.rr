@@ -97,6 +97,27 @@ fn test_properties() {
     let branch = base.write_u64(2).finish();
     wb(base.finish() == std::hash::fast_hasher().write_u64(1).finish());
     wb(branch != base.finish());
+    // The associated constructors: a generic consumer builds its hasher
+    // through the trait — the hash-container pattern — and the type-
+    // prefixed forms agree with the free constructors.
+    wb(digest_of<FastHasher, Point>(Point { x: 3, y: 4 }) ==
+        std::hash::fast_hash(Point { x: 3, y: 4 }));
+    wb(digest_of<StrongHasher, Point>(Point { x: 3, y: 4 }) ==
+        std::hash::strong_hash(Point { x: 3, y: 4 }));
+    wb(FastHasher::from_entropy(99).write_u64(5).finish() ==
+        std::hash::fast_hasher_seeded(99).write_u64(5).finish());
+    wb(StrongHasher::from_entropy(99).write_u64(5).finish() ==
+        std::hash::strong_hasher_seeded(99).write_u64(5).finish());
+    wb(FastHasher::from_entropy(99).write_u64(5).finish() !=
+        FastHasher::default().write_u64(5).finish());
+    let via_trait : FastHasher = Hasher::default();
+    wb(via_trait.write_u64(1234).finish() == std::hash::fast_hash_u64(1234));
+}
+
+// The hash-container construction pattern: the hasher type is a bound,
+// and the consumer builds it with `H::default()`.
+fn digest_of<H : Hasher, T : Hash>(value : T) -> u64 {
+    value.hash(H::default()).finish()
 }
 
 #[main]

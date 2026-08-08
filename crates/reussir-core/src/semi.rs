@@ -2572,14 +2572,22 @@ trait A { fn n(self: Self); }",
 
     #[test]
     fn trait_member_rejections() {
+        // A method without a leading `self` is not a rejection anymore: it
+        // is an associated function, receiver-less with every parameter
+        // positional.
         elaborate_source("trait T { fn m(x: i64) -> i64; }", |elab| {
-            assert!(
-                elab.reports.iter().any(|r| r
-                    .message
-                    .contains("a trait method must take `self` as its first parameter")),
-                "{:#?}",
-                elab.reports
-            );
+            assert!(!elab.has_errors(), "{:#?}", elab.reports);
+            let def = (0..elab.defs.len() as u32)
+                .map(crate::semi::ty::DefId)
+                .find(|d| {
+                    elab.defs.info(*d).kind == crate::semi::resolve::DefKind::Trait
+                        && elab.sym(elab.defs.path(*d).name()) == "T"
+                })
+                .expect("trait def");
+            let id = elab.traits.trait_by_def(def).expect("registered");
+            let m = &elab.traits.trait_def(id).methods[0];
+            assert_eq!(m.receiver, None);
+            assert_eq!(m.params.len(), 1);
         });
         elaborate_source(
             "trait T { fn m(self: Self); fn m(self: Self) -> i64; }",
@@ -2658,10 +2666,15 @@ trait A { fn n(self: Self); }",
                     )
                     .expect("registered");
                 let def = elab.traits.trait_def(id);
-                let forms: Vec<ReceiverForm> = def.methods.iter().map(|m| m.receiver).collect();
+                let forms: Vec<Option<ReceiverForm>> =
+                    def.methods.iter().map(|m| m.receiver).collect();
                 assert_eq!(
                     forms,
-                    [ReceiverForm::Value, ReceiverForm::Arc, ReceiverForm::Flex]
+                    [
+                        Some(ReceiverForm::Value),
+                        Some(ReceiverForm::Arc),
+                        Some(ReceiverForm::Flex)
+                    ]
                 );
                 assert!(def.methods[2].is_regional);
             },

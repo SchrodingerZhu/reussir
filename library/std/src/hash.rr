@@ -86,6 +86,16 @@ pub trait Hasher {
     fn write<T: Hash>(self: Self, value: T) -> Self;
     /// The digest of everything written so far.
     fn finish(self: Self) -> u64;
+    /// A fresh hasher under the implementation's default seed. An
+    /// associated function: generic containers construct their hasher
+    /// through it (`H::default()`), the stand-in for a builder trait until
+    /// associated types exist.
+    fn default() -> Self;
+    /// A fresh hasher seeded from caller-supplied entropy. What
+    /// distinguishes it from a fixed seed is the caller's contract: pass
+    /// something an adversary cannot predict (its dispersion is the
+    /// implementation's problem), and equal entropy yields equal digests.
+    fn from_entropy(entropy: u64) -> Self;
 }
 
 /// A type that can feed itself to any `Hasher`.
@@ -154,6 +164,8 @@ impl Hasher for FastHasher {
     }
     fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { fast_finish(self) }
+    fn default() -> Self { fast_new() }
+    fn from_entropy(entropy: u64) -> Self { fast_with_seed(entropy) }
 }
 
 /// Creates a `FastHasher` with rapidhash's default seed.
@@ -218,6 +230,8 @@ impl Hasher for StrongHasher {
     }
     fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { strong_finish(self) }
+    fn default() -> Self { strong_new() }
+    fn from_entropy(entropy: u64) -> Self { strong_with_seed(entropy) }
 }
 
 /// Creates a `StrongHasher` with rapidhash's default seed.

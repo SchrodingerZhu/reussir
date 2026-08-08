@@ -1,0 +1,72 @@
+// Trait associated functions: a trait method without a `self` receiver,
+// implemented per type and callable three ways — `Trait::f(…)` with `Self`
+// solved from context, `Type::f(…)` with `Self` named by the path prefix,
+// and `G::f(…)` on a generic bounded by the trait. The textual HIR tags a
+// receiver-less method `!` and round-trips.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %FileCheck %s --check-prefix=HIR < %t.hir
+// RUN: %rrc %t.hir --emit mir --no-source-locations -o -
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.mir
+// RUN: %rrc %t.mir --emit llvm-ir -Onone -o %t.ll
+// RUN: %FileCheck %s --check-prefix=LLVM < %t.ll
+
+// HIR: trait #Maker
+// HIR-DAG: fn make ! () -> $0
+// HIR-DAG: fn make_with ! (i64) -> $0
+// HIR-DAG: fn get ($0) -> i64
+pub trait Maker {
+    fn make() -> Self;
+    fn make_with(seed: i64) -> Self;
+    fn get(self: Self) -> i64;
+}
+
+pub struct Box { value: i64 }
+pub struct Pair { a: i64, b: i64 }
+
+impl Maker for Box {
+    fn make() -> Self { Box { value: 7 } }
+    fn make_with(seed: i64) -> Self { Box { value: seed } }
+    fn get(self: Self) -> i64 { self.value }
+}
+
+impl Maker for Pair {
+    fn make() -> Self { Pair { a: 1, b: 2 } }
+    fn make_with(seed: i64) -> Self { Pair { a: seed, b: seed } }
+    fn get(self: Self) -> i64 { self.a + self.b }
+}
+
+// `G::f()`: deferred to monomorphization, one instance per ground `Self`.
+fn fresh<M: Maker>() -> M { M::make() }
+fn seeded<M: Maker>(seed: i64) -> M { M::make_with(seed) }
+
+// `Trait::f()`: `Self` solved by the annotated binding.
+pub fn via_trait() -> i64 {
+    let b : Box = Maker::make();
+    b.get()
+}
+
+// `Type::f(…)`: `Self` named by the prefix; the result chains like any call.
+pub fn via_type() -> i64 {
+    Box::make_with(35).get() + Pair::make().get()
+}
+
+pub fn via_generic() -> i64 {
+    let b : Box = fresh();
+    let p : Pair = seeded(4);
+    b.get() + p.get()
+}
+
+// UFCS through the type prefix still reaches receiver-carrying methods.
+pub fn ufcs(b : Box) -> i64 {
+    Box::get(b)
+}
+
+// 7 + (35 + 3) + (7 + 8) + 7 = 67, fully folded at -Onone? No — but each
+// instance must exist; the LLVM check pins the three mangled instances.
+// LLVM-DAG: @_RNvNvC5Maker3Box4make
+// LLVM-DAG: @_RNvNvC5Maker4Pair4make
+// LLVM-DAG: @_RNvNvC5Maker3Box9make_with
+pub fn total(b : Box) -> i64 {
+    via_trait() + via_type() + via_generic() + ufcs(b)
+}

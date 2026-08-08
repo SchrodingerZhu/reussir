@@ -373,9 +373,11 @@ impl<'a> Printer<'a> {
             .map(|m| {
                 let regional = if m.regional { "regional " } else { "" };
                 let recv = match m.receiver {
-                    crate::semi::traits::def::ReceiverForm::Value => "",
-                    crate::semi::traits::def::ReceiverForm::Arc => " Arc",
-                    crate::semi::traits::def::ReceiverForm::Flex => " flex",
+                    Some(crate::semi::traits::def::ReceiverForm::Value) => "",
+                    Some(crate::semi::traits::def::ReceiverForm::Arc) => " Arc",
+                    Some(crate::semi::traits::def::ReceiverForm::Flex) => " flex",
+                    // An associated function: no receiver, tagged `!`.
+                    None => " !",
                 };
                 let params: Vec<Doc<'static>> = m.params.iter().map(|p| self.ty(*p)).collect();
                 text(format!("{regional}fn {}", m.name))

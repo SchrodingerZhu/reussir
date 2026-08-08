@@ -788,6 +788,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             {
                 return done;
             }
+            // `Type::f(…)` / `G::f(…)` — the prefix names a type whose
+            // traits (impls or bounds) declare `f`.
+            if !fc.name.segments.is_empty()
+                && let Some(done) = self.try_type_assoc_call(fc, span)
+            {
+                return done;
+            }
             let hint = if fc.name.segments.is_empty() {
                 self.function_suggestion(fc.name.basename)
             } else {
@@ -1219,6 +1226,21 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         args: &[surface::Expr],
         span: Option<Span>,
     ) -> Expr<'tcx> {
+        // An associated function has no receiver slot: dot dispatch (and the
+        // UFCS spelling that feeds a receiver here) cannot reach it.
+        if self.traits.trait_def(tid).methods[midx].receiver.is_none() {
+            let mname = self.traits.trait_def(tid).methods[midx].name;
+            let shown = self.trait_display(tid);
+            let m = self.sym(mname);
+            self.error(
+                span,
+                format!(
+                    "`{m}` is an associated function of `{shown}` (no receiver); \
+                     call it as `{shown}::{m}(…)` or `Type::{m}(…)`"
+                ),
+            );
+            return self.poison(span);
+        }
         let raw = self.infer.resolve(receiver.ty);
         let peeled = self.peel_arc(raw);
         if let TyKind::Generic(_) = peeled.kind() {
@@ -1647,6 +1669,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return Some(self.poison(span));
         }
+        // An associated function: no receiver argument, and `Self` comes
+        // from context — a fresh hole that unification solves (the result
+        // type mentions `Self` in every interesting case, e.g. `default()
+        // -> Self`), left generic in a bounded function, ground otherwise.
+        if self.traits.trait_def(tid).methods[midx].receiver.is_none() {
+            self.record_use(fc.name.basename);
+            let self_ty = self.infer.new_hole_ty();
+            return Some(self.assoc_trait_call(tid, midx, self_ty, &fc.args, span));
+        }
         let Some(recv_src) = fc.args.first() else {
             let shown = self.trait_display(tid);
             self.error(
@@ -1658,6 +1689,166 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         self.record_use(fc.name.basename);
         let receiver = self.infer_expr(recv_src);
         Some(self.dispatch_trait_method(tid, midx, receiver, &fc.args[1..], span))
+    }
+
+    /// An associated-function call with `Self = self_ty`: every argument is
+    /// positional, and the call is always the serializable deferred
+    /// [`ExprKind::TraitCall`] — a generic `Self` resolves per instance at
+    /// monomorphization, and a ground (or ground-by-unification) `Self`
+    /// resolves there identically, so one form covers both.
+    fn assoc_trait_call(
+        &mut self,
+        tid: TraitId,
+        midx: usize,
+        self_ty: Ty<'tcx>,
+        args: &[surface::Expr],
+        span: Option<Span>,
+    ) -> Expr<'tcx> {
+        let tdef = self.traits.trait_def(tid);
+        if !tdef.params.is_empty() {
+            let shown = self.trait_display(tid);
+            self.error(
+                span,
+                format!(
+                    "cannot call an associated function of multi-parameter \
+                     trait `{shown}` without a concrete trait reference"
+                ),
+            );
+            return self.poison(span);
+        }
+        let trait_def_id = tdef.def;
+        let self_param = tdef.self_param;
+        let sig = tdef.methods[midx].clone();
+        debug_assert!(sig.receiver.is_none(), "assoc_trait_call needs no receiver");
+        if sig.is_regional && !self.inside_region {
+            self.error(span, "cannot call a regional function outside of a region");
+        }
+        let mut inst = self.instantiate(&sig.generics, &[], span);
+        inst.insert(self_param, self_ty);
+        if args.len() != sig.params.len() {
+            self.error(
+                span,
+                format!(
+                    "associated function `{}` expects {} argument(s), got {}",
+                    self.sym(sig.name),
+                    sig.params.len(),
+                    args.len()
+                ),
+            );
+        }
+        let out: Vec<Expr<'tcx>> = args
+            .iter()
+            .zip(&sig.params)
+            .map(|(arg, &pty)| {
+                let expected = self.infer.instantiate_ty(pty, &inst);
+                self.check_expr(arg, expected)
+            })
+            .collect();
+        let ty_args: Vec<Ty<'tcx>> = std::iter::once(self_ty)
+            .chain(self.inst_args(&sig.generics, &inst))
+            .collect();
+        let result = self.infer.instantiate_ty(sig.ret, &inst);
+        // The bound obligation is what turns an unimplemented `Self` into a
+        // real diagnostic (and constrains a hole `Self` like any bound).
+        self.register_bound(tid, self_ty, span);
+        self.mk_expr(
+            ExprKind::TraitCall {
+                trait_def: trait_def_id,
+                method: midx as u32,
+                ty_args,
+                args: out,
+            },
+            result,
+            span,
+        )
+    }
+
+    /// The `Type::f(…)` / `G::f(…)` spellings: the path prefix names a type
+    /// — a generic parameter in scope or a record — and `f` resolves among
+    /// the traits that type implements (or that bound it). An associated
+    /// function calls with `Self` fixed to the named type; a method with a
+    /// receiver dispatches UFCS style, its first argument the receiver.
+    /// `None` when the prefix names no type — the caller keeps its
+    /// unknown-function diagnostic.
+    fn try_type_assoc_call(
+        &mut self,
+        fc: &surface::FuncCall,
+        span: Option<Span>,
+    ) -> Option<Expr<'tcx>> {
+        let (tname, prefix) = fc.name.segments.split_last()?;
+        let self_ty = if prefix.is_empty()
+            && let Some(&g) = self.generic_names.get(tname)
+        {
+            self.tcx.mk_generic(g)
+        } else {
+            let tpath = surface::Path {
+                basename: *tname,
+                segments: prefix.iter().copied().collect(),
+            };
+            let def = self.resolve_record_ref(&tpath)?;
+            // A generic record's arguments are holes for unification to
+            // solve; the common associated-function shapes mention them in
+            // the parameters or the result.
+            let rec = &self.records[&def];
+            let default_cap = rec.default_cap;
+            let n = rec.ty_params.len();
+            let args: Vec<Ty<'tcx>> = (0..n).map(|_| self.infer.new_hole_ty()).collect();
+            let flex = match default_cap {
+                crate::semi::ctxt::DefaultCap::Value | crate::semi::ctxt::DefaultCap::Shared => {
+                    Flexivity::Irrelevant
+                }
+                crate::semi::ctxt::DefaultCap::Regional => Flexivity::Rigid,
+            };
+            self.tcx.mk_record(def, &args, flex)
+        };
+        let name = fc.name.basename;
+        let cands = match self_ty.kind() {
+            TyKind::Generic(g) => self.generic_trait_candidates(*g, name),
+            _ => self.ground_trait_candidates(self_ty, name),
+        };
+        let (tid, midx) = match cands[..] {
+            [] => return None,
+            [one] => one,
+            [(a, _), (b, _), ..] => {
+                self.ambiguous_method_error(name, self_ty, a, b, span);
+                return Some(self.poison(span));
+            }
+        };
+        if !fc.ty_args.is_empty() {
+            self.error(
+                span,
+                "type arguments on a trait-method call are not supported yet",
+            );
+            return Some(self.poison(span));
+        }
+        self.record_use(name);
+        if self.traits.trait_def(tid).methods[midx].receiver.is_some() {
+            // UFCS: `Type::method(recv, args…)`.
+            let Some(recv_src) = fc.args.first() else {
+                let m = self.sym(name);
+                self.error(
+                    span,
+                    format!("`{m}` takes its receiver as the first argument"),
+                );
+                return Some(self.poison(span));
+            };
+            // The prefix constrains the receiver: unify them — up to the arc
+            // peel, and carrying the receiver's own flexivity refinement —
+            // so `Box::get(p)` on a `Pair` errors rather than silently
+            // dispatching on `Pair`'s impl after selecting by `Box`.
+            let receiver = self.infer_expr(recv_src);
+            let resolved = self.infer.shallow_resolve(receiver.ty);
+            let peeled = self.peel_arc(resolved);
+            let expected = match (self_ty.kind(), peeled.kind()) {
+                (TyKind::Record { def, args, .. }, TyKind::Record { flex, .. }) => {
+                    self.tcx.mk_record(*def, args, *flex)
+                }
+                _ => self_ty,
+            };
+            self.expect(peeled, expected, span);
+            return Some(self.dispatch_trait_method(tid, midx, receiver, &fc.args[1..], span));
+        }
+        Some(self.assoc_trait_call(tid, midx, self_ty, &fc.args, span))
     }
 
     /// (APP) `Γ ⊢ callee(args) ⇒ (ClosureCall{hc,[hᵢ]} : R)`: synthesize the callee to

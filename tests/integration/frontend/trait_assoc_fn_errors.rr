@@ -1,0 +1,47 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+pub trait Maker {
+    fn make() -> Self;
+    fn get(self: Self) -> i64;
+}
+
+pub struct Box { value: i64 }
+
+impl Maker for Box {
+    fn make() -> Self { Box { value: 7 } }
+    fn get(self: Self) -> i64 { self.value }
+}
+
+pub struct Plain { x: i64 }
+
+// An associated function has no receiver, so dot dispatch cannot reach it.
+// CHECK-DAG: `make` is an associated function of `Maker` (no receiver); call it as `Maker::make
+pub fn dotted(b : Box) -> Box { b.make() }
+
+// `Self` must be constrained by context.
+// CHECK-DAG: type annotations needed
+pub fn unsolved() -> i64 {
+    let x = Maker::make();
+    0
+}
+
+// The UFCS prefix constrains the receiver: selecting by one type and
+// dispatching on another is an error, not a silent re-selection.
+pub struct Duo { a: i64 }
+impl Maker for Duo {
+    fn make() -> Self { Duo { a: 1 } }
+    fn get(self: Self) -> i64 { self.a }
+}
+// CHECK-DAG: type mismatch: expected `Box`, found `Duo`
+pub fn wrong_prefix(d : Duo) -> i64 { Box::get(d) }
+
+// The implementation must actually provide the receiver-less form: an impl
+// method with a receiver against a receiver-less trait signature is a
+// parameter-count mismatch.
+pub trait Zero {
+    fn zero() -> Self;
+}
+// CHECK-DAG: method `zero` takes 1 parameter(s); trait `Zero` requires 0
+impl Zero for Plain {
+    fn zero(self: Self) -> Self { self }
+}

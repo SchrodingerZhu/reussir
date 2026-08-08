@@ -40,3 +40,11 @@
 // PROPS-NEXT: 1
 // PROPS-NEXT: 1
 // PROPS-NEXT: 1
+// the associated constructors (default/from_entropy) agree with
+// the free ones, through a generic consumer and type prefixes
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
+// PROPS-NEXT: 1
