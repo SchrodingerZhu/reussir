@@ -171,6 +171,18 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
 
     add_custom_target(reussir-rt-${suffix}-build
         COMMAND ${CMAKE_COMMAND} -E env
+            # Cargo gives a global `RUSTFLAGS` precedence over the
+            # target-specific form, so an ambient value — `-D warnings` in the
+            # CI workflows — silently *replaces* the flags below rather than
+            # adding to them. The sanitized build then loses `-Zsanitizer` and
+            # its custom SONAME, the copied library advertises the ordinary
+            # `libreussir_rt.so`, and the loader resolves the uninstrumented
+            # runtime from `target-rt/release/deps`. The suite goes green
+            # while sanitizing nothing, which is the failure
+            # `sanitizer/runtime-allocator-asan.rr` exists to catch — and did,
+            # on this very build.
+            --unset=RUSTFLAGS
+            --unset=CARGO_ENCODED_RUSTFLAGS
             CARGO_TARGET_DIR=${target_dir}
             ${target_linker}
             ${target_sanitizer_lib}
