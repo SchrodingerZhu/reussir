@@ -105,6 +105,9 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
     set(target_dir "${CMAKE_BINARY_DIR}/target-${suffix}")
     set(output_lib "${REUSSIR_RT_OUTPUT_DIR}/sanitizers/${REUSSIR_RT_SHARED_PREFIX}.${suffix}.${REUSSIR_RT_SHARED_EXT}")
     set(rustflags "-Awarnings -Zsanitizer=${sanitizer}")
+    # Only Windows needs a library-path override (see below); elsewhere the
+    # linker driver already knows where its own sanitizer runtimes live.
+    set(target_sanitizer_lib "")
     # Point rustc at the C compiler as its linker driver, so the sanitizer
     # runtime it asks for is the one this Clang ships. That is wrong on an
     # `*-pc-windows-msvc` target: rustc emits MSVC-style linker arguments
@@ -134,8 +137,18 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
                 "Failed to run '${CMAKE_C_COMPILER} -print-resource-dir'; needed to "
                 "resolve the sanitizer runtime the sanitized reussir-rt links against.")
         endif()
-        file(TO_CMAKE_PATH "${_clang_resource_dir}/lib/windows" _clang_sanitizer_libdir)
-        string(APPEND rustflags " -Clink-arg=/LIBPATH:${_clang_sanitizer_libdir}")
+        file(TO_NATIVE_PATH "${_clang_resource_dir}/lib/windows" _clang_sanitizer_libdir)
+        # Through `LIB` rather than a `-Clink-arg=/LIBPATH:` in RUSTFLAGS:
+        # cargo splits RUSTFLAGS on whitespace, so a resource directory under
+        # `C:\Program Files\...` would arrive as several rustc arguments and no
+        # amount of quoting for link.exe would help. `LIB` is a single value
+        # link.exe reads directly, and prepending keeps the vcvars entries that
+        # supply the CRT and Windows SDK.
+        set(_vcvars_lib "$ENV{LIB}")
+        # Semicolons separate LIB entries and also CMake list elements; escape
+        # them so the value survives as one argument to `cmake -E env`.
+        string(REPLACE ";" "\\;" _vcvars_lib "${_vcvars_lib}")
+        set(target_sanitizer_lib "LIB=${_clang_sanitizer_libdir}\\;${_vcvars_lib}")
     else()
         set(target_linker "CARGO_TARGET_${RUST_CARGO_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}")
     endif()
@@ -160,6 +173,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
         COMMAND ${CMAKE_COMMAND} -E env
             CARGO_TARGET_DIR=${target_dir}
             ${target_linker}
+            ${target_sanitizer_lib}
             ${target_rustflags}
             cargo build ${cargo_extra_args} --locked --target ${RUST_HOST_TRIPLE} --profile ${CARGO_PROFILE} --quiet --no-default-features
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
