@@ -23,10 +23,11 @@
 // report entirely on Linux: the child dies by SIGABRT and the pipeline
 // delivers nothing to FileCheck, so this case failed with empty output on
 // both Linux arches while passing on Windows. What it needs is the report
-// itself rather than the abort, so it sets its own options —
-// `halt_on_error=1` still stops at the first error, and ASan's nonzero
-// exit is what `%not` consumes.
-// RUN: ASAN_OPTIONS=abort_on_error=0:halt_on_error=1 %asan_path %not %t.exe 2>&1 | %FileCheck %s
+// itself rather than the abort, so it overrides that one option — the
+// later assignment wins, and keeping `%asan_env` preserves the staged
+// runtime's loader path on Windows. `halt_on_error=1` still stops at the
+// first error, and ASan's ordinary nonzero exit is what `%not` consumes.
+// RUN: %asan_env ASAN_OPTIONS=abort_on_error=0:halt_on_error=1 %not %t.exe 2>&1 | %FileCheck %s
 
 // CHECK: ERROR: AddressSanitizer: heap-use-after-free
 // CHECK: READ of size 1

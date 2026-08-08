@@ -259,15 +259,11 @@ config.substitutions.append((r'%tsan_flags', config.tsan_flags))
 # the loader path globally would hand it to *every* test; putting it in the
 # per-case environment prefix hands it only to the sanitizer RUN lines, which
 # is what the distinction requires.
-_asan_path = ''
+_asan_env = config.asan_env
 if sys.platform == 'win32' and getattr(config, 'asan_runtime_dir', ''):
-    _asan_path = 'PATH="%s;$PATH"' % config.asan_runtime_dir.replace('/', '\\')
-# `%asan_path` is the loader-path prefix on its own, for cases that need their
-# own ASAN_OPTIONS rather than the suite default; `%asan_env` is that prefix
-# plus the default options.
-config.substitutions.append((r'%asan_path', _asan_path))
-config.substitutions.append((
-    r'%asan_env', ' '.join(p for p in (_asan_path, config.asan_env) if p)))
+    _asan_env = 'PATH="%s;$PATH" %s' % (
+        config.asan_runtime_dir.replace('/', '\\'), config.asan_env)
+config.substitutions.append((r'%asan_env', _asan_env))
 config.substitutions.append((r'%lsan_env', config.lsan_env))
 config.substitutions.append((r'%msan_env', config.msan_env))
 config.substitutions.append((r'%tsan_env', config.tsan_env))
