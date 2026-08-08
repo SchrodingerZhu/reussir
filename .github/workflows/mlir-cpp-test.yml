@@ -153,6 +153,15 @@ jobs:
           ctest --test-dir build --output-on-failure
 
       - name: Run Integration Tests
+        env:
+          # DIAGNOSTIC BRANCH, NEVER MERGE. `rene/wasi_examples.rr` wedged
+          # this job for 5h09m on 2026-08-07 and again on the retrigger,
+          # while the arm sibling passed it in both runs. A 60s cap cannot
+          # distinguish a slow test from a hung one — it reports the cap
+          # either way — so run that test alone with a large one and read
+          # the duration. Completes at ~200s: slow, and the runtime-bake
+          # tax likely explains it. Still running at 1800s: a hang.
+          LIT_OPTS: --timeout=1800 --filter=wasi_examples --time-tests
         run: cmake --build build --target check
 
       - name: Run Sanitizer Integration Tests
