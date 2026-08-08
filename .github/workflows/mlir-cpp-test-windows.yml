@@ -250,7 +250,11 @@ jobs:
           # Kill and name any individual test that wedges (lit reports it as
           # TIMEOUT) instead of hanging the whole job; needs psutil from the
           # conda environment.
-          LIT_OPTS: --timeout=900
+          # `--time-tests` prints the slowest-test report, so this job
+          # contributes its distribution to the timing probe the other
+          # workflows run. Its 900s cap stays: this is the one platform
+          # that has always been bounded, which makes it the control.
+          LIT_OPTS: --timeout=900 --time-tests
         run: |
           $env:RUSTC_WRAPPER = "sccache"
           $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"
