@@ -90,6 +90,14 @@ endif()
 string(REPLACE "-" "_" RUST_CARGO_TARGET_ENV ${RUST_HOST_TRIPLE})
 string(TOUPPER "${RUST_CARGO_TARGET_ENV}" RUST_CARGO_TARGET_ENV)
 
+# Tools for the post-build instrumentation assertion
+# (cmake/AssertSanitizedRuntime.cmake). They ship beside the C compiler.
+if(REUSSIR_RUNTIME_SANITIZERS)
+    get_filename_component(_reussir_toolchain_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+    find_program(REUSSIR_LLVM_READOBJ NAMES llvm-readobj HINTS "${_reussir_toolchain_bin}" REQUIRED)
+    find_program(REUSSIR_LLVM_NM NAMES llvm-nm HINTS "${_reussir_toolchain_bin}" REQUIRED)
+endif()
+
 set(REUSSIR_SUPPORTED_RUNTIME_SANITIZERS address leak memory thread)
 set(REUSSIR_SANITIZED_RUNTIME_TARGETS "")
 set(REUSSIR_RT_ASAN_LIBRARY "")
@@ -221,6 +229,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
             COMMENT "Installing sanitized runtime ${staged_dll}"
             DEPENDS reussir-rt-${suffix}-build
         )
+        set(_assert_target "${staged_dll}")
         set(${output_var} "${staged_implib}" PARENT_SCOPE)
         set(REUSSIR_RT_${suffix}_DIR "${variant_dir}" PARENT_SCOPE)
     else()
@@ -232,8 +241,23 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
             COMMENT "Installing sanitized runtime ${output_lib}"
             DEPENDS reussir-rt-${suffix}-build
         )
+        set(_assert_target "${output_lib}")
         set(${output_var} "${output_lib}" PARENT_SCOPE)
     endif()
+
+    # A runtime that lost its instrumentation still passes the sanitizer
+    # suite, so catch it here rather than hoping a test notices.
+    add_custom_command(TARGET reussir-rt-${suffix} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DLIBRARY=${_assert_target}
+            -DSANITIZER=${sanitizer}
+            -DREADOBJ=${REUSSIR_LLVM_READOBJ}
+            -DNM=${REUSSIR_LLVM_NM}
+            -DIS_WIN32=$<BOOL:${WIN32}>
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertSanitizedRuntime.cmake
+        COMMENT "Checking ${_assert_target} carries ${sanitizer} instrumentation"
+        VERBATIM
+    )
     add_dependencies(reussir-rt-${suffix} reussir-rt-${suffix}-build)
 
     list(APPEND REUSSIR_SANITIZED_RUNTIME_TARGETS reussir-rt-${suffix})
