@@ -124,11 +124,21 @@ fn binary_bp(kind: SyntaxKind) -> Option<BindingPower> {
         PipePipe => BindingPower::left_assoc(2),
         AmpAmp => BindingPower::left_assoc(4),
         EqEq | BangEq | LAngle | RAngle | LtEq | GtEq => BindingPower::non_assoc(6),
-        Plus | Minus => BindingPower::left_assoc(8),
-        Star | Slash | Percent => BindingPower::left_assoc(10),
+        // The bitwise ladder sits between comparisons and arithmetic —
+        // Rust's order, so `a & b == c` is `(a & b) == c` (not C's trap)
+        // and `a | b + c` is `a | (b + c)`.
+        Pipe => BindingPower::left_assoc(8),
+        Caret => BindingPower::left_assoc(10),
+        Amp => BindingPower::left_assoc(12),
+        Plus | Minus => BindingPower::left_assoc(16),
+        Star | Slash | Percent => BindingPower::left_assoc(18),
         _ => return None,
     })
 }
+
+/// Shifts sit between `&` and `+`/`-` on the ladder. They have no token of
+/// their own — see [`Parser::glued_shift`].
+const SHIFT_BP: BindingPower = BindingPower::left_assoc(14);
 
 const ASSIGN_BP: u8 = 1;
 
@@ -186,8 +196,17 @@ impl Parser<'_> {
                 continue;
             }
 
-            let Some(bp) = binary_bp(self.current()) else {
-                break;
+            // `<<`/`>>` are two glued angle tokens, not a lexer token of
+            // their own: the lexer keeps angles single so the type grammar
+            // can close nested generics (`List<List<T>>`) one level at a
+            // time. Gluing happens only here, in infix-operator position.
+            let shift = self.glued_shift();
+            let bp = match shift {
+                Some(_) => SHIFT_BP,
+                None => match binary_bp(self.current()) {
+                    Some(bp) => bp,
+                    None => break,
+                },
             };
             if bp.left < min_bp {
                 break;
@@ -198,6 +217,9 @@ impl Parser<'_> {
             }
             let m = lhs.precede(self);
             self.bump(); // the operator
+            if shift.is_some() {
+                self.bump(); // the glued second half of `<<` / `>>`
+            }
             if self.expr_bp(bp.right, allow_struct).is_none() {
                 self.error(format!(
                     "expected an expression after the operator, found {}",

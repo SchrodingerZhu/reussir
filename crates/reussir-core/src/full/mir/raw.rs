@@ -439,6 +439,11 @@ pub enum ArithOp {
     Mod,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Clone, Copy, Debug)]

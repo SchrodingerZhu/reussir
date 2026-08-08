@@ -224,6 +224,12 @@ pub enum Token<'a> {
     Ne,
     #[token("!")]
     Bang,
+    #[token("&")]
+    Amp,
+    #[token("|")]
+    Pipe,
+    #[token("^")]
+    Caret,
 
     // ----- literals & identifiers -----
     /// `v<id>` — a local variable.

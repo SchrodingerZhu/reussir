@@ -1,0 +1,17 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+// The bitwise operators are integer-only: `Integral ⊳ T`, which excludes
+// floats and — unlike Rust — `bool`, whose connectives are `&&`/`||`.
+
+// CHECK-DAG: `f64` does not implement `Integral`
+pub fn on_float(x : f64, y : f64) -> f64 { x & y }
+
+// CHECK-DAG: `bool` does not implement `Integral`
+pub fn on_bool(x : bool, y : bool) -> bool { x | y }
+
+// CHECK-DAG: `f32` does not implement `Integral`
+pub fn shift_float(x : f32) -> f32 { x << 2 }
+
+// The bit-counting intrinsics carry the same bound.
+// CHECK-DAG: `f64` does not implement `Integral`
+pub fn count_float(x : f64) -> f64 { core::intrinsic::math::ctpop(x) }

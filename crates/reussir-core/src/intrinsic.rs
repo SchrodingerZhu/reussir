@@ -20,6 +20,10 @@ pub enum MathKind {
     Fma,
     /// Float base and `i32` exponent in, float out.
     Fpowi,
+    /// One integer in, same integer out (`ctpop`, `ctlz`, `cttz`). Bounded
+    /// by `Integral` rather than `FloatingPoint`, and takes no fast-math
+    /// flag — the MLIR integer math ops have no such attribute.
+    IntUnary,
 }
 
 macro_rules! math_fns {
@@ -98,6 +102,9 @@ math_fns! {
     Powf => "powf": Binary,
     Fma => "fma": Fma,
     Fpowi => "fpowi": Fpowi,
+    Ctpop => "ctpop": IntUnary,
+    Ctlz => "ctlz": IntUnary,
+    Cttz => "cttz": IntUnary,
 }
 
 impl MathKind {
@@ -105,7 +112,7 @@ impl MathKind {
     /// flag is one more).
     pub fn value_args(self) -> usize {
         match self {
-            MathKind::Unary | MathKind::Check => 1,
+            MathKind::Unary | MathKind::Check | MathKind::IntUnary => 1,
             MathKind::Binary | MathKind::Fpowi => 2,
             MathKind::Fma => 3,
         }

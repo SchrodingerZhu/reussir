@@ -103,6 +103,21 @@ impl<'s> Parser<'s> {
         self.current() == kind
     }
 
+    /// An adjacent `<<`/`>>` pair glued into a shift operator, or `None`.
+    /// The lexer keeps angle tokens single so the type grammar can close
+    /// nested generics one level at a time; a shift operator therefore
+    /// exists only as two angle tokens with nothing between them, detected
+    /// where an infix operator is expected. Returns the angle kind.
+    pub(crate) fn glued_shift(&self) -> Option<SyntaxKind> {
+        let kind = self.current();
+        if !matches!(kind, SyntaxKind::LAngle | SyntaxKind::RAngle) || self.nth(1) != kind {
+            return None;
+        }
+        let a = self.tokens.get(self.pos)?;
+        let b = self.tokens.get(self.pos + 1)?;
+        (a.range.1 == b.range.0).then_some(kind)
+    }
+
     pub(crate) fn at_eof(&self) -> bool {
         self.at(SyntaxKind::Eof)
     }

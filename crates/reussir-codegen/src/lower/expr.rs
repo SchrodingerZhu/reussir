@@ -2795,6 +2795,16 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             (ArithOp::Mod, false, false) => arith::remui(lv, rv, loc),
             (ArithOp::And, ..) => arith::andi(lv, rv, loc),
             (ArithOp::Or, ..) => arith::ori(lv, rv, loc),
+            // Bitwise: the checker admits only `Integral` operands, so the
+            // float flag is always false here. The shift amount shares the
+            // operand type; a right shift follows the operand's signedness
+            // (arithmetic for signed, logical for unsigned).
+            (ArithOp::BitAnd, ..) => arith::andi(lv, rv, loc),
+            (ArithOp::BitOr, ..) => arith::ori(lv, rv, loc),
+            (ArithOp::BitXor, ..) => arith::xori(lv, rv, loc),
+            (ArithOp::Shl, ..) => arith::shli(lv, rv, loc),
+            (ArithOp::Shr, _, true) => arith::shrsi(lv, rv, loc),
+            (ArithOp::Shr, _, false) => arith::shrui(lv, rv, loc),
         };
         Ok(self.append(block, op))
     }

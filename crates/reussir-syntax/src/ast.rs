@@ -663,9 +663,7 @@ impl Emitter<'_> {
                 )
             }
             BinExpr => {
-                let op = tokens(node)
-                    .find_map(|t| binary_op_name(t.kind()))
-                    .expect("binary operator");
+                let op = bin_expr_op_name(node).expect("binary operator");
                 let mut operands = expr_children(node).map(|e| self.expr(e));
                 let lhs = operands.next().expect("lhs");
                 let rhs = operands.next().expect("rhs");
@@ -867,8 +865,24 @@ fn binary_op_name(kind: SyntaxKind) -> Option<&'static str> {
         BangEq => "Neq",
         AmpAmp => "And",
         PipePipe => "Or",
+        Amp => "BitAnd",
+        Pipe => "BitOr",
+        Caret => "BitXor",
         _ => return None,
     })
+}
+
+/// The operator name of a `BinExpr` node. Shifts have no token of their
+/// own — the parser glues two adjacent angle tokens — so a pair of
+/// operator tokens reads as the shift, and a single token maps directly.
+fn bin_expr_op_name(node: &ResolvedNode) -> Option<&'static str> {
+    let mut ops = tokens(node).filter_map(|t| Some((t.kind(), binary_op_name(t.kind())?)));
+    let (first_kind, first) = ops.next()?;
+    match (first_kind, ops.next()) {
+        (LAngle, Some((LAngle, _))) => Some("Shl"),
+        (RAngle, Some((RAngle, _))) => Some("Shr"),
+        _ => Some(first),
+    }
 }
 
 fn prim_type(text: &str) -> Value {

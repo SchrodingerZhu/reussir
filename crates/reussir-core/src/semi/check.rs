@@ -505,6 +505,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Binary operators synthesize:
     /// (ARITH) `op∈{+,-,*,/,%}`: `l ⇒ T`, `Num ⊳ T`, `r ⇐ T`, result `T`.
+    /// (BIT) `op∈{&,|,^,<<,>>}`: `l ⇒ T`, `Integral ⊳ T`, `r ⇐ T`, result `T`.
     /// (LOGIC) `op∈{&&,||}`: `l ⇐ Bool`, `r ⇐ Bool`, result `Bool`.
     /// (CMP-SCALAR) comparisons with `l ⇒ T` for scalar-or-hole `T`: `r ⇐ T`, result
     /// `Bool`, lowered intrinsically; equality registers `PartialEq ⊳ T`, orderings
@@ -525,6 +526,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let l = self.infer_expr(l);
                 let ty = l.ty;
                 self.register_bound(self.lang.num, ty, span);
+                let r = self.check_expr(r, ty);
+                let aop = arith_op(op);
+                self.mk_expr(ExprKind::Arith(Box::new(l), aop, Box::new(r)), ty, span)
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                // (BIT) like (ARITH) but integers only, `Integral ⊳ T`.
+                // Both operands share `T` — a shift amount is the operand
+                // type, not a separate width.
+                let l = self.infer_expr(l);
+                let ty = l.ty;
+                self.register_bound(self.lang.integral, ty, span);
                 let r = self.check_expr(r, ty);
                 let aop = arith_op(op);
                 self.mk_expr(ExprKind::Arith(Box::new(l), aop, Box::new(r)), ty, span)
@@ -2253,7 +2265,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
 
         // The shared element type: an optional single explicit type argument,
-        // else inferred — either way bounded by `FloatingPoint`.
+        // else inferred — either way bounded by `FloatingPoint` (`Integral`
+        // for the integer ops).
         let elem = match fc.ty_args.as_slice() {
             [] | [None] => self.infer.new_hole_ty(),
             [Some(t)] => self.eval_type(t),
@@ -2265,9 +2278,36 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 return self.poison(span);
             }
         };
-        self.register_bound(self.lang.floating_point, elem, span);
-
         let kind = func.kind();
+        let bound = if kind == MathKind::IntUnary {
+            self.lang.integral
+        } else {
+            self.lang.floating_point
+        };
+        self.register_bound(bound, elem, span);
+
+        // The integer ops (`ctpop`, `ctlz`, `cttz`) take no fast-math flag:
+        // their MLIR forms have no such attribute.
+        if kind == MathKind::IntUnary {
+            if fc.args.len() != 1 {
+                self.error(
+                    span,
+                    format!("`{name}` expects exactly 1 argument, got {}", fc.args.len()),
+                );
+                return self.poison(span);
+            }
+            let arg = self.check_expr(&fc.args[0], elem);
+            let op = IntrinsicOp::Math { func, flag: 0 };
+            return self.mk_expr(
+                ExprKind::Intrinsic {
+                    op,
+                    args: vec![arg],
+                },
+                elem,
+                span,
+            );
+        }
+
         let want = kind.value_args() + 1;
         if fc.args.len() != want {
             self.error(
@@ -3517,7 +3557,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 }
 
-/// Map a surface arithmetic/boolean operator to the HIR form.
+/// Map a surface arithmetic/boolean/bitwise operator to the HIR form.
 fn arith_op(op: BinOp) -> ArithOp {
     match op {
         BinOp::Add => ArithOp::Add,
@@ -3527,6 +3567,11 @@ fn arith_op(op: BinOp) -> ArithOp {
         BinOp::Mod => ArithOp::Mod,
         BinOp::And => ArithOp::And,
         BinOp::Or => ArithOp::Or,
+        BinOp::BitAnd => ArithOp::BitAnd,
+        BinOp::BitOr => ArithOp::BitOr,
+        BinOp::BitXor => ArithOp::BitXor,
+        BinOp::Shl => ArithOp::Shl,
+        BinOp::Shr => ArithOp::Shr,
         _ => unreachable!("not an arithmetic operator"),
     }
 }
