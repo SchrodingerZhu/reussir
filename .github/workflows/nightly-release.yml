@@ -592,6 +592,14 @@ jobs:
   publish-release:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
+    # 10 minutes against a 0.3m observed maximum. This job is almost
+    # entirely network I/O — four platform artifacts down, a release up —
+    # and a stalled transfer with no client-side timeout is one of the
+    # commoner ways a CI job hangs. Its shortness describes the happy
+    # path, not the failure mode: a stall here means nightly publication
+    # silently does not happen, which is an absence rather than a red
+    # check.
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
