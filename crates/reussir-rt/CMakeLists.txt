@@ -192,7 +192,7 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
         #
         # So keep cargo's own names and give each variant its own directory.
         # The import library stays valid, and which runtime a test loads is
-        # decided by search order — see `sanitizer_runtime_dir` in
+        # decided by search order — see `REUSSIR_ASAN_RUNTIME_DIR` in
         # tests/integration, which puts this directory ahead of the ordinary
         # one for sanitizer RUN lines only.
         set(variant_dir "${REUSSIR_RT_OUTPUT_DIR}/sanitizers/${suffix}")
