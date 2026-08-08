@@ -72,6 +72,42 @@ module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<i64, dense<
         return %a, %b : !rcInner, !rcInner
     }
 
+    // CHECK-LABEL: func.func @escape_chain
+    // A single sweep visits the inner decrement first, then bubbles all three
+    // tokens through the middle and outer joins. This exercises the ordering
+    // invariant needed to avoid a whole-function walk per widening.
+    // CHECK: %[[OUTER:.+]]:3 = scf.if
+    // CHECK: %[[MIDDLE:.+]]:2 = scf.if
+    // CHECK: %[[INNER:.+]] = scf.if
+    // CHECK: scf.yield %{{.+}}, %[[INNER]]
+    // CHECK: scf.yield %{{.+}}, %[[MIDDLE]]#0, %[[MIDDLE]]#1
+    func.func @escape_chain(%outerCond: i1, %middleCond: i1,
+                            %innerCond: i1, %outerToken: !tk,
+                            %middleToken: !tk, %innerToken: !tk) {
+        %outer = scf.if %outerCond -> (!reussir.nullable<!tk>) {
+            %middle = scf.if %middleCond -> (!reussir.nullable<!tk>) {
+                %inner = scf.if %innerCond -> (!reussir.nullable<!tk>) {
+                    %innerNonnull = reussir.nullable.create (%innerToken : !tk) : !reussir.nullable<!tk>
+                    scf.yield %innerNonnull : !reussir.nullable<!tk>
+                } else {
+                    %innerNull = reussir.nullable.create : !reussir.nullable<!tk>
+                    scf.yield %innerNull : !reussir.nullable<!tk>
+                } {reussir.expanded_decrement}
+                %middleNonnull = reussir.nullable.create (%middleToken : !tk) : !reussir.nullable<!tk>
+                scf.yield %middleNonnull : !reussir.nullable<!tk>
+            } else {
+                %middleNull = reussir.nullable.create : !reussir.nullable<!tk>
+                scf.yield %middleNull : !reussir.nullable<!tk>
+            } {reussir.expanded_decrement}
+            %outerNonnull = reussir.nullable.create (%outerToken : !tk) : !reussir.nullable<!tk>
+            scf.yield %outerNonnull : !reussir.nullable<!tk>
+        } else {
+            %outerNull = reussir.nullable.create : !reussir.nullable<!tk>
+            scf.yield %outerNull : !reussir.nullable<!tk>
+        } {reussir.expanded_decrement}
+        return
+    }
+
     // Unconsumed sibling tokens are recorded and emitted in the same stable
     // result-number order. Both frees sink into the unique branch; the
     // pointer-hash order of the pending-token set must not swap them.
