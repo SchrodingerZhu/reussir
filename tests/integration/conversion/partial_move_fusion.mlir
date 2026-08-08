@@ -1,4 +1,5 @@
 // RUN: %reussir-opt %s --reussir-rc-dispatch-fusion --reussir-partial-move | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-early-partial-move | %FileCheck %s --check-prefix=EARLY
 
 // Projection-only compound owners can move at their first consuming use even
 // when a late scalar projection originally kept the carrier alive across a
@@ -27,6 +28,18 @@ func.func private @consume_one(!rc_tree)
 // CHECK-SAME: boundMembers = array<i64: 0>
 // CHECK-NEXT: %{{.+}} = call @consume_tree(%[[TREE]],
 // CHECK: return %[[LATE]]
+// Complete-owner scheduling is late-only. Running it before the inliner made
+// this decrement destructuring before the call; wavl_fold_traverse exposed the
+// resulting transfer as a use-after-free in the full pipeline.
+// EARLY-LABEL: func.func @lazy_projection(
+// EARLY-NOT: boundMembers
+// EARLY: reussir.rc.inc
+// EARLY-NOT: boundMembers
+// EARLY: call @consume_tree
+// EARLY-NOT: boundMembers
+// EARLY: reussir.rc.dec
+// EARLY-NOT: boundMembers
+// EARLY: return
 func.func @lazy_projection(%carrier: !rc_carrier) -> i1 {
   %ref = reussir.rc.borrow (%carrier : !rc_carrier) : !reussir.ref<!carrier>
   %tree_slot = reussir.ref.project (%ref : !reussir.ref<!carrier>) [0] : !reussir.ref<!rc_tree>
