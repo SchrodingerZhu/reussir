@@ -1,3 +1,4 @@
+// REQUIRES: rrepl
 // RUN: %rrepl -i %s -lerror -Onone | %FileCheck %s
 
 fn cos_squared(x: f64) -> f64 { let y = core::intrinsic::math::cos(x, 0); y * y }
