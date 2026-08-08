@@ -253,7 +253,17 @@ config.substitutions.append((r'%asan_flags', config.asan_flags))
 config.substitutions.append((r'%lsan_flags', config.lsan_flags))
 config.substitutions.append((r'%msan_flags', config.msan_flags))
 config.substitutions.append((r'%tsan_flags', config.tsan_flags))
-config.substitutions.append((r'%asan_env', config.asan_env))
+# Windows resolves `reussir_rt.dll` by search order, and the sanitized runtime
+# carries the same name as the ordinary one (renaming it would invalidate the
+# import library the tests link against). Putting the sanitized directory on
+# the loader path globally would hand it to *every* test; putting it in the
+# per-case environment prefix hands it only to the sanitizer RUN lines, which
+# is what the distinction requires.
+_asan_env = config.asan_env
+if sys.platform == 'win32' and getattr(config, 'asan_runtime_dir', ''):
+    _asan_env = 'PATH="%s;$PATH" %s' % (
+        config.asan_runtime_dir.replace('/', '\\'), config.asan_env)
+config.substitutions.append((r'%asan_env', _asan_env))
 config.substitutions.append((r'%lsan_env', config.lsan_env))
 config.substitutions.append((r'%msan_env', config.msan_env))
 config.substitutions.append((r'%tsan_env', config.tsan_env))
