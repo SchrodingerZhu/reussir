@@ -91,11 +91,18 @@ string(REPLACE "-" "_" RUST_CARGO_TARGET_ENV ${RUST_HOST_TRIPLE})
 string(TOUPPER "${RUST_CARGO_TARGET_ENV}" RUST_CARGO_TARGET_ENV)
 
 # Tools for the post-build instrumentation assertion
-# (cmake/AssertSanitizedRuntime.cmake). They ship beside the C compiler.
+# (cmake/AssertSanitizedRuntime.cmake). Resolved from LLVM's own tools
+# directory rather than from beside the C compiler: Ubuntu's LLVM packaging
+# installs only versioned names (`llvm-nm-22`) into /usr/bin, with the
+# unversioned ones under LLVM_TOOLS_BINARY_DIR. Both spellings are searched
+# for the same reason, and tests/integration resolves its tools this way too.
 if(REUSSIR_RUNTIME_SANITIZERS)
-    get_filename_component(_reussir_toolchain_bin "${CMAKE_C_COMPILER}" DIRECTORY)
-    find_program(REUSSIR_LLVM_READOBJ NAMES llvm-readobj HINTS "${_reussir_toolchain_bin}" REQUIRED)
-    find_program(REUSSIR_LLVM_NM NAMES llvm-nm HINTS "${_reussir_toolchain_bin}" REQUIRED)
+    find_program(REUSSIR_LLVM_READOBJ
+        NAMES llvm-readobj-${LLVM_VERSION_MAJOR} llvm-readobj
+        HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
+    find_program(REUSSIR_LLVM_NM
+        NAMES llvm-nm-${LLVM_VERSION_MAJOR} llvm-nm
+        HINTS ${LLVM_TOOLS_BINARY_DIR} REQUIRED)
 endif()
 
 set(REUSSIR_SUPPORTED_RUNTIME_SANITIZERS address leak memory thread)
