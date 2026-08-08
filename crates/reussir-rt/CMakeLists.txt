@@ -115,6 +115,27 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
     # `-Zsanitizer` support.
     if(MSVC OR RUST_HOST_TRIPLE MATCHES "windows-msvc")
         set(target_linker "")
+        # ...but then rustc resolves `clang_rt.asan_dynamic-x86_64.lib` through
+        # the vcvars `LIB` path, which is Visual Studio's *own* ASan runtime.
+        # Microsoft's fork and this Clang's are different implementations behind
+        # one DLL name: the MSVC one additionally exports
+        # `__sanitizer_cov_*_cleanup__dll`, which Clang's does not. A runtime
+        # linked against MSVC's then fails to load next to a Clang-instrumented
+        # test program — `0xC0000139`, entry point not found — because the test
+        # brings Clang's copy of that DLL. Point rustc at this Clang's
+        # compiler-rt so both halves of the process agree on one ASan.
+        execute_process(
+            COMMAND ${CMAKE_C_COMPILER} -print-resource-dir
+            OUTPUT_VARIABLE _clang_resource_dir
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _clang_resource_result)
+        if(NOT _clang_resource_result EQUAL 0)
+            message(FATAL_ERROR
+                "Failed to run '${CMAKE_C_COMPILER} -print-resource-dir'; needed to "
+                "resolve the sanitizer runtime the sanitized reussir-rt links against.")
+        endif()
+        file(TO_CMAKE_PATH "${_clang_resource_dir}/lib/windows" _clang_sanitizer_libdir)
+        string(APPEND rustflags " -Clink-arg=/LIBPATH:${_clang_sanitizer_libdir}")
     else()
         set(target_linker "CARGO_TARGET_${RUST_CARGO_TARGET_ENV}_LINKER=${CMAKE_C_COMPILER}")
     endif()
@@ -145,19 +166,52 @@ function(add_reussir_sanitized_runtime sanitizer suffix output_var)
         COMMENT "Building sanitized runtime ${output_lib}"
     )
 
-    add_custom_target(reussir-rt-${suffix}
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${REUSSIR_RT_OUTPUT_DIR}/sanitizers"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${target_dir}/${RUST_HOST_TRIPLE}/${CARGO_PROFILE_DIR}/${REUSSIR_RT_SHARED_LIB}
-            ${output_lib}
-        COMMENT "Installing sanitized runtime ${output_lib}"
-        DEPENDS reussir-rt-${suffix}-build
-    )
+    if(WIN32)
+        # Windows binds a DLL by the name recorded in the import library, and
+        # cargo's import library records `reussir_rt.dll`. Staging the runtime
+        # under a new name therefore breaks the pairing silently: a program
+        # linked against a copied import library imports `reussir_rt.dll` and
+        # the loader supplies the *unsanitized* runtime sitting on the same
+        # search path, so instrumented code runs against an allocator the
+        # sanitizer cannot see and the suite passes while checking far less
+        # than it appears to.
+        #
+        # So keep cargo's own names and give each variant its own directory.
+        # The import library stays valid, and which runtime a test loads is
+        # decided by search order — see `sanitizer_runtime_dir` in
+        # tests/integration, which puts this directory ahead of the ordinary
+        # one for sanitizer RUN lines only.
+        set(variant_dir "${REUSSIR_RT_OUTPUT_DIR}/sanitizers/${suffix}")
+        set(staged_dll "${variant_dir}/${REUSSIR_RT_SHARED_LIB}")
+        set(staged_implib "${variant_dir}/${REUSSIR_RT_SHARED_PREFIX}.dll.lib")
+        add_custom_target(reussir-rt-${suffix}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${variant_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${target_dir}/${RUST_HOST_TRIPLE}/${CARGO_PROFILE_DIR}/${REUSSIR_RT_SHARED_LIB}
+                ${staged_dll}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${target_dir}/${RUST_HOST_TRIPLE}/${CARGO_PROFILE_DIR}/${REUSSIR_RT_SHARED_PREFIX}.dll.lib
+                ${staged_implib}
+            COMMENT "Installing sanitized runtime ${staged_dll}"
+            DEPENDS reussir-rt-${suffix}-build
+        )
+        set(${output_var} "${staged_implib}" PARENT_SCOPE)
+        set(REUSSIR_RT_${suffix}_DIR "${variant_dir}" PARENT_SCOPE)
+    else()
+        add_custom_target(reussir-rt-${suffix}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${REUSSIR_RT_OUTPUT_DIR}/sanitizers"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${target_dir}/${RUST_HOST_TRIPLE}/${CARGO_PROFILE_DIR}/${REUSSIR_RT_SHARED_LIB}
+                ${output_lib}
+            COMMENT "Installing sanitized runtime ${output_lib}"
+            DEPENDS reussir-rt-${suffix}-build
+        )
+        set(${output_var} "${output_lib}" PARENT_SCOPE)
+    endif()
     add_dependencies(reussir-rt-${suffix} reussir-rt-${suffix}-build)
 
     list(APPEND REUSSIR_SANITIZED_RUNTIME_TARGETS reussir-rt-${suffix})
     set(REUSSIR_SANITIZED_RUNTIME_TARGETS "${REUSSIR_SANITIZED_RUNTIME_TARGETS}" PARENT_SCOPE)
-    set(${output_var} "${output_lib}" PARENT_SCOPE)
 endfunction()
 
 foreach(sanitizer IN LISTS REUSSIR_RUNTIME_SANITIZERS)

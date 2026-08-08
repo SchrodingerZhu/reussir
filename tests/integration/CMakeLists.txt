@@ -209,7 +209,18 @@ set(reussir_rt_lsan_path ${REUSSIR_RT_LSAN_LIBRARY})
 set(reussir_rt_msan_path ${REUSSIR_RT_MSAN_LIBRARY})
 set(reussir_rt_tsan_path ${REUSSIR_RT_TSAN_LIBRARY})
 
-set(rpath_san_flag "-Wl,-rpath,${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/sanitizers")
+# Where the sanitized runtimes are staged (crates/reussir-rt). Windows has no
+# rpath — link.exe warns "unrecognized option '/rpath'" and ignores it — and
+# stages each variant in its own directory under the runtime output directory,
+# so the loader picks it by search order instead. See %asan_env and friends,
+# which put that directory first for sanitizer RUN lines only.
+if(WIN32)
+  set(rpath_san_flag "")
+  set(REUSSIR_ASAN_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/sanitizers/asan")
+else()
+  set(rpath_san_flag "-Wl,-rpath,${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/sanitizers")
+  set(REUSSIR_ASAN_RUNTIME_DIR "")
+endif()
 
 set(asan_flags "-fsanitize=address -fno-omit-frame-pointer -g")
 set(lsan_flags "-fsanitize=leak -fno-omit-frame-pointer -g")
@@ -219,7 +230,14 @@ if(REUSSIR_MSAN_TRACK_ORIGINS)
   string(APPEND msan_flags " -fsanitize-memory-track-origins=2")
 endif()
 
-set(asan_env "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:halt_on_error=1")
+if(WIN32)
+  # LeakSanitizer has no Windows implementation and ASan aborts at startup when
+  # asked for it ("detect_leaks is not supported on this platform"), so the
+  # option would fail every ASan case rather than only the leak checks.
+  set(asan_env "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1")
+else()
+  set(asan_env "ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:halt_on_error=1")
+endif()
 set(lsan_env "LSAN_OPTIONS=abort_on_error=1:report_objects=1")
 set(msan_env "MSAN_OPTIONS=abort_on_error=1:halt_on_error=1:poison_in_dtor=1")
 set(tsan_env "TSAN_OPTIONS=abort_on_error=1:halt_on_error=1")

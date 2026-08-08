@@ -1,0 +1,25 @@
+// REQUIRES: asan
+// Guards the sanitizer harness itself rather than any generated code: does an
+// ASan build actually link and load the *sanitized* runtime?
+//
+// Every other case here answers "does instrumented Reussir code misbehave",
+// and every one of them passes just as happily against the ordinary runtime —
+// whose mimalloc heap the sanitizers cannot see. That is a suite that reports
+// green while checking substantially less than its name claims, and it is the
+// state this suite was in on Windows: the staged runtime was renamed while its
+// import library still named the original, so tests silently loaded the
+// uninstrumented build (see the runtime-selection notes in
+// crates/reussir-rt/CMakeLists.txt).
+//
+// This case cannot pass in that state. It plants a use-after-free in memory
+// the runtime allocated: reported when the sanitized runtime is in the
+// process, silent when it is not.
+//
+// It compiles no Reussir source — the `.rr` suffix is what makes lit collect
+// it, and `Inputs/` is where the suite keeps its C drivers.
+
+// RUN: %cc %asan_flags %S/Inputs/runtime_allocator_uaf.c %reussir_rt_asan -o %t.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %not %t.exe 2>&1 | %FileCheck %s
+
+// CHECK: ERROR: AddressSanitizer: heap-use-after-free
+// CHECK: READ of size 1
