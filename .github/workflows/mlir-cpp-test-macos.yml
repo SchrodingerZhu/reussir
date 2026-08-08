@@ -17,6 +17,7 @@ jobs:
         os: [macos-15]  # ARM64 macOS runner
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -84,6 +85,8 @@ jobs:
           ctest --test-dir build --output-on-failure
 
       - name: Run Integration Tests
+        env:
+          LIT_OPTS: --timeout=60 --time-tests
         run: |
           export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
           cmake --build build --target check

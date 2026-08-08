@@ -21,6 +21,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -95,6 +96,8 @@ jobs:
           ctest --test-dir build --output-on-failure
 
       - name: Run Integration Tests
+        env:
+          LIT_OPTS: --timeout=60 --time-tests
         run: cmake --build build --target check
 
       - name: Stage rrepl
@@ -149,6 +152,7 @@ jobs:
 
   build-macos:
     runs-on: macos-15
+    timeout-minutes: 120
 
     steps:
       - name: Checkout code
@@ -209,6 +213,8 @@ jobs:
           ctest --test-dir build --output-on-failure
 
       - name: Run Integration Tests
+        env:
+          LIT_OPTS: --timeout=60 --time-tests
         run: |
           export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
           cmake --build build --target check
@@ -267,6 +273,7 @@ jobs:
 
   build-windows:
     runs-on: windows-2025
+    timeout-minutes: 120
     env:
       LLVM_VERSION: 22.1.8
       CONDA_ENV_FILE: .github/conda/windows-msvc.yml
@@ -496,6 +503,8 @@ jobs:
       - name: Run Integration Tests
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
+        env:
+          LIT_OPTS: --timeout=60 --time-tests
         run: |
           $env:RUSTC_WRAPPER = "sccache"
           $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"
