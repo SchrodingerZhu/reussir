@@ -43,6 +43,12 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
 
     runs-on: ${{ matrix.os }}
+    # 30 minutes against a 5.8m observed maximum (windows-2025; ubuntu ~1m50s,
+    # macos ~4.5m, six successful runs each). This workflow has no lit and so
+    # takes no `LIT_OPTS` — a job-level bound is the only thing that can stop
+    # it, and on 2026-08-07 its `ubuntu-24.04` job burned the full six-hour
+    # runner ceiling wedged in `cargo test -p rene`.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
