@@ -31,7 +31,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
-        toolchain: nightly-2026-02-15
+        toolchain: nightly-2026-08-01
         components: rust-src, rustfmt, clippy, miri
 
     - name: Run Miri tests on reussir-rt
