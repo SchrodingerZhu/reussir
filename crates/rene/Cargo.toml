@@ -20,7 +20,7 @@ blake3.workspace = true
 # The async runtime: completion-based (io_uring/IOCP), driving the child
 # processes (rrc, cargo, rustc) and the source-digest reads. 0.18 pinned:
 # 0.19's executor needs a `cfg_select!` newer than the pinned toolchain.
-compio = { version = "0.18", features = ["dispatcher", "fs", "io", "macros", "process", "time"] }
+compio = { version = "0.18", features = ["fs", "io", "macros", "process", "time"] }
 # `try_join_all` for the concurrent stages (digests, target compiles).
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 # Evaluates the `rene.ncl` manifest; the manifest is a full Nickel program

@@ -403,9 +403,9 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // One pool for the whole build: `-j` admission over a few event-loop
-    // workers.
-    let pool = pool::Pool::new(args.jobs)?;
+    // One pool for the whole build: `-j` admission over the main event
+    // loop, which monitors every child process.
+    let pool = pool::Pool::new(args.jobs);
 
     // The dependency pipeline: every node of the graph but the root, each
     // dispatched the moment its last dependency finishes, each freshness-
@@ -463,7 +463,6 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
         &pool,
     )
     .await?;
-    pool.shutdown().await?;
     // Stdout carries the artifact listing, one path per target, in the
     // order they were declared (or selected).
     for product in &products {

@@ -164,7 +164,7 @@ async fn build_node(
     let color = opts.color;
     let mut sources = pool
         .run(move || async move { deps::scan(&src_root, &package, color).await })
-        .await??;
+        .await?;
     sources.sort_by(|a, b| a.path.cmp(&b.path));
 
     let plan_opts = plan::Options {
@@ -177,7 +177,7 @@ async fn build_node(
     for command in plan::node_commands(graph, name, &plan_opts, Some(rt)) {
         bar.set_message(format!("{name}: {}", command.emit));
         let invocation = compile::Invocation::from_planned(command, &rt.rustc, opts.color);
-        let completed = pool.run(move || invocation.run()).await??;
+        let completed = pool.run(move || invocation.run()).await?;
         // Clear/redraw every active bar around the indivisible diagnostic
         // block. `suspend` also serializes these callbacks on the scheduler.
         progress.suspend(|| completed.report())?;

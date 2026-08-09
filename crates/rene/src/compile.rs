@@ -161,10 +161,6 @@ pub async fn build(
     .await;
     let mut failure = None;
     for result in completed {
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => Err(error),
-        };
         if let Err(error) = result.and_then(CompletedInvocation::report)
             && failure.is_none()
         {
