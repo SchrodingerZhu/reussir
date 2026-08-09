@@ -232,7 +232,13 @@ for arg in "$@"; do
   prev="$arg"
 done
 if [ "$scan" = no ]; then
-  echo "$* rustc=$REUSSIR_RUSTC" >> "$(dirname "$0")/rrc-compiles"
+  # Concurrent compiles append to one log; the shell may emit a line in
+  # more than one write(2), which interleaves under contention (seen on
+  # macOS). mkdir is the portable atomic lock.
+  log="$(dirname "$0")/rrc-compiles"
+  until mkdir "$log.lock" 2>/dev/null; do sleep 0.001; done
+  echo "$* rustc=$REUSSIR_RUSTC" >> "$log"
+  rmdir "$log.lock"
   if [ "$FAKE_RRC_FRAGMENTED_DIAGNOSTIC" = yes ] && [ "$package" != core ]; then
     if [ "$color" = always ]; then
       sync="$(dirname "$0")/diagnostic-sync"
@@ -260,7 +266,10 @@ if [ "$scan" = no ]; then
   echo compiled > "$out"
   exit 0
 fi
-echo run >> "$(dirname "$0")/rrc-runs"
+log="$(dirname "$0")/rrc-runs"
+until mkdir "$log.lock" 2>/dev/null; do sleep 0.001; done
+echo run >> "$log"
+rmdir "$log.lock"
 printf '{"package":"pkg","files":[{"path":"%s","module":["pkg"]}' "$root/lib.rr"
 for f in "$root"/*.rr; do
   case "$f" in */lib.rr) continue;; esac
