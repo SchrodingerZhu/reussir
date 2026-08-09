@@ -24,7 +24,7 @@
         # The sha256 covers the channel manifest downloaded by fenix.
         rustToolchain = fenix.packages.${system}.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-7gtdtMrnS61/fyYXzXomlz9yIODc+zU9kfn2mIVsPYM=";
+          sha256 = "sha256-4ot8+Fs79G1hUwlEYI6700QBLKdkLb33yzwOou1o5Yk=";
         };
 
         # Merge LLVM+MLIR outputs into one prefix so that llvm-sys/mlir-sys
@@ -177,7 +177,7 @@
             llvmPkgs.tblgen         # mlir-tblgen, llvm-tblgen (needed by cmake & mlir-sys)
             llvmPkgs.lldb
 
-            # Rust toolchain (nightly-2026-02-15 as pinned in rust-toolchain.toml)
+            # Rust toolchain (nightly-2026-03-15 as pinned in rust-toolchain.toml)
             rustToolchain
 
             # Rust LSP — works alongside the pinned toolchain

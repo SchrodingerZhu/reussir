@@ -33,7 +33,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2026-02-15
+          toolchain: nightly-2026-03-15
           components: rust-src, rustfmt, clippy
 
       - name: Install dependencies
@@ -168,7 +168,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2026-02-15
+          toolchain: nightly-2026-03-15
           components: rust-src, rustfmt, clippy
 
       - name: Setup environment paths
@@ -457,7 +457,7 @@ jobs:
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2026-02-15
+          toolchain: nightly-2026-03-15
           components: rust-src, rustfmt, clippy
 
       - name: sccache
