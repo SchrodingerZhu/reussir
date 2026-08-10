@@ -1,0 +1,50 @@
+// UNSUPPORTED: darwin
+// Regression test: an FFI object stored inside a record/variant member,
+// released through the transitive drop glue. The acquire/drop expansion
+// used to give the member's `rc.dec` a reuse-token result whenever the box
+// was not rigid — but an FFI box releases through its foreign cleanup hook
+// and cannot donate its memory, so the verifier (correctly) rejected the
+// dec and the whole compilation ICE'd. The token predicate now mirrors
+// `shouldProduceToken`.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn len<T>(v: Vec<T>) -> u64 [{ v.len() as u64 }];
+
+// The FFI box sits in a variant arm (and, transitively, in a compound):
+// dropping `Holder` runs the record drop glue over the `Vec` member — the
+// dec that must not carry a token.
+pub enum Holder {
+    Nothing,
+    Payload(u64, Vec<i64>)
+}
+
+pub struct Wrapped { tag : u64, inner : Holder }
+
+fn touch(w : Wrapped) -> u64 {
+    // Consume one field and let the rest drop through the glue.
+    w.tag
+}
+
+pub fn main() -> i64 {
+    let h = Holder::Payload { 7, push(new<i64>(), 42) };
+    let w = Wrapped { tag: 1, inner: h };
+    touch(w) as i64
+}
+
+extern "C" trampoline "reussir_main" = main;

@@ -155,12 +155,22 @@ private:
     return mlir::success();
   }
 
+  // Whether a decrement of this rc type may carry a reuse token — the
+  // mirror of `ReussirRcDecOp::shouldProduceToken`, which the verifier
+  // enforces on any token-carrying dec this pass creates: only shared
+  // boxes whose payload the program lays out itself donate their memory.
+  // FFI objects release through their foreign cleanup hook and closures
+  // through their vtable, so neither can hand its box out as a token.
+  static bool decMayProduceToken(RcType rcType) {
+    return rcType.getCapability() == Capability::shared &&
+           !llvm::isa<FFIObjectType, ClosureType>(rcType.getElementType());
+  }
+
   mlir::LogicalResult rewriteDropRc(RcType rcType, ReussirRefDropOp op,
                                     mlir::PatternRewriter &rewriter) const {
     // Replace drop of ref rc with load then dec
     NullableType nullableType = nullptr;
-    if (rcType.getCapability() != Capability::rigid &&
-        !llvm::isa<ClosureType>(rcType.getElementType())) {
+    if (decMayProduceToken(rcType)) {
       auto layout = mlir::DataLayout::closest(op.getOperation());
       RcBoxType rcBoxType = rcType.getInnerBoxType();
       size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
@@ -284,7 +294,7 @@ private:
           {nullableType.getPtrTy()}, {op.getLoc()});
       rewriter.setInsertionPointToStart(nonNullBlock);
       NullableType retNullableTy = nullptr;
-      if (rcType.getCapability() != Capability::rigid) {
+      if (decMayProduceToken(rcType)) {
         auto layout = mlir::DataLayout::closest(op.getOperation());
         RcBoxType rcBoxType = rcType.getInnerBoxType();
         size_t size = layout.getTypeSize(rcBoxType).getFixedValue();
