@@ -2355,14 +2355,22 @@ mlir::LogicalResult ReussirScfYieldOp::verify() {
   mlir::Type yieldedType = getValue() ? getValue().getType() : mlir::Type{};
   mlir::Type expectedType = mlir::Type{};
   bool allowImplicitArrayResult = false;
-  // The rdlock check looks at the immediate parent (not the nearest ancestor
-  // of a type): an rdlock body may itself sit inside a dispatch region, and
-  // this yield belongs to the rdlock.
+  // The rdlock and with-unique-view checks look at the immediate parent
+  // (not the nearest ancestor of a type): either body may itself sit inside
+  // a dispatch region — a `set` in a match arm is the everyday case — and
+  // this yield belongs to the op whose single-block body it terminates.
   if (auto rdlockParent = llvm::dyn_cast_if_present<ReussirCellRdlockOp>(
           getOperation()->getParentOp()))
     expectedType = rdlockParent.getOutput() ? rdlockParent.getOutput().getType()
                                             : mlir::Type{};
-  else if (auto nullableParent =
+  else if (auto arrayParent =
+               llvm::dyn_cast_if_present<ReussirArrayWithUniqueViewOp>(
+                   getOperation()->getParentOp())) {
+    expectedType = arrayParent.getResult() ? arrayParent.getResult().getType()
+                                           : mlir::Type{};
+    allowImplicitArrayResult =
+        expectedType && expectedType == arrayParent.getArray().getType();
+  } else if (auto nullableParent =
           getOperation()->getParentOfType<ReussirNullableDispatchOp>())
     expectedType = nullableParent.getValue()
                        ? nullableParent.getValue().getType()
