@@ -7,8 +7,10 @@
 
 import core::intrinsic::array;
 
-// CHECK-DAG: non-scalar array element types are not supported yet
-struct S { x: i32 }
+// A `[shared]` record element is legal now; a `[value]` record still is
+// not — its payload would need member-wise rc traffic through the view.
+// CHECK-DAG: array element type `S` is not supported yet (a `[value]` record)
+struct [value] S { x: i32 }
 fn bad_elem(a : [S; 4]) -> i64 { 0 }
 
 // An array member is fine (one shared rc box, like a closure member), but a

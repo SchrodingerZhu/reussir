@@ -2863,6 +2863,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
             return self.poison(span);
         }
+        // `tabulate` fills the payload through the raw view with no
+        // per-element ownership hooks, so rc elements stay out of it; a
+        // deferred (generic) element re-checks at monomorphization. `splat`
+        // supports them (its lowering retains per stored slot).
+        if op == ArrayFn::Tabulate
+            && !crate::semi::ty_eval::is_plain_scalar_or_deferred(self.infer.shallow_resolve(elem))
+        {
+            self.error(
+                span,
+                format!(
+                    "`tabulate` does not support rc element types yet; found `{}` \
+                     (build with `splat` and `set` instead)",
+                    self.ty_display(elem)
+                ),
+            );
+            return self.poison(span);
+        }
         match op {
             ArrayFn::Splat => {
                 let v = self.check_expr(&fc.args[0], elem);
@@ -2903,6 +2920,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let TyKind::Array { elem, dims } = *bty.kind() else {
             unreachable!("routed here only for array bases");
         };
+        // `fold` runs the payload through a borrowed view with no
+        // per-element ownership hooks, so rc elements stay out of it (the
+        // supported traffic is `splat`/`get`/`set`). A deferred (generic)
+        // element re-checks at monomorphization.
+        if method == "fold"
+            && !crate::semi::ty_eval::is_plain_scalar_or_deferred(self.infer.shallow_resolve(elem))
+        {
+            self.error(
+                span,
+                format!(
+                    "`fold` does not support rc element types yet; found `{}` \
+                     (use `get` in a recursive loop instead)",
+                    self.ty_display(elem)
+                ),
+            );
+            return self.poison(span);
+        }
         let rank = dims.len();
         let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
         match method {

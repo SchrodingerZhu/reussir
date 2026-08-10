@@ -2392,10 +2392,57 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 args: self.lower_slice(args, subst),
             },
             ExprKind::Closure(c) => M::Closure(self.lower_closure(c, subst)),
-            ExprKind::ArrayOp { op, args } => M::ArrayOp {
-                op: *op,
-                args: self.lower_slice(args, subst),
-            },
+            ExprKind::ArrayOp { op, args } => {
+                // The ground half of the array element checks: semi lets a
+                // generic element through, so an instantiation is the first
+                // point where `[T; n]` can ground to an inadmissible element
+                // — or where `tabulate`/`fold` (whose raw views carry no
+                // per-element ownership hooks) can meet an rc element.
+                use crate::intrinsic::ArrayFn;
+                use crate::semi::ty::TyKind;
+                use crate::semi::ty_eval::{array_element_rejection, is_plain_scalar_or_deferred};
+                let arg0 = args.first().map(|a| subst_ty(self.tcx, a.ty, subst));
+                let elem = match op {
+                    // `splat`'s one argument *is* an element value.
+                    ArrayFn::Splat => arg0,
+                    // `tabulate`'s kernel returns the element.
+                    ArrayFn::Tabulate => arg0.and_then(|t| match t.kind() {
+                        TyKind::Closure { ret, .. } => Some(*ret),
+                        _ => None,
+                    }),
+                    // Everything else operates on an array base.
+                    _ => arg0.and_then(|t| match t.kind() {
+                        TyKind::Array { elem, .. } => Some(*elem),
+                        _ => None,
+                    }),
+                };
+                if let Some(elem) = elem {
+                    if let Some(why) = array_element_rejection(
+                        |def| self.record_defs.get(&def).map(|r| r.default_cap),
+                        elem,
+                    ) {
+                        self.error(
+                            span,
+                            format!(
+                                "this instantiation grounds an array element type that is \
+                                 not supported ({why}); elements must be plain scalars or \
+                                 `[shared]` records"
+                            ),
+                        );
+                    } else if matches!(op, ArrayFn::Tabulate | ArrayFn::Fold)
+                        && !is_plain_scalar_or_deferred(elem)
+                    {
+                        self.error(
+                            span,
+                            format!("`{}` does not support rc element types yet", op.as_str()),
+                        );
+                    }
+                }
+                M::ArrayOp {
+                    op: *op,
+                    args: self.lower_slice(args, subst),
+                }
+            }
             ExprKind::Match(scrut, tree) => {
                 M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
             }

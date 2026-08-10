@@ -1,0 +1,18 @@
+// RUN: %not %rrc %s --emit mir -o - 2>&1 | %FileCheck %s
+
+// The deferred half of the array element checks: a generic element passes
+// the concrete-annotation check, so the instantiation is where `fold` over
+// an rc element — or an inadmissible element type — first grounds.
+
+import core::intrinsic::array;
+
+pub enum List { Nil, Cons(i64, List) }
+
+fn generic_fold<T>(a : [T; 4], z : i64) -> i64 {
+    array::fold(a, z, |acc, x| acc)
+}
+
+// CHECK: `fold` does not support rc element types yet
+pub fn trigger(a : [List; 4]) -> i64 {
+    generic_fold(a, 0)
+}

@@ -458,11 +458,13 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
 
     /// The `!reussir.array<dims x elem>` payload type of an array-typed `ty`
     /// (the type inside its `rc` box, and the element type of its views).
+    /// Full type lowering: an rc element's slot is its `!reussir.rc<…>`
+    /// pointer, a scalar's the scalar itself.
     pub(super) fn array_inner_of(&self, ty: Ty<'tcx>) -> Result<Type<'c>> {
         let TyKind::Array { elem, dims } = *ty.kind() else {
             return err("array payload requested for a non-array type");
         };
-        let elem = scalar_ty(self.context, elem)?;
+        let elem = self.mlir_ty(elem)?;
         let shape: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
         Ok(array(&shape, elem))
     }

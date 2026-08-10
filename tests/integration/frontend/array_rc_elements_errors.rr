@@ -1,0 +1,31 @@
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+import core::intrinsic::array;
+
+pub enum List { Nil, Cons(i64, List) }
+pub struct [value] Pair { a : i64, b : i64 }
+
+// A `[value]` record's payload would need member-wise rc traffic through
+// the view; only plain scalars and `[shared]` records are elements.
+// CHECK-DAG: array element type `Pair` is not supported yet (a `[value]` record)
+pub fn value_elem(p : Pair) -> [Pair; 4] {
+    array::splat<[Pair; 4]>(p)
+}
+
+// A closure is not an element either.
+// CHECK-DAG: is not supported yet (a closure)
+pub fn closure_elem() -> i64 {
+    let a = array::splat<[(i64) -> i64; 2]>(|x : i64| x);
+    0
+}
+
+// The raw-view operations stay scalar-only over rc elements.
+// CHECK-DAG: `tabulate` does not support rc element types yet
+pub fn tab() -> [List; 4] {
+    array::tabulate<[List; 4]>(|i| List::Nil)
+}
+
+// CHECK-DAG: `fold` does not support rc element types yet
+pub fn fold_over(a : [List; 4]) -> i64 {
+    array::fold(a, 0, |acc, x| acc)
+}
