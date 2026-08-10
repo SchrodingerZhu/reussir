@@ -274,7 +274,21 @@ def ReussirDefaultInlinerPass
     inlines) and unrolls recursion one level, the posture LLVM's own inliner
     takes. Region simplification stays off in the callable optimizer to
     match the rest of the pipeline's canonicalization policy.
+
+    The other load-bearing part is the callee size cap. The inliner works
+    bottom-up, so by the time a caller is processed its callees already
+    contain everything inlined into *them*; with no cap, each level of the
+    call tree copies its callees' fully-inlined bodies into every call
+    site, and module size grows geometrically in call-tree depth — the
+    acquire/drop expansions that run later then multiply whatever was
+    duplicated. The cap lets small helpers inline everywhere (where the
+    rc-pairing passes profit from seeing through the call) while the big
+    already-inlined bodies stay shared.
   }];
+  let options =
+      [Option<"maxCalleeOps", "max-callee-ops", "unsigned", "256",
+              "Only inline callees with at most this many operations "
+              "(counted recursively through nested regions).">];
 }
 
 #endif // REUSSIR_TRANSFORMATION_PASSES_TD
