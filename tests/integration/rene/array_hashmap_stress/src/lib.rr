@@ -514,6 +514,160 @@ fn test_collisions() {
     wb(check_range<Weak4>(shrunk, 250, 300));
 }
 
+
+// ------------------------------------------------ the linear (take) path
+
+// The same operations written linearly, the way a real container should
+// be: the wrapper destructures `Map` completely before the recursive call
+// (a later `m.size` read would keep the whole map alive across it), and
+// the branch step takes the child out of its slot — parking `Empty` —
+// before recursing, so the child stays uniquely owned all the way down.
+// This drives the *other* half of the array machinery: where the COW
+// cases above force clone-and-acquire, these hit in-place `set` under the
+// unique view and token reuse through the match arms.
+
+fn ins_lin(n : Node<Key, i64>, h : u64, shift : u64, k : Key, v : i64) -> Ins<Key, i64> {
+    match n {
+        Node::Empty => Ins { node: Node::Leaf { h, k, v }, added: true },
+        Node::Leaf(h2, k2, v2) => {
+            if h2 == h {
+                if k2 == k {
+                    Ins { node: Node::Leaf { h, k, v }, added: false }
+                } else {
+                    Ins {
+                        node: Node::Bucket {
+                            h,
+                            List::Cons {
+                                Pair { key: k2, value: v2 },
+                                List::Cons { Pair { key: k, value: v }, List::Nil }
+                            }
+                        },
+                        added: true
+                    }
+                }
+            } else {
+                let seeded = branch_with(Node::Leaf { h2, k2, v2 }, h2, shift);
+                let below = ins_branch_lin(seeded, h, shift, k, v);
+                let added = below.added;
+                Ins { node: below.node, added }
+            }
+        },
+        Node::Branch(arr) => {
+            let below = ins_branch_lin(arr, h, shift, k, v);
+            let added = below.added;
+            Ins { node: below.node, added }
+        },
+        Node::Bucket(h2, l) => {
+            if h2 == h {
+                let grew = !bucket_contains(l, k);
+                Ins { node: Node::Bucket { h, bucket_list_put(l, k, v) }, added: grew }
+            } else {
+                let seeded = branch_with(Node::Bucket { h2, l }, h2, shift);
+                let below = ins_branch_lin(seeded, h, shift, k, v);
+                let added = below.added;
+                Ins { node: below.node, added }
+            }
+        }
+    }
+}
+
+fn ins_branch_lin(
+    arr : [Node<Key, i64>; 32],
+    h : u64,
+    shift : u64,
+    k : Key,
+    v : i64
+) -> Ins<Key, i64> {
+    let i = slot(h, shift);
+    let child = array::get(arr, i);
+    let holed = array::set(arr, i, Node::Empty);
+    let below = ins_lin(child, h, shift + 5, k, v);
+    let node = below.node;
+    let added = below.added;
+    Ins { node: Node::Branch { array::set(holed, i, node) }, added }
+}
+
+fn del_lin(n : Node<Key, i64>, h : u64, shift : u64, k : Key) -> Rem<Key, i64> {
+    match n {
+        Node::Empty => Rem { node: Node::Empty, removed: false },
+        Node::Leaf(h2, k2, v2) => {
+            if h2 == h && k2 == k {
+                Rem { node: Node::Empty, removed: true }
+            } else {
+                Rem { node: Node::Leaf { h2, k2, v2 }, removed: false }
+            }
+        },
+        Node::Branch(arr) => {
+            let i = slot(h, shift);
+            let child = array::get(arr, i);
+            let holed = array::set(arr, i, Node::Empty);
+            let below = del_lin(child, h, shift + 5, k);
+            let node = below.node;
+            let removed = below.removed;
+            Rem { node: Node::Branch { array::set(holed, i, node) }, removed }
+        },
+        Node::Bucket(h2, l) => {
+            if h2 == h && bucket_contains(l, k) {
+                let rest = bucket_del(l, k);
+                let node = match rest {
+                    List::Nil => Node::Empty,
+                    kept => Node::Bucket { h2, kept }
+                };
+                Rem { node, removed: true }
+            } else {
+                Rem { node: Node::Bucket { h2, l }, removed: false }
+            }
+        }
+    }
+}
+
+fn map_insert_lin(m : Map<Key, i64>, k : Key, v : i64) -> Map<Key, i64> {
+    let h = hash_of<FastHasher, Key>(k);
+    let size = m.size;
+    let root = m.root;
+    let out = ins_lin(root, h, 0, k, v);
+    let node = out.node;
+    let added = out.added;
+    Map { size: size + if added { 1 } else { 0 }, root: node }
+}
+
+fn map_remove_lin(m : Map<Key, i64>, k : Key) -> Map<Key, i64> {
+    let h = hash_of<FastHasher, Key>(k);
+    let size = m.size;
+    let root = m.root;
+    let out = del_lin(root, h, 0, k);
+    let node = out.node;
+    let removed = out.removed;
+    Map { size: size - if removed { 1 } else { 0 }, root: node }
+}
+
+// Case 5: the same churn as case 3, through the linear operations — the
+// map is threaded uniquely the whole way, so every step should ride the
+// in-place path, and the WavlMap cross-check must still agree.
+fn churn_lin(
+    m : Map<Key, i64>,
+    model : WavlMap<i64, i64>,
+    seed : i64,
+    steps : i64
+) -> bool {
+    if steps == 0 {
+        agree(m, model, 0, 512) && map_len(m) == model.len()
+    } else {
+        let s1 = lcg(seed);
+        let key = s1 & 511;
+        let s2 = lcg(s1);
+        if (s2 & 3) == 0 {
+            churn_lin(map_remove_lin(m, Key { k: key }), model.remove(key), s2, steps - 1)
+        } else {
+            churn_lin(map_insert_lin(m, Key { k: key }, s2), model.insert(key, s2), s2, steps - 1)
+        }
+    }
+}
+
+fn test_linear_churn() {
+    wb(churn_lin(map_new(), WavlMap::new(), 20260810, 2000));
+}
+
 #[main]
 pub fn main() {
     let case = test_utils::io::read_i32();
@@ -522,7 +676,10 @@ pub fn main() {
         if case == 2 { test_persistence() }
         else {
             if case == 3 { test_churn() }
-            else { test_collisions() }
+            else {
+                if case == 4 { test_collisions() }
+                else { test_linear_churn() }
+            }
         }
     }
 }

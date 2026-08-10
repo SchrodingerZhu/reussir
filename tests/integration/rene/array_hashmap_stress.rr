@@ -47,3 +47,9 @@
 // WEAK-NEXT: 1
 // WEAK-NEXT: 1
 // WEAK-NEXT: 1
+
+// RUN: %t.bdir/release/array_hashmap_stress%exe_ext < %S/array_hashmap_stress/case5.in | %FileCheck %s --check-prefix=LINEAR
+// The same churn as case 3 through the linear (take-based) operations:
+// the map is threaded uniquely, so every step rides the in-place path —
+// and the WavlMap cross-check must still agree.
+// LINEAR: 1
