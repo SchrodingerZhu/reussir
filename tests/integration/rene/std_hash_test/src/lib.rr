@@ -1,11 +1,12 @@
 // Exercises std::hash end to end: user `Hash` impls dispatching through
-// the `Hasher` trait into the rapidhash-backed hashers, the scalar
-// write helpers, seeding, and the one-shot entry points.
+// the `Hasher` trait into the pure value hashers, the scalar write
+// helpers and seeding.
 //
-// The pinned digests are rapidhash's own output for the same writes,
-// computed independently with the upstream crate — so a change in the
-// marshalling, the write widths, or the variant selection shows up here
-// as a changed number rather than as silently different hashes.
+// The pinned digests are computed independently from the documented
+// algorithms (classic Fx for FastHasher; an aHash-derived
+// state and primitive update specialization for StrongHasher) — so a
+// change in chaining or state handling shows up here as a changed number
+// rather than as silently different hashes.
 
 import std::hash::Hash;
 import std::hash::Hasher;
@@ -39,18 +40,22 @@ fn test_reference_vectors() {
     // Point { 1, 2 } is two u64 writes.
     print_u64(std::hash::fast_hash(Point { x: 1, y: 2 }));
     print_u64(std::hash::strong_hash(Point { x: 1, y: 2 }));
-    // One-shot, default seed.
-    print_u64(std::hash::fast_hash_u64(42));
-    print_u64(std::hash::strong_hash_u64(42));
-    // One-shot, explicit seed.
-    print_u64(std::hash::fast_hash_u64_seeded(42, 12345));
-    print_u64(std::hash::strong_hash_u64_seeded(42, 12345));
+    // Single scalar, default seed.
+    print_u64(std::hash::fast_hasher().write_u64(42).finish());
+    print_u64(std::hash::strong_hasher().write_u64(42).finish());
+    // Single scalar, explicit seed.
+    print_u64(std::hash::fast_hasher_seeded(12345).write_u64(42).finish());
+    print_u64(std::hash::strong_hasher_seeded(12345).write_u64(42).finish());
     // Mixed widths plus bool and char, through the streaming hasher.
     print_u64(std::hash::fast_hasher()
         .write_u32(7).write_u16(8).write_u8(9).write_bool(true).write_char('z')
         .finish());
+    print_u64(std::hash::strong_hasher()
+        .write_u32(7).write_u16(8).write_u8(9).write_bool(true).write_char('z')
+        .finish());
     // Streaming with an explicit seed.
     print_u64(std::hash::fast_hasher_seeded(99).write_u64(5).finish());
+    print_u64(std::hash::strong_hasher_seeded(99).write_u64(5).finish());
 }
 
 fn test_properties() {
@@ -63,13 +68,8 @@ fn test_properties() {
     wb(std::hash::fast_hash(Point { x: 3, y: 4 }) !=
         std::hash::strong_hash(Point { x: 3, y: 4 }));
     // Seeding changes the digest, and the default seed round-trips.
-    wb(std::hash::fast_hash_u64_seeded(5, 1) !=
-        std::hash::fast_hash_u64_seeded(5, 2));
-    // One-shot agrees with the streaming equivalent.
-    wb(std::hash::fast_hash_u64(1234) ==
-        std::hash::fast_hasher().write_u64(1234).finish());
-    wb(std::hash::strong_hash_u64(1234) ==
-        std::hash::strong_hasher().write_u64(1234).finish());
+    wb(std::hash::fast_hasher_seeded(1).write_u64(5).finish() !=
+        std::hash::fast_hasher_seeded(2).write_u64(5).finish());
     // The generic impl composes: Pair folds one state through both fields.
     wb(std::hash::fast_hash(Pair {
         a: Point { x: 1, y: 2 },
@@ -91,6 +91,12 @@ fn test_properties() {
     // Signed writes reinterpret, so -1i64 and u64::MAX agree.
     wb(std::hash::fast_hasher().write_i64(0 - 1).finish() ==
         std::hash::fast_hasher().write_u64(18446744073709551615).finish());
+    // StrongHasher sends every fixed-size primitive through the same
+    // zero-extending single-word update specialization.
+    wb(std::hash::strong_hasher().write_u8(7).finish() ==
+        std::hash::strong_hasher().write_u64(7).finish());
+    wb(std::hash::strong_hasher().write_i32(0 - 1).finish() ==
+        std::hash::strong_hasher().write_u32(4294967295).finish());
     // A hasher is a value: reusing an earlier state does not observe
     // writes made to a later one.
     let base = std::hash::fast_hasher().write_u64(1);
@@ -111,7 +117,8 @@ fn test_properties() {
     wb(FastHasher::from_entropy(99).write_u64(5).finish() !=
         FastHasher::default().write_u64(5).finish());
     let via_trait : FastHasher = Hasher::default();
-    wb(via_trait.write_u64(1234).finish() == std::hash::fast_hash_u64(1234));
+    wb(via_trait.write_u64(1234).finish() ==
+        std::hash::fast_hasher().write_u64(1234).finish());
 }
 
 // The hash-container construction pattern: the hasher type is a bound,

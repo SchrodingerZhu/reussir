@@ -3225,7 +3225,6 @@ dependencies = [
  "libmimalloc-sys",
  "mlir_sync",
  "num_enum",
- "rapidhash",
  "smallvec",
  "stacker",
 ]
