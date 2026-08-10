@@ -1,0 +1,49 @@
+// A hash-trie map as a stress test for rc elements in arrays: 32-way
+// branch nodes are `[Node; 32]` arrays, exercised through build (splat),
+// spine rebuilds (get/set), copy-on-write persistence snapshots, a
+// pseudorandom churn cross-checked against WavlMap, and a degenerate
+// 4-bit hasher that forces full-depth splits and collision buckets.
+
+// RUN: %rene build --manifest-path %S/array_hashmap_stress/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}array_hashmap_stress
+
+// RUN: %t.bdir/release/array_hashmap_stress%exe_ext < %S/array_hashmap_stress/case1.in | %FileCheck %s --check-prefix=BASICS
+// len 3; get 2 = 20; replace keeps len; new value read back; miss; remove
+// drops len; removed key misses; removing a missing key is a no-op.
+// BASICS:      3
+// BASICS-NEXT: 1
+// BASICS-NEXT: 3
+// BASICS-NEXT: 1
+// BASICS-NEXT: 1
+// BASICS-NEXT: 2
+// BASICS-NEXT: 1
+// BASICS-NEXT: 2
+
+// RUN: %t.bdir/release/array_hashmap_stress%exe_ext < %S/array_hashmap_stress/case2.in | %FileCheck %s --check-prefix=PERSIST
+// snapshot 200, grown 600, shrunk 500; the snapshot still holds exactly
+// its 200 entries; grown holds all 600; shrunk misses the drained 100.
+// PERSIST:      200
+// PERSIST-NEXT: 600
+// PERSIST-NEXT: 500
+// PERSIST-NEXT: 1
+// PERSIST-NEXT: 1
+// PERSIST-NEXT: 1
+// PERSIST-NEXT: 1
+// PERSIST-NEXT: 1
+
+// RUN: %t.bdir/release/array_hashmap_stress%exe_ext < %S/array_hashmap_stress/case3.in | %FileCheck %s --check-prefix=CHURN
+// 2000 pseudorandom inserts/removes agree with WavlMap on every key and
+// on the size.
+// CHURN: 1
+
+// RUN: %t.bdir/release/array_hashmap_stress%exe_ext < %S/array_hashmap_stress/case4.in | %FileCheck %s --check-prefix=WEAK
+// 300 keys over 16 possible digests: len exact, all present, misses miss;
+// a snapshot survives draining 150 keys from a bucket-heavy trie.
+// WEAK:      300
+// WEAK-NEXT: 1
+// WEAK-NEXT: 1
+// WEAK-NEXT: 150
+// WEAK-NEXT: 1
+// WEAK-NEXT: 1
+// WEAK-NEXT: 1
+// WEAK-NEXT: 1

@@ -1,0 +1,528 @@
+// A hash-trie map written as a stress test for rc elements in arrays: an
+// uncompressed 32-way trie whose branch nodes are `[Node<K, V>; 32]`
+// arrays. Every operation leans on the array ownership contract — `splat`
+// building branches from a shared `Empty`, `get` handing back owned
+// children, `set` releasing the child it overwrites, copy-on-write cloning
+// branch arrays when a snapshot is held, and the drop glue releasing whole
+// tries recursively through the array payloads.
+//
+// It is deliberately not a std container (the compressed version waits on
+// runtime-length arrays); it exists to run the array machinery hard, and
+// it exercises the rest of the recent stack while at it: the trie index
+// arithmetic is `(h >> shift) & 31` and the hasher is constructed through
+// the trait (`H::default()`), including a degenerate 4-bit hasher that
+// forces deep splits and the collision-bucket path.
+
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::hash::FastHasher;
+import std::collections::pure::list::List;
+import std::collections::pure::wavlmap::WavlMap;
+import std::option::Option;
+import core::intrinsic::array;
+
+// ------------------------------------------------------------------ the map
+
+/// The key newtype: `Hash` is not a lang trait, so scalars cannot receive
+/// downstream impls — and a user key type is the more interesting stress
+/// anyway, since its `hash` runs through the trait-generic write path.
+pub struct [value] Key { k : i64 }
+
+impl Hash for Key {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_i64(self.k) }
+}
+
+impl PartialEq for Key {
+    fn eq(self: Self, other: Self) -> bool { self.k == other.k }
+}
+
+pub struct [value] Pair<K, V> { key : K, value : V }
+
+/// One trie node. `Branch` is the stressor: a real rc-element array.
+/// Equal full hashes fall into a linear `Bucket`; unequal hashes always
+/// split apart within 13 levels (64 bits, 5 per level).
+pub enum Node<K, V> {
+    Empty,
+    Leaf(u64, K, V),
+    Branch([Node<K, V>; 32]),
+    Bucket(u64, List<Pair<K, V>>)
+}
+
+pub struct Map<K, V> { size : u64, root : Node<K, V> }
+
+fn hash_of<H : Hasher, K : Hash>(k : K) -> u64 {
+    k.hash(H::default()).finish()
+}
+
+fn slot(h : u64, shift : u64) -> i64 {
+    ((h >> shift) & 31) as i64
+}
+
+// Carriers as value structs, every field projected before further calls
+// (the #537 rule).
+struct [value] Ins<K, V> { node : Node<K, V>, added : bool }
+struct [value] Rem<K, V> { node : Node<K, V>, removed : bool }
+
+fn bucket_put<K : PartialEq, V>(
+    l : List<Pair<K, V>>,
+    k : K,
+    v : V
+) -> Ins<K, V> {
+    match l {
+        List::Nil => Ins {
+            node: Node::Empty,
+            added: true
+        },
+        List::Cons(p, t) => {
+            if p.key == k {
+                Ins {
+                    node: Node::Empty,
+                    added: false
+                }
+            } else {
+                let below = bucket_put(t, k, v);
+                let added = below.added;
+                Ins { node: below.node, added }
+            }
+        }
+    }
+}
+
+// The list rebuild for a bucket insert: replace in place or prepend.
+fn bucket_list_put<K : PartialEq, V>(
+    l : List<Pair<K, V>>,
+    k : K,
+    v : V
+) -> List<Pair<K, V>> {
+    match l {
+        List::Nil => List::Cons { Pair { key: k, value: v }, List::Nil },
+        List::Cons(p, t) => {
+            if p.key == k {
+                List::Cons { Pair { key: k, value: v }, t }
+            } else {
+                List::Cons { p, bucket_list_put(t, k, v) }
+            }
+        }
+    }
+}
+
+fn bucket_contains<K : PartialEq, V>(l : List<Pair<K, V>>, k : K) -> bool {
+    match l {
+        List::Nil => false,
+        List::Cons(p, t) => if p.key == k { true } else { bucket_contains(t, k) }
+    }
+}
+
+fn bucket_get<K : PartialEq, V>(l : List<Pair<K, V>>, k : K) -> Option<V> {
+    match l {
+        List::Nil => Option::None,
+        List::Cons(p, t) => {
+            if p.key == k { Option::Some { p.value } } else { bucket_get(t, k) }
+        }
+    }
+}
+
+fn bucket_del<K : PartialEq, V>(l : List<Pair<K, V>>, k : K) -> List<Pair<K, V>> {
+    match l {
+        List::Nil => List::Nil,
+        List::Cons(p, t) => {
+            if p.key == k { t } else { List::Cons { p, bucket_del(t, k) } }
+        }
+    }
+}
+
+fn bucket_len<K, V>(l : List<Pair<K, V>>, acc : u64) -> u64 {
+    match l {
+        List::Nil => acc,
+        List::Cons(_, t) => bucket_len(t, acc + 1)
+    }
+}
+
+/// A fresh branch holding `n` at its slot for `shift`. The `splat` from a
+/// shared `Empty` plus the immediate `set` is the array build the map
+/// leans on everywhere.
+fn branch_with<K, V>(n : Node<K, V>, h : u64, shift : u64) -> [Node<K, V>; 32] {
+    array::set(array::splat<[Node<K, V>; 32]>(Node::Empty), slot(h, shift), n)
+}
+
+fn ins<K : PartialEq, V>(
+    n : Node<K, V>,
+    h : u64,
+    shift : u64,
+    k : K,
+    v : V
+) -> Ins<K, V> {
+    match n {
+        Node::Empty => Ins {
+            node: Node::Leaf { h, k, v },
+            added: true
+        },
+        Node::Leaf(h2, k2, v2) => {
+            if h2 == h {
+                if k2 == k {
+                    Ins { node: Node::Leaf { h, k, v }, added: false }
+                } else {
+                    // A genuine full-hash collision: a two-entry bucket.
+                    Ins {
+                        node: Node::Bucket {
+                            h,
+                            List::Cons {
+                                Pair { key: k2, value: v2 },
+                                List::Cons {
+                                    Pair { key: k, value: v },
+                                    List::Nil
+                                }
+                            }
+                        },
+                        added: true
+                    }
+                }
+            } else {
+                // Split: seat the old leaf one level down, then insert the
+                // new entry into that branch.
+                let seeded = branch_with(Node::Leaf { h2, k2, v2 }, h2, shift);
+                let below = ins_branch(seeded, h, shift, k, v);
+                let added = below.added;
+                Ins { node: below.node, added }
+            }
+        },
+        Node::Branch(arr) => {
+            let below = ins_branch(arr, h, shift, k, v);
+            let added = below.added;
+            Ins { node: below.node, added }
+        },
+        Node::Bucket(h2, l) => {
+            if h2 == h {
+                let grew = !bucket_contains(l, k);
+                Ins {
+                    node: Node::Bucket { h, bucket_list_put(l, k, v) },
+                    added: grew
+                }
+            } else {
+                let seeded = branch_with(Node::Bucket { h2, l }, h2, shift);
+                let below = ins_branch(seeded, h, shift, k, v);
+                let added = below.added;
+                Ins { node: below.node, added }
+            }
+        }
+    }
+}
+
+fn ins_branch<K : PartialEq, V>(
+    arr : [Node<K, V>; 32],
+    h : u64,
+    shift : u64,
+    k : K,
+    v : V
+) -> Ins<K, V> {
+    let i = slot(h, shift);
+    let child = array::get(arr, i);
+    let below = ins(child, h, shift + 5, k, v);
+    let node = below.node;
+    let added = below.added;
+    Ins { node: Node::Branch { array::set(arr, i, node) }, added }
+}
+
+fn find<K : PartialEq, V>(n : Node<K, V>, h : u64, shift : u64, k : K) -> Option<V> {
+    match n {
+        Node::Empty => Option::None,
+        Node::Leaf(h2, k2, v2) => {
+            if h2 == h && k2 == k { Option::Some { v2 } } else { Option::None }
+        },
+        Node::Branch(arr) => {
+            find(array::get(arr, slot(h, shift)), h, shift + 5, k)
+        },
+        Node::Bucket(h2, l) => {
+            if h2 == h { bucket_get(l, k) } else { Option::None }
+        }
+    }
+}
+
+fn del<K : PartialEq, V>(
+    n : Node<K, V>,
+    h : u64,
+    shift : u64,
+    k : K
+) -> Rem<K, V> {
+    match n {
+        Node::Empty => Rem { node: Node::Empty, removed: false },
+        Node::Leaf(h2, k2, v2) => {
+            if h2 == h && k2 == k {
+                Rem { node: Node::Empty, removed: true }
+            } else {
+                Rem { node: Node::Leaf { h2, k2, v2 }, removed: false }
+            }
+        },
+        Node::Branch(arr) => {
+            let i = slot(h, shift);
+            let child = array::get(arr, i);
+            let below = del(child, h, shift + 5, k);
+            let node = below.node;
+            let removed = below.removed;
+            // No canonicalization: an emptied slot stays `Empty` in place.
+            // The stress is the slot swap, not the collapse.
+            Rem { node: Node::Branch { array::set(arr, i, node) }, removed }
+        },
+        Node::Bucket(h2, l) => {
+            if h2 == h && bucket_contains(l, k) {
+                let rest = bucket_del(l, k);
+                let node = match rest {
+                    List::Nil => Node::Empty,
+                    kept => Node::Bucket { h2, kept }
+                };
+                Rem { node, removed: true }
+            } else {
+                Rem { node: Node::Bucket { h2, l }, removed: false }
+            }
+        }
+    }
+}
+
+pub fn map_new<K, V>() -> Map<K, V> {
+    Map { size: 0, root: Node::Empty }
+}
+
+pub fn map_len<K, V>(m : Map<K, V>) -> u64 { m.size }
+
+pub fn map_insert<H : Hasher, K : Hash + PartialEq, V>(
+    m : Map<K, V>,
+    k : K,
+    v : V
+) -> Map<K, V> {
+    let h = hash_of<H, K>(k);
+    let out = ins(m.root, h, 0, k, v);
+    let node = out.node;
+    let added = out.added;
+    Map { size: m.size + if added { 1 } else { 0 }, root: node }
+}
+
+pub fn map_get<H : Hasher, K : Hash + PartialEq, V>(
+    m : Map<K, V>,
+    k : K
+) -> Option<V> {
+    find(m.root, hash_of<H, K>(k), 0, k)
+}
+
+pub fn map_remove<H : Hasher, K : Hash + PartialEq, V>(
+    m : Map<K, V>,
+    k : K
+) -> Map<K, V> {
+    let h = hash_of<H, K>(k);
+    let out = del(m.root, h, 0, k);
+    let node = out.node;
+    let removed = out.removed;
+    Map { size: m.size - if removed { 1 } else { 0 }, root: node }
+}
+
+// -------------------------------------------------- the degenerate hasher
+
+/// A 4-bit hasher: sixteen possible digests, so any workload beyond a
+/// handful of keys collides constantly — every insert beyond the sixteenth
+/// lands in a `Bucket`, and the branch arrays split to full depth fast.
+/// (Two keys with equal low bits share a digest *entirely*, which is what
+/// exercises the bucket arms; unequal digests still split by trie level.)
+pub struct [value] Weak4 { state : u64 }
+
+impl Hasher for Weak4 {
+    fn write_u64(self: Self, value: u64) -> Self {
+        Weak4 { state: (self.state * 31 + value) & 15 }
+    }
+    fn write_u32(self: Self, value: u32) -> Self { self.write_u64(value as u64) }
+    fn write_u16(self: Self, value: u16) -> Self { self.write_u64(value as u64) }
+    fn write_u8(self: Self, value: u8) -> Self { self.write_u64(value as u64) }
+    fn write_i64(self: Self, value: i64) -> Self { self.write_u64(value as u64) }
+    fn write_i32(self: Self, value: i32) -> Self { self.write_u64(value as u64) }
+    fn write_i16(self: Self, value: i16) -> Self { self.write_u64(value as u64) }
+    fn write_i8(self: Self, value: i8) -> Self { self.write_u64(value as u64) }
+    fn write_bool(self: Self, value: bool) -> Self {
+        self.write_u64(if value { 1 } else { 0 })
+    }
+    fn write_char(self: Self, value: char) -> Self { self.write_u64(0) }
+    fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
+    fn finish(self: Self) -> u64 { self.state }
+    fn default() -> Self { Weak4 { state: 0 } }
+    fn from_entropy(entropy: u64) -> Self { Weak4 { state: entropy & 15 } }
+}
+
+// -------------------------------------------------------------- the driver
+
+fn wb(v : bool) { test_utils::io::write_i32(if v { 1 } else { 0 }) }
+
+fn w(v : i64) { test_utils::io::write_i32(v as i32) }
+
+fn lcg(seed : i64) -> i64 {
+    (seed * 1103515245 + 12345) & 2147483647
+}
+
+// Case 1: basics under the real hasher — insert, lookup, replace, remove,
+// misses, size accounting.
+fn test_basics() {
+    let m = map_new();
+    let m = map_insert<FastHasher, Key, i64>(m, Key { k: 1 }, 10);
+    let m = map_insert<FastHasher, Key, i64>(m, Key { k: 2 }, 20);
+    let m = map_insert<FastHasher, Key, i64>(m, Key { k: 3 }, 30);
+    w(map_len(m) as i64);
+    wb(match map_get<FastHasher, Key, i64>(m, Key { k: 2 }) {
+        Option::Some(v) => v == 20,
+        Option::None => false
+    });
+    let m = map_insert<FastHasher, Key, i64>(m, Key { k: 2 }, 200);
+    w(map_len(m) as i64);
+    wb(match map_get<FastHasher, Key, i64>(m, Key { k: 2 }) {
+        Option::Some(v) => v == 200,
+        Option::None => false
+    });
+    wb(match map_get<FastHasher, Key, i64>(m, Key { k: 4 }) {
+        Option::Some(_) => false,
+        Option::None => true
+    });
+    let m = map_remove<FastHasher, Key, i64>(m, Key { k: 1 });
+    w(map_len(m) as i64);
+    wb(match map_get<FastHasher, Key, i64>(m, Key { k: 1 }) {
+        Option::Some(_) => false,
+        Option::None => true
+    });
+    let m = map_remove<FastHasher, Key, i64>(m, Key { k: 77 });
+    w(map_len(m) as i64);
+}
+
+// Case 2: persistence — hold a snapshot, keep writing, and check the
+// snapshot never moves. Every write that touches a shared spine clones a
+// branch array and re-acquires 32 children.
+fn fill<H : Hasher>(m : Map<Key, i64>, from : i64, to : i64) -> Map<Key, i64> {
+    if from >= to {
+        m
+    } else {
+        fill<H>(map_insert<H, Key, i64>(m, Key { k: from }, from * 7), from + 1, to)
+    }
+}
+
+fn check_range<H : Hasher>(m : Map<Key, i64>, from : i64, to : i64) -> bool {
+    if from >= to {
+        true
+    } else {
+        match map_get<H, Key, i64>(m, Key { k: from }) {
+            Option::Some(v) => v == from * 7 && check_range<H>(m, from + 1, to),
+            Option::None => false
+        }
+    }
+}
+
+fn miss_range<H : Hasher>(m : Map<Key, i64>, from : i64, to : i64) -> bool {
+    if from >= to {
+        true
+    } else {
+        match map_get<H, Key, i64>(m, Key { k: from }) {
+            Option::Some(_) => false,
+            Option::None => miss_range<H>(m, from + 1, to)
+        }
+    }
+}
+
+fn test_persistence() {
+    let snap = fill<FastHasher>(map_new(), 0, 200);
+    let grown = fill<FastHasher>(snap, 200, 600);
+    let shrunk = drain<FastHasher>(grown, 0, 100);
+    w(map_len(snap) as i64);
+    w(map_len(grown) as i64);
+    w(map_len(shrunk) as i64);
+    wb(check_range<FastHasher>(snap, 0, 200));
+    wb(miss_range<FastHasher>(snap, 200, 600));
+    wb(check_range<FastHasher>(grown, 0, 600));
+    wb(miss_range<FastHasher>(shrunk, 0, 100));
+    wb(check_range<FastHasher>(shrunk, 100, 600));
+}
+
+fn drain<H : Hasher>(m : Map<Key, i64>, from : i64, to : i64) -> Map<Key, i64> {
+    if from >= to {
+        m
+    } else {
+        drain<H>(map_remove<H, Key, i64>(m, Key { k: from }), from + 1, to)
+    }
+}
+
+// Case 3: pseudorandom churn cross-checked against WavlMap, key space
+// [0, 512) so branches go two levels deep and slots swap constantly.
+fn churn(
+    m : Map<Key, i64>,
+    model : WavlMap<i64, i64>,
+    seed : i64,
+    steps : i64
+) -> bool {
+    if steps == 0 {
+        agree(m, model, 0, 512) && map_len(m) == model.len()
+    } else {
+        let s1 = lcg(seed);
+        let key = s1 & 511;
+        let s2 = lcg(s1);
+        if (s2 & 3) == 0 {
+            churn(
+                map_remove<FastHasher, Key, i64>(m, Key { k: key }),
+                model.remove(key),
+                s2,
+                steps - 1
+            )
+        } else {
+            churn(
+                map_insert<FastHasher, Key, i64>(m, Key { k: key }, s2),
+                model.insert(key, s2),
+                s2,
+                steps - 1
+            )
+        }
+    }
+}
+
+fn agree(m : Map<Key, i64>, model : WavlMap<i64, i64>, from : i64, to : i64) -> bool {
+    if from >= to {
+        true
+    } else {
+        let ours = map_get<FastHasher, Key, i64>(m, Key { k: from });
+        let theirs = model.get(from);
+        let same = match ours {
+            Option::Some(v) => match theirs {
+                Option::Some(u) => v == u,
+                Option::None => false
+            },
+            Option::None => match theirs {
+                Option::Some(_) => false,
+                Option::None => true
+            }
+        };
+        same && agree(m, model, from + 1, to)
+    }
+}
+
+fn test_churn() {
+    wb(churn(map_new(), WavlMap::new(), 20260810, 2000));
+}
+
+// Case 4: the degenerate hasher — sixteen digests for 300 keys, so nearly
+// every entry lives in a bucket and every trie path is maximally shared.
+// The same workloads must still be correct.
+fn test_collisions() {
+    let m = fill<Weak4>(map_new(), 0, 300);
+    w(map_len(m) as i64);
+    wb(check_range<Weak4>(m, 0, 300));
+    wb(miss_range<Weak4>(m, 300, 340));
+    let snap = m;
+    let shrunk = drain<Weak4>(m, 100, 250);
+    w(map_len(shrunk) as i64);
+    wb(check_range<Weak4>(snap, 0, 300));
+    wb(check_range<Weak4>(shrunk, 0, 100));
+    wb(miss_range<Weak4>(shrunk, 100, 250));
+    wb(check_range<Weak4>(shrunk, 250, 300));
+}
+
+#[main]
+pub fn main() {
+    let case = test_utils::io::read_i32();
+    if case == 1 { test_basics() }
+    else {
+        if case == 2 { test_persistence() }
+        else {
+            if case == 3 { test_churn() }
+            else { test_collisions() }
+        }
+    }
+}
