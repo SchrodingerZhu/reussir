@@ -3302,6 +3302,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 .result(0)
                 .expect("load result")
                 .into();
+            // An rc element is shared with the array: the caller receives an
+            // owned +1 reference, the payload keeps its own.
+            if self.tys.is_managed_rc(e.ty) {
+                self.emit_inc(then, loaded, e.ty)?;
+            }
             then.append_operation(scf::r#yield(&[loaded], loc));
             Ok(())
         })
@@ -3326,12 +3331,24 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             .ok_or_else(|| LoweringError("array element is unit".into()))?;
         let memref_ty = self.memref_of(base.ty)?;
         let rc_ty = self.tys.mlir_ty(base.ty)?;
+        let elem_ty = args[rank + 1].ty;
         self.guarded(block, ok, rc_ty, |then| {
             let body = Block::new(&[(memref_ty, loc)]);
             let view = body
                 .argument(0)
                 .expect("with_unique_view body takes the view")
                 .into();
+            // The store overwrites the old element: for an rc element that
+            // reference is the payload's own, released here — inside the
+            // unique view, so the slot is not shared with another array.
+            if self.tys.is_managed_rc(elem_ty) {
+                let old = body
+                    .append_operation(memref::load(view, &idxs, loc))
+                    .result(0)
+                    .expect("load result")
+                    .into();
+                self.emit_dec(&body, old, elem_ty)?;
+            }
             body.append_operation(memref::store(value, view, &idxs, loc));
             body.append_operation(builders::scf_yield(None, loc));
             let region = Region::new();
@@ -3399,7 +3416,22 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let rc_val = self.fresh_array(block, e.ty)?;
         let view = self.array_view_of(block, rc_val, e.ty)?;
         let dims = Self::array_dims(e.ty)?;
-        self.splat_nest(block, view, value, dims, Vec::new())?;
+        // An rc element is stored `∏dims` times but arrives owned once: the
+        // nest retains before every store, and the surplus reference — the
+        // consumed operand's own — is released after the fill.
+        let elem_ty = args[0].ty;
+        let elem_rc = self.tys.is_managed_rc(elem_ty);
+        self.splat_nest(
+            block,
+            view,
+            value,
+            dims,
+            Vec::new(),
+            elem_rc.then_some(elem_ty),
+        )?;
+        if elem_rc {
+            self.emit_dec(block, value, elem_ty)?;
+        }
         Ok(rc_val)
     }
 
@@ -3411,9 +3443,15 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         value: Value<'c, 'b>,
         dims: &[u64],
         ivs: Vec<Value<'c, 'b>>,
+        elem_rc: Option<Ty<'tcx>>,
     ) -> Result<()> {
         let loc = self.loc();
         if dims.is_empty() {
+            // Each stored slot holds its own reference (the fill's caller
+            // settles the consumed operand's surplus).
+            if let Some(ty) = elem_rc {
+                self.emit_inc(block, value, ty)?;
+            }
             block.append_operation(memref::store(value, view, &ivs, loc));
             return Ok(());
         }
@@ -3425,7 +3463,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             let iv = inner.argument(0).expect("loop induction variable").into();
             let mut ivs2: Vec<Value<'c, '_>> = ivs.to_vec();
             ivs2.push(iv);
-            self.splat_nest(&inner, view, value, &dims[1..], ivs2)?;
+            self.splat_nest(&inner, view, value, &dims[1..], ivs2, elem_rc)?;
             inner.append_operation(scf::r#yield(&[], loc));
         }
         let region = Region::new();

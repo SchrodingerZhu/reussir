@@ -250,6 +250,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         arc_inner_rejection(|def| self.records.get(&def).map(|r| r.default_cap), t)
     }
 
+    /// [`array_element_rejection`] against this elaborator's record table.
+    pub(crate) fn array_element_rejection(&self, t: Ty<'tcx>) -> Option<&'static str> {
+        array_element_rejection(|def| self.records.get(&def).map(|r| r.default_cap), t)
+    }
+
     /// Evaluate a statically shaped array type (`[f64; 512]`,
     /// `[f64; 5, 16, 8]`) into a [`TyKind::Array`].
     pub(crate) fn eval_array_type(
@@ -264,13 +269,15 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             return self.tcx.mk(TyKind::Bottom);
         }
         let elem = self.eval_type(elem);
-        // Phase A restricts elements to plain scalars: views over the
-        // payload must be free of reference-count traffic.
-        if !is_plain_scalar_or_deferred(elem) {
+        // Elements are plain scalars or shared rc boxes; anything whose
+        // payload would need member-wise treatment through a view stays
+        // rejected (a rejection names why).
+        if let Some(why) = self.array_element_rejection(elem) {
             self.error(
                 Some(span),
                 format!(
-                    "non-scalar array element types are not supported yet; found `{}`",
+                    "array element type `{}` is not supported yet ({why}); \
+                     elements must be plain scalars or `[shared]` records",
                     self.ty_display(elem)
                 ),
             );
@@ -412,8 +419,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 /// rejected; `Record`/`Closure`/`Array`/`Cell` are valid inners, and
 /// `Generic`/`Hole`/`Bottom` are deferred (resolved/checked later) so this never
 /// reports a false positive on a not-yet-ground type.
-/// Whether `t` qualifies as a Phase-A array element: a plain scalar, or a
-/// generic/hole deferred to the monomorphization-time groundness check.
+/// Whether `t` qualifies as an array element on the scalar side: a plain
+/// scalar, or a generic/hole deferred to the monomorphization-time check.
 pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
     matches!(
         t.kind(),
@@ -425,6 +432,38 @@ pub(crate) fn is_plain_scalar_or_deferred(t: Ty<'_>) -> bool {
             | TyKind::Hole(_)
             | TyKind::Bottom
     )
+}
+
+/// Why `t` cannot be an array element, or `None` when it can: a plain
+/// scalar, or a shared rc box — a `[shared]` record (struct or enum), whose
+/// payload slot is one pointer the acquire/drop expansions already walk.
+/// Value records (member-wise rc traffic through a view), regional records
+/// (region lifetimes), cells, closures, and `Arc` (atomic context through a
+/// plain view) stay rejected. Generic/hole/bottom defer to the
+/// monomorphization-time check, exactly like [`arc_inner_rejection`].
+pub fn array_element_rejection<'tcx>(
+    cap_of: impl FnOnce(DefId) -> Option<DefaultCap>,
+    t: Ty<'tcx>,
+) -> Option<&'static str> {
+    if is_plain_scalar_or_deferred(t) {
+        return None;
+    }
+    match t.kind() {
+        TyKind::Record { def, flex, .. } => match flex {
+            Flexivity::Flex | Flexivity::Rigid => Some("a regional record"),
+            _ => match cap_of(*def) {
+                Some(DefaultCap::Shared) | None => None,
+                Some(DefaultCap::Value) => Some("a `[value]` record"),
+                Some(DefaultCap::Regional) => Some("a `[regional]` record"),
+            },
+        },
+        TyKind::Arc(_) => Some("an `Arc`"),
+        TyKind::Cell { .. } => Some("a cell"),
+        TyKind::Closure { .. } => Some("a closure"),
+        TyKind::Array { .. } => Some("a nested rc array"),
+        TyKind::Str => Some("a string"),
+        _ => Some("not a scalar or `[shared]` record"),
+    }
 }
 
 /// Why `t` cannot be the inner of an `Arc`, or `None` when it can — a shared
