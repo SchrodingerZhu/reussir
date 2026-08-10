@@ -318,18 +318,36 @@ mlir::Value createEntryBlockAlloca(mlir::ConversionPatternRewriter &rewriter,
 // slot in such a function can end up inside a loop TailCallElimination
 // later builds around the recursion, so a fill-once claim about the slot
 // (invariant.start) would be violated by the next iteration's store.
-bool enclosingFunctionIsSelfRecursive(mlir::Operation *op) {
+//
+// The scan walks the whole enclosing function, and a function fresh out of
+// the inliner can carry thousands of spill sites — re-walking per site is
+// quadratic and dominates the conversion on such modules. Callers with many
+// queries pass a cache keyed on the function op; the answer only depends on
+// the callee symbols inside, which conversion preserves. (The function op
+// itself may be replaced mid-conversion — func.func to llvm.func — which
+// merely splits the cache key: one extra walk, still sound.)
+bool enclosingFunctionIsSelfRecursive(
+    mlir::Operation *op,
+    llvm::DenseMap<mlir::Operation *, bool> *cache = nullptr) {
   auto func = op->getParentOfType<mlir::FunctionOpInterface>();
   if (!func)
     return true;
+  if (cache)
+    if (auto it = cache->find(func); it != cache->end())
+      return it->second;
   llvm::StringRef name = mlir::SymbolTable::getSymbolName(func).getValue();
   bool found = false;
   func.walk([&](mlir::CallOpInterface call) {
     auto callee = llvm::dyn_cast_if_present<mlir::SymbolRefAttr>(
         call.getCallableForCallee());
-    if (callee && callee.getLeafReference().getValue() == name)
+    if (callee && callee.getLeafReference().getValue() == name) {
       found = true;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
   });
+  if (cache)
+    (*cache)[func] = found;
   return found;
 }
 
@@ -1047,6 +1065,13 @@ struct ReussirRefSpilledConversionPattern
     : public mlir::OpConversionPattern<ReussirRefSpilledOp> {
   using OpConversionPattern::OpConversionPattern;
 
+  // Self-recursion answers, one entry per enclosing function. The driver
+  // applies this pattern once per spill site; without the cache each site
+  // re-walks its whole function (see enclosingFunctionIsSelfRecursive).
+  // Mutable because matchAndRewrite is const; the conversion driver is
+  // single-threaded, so unsynchronized access is fine.
+  mutable llvm::DenseMap<mlir::Operation *, bool> selfRecursionCache;
+
   mlir::LogicalResult
   matchAndRewrite(ReussirRefSpilledOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
@@ -1073,7 +1098,7 @@ struct ReussirRefSpilledConversionPattern
     // very site, and the next iteration's refill of the (entry-block,
     // per-frame) slot would violate the invariant.
     mlir::LLVM::StoreOp::create(rewriter, loc, value, allocaOp);
-    if (!enclosingFunctionIsSelfRecursive(op))
+    if (!enclosingFunctionIsSelfRecursive(op, &selfRecursionCache))
       mlir::LLVM::InvariantStartOp::create(
           rewriter, loc, dataLayout.getTypeABIAlignment(valueType), allocaOp);
     rewriter.replaceOp(op, allocaOp);
