@@ -1422,14 +1422,24 @@ struct ReussirArrayProjectConversionPattern
     auto resultDesc = mlir::MemRefDescriptor::poison(rewriter, loc, resultType);
     resultDesc.setAllocatedPtr(rewriter, loc,
                                srcDesc.allocatedPtr(rewriter, loc));
-    resultDesc.setAlignedPtr(rewriter, loc, srcDesc.alignedPtr(rewriter, loc));
 
+    // The projected type keeps the static identity layout (offset 0), and
+    // consumers such as `getStridedElementPtr` fold that static offset —
+    // the descriptor's runtime offset field is dead to them. Carry the row
+    // shift in the aligned pointer itself instead.
     auto offset = srcDesc.offset(rewriter, loc);
     auto stride0 = srcDesc.stride(rewriter, loc, 0);
     auto delta =
         mlir::arith::MulIOp::create(rewriter, loc, adaptor.getIndex(), stride0);
-    auto newOffset = mlir::arith::AddIOp::create(rewriter, loc, offset, delta);
-    resultDesc.setOffset(rewriter, loc, newOffset);
+    auto shift = mlir::arith::AddIOp::create(rewriter, loc, offset, delta);
+    mlir::Type llvmElemTy =
+        converter->convertType(resultMemRefType.getElementType());
+    auto llvmPtrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto shifted = mlir::LLVM::GEPOp::create(
+        rewriter, loc, llvmPtrTy, llvmElemTy, srcDesc.alignedPtr(rewriter, loc),
+        mlir::ValueRange{shift.getResult()});
+    resultDesc.setAlignedPtr(rewriter, loc, shifted);
+    resultDesc.setConstantOffset(rewriter, loc, 0);
 
     for (int64_t i = 0, e = resultMemRefType.getRank(); i < e; ++i) {
       resultDesc.setSize(rewriter, loc, i, srcDesc.size(rewriter, loc, i + 1));

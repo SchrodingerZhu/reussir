@@ -1,0 +1,21 @@
+// REQUIRES: asan
+// ASan+LSan gate over frontend/array_rc_elements.rr: every reference the
+// array traffic touches must balance — get's owned result, set's release of
+// the overwritten slot, splat's per-slot retains, the copy-on-write clone's
+// per-element acquires, and the drop glue's releases. A missed release is a
+// leak here; a double release a use-after-free.
+
+// RUN: %rrc %S/../../frontend/array_rc_elements.rr -o %t.none.ll -t llvm-ir --relocation-mode pic -Onone
+// RUN: %cc %asan_flags -c -x ir %t.none.ll -o %t.none.o
+// RUN: %cc %asan_flags %t.none.o %S/../../frontend/array_rc_elements.c %reussir_rt_asan -o %t.none.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.none.exe
+
+// RUN: %rrc %S/../../frontend/array_rc_elements.rr -o %t.default.ll -t llvm-ir --relocation-mode pic -Odefault
+// RUN: %cc %asan_flags -c -x ir %t.default.ll -o %t.default.o
+// RUN: %cc %asan_flags %t.default.o %S/../../frontend/array_rc_elements.c %reussir_rt_asan -o %t.default.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.default.exe
+
+// RUN: %rrc %S/../../frontend/array_rc_elements.rr -o %t.aggr.ll -t llvm-ir --relocation-mode pic -Oaggressive --reuse-across-call
+// RUN: %cc %asan_flags -c -x ir %t.aggr.ll -o %t.aggr.o
+// RUN: %cc %asan_flags %t.aggr.o %S/../../frontend/array_rc_elements.c %reussir_rt_asan -o %t.aggr.exe %rpath_flag %rpath_san_flag %extra_sys_libs
+// RUN: %asan_env %t.aggr.exe

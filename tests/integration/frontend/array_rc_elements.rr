@@ -1,0 +1,89 @@
+// Arrays over rc elements (issue #344 phase B, first slice): `splat`, `get`,
+// and `set` carry the reference counts — `get` returns an owned +1 element,
+// `set` releases the slot it overwrites inside the unique view, `splat`
+// retains per stored slot, the copy-on-write clone acquires every element,
+// and the array's drop releases them. `tabulate`/`fold` still reject rc
+// elements (their raw views carry no per-element hooks).
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/array_rc_elements.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/array_rc_elements.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+import core::intrinsic::array;
+
+pub enum List { Nil, Cons(i64, List) }
+
+fn len(l : List) -> i64 {
+    match l { List::Nil => 0, List::Cons(_, t) => 1 + len(t) }
+}
+
+fn sum(l : List) -> i64 {
+    match l { List::Nil => 0, List::Cons(h, t) => h + sum(t) }
+}
+
+// splat shares one element across every slot; get hands back an owned copy.
+pub fn test_splat_get() -> i64 {
+    let a = array::splat<[List; 4]>(List::Cons { 7, List::Nil });
+    sum(array::get(a, 0)) + sum(array::get(a, 3))
+}
+extern "C" trampoline "test_splat_get_ffi" = test_splat_get;
+
+// Copy-on-write: `a` stays live across the set, so the update clones — and
+// the clone owns its own references to every element.
+pub fn test_cow() -> i64 {
+    let a = array::splat<[List; 4]>(List::Nil);
+    let b = array::set(a, 1, List::Cons { 1, List::Cons { 2, List::Nil } });
+    len(array::get(b, 1)) * 10 + len(array::get(a, 1))
+}
+extern "C" trampoline "test_cow_ffi" = test_cow;
+
+// A unique array updates in place; the overwritten element is released.
+pub fn test_unique_overwrite() -> i64 {
+    let a = array::splat<[List; 3]>(List::Cons { 9, List::Nil });
+    let a = array::set(a, 0, List::Nil);
+    let a = array::set(a, 0, List::Cons { 5, List::Cons { 6, List::Nil } });
+    sum(array::get(a, 0)) * 10 + len(array::get(a, 2))
+}
+extern "C" trampoline "test_unique_overwrite_ffi" = test_unique_overwrite;
+
+// Rank-2 copy-on-write: the clone's acquire walks every row (the row
+// projection advances the aligned pointer, the bug its first user found).
+pub fn test_rank2_cow() -> i64 {
+    let a = array::splat<[List; 2, 3]>(List::Cons { 8, List::Nil });
+    let b = array::set(a, 1, 1, List::Nil);
+    len(array::get(a, 1, 1)) * 10 + len(array::get(b, 1, 1))
+}
+extern "C" trampoline "test_rank2_cow_ffi" = test_rank2_cow;
+
+// Rank-2: the fill nest and the projection chain carry the counts the same.
+pub fn test_rank2() -> i64 {
+    let m = array::splat<[List; 2, 3]>(List::Cons { 4, List::Nil });
+    let m = array::set(m, 1, 2, List::Nil);
+    sum(array::get(m, 0, 0)) * 10 + len(array::get(m, 1, 2))
+}
+extern "C" trampoline "test_rank2_ffi" = test_rank2;
+
+// Elements flow through calls and rebuilds: take an element out, extend it,
+// store it back — the old slot reference released, the new one owned.
+fn extend(l : List, x : i64) -> List { List::Cons { x, l } }
+
+pub fn test_roundtrip() -> i64 {
+    let a = array::splat<[List; 2]>(List::Cons { 1, List::Nil });
+    let e = array::get(a, 0);
+    let a = array::set(a, 1, extend(e, 2));
+    sum(array::get(a, 1)) * 10 + len(array::get(a, 0))
+}
+extern "C" trampoline "test_roundtrip_ffi" = test_roundtrip;
+
+// A generic element defers the admissibility check to monomorphization;
+// grounding at a shared record is admissible and works end to end.
+fn generic_pick<T>(a : [T; 2]) -> T { array::get(a, 0) }
+
+pub fn test_generic() -> i64 {
+    let a = array::splat<[List; 2]>(List::Cons { 3, List::Nil });
+    sum(generic_pick(a))
+}
+extern "C" trampoline "test_generic_ffi" = test_generic;
