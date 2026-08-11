@@ -79,7 +79,8 @@ pub(crate) fn node_commands(
             .map(|(target, decl)| {
                 let out =
                     profile_dir.join(compile::artifact_file(target, decl.kind, Some(opts.target)));
-                let mut args = package_args(node, &out, decl.kind.emit());
+                let root = decl.path.as_ref().map(|path| node.dir.join(path));
+                let mut args = package_args(node, &out, decl.kind.emit(), root.as_deref());
                 args.extend(compile::profile_flags(
                     opts.profile,
                     opts.target,
@@ -108,10 +109,10 @@ pub(crate) fn node_commands(
             .collect()
     } else {
         let rri = deps_dir.join(format!("{name}.rri"));
-        let mut interface = package_args(node, &rri, "rri");
+        let mut interface = package_args(node, &rri, "rri", None);
         interface.extend(externs.iter().cloned());
         let archive = archive_path(&deps_dir, name, opts.target);
-        let mut staticlib = package_args(node, &archive, "staticlib");
+        let mut staticlib = package_args(node, &archive, "staticlib", None);
         staticlib.extend(compile::profile_flags(
             opts.profile,
             opts.target,
@@ -191,17 +192,29 @@ pub fn render(
 }
 
 /// The invocation prefix shared by every command of a package.
-fn package_args(node: &crate::resolve::Node, out: &Path, emit: &str) -> Vec<String> {
-    let mut args = vec![
-        "--package-root".to_owned(),
-        node.dir.join("src").display().to_string(),
+fn package_args(
+    node: &crate::resolve::Node,
+    out: &Path,
+    emit: &str,
+    root: Option<&Path>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(root) = root {
+        args.push(root.display().to_string());
+    } else {
+        args.extend([
+            "--package-root".to_owned(),
+            node.dir.join("src").display().to_string(),
+        ]);
+    }
+    args.extend([
         "--package-name".to_owned(),
         node.loaded.manifest.package.name.clone(),
         "--emit".to_owned(),
         emit.to_owned(),
         "-o".to_owned(),
         out.display().to_string(),
-    ];
+    ]);
     // The bundled core carries the reserved name; `--core` lifts the
     // reservation for exactly this build.
     if node.loaded.manifest.package.name == "core" {

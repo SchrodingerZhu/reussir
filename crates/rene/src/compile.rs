@@ -1,8 +1,9 @@
 //! Compiling the package's declared targets through `rrc`.
 //!
-//! One `rrc` invocation per (target, profile): the package rooted at
-//! `src/lib.rr`, the profile's knobs as flags, `--emit` from the target's
-//! kind, and the baked runtime's libdirs for polyffi and the link step.
+//! One `rrc` invocation per (target, profile): the target's explicit crate
+//! root (or the package's `src/lib.rr` default), the profile's knobs as
+//! flags, `--emit` from the target's kind, and the baked runtime's libdirs
+//! for polyffi and the link step.
 //! Artifacts land in `<build-dir>/<profile>/`, named per platform
 //! (`demo`/`demo.exe`/`demo.wasm`,
 //! `libdemo.so`/`libdemo.dylib`/`demo.dll`,

@@ -21,7 +21,8 @@ let pkg_name = "std" in
   # `libapp.so`, `libapp.a`, ...). Kinds: 'executable, 'dynlib (shared
   # library), 'staticlib (archive). A package declaring no targets still
   # builds: `rene build` bakes the runtime and prints the library
-  # directories to pass to `rrc --polyffi-libdir` by hand.
+  # directories to pass to `rrc --polyffi-libdir` by hand. A target may set
+  # `path = "src/main.rr"`; otherwise it uses the package's `src/lib.rr`.
   targets = {
     std_static = { kind = 'staticlib },
   },

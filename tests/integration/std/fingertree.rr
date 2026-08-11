@@ -1,3 +1,170 @@
+// A downstream package instantiates every generic finger-tree operation.
+// Numeric cases cover both ends, cached measures, random access, splitting,
+// concatenation, editing, traversal, persistence, and shared payloads.
+
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}fingertree
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/new.in | %FileCheck %s --check-prefix=NEW
+// NEW:      1
+// NEW-NEXT: 1
+// NEW-NEXT: 1
+// NEW-NEXT: 1
+// NEW-NEXT: 1
+// NEW-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/singleton.in | %FileCheck %s --check-prefix=SINGLETON
+// SINGLETON:      1
+// SINGLETON-NEXT: 7
+// SINGLETON-NEXT: 7
+// SINGLETON-NEXT: 7
+// SINGLETON-NEXT: 1
+// SINGLETON-NEXT: 7
+// SINGLETON-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/cons.in | %FileCheck %s --check-prefix=CONS
+// CONS:      1
+// CONS-NEXT: 3
+// CONS-NEXT: 1
+// CONS-NEXT: 123
+// CONS-NEXT: 321
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/snoc.in | %FileCheck %s --check-prefix=SNOC
+// SNOC:      1
+// SNOC-NEXT: 3
+// SNOC-NEXT: 1
+// SNOC-NEXT: 123
+// SNOC-NEXT: 321
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/mixed_ends.in | %FileCheck %s --check-prefix=MIXED
+// MIXED:      1
+// MIXED-NEXT: 0
+// MIXED-NEXT: 4
+// MIXED-NEXT: 1234
+// MIXED-NEXT: 43210
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/persistence.in | %FileCheck %s --check-prefix=PERSISTENCE
+// PERSISTENCE:      1
+// PERSISTENCE-NEXT: 1
+// PERSISTENCE-NEXT: 45
+// PERSISTENCE-NEXT: 3456
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/bulk_rotations.in | %FileCheck %s --check-prefix=BULK
+// BULK:      1
+// BULK-NEXT: 1
+// BULK-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/churn.in | %FileCheck %s --check-prefix=CHURN
+// CHURN: 6112
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/shared_payload.in | %FileCheck %s --check-prefix=SHARED
+// SHARED:      1
+// SHARED-NEXT: 5
+// SHARED-NEXT: 7
+// SHARED-NEXT: 11
+// SHARED-NEXT: 7
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/random_access.in | %FileCheck %s --check-prefix=RANDOM
+// RANDOM:      0
+// RANDOM-NEXT: 31
+// RANDOM-NEXT: 63
+// RANDOM-NEXT: 64
+// RANDOM-NEXT: 127
+// RANDOM-NEXT: 1
+// RANDOM-NEXT: 640
+// RANDOM-NEXT: 641
+// RANDOM-NEXT: 64
+// RANDOM-NEXT: 1
+// RANDOM-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/split.in | %FileCheck %s --check-prefix=SPLIT
+// SPLIT:      1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 36
+// SPLIT-NEXT: 37
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 71
+// SPLIT-NEXT: 72
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+// SPLIT-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/concat.in | %FileCheck %s --check-prefix=CONCAT
+// CONCAT:      1
+// CONCAT-NEXT: 1
+// CONCAT-NEXT: 1
+// CONCAT-NEXT: 1
+// CONCAT-NEXT: 64
+// CONCAT-NEXT: 66
+// CONCAT-NEXT: 1
+// CONCAT-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/editing.in | %FileCheck %s --check-prefix=EDITING
+// EDITING:      1
+// EDITING-NEXT: 36
+// EDITING-NEXT: 700
+// EDITING-NEXT: 37
+// EDITING-NEXT: 800
+// EDITING-NEXT: 900
+// EDITING-NEXT: 700
+// EDITING-NEXT: 1
+// EDITING-NEXT: 1
+// EDITING-NEXT: 1
+// EDITING-NEXT: 1
+// EDITING-NEXT: 1
+// EDITING-NEXT: 49
+// EDITING-NEXT: 51
+// EDITING-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/transforms.in | %FileCheck %s --check-prefix=TRANSFORMS
+// TRANSFORMS:      1
+// TRANSFORMS-NEXT: 1234
+// TRANSFORMS-NEXT: 4321
+// TRANSFORMS-NEXT: 2468
+// TRANSFORMS-NEXT: 1234
+// TRANSFORMS-NEXT: 4321
+// TRANSFORMS-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/predicates.in | %FileCheck %s --check-prefix=PREDICATES
+// PREDICATES:      1
+// PREDICATES-NEXT: 2468
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 6
+// PREDICATES-NEXT: 6
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+// PREDICATES-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/take_drop.in | %FileCheck %s --check-prefix=TAKE_DROP
+// TAKE_DROP:      1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+// TAKE_DROP-NEXT: 1
+
+// RUN: %T/rene-build/release/fingertree%exe_ext < %S/Inputs/fingertree/exhaustive_measures.in | %FileCheck %s --check-prefix=EXHAUSTIVE
+// EXHAUSTIVE:      1
+// EXHAUSTIVE-NEXT: 1
+// EXHAUSTIVE-NEXT: 1
+
 import std::collections::pure::fingertree::FingerTree;
 import std::collections::pure::fingertree::Remove;
 import std::collections::pure::fingertree::Split;

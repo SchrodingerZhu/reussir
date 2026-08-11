@@ -4,8 +4,8 @@
 //! what the build directory already contains. redb holds an exclusive
 //! cross-process file lock for as long as the database is open, and that lock
 //! *is* the build-directory lock: `build` opens the database first and keeps
-//! it open for the whole build, and `clean` refuses to delete a directory
-//! whose database it cannot open.
+//! it open for the whole build. Other builds wait for that lock, while
+//! `clean` refuses to delete a directory whose database it cannot open.
 //!
 //! Deleting the database file releases its lock, so `clean` cannot hold the
 //! lock *through* the deletion. Instead it narrows the window: while still
@@ -17,6 +17,7 @@
 //! is the accepted trade-off for not inventing a second locking scheme.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use redb::{Database, DatabaseError, ReadableDatabase, ReadableTable, TableError};
 
@@ -68,6 +69,27 @@ impl BuildDir {
             root: root.to_owned(),
             db,
         })
+    }
+
+    /// Open a build directory once its current build, if any, releases the
+    /// database. Redb exposes a non-blocking cross-process lock, so builds
+    /// turn `DatabaseAlreadyOpen` into an asynchronous wait here rather than
+    /// forcing every caller to arrange its own serialization.
+    pub async fn open_wait(root: &Path) -> Result<Self, DbError> {
+        let mut waiting = false;
+        loop {
+            match Self::open(root) {
+                Ok(dir) => return Ok(dir),
+                Err(DbError::InUse(path)) => {
+                    if !waiting {
+                        tracing::debug!(database = %path.display(), "waiting for the build directory");
+                        waiting = true;
+                    }
+                    compio::runtime::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Open an *existing* build directory, or `None` if there is none. Unlike

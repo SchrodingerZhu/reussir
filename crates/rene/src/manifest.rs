@@ -111,6 +111,12 @@ impl TargetKind {
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub kind: TargetKind,
+    /// This target's crate root, relative to the manifest directory unless
+    /// absolute. When omitted, the package-wide `src/lib.rr` root is used.
+    /// Giving each executable its own root lets one package declare several
+    /// independent programs while sharing dependencies and build state.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
 }
 
 /// A named set of build knobs, mirroring `rrc`'s flags one for one — the
@@ -434,7 +440,7 @@ mod tests {
             {
               package = { name = "demo" },
               targets = {
-                demo = { kind = 'executable },
+                demo = { kind = 'executable, path = "src/main.rr" },
                 shared = { kind = 'dynlib },
                 archive = { kind = 'staticlib },
               },
@@ -454,7 +460,12 @@ mod tests {
         let loaded = load(&path).unwrap();
         let m = &loaded.manifest;
         assert_eq!(m.targets["demo"].kind, TargetKind::Executable);
+        assert_eq!(
+            m.targets["demo"].path.as_deref(),
+            Some(Path::new("src/main.rr"))
+        );
         assert_eq!(m.targets["shared"].kind, TargetKind::Dynlib);
+        assert_eq!(m.targets["shared"].path, None);
         assert_eq!(m.targets["archive"].kind, TargetKind::Staticlib);
         assert_eq!(m.profiles["release"].lto.as_deref(), Some("thin"));
         assert_eq!(m.profiles["release"].codegen_units, Some(4));

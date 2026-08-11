@@ -5,8 +5,9 @@
 //! (`--bin`, `--lib`, `--staticlib`, freely combined; `--target` pins a
 //! cross triple), and a git repository with the build directory ignored;
 //! `--interactive` asks about each choice instead.
-//! `rene build` locates the package manifest (`rene.ncl`), takes the build
-//! directory's lock (the status database), records the package's source graph
+//! `rene build` locates the package manifest (`rene.ncl`), waits for and takes
+//! the build directory's lock (the status database), records the package's
+//! source graph
 //! (re-scanning it through `rrc --scan-deps` only when something moved), bakes
 //! the bundled `reussir-rt` runtime with the user's Rust toolchain if needed,
 //! and compiles the manifest's declared `targets` under the selected
@@ -352,26 +353,29 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
     // Resolve the profile before any work: an unknown name is a usage
     // problem, not something to discover after a runtime bake.
     let profile = manifest::resolve_profile(&loaded.manifest, &args.profile)?;
-    // Dependency resolution, before any expensive work too: load the
+    let root = resolve_build_dir(location)?;
+    // Builds sharing a directory queue on its database lock. Take it before
+    // materializing bundled sources so concurrent invocations serialize all
+    // writes, then hold it (`dir`) for the rest of the build.
+    let dir = BuildDir::open_wait(&root)
+        .await
+        .map_err(|e| e.to_string())?;
+    if dir.is_cleaning().map_err(|e| e.to_string())? {
+        return Err(pending_clean(&root));
+    }
+
+    // Dependency resolution, before any expensive compile work: load the
     // transitive path graph and let pubgrub verify the constraints hold
     // together (each package exists in exactly one version today, so this is
     // a feasibility check; see `resolve`). A dependency-less package is a
     // one-node graph through the same machinery.
-    let core_dir = core_src::unpack(&resolve_build_dir(location)?)?;
+    let core_dir = core_src::unpack(&root)?;
     let graph = resolve::load_graph_with(&loaded, Some(&core_dir))?;
     if graph.nodes.len() > 1 {
         let solution = resolve::check(&graph)?;
         for (name, version) in &solution.pinned {
             tracing::debug!(package = %name, %version, "resolved");
         }
-    }
-
-    let root = resolve_build_dir(location)?;
-    // Opening the status database takes the build directory's lock; hold it
-    // (`dir`) for the rest of the build.
-    let dir = BuildDir::open(&root).map_err(|e| e.to_string())?;
-    if dir.is_cleaning().map_err(|e| e.to_string())? {
-        return Err(pending_clean(&root));
     }
     // The source graph first: it is cheap, it fails fast on a broken package,
     // and a build that finds nothing moved skips straight to the freshness
