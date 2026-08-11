@@ -86,17 +86,35 @@ fn build_help_distinguishes_products_from_the_machine_target() {
 }
 
 #[test]
-fn build_refuses_a_build_dir_held_by_another_instance() {
+fn build_waits_for_a_build_dir_held_by_another_instance() {
+    use std::process::Stdio;
+
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("reussir-build");
-    let _held = BuildDir::open(&root).unwrap();
+    let held = BuildDir::open(&root).unwrap();
+    // Once the waiter acquires the lock it will stop at this marker, before
+    // touching the real toolchain. That makes the test about queueing alone.
+    held.set_status(&[(tables::CLEANING_KEY, "true")]).unwrap();
 
-    let out = run(rene(&["build", "--manifest-path"])
+    let mut child = rene(&["build", "--manifest-path"])
         .arg(demo_manifest())
         .arg("--build-dir")
-        .arg(&root));
+        .arg(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(child.try_wait().unwrap().is_none(), "build did not wait");
+
+    drop(held);
+    let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("in use"), "stderr: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("rene clean") && !stderr(&out).contains("in use"),
+        "stderr: {}",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -222,13 +240,14 @@ impl Fakes {
         // fabricates the `-o` artifact.
         let rrc = script(
             "fake-rrc",
-            r#"root=""; out=""; package=""; color=auto; prev=""; scan=no
+            r#"root=""; input=""; out=""; package=""; color=auto; prev=""; scan=no
 for arg in "$@"; do
   [ "$prev" = "--package-root" ] && root="$arg"
   [ "$prev" = "--package-name" ] && package="$arg"
   [ "$prev" = "-o" ] && out="$arg"
   [ "$prev" = "--color" ] && color="$arg"
   [ "$arg" = "--scan-deps" ] && scan=yes
+  case "$arg" in *.rr) input="$arg";; esac
   prev="$arg"
 done
 if [ "$scan" = no ]; then
@@ -270,6 +289,10 @@ log="$(dirname "$0")/rrc-runs"
 until mkdir "$log.lock" 2>/dev/null; do sleep 0.001; done
 echo run >> "$log"
 rmdir "$log.lock"
+if [ -n "$input" ]; then
+  printf '{"package":"pkg","files":[{"path":"%s","module":["pkg"]}]}\n' "$input"
+  exit 0
+fi
 printf '{"package":"pkg","files":[{"path":"%s","module":["pkg"]}' "$root/lib.rr"
 for f in "$root"/*.rr; do
   case "$f" in */lib.rr) continue;; esac
@@ -889,6 +912,67 @@ fn build_compiles_the_declared_targets_with_the_profile_knobs() {
     let rebuilt = fakes.rene(&["build", "--profile", "release"], &manifest, &root);
     assert!(rebuilt.status.success(), "stderr: {}", stderr(&rebuilt));
     assert_eq!(fakes.package_compiles().len(), 6, "the edit must rebuild");
+}
+
+/// Target paths give independent executables in one package their own crate
+/// roots; both the source scan and the compile plan use those files directly.
+#[cfg(unix)]
+#[test]
+fn build_compiles_explicit_target_paths() {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let tmp = tmp_dir.path().canonicalize().unwrap();
+    let root = tmp.join("reussir-build");
+    std::fs::create_dir_all(tmp.join("src")).unwrap();
+    for name in ["one", "two"] {
+        std::fs::write(
+            tmp.join("src").join(format!("{name}.rr")),
+            "#[main]\npub fn entry() {}\n",
+        )
+        .unwrap();
+    }
+    let manifest = tmp.join("rene.ncl");
+    std::fs::write(
+        &manifest,
+        r#"{
+          package = { name = "multi", version = "0.1.0" },
+          targets = {
+            one = { kind = 'executable, path = "src/one.rr" },
+            two = { kind = 'executable, path = "src/two.rr" },
+          },
+        }
+        "#,
+    )
+    .unwrap();
+    let fakes = Fakes::new(&tmp);
+
+    let out = fakes.rene(&["build"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+
+    let compiles = fakes.package_compiles();
+    assert_eq!(compiles.len(), 2, "{compiles:#?}");
+    for name in ["one", "two"] {
+        let path = tmp.join("src").join(format!("{name}.rr"));
+        assert!(
+            compiles
+                .iter()
+                .any(|line| line.contains(&path.display().to_string())),
+            "no compile rooted at {}: {compiles:#?}",
+            path.display()
+        );
+    }
+    assert!(
+        compiles.iter().all(|line| !line.contains("--package-root")),
+        "{compiles:#?}"
+    );
+
+    let dir = BuildDir::open(&root).unwrap();
+    let sources = dir.sources().unwrap();
+    assert_eq!(sources.len(), 2, "{sources:#?}");
+    drop(dir);
+
+    let again = fakes.rene(&["build"], &manifest, &root);
+    assert!(again.status.success(), "stderr: {}", stderr(&again));
+    assert_eq!(fakes.package_compiles().len(), 2, "fresh targets rebuilt");
 }
 
 /// `--linker` pins one linker end to end: cargo's target-specific

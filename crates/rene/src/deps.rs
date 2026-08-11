@@ -16,6 +16,7 @@
 //! [`crate::db::BuildDir::sources`]; they are not part of the check, which
 //! must stay read-free.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::UNIX_EPOCH;
@@ -153,6 +154,49 @@ pub fn source_root(loaded: &Loaded) -> PathBuf {
         .join(SRC_DIR)
 }
 
+/// One crate root rrc must scan for the root package. Dependencies always use
+/// the directory form; a root target may instead name its own entrypoint.
+#[derive(Debug)]
+enum ScanRoot {
+    Dir(PathBuf),
+    File(PathBuf),
+}
+
+impl ScanRoot {
+    fn path(&self) -> &Path {
+        match self {
+            ScanRoot::Dir(path) | ScanRoot::File(path) => path,
+        }
+    }
+}
+
+/// Every distinct crate root declared by the package. A target without an
+/// explicit path keeps the traditional `src/lib.rr` root; a target-only
+/// package whose every product has a path does not need that file at all.
+fn package_roots(loaded: &Loaded) -> Vec<ScanRoot> {
+    let mut roots = Vec::new();
+    if loaded.manifest.targets.is_empty()
+        || loaded
+            .manifest
+            .targets
+            .values()
+            .any(|target| target.path.is_none())
+    {
+        roots.push(ScanRoot::Dir(source_root(loaded)));
+    }
+
+    let dir = loaded.path.parent().unwrap_or_else(|| Path::new("."));
+    let paths: BTreeSet<PathBuf> = loaded
+        .manifest
+        .targets
+        .values()
+        .filter_map(|target| target.path.as_ref())
+        .map(|path| dir.join(path))
+        .collect();
+    roots.extend(paths.into_iter().map(ScanRoot::File));
+    roots
+}
+
 /// Compare the recorded graph against the manifest and the files on disk,
 /// reading no file contents.
 pub fn staleness(dir: &BuildDir, config_hash: &str) -> Result<Staleness, String> {
@@ -224,11 +268,31 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded, color: bool) -> Result<Pre
     }
 
     tracing::debug!(%reason, "scanning the package source graph");
-    let root = source_root(loaded);
-    let mut files = scan(&root, &loaded.manifest.package.name, color).await?;
-    // Order by path, the order the table reads back in, so what this returns
-    // does not depend on whether it came from the scan or the record.
-    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let scanned = futures_util::future::try_join_all(
+        package_roots(loaded)
+            .into_iter()
+            .map(|root| scan_root(root, &loaded.manifest.package.name, color)),
+    )
+    .await?;
+
+    // Several entrypoints may reach the same module. The database is a set
+    // keyed by path, so coalesce identical observations and reject a path
+    // that acquired two different module identities from different roots.
+    let mut by_path: BTreeMap<String, SourceFile> = BTreeMap::new();
+    for file in scanned.into_iter().flatten() {
+        if let Some(existing) = by_path.get(&file.path)
+            && existing.record != file.record
+        {
+            return Err(format!(
+                "source `{}` has different module identities under separate target roots",
+                file.path
+            ));
+        }
+        by_path.insert(file.path.clone(), file);
+    }
+    // BTreeMap order is the path order the table reads back in, so what this
+    // returns does not depend on whether it came from the scan or the record.
+    let files: Vec<SourceFile> = by_path.into_values().collect();
     dir.replace_sources(&files).map_err(|e| e.to_string())?;
     dir.set_status(&[(tables::SOURCES_CONFIG_HASH_KEY, hash.as_str())])
         .map_err(|e| e.to_string())?;
@@ -239,20 +303,41 @@ pub async fn prepare(dir: &BuildDir, loaded: &Loaded, color: bool) -> Result<Pre
 /// Ask `rrc --scan-deps` for the package's source graph and stat every file
 /// it names.
 pub async fn scan(root: &Path, package: &str, color: bool) -> Result<Vec<SourceFile>, String> {
+    scan_root(ScanRoot::Dir(root.to_owned()), package, color).await
+}
+
+/// Ask `rrc --scan-deps` for one directory- or file-rooted source graph and
+/// stat every file it names.
+async fn scan_root(root: ScanRoot, package: &str, color: bool) -> Result<Vec<SourceFile>, String> {
     let rrc = resolve_rrc();
-    if !root.is_dir() {
-        return Err(format!(
-            "package source root `{}` does not exist; a package's crate root \
-             is `{}/lib.rr`",
-            root.display(),
-            SRC_DIR
-        ));
+    match &root {
+        ScanRoot::Dir(path) if !path.is_dir() => {
+            return Err(format!(
+                "package source root `{}` does not exist; a package's crate root \
+                 is `{}/lib.rr`",
+                path.display(),
+                SRC_DIR
+            ));
+        }
+        ScanRoot::File(path) if !path.is_file() => {
+            return Err(format!(
+                "target crate root `{}` does not exist or is not a file",
+                path.display()
+            ));
+        }
+        _ => {}
     }
-    tracing::debug!(rrc = %rrc.display(), root = %root.display(), "scanning dependencies");
+    tracing::debug!(rrc = %rrc.display(), root = %root.path().display(), "scanning dependencies");
     let mut cmd = compio::process::Command::new(&rrc);
-    cmd.arg("--package-root")
-        .arg(root)
-        .arg("--package-name")
+    match &root {
+        ScanRoot::Dir(path) => {
+            cmd.arg("--package-root").arg(path);
+        }
+        ScanRoot::File(path) => {
+            cmd.arg(path);
+        }
+    }
+    cmd.arg("--package-name")
         .arg(package)
         .arg("--scan-deps")
         // Both streams are captured below. Preserve the parent CLI's resolved

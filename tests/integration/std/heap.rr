@@ -1,3 +1,49 @@
+// A downstream package instantiates both persistent priority queues.
+// Cases cover the public API, persistence of shared versions, heapsort
+// output order, a model-checked insert/delete-min churn, and agreement
+// between the two implementations on identical inputs.
+
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}heap
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/pairing_basics.in | %FileCheck %s --check-prefix=PAIRING
+// PAIRING:      1
+// PAIRING-NEXT: 1
+// PAIRING-NEXT: 1
+// PAIRING-NEXT: 1
+// PAIRING-NEXT: 1
+// PAIRING-NEXT: 1
+// PAIRING-NEXT: 1
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/binomial_basics.in | %FileCheck %s --check-prefix=BINOMIAL
+// BINOMIAL:      1
+// BINOMIAL-NEXT: 1
+// BINOMIAL-NEXT: 1
+// BINOMIAL-NEXT: 1
+// BINOMIAL-NEXT: 1
+// BINOMIAL-NEXT: 1
+// BINOMIAL-NEXT: 1
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/pairing_sort.in | %FileCheck %s --check-prefix=PSORT
+// PSORT:      1
+// PSORT-NEXT: 1
+// PSORT-NEXT: 1
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/binomial_sort.in | %FileCheck %s --check-prefix=BSORT
+// BSORT:      1
+// BSORT-NEXT: 1
+// BSORT-NEXT: 1
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/churn.in | %FileCheck %s --check-prefix=CHURN
+// CHURN:      1
+// CHURN-NEXT: 1
+// CHURN-NEXT: 1
+// CHURN-NEXT: 1
+
+// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/agreement.in | %FileCheck %s --check-prefix=AGREE
+// AGREE:      1
+// AGREE-NEXT: 1
+
 // A downstream executable package exercises both persistent priority
 // queues. Each input selects one case; case 5 checks a pseudorandom
 // insert/delete-min sequence against a sorted-list model, and case 6
