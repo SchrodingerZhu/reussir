@@ -1,0 +1,154 @@
+// `&&` and `||` short-circuit: the right operand is evaluated only when the
+// left one leaves the answer open. Elaboration desugars the pair into `if`
+// (`l && r` to `if l { r } else { false }`, `l || r` to `if l { true } else
+// { r }`), so the right operand lands in a branch region and lowers to
+// `scf.if` — the same construct every other conditional uses. Before that
+// desugaring both operators emitted `arith.andi`/`arith.ori`, which evaluate
+// both sides.
+//
+// The runtime cases below are the ones a shape check cannot make: a cell
+// counts how many times the right operand actually ran, and `guarded`
+// divides by the very value its left operand tests for zero, so a strict
+// operator traps instead of returning false.
+
+// RUN: %rrc %s --emit hir --no-source-locations -o %t.hir
+// RUN: %FileCheck %s --check-prefix=HIR < %t.hir
+// RUN: %rrc %s --emit mir --no-source-locations -o %t.mir
+// RUN: %FileCheck %s --check-prefix=MIR < %t.mir
+// RUN: %rrc %t.hir --emit mir --no-source-locations -o -
+// RUN: %rrc %s --emit mlir --no-source-locations -o %t.mlir
+// RUN: %FileCheck %s --check-prefix=MLIR < %t.mlir
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/short_circuit.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/short_circuit.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+import core::intrinsic::cell;
+
+// The whole operator is one `if` whose else-branch is the constant that
+// settles the result, and whose other branch is the right operand.
+// HIR-LABEL: pub fn #both
+// HIR: if v0 : bool then {
+// HIR-NEXT: v1 : bool
+// HIR-NEXT: } else {
+// HIR-NEXT: false : bool
+pub fn both(a : bool, b : bool) -> bool {
+    a && b
+}
+
+// HIR-LABEL: pub fn #either
+// HIR: if v0 : bool then {
+// HIR-NEXT: true : bool
+// HIR-NEXT: } else {
+// HIR-NEXT: v1 : bool
+pub fn either(a : bool, b : bool) -> bool {
+    a || b
+}
+
+// Neither operator reaches the eager integer forms any more, and both
+// produce a value-carrying `scf.if`.
+// MIR: fn @{{.*}}both
+// MIR: fn @{{.*}}either
+// MLIR-LABEL: func.func @_RC4both
+// MLIR: scf.if %{{.+}} -> (i1)
+// MLIR-LABEL: func.func @_RC6either
+// MLIR: scf.if %{{.+}} -> (i1)
+// MLIR-NOT: arith.andi
+// MLIR-NOT: arith.ori
+
+// Counts its own evaluations, so a test can tell "returned the right answer"
+// from "took the right path to it".
+fn probe(counter : RefCell<i64>, value : bool) -> bool {
+    cell::rmw(counter, |n| n + 1);
+    value
+}
+
+// Each case reports `evaluations * 10 + result`, so a failure names which of
+// the two went wrong rather than collapsing into one boolean.
+fn observe(taken : bool, counter : RefCell<i64>) -> i64 {
+    cell::get(counter) * 10 + (if taken { 1 } else { 0 })
+}
+
+// A false left operand settles `&&`: the right operand must not run.
+pub fn and_short() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = false && probe(c, true);
+    observe(taken, c)
+}
+extern "C" trampoline "and_short_ffi" = and_short;
+
+// A true left operand leaves `&&` open: the right operand decides it.
+pub fn and_full() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = true && probe(c, true);
+    observe(taken, c)
+}
+extern "C" trampoline "and_full_ffi" = and_full;
+
+// A true left operand settles `||`.
+pub fn or_short() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = true || probe(c, false);
+    observe(taken, c)
+}
+extern "C" trampoline "or_short_ffi" = or_short;
+
+// A false left operand leaves `||` open.
+pub fn or_full() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = false || probe(c, false);
+    observe(taken, c)
+}
+extern "C" trampoline "or_full_ffi" = or_full;
+
+// Chained operators short-circuit as a whole: the first false stops `&&` for
+// every operand after it, so exactly one probe runs here.
+pub fn and_chain() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = probe(c, false) && probe(c, true) && probe(c, true);
+    observe(taken, c)
+}
+extern "C" trampoline "and_chain_ffi" = and_chain;
+
+// The mixed chain: `&&` binds tighter, so this is `a || (b && c)`. With `a`
+// true the whole right side is skipped.
+pub fn mixed_chain() -> i64 {
+    let c = cell::alloc<RefCell<i64>>(0);
+    let taken = true || probe(c, true) && probe(c, true);
+    observe(taken, c)
+}
+extern "C" trampoline "mixed_chain_ffi" = mixed_chain;
+
+// The reason the operators exist: the left operand is a precondition for
+// evaluating the right one at all. Under a strict `&&` this divides by zero.
+pub fn guarded(n : i64, d : i64) -> bool {
+    d != 0 && n / d > 1
+}
+
+pub fn guarded_zero() -> i64 {
+    if guarded(10, 0) { 1 } else { 0 }
+}
+extern "C" trampoline "guarded_zero_ffi" = guarded_zero;
+
+pub fn guarded_nonzero() -> i64 {
+    if guarded(10, 2) { 1 } else { 0 }
+}
+extern "C" trampoline "guarded_nonzero_ffi" = guarded_nonzero;
+
+// The values themselves, over the whole truth table, so the desugaring is
+// checked to be the operator it replaced and not merely lazy.
+pub fn truth_table() -> i64 {
+    let and_bits = (if both(true, true) { 8 } else { 0 })
+        + (if both(true, false) { 4 } else { 0 })
+        + (if both(false, true) { 2 } else { 0 })
+        + (if both(false, false) { 1 } else { 0 });
+    let or_bits = (if either(true, true) { 8 } else { 0 })
+        + (if either(true, false) { 4 } else { 0 })
+        + (if either(false, true) { 2 } else { 0 })
+        + (if either(false, false) { 1 } else { 0 });
+    and_bits * 100 + or_bits
+}
+extern "C" trampoline "truth_table_ffi" = truth_table;
