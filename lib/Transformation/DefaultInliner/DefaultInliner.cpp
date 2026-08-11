@@ -46,6 +46,20 @@ void addCanonicalizerWithoutRegionSimplification(mlir::OpPassManager &pm) {
   pm.addPass(mlir::createCanonicalizerPass(config));
 }
 
+// Whether the callable region holds at most `limit` operations, counted
+// recursively through nested regions. The walk stops as soon as the limit
+// is crossed, so a query costs O(limit) however large the callee is.
+bool calleeIsSmall(mlir::Region *callable, unsigned limit) {
+  if (!callable)
+    return false;
+  unsigned count = 0;
+  auto result = callable->walk([&](mlir::Operation *) {
+    return ++count > limit ? mlir::WalkResult::interrupt()
+                           : mlir::WalkResult::advance();
+  });
+  return !result.wasInterrupted();
+}
+
 struct DefaultInlinerPass
     : public impl::ReussirDefaultInlinerPassBase<DefaultInlinerPass> {
   using Base::Base;
@@ -59,13 +73,18 @@ struct DefaultInlinerPass
                                      /*maxInliningIterations=*/1);
     mlir::CallGraph &callGraph = getAnalysis<mlir::CallGraph>();
     // Nested (callable-optimizer) pipelines run through the pass's own
-    // instrumented pipeline runner; profitability matches the upstream
-    // pass's default of no cost threshold.
+    // instrumented pipeline runner. Profitability caps the callee's size:
+    // bottom-up processing means an uncapped policy re-copies each level's
+    // fully-inlined bodies into every caller, growing the module
+    // geometrically in call-tree depth (see the pass description).
     mlir::Inliner inliner(
         getOperation(), callGraph, *this, getAnalysisManager(),
         [this](mlir::Pass &, mlir::OpPassManager &pipeline,
                mlir::Operation *op) { return runPipeline(pipeline, op); },
-        config, [](const mlir::Inliner::ResolvedCall &) { return true; });
+        config, [this](const mlir::Inliner::ResolvedCall &call) {
+          return calleeIsSmall(call.targetNode->getCallableRegion(),
+                               maxCalleeOps);
+        });
     if (mlir::failed(inliner.doInlining()))
       signalPassFailure();
   }

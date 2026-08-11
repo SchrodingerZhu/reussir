@@ -1,0 +1,40 @@
+// Regression test: `array::set` inside a match arm. The set's copy-on-write
+// body terminates with a `reussir.scf.yield` whose immediate parent is the
+// `with_unique_view` op, but the whole construct sits inside the match's
+// dispatch region — the yield verifier used to resolve its owner with
+// `getParentOfType`, find the dispatch ancestor first, and reject the (valid)
+// value-less yield with "parent operation expected a value".
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/array_set_in_match.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+// RUN: %rrc %s -o %t.opt.o --relocation-mode pic -Oaggressive
+// RUN: %cc %t.opt.o %S/array_set_in_match.c -o %t.opt.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.opt.exe
+
+import core::intrinsic::array;
+
+pub enum Node { Empty, Leaf(i64), Branch([Node; 4]) }
+
+struct [value] Rem { node : Node, removed : bool }
+
+fn del(n : Node, i : i64) -> Rem {
+    match n {
+        Node::Empty => Rem { node: Node::Empty, removed: false },
+        Node::Leaf(_) => Rem { node: Node::Empty, removed: true },
+        Node::Branch(arr) => {
+            let child = array::get(arr, i);
+            let below = del(child, i);
+            let node = below.node;
+            let removed = below.removed;
+            Rem { node: Node::Branch { array::set(arr, i, node) }, removed }
+        }
+    }
+}
+
+pub fn test_set_in_match(x : i64) -> i64 {
+    let a = array::splat<[Node; 4]>(Node::Leaf { x });
+    let out = del(Node::Branch { a }, 2);
+    if out.removed { 1 } else { 0 }
+}
+extern "C" trampoline "test_set_in_match" = test_set_in_match;
