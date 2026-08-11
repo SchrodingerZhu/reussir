@@ -61,6 +61,13 @@ config.substitutions.append((r'%reussir-llvm-opt',
 config.substitutions.append((r'%cc', append_flags(config.cc_path, config.cc_runtime_flags)))
 
 config.substitutions.append((r'%FileCheck', sh_path(config.filecheck_path)))
+# The std integration executables are targets of one rene package. All of
+# their tests deliberately share one build directory; rene's database lock
+# serializes concurrent writers while preserving the compiled target cache.
+config.substitutions.append((
+    r'%std_rene_build',
+    sh_path(os.path.join(config.test_exec_root, 'std-rene-build')),
+))
 linkage_check_prefixes = (
     '--check-prefixes=CHECK,CHECK-COFF'
     if sys.platform == 'win32'

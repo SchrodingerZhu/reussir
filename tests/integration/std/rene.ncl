@@ -10,6 +10,8 @@
   targets = {
     fingertree = { kind = 'executable, path = "fingertree.rr" },
     hash = { kind = 'executable, path = "hash.rr" },
+    hashmap = { kind = 'executable, path = "hashmap.rr" },
+    hashset = { kind = 'executable, path = "hashset.rr" },
     heap = { kind = 'executable, path = "heap.rr" },
     list = { kind = 'executable, path = "list.rr" },
     option = { kind = 'executable, path = "option.rr" },

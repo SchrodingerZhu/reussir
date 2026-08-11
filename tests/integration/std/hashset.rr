@@ -1,0 +1,281 @@
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}hashset
+
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/basics.in | %FileCheck %s --check-prefix=BASICS
+// BASICS: 1
+
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/algebra.in | %FileCheck %s --check-prefix=ALGEBRA
+// ALGEBRA: 1
+
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/transforms.in | %FileCheck %s --check-prefix=TRANSFORMS
+// TRANSFORMS: 1
+
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/adaptive.in | %FileCheck %s --check-prefix=ADAPTIVE
+// ADAPTIVE: 4
+// ADAPTIVE-NEXT: 5
+// ADAPTIVE-NEXT: 4
+// ADAPTIVE-NEXT: 39
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 55
+// ADAPTIVE-NEXT: 40
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/churn.in | %FileCheck %s --check-prefix=CHURN
+// CHURN: 1
+
+import std::collections::pure::hashset::HashSet;
+import std::collections::pure::hashset::TakeResult;
+import std::collections::pure::list::List;
+import std::collections::pure::wavlset::WavlSet;
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::option::Option;
+
+fn wb(value : bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+pub struct [value] Key {
+    id : i64,
+    digest : u64
+}
+
+impl PartialEq for Key {
+    fn eq(self : Self, other : Self) -> bool { self.id == other.id }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H : Hasher>(self : Self, state : H) -> H {
+        state.write_u64(self.digest)
+    }
+}
+
+fn controlled(id : i64, digest : u64) -> Key {
+    Key { id, digest }
+}
+
+fn int_key(id : i64) -> Key {
+    controlled(id, id as u64)
+}
+
+fn test_basics() {
+    let empty : HashSet<Key> = HashSet::new();
+    let seeded : HashSet<Key> = HashSet::with_seed(88);
+    let set = empty.insert(int_key(1)).insert(int_key(2)).insert(int_key(2));
+    let shape = empty.is_empty() && empty.len() == 0 && set.len() == 2
+        && !set.is_empty() && seeded.hash_seed() == 88
+        && seeded.clear().hash_seed() == 88;
+    let membership = set.contains(int_key(1)) && set.contains(int_key(2))
+        && !set.contains(int_key(3))
+        && match set.get(int_key(2)) {
+            Option::Some(value) => value.id == 2,
+            Option::None => false
+        }
+        && HashSet::singleton(int_key(9)).contains(int_key(9))
+        && HashSet::singleton_seeded(int_key(8), 44).hash_seed() == 44;
+    let taken = match set.take(int_key(2)) {
+        TakeResult::Taken(value, rest) =>
+            value.id == 2 && rest.len() == 1 && !rest.contains(int_key(2)),
+        TakeResult::Missing(_) => false
+    };
+    let missing = match set.take(int_key(7)) {
+        TakeResult::Missing(original) => original.len() == 2,
+        TakeResult::Taken(_, _) => false
+    };
+    wb(shape && membership && taken && missing);
+}
+
+fn test_algebra() {
+    let left : HashSet<Key> = HashSet::new()
+        .insert(int_key(1)).insert(int_key(2)).insert(int_key(3));
+    let right : HashSet<Key> = HashSet::with_seed(71)
+        .insert(int_key(3)).insert(int_key(4));
+    let union = left.union(right);
+    let intersection = left.intersection(right);
+    let difference = left.difference(right);
+    let symmetric = left.symmetric_difference(right);
+    let subset : HashSet<Key> = HashSet::new().insert(int_key(1)).insert(int_key(3));
+    let equal : HashSet<Key> = HashSet::with_seed(999)
+        .insert(int_key(3)).insert(int_key(2)).insert(int_key(1));
+    let disjoint : HashSet<Key> = HashSet::new().insert(int_key(8)).insert(int_key(9));
+    let values = union.len() == 4 && union.contains(int_key(1))
+        && union.contains(int_key(4))
+        && intersection.len() == 1 && intersection.contains(int_key(3))
+        && difference.len() == 2 && difference.contains(int_key(1))
+        && difference.contains(int_key(2))
+        && symmetric.len() == 3 && symmetric.contains(int_key(1))
+        && symmetric.contains(int_key(2)) && symmetric.contains(int_key(4))
+        && !symmetric.contains(int_key(3));
+    let relations = subset.is_subset(left) && left.is_superset(subset)
+        && subset.is_proper_subset(left) && left.is_proper_superset(subset)
+        && left.is_disjoint(disjoint) && left.equals(equal)
+        && left == equal && left != right;
+    wb(values && relations);
+}
+
+fn sample_values() -> List<Key> {
+    List::Cons {
+        int_key(1),
+        List::Cons {
+            int_key(2),
+            List::Cons {
+                int_key(3),
+                List::Cons { int_key(2), List::Cons { int_key(4), List::Nil } }
+            }
+        }
+    }
+}
+
+fn test_transforms() {
+    let set : HashSet<Key> = HashSet::from_list_seeded(sample_values(), 123);
+    let evens = set.filter(|value| value.id % 2 == 0);
+    let parity = set.map(|value| int_key(value.id % 2));
+    let traversal = set.to_list().len() == 4
+        && set.fold_left(0, |sum, value| sum + value.id) == 10;
+    let transforms = evens.len() == 2 && evens.contains(int_key(2))
+        && evens.contains(int_key(4))
+        && evens.hash_seed() == 123 && parity.len() == 2
+        && parity.contains(int_key(0)) && parity.contains(int_key(1));
+    let predicates = set.count_if(|value| value.id >= 3) == 2
+        && set.any(|value| value.id == 4) && set.all(|value| value.id > 0)
+        && match set.find(|value| value.id == 3) {
+            Option::Some(value) => value.id == 3,
+            Option::None => false
+        };
+    wb(traversal && transforms && predicates);
+}
+
+fn insert_slots(
+    set : HashSet<Key>,
+    current : i64,
+    end : i64
+) -> HashSet<Key> {
+    if current >= end {
+        set
+    } else {
+        insert_slots(set.insert(controlled(current, current as u64)), current + 1, end)
+    }
+}
+
+fn check_slots(set : HashSet<Key>, current : i64, end : i64) -> bool {
+    if current >= end {
+        true
+    } else {
+        set.contains(controlled(current, current as u64))
+            && check_slots(set, current + 1, end)
+    }
+}
+
+fn insert_collisions(
+    set : HashSet<Key>,
+    current : i64,
+    end : i64
+) -> HashSet<Key> {
+    if current >= end {
+        set
+    } else {
+        insert_collisions(set.insert(controlled(current, 13)), current + 1, end)
+    }
+}
+
+fn remove_collisions(
+    set : HashSet<Key>,
+    current : i64,
+    end : i64
+) -> HashSet<Key> {
+    if current >= end {
+        set
+    } else {
+        remove_collisions(set.remove(controlled(current, 13)), current + 1, end)
+    }
+}
+
+fn test_adaptive() {
+    let empty : HashSet<Key> = HashSet::new();
+    let four = insert_slots(empty, 0, 4);
+    let five = insert_slots(four, 4, 5);
+    let demoted = five.remove(controlled(4, 4));
+    let grown = insert_slots(demoted, 5, 40);
+    let collisions = insert_collisions(grown, 100, 116);
+    let collapsed = remove_collisions(collisions, 100, 115);
+    let persistent = five.contains(controlled(4, 4))
+        && !demoted.contains(controlled(4, 4));
+    test_utils::io::write_i32(four.len() as i32);
+    test_utils::io::write_i32(five.len() as i32);
+    test_utils::io::write_i32(demoted.len() as i32);
+    test_utils::io::write_i32(grown.len() as i32);
+    wb(check_slots(four, 0, 4));
+    wb(check_slots(five, 0, 5));
+    wb(check_slots(demoted, 0, 4));
+    wb(check_slots(grown, 0, 4) && check_slots(grown, 5, 40));
+    wb(!demoted.contains(controlled(4, 4)));
+    test_utils::io::write_i32(collisions.len() as i32);
+    test_utils::io::write_i32(collapsed.len() as i32);
+    wb(collapsed.contains(controlled(115, 13)));
+    wb(collisions.contains(controlled(100, 13)));
+    wb(collisions.contains(controlled(115, 13)));
+    wb(persistent);
+}
+
+fn lcg(seed : i64) -> i64 {
+    (seed * 1103515245 + 12345) % 2147483648
+}
+
+fn agree(
+    set : HashSet<Key>,
+    model : WavlSet<i64>,
+    value : i64,
+    end : i64
+) -> bool {
+    if value >= end {
+        true
+    } else {
+        set.contains(int_key(value)) == model.contains(value)
+            && agree(set, model, value + 1, end)
+    }
+}
+
+fn churn(
+    set : HashSet<Key>,
+    model : WavlSet<i64>,
+    seed : i64,
+    steps : i64
+) -> bool {
+    if steps == 0 {
+        set.len() == model.len() && agree(set, model, 0, 128)
+    } else {
+        let next = lcg(seed);
+        let value = next % 128;
+        if next % 4 == 0 {
+            churn(set.remove(int_key(value)), model.remove(value), next, steps - 1)
+        } else {
+            churn(set.insert(int_key(value)), model.insert(value), next, steps - 1)
+        }
+    }
+}
+
+fn test_churn() {
+    let set : HashSet<Key> = HashSet::new();
+    wb(churn(set, WavlSet::new(), 20260810, 1200));
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_basics(),
+        1 => test_algebra(),
+        2 => test_transforms(),
+        3 => test_adaptive(),
+        4 => test_churn(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

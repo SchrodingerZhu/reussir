@@ -1,0 +1,1266 @@
+//! A persistent hash map implemented as a radix-32 hash-array mapped trie.
+//!
+//! Sparse trie levels use an `A4` node: a 32-bit occupancy bitmap and four
+//! packed child slots. Inserting a fifth child promotes the level directly to
+//! an `A32` node with constant-time direct indexing. Removing children from an
+//! `A32` demotes it when four remain. This keeps small maps and trie fringes
+//! compact without adding an intermediate node width to every lookup path.
+//!
+//! Updates consume a map and return its new version. Retained versions remain
+//! valid and share unchanged trie nodes. When a version is used linearly, the
+//! implementation takes a child out of its array slot before recursion so the
+//! update can reuse uniquely owned storage in place.
+//!
+//! Keys are hashed with `FastHasher`. `new` uses its default seed;
+//! `with_seed` lets callers choose a per-container seed. Iteration and list
+//! conversion have no stable ordering guarantee. Lookup and updates are
+//! expected O(1), with O(n) worst-case behavior when many distinct keys have
+//! the same full hash.
+
+import core::intrinsic::array;
+import core::intrinsic::math;
+import std::collections::pure::list::List;
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::option::Option;
+
+/// A key-value pair produced and accepted by `HashMap` operations.
+pub struct [value] Entry<K, V> {
+    pub key : K,
+    pub value : V
+}
+
+/// A trie node. Public because `HashMap` stores it in its recursive
+/// representation; construct maps through `HashMap` so bitmap, packing, hash,
+/// and size invariants remain valid.
+pub enum Node<K, V> {
+    Empty,
+    Leaf(u64, K, V),
+    A4(u32, [Node<K, V>; 4]),
+    A32(u32, [Node<K, V>; 32]),
+    Bucket(u64, List<Entry<K, V>>)
+}
+
+/// A persistent hash map.
+pub struct HashMap<K, V> {
+    size : u64,
+    seed : u64,
+    root : Node<K, V>
+}
+
+/// The previous value, when requested while inserting an entry.
+pub enum [value] InsertResult<K, V> {
+    Added(HashMap<K, V>),
+    Replaced(V, HashMap<K, V>)
+}
+
+/// The entry removed from a map, or the unchanged map when the key was absent.
+pub enum [value] RemoveResult<K, V> {
+    Removed(Entry<K, V>, HashMap<K, V>),
+    Missing(HashMap<K, V>)
+}
+
+struct [value] Taken4<K, V> {
+    nodes : [Node<K, V>; 4],
+    node : Node<K, V>
+}
+
+struct [value] Taken32<K, V> {
+    nodes : [Node<K, V>; 32],
+    node : Node<K, V>
+}
+
+struct [value] Inserted<K, V> {
+    node : Node<K, V>,
+    previous : Option<V>
+}
+
+struct [value] Deleted<K, V> {
+    node : Node<K, V>,
+    removed : Option<Entry<K, V>>
+}
+
+struct [value] BucketInserted<K, V> {
+    entries : List<Entry<K, V>>,
+    previous : Option<V>
+}
+
+struct [value] BucketDeleted<K, V> {
+    entries : List<Entry<K, V>>,
+    removed : Option<Entry<K, V>>
+}
+
+struct [value] Put<K, V> {
+    map : HashMap<K, V>,
+    previous : Option<V>
+}
+
+struct [value] Delete<K, V> {
+    map : HashMap<K, V>,
+    removed : Option<Entry<K, V>>
+}
+
+fn hash_key<K : Hash>(key : K, seed : u64) -> u64 {
+    key.hash(std::hash::fast_hasher_seeded(seed)).finish()
+}
+
+fn slot(hash : u64, shift : u64) -> u32 {
+    ((hash >> shift) & 31) as u32
+}
+
+fn slot_bit(index : u32) -> u32 {
+    (1 as u32) << index
+}
+
+fn packed_index(bitmap : u32, bit : u32) -> i64 {
+    math::ctpop(bitmap & (bit - 1)) as i64
+}
+
+fn empty4<K, V>() -> [Node<K, V>; 4] {
+    array::splat<[Node<K, V>; 4]>(Node::Empty)
+}
+
+fn empty32<K, V>() -> [Node<K, V>; 32] {
+    array::splat<[Node<K, V>; 32]>(Node::Empty)
+}
+
+fn take4<K, V>(nodes : [Node<K, V>; 4], index : i64) -> Taken4<K, V> {
+    let node = array::get(nodes, index);
+    Taken4 { nodes: array::set(nodes, index, Node::Empty), node }
+}
+
+fn take32<K, V>(nodes : [Node<K, V>; 32], index : i64) -> Taken32<K, V> {
+    let node = array::get(nodes, index);
+    Taken32 { nodes: array::set(nodes, index, Node::Empty), node }
+}
+
+// Insert into the packed prefix [0, count), shifting its suffix right.
+fn a4_insert_at<K, V>(
+    nodes : [Node<K, V>; 4],
+    index : i64,
+    count : i64,
+    node : Node<K, V>
+) -> [Node<K, V>; 4] {
+    if count == index {
+        array::set(nodes, index, node)
+    } else {
+        let taken = take4(nodes, count - 1);
+        let rest = taken.nodes;
+        let moved = taken.node;
+        a4_insert_at(array::set(rest, count, moved), index, count - 1, node)
+    }
+}
+
+// Remove an already emptied packed slot and shift the remaining suffix left.
+fn a4_remove_at<K, V>(
+    nodes : [Node<K, V>; 4],
+    index : i64,
+    count : i64
+) -> [Node<K, V>; 4] {
+    if index + 1 >= count {
+        nodes
+    } else {
+        let taken = take4(nodes, index + 1);
+        let rest = taken.nodes;
+        let moved = taken.node;
+        a4_remove_at(array::set(rest, index, moved), index + 1, count)
+    }
+}
+
+// Move packed A4 children to their direct logical slots. Every source slot is
+// emptied before recursion so uniquely owned subtries stay unique.
+fn a4_to_a32<K, V>(
+    remaining : u32,
+    index : i64,
+    small : [Node<K, V>; 4],
+    wide : [Node<K, V>; 32]
+) -> [Node<K, V>; 32] {
+    if remaining == 0 {
+        wide
+    } else {
+        let logical = math::cttz(remaining);
+        let bit = slot_bit(logical);
+        let taken = take4(small, index);
+        let rest = taken.nodes;
+        let child = taken.node;
+        a4_to_a32(
+            remaining ^ bit,
+            index + 1,
+            rest,
+            array::set(wide, logical as i64, child)
+        )
+    }
+}
+
+// Pack occupied A32 children in ascending logical-slot order.
+fn a32_to_a4<K, V>(
+    remaining : u32,
+    index : i64,
+    wide : [Node<K, V>; 32],
+    small : [Node<K, V>; 4]
+) -> [Node<K, V>; 4] {
+    if remaining == 0 {
+        small
+    } else {
+        let logical = math::cttz(remaining);
+        let bit = slot_bit(logical);
+        let taken = take32(wide, logical as i64);
+        let rest = taken.nodes;
+        let child = taken.node;
+        a32_to_a4(
+            remaining ^ bit,
+            index + 1,
+            rest,
+            array::set(small, index, child)
+        )
+    }
+}
+
+fn one_child<K, V>(node : Node<K, V>, hash : u64, shift : u64) -> Node<K, V> {
+    let bit = slot_bit(slot(hash, shift));
+    Node::A4 { bit, array::set(empty4(), 0, node) }
+}
+
+fn bucket_get<K : Eq, V>(
+    entries : List<Entry<K, V>>,
+    key : K
+) -> Option<V> {
+    match entries {
+        List::Nil => Option::None,
+        List::Cons(entry, rest) => {
+            if entry.key == key {
+                Option::Some { entry.value }
+            } else {
+                bucket_get(rest, key)
+            }
+        }
+    }
+}
+
+fn bucket_get_entry<K : Eq, V>(
+    entries : List<Entry<K, V>>,
+    key : K
+) -> Option<Entry<K, V>> {
+    match entries {
+        List::Nil => Option::None,
+        List::Cons(entry, rest) => {
+            if entry.key == key {
+                Option::Some { entry }
+            } else {
+                bucket_get_entry(rest, key)
+            }
+        }
+    }
+}
+
+fn bucket_contains<K : Eq, V>(entries : List<Entry<K, V>>, key : K) -> bool {
+    match entries {
+        List::Nil => false,
+        List::Cons(entry, rest) => {
+            if entry.key == key { true } else { bucket_contains(rest, key) }
+        }
+    }
+}
+
+fn bucket_insert<K : Eq, V>(
+    entries : List<Entry<K, V>>,
+    key : K,
+    value : V
+) -> BucketInserted<K, V> {
+    match entries {
+        List::Nil => BucketInserted {
+            entries: List::Cons {
+                Entry { key, value },
+                List::Nil
+            },
+            previous: Option::None
+        },
+        List::Cons(entry, rest) => {
+            if entry.key == key {
+                BucketInserted {
+                    entries: List::Cons {
+                        Entry { key: entry.key, value },
+                        rest
+                    },
+                    previous: Option::Some { entry.value }
+                }
+            } else {
+                let below = bucket_insert(rest, key, value);
+                let tail = below.entries;
+                let previous = below.previous;
+                BucketInserted {
+                    entries: List::Cons { entry, tail },
+                    previous
+                }
+            }
+        }
+    }
+}
+
+fn bucket_delete<K : Eq, V>(
+    entries : List<Entry<K, V>>,
+    key : K
+) -> BucketDeleted<K, V> {
+    match entries {
+        List::Nil => BucketDeleted {
+            entries: List::Nil,
+            removed: Option::None
+        },
+        List::Cons(entry, rest) => {
+            if entry.key == key {
+                BucketDeleted {
+                    entries: rest,
+                    removed: Option::Some { entry }
+                }
+            } else {
+                let below = bucket_delete(rest, key);
+                let tail = below.entries;
+                let removed = below.removed;
+                BucketDeleted {
+                    entries: List::Cons { entry, tail },
+                    removed
+                }
+            }
+        }
+    }
+}
+
+fn bucket_node<K, V>(hash : u64, entries : List<Entry<K, V>>) -> Node<K, V> {
+    match entries {
+        List::Nil => Node::Empty,
+        List::Cons(entry, List::Nil) =>
+            Node::Leaf { hash, entry.key, entry.value },
+        kept => Node::Bucket { hash, kept }
+    }
+}
+
+fn insert_a4<K : Eq, V>(
+    bitmap : u32,
+    nodes : [Node<K, V>; 4],
+    hash : u64,
+    shift : u64,
+    key : K,
+    value : V
+) -> Inserted<K, V> {
+    let logical = slot(hash, shift);
+    let bit = slot_bit(logical);
+    let index = packed_index(bitmap, bit);
+    if bitmap & bit != 0 {
+        let taken = take4(nodes, index);
+        let rest = taken.nodes;
+        let child = taken.node;
+        let below = insert_node(child, hash, shift + 5, key, value);
+        let inserted = below.node;
+        let previous = below.previous;
+        Inserted {
+            node: Node::A4 { bitmap, array::set(rest, index, inserted) },
+            previous
+        }
+    } else {
+        let count = math::ctpop(bitmap) as i64;
+        let leaf = Node::Leaf { hash, key, value };
+        if count < 4 {
+            Inserted {
+                node: Node::A4 {
+                    bitmap | bit,
+                    a4_insert_at(nodes, index, count, leaf)
+                },
+                previous: Option::None
+            }
+        } else {
+            let wide = a4_to_a32(bitmap, 0, nodes, empty32());
+            Inserted {
+                node: Node::A32 {
+                    bitmap | bit,
+                    array::set(wide, logical as i64, leaf)
+                },
+                previous: Option::None
+            }
+        }
+    }
+}
+
+fn insert_a32<K : Eq, V>(
+    bitmap : u32,
+    nodes : [Node<K, V>; 32],
+    hash : u64,
+    shift : u64,
+    key : K,
+    value : V
+) -> Inserted<K, V> {
+    let logical = slot(hash, shift);
+    let bit = slot_bit(logical);
+    let taken = take32(nodes, logical as i64);
+    let rest = taken.nodes;
+    let child = taken.node;
+    let below = insert_node(child, hash, shift + 5, key, value);
+    let inserted = below.node;
+    let previous = below.previous;
+    Inserted {
+        node: Node::A32 {
+            bitmap | bit,
+            array::set(rest, logical as i64, inserted)
+        },
+        previous
+    }
+}
+
+fn insert_node<K : Eq, V>(
+    node : Node<K, V>,
+    hash : u64,
+    shift : u64,
+    key : K,
+    value : V
+) -> Inserted<K, V> {
+    match node {
+        Node::Empty => Inserted {
+            node: Node::Leaf { hash, key, value },
+            previous: Option::None
+        },
+        Node::Leaf(old_hash, old_key, old_value) => {
+            if old_hash == hash {
+                if old_key == key {
+                    Inserted {
+                        node: Node::Leaf { old_hash, old_key, value },
+                        previous: Option::Some { old_value }
+                    }
+                } else {
+                    Inserted {
+                        node: Node::Bucket {
+                            hash,
+                            List::Cons {
+                                Entry { key: old_key, value: old_value },
+                                List::Cons {
+                                    Entry { key, value },
+                                    List::Nil
+                                }
+                            }
+                        },
+                        previous: Option::None
+                    }
+                }
+            } else {
+                insert_node(
+                    one_child(
+                        Node::Leaf { old_hash, old_key, old_value },
+                        old_hash,
+                        shift
+                    ),
+                    hash,
+                    shift,
+                    key,
+                    value
+                )
+            }
+        },
+        Node::A4(bitmap, nodes) =>
+            insert_a4(bitmap, nodes, hash, shift, key, value),
+        Node::A32(bitmap, nodes) =>
+            insert_a32(bitmap, nodes, hash, shift, key, value),
+        Node::Bucket(old_hash, entries) => {
+            if old_hash == hash {
+                let below = bucket_insert(entries, key, value);
+                let kept = below.entries;
+                let previous = below.previous;
+                Inserted {
+                    node: Node::Bucket { old_hash, kept },
+                    previous
+                }
+            } else {
+                insert_node(
+                    one_child(Node::Bucket { old_hash, entries }, old_hash, shift),
+                    hash,
+                    shift,
+                    key,
+                    value
+                )
+            }
+        }
+    }
+}
+
+fn get_node<K : Eq, V>(
+    node : Node<K, V>,
+    hash : u64,
+    shift : u64,
+    key : K
+) -> Option<V> {
+    match node {
+        Node::Empty => Option::None,
+        Node::Leaf(old_hash, old_key, value) => {
+            if old_hash == hash && old_key == key {
+                Option::Some { value }
+            } else {
+                Option::None
+            }
+        },
+        Node::A4(bitmap, nodes) => {
+            let bit = slot_bit(slot(hash, shift));
+            if bitmap & bit == 0 {
+                Option::None
+            } else {
+                get_node(
+                    array::get(nodes, packed_index(bitmap, bit)),
+                    hash,
+                    shift + 5,
+                    key
+                )
+            }
+        },
+        Node::A32(bitmap, nodes) => {
+            let logical = slot(hash, shift);
+            let bit = slot_bit(logical);
+            if bitmap & bit == 0 {
+                Option::None
+            } else {
+                get_node(
+                    array::get(nodes, logical as i64),
+                    hash,
+                    shift + 5,
+                    key
+                )
+            }
+        },
+        Node::Bucket(old_hash, entries) => {
+            if old_hash == hash {
+                bucket_get(entries, key)
+            } else {
+                Option::None
+            }
+        }
+    }
+}
+
+fn get_entry_node<K : Eq, V>(
+    node : Node<K, V>,
+    hash : u64,
+    shift : u64,
+    key : K
+) -> Option<Entry<K, V>> {
+    match node {
+        Node::Empty => Option::None,
+        Node::Leaf(old_hash, old_key, value) => {
+            if old_hash == hash && old_key == key {
+                Option::Some { Entry { key: old_key, value } }
+            } else {
+                Option::None
+            }
+        },
+        Node::A4(bitmap, nodes) => {
+            let bit = slot_bit(slot(hash, shift));
+            if bitmap & bit == 0 {
+                Option::None
+            } else {
+                get_entry_node(
+                    array::get(nodes, packed_index(bitmap, bit)),
+                    hash,
+                    shift + 5,
+                    key
+                )
+            }
+        },
+        Node::A32(bitmap, nodes) => {
+            let logical = slot(hash, shift);
+            let bit = slot_bit(logical);
+            if bitmap & bit == 0 {
+                Option::None
+            } else {
+                get_entry_node(
+                    array::get(nodes, logical as i64),
+                    hash,
+                    shift + 5,
+                    key
+                )
+            }
+        },
+        Node::Bucket(old_hash, entries) => {
+            if old_hash == hash {
+                bucket_get_entry(entries, key)
+            } else {
+                Option::None
+            }
+        }
+    }
+}
+
+fn contains_node<K : Eq, V>(
+    node : Node<K, V>,
+    hash : u64,
+    shift : u64,
+    key : K
+) -> bool {
+    match node {
+        Node::Empty => false,
+        Node::Leaf(old_hash, old_key, _) => old_hash == hash && old_key == key,
+        Node::A4(bitmap, nodes) => {
+            let bit = slot_bit(slot(hash, shift));
+            bitmap & bit != 0 && contains_node(
+                array::get(nodes, packed_index(bitmap, bit)),
+                hash,
+                shift + 5,
+                key
+            )
+        },
+        Node::A32(bitmap, nodes) => {
+            let logical = slot(hash, shift);
+            let bit = slot_bit(logical);
+            bitmap & bit != 0 && contains_node(
+                array::get(nodes, logical as i64),
+                hash,
+                shift + 5,
+                key
+            )
+        },
+        Node::Bucket(old_hash, entries) =>
+            old_hash == hash && bucket_contains(entries, key)
+    }
+}
+
+fn delete_a4<K : Eq, V>(
+    bitmap : u32,
+    nodes : [Node<K, V>; 4],
+    hash : u64,
+    shift : u64,
+    key : K
+) -> Deleted<K, V> {
+    let bit = slot_bit(slot(hash, shift));
+    if bitmap & bit == 0 {
+        Deleted {
+            node: Node::A4 { bitmap, nodes },
+            removed: Option::None
+        }
+    } else {
+        let index = packed_index(bitmap, bit);
+        let count = math::ctpop(bitmap) as i64;
+        let taken = take4(nodes, index);
+        let rest = taken.nodes;
+        let child = taken.node;
+        let below = delete_node(child, hash, shift + 5, key);
+        let kept = below.node;
+        let removed = below.removed;
+        match removed {
+            Option::None => Deleted {
+                node: Node::A4 { bitmap, array::set(rest, index, kept) },
+                removed: Option::None
+            },
+            Option::Some(entry) => match kept {
+                Node::Empty => {
+                    let next_bitmap = bitmap ^ bit;
+                    let shifted = a4_remove_at(rest, index, count);
+                    Deleted {
+                        node: if next_bitmap == 0 {
+                            Node::Empty
+                        } else {
+                            Node::A4 { next_bitmap, shifted }
+                        },
+                        removed: Option::Some { entry }
+                    }
+                },
+                node => Deleted {
+                    node: Node::A4 { bitmap, array::set(rest, index, node) },
+                    removed: Option::Some { entry }
+                }
+            }
+        }
+    }
+}
+
+fn delete_a32<K : Eq, V>(
+    bitmap : u32,
+    nodes : [Node<K, V>; 32],
+    hash : u64,
+    shift : u64,
+    key : K
+) -> Deleted<K, V> {
+    let logical = slot(hash, shift);
+    let bit = slot_bit(logical);
+    if bitmap & bit == 0 {
+        Deleted {
+            node: Node::A32 { bitmap, nodes },
+            removed: Option::None
+        }
+    } else {
+        let taken = take32(nodes, logical as i64);
+        let rest = taken.nodes;
+        let child = taken.node;
+        let below = delete_node(child, hash, shift + 5, key);
+        let kept = below.node;
+        let removed = below.removed;
+        match removed {
+            Option::None => Deleted {
+                node: Node::A32 {
+                    bitmap,
+                    array::set(rest, logical as i64, kept)
+                },
+                removed: Option::None
+            },
+            Option::Some(entry) => match kept {
+                Node::Empty => {
+                    let next_bitmap = bitmap ^ bit;
+                    let node = if next_bitmap == 0 {
+                        Node::Empty
+                    } else {
+                        if math::ctpop(next_bitmap) <= 4 {
+                            Node::A4 {
+                                next_bitmap,
+                                a32_to_a4(next_bitmap, 0, rest, empty4())
+                            }
+                        } else {
+                            Node::A32 { next_bitmap, rest }
+                        }
+                    };
+                    Deleted { node, removed: Option::Some { entry } }
+                },
+                node => Deleted {
+                    node: Node::A32 {
+                        bitmap,
+                        array::set(rest, logical as i64, node)
+                    },
+                    removed: Option::Some { entry }
+                }
+            }
+        }
+    }
+}
+
+fn delete_node<K : Eq, V>(
+    node : Node<K, V>,
+    hash : u64,
+    shift : u64,
+    key : K
+) -> Deleted<K, V> {
+    match node {
+        Node::Empty => Deleted {
+            node: Node::Empty,
+            removed: Option::None
+        },
+        Node::Leaf(old_hash, old_key, value) => {
+            if old_hash == hash && old_key == key {
+                Deleted {
+                    node: Node::Empty,
+                    removed: Option::Some {
+                        Entry { key: old_key, value }
+                    }
+                }
+            } else {
+                Deleted {
+                    node: Node::Leaf { old_hash, old_key, value },
+                    removed: Option::None
+                }
+            }
+        },
+        Node::A4(bitmap, nodes) =>
+            delete_a4(bitmap, nodes, hash, shift, key),
+        Node::A32(bitmap, nodes) =>
+            delete_a32(bitmap, nodes, hash, shift, key),
+        Node::Bucket(old_hash, entries) => {
+            if old_hash == hash {
+                let below = bucket_delete(entries, key);
+                let kept = below.entries;
+                let removed = below.removed;
+                Deleted {
+                    node: if removed.is_some() {
+                        bucket_node(old_hash, kept)
+                    } else {
+                        Node::Bucket { old_hash, kept }
+                    },
+                    removed
+                }
+            } else {
+                Deleted {
+                    node: Node::Bucket { old_hash, entries },
+                    removed: Option::None
+                }
+            }
+        }
+    }
+}
+
+fn fold_bucket<U, K, V>(
+    entries : List<Entry<K, V>>,
+    initial : U,
+    f : (U, K, V) -> U
+) -> U {
+    match entries {
+        List::Nil => initial,
+        List::Cons(entry, rest) =>
+            fold_bucket(rest, f(initial, entry.key, entry.value), f)
+    }
+}
+
+fn fold_a4<U, K, V>(
+    nodes : [Node<K, V>; 4],
+    index : i64,
+    count : i64,
+    initial : U,
+    f : (U, K, V) -> U
+) -> U {
+    if index >= count {
+        initial
+    } else {
+        fold_a4(
+            nodes,
+            index + 1,
+            count,
+            fold_node(array::get(nodes, index), initial, f),
+            f
+        )
+    }
+}
+
+fn fold_a32<U, K, V>(
+    remaining : u32,
+    nodes : [Node<K, V>; 32],
+    initial : U,
+    f : (U, K, V) -> U
+) -> U {
+    if remaining == 0 {
+        initial
+    } else {
+        let logical = math::cttz(remaining);
+        let bit = slot_bit(logical);
+        fold_a32(
+            remaining ^ bit,
+            nodes,
+            fold_node(array::get(nodes, logical as i64), initial, f),
+            f
+        )
+    }
+}
+
+fn fold_node<U, K, V>(
+    node : Node<K, V>,
+    initial : U,
+    f : (U, K, V) -> U
+) -> U {
+    match node {
+        Node::Empty => initial,
+        Node::Leaf(_, key, value) => f(initial, key, value),
+        Node::A4(bitmap, nodes) =>
+            fold_a4(nodes, 0, math::ctpop(bitmap) as i64, initial, f),
+        Node::A32(bitmap, nodes) =>
+            fold_a32(bitmap, nodes, initial, f),
+        Node::Bucket(_, entries) => fold_bucket(entries, initial, f)
+    }
+}
+
+fn put_map<K : Hash + Eq, V>(
+    map : HashMap<K, V>,
+    key : K,
+    value : V
+) -> Put<K, V> {
+    let size = map.size;
+    let seed = map.seed;
+    let root = map.root;
+    let hash = hash_key(key, seed);
+    let below = insert_node(root, hash, 0, key, value);
+    let node = below.node;
+    let previous = below.previous;
+    Put {
+        map: HashMap {
+            size: if previous.is_none() { size + 1 } else { size },
+            seed,
+            root: node
+        },
+        previous
+    }
+}
+
+fn delete_map<K : Hash + Eq, V>(
+    map : HashMap<K, V>,
+    key : K
+) -> Delete<K, V> {
+    let size = map.size;
+    let seed = map.seed;
+    let root = map.root;
+    let hash = hash_key(key, seed);
+    let below = delete_node(root, hash, 0, key);
+    let node = below.node;
+    let removed = below.removed;
+    Delete {
+        map: HashMap {
+            size: if removed.is_some() { size - 1 } else { size },
+            seed,
+            root: node
+        },
+        removed
+    }
+}
+
+fn from_list_impl<K : Hash + Eq, V>(
+    values : List<Entry<K, V>>,
+    map : HashMap<K, V>
+) -> HashMap<K, V> {
+    match values {
+        List::Nil => map,
+        List::Cons(entry, rest) =>
+            from_list_impl(rest, map.insert(entry.key, entry.value))
+    }
+}
+
+impl<K : Hash + Eq, V> HashMap<K, V> {
+    /// Creates an empty map with the default hash seed. O(1).
+    pub fn new() -> Self {
+        HashMap { size: 0, seed: 0, root: Node::Empty }
+    }
+
+    /// Creates an empty map using `seed` as caller-supplied hash entropy. O(1).
+    pub fn with_seed(seed : u64) -> Self {
+        HashMap { size: 0, seed, root: Node::Empty }
+    }
+
+    /// Creates a one-entry map with the default hash seed. Expected O(1).
+    pub fn singleton(key : K, value : V) -> Self {
+        HashMap::new().insert(key, value)
+    }
+
+    /// Creates a one-entry map with an explicit hash seed. Expected O(1).
+    pub fn singleton_seeded(key : K, value : V, seed : u64) -> Self {
+        HashMap::with_seed(seed).insert(key, value)
+    }
+
+    /// Returns the seed used to hash keys. O(1).
+    pub fn hash_seed(self : Self) -> u64 {
+        self.seed
+    }
+
+    /// Returns the number of entries. O(1).
+    pub fn len(self : Self) -> u64 {
+        self.size
+    }
+
+    /// Returns true when the map contains no entries. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        self.size == 0
+    }
+
+    /// Removes every entry while preserving the map's hash seed. O(1).
+    pub fn clear(self : Self) -> Self {
+        HashMap { size: 0, seed: self.seed, root: Node::Empty }
+    }
+
+    /// Adds or replaces the value for `key`. The existing stored key is kept
+    /// when an equal key is already present. Expected O(1).
+    pub fn insert(self : Self, key : K, value : V) -> Self {
+        put_map(self, key, value).map
+    }
+
+    /// Adds or replaces an entry and reports the previous value. Expected O(1).
+    pub fn insert_result(self : Self, key : K, value : V) -> InsertResult<K, V> {
+        let put = put_map(self, key, value);
+        let map = put.map;
+        let previous = put.previous;
+        match previous {
+            Option::Some(value) => InsertResult::Replaced { value, map },
+            Option::None => InsertResult::Added { map }
+        }
+    }
+
+    /// Combines an existing value with `value`, or inserts `value` when the key
+    /// is absent. `combine` receives the existing value first. Expected O(1).
+    pub fn insert_with(
+        self : Self,
+        key : K,
+        value : V,
+        combine : (V, V) -> V
+    ) -> Self {
+        match self.get(key) {
+            Option::Some(current) => self.insert(key, combine(current, value)),
+            Option::None => self.insert(key, value)
+        }
+    }
+
+    /// Returns the value stored for `key`. Expected O(1).
+    pub fn get(self : Self, key : K) -> Option<V> {
+        get_node(self.root, hash_key(key, self.seed), 0, key)
+    }
+
+    /// Returns the stored key and value for `key`. This exposes the canonical
+    /// stored key when the query compares equal but is not identical.
+    /// Expected O(1).
+    pub fn get_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        get_entry_node(self.root, hash_key(key, self.seed), 0, key)
+    }
+
+    /// Returns true if an entry exists for `key`. Expected O(1).
+    pub fn contains_key(self : Self, key : K) -> bool {
+        contains_node(self.root, hash_key(key, self.seed), 0, key)
+    }
+
+    /// Removes `key` when present. Expected O(1).
+    pub fn remove(self : Self, key : K) -> Self {
+        delete_map(self, key).map
+    }
+
+    /// Removes and returns the stored entry for `key`. Expected O(1).
+    pub fn remove_entry(self : Self, key : K) -> RemoveResult<K, V> {
+        let deleted = delete_map(self, key);
+        let map = deleted.map;
+        let removed = deleted.removed;
+        match removed {
+            Option::Some(entry) => RemoveResult::Removed { entry, map },
+            Option::None => RemoveResult::Missing { map }
+        }
+    }
+
+    /// Applies `f` to an existing value, leaving a missing key unchanged.
+    /// Expected O(1).
+    pub fn adjust(self : Self, key : K, f : V -> V) -> Self {
+        match self.get(key) {
+            Option::Some(value) => self.insert(key, f(value)),
+            Option::None => self
+        }
+    }
+
+    /// Updates an existing value; returning `None` from `f` removes the entry.
+    /// A missing key is left unchanged. Expected O(1).
+    pub fn update(self : Self, key : K, f : V -> Option<V>) -> Self {
+        match self.get(key) {
+            Option::None => self,
+            Option::Some(value) => match f(value) {
+                Option::Some(next) => self.insert(key, next),
+                Option::None => self.remove(key)
+            }
+        }
+    }
+
+    /// Alters the optional value for `key`; `Some` inserts or replaces and
+    /// `None` removes. Expected O(1).
+    pub fn alter(self : Self, key : K, f : Option<V> -> Option<V>) -> Self {
+        match f(self.get(key)) {
+            Option::Some(value) => self.insert(key, value),
+            Option::None => self.remove(key)
+        }
+    }
+
+    /// Folds every entry in unspecified order. O(n).
+    pub fn fold_left<U>(self : Self, initial : U, f : (U, K, V) -> U) -> U {
+        fold_node(self.root, initial, f)
+    }
+
+    /// Returns every entry in unspecified order. O(n).
+    pub fn to_list(self : Self) -> List<Entry<K, V>> {
+        self.fold_left(List::Nil, |entries, key, value| List::Cons {
+            Entry { key, value },
+            entries
+        })
+    }
+
+    /// Returns every key in unspecified order. O(n).
+    pub fn keys(self : Self) -> List<K> {
+        self.fold_left(List::Nil, |keys, key, ignored_value| List::Cons { key, keys })
+    }
+
+    /// Returns every value in unspecified order. O(n).
+    pub fn values(self : Self) -> List<V> {
+        self.fold_left(List::Nil, |values, ignored_key, value| List::Cons { value, values })
+    }
+
+    /// Creates a map from entries. Later duplicates replace earlier values
+    /// while keeping the first stored key. Expected O(n).
+    pub fn from_list(values : List<Entry<K, V>>) -> Self {
+        from_list_impl(values, HashMap::new())
+    }
+
+    /// Creates a seeded map from entries. Later duplicates replace earlier
+    /// values while keeping the first stored key. Expected O(n).
+    pub fn from_list_seeded(values : List<Entry<K, V>>, seed : u64) -> Self {
+        from_list_impl(values, HashMap::with_seed(seed))
+    }
+
+    /// Transforms every value while retaining its key. Expected O(n).
+    pub fn map_values<U>(self : Self, f : V -> U) -> HashMap<K, U> {
+        let seed = self.seed;
+        let root = self.root;
+        let initial : HashMap<K, U> = HashMap::with_seed(seed);
+        fold_node(root, initial, |map, key, value| map.insert(key, f(value)))
+    }
+
+    /// Transforms entries into a map with a possibly different key and value
+    /// type. Later transformed duplicates replace earlier values. Expected O(n).
+    pub fn map_entries<L : Hash + Eq, U>(
+        self : Self,
+        f : (K, V) -> Entry<L, U>
+    ) -> HashMap<L, U> {
+        let seed = self.seed;
+        let root = self.root;
+        let initial : HashMap<L, U> = HashMap::with_seed(seed);
+        fold_node(root, initial, |map, key, value| {
+            let entry = f(key, value);
+            map.insert(entry.key, entry.value)
+        })
+    }
+
+    /// Transforms every key while retaining its value. Later transformed
+    /// duplicates replace earlier values. Expected O(n).
+    pub fn map_keys<L : Hash + Eq>(self : Self, f : K -> L) -> HashMap<L, V> {
+        self.map_entries(|key, value| Entry { key: f(key), value })
+    }
+
+    /// Keeps entries for which `predicate` returns true. Expected O(n).
+    pub fn filter(self : Self, predicate : (K, V) -> bool) -> Self {
+        let seed = self.seed;
+        let root = self.root;
+        let initial : HashMap<K, V> = HashMap::with_seed(seed);
+        fold_node(root, initial, |map, key, value| {
+            if predicate(key, value) { map.insert(key, value) } else { map }
+        })
+    }
+
+    /// Transforms retained values and discards entries mapped to `None`.
+    /// Expected O(n).
+    pub fn filter_map<U>(self : Self, f : (K, V) -> Option<U>) -> HashMap<K, U> {
+        let seed = self.seed;
+        let root = self.root;
+        let initial : HashMap<K, U> = HashMap::with_seed(seed);
+        fold_node(root, initial, |map, key, value| match f(key, value) {
+            Option::Some(next) => map.insert(key, next),
+            Option::None => map
+        })
+    }
+
+    /// Counts entries satisfying `predicate`. O(n).
+    pub fn count_if(self : Self, predicate : (K, V) -> bool) -> u64 {
+        self.fold_left(0, |count, key, value| {
+            if predicate(key, value) { count + 1 } else { count }
+        })
+    }
+
+    /// Returns true if any entry satisfies `predicate`. O(n).
+    pub fn any(self : Self, predicate : (K, V) -> bool) -> bool {
+        self.fold_left(false, |found, key, value| {
+            if found { true } else { predicate(key, value) }
+        })
+    }
+
+    /// Returns true if every entry satisfies `predicate`. O(n).
+    pub fn all(self : Self, predicate : (K, V) -> bool) -> bool {
+        self.fold_left(true, |accepted, key, value| {
+            if accepted { predicate(key, value) } else { false }
+        })
+    }
+
+    /// Returns one matching entry, or `None`. The selected entry is unspecified.
+    /// O(n).
+    pub fn find(self : Self, predicate : (K, V) -> bool) -> Option<Entry<K, V>> {
+        self.fold_left(Option::None, |found, key, value| match found {
+            Option::Some(_) => found,
+            Option::None => {
+                if predicate(key, value) {
+                    Option::Some { Entry { key, value } }
+                } else {
+                    Option::None
+                }
+            }
+        })
+    }
+
+    /// Inserts every entry from `other`; values from `other` win on duplicate
+    /// keys. The result keeps this map's hash seed. Expected O(n + m).
+    pub fn union(self : Self, other : Self) -> Self {
+        other.fold_left(self, |map, key, value| map.insert(key, value))
+    }
+
+    /// Unions two maps and combines duplicate values, receiving the value from
+    /// this map first and `other` second. The result keeps this map's seed.
+    /// Expected O(n + m).
+    pub fn union_with(self : Self, other : Self, combine : (V, V) -> V) -> Self {
+        other.fold_left(self, |map, key, right| match map.get(key) {
+            Option::Some(left) => map.insert(key, combine(left, right)),
+            Option::None => map.insert(key, right)
+        })
+    }
+
+    /// Keeps entries from this map whose keys also occur in `other`. The result
+    /// keeps this map's values and hash seed. Expected O(n).
+    pub fn intersection<W>(self : Self, other : HashMap<K, W>) -> Self {
+        self.filter(|key, ignored_value| other.contains_key(key))
+    }
+
+    /// Keeps shared keys and combines their values. The result uses this map's
+    /// stored keys and hash seed. Expected O(n).
+    pub fn intersection_with<W, U>(
+        self : Self,
+        other : HashMap<K, W>,
+        combine : (V, W) -> U
+    ) -> HashMap<K, U> {
+        let seed = self.seed;
+        let root = self.root;
+        let initial : HashMap<K, U> = HashMap::with_seed(seed);
+        fold_node(root, initial, |map, key, value| match other.get(key) {
+            Option::Some(right) => map.insert(key, combine(value, right)),
+            Option::None => map
+        })
+    }
+
+    /// Removes every key occurring in `other`. The result keeps this map's hash
+    /// seed. Expected O(n + m).
+    pub fn difference<W>(self : Self, other : HashMap<K, W>) -> Self {
+        other.fold_left(self, |map, key, ignored_value| map.remove(key))
+    }
+
+    /// Returns true when the maps share no key. Expected O(min(n, m)).
+    pub fn is_disjoint<W>(self : Self, other : HashMap<K, W>) -> bool {
+        if self.len() <= other.len() {
+            self.all(|key, ignored_value| !other.contains_key(key))
+        } else {
+            other.all(|key, ignored_value| !self.contains_key(key))
+        }
+    }
+
+    /// Returns true when every entry in this map has a matching key and
+    /// predicate-compatible value in `other`. Expected O(n).
+    pub fn is_submap_by<W>(
+        self : Self,
+        other : HashMap<K, W>,
+        predicate : (V, W) -> bool
+    ) -> bool {
+        self.len() <= other.len() && self.all(|key, value| match other.get(key) {
+            Option::Some(right) => predicate(value, right),
+            Option::None => false
+        })
+    }
+
+    /// Returns true when this map is a strict predicate-compatible submap of
+    /// `other`. Expected O(n).
+    pub fn is_proper_submap_by<W>(
+        self : Self,
+        other : HashMap<K, W>,
+        predicate : (V, W) -> bool
+    ) -> bool {
+        self.len() < other.len() && self.is_submap_by(other, predicate)
+    }
+}
+
+impl<K : Hash + Eq, V : PartialEq> HashMap<K, V> {
+    /// Returns true when both maps contain equal values for exactly the same
+    /// keys, independent of their hash seeds. Expected O(n).
+    pub fn equals(self : Self, other : Self) -> bool {
+        self.is_submap_by(other, |left, right| left == right)
+            && self.len() == other.len()
+    }
+
+    /// Returns true when every entry in this map also occurs in `other`.
+    /// Expected O(n).
+    pub fn is_submap(self : Self, other : Self) -> bool {
+        self.is_submap_by(other, |left, right| left == right)
+    }
+
+    /// Returns true when this map is a strict submap of `other`. Expected O(n).
+    pub fn is_proper_submap(self : Self, other : Self) -> bool {
+        self.is_proper_submap_by(other, |left, right| left == right)
+    }
+
+    /// Returns true if any entry has a value equal to `value`. O(n).
+    pub fn contains_value(self : Self, value : V) -> bool {
+        self.any(|ignored_key, stored| stored == value)
+    }
+}
+
+impl<K : Hash + Eq, V : PartialEq> PartialEq for HashMap<K, V> {
+    fn eq(self : Self, other : Self) -> bool {
+        self.equals(other)
+    }
+}
+
+impl<K : Hash + Eq, V : Eq> Eq for HashMap<K, V> {}

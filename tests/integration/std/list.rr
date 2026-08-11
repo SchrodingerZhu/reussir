@@ -1,77 +1,77 @@
 // Each input selects one persistent List unit case through the executable's
 // dispatcher. New methods can be covered without changing existing cases.
 
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}list
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/len.in | %FileCheck %s --check-prefix=LEN
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/len.in | %FileCheck %s --check-prefix=LEN
 // LEN:      1
 // LEN-NEXT: 1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/head.in | %FileCheck %s --check-prefix=HEAD
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/head.in | %FileCheck %s --check-prefix=HEAD
 // HEAD:      3
 // HEAD-NEXT: -1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/tail.in | %FileCheck %s --check-prefix=TAIL
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/tail.in | %FileCheck %s --check-prefix=TAIL
 // TAIL:      1
 // TAIL-NEXT: 1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/is_nil.in | %FileCheck %s --check-prefix=IS-NIL
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/is_nil.in | %FileCheck %s --check-prefix=IS-NIL
 // IS-NIL:      1
 // IS-NIL-NEXT: 0
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/is_cons.in | %FileCheck %s --check-prefix=IS-CONS
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/is_cons.in | %FileCheck %s --check-prefix=IS-CONS
 // IS-CONS:      0
 // IS-CONS-NEXT: 1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/reverse.in | %FileCheck %s --check-prefix=REVERSE
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/reverse.in | %FileCheck %s --check-prefix=REVERSE
 // REVERSE:      2
 // REVERSE-NEXT: 1
 // REVERSE-NEXT: 3
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/map.in | %FileCheck %s --check-prefix=MAP
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/map.in | %FileCheck %s --check-prefix=MAP
 // MAP:      4
 // MAP-NEXT: 2
 // MAP-NEXT: 3
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/min.in | %FileCheck %s --check-prefix=MIN
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/min.in | %FileCheck %s --check-prefix=MIN
 // MIN:      1
 // MIN-NEXT: -1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/max.in | %FileCheck %s --check-prefix=MAX
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/max.in | %FileCheck %s --check-prefix=MAX
 // MAX:      3
 // MAX-NEXT: 2
 // MAX-NEXT: -1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/contains.in | %FileCheck %s --check-prefix=CONTAINS
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/contains.in | %FileCheck %s --check-prefix=CONTAINS
 // CONTAINS:      1
 // CONTAINS-NEXT: 0
 // CONTAINS-NEXT: 0
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/fold_left.in | %FileCheck %s --check-prefix=FOLD-LEFT
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/fold_left.in | %FileCheck %s --check-prefix=FOLD-LEFT
 // FOLD-LEFT:      312
 // FOLD-LEFT-NEXT: 7
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/count_if.in | %FileCheck %s --check-prefix=COUNT-IF
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/count_if.in | %FileCheck %s --check-prefix=COUNT-IF
 // COUNT-IF:      1
 // COUNT-IF-NEXT: 1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/find_first.in | %FileCheck %s --check-prefix=FIND-FIRST
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/find_first.in | %FileCheck %s --check-prefix=FIND-FIRST
 // FIND-FIRST:      1
 // FIND-FIRST-NEXT: -1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/filter.in | %FileCheck %s --check-prefix=FILTER
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/filter.in | %FileCheck %s --check-prefix=FILTER
 // FILTER:      3
 // FILTER-NEXT: 1
 // FILTER-NEXT: 1
 // FILTER-NEXT: 1
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/any.in | %FileCheck %s --check-prefix=ANY
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/any.in | %FileCheck %s --check-prefix=ANY
 // ANY:      1
 // ANY-NEXT: 0
 // ANY-NEXT: 0
 
-// RUN: %T/rene-build/release/list%exe_ext < %S/Inputs/list/all.in | %FileCheck %s --check-prefix=ALL
+// RUN: %std_rene_build/release/list%exe_ext < %S/Inputs/list/all.in | %FileCheck %s --check-prefix=ALL
 // ALL:      1
 // ALL-NEXT: 0
 // ALL-NEXT: 1

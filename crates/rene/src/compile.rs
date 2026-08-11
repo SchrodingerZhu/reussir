@@ -18,7 +18,9 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
+use indicatif::{MultiProgress, ProgressBar};
 use serde::{Deserialize, Serialize};
 
 use std::ffi::OsString;
@@ -60,6 +62,12 @@ pub struct Options {
     pub color: bool,
 }
 
+/// The shared execution resources used by every target compilation.
+pub struct Execution<'a> {
+    pub pool: &'a Pool,
+    pub progress: &'a MultiProgress,
+}
+
 /// A built (or reused) product.
 pub struct Product {
     pub name: String,
@@ -76,7 +84,8 @@ pub struct ProductRecord {
 /// Build the selected targets, reusing whatever the record proves current.
 /// The stale ones compile on the process pool — independent `rrc` processes
 /// over the same baked runtime, at most `-j` of them at once — and are
-/// recorded in declared order once all of them succeed.
+/// recorded in declared order once all of them succeed. Each command owns a
+/// spinner on the build's shared progress surface for its whole lifetime.
 pub async fn build(
     dir: &BuildDir,
     loaded: &Loaded,
@@ -84,7 +93,7 @@ pub async fn build(
     rt: &RtArtifacts,
     opts: &Options,
     graph: &Graph,
-    pool: &Pool,
+    execution: &Execution<'_>,
 ) -> Result<Vec<Product>, String> {
     let manifest = &loaded.manifest;
     let selected: Vec<&str> = if opts.bins.is_empty() && opts.libs.is_empty() {
@@ -149,20 +158,32 @@ pub async fn build(
         let command = planned
             .remove(*name)
             .ok_or_else(|| format!("target `{name}` missing from the plan"))?;
-        invocations.push(Invocation::from_planned(command, &rt.rustc, opts.color));
+        let bar = execution.progress.add(
+            ProgressBar::new_spinner().with_message(format!("{name}: compiling {}", kind.emit())),
+        );
+        bar.enable_steady_tick(Duration::from_millis(120));
+        invocations.push((
+            Invocation::from_planned(command, &rt.rustc, opts.color),
+            bar,
+        ));
     }
     // Every child owns a private stderr pipe. Wait for all jobs, then replay
     // each complete diagnostic block in declaration order: target compiles
     // remain concurrent, but their ANSI escape sequences can never interleave.
-    let completed = futures_util::future::join_all(
-        invocations
-            .into_iter()
-            .map(|invocation| pool.run(move || invocation.run())),
-    )
-    .await;
+    let completed =
+        futures_util::future::join_all(invocations.into_iter().map(|(invocation, bar)| {
+            execution.pool.run(move || async move {
+                let result = invocation.run().await;
+                bar.finish_and_clear();
+                execution.progress.remove(&bar);
+                result
+            })
+        }))
+        .await;
     let mut failure = None;
     for result in completed {
-        if let Err(error) = result.and_then(CompletedInvocation::report)
+        if let Err(error) =
+            result.and_then(|completed| execution.progress.suspend(|| completed.report()))
             && failure.is_none()
         {
             failure = Some(error);

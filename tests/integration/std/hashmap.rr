@@ -1,0 +1,348 @@
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}hashmap
+
+// RUN: %std_rene_build/release/hashmap%exe_ext < %S/Inputs/hashmap/basics.in | %FileCheck %s --check-prefix=BASICS
+// BASICS: 1
+
+// RUN: %std_rene_build/release/hashmap%exe_ext < %S/Inputs/hashmap/adaptive.in | %FileCheck %s --check-prefix=ADAPTIVE
+// ADAPTIVE: 4
+// ADAPTIVE-NEXT: 5
+// ADAPTIVE-NEXT: 4
+// ADAPTIVE-NEXT: 39
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 51
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 40
+// ADAPTIVE-NEXT: 333
+// ADAPTIVE-NEXT: 1
+// ADAPTIVE-NEXT: 1
+
+// RUN: %std_rene_build/release/hashmap%exe_ext < %S/Inputs/hashmap/transforms.in | %FileCheck %s --check-prefix=TRANSFORMS
+// TRANSFORMS: 1
+
+// RUN: %std_rene_build/release/hashmap%exe_ext < %S/Inputs/hashmap/algebra.in | %FileCheck %s --check-prefix=ALGEBRA
+// ALGEBRA: 1
+
+// RUN: %std_rene_build/release/hashmap%exe_ext < %S/Inputs/hashmap/churn.in | %FileCheck %s --check-prefix=CHURN
+// CHURN: 1
+
+import std::collections::pure::hashmap::Entry;
+import std::collections::pure::hashmap::HashMap;
+import std::collections::pure::hashmap::InsertResult;
+import std::collections::pure::hashmap::RemoveResult;
+import std::collections::pure::list::List;
+import std::collections::pure::wavlmap::WavlMap;
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::option::Option;
+
+fn wb(value : bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+pub struct [value] Key {
+    id : i64,
+    digest : u64
+}
+
+impl PartialEq for Key {
+    fn eq(self : Self, other : Self) -> bool { self.id == other.id }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H : Hasher>(self : Self, state : H) -> H {
+        state.write_u64(self.digest)
+    }
+}
+
+fn controlled(id : i64, digest : u64) -> Key {
+    Key { id, digest }
+}
+
+fn int_key(id : i64) -> Key {
+    controlled(id, id as u64)
+}
+
+fn value_or(map : HashMap<Key, i64>, key : i64, fallback : i64) -> i64 {
+    map.get(int_key(key)).unwrap_or(fallback)
+}
+
+fn controlled_value(map : HashMap<Key, i64>, id : i64, digest : u64) -> i64 {
+    map.get(controlled(id, digest)).unwrap_or(0 - 1)
+}
+
+fn test_basics() {
+    let empty : HashMap<Key, i64> = HashMap::new();
+    let seeded : HashMap<Key, i64> = HashMap::with_seed(77);
+    let map = empty.insert(int_key(1), 10)
+        .insert(int_key(2), 20).insert(int_key(2), 200);
+    let shape = empty.is_empty() && empty.len() == 0 && empty.hash_seed() == 0
+        && seeded.hash_seed() == 77 && seeded.clear().hash_seed() == 77
+        && map.len() == 2 && !map.is_empty();
+    let lookup = value_or(map, 2, 0) == 200 && map.contains_key(int_key(1))
+        && !map.contains_key(int_key(9)) && map.get(int_key(9)).is_none()
+        && match map.get_entry(int_key(2)) {
+            Option::Some(entry) => entry.key.id == 2 && entry.value == 200,
+            Option::None => false
+        };
+    let added = match map.insert_result(int_key(3), 30) {
+        InsertResult::Added(next) => next.len() == 3 && value_or(next, 3, 0) == 30,
+        InsertResult::Replaced(_, _) => false
+    };
+    let replaced = match map.insert_result(int_key(2), 222) {
+        InsertResult::Replaced(previous, next) =>
+            previous == 200 && next.len() == 2 && value_or(next, 2, 0) == 222,
+        InsertResult::Added(_) => false
+    };
+    let removed = match map.remove_entry(int_key(2)) {
+        RemoveResult::Removed(entry, next) => entry.key.id == 2 && entry.value == 200
+            && next.len() == 1 && !next.contains_key(int_key(2)),
+        RemoveResult::Missing(_) => false
+    };
+    let missing = match map.remove_entry(int_key(99)) {
+        RemoveResult::Missing(original) => original.len() == 2,
+        RemoveResult::Removed(_, _) => false
+    };
+    let single = HashMap::singleton(int_key(8), 80);
+    let seeded_single : HashMap<Key, i64> =
+        HashMap::singleton_seeded(int_key(7), 70, 17);
+    wb(shape && lookup && added && replaced && removed && missing
+        && single.len() == 1 && value_or(single, 8, 0) == 80
+        && seeded_single.hash_seed() == 17);
+}
+
+fn put_slots(
+    map : HashMap<Key, i64>,
+    current : i64,
+    end : i64
+) -> HashMap<Key, i64> {
+    if current >= end {
+        map
+    } else {
+        put_slots(
+            map.insert(controlled(current, current as u64), current * 10),
+            current + 1,
+            end
+        )
+    }
+}
+
+fn check_slots(map : HashMap<Key, i64>, current : i64, end : i64) -> bool {
+    if current >= end {
+        true
+    } else {
+        controlled_value(map, current, current as u64) == current * 10
+            && check_slots(map, current + 1, end)
+    }
+}
+
+fn put_collisions(
+    map : HashMap<Key, i64>,
+    current : i64,
+    end : i64
+) -> HashMap<Key, i64> {
+    if current >= end {
+        map
+    } else {
+        put_collisions(
+            map.insert(controlled(current, 7), current * 3),
+            current + 1,
+            end
+        )
+    }
+}
+
+fn check_collisions(map : HashMap<Key, i64>, current : i64, end : i64) -> bool {
+    if current >= end {
+        true
+    } else {
+        controlled_value(map, current, 7) == current * 3
+            && check_collisions(map, current + 1, end)
+    }
+}
+
+fn remove_collisions(
+    map : HashMap<Key, i64>,
+    current : i64,
+    end : i64
+) -> HashMap<Key, i64> {
+    if current >= end {
+        map
+    } else {
+        remove_collisions(map.remove(controlled(current, 7)), current + 1, end)
+    }
+}
+
+fn test_adaptive() {
+    let empty : HashMap<Key, i64> = HashMap::new();
+    let four = put_slots(empty, 0, 4);
+    let five = put_slots(four, 4, 5);
+    let demoted = five.remove(controlled(4, 4));
+    let grown = put_slots(demoted, 5, 40);
+    let collisions = put_collisions(grown, 100, 112);
+    let collapsed = remove_collisions(collisions, 100, 111);
+    let persistent = five.len() == 5 && five.contains_key(controlled(4, 4))
+        && !demoted.contains_key(controlled(4, 4));
+    test_utils::io::write_i32(four.len() as i32);
+    test_utils::io::write_i32(five.len() as i32);
+    test_utils::io::write_i32(demoted.len() as i32);
+    test_utils::io::write_i32(grown.len() as i32);
+    wb(check_slots(four, 0, 4));
+    wb(check_slots(five, 0, 5));
+    wb(check_slots(demoted, 0, 4));
+    wb(check_slots(grown, 0, 4) && check_slots(grown, 5, 40));
+    wb(!demoted.contains_key(controlled(4, 4)));
+    test_utils::io::write_i32(collisions.len() as i32);
+    wb(check_collisions(collisions, 100, 112));
+    test_utils::io::write_i32(collapsed.len() as i32);
+    test_utils::io::write_i32(controlled_value(collapsed, 111, 7) as i32);
+    wb(check_collisions(collisions, 100, 112));
+    wb(persistent);
+}
+
+fn sample_entries() -> List<Entry<Key, i64>> {
+    List::Cons {
+        Entry { key: int_key(1), value: 10 },
+        List::Cons {
+            Entry { key: int_key(2), value: 20 },
+            List::Cons {
+                Entry { key: int_key(3), value: 30 },
+                List::Cons {
+                    Entry { key: int_key(2), value: 200 },
+                    List::Nil
+                }
+            }
+        }
+    }
+}
+
+fn test_transforms() {
+    let map : HashMap<Key, i64> = HashMap::from_list_seeded(sample_entries(), 123);
+    let adjusted = map.adjust(int_key(1), |value| value + 1)
+        .update(int_key(2), |value| Option::None)
+        .alter(int_key(3), |value| value.map(|current| current + 3))
+        .alter(int_key(4), |value| Option::Some { value.unwrap_or(40) })
+        .insert_with(int_key(1), 9, |left, right| left + right);
+    let doubled = map.map_values(|value| value * 2);
+    let remapped = map.map_entries(|key, value| Entry {
+        key: int_key(key.id + 10),
+        value: value / 10
+    });
+    let shifted = map.map_keys(|key| int_key(key.id + 20));
+    let filtered = map.filter(|key, value| key.id % 2 != 0 && value < 100);
+    let filtered_map = map.filter_map(|key, value| {
+        if key.id % 2 == 0 { Option::Some { value / 2 } } else { Option::None }
+    });
+    let traversal = map.to_list().len() == 3 && map.keys().len() == 3
+        && map.values().len() == 3
+        && map.fold_left(0, |sum, key, value| sum + key.id + value) == 246;
+    let edits = adjusted.len() == 3 && value_or(adjusted, 1, 0) == 20
+        && !adjusted.contains_key(int_key(2)) && value_or(adjusted, 3, 0) == 33
+        && value_or(adjusted, 4, 0) == 40;
+    let mappings = doubled.hash_seed() == 123 && value_or(doubled, 2, 0) == 400
+        && value_or(remapped, 12, 0) == 20 && value_or(shifted, 22, 0) == 200
+        && filtered.len() == 2
+        && filtered_map.len() == 1 && value_or(filtered_map, 2, 0) == 100;
+    let predicates = map.count_if(|key, value| key.id <= 2 && value > 0) == 2
+        && map.any(|key, value| value == 200)
+        && map.all(|key, value| key.id > 0 && value > 0)
+        && map.contains_value(30) && !map.contains_value(99)
+        && match map.find(|key, value| key.id == 3) {
+            Option::Some(entry) => entry.value == 30,
+            Option::None => false
+        };
+    wb(traversal && edits && mappings && predicates);
+}
+
+fn test_algebra() {
+    let left : HashMap<Key, i64> = HashMap::new()
+        .insert(int_key(1), 10).insert(int_key(2), 20).insert(int_key(3), 30);
+    let right : HashMap<Key, i64> = HashMap::with_seed(99)
+        .insert(int_key(3), 300).insert(int_key(4), 400);
+    let union = left.union(right);
+    let combined = left.union_with(right, |a, b| a + b);
+    let intersection = left.intersection(right);
+    let intersection_with = left.intersection_with(right, |a, b| a + b);
+    let difference = left.difference(right);
+    let subset : HashMap<Key, i64> = HashMap::new()
+        .insert(int_key(1), 10).insert(int_key(3), 30);
+    let equal : HashMap<Key, i64> = HashMap::with_seed(456)
+        .insert(int_key(3), 30).insert(int_key(1), 10).insert(int_key(2), 20);
+    let disjoint : HashMap<Key, bool> = HashMap::new().insert(int_key(9), true);
+    let values = union.len() == 4 && value_or(union, 3, 0) == 300
+        && value_or(combined, 3, 0) == 330
+        && intersection.len() == 1 && value_or(intersection, 3, 0) == 30
+        && value_or(intersection_with, 3, 0) == 330
+        && difference.len() == 2 && !difference.contains_key(int_key(3));
+    let relations = subset.is_submap_by(left, |a, b| a == b)
+        && subset.is_submap(left) && subset.is_proper_submap(left)
+        && left.is_disjoint(disjoint) && left.equals(equal)
+        && left == equal && left != right;
+    wb(values && relations);
+}
+
+fn lcg(seed : i64) -> i64 {
+    (seed * 1103515245 + 12345) % 2147483648
+}
+
+fn agree(
+    map : HashMap<Key, i64>,
+    model : WavlMap<i64, i64>,
+    key : i64,
+    end : i64
+) -> bool {
+    if key >= end {
+        true
+    } else {
+        let same = match map.get(int_key(key)) {
+            Option::Some(value) => match model.get(key) {
+                Option::Some(expected) => value == expected,
+                Option::None => false
+            },
+            Option::None => model.get(key).is_none()
+        };
+        same && agree(map, model, key + 1, end)
+    }
+}
+
+fn churn(
+    map : HashMap<Key, i64>,
+    model : WavlMap<i64, i64>,
+    seed : i64,
+    steps : i64
+) -> bool {
+    if steps == 0 {
+        map.len() == model.len() && agree(map, model, 0, 128)
+    } else {
+        let next = lcg(seed);
+        let key = next % 128;
+        if next % 4 == 0 {
+            churn(map.remove(int_key(key)), model.remove(key), next, steps - 1)
+        } else {
+            churn(map.insert(int_key(key), next), model.insert(key, next), next, steps - 1)
+        }
+    }
+}
+
+fn test_churn() {
+    let map : HashMap<Key, i64> = HashMap::new();
+    wb(churn(map, WavlMap::new(), 20260810, 1200));
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_basics(),
+        1 => test_adaptive(),
+        2 => test_transforms(),
+        3 => test_algebra(),
+        4 => test_churn(),
+        _ => core::intrinsic::panic::panic()
+    }
+}
