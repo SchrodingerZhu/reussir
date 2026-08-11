@@ -119,7 +119,7 @@ private:
                                                  arrayType.getElementType()),
                            op.getRef())
                            .getView();
-    if (mlir::failed(emitArrayElementLoopNest(
+    if (mlir::failed(emitArrayElementTraversal(
             view, rewriter, op.getLoc(),
             [&](mlir::OpBuilder &bodyBuilder, mlir::Location bodyLoc,
                 mlir::Value elementRef) {

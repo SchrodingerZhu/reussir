@@ -1,9 +1,10 @@
-// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQ2D --check-prefix=DROP32
+// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQ2D --check-prefix=UNROLL3 --check-prefix=DROP32
 // RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=CLONE
 // RUN: %reussir-opt %s --reussir-acquire-drop-expansion --convert-scf-to-cf | %FileCheck %s --check-prefix=CF
 
 !elt = !reussir.rc<i64>
 !arr2 = !reussir.array<2 x !elt>
+!arr3 = !reussir.array<3 x !elt>
 !arr32 = !reussir.array<32 x !elt>
 !arr2x2 = !reussir.array<2 x 2 x !elt>
 !rc_arr2 = !reussir.rc<!arr2>
@@ -18,6 +19,21 @@ module {
   // ACQ2D: reussir.rc.inc
   func.func @acquire_2d(%xs: !reussir.ref<!arr2x2>) {
     reussir.ref.acquire (%xs : !reussir.ref<!arr2x2>)
+    return
+  }
+
+  // UNROLL3-LABEL: func.func @drop_3(
+  // UNROLL3-NOT: scf.for
+  // UNROLL3: reussir.rc.dec
+  // UNROLL3-NOT: scf.for
+  // UNROLL3: reussir.rc.dec
+  // UNROLL3-NOT: scf.for
+  // UNROLL3: reussir.rc.dec
+  // UNROLL3-NOT: scf.for
+  // UNROLL3-NOT: reussir.rc.dec
+  // UNROLL3: return
+  func.func @drop_3(%xs: !reussir.ref<!arr3>) {
+    reussir.ref.drop (%xs : !reussir.ref<!arr3>)
     return
   }
 
@@ -51,9 +67,12 @@ module {
   // CLONE: %[[DST_BORROW:.+]] = reussir.rc.borrow(%[[CLONED]] : !reussir.rc<!reussir.array<2 x !reussir.rc<i64>>>) : !reussir.ref<!reussir.array<2 x !reussir.rc<i64>>>
   // CLONE: reussir.ref.memcpy %[[SRC_BORROW]] to %[[DST_BORROW]] : <!reussir.array<2 x !reussir.rc<i64>>> to <!reussir.array<2 x !reussir.rc<i64>>>
   // CLONE: %[[CLONED_VIEW:.+]] = reussir.array.view(%[[DST_BORROW]] : !reussir.ref<!reussir.array<2 x !reussir.rc<i64>>>) : memref<2x!reussir.rc<i64>>
-  // CLONE: scf.for %[[CLONE_INDEX:.+]] =
-  // CLONE: reussir.array.project(%[[CLONED_VIEW]]{{.*}}) [%[[CLONE_INDEX]] : index]
+  // CLONE-NOT: scf.for
+  // CLONE: reussir.array.project(%[[CLONED_VIEW]]
   // CLONE: reussir.rc.inc
+  // CLONE: reussir.array.project(%[[CLONED_VIEW]]
+  // CLONE: reussir.rc.inc
+  // CLONE-NOT: scf.for
   // CLONE: %[[COUNT:.+]] = reussir.rc.fetch(%arg0 : !reussir.rc<!reussir.array<2 x !reussir.rc<i64>>>) : index
   // CLONE: reussir.rc.set(%arg0 : !reussir.rc<!reussir.array<2 x !reussir.rc<i64>>>,
   // CLONE: scf.yield %[[CLONED]] : !reussir.rc<!reussir.array<2 x !reussir.rc<i64>>>

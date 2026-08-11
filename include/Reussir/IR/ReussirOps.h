@@ -87,10 +87,9 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                                              mlir::OpBuilder &builder,
                                              mlir::Location loc);
 
-/// Emits a perfectly nested `scf.for` loop over a statically shaped Reussir
-/// array view. `emitElement` is invoked once in the innermost loop with a
-/// reference to the current element.
-mlir::LogicalResult emitArrayElementLoopNest(
+/// Traverses a statically shaped Reussir array view and invokes `emitElement`
+/// with a reference to each element.
+mlir::LogicalResult emitArrayElementTraversal(
     mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc,
     llvm::function_ref<mlir::LogicalResult(mlir::OpBuilder &, mlir::Location,
                                            mlir::Value)>
