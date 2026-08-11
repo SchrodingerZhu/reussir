@@ -506,7 +506,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Binary operators synthesize:
     /// (ARITH) `op∈{+,-,*,/,%}`: `l ⇒ T`, `Num ⊳ T`, `r ⇐ T`, result `T`.
     /// (BIT) `op∈{&,|,^,<<,>>}`: `l ⇒ T`, `Integral ⊳ T`, `r ⇐ T`, result `T`.
-    /// (LOGIC) `op∈{&&,||}`: `l ⇐ Bool`, `r ⇐ Bool`, result `Bool`.
+    /// (LOGIC) `op∈{&&,||}`: `l ⇐ Bool`, `r ⇐ Bool`, result `Bool`, and the
+    /// pair desugars to (IF) so it short-circuits — `l && r` elaborates to
+    /// `if l { r } else { false }` and `l || r` to `if l { true } else { r }`,
+    /// putting the right operand in a branch that only runs when the left one
+    /// leaves the answer open. The strict `ArithOp::And`/`Or` remain reachable
+    /// from hand-written HIR/MIR text, where they mean the eager bitwise form.
     /// (CMP-SCALAR) comparisons with `l ⇒ T` for scalar-or-hole `T`: `r ⇐ T`, result
     /// `Bool`, lowered intrinsically; equality registers `PartialEq ⊳ T`, orderings
     /// `PartialOrd ⊳ T`.
@@ -542,12 +547,28 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.mk_expr(ExprKind::Arith(Box::new(l), aop, Box::new(r)), ty, span)
             }
             BinOp::And | BinOp::Or => {
+                // (LOGIC) is sugar for (IF), which is what makes it
+                // short-circuiting: the right operand becomes a branch body,
+                // so it is evaluated only when the left operand does not
+                // already decide the result. Emitting `Arith` here instead —
+                // `arith.andi`/`arith.ori` — would evaluate both sides, which
+                // is a different language.
                 let bool_ty = self.tcx.mk_bool();
                 let l = self.check_expr(l, bool_ty);
                 let r = self.check_expr(r, bool_ty);
-                let aop = arith_op(op);
+                let shortcut = self.mk_expr(
+                    ExprKind::ConstBool(matches!(op, BinOp::Or)),
+                    bool_ty,
+                    span,
+                );
+                let (t, f) = match op {
+                    // `l && r` ⇒ `if l { r } else { false }`
+                    BinOp::And => (r, shortcut),
+                    // `l || r` ⇒ `if l { true } else { r }`
+                    _ => (shortcut, r),
+                };
                 self.mk_expr(
-                    ExprKind::Arith(Box::new(l), aop, Box::new(r)),
+                    ExprKind::If(Box::new(l), Box::new(t), Box::new(f)),
                     bool_ty,
                     span,
                 )
@@ -3790,8 +3811,12 @@ fn arith_op(op: BinOp) -> ArithOp {
         BinOp::Mul => ArithOp::Mul,
         BinOp::Div => ArithOp::Div,
         BinOp::Mod => ArithOp::Mod,
-        BinOp::And => ArithOp::And,
-        BinOp::Or => ArithOp::Or,
+        // `&&`/`||` deliberately do not route here: (LOGIC) desugars them to
+        // (IF) so they short-circuit, and mapping them onto the eager
+        // `ArithOp::And`/`Or` is exactly the bug that desugaring fixed.
+        BinOp::And | BinOp::Or => {
+            unreachable!("`&&`/`||` elaborate to `If`, never to `Arith`")
+        }
         BinOp::BitAnd => ArithOp::BitAnd,
         BinOp::BitOr => ArithOp::BitOr,
         BinOp::BitXor => ArithOp::BitXor,

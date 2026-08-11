@@ -4,6 +4,16 @@
 
 ### Language
 
+- `&&` and `||` now short-circuit. Elaboration desugars them into the
+  conditional — `l && r` to `if l { r } else { false }` and `l || r` to
+  `if l { true } else { r }` — so the right operand becomes a branch body
+  and lowers to `scf.if` like every other conditional. They previously
+  elaborated to `ArithOp::And`/`Or` alongside the bitwise operators and
+  emitted `arith.andi`/`arith.ori`, which evaluate both operands: a guard
+  such as `d != 0 && n / d > 1` divided by zero, and an early-exit
+  traversal written with `||` visited every node. The eager `ArithOp`
+  forms stay reachable from hand-written HIR/MIR text, where they keep
+  their bitwise meaning.
 - Record fields now carry visibility: fields default to private and accept a
   leading `pub` marker. A private field is accessible (projection,
   assignment, construction) only from the record's defining module and its
