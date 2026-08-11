@@ -18,6 +18,7 @@
 #ifndef REUSSIR_IR_REUSSIROPS_H
 #define REUSSIR_IR_REUSSIROPS_H
 
+#include <llvm/ADT/STLFunctionalExtras.h>
 #include <llvm/IR/Module.h>
 #include <mlir/Bytecode/BytecodeOpInterface.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
@@ -85,6 +86,15 @@ void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
 mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                                              mlir::OpBuilder &builder,
                                              mlir::Location loc);
+
+/// Emits a perfectly nested `scf.for` loop over a statically shaped Reussir
+/// array view. `emitElement` is invoked once in the innermost loop with a
+/// reference to the current element.
+mlir::LogicalResult emitArrayElementLoopNest(
+    mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc,
+    llvm::function_ref<mlir::LogicalResult(mlir::OpBuilder &, mlir::Location,
+                                           mlir::Value)>
+        emitElement);
 
 //===----------------------------------------------------------------------===//
 // createDtorIfNotExists

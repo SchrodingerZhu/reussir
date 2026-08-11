@@ -177,6 +177,7 @@ def ReussirAcquireDropExpansionPass : Pass<"reussir-acquire-drop-expansion"> {
               "`rc-decrement-expansion` pass)">,
   ];
   let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::scf::SCFDialect",
                            "::mlir::sync::SyncDialect"];
 }
 
