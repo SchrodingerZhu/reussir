@@ -662,9 +662,11 @@ fn fold_right_tree<U, K, V>(
 }
 
 // The searching traversals stop as soon as the answer is settled, which a
-// fold cannot do. They branch rather than chain `||`/`&&`: those operators
-// evaluate both sides, so writing the recursion with them would visit every
-// node and give up exactly the early exit these exist for.
+// fold cannot do. The exit is spelled as an explicit `if` chain rather than
+// a chain of `||`/`&&`, which is both what the recursion means and what it
+// has to be while those operators still evaluate both sides — written that
+// way, they would visit every node and give up exactly the early exit these
+// exist for.
 // `find_tree` keeps ascending order, so the entry it returns is the one
 // with the least key rather than an arbitrary one.
 fn any_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
@@ -1086,9 +1088,9 @@ impl<K : Ord, V> WavlMap<K, V> {
     }
 
     /// Returns true when every entry in this map has a matching key and
-    /// predicate-compatible value in `other`. O(n log m). The size test
-    /// guards the scan with a branch: `&&` would evaluate both sides and run
-    /// the scan even on a size mismatch.
+    /// predicate-compatible value in `other`. O(n log m). The size test is a
+    /// branch, so a size mismatch answers without scanning at all — which
+    /// `&&` would not give while it still evaluates both sides.
     pub fn is_submap_by<W>(
         self : Self,
         other : WavlMap<K, W>,
