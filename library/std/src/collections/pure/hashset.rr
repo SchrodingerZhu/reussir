@@ -1,0 +1,247 @@
+//! A persistent hash set backed by `HashMap`.
+//!
+//! Updates return new sets while retained versions remain valid. The backing
+//! radix-32 trie uses compact bitmap-indexed A4 nodes at sparse levels and
+//! direct-indexed A32 nodes at dense levels. Iteration and list conversion have
+//! no stable ordering guarantee.
+
+import std::collections::pure::hashmap::HashMap;
+import std::collections::pure::hashmap::RemoveResult;
+import std::collections::pure::list::List;
+import std::hash::Hash;
+import std::option::Option;
+
+/// A persistent hash set.
+pub struct HashSet<T> {
+    map : HashMap<T, bool>
+}
+
+/// The value removed from a set, or the unchanged set when it was absent.
+pub enum [value] TakeResult<T> {
+    Taken(T, HashSet<T>),
+    Missing(HashSet<T>)
+}
+
+fn from_list_impl<T : Hash + Eq>(
+    values : List<T>,
+    set : HashSet<T>
+) -> HashSet<T> {
+    match values {
+        List::Nil => set,
+        List::Cons(value, rest) => from_list_impl(rest, set.insert(value))
+    }
+}
+
+impl<T : Hash + Eq> HashSet<T> {
+    /// Creates an empty set with the default hash seed. O(1).
+    pub fn new() -> Self {
+        HashSet { map: HashMap::new() }
+    }
+
+    /// Creates an empty set using `seed` as caller-supplied hash entropy. O(1).
+    pub fn with_seed(seed : u64) -> Self {
+        HashSet { map: HashMap::with_seed(seed) }
+    }
+
+    /// Creates a one-element set with the default hash seed. Expected O(1).
+    pub fn singleton(value : T) -> Self {
+        HashSet::new().insert(value)
+    }
+
+    /// Creates a one-element set with an explicit hash seed. Expected O(1).
+    pub fn singleton_seeded(value : T, seed : u64) -> Self {
+        HashSet::with_seed(seed).insert(value)
+    }
+
+    /// Returns the seed used to hash elements. O(1).
+    pub fn hash_seed(self : Self) -> u64 {
+        self.map.hash_seed()
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        self.map.len()
+    }
+
+    /// Returns true when the set contains no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Removes every element while preserving the set's hash seed. O(1).
+    pub fn clear(self : Self) -> Self {
+        HashSet { map: self.map.clear() }
+    }
+
+    /// Adds `value`, keeping the existing stored element on equality.
+    /// Expected O(1).
+    pub fn insert(self : Self, value : T) -> Self {
+        HashSet { map: self.map.insert(value, true) }
+    }
+
+    /// Removes `value` when present. Expected O(1).
+    pub fn remove(self : Self, value : T) -> Self {
+        HashSet { map: self.map.remove(value) }
+    }
+
+    /// Removes and returns the stored element equal to `value`. Expected O(1).
+    pub fn take(self : Self, value : T) -> TakeResult<T> {
+        match self.map.remove_entry(value) {
+            RemoveResult::Removed(entry, map) =>
+                TakeResult::Taken { entry.key, HashSet { map } },
+            RemoveResult::Missing(map) =>
+                TakeResult::Missing { HashSet { map } }
+        }
+    }
+
+    /// Returns true if an equal element occurs in the set. Expected O(1).
+    pub fn contains(self : Self, value : T) -> bool {
+        self.map.contains_key(value)
+    }
+
+    /// Returns the stored element equal to `value`. This exposes the canonical
+    /// stored value when the query compares equal but is not identical.
+    /// Expected O(1).
+    pub fn get(self : Self, value : T) -> Option<T> {
+        self.map.get_entry(value).map(|entry| entry.key)
+    }
+
+    /// Folds every element in unspecified order. O(n).
+    pub fn fold_left<U>(self : Self, initial : U, f : (U, T) -> U) -> U {
+        self.map.fold_left(initial, |acc, value, ignored_marker| f(acc, value))
+    }
+
+    /// Returns every element in unspecified order. O(n).
+    pub fn to_list(self : Self) -> List<T> {
+        self.map.keys()
+    }
+
+    /// Creates a set from list elements, keeping first occurrences.
+    /// Expected O(n).
+    pub fn from_list(values : List<T>) -> Self {
+        from_list_impl(values, HashSet::new())
+    }
+
+    /// Creates a seeded set from list elements, keeping first occurrences.
+    /// Expected O(n).
+    pub fn from_list_seeded(values : List<T>, seed : u64) -> Self {
+        from_list_impl(values, HashSet::with_seed(seed))
+    }
+
+    /// Keeps elements for which `predicate` returns true. Expected O(n).
+    pub fn filter(self : Self, predicate : T -> bool) -> Self {
+        let seed = self.hash_seed();
+        let initial : HashSet<T> = HashSet::with_seed(seed);
+        self.fold_left(initial, |set, value| {
+            if predicate(value) { set.insert(value) } else { set }
+        })
+    }
+
+    /// Transforms every element, coalescing equal results. Expected O(n).
+    pub fn map<U : Hash + Eq>(self : Self, f : T -> U) -> HashSet<U> {
+        let seed = self.hash_seed();
+        let initial : HashSet<U> = HashSet::with_seed(seed);
+        self.fold_left(initial, |set, value| set.insert(f(value)))
+    }
+
+    /// Counts elements satisfying `predicate`. O(n).
+    pub fn count_if(self : Self, predicate : T -> bool) -> u64 {
+        self.fold_left(0, |count, value| {
+            if predicate(value) { count + 1 } else { count }
+        })
+    }
+
+    /// Returns true if any element satisfies `predicate`. O(n).
+    pub fn any(self : Self, predicate : T -> bool) -> bool {
+        self.fold_left(false, |found, value| {
+            if found { true } else { predicate(value) }
+        })
+    }
+
+    /// Returns true if every element satisfies `predicate`. O(n).
+    pub fn all(self : Self, predicate : T -> bool) -> bool {
+        self.fold_left(true, |accepted, value| {
+            if accepted { predicate(value) } else { false }
+        })
+    }
+
+    /// Returns one element satisfying `predicate`, or `None`. The selected
+    /// element is unspecified. O(n).
+    pub fn find(self : Self, predicate : T -> bool) -> Option<T> {
+        self.fold_left(Option::None, |found, value| match found {
+            Option::Some(_) => found,
+            Option::None => {
+                if predicate(value) { Option::Some { value } } else { Option::None }
+            }
+        })
+    }
+
+    /// Returns all elements occurring in either set. The result keeps this
+    /// set's hash seed. Expected O(n + m).
+    pub fn union(self : Self, other : Self) -> Self {
+        other.fold_left(self, |set, value| set.insert(value))
+    }
+
+    /// Returns elements occurring in both sets. The result keeps this set's
+    /// stored elements and hash seed. Expected O(n).
+    pub fn intersection(self : Self, other : Self) -> Self {
+        self.filter(|value| other.contains(value))
+    }
+
+    /// Returns elements occurring in this set but not `other`. The result keeps
+    /// this set's hash seed. Expected O(n).
+    pub fn difference(self : Self, other : Self) -> Self {
+        self.filter(|value| !other.contains(value))
+    }
+
+    /// Returns elements occurring in exactly one set. The result keeps this
+    /// set's hash seed. Expected O(n + m).
+    pub fn symmetric_difference(self : Self, other : Self) -> Self {
+        self.difference(other).union(other.difference(self))
+    }
+
+    /// Returns true when every element of this set occurs in `other`.
+    /// Expected O(n).
+    pub fn is_subset(self : Self, other : Self) -> bool {
+        self.len() <= other.len() && self.all(|value| other.contains(value))
+    }
+
+    /// Returns true when this set is a strict subset of `other`. Expected O(n).
+    pub fn is_proper_subset(self : Self, other : Self) -> bool {
+        self.len() < other.len() && self.is_subset(other)
+    }
+
+    /// Returns true when every element of `other` occurs in this set.
+    /// Expected O(m).
+    pub fn is_superset(self : Self, other : Self) -> bool {
+        other.is_subset(self)
+    }
+
+    /// Returns true when this set is a strict superset of `other`. Expected O(m).
+    pub fn is_proper_superset(self : Self, other : Self) -> bool {
+        other.is_proper_subset(self)
+    }
+
+    /// Returns true when the sets share no element. Expected O(min(n, m)).
+    pub fn is_disjoint(self : Self, other : Self) -> bool {
+        if self.len() <= other.len() {
+            self.all(|value| !other.contains(value))
+        } else {
+            other.all(|value| !self.contains(value))
+        }
+    }
+
+    /// Returns true when the sets contain exactly the same elements,
+    /// independent of their hash seeds. Expected O(n).
+    pub fn equals(self : Self, other : Self) -> bool {
+        self.len() == other.len() && self.is_subset(other)
+    }
+}
+
+impl<T : Hash + Eq> PartialEq for HashSet<T> {
+    fn eq(self : Self, other : Self) -> bool {
+        self.equals(other)
+    }
+}
+
+impl<T : Hash + Eq> Eq for HashSet<T> {}

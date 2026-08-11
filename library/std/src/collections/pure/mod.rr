@@ -5,6 +5,7 @@
 //! - `rtqueue` — a FIFO queue with worst-case constant-time operations.
 //! - `fingertree` — a random-access sequence: both ends, indexing,
 //!   splitting, and concatenation.
+//! - `hashmap`, `hashset` — hash-based maps and sets with persistent updates.
 //! - `wavlset`, `wavlmap` — ordered set and map on a balanced tree.
 //! - `pairing_heap`, `binomial_heap` — min-priority queues.
 //!
@@ -19,6 +20,8 @@
 
 pub mod binomial_heap;
 pub mod fingertree;
+pub mod hashmap;
+pub mod hashset;
 pub mod list;
 pub mod pairing_heap;
 pub mod rtqueue;

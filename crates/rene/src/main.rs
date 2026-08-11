@@ -465,6 +465,7 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
         },
         &graph,
         &pool,
+        &progress,
     )
     .await?;
     // Stdout carries the artifact listing, one path per target, in the
