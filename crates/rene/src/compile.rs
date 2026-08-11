@@ -62,6 +62,12 @@ pub struct Options {
     pub color: bool,
 }
 
+/// The shared execution resources used by every target compilation.
+pub struct Execution<'a> {
+    pub pool: &'a Pool,
+    pub progress: &'a MultiProgress,
+}
+
 /// A built (or reused) product.
 pub struct Product {
     pub name: String,
@@ -87,8 +93,7 @@ pub async fn build(
     rt: &RtArtifacts,
     opts: &Options,
     graph: &Graph,
-    pool: &Pool,
-    progress: &MultiProgress,
+    execution: &Execution<'_>,
 ) -> Result<Vec<Product>, String> {
     let manifest = &loaded.manifest;
     let selected: Vec<&str> = if opts.bins.is_empty() && opts.libs.is_empty() {
@@ -153,7 +158,7 @@ pub async fn build(
         let command = planned
             .remove(*name)
             .ok_or_else(|| format!("target `{name}` missing from the plan"))?;
-        let bar = progress.add(
+        let bar = execution.progress.add(
             ProgressBar::new_spinner().with_message(format!("{name}: compiling {}", kind.emit())),
         );
         bar.enable_steady_tick(Duration::from_millis(120));
@@ -167,17 +172,18 @@ pub async fn build(
     // remain concurrent, but their ANSI escape sequences can never interleave.
     let completed =
         futures_util::future::join_all(invocations.into_iter().map(|(invocation, bar)| {
-            pool.run(move || async move {
+            execution.pool.run(move || async move {
                 let result = invocation.run().await;
                 bar.finish_and_clear();
-                progress.remove(&bar);
+                execution.progress.remove(&bar);
                 result
             })
         }))
         .await;
     let mut failure = None;
     for result in completed {
-        if let Err(error) = result.and_then(|completed| progress.suspend(|| completed.report()))
+        if let Err(error) =
+            result.and_then(|completed| execution.progress.suspend(|| completed.report()))
             && failure.is_none()
         {
             failure = Some(error);

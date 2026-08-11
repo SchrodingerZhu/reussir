@@ -3,10 +3,10 @@
 // output order, a model-checked insert/delete-min churn, and agreement
 // between the two implementations on identical inputs.
 
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}heap
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/pairing_basics.in | %FileCheck %s --check-prefix=PAIRING
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/pairing_basics.in | %FileCheck %s --check-prefix=PAIRING
 // PAIRING:      1
 // PAIRING-NEXT: 1
 // PAIRING-NEXT: 1
@@ -15,7 +15,7 @@
 // PAIRING-NEXT: 1
 // PAIRING-NEXT: 1
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/binomial_basics.in | %FileCheck %s --check-prefix=BINOMIAL
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/binomial_basics.in | %FileCheck %s --check-prefix=BINOMIAL
 // BINOMIAL:      1
 // BINOMIAL-NEXT: 1
 // BINOMIAL-NEXT: 1
@@ -24,23 +24,23 @@
 // BINOMIAL-NEXT: 1
 // BINOMIAL-NEXT: 1
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/pairing_sort.in | %FileCheck %s --check-prefix=PSORT
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/pairing_sort.in | %FileCheck %s --check-prefix=PSORT
 // PSORT:      1
 // PSORT-NEXT: 1
 // PSORT-NEXT: 1
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/binomial_sort.in | %FileCheck %s --check-prefix=BSORT
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/binomial_sort.in | %FileCheck %s --check-prefix=BSORT
 // BSORT:      1
 // BSORT-NEXT: 1
 // BSORT-NEXT: 1
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/churn.in | %FileCheck %s --check-prefix=CHURN
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/churn.in | %FileCheck %s --check-prefix=CHURN
 // CHURN:      1
 // CHURN-NEXT: 1
 // CHURN-NEXT: 1
 // CHURN-NEXT: 1
 
-// RUN: %T/rene-build/release/heap%exe_ext < %S/Inputs/heap/agreement.in | %FileCheck %s --check-prefix=AGREE
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/agreement.in | %FileCheck %s --check-prefix=AGREE
 // AGREE:      1
 // AGREE-NEXT: 1
 

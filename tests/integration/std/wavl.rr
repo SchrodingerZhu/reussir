@@ -3,10 +3,10 @@
 // and a pseudorandom insert/remove churn cross-checked against a
 // sorted-list model.
 
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}wavl
 
-// RUN: %T/rene-build/release/wavl%exe_ext < %S/Inputs/wavl/set_basics.in | %FileCheck %s --check-prefix=SET
+// RUN: %std_rene_build/release/wavl%exe_ext < %S/Inputs/wavl/set_basics.in | %FileCheck %s --check-prefix=SET
 // SET:      1
 // SET-NEXT: 1
 // SET-NEXT: 1
@@ -15,7 +15,7 @@
 // SET-NEXT: 1
 // SET-NEXT: 1
 
-// RUN: %T/rene-build/release/wavl%exe_ext < %S/Inputs/wavl/map_basics.in | %FileCheck %s --check-prefix=MAP
+// RUN: %std_rene_build/release/wavl%exe_ext < %S/Inputs/wavl/map_basics.in | %FileCheck %s --check-prefix=MAP
 // MAP:      1
 // MAP-NEXT: 1
 // MAP-NEXT: 1
@@ -30,7 +30,7 @@
 // traversal from one that yields nothing. The two lengths bracket the fold —
 // a defect that disturbs the tree while folding shows up as a second length
 // that disagrees with the first, and the log names which one is wrong.
-// RUN: %T/rene-build/release/wavl%exe_ext < %S/Inputs/wavl/set_order.in | %FileCheck %s --check-prefix=SETORD
+// RUN: %std_rene_build/release/wavl%exe_ext < %S/Inputs/wavl/set_order.in | %FileCheck %s --check-prefix=SETORD
 // elements iterated before the fold
 // SETORD:      7
 // the seven keys in ascending order, folded into one number
@@ -42,7 +42,7 @@
 // strictly ascending
 // SETORD-NEXT: 1
 
-// RUN: %T/rene-build/release/wavl%exe_ext < %S/Inputs/wavl/map_order.in | %FileCheck %s --check-prefix=MAPORD
+// RUN: %std_rene_build/release/wavl%exe_ext < %S/Inputs/wavl/map_order.in | %FileCheck %s --check-prefix=MAPORD
 // entries iterated before the fold
 // MAPORD:      4
 // sum of key*100 + value over the four entries
@@ -54,7 +54,7 @@
 // keys strictly ascending
 // MAPORD-NEXT: 1
 
-// RUN: %T/rene-build/release/wavl%exe_ext < %S/Inputs/wavl/churn.in | %FileCheck %s --check-prefix=CHURN
+// RUN: %std_rene_build/release/wavl%exe_ext < %S/Inputs/wavl/churn.in | %FileCheck %s --check-prefix=CHURN
 // CHURN:      1
 // CHURN-NEXT: 1
 

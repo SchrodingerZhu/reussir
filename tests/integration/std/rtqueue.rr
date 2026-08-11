@@ -1,42 +1,42 @@
 // A downstream executable package exercises the generic Hood-Melville queue.
 // Each input selects one public-API or incremental-rotation case.
 
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}rtqueue
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/new.in | %FileCheck %s --check-prefix=NEW
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/new.in | %FileCheck %s --check-prefix=NEW
 // NEW:      1
 // NEW-NEXT: 1
 // NEW-NEXT: 1
 // NEW-NEXT: 1
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/snoc.in | %FileCheck %s --check-prefix=SNOC
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/snoc.in | %FileCheck %s --check-prefix=SNOC
 // SNOC:      10
 // SNOC-NEXT: 1
 // SNOC-NEXT: 0
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/uncons.in | %FileCheck %s --check-prefix=UNCONS
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/uncons.in | %FileCheck %s --check-prefix=UNCONS
 // UNCONS:      1
 // UNCONS-NEXT: 2
 // UNCONS-NEXT: 3
 // UNCONS-NEXT: 1
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/persistence.in | %FileCheck %s --check-prefix=PERSISTENCE
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/persistence.in | %FileCheck %s --check-prefix=PERSISTENCE
 // PERSISTENCE:      1
 // PERSISTENCE-NEXT: 1
 // PERSISTENCE-NEXT: 4
 // PERSISTENCE-NEXT: 4
 // PERSISTENCE-NEXT: 456
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/bulk_rotation.in | %FileCheck %s --check-prefix=BULK
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/bulk_rotation.in | %FileCheck %s --check-prefix=BULK
 // BULK:      1
 // BULK-NEXT: 0
 // BULK-NEXT: 1234567
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/interleaved_rotation.in | %FileCheck %s --check-prefix=INTERLEAVED
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/interleaved_rotation.in | %FileCheck %s --check-prefix=INTERLEAVED
 // INTERLEAVED: 8128
 
-// RUN: %T/rene-build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/shared_payload.in | %FileCheck %s --check-prefix=SHARED
+// RUN: %std_rene_build/release/rtqueue%exe_ext < %S/Inputs/rtqueue/shared_payload.in | %FileCheck %s --check-prefix=SHARED
 // SHARED:      7
 // SHARED-NEXT: 11
 // SHARED-NEXT: 1

@@ -8,10 +8,10 @@
 // independently. They guard the chaining and state handling: any drift
 // shows up as a changed number rather than as quietly different hashes.
 
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}hash
 
-// RUN: %T/rene-build/release/hash%exe_ext < %S/Inputs/hash/vectors.in | %FileCheck %s --check-prefix=VECTORS
+// RUN: %std_rene_build/release/hash%exe_ext < %S/Inputs/hash/vectors.in | %FileCheck %s --check-prefix=VECTORS
 // fast/strong over words 1 ++ 2
 // VECTORS:      7659469028595837896
 // VECTORS-NEXT: 14389719906271566111
@@ -28,7 +28,7 @@
 // VECTORS-NEXT: 18396363454642202825
 // VECTORS-NEXT: 6887771581839605075
 
-// RUN: %T/rene-build/release/hash%exe_ext < %S/Inputs/hash/properties.in | %FileCheck %s --check-prefix=PROPS
+// RUN: %std_rene_build/release/hash%exe_ext < %S/Inputs/hash/properties.in | %FileCheck %s --check-prefix=PROPS
 // PROPS:      1
 // PROPS-NEXT: 1
 // PROPS-NEXT: 1

@@ -1,16 +1,16 @@
-// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %T/rene-build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}hashset
 
-// RUN: %T/rene-build/release/hashset%exe_ext < %S/Inputs/hashset/basics.in | %FileCheck %s --check-prefix=BASICS
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/basics.in | %FileCheck %s --check-prefix=BASICS
 // BASICS: 1
 
-// RUN: %T/rene-build/release/hashset%exe_ext < %S/Inputs/hashset/algebra.in | %FileCheck %s --check-prefix=ALGEBRA
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/algebra.in | %FileCheck %s --check-prefix=ALGEBRA
 // ALGEBRA: 1
 
-// RUN: %T/rene-build/release/hashset%exe_ext < %S/Inputs/hashset/transforms.in | %FileCheck %s --check-prefix=TRANSFORMS
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/transforms.in | %FileCheck %s --check-prefix=TRANSFORMS
 // TRANSFORMS: 1
 
-// RUN: %T/rene-build/release/hashset%exe_ext < %S/Inputs/hashset/adaptive.in | %FileCheck %s --check-prefix=ADAPTIVE
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/adaptive.in | %FileCheck %s --check-prefix=ADAPTIVE
 // ADAPTIVE: 4
 // ADAPTIVE-NEXT: 5
 // ADAPTIVE-NEXT: 4
@@ -27,7 +27,7 @@
 // ADAPTIVE-NEXT: 1
 // ADAPTIVE-NEXT: 1
 
-// RUN: %T/rene-build/release/hashset%exe_ext < %S/Inputs/hashset/churn.in | %FileCheck %s --check-prefix=CHURN
+// RUN: %std_rene_build/release/hashset%exe_ext < %S/Inputs/hashset/churn.in | %FileCheck %s --check-prefix=CHURN
 // CHURN: 1
 
 import std::collections::pure::hashset::HashSet;
