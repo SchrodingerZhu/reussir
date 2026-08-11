@@ -119,37 +119,13 @@ private:
                                                  arrayType.getElementType()),
                            op.getRef())
                            .getView();
-    auto recurse = [&](auto &&self, mlir::Value currentView,
-                       ArrayType currentType) -> mlir::LogicalResult {
-      for (int64_t index :
-           llvm::seq<int64_t>(0, currentType.getShape().front())) {
-        auto idx =
-            mlir::arith::ConstantIndexOp::create(rewriter, op.getLoc(), index);
-        if (currentType.getRank() == 1) {
-          RefType projectedRefType = rewriter.getType<RefType>(
-              currentType.getElementType(), Capability::unspecified);
-          auto projected = ReussirArrayProjectOp::create(
-              rewriter, op.getLoc(), projectedRefType, currentView,
-              idx.getResult());
-          if (!isTriviallyCopyable(currentType.getElementType()))
-            ReussirRefDropOp::create(rewriter, op.getLoc(),
-                                     projected.getProjected());
-          continue;
-        }
-        auto droppedType = currentType.dropFront();
-        auto projected = ReussirArrayProjectOp::create(
-            rewriter, op.getLoc(),
-            mlir::MemRefType::get(droppedType.getShape(),
-                                  droppedType.getElementType()),
-            currentView, idx.getResult());
-        if (mlir::failed(
-                self(self, projected.getProjected(), currentType.dropFront())))
-          return mlir::failure();
-      }
-      return mlir::success();
-    };
-
-    if (mlir::failed(recurse(recurse, view, arrayType)))
+    if (mlir::failed(emitArrayElementTraversal(
+            view, rewriter, op.getLoc(),
+            [&](mlir::OpBuilder &bodyBuilder, mlir::Location bodyLoc,
+                mlir::Value elementRef) {
+              ReussirRefDropOp::create(bodyBuilder, bodyLoc, elementRef);
+              return mlir::success();
+            })))
       return mlir::failure();
     rewriter.eraseOp(op);
     return mlir::success();

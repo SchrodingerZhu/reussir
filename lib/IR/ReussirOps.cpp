@@ -32,6 +32,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
@@ -3192,31 +3193,95 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
 static mlir::LogicalResult
 emitArrayOwnershipAcquisition(mlir::Value view, mlir::OpBuilder &builder,
                               mlir::Location loc) {
+  return emitArrayElementTraversal(
+      view, builder, loc,
+      [&](mlir::OpBuilder &bodyBuilder, mlir::Location bodyLoc,
+          mlir::Value elementRef) {
+        return emitOwnershipAcquisition(elementRef, bodyBuilder, bodyLoc);
+      });
+}
+
+static constexpr int64_t kArrayOwnershipUnrollThreshold = 4;
+
+mlir::LogicalResult emitArrayElementTraversal(
+    mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc,
+    llvm::function_ref<mlir::LogicalResult(mlir::OpBuilder &, mlir::Location,
+                                           mlir::Value)>
+        emitElement) {
   auto viewType = llvm::cast<mlir::MemRefType>(view.getType());
   ArrayType arrayType = ArrayType::get(
       builder.getContext(), viewType.getShape(), viewType.getElementType());
-  auto *context = builder.getContext();
-  for (int64_t index : llvm::seq<int64_t>(0, arrayType.getShape().front())) {
-    auto idx = mlir::arith::ConstantIndexOp::create(builder, loc, index);
-    if (arrayType.getRank() == 1) {
-      RefType projectedType = RefType::get(context, arrayType.getElementType(),
-                                           Capability::unspecified);
-      auto elementRef = ReussirArrayProjectOp::create(
-          builder, loc, projectedType, view, idx.getResult());
-      if (emitOwnershipAcquisition(elementRef.getProjected(), builder, loc)
-              .failed())
-        return mlir::failure();
-      continue;
-    }
 
-    auto projectedType = getArrayViewMemRefType(arrayType.dropFront());
-    auto nestedView = ReussirArrayProjectOp::create(builder, loc, projectedType,
-                                                    view, idx.getResult());
-    if (emitArrayOwnershipAcquisition(nestedView.getProjected(), builder, loc)
-            .failed())
-      return mlir::failure();
+  if (viewType.getNumElements() < kArrayOwnershipUnrollThreshold) {
+    auto emitDimension =
+        [&](auto &&self, mlir::Value currentView, ArrayType currentType,
+            mlir::OpBuilder &currentBuilder) -> mlir::LogicalResult {
+      int64_t extent = currentType.getShape().front();
+      for (int64_t index : llvm::seq<int64_t>(0, extent)) {
+        auto indexValue =
+            mlir::arith::ConstantIndexOp::create(currentBuilder, loc, index);
+        if (currentType.getRank() == 1) {
+          RefType elementRefType = RefType::get(currentBuilder.getContext(),
+                                                currentType.getElementType(),
+                                                Capability::unspecified);
+          auto elementRef = ReussirArrayProjectOp::create(
+              currentBuilder, loc, elementRefType, currentView, indexValue);
+          if (mlir::failed(
+                  emitElement(currentBuilder, loc, elementRef.getProjected())))
+            return mlir::failure();
+        } else {
+          ArrayType nestedType = currentType.dropFront();
+          auto nestedView = ReussirArrayProjectOp::create(
+              currentBuilder, loc, getArrayViewMemRefType(nestedType),
+              currentView, indexValue);
+          if (mlir::failed(self(self, nestedView.getProjected(), nestedType,
+                                currentBuilder)))
+            return mlir::failure();
+        }
+      }
+      return mlir::success();
+    };
+    return emitDimension(emitDimension, view, arrayType, builder);
   }
-  return mlir::success();
+
+  auto lower = mlir::arith::ConstantIndexOp::create(builder, loc, 0);
+  auto step = mlir::arith::ConstantIndexOp::create(builder, loc, 1);
+  llvm::SmallVector<mlir::Value> lowerBounds(arrayType.getRank(), lower);
+  llvm::SmallVector<mlir::Value> upperBounds;
+  llvm::SmallVector<mlir::Value> steps(arrayType.getRank(), step);
+  upperBounds.reserve(arrayType.getRank());
+  for (int64_t extent : arrayType.getShape())
+    upperBounds.push_back(
+        mlir::arith::ConstantIndexOp::create(builder, loc, extent));
+
+  mlir::LogicalResult bodyResult = mlir::success();
+  mlir::scf::buildLoopNest(
+      builder, loc, lowerBounds, upperBounds, steps,
+      [&](mlir::OpBuilder &bodyBuilder, mlir::Location bodyLoc,
+          mlir::ValueRange indices) {
+        mlir::Value currentView = view;
+        ArrayType currentType = arrayType;
+        for (mlir::Value index : indices) {
+          if (currentType.getRank() == 1) {
+            RefType elementRefType = RefType::get(bodyBuilder.getContext(),
+                                                  currentType.getElementType(),
+                                                  Capability::unspecified);
+            currentView = ReussirArrayProjectOp::create(bodyBuilder, bodyLoc,
+                                                        elementRefType,
+                                                        currentView, index)
+                              .getProjected();
+          } else {
+            currentType = currentType.dropFront();
+            currentView =
+                ReussirArrayProjectOp::create(
+                    bodyBuilder, bodyLoc, getArrayViewMemRefType(currentType),
+                    currentView, index)
+                    .getProjected();
+          }
+        }
+        bodyResult = emitElement(bodyBuilder, bodyLoc, currentView);
+      });
+  return bodyResult;
 }
 
 //===----------------------------------------------------------------------===//
