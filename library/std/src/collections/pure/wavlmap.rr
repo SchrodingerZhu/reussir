@@ -662,34 +662,25 @@ fn fold_right_tree<U, K, V>(
 }
 
 // The searching traversals stop as soon as the answer is settled, which a
-// fold cannot do. The exit is spelled as an explicit `if` chain rather than
-// a chain of `||`/`&&`, which is both what the recursion means and what it
-// has to be while those operators still evaluate both sides — written that
-// way, they would visit every node and give up exactly the early exit these
-// exist for.
+// fold cannot do: `||` and `&&` short-circuit, so a subtree is only walked
+// while the answer is still open.
 // `find_tree` keeps ascending order, so the entry it returns is the one
 // with the least key rather than an arbitrary one.
 fn any_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
     match t {
         Tree::Leaf => false,
-        Tree::Node(_, l, k, v, rt) =>
-            if predicate(k, v) {
-                true
-            } else {
-                if any_tree(l, predicate) { true } else { any_tree(rt, predicate) }
-            }
+        Tree::Node(_, l, k, v, rt) => predicate(k, v)
+            || any_tree(l, predicate)
+            || any_tree(rt, predicate)
     }
 }
 
 fn all_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
     match t {
         Tree::Leaf => true,
-        Tree::Node(_, l, k, v, rt) =>
-            if predicate(k, v) {
-                if all_tree(l, predicate) { all_tree(rt, predicate) } else { false }
-            } else {
-                false
-            }
+        Tree::Node(_, l, k, v, rt) => predicate(k, v)
+            && all_tree(l, predicate)
+            && all_tree(rt, predicate)
     }
 }
 
@@ -1088,22 +1079,17 @@ impl<K : Ord, V> WavlMap<K, V> {
     }
 
     /// Returns true when every entry in this map has a matching key and
-    /// predicate-compatible value in `other`. O(n log m). The size test is a
-    /// branch, so a size mismatch answers without scanning at all — which
-    /// `&&` would not give while it still evaluates both sides.
+    /// predicate-compatible value in `other`. O(n log m). The size test
+    /// short-circuits the scan away entirely on a mismatch.
     pub fn is_submap_by<W>(
         self : Self,
         other : WavlMap<K, W>,
         predicate : (V, W) -> bool
     ) -> bool {
-        if self.len() <= other.len() {
-            self.all(|key, value| match other.get(key) {
-                Option::Some(right) => predicate(value, right),
-                Option::None => false
-            })
-        } else {
-            false
-        }
+        self.len() <= other.len() && self.all(|key, value| match other.get(key) {
+            Option::Some(right) => predicate(value, right),
+            Option::None => false
+        })
     }
 
     /// Returns true when this map is a strict predicate-compatible submap of
@@ -1113,11 +1099,7 @@ impl<K : Ord, V> WavlMap<K, V> {
         other : WavlMap<K, W>,
         predicate : (V, W) -> bool
     ) -> bool {
-        if self.len() < other.len() {
-            self.is_submap_by(other, predicate)
-        } else {
-            false
-        }
+        self.len() < other.len() && self.is_submap_by(other, predicate)
     }
 }
 
@@ -1125,11 +1107,8 @@ impl<K : Ord, V : PartialEq> WavlMap<K, V> {
     /// Returns true when both maps contain equal values for exactly the same
     /// keys. O(n log n).
     pub fn equals(self : Self, other : Self) -> bool {
-        if self.len() == other.len() {
-            self.is_submap_by(other, |left, right| left == right)
-        } else {
-            false
-        }
+        self.len() == other.len()
+            && self.is_submap_by(other, |left, right| left == right)
     }
 
     /// Returns true when every entry in this map also occurs in `other`.

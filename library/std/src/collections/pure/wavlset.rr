@@ -59,14 +59,9 @@
 //!   set, ~19000x on a window of a hundred thousand key values.
 //! - `pop_min` descends once where `min` followed by `remove` descends
 //!   twice: 192 ns against 366 ns per element when draining a set.
-//! - `any`/`all` branch out of the traversal at the first decisive
-//!   element, written as an explicit `if` chain: 6.45 ms per call for the
-//!   full fold the hash containers do, below timer noise once it exits
-//!   early. The explicit form is also the portable one — at the time of
-//!   writing `||` and `&&` evaluate *both* sides, so the natural
-//!   `predicate(k) || any(left) || any(right)` would visit every node and
-//!   give up the early exit entirely (fixed separately, in the
-//!   short-circuit change); branching says what is meant either way.
+//! - `any`/`all` leave the traversal at the first decisive element rather
+//!   than folding the whole set the way the hash containers do: 6.45 ms
+//!   per call for the full fold, below timer noise once it exits early.
 
 import std::option::Option;
 import std::collections::pure::list::List;
@@ -658,22 +653,15 @@ fn fold_right_tree<U, T>(t : Tree<T>, initial : U, f : (T, U) -> U) -> U {
 }
 
 // The searching traversals stop as soon as the answer is settled, which a
-// fold cannot do. The exit is spelled as an explicit `if` chain rather than
-// a chain of `||`/`&&`, which is both what the recursion means and what it
-// has to be while those operators still evaluate both sides — written that
-// way, they would visit every node and give up exactly the early exit these
-// exist for.
+// fold cannot do: `||` and `&&` short-circuit, so a subtree is only walked
+// while the answer is still open.
 // `find_tree` keeps ascending order, so the element it returns is the least
 // match rather than an arbitrary one.
 fn any_tree<T>(t : Tree<T>, predicate : T -> bool) -> bool {
     match view(t) {
         View::Leaf => false,
         View::Node(_, l, k, rt) =>
-            if predicate(k) {
-                true
-            } else {
-                if any_tree(l, predicate) { true } else { any_tree(rt, predicate) }
-            }
+            predicate(k) || any_tree(l, predicate) || any_tree(rt, predicate)
     }
 }
 
@@ -681,11 +669,7 @@ fn all_tree<T>(t : Tree<T>, predicate : T -> bool) -> bool {
     match view(t) {
         View::Leaf => true,
         View::Node(_, l, k, rt) =>
-            if predicate(k) {
-                if all_tree(l, predicate) { all_tree(rt, predicate) } else { false }
-            } else {
-                false
-            }
+            predicate(k) && all_tree(l, predicate) && all_tree(rt, predicate)
     }
 }
 
@@ -949,20 +933,15 @@ impl<T : Ord> WavlSet<T> {
     }
 
     /// Returns true when every element of this set occurs in `other`.
-    /// O(n log m). The size test is a branch, so a size mismatch answers
-    /// without scanning at all — which `&&` would not give while it still
-    /// evaluates both sides.
+    /// O(n log m). The size test short-circuits the scan away entirely on a
+    /// mismatch.
     pub fn is_subset(self : Self, other : Self) -> bool {
-        if self.len() <= other.len() {
-            self.all(|value| other.contains(value))
-        } else {
-            false
-        }
+        self.len() <= other.len() && self.all(|value| other.contains(value))
     }
 
     /// Returns true when this set is a strict subset of `other`. O(n log m).
     pub fn is_proper_subset(self : Self, other : Self) -> bool {
-        if self.len() < other.len() { self.is_subset(other) } else { false }
+        self.len() < other.len() && self.is_subset(other)
     }
 
     /// Returns true when every element of `other` occurs in this set.
@@ -988,7 +967,7 @@ impl<T : Ord> WavlSet<T> {
     /// Returns true when the sets contain exactly the same elements.
     /// O(n log n).
     pub fn equals(self : Self, other : Self) -> bool {
-        if self.len() == other.len() { self.is_subset(other) } else { false }
+        self.len() == other.len() && self.is_subset(other)
     }
 }
 
