@@ -3201,6 +3201,11 @@ emitArrayOwnershipAcquisition(mlir::Value view, mlir::OpBuilder &builder,
       });
 }
 
+// The largest element count still worth unrolling: at or below it the
+// traversal is emitted as straight-line code, above it as an `scf.for` nest.
+// The bound is inclusive, so a 2x2 array — four elements, and the common
+// small fixed-size shape — stays unrolled rather than paying for a loop nest
+// that would run four iterations.
 static constexpr int64_t kArrayOwnershipUnrollThreshold = 4;
 
 mlir::LogicalResult emitArrayElementTraversal(
@@ -3212,7 +3217,7 @@ mlir::LogicalResult emitArrayElementTraversal(
   ArrayType arrayType = ArrayType::get(
       builder.getContext(), viewType.getShape(), viewType.getElementType());
 
-  if (viewType.getNumElements() < kArrayOwnershipUnrollThreshold) {
+  if (viewType.getNumElements() <= kArrayOwnershipUnrollThreshold) {
     auto emitDimension =
         [&](auto &&self, mlir::Value currentView, ArrayType currentType,
             mlir::OpBuilder &currentBuilder) -> mlir::LogicalResult {

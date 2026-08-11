@@ -11,9 +11,9 @@ import reussir.test.value;
 namespace reussir {
 
 // Ownership acquisition over an array has two shapes, chosen by
-// `kArrayOwnershipUnrollThreshold` in lib/IR/ReussirOps.cpp: below the
-// threshold the traversal is unrolled into straight-line code, at or above it
-// the traversal becomes an `scf.for` nest with one loop per dimension.
+// `kArrayOwnershipUnrollThreshold` in lib/IR/ReussirOps.cpp: at or below the
+// threshold the traversal is unrolled into straight-line code, above it the
+// traversal becomes an `scf.for` nest with one loop per dimension.
 //
 // Both shapes have to be counted over the whole function rather than its
 // entry block. The loop form puts every project and inc inside the loop body,
@@ -27,9 +27,12 @@ struct AcquisitionShape {
   llvm::SmallVector<int64_t> tripCounts;
 };
 
+// The walk is pre-order so that nested loops are seen outermost first and
+// `tripCounts` lines up with the array's dimension order; the default
+// post-order would report the innermost extent first.
 static AcquisitionShape inspectAcquisition(mlir::func::FuncOp funcOp) {
   AcquisitionShape shape;
-  funcOp.walk([&](mlir::Operation *op) {
+  funcOp.walk<mlir::WalkOrder::PreOrder>([&](mlir::Operation *op) {
     if (llvm::isa<ReussirArrayViewOp>(op))
       ++shape.views;
     if (llvm::isa<ReussirArrayProjectOp>(op))
@@ -98,34 +101,35 @@ TEST_F(ReussirValueTransformTest, RefToArrayOfRcAcquisition) {
                        });
 }
 
-// Still under the threshold, but nested: the unrolled form projects the outer
-// dimension once and then each element of the inner one. This is the nested
-// unrolling the 2x2 case used to cover before it crossed the threshold.
-TEST_F(ReussirValueTransformTest, RefToSmallNestedArrayOfRcAcquisition) {
-  testValueAcquisition(
-      "!reussir.ref<!reussir.array<1 x 2 x !reussir.rc<i32>>>",
-      [](mlir::func::FuncOp funcOp) {
-        auto shape = inspectAcquisition(funcOp);
-        EXPECT_EQ(shape.views, 1u);
-        EXPECT_TRUE(shape.tripCounts.empty());
-        // one projection to the single inner row, then one per element in it
-        EXPECT_EQ(shape.projects, 3u);
-        EXPECT_EQ(shape.incs, 2u);
-      });
-}
-
-// Four elements is exactly the threshold, so this is the smallest shape that
-// takes the loop form: a loop per dimension over that dimension's extent, and
-// a single project-per-dimension and inc in the innermost body, executed once
-// per element rather than emitted once per element.
+// Four elements is exactly the threshold, and the threshold is inclusive, so
+// this is the largest nested shape that still unrolls: each row projected
+// once and each of its elements once, an inc per element, no loop.
 TEST_F(ReussirValueTransformTest, RefToNestedArrayOfRcAcquisition) {
   testValueAcquisition("!reussir.ref<!reussir.array<2 x 2 x !reussir.rc<i32>>>",
                        [](mlir::func::FuncOp funcOp) {
                          auto shape = inspectAcquisition(funcOp);
                          EXPECT_EQ(shape.views, 1u);
+                         EXPECT_TRUE(shape.tripCounts.empty());
+                         EXPECT_EQ(shape.projects, 6u);
+                         EXPECT_EQ(shape.incs, 4u);
+                       });
+}
+
+// Six elements is over the threshold, so this takes the loop form: a loop per
+// dimension over that dimension's extent, and a single project-per-dimension
+// and inc in the innermost body — emitted once each, executed once per
+// element. The trip counts are what carry "every element is visited" here,
+// which is why they are asserted and not just the loop count.
+TEST_F(ReussirValueTransformTest, RefToLargeNestedArrayOfRcAcquisition) {
+  testValueAcquisition("!reussir.ref<!reussir.array<2 x 3 x !reussir.rc<i32>>>",
+                       [](mlir::func::FuncOp funcOp) {
+                         auto shape = inspectAcquisition(funcOp);
+                         EXPECT_EQ(shape.views, 1u);
                          EXPECT_EQ(shape.tripCounts.size(), 2u);
-                         for (int64_t trip : shape.tripCounts)
-                           EXPECT_EQ(trip, 2);
+                         if (shape.tripCounts.size() == 2u) {
+                           EXPECT_EQ(shape.tripCounts[0], 2);
+                           EXPECT_EQ(shape.tripCounts[1], 3);
+                         }
                          EXPECT_EQ(shape.projects, 2u);
                          EXPECT_EQ(shape.incs, 1u);
                        });
