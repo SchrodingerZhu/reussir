@@ -1,4 +1,4 @@
-// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQ2D --check-prefix=UNROLL3 --check-prefix=DROP32
+// RUN: %reussir-opt %s --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=ACQ2D --check-prefix=ACQ2DLOOP --check-prefix=UNROLL3 --check-prefix=DROP32
 // RUN: %reussir-opt %s --reussir-convert-to-std --reussir-acquire-drop-expansion | %FileCheck %s --check-prefix=CLONE
 // RUN: %reussir-opt %s --reussir-acquire-drop-expansion --convert-scf-to-cf | %FileCheck %s --check-prefix=CF
 
@@ -7,18 +7,49 @@
 !arr3 = !reussir.array<3 x !elt>
 !arr32 = !reussir.array<32 x !elt>
 !arr2x2 = !reussir.array<2 x 2 x !elt>
+!arr2x3 = !reussir.array<2 x 3 x !elt>
 !rc_arr2 = !reussir.rc<!arr2>
 
 module {
+  // Four elements is exactly `kArrayOwnershipUnrollThreshold`, and the bound
+  // is inclusive, so the largest nested shape that still unrolls: each row is
+  // projected once and each of its elements once, with no loop anywhere.
   // ACQ2D-LABEL: func.func @acquire_2d(
   // ACQ2D: %[[VIEW:.+]] = reussir.array.view
-  // ACQ2D: scf.for %[[ROW:.+]] =
-  // ACQ2D: scf.for %[[COLUMN:.+]] =
-  // ACQ2D: %[[ROW_VIEW:.+]] = reussir.array.project(%[[VIEW]]{{.*}}) [%[[ROW]] : index]
-  // ACQ2D: %[[ELEMENT:.+]] = reussir.array.project(%[[ROW_VIEW]]{{.*}}) [%[[COLUMN]] : index]
+  // ACQ2D-NOT: scf.for
+  // ACQ2D: %[[ROW0:.+]] = reussir.array.project(%[[VIEW]]{{.*}}) [%{{.+}} : index]
+  // ACQ2D: reussir.array.project(%[[ROW0]]{{.*}}) [%{{.+}} : index]
   // ACQ2D: reussir.rc.inc
+  // ACQ2D: reussir.array.project(%[[ROW0]]{{.*}}) [%{{.+}} : index]
+  // ACQ2D: reussir.rc.inc
+  // ACQ2D: %[[ROW1:.+]] = reussir.array.project(%[[VIEW]]{{.*}}) [%{{.+}} : index]
+  // ACQ2D: reussir.array.project(%[[ROW1]]{{.*}}) [%{{.+}} : index]
+  // ACQ2D: reussir.rc.inc
+  // ACQ2D: reussir.array.project(%[[ROW1]]{{.*}}) [%{{.+}} : index]
+  // ACQ2D: reussir.rc.inc
+  // ACQ2D-NOT: reussir.rc.inc
+  // ACQ2D-NOT: scf.for
+  // ACQ2D: return
   func.func @acquire_2d(%xs: !reussir.ref<!arr2x2>) {
     reussir.ref.acquire (%xs : !reussir.ref<!arr2x2>)
+    return
+  }
+
+  // Six elements is over the threshold, so the nested traversal becomes a
+  // loop per dimension with one projection each and a single inc in the
+  // innermost body. This is the multi-dimensional loop form; `acquire_2d`
+  // above covers the unrolled one on the other side of the same bound.
+  // ACQ2DLOOP-LABEL: func.func @acquire_2d_loop(
+  // ACQ2DLOOP: %[[VIEW:.+]] = reussir.array.view
+  // ACQ2DLOOP: scf.for %[[ROW:.+]] =
+  // ACQ2DLOOP: scf.for %[[COLUMN:.+]] =
+  // ACQ2DLOOP: %[[ROW_VIEW:.+]] = reussir.array.project(%[[VIEW]]{{.*}}) [%[[ROW]] : index]
+  // ACQ2DLOOP: %[[ELEMENT:.+]] = reussir.array.project(%[[ROW_VIEW]]{{.*}}) [%[[COLUMN]] : index]
+  // ACQ2DLOOP: reussir.rc.inc
+  // ACQ2DLOOP-NOT: reussir.rc.inc
+  // ACQ2DLOOP: return
+  func.func @acquire_2d_loop(%xs: !reussir.ref<!arr2x3>) {
+    reussir.ref.acquire (%xs : !reussir.ref<!arr2x3>)
     return
   }
 
