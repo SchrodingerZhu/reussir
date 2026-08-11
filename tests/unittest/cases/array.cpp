@@ -1,12 +1,52 @@
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
 #include <gtest/gtest.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/Verifier.h>
 
 import reussir.test;
 import reussir.test.value;
 
 namespace reussir {
+
+// Ownership acquisition over an array has two shapes, chosen by
+// `kArrayOwnershipUnrollThreshold` in lib/IR/ReussirOps.cpp: below the
+// threshold the traversal is unrolled into straight-line code, at or above it
+// the traversal becomes an `scf.for` nest with one loop per dimension.
+//
+// Both shapes have to be counted over the whole function rather than its
+// entry block. The loop form puts every project and inc inside the loop body,
+// so an entry-block scan reports zero of each and reads as "nothing was
+// emitted" — which is how these counts silently stopped describing the
+// compiler when the loop form landed.
+struct AcquisitionShape {
+  size_t views = 0;
+  size_t projects = 0;
+  size_t incs = 0;
+  llvm::SmallVector<int64_t> tripCounts;
+};
+
+static AcquisitionShape inspectAcquisition(mlir::func::FuncOp funcOp) {
+  AcquisitionShape shape;
+  funcOp.walk([&](mlir::Operation *op) {
+    if (llvm::isa<ReussirArrayViewOp>(op))
+      ++shape.views;
+    if (llvm::isa<ReussirArrayProjectOp>(op))
+      ++shape.projects;
+    if (llvm::isa<ReussirRcIncOp>(op))
+      ++shape.incs;
+    // Trip counts, not just loop count: the point of the loop form is that it
+    // visits every element, which only the bounds can attest to.
+    if (auto forOp = llvm::dyn_cast<mlir::scf::ForOp>(op)) {
+      if (auto bound = forOp.getUpperBound()
+                           .getDefiningOp<mlir::arith::ConstantIndexOp>())
+        shape.tripCounts.push_back(bound.value());
+    }
+  });
+  return shape;
+}
+
 TEST_F(ReussirTest, ParseArrayTypeTest) {
   withType<reussir::ArrayType>(
       SIMPLE_LAYOUT, R"(!reussir.array<4 x 8 x !reussir.rc<i64>>)",
@@ -45,43 +85,49 @@ TEST_F(ReussirTest, RcTypeIsValidMemRefElementType) {
       });
 }
 
+// Two elements, under the unroll threshold: straight-line code, one project
+// and one inc per element, no loop.
 TEST_F(ReussirValueTransformTest, RefToArrayOfRcAcquisition) {
   testValueAcquisition("!reussir.ref<!reussir.array<2 x !reussir.rc<i32>>>",
                        [](mlir::func::FuncOp funcOp) {
-                         size_t projectCount = 0;
-                         size_t incCount = 0;
-                         bool foundView = false;
-                         for (auto &op : funcOp.getFunctionBody().front()) {
-                           if (llvm::isa<ReussirArrayViewOp>(op))
-                             foundView = true;
-                           if (llvm::isa<ReussirArrayProjectOp>(op))
-                             ++projectCount;
-                           if (llvm::isa<ReussirRcIncOp>(op))
-                             ++incCount;
-                         }
-                         EXPECT_TRUE(foundView);
-                         EXPECT_EQ(projectCount, 2u);
-                         EXPECT_EQ(incCount, 2u);
+                         auto shape = inspectAcquisition(funcOp);
+                         EXPECT_EQ(shape.views, 1u);
+                         EXPECT_TRUE(shape.tripCounts.empty());
+                         EXPECT_EQ(shape.projects, 2u);
+                         EXPECT_EQ(shape.incs, 2u);
                        });
 }
 
+// Still under the threshold, but nested: the unrolled form projects the outer
+// dimension once and then each element of the inner one. This is the nested
+// unrolling the 2x2 case used to cover before it crossed the threshold.
+TEST_F(ReussirValueTransformTest, RefToSmallNestedArrayOfRcAcquisition) {
+  testValueAcquisition(
+      "!reussir.ref<!reussir.array<1 x 2 x !reussir.rc<i32>>>",
+      [](mlir::func::FuncOp funcOp) {
+        auto shape = inspectAcquisition(funcOp);
+        EXPECT_EQ(shape.views, 1u);
+        EXPECT_TRUE(shape.tripCounts.empty());
+        // one projection to the single inner row, then one per element in it
+        EXPECT_EQ(shape.projects, 3u);
+        EXPECT_EQ(shape.incs, 2u);
+      });
+}
+
+// Four elements is exactly the threshold, so this is the smallest shape that
+// takes the loop form: a loop per dimension over that dimension's extent, and
+// a single project-per-dimension and inc in the innermost body, executed once
+// per element rather than emitted once per element.
 TEST_F(ReussirValueTransformTest, RefToNestedArrayOfRcAcquisition) {
   testValueAcquisition("!reussir.ref<!reussir.array<2 x 2 x !reussir.rc<i32>>>",
                        [](mlir::func::FuncOp funcOp) {
-                         size_t projectCount = 0;
-                         size_t incCount = 0;
-                         bool foundView = false;
-                         for (auto &op : funcOp.getFunctionBody().front()) {
-                           if (llvm::isa<ReussirArrayViewOp>(op))
-                             foundView = true;
-                           if (llvm::isa<ReussirArrayProjectOp>(op))
-                             ++projectCount;
-                           if (llvm::isa<ReussirRcIncOp>(op))
-                             ++incCount;
-                         }
-                         EXPECT_TRUE(foundView);
-                         EXPECT_EQ(projectCount, 6u);
-                         EXPECT_EQ(incCount, 4u);
+                         auto shape = inspectAcquisition(funcOp);
+                         EXPECT_EQ(shape.views, 1u);
+                         EXPECT_EQ(shape.tripCounts.size(), 2u);
+                         for (int64_t trip : shape.tripCounts)
+                           EXPECT_EQ(trip, 2);
+                         EXPECT_EQ(shape.projects, 2u);
+                         EXPECT_EQ(shape.incs, 1u);
                        });
 }
 
