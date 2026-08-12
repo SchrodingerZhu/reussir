@@ -22,6 +22,26 @@
   Enum-variant payloads are unaffected — variants stay
   exactly as visible as their enum.
 
+### Standard library
+
+- `WavlSet` and `WavlMap` now carry the same interface as the hash
+  containers, plus the operations only an ordered container can offer.
+  Shared with `HashSet`/`HashMap`: `singleton`, `clear`, `get`/`get_entry`,
+  `take`/`remove_entry`, `insert_result`, `insert_with`, `adjust`, `update`,
+  `alter`, `keys`, `values`, `filter`, `filter_map`, `map`, `map_values`,
+  `map_keys`, `map_entries`, `count_if`, `any`, `all`, `find`, the set and
+  map algebra (`union`, `union_with`, `intersection`, `intersection_with`,
+  `difference`, `symmetric_difference`), the containment relations, and
+  `PartialEq`/`Eq`. Ordered-only: `min`/`max` gain `pop_min`/`pop_max`,
+  the neighbour queries `floor`, `ceiling`, `predecessor`, `successor`
+  (`*_entry` on the map), the half-open window queries `range` and
+  `range_to_list`, the descending traversals `to_list_desc` and
+  `fold_right`, and `depth`, which reports the tree height so the balance
+  bound is observable from outside the module.
+- The ordered containers' `any`, `all`, and `find` stop at the first
+  decisive element rather than folding the whole container, and `find`
+  returns the least match rather than an unspecified one.
+
 ## 0.1.0
 
 The first tagged release of Reussir: an MLIR-based compiler framework for

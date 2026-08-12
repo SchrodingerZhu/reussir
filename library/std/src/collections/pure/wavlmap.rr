@@ -17,6 +17,21 @@
 //! the parity form. (For a map with narrower keys and values — an
 //! `i32`-to-`i32` map is 40 B against 32 B — the arithmetic favours
 //! parity again; revisit this if such maps become the common case.)
+//!
+//! ## Interface
+//!
+//! The map carries the whole `HashMap` interface, so the two are
+//! interchangeable at the call site, plus the ordered operations
+//! `wavlset` documents: `pop_min`/`pop_max`, the neighbour queries
+//! (`floor_entry`, `ceiling_entry`, `predecessor_entry`,
+//! `successor_entry`), the half-open window queries (`range`,
+//! `range_to_list`), and the descending traversals (`to_list_desc`,
+//! `fold_right`). `to_list`, `keys`, `values`, and `fold_left` are in
+//! ascending key order, where the hash containers promise no order at
+//! all, and `find` returns the entry with the *least* matching key rather
+//! than an unspecified one. See `wavlset` for why the window walk, the
+//! end removals, and the searching traversals are written against the
+//! tree instead of composed, and for what that buys.
 
 import std::option::Option;
 import std::collections::pure::list::List;
@@ -39,6 +54,24 @@ pub struct [value] Entry<K, V> {
 pub struct WavlMap<K, V> {
     size : u64,
     root : Tree<K, V>
+}
+
+/// The previous value, when requested while inserting an entry.
+pub enum [value] InsertResult<K, V> {
+    Added(WavlMap<K, V>),
+    Replaced(V, WavlMap<K, V>)
+}
+
+/// The entry removed from a map, or the unchanged map when the key was absent.
+pub enum [value] RemoveResult<K, V> {
+    Removed(Entry<K, V>, WavlMap<K, V>),
+    Missing(WavlMap<K, V>)
+}
+
+/// The entry taken off one end of a map, or the unchanged empty map.
+pub enum [value] PopResult<K, V> {
+    Popped(Entry<K, V>, WavlMap<K, V>),
+    Empty(WavlMap<K, V>)
 }
 
 fn rank<K, V>(t : Tree<K, V>) -> i64 {
@@ -344,6 +377,23 @@ fn del_min<K, V>(t : Tree<K, V>) -> DelMin<K, V> {
     }
 }
 
+// The mirror of `del_min`: strip the rightmost entry and rebalance up the
+// right spine.
+fn del_max<K, V>(t : Tree<K, V>) -> DelMin<K, V> {
+    match t {
+        Tree::Node(_, l, k, v, Tree::Leaf) =>
+            DelMin { key: k, value: v, tree: l },
+        Tree::Node(r, l, k, v, rt) => {
+            let greatest = del_max(rt);
+            let m = greatest.key;
+            let mv = greatest.value;
+            let sub = greatest.tree;
+            DelMin { key: m, value: mv, tree: bal_right_del(r, l, k, v, sub) }
+        },
+        Tree::Leaf => core::intrinsic::panic::panic()
+    }
+}
+
 fn remove_root<K, V>(r : i64, l : Tree<K, V>, rt : Tree<K, V>) -> Tree<K, V> {
     match l {
         Tree::Leaf => rt,
@@ -413,6 +463,109 @@ fn lookup<K : Ord, V>(t : Tree<K, V>, x : K) -> Option<V> {
     }
 }
 
+// The stored entry, which exposes the canonical key when the probe only
+// compares equal to it rather than being identical.
+fn lookup_entry<K : Ord, V>(t : Tree<K, V>, x : K) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Less => lookup_entry(l, x),
+            Ordering::Greater => lookup_entry(rt, x),
+            Ordering::Equal => Option::Some { Entry { key: k, value: v } }
+        }
+    }
+}
+
+// The four neighbour queries. Each descends once, remembering the last
+// node that could still answer: when the descent runs off the tree, that
+// remembered node is the answer. `inclusive` decides whether an exact
+// match counts, which is the only difference between floor/predecessor
+// and ceiling/successor.
+fn floor_entry_tree<K : Ord, V>(
+    t : Tree<K, V>,
+    x : K,
+    inclusive : bool
+) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Less => floor_entry_tree(l, x, inclusive),
+            Ordering::Greater => {
+                let below = floor_entry_tree(rt, x, inclusive);
+                match below {
+                    Option::Some(_) => below,
+                    Option::None => Option::Some { Entry { key: k, value: v } }
+                }
+            },
+            Ordering::Equal =>
+                if inclusive {
+                    Option::Some { Entry { key: k, value: v } }
+                } else {
+                    floor_entry_tree(l, x, inclusive)
+                }
+        }
+    }
+}
+
+fn ceil_entry_tree<K : Ord, V>(
+    t : Tree<K, V>,
+    x : K,
+    inclusive : bool
+) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, l, k, v, rt) => match x.cmp(k) {
+            Ordering::Greater => ceil_entry_tree(rt, x, inclusive),
+            Ordering::Less => {
+                let below = ceil_entry_tree(l, x, inclusive);
+                match below {
+                    Option::Some(_) => below,
+                    Option::None => Option::Some { Entry { key: k, value: v } }
+                }
+            },
+            Ordering::Equal =>
+                if inclusive {
+                    Option::Some { Entry { key: k, value: v } }
+                } else {
+                    ceil_entry_tree(rt, x, inclusive)
+                }
+        }
+    }
+}
+
+// Ascending entries of `[low, high)`, prepended onto `acc`. Subtrees that
+// cannot hold a key in the window are never entered, so this costs
+// O(log n + k) for k reported entries rather than O(n).
+fn range_acc<K : Ord, V>(
+    t : Tree<K, V>,
+    low : K,
+    high : K,
+    acc : List<Entry<K, V>>
+) -> List<Entry<K, V>> {
+    match t {
+        Tree::Leaf => acc,
+        Tree::Node(_, l, k, v, rt) => {
+            if k < low {
+                range_acc(rt, low, high, acc)
+            } else {
+                if !(k < high) {
+                    range_acc(l, low, high, acc)
+                } else {
+                    range_acc(
+                        l,
+                        low,
+                        high,
+                        List::Cons {
+                            Entry { key: k, value: v },
+                            range_acc(rt, low, high, acc)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
 fn min_tree<K, V>(t : Tree<K, V>) -> Option<Entry<K, V>> {
     match t {
         Tree::Leaf => Option::None,
@@ -456,6 +609,102 @@ fn fold_tree<U, K, V>(
     }
 }
 
+fn depth_tree<K, V>(t : Tree<K, V>) -> u64 {
+    match t {
+        Tree::Leaf => 0,
+        Tree::Node(_, l, _, _, rt) => {
+            let dl = depth_tree(l);
+            let dr = depth_tree(rt);
+            1 + (if dl < dr { dr } else { dl })
+        }
+    }
+}
+
+fn keys_acc<K, V>(t : Tree<K, V>, acc : List<K>) -> List<K> {
+    match t {
+        Tree::Leaf => acc,
+        Tree::Node(_, l, k, _, rt) =>
+            keys_acc(l, List::Cons { k, keys_acc(rt, acc) })
+    }
+}
+
+fn values_acc<K, V>(t : Tree<K, V>, acc : List<V>) -> List<V> {
+    match t {
+        Tree::Leaf => acc,
+        Tree::Node(_, l, _, v, rt) =>
+            values_acc(l, List::Cons { v, values_acc(rt, acc) })
+    }
+}
+
+fn to_list_desc_acc<K, V>(
+    t : Tree<K, V>,
+    acc : List<Entry<K, V>>
+) -> List<Entry<K, V>> {
+    match t {
+        Tree::Leaf => acc,
+        Tree::Node(_, l, k, v, rt) => to_list_desc_acc(
+            rt,
+            List::Cons { Entry { key: k, value: v }, to_list_desc_acc(l, acc) }
+        )
+    }
+}
+
+fn fold_right_tree<U, K, V>(
+    t : Tree<K, V>,
+    initial : U,
+    f : (K, V, U) -> U
+) -> U {
+    match t {
+        Tree::Leaf => initial,
+        Tree::Node(_, l, k, v, rt) =>
+            fold_right_tree(l, f(k, v, fold_right_tree(rt, initial, f)), f)
+    }
+}
+
+// The searching traversals stop as soon as the answer is settled, which a
+// fold cannot do: `||` and `&&` short-circuit, so a subtree is only walked
+// while the answer is still open.
+// `find_tree` keeps ascending order, so the entry it returns is the one
+// with the least key rather than an arbitrary one.
+fn any_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
+    match t {
+        Tree::Leaf => false,
+        Tree::Node(_, l, k, v, rt) => predicate(k, v)
+            || any_tree(l, predicate)
+            || any_tree(rt, predicate)
+    }
+}
+
+fn all_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
+    match t {
+        Tree::Leaf => true,
+        Tree::Node(_, l, k, v, rt) => predicate(k, v)
+            && all_tree(l, predicate)
+            && all_tree(rt, predicate)
+    }
+}
+
+fn find_tree<K, V>(
+    t : Tree<K, V>,
+    predicate : (K, V) -> bool
+) -> Option<Entry<K, V>> {
+    match t {
+        Tree::Leaf => Option::None,
+        Tree::Node(_, l, k, v, rt) => {
+            let left = find_tree(l, predicate);
+            match left {
+                Option::Some(_) => left,
+                Option::None =>
+                    if predicate(k, v) {
+                        Option::Some { Entry { key: k, value: v } }
+                    } else {
+                        find_tree(rt, predicate)
+                    }
+            }
+        }
+    }
+}
+
 fn from_list_impl<K : Ord, V>(
     values : List<Entry<K, V>>,
     acc : WavlMap<K, V>
@@ -473,6 +722,16 @@ impl<K : Ord, V> WavlMap<K, V> {
         WavlMap { size: 0, root: Tree::Leaf }
     }
 
+    /// Creates a one-entry map. O(1).
+    pub fn singleton(key : K, value : V) -> Self {
+        WavlMap::new().insert(key, value)
+    }
+
+    /// Removes every entry. O(1).
+    pub fn clear(self : Self) -> Self {
+        WavlMap { size: 0, root: Tree::Leaf }
+    }
+
     /// Returns the number of entries. O(1).
     pub fn len(self : Self) -> u64 {
         self.size
@@ -483,12 +742,43 @@ impl<K : Ord, V> WavlMap<K, V> {
         self.size == 0
     }
 
+    /// Returns the number of nodes on the longest root-to-leaf path, zero
+    /// for an empty map. The WAVL discipline bounds this by `2·log2(n) + 1`,
+    /// which is what makes the balance observable from outside the module —
+    /// tests assert against that bound. O(n).
+    pub fn depth(self : Self) -> u64 {
+        depth_tree(self.root)
+    }
+
     /// Adds or replaces the entry for `key`. O(log n).
     pub fn insert(self : Self, key : K, value : V) -> Self {
         let r = ins(self.root, key, value);
         WavlMap {
             size: if r.changed { self.size + 1 } else { self.size },
             root: r.tree
+        }
+    }
+
+    /// Adds or replaces an entry and reports the previous value. O(log n).
+    pub fn insert_result(self : Self, key : K, value : V) -> InsertResult<K, V> {
+        match self.get(key) {
+            Option::Some(previous) =>
+                InsertResult::Replaced { previous, self.insert(key, value) },
+            Option::None => InsertResult::Added { self.insert(key, value) }
+        }
+    }
+
+    /// Combines an existing value with `value`, or inserts `value` when the
+    /// key is absent. `combine` receives the existing value first. O(log n).
+    pub fn insert_with(
+        self : Self,
+        key : K,
+        value : V,
+        combine : (V, V) -> V
+    ) -> Self {
+        match self.get(key) {
+            Option::Some(current) => self.insert(key, combine(current, value)),
+            Option::None => self.insert(key, value)
         }
     }
 
@@ -501,9 +791,85 @@ impl<K : Ord, V> WavlMap<K, V> {
         }
     }
 
+    /// Removes and returns the stored entry for `key`. O(log n).
+    pub fn remove_entry(self : Self, key : K) -> RemoveResult<K, V> {
+        match lookup_entry(self.root, key) {
+            Option::Some(entry) =>
+                RemoveResult::Removed { entry, self.remove(key) },
+            Option::None => RemoveResult::Missing { self }
+        }
+    }
+
+    /// Removes and returns the entry with the least key. O(log n).
+    pub fn pop_min(self : Self) -> PopResult<K, V> {
+        let size = self.size;
+        let root = self.root;
+        if size == 0 {
+            PopResult::Empty { WavlMap { size, root } }
+        } else {
+            let least = del_min(root);
+            PopResult::Popped {
+                Entry { key: least.key, value: least.value },
+                WavlMap { size: size - 1, root: least.tree }
+            }
+        }
+    }
+
+    /// Removes and returns the entry with the greatest key. O(log n).
+    pub fn pop_max(self : Self) -> PopResult<K, V> {
+        let size = self.size;
+        let root = self.root;
+        if size == 0 {
+            PopResult::Empty { WavlMap { size, root } }
+        } else {
+            let greatest = del_max(root);
+            PopResult::Popped {
+                Entry { key: greatest.key, value: greatest.value },
+                WavlMap { size: size - 1, root: greatest.tree }
+            }
+        }
+    }
+
+    /// Applies `f` to an existing value, leaving a missing key unchanged.
+    /// O(log n).
+    pub fn adjust(self : Self, key : K, f : V -> V) -> Self {
+        match self.get(key) {
+            Option::Some(value) => self.insert(key, f(value)),
+            Option::None => self
+        }
+    }
+
+    /// Updates an existing value; returning `None` from `f` removes the
+    /// entry. A missing key is left unchanged. O(log n).
+    pub fn update(self : Self, key : K, f : V -> Option<V>) -> Self {
+        match self.get(key) {
+            Option::None => self,
+            Option::Some(value) => match f(value) {
+                Option::Some(next) => self.insert(key, next),
+                Option::None => self.remove(key)
+            }
+        }
+    }
+
+    /// Alters the optional value for `key`; `Some` inserts or replaces and
+    /// `None` removes. O(log n).
+    pub fn alter(self : Self, key : K, f : Option<V> -> Option<V>) -> Self {
+        match f(self.get(key)) {
+            Option::Some(value) => self.insert(key, value),
+            Option::None => self.remove(key)
+        }
+    }
+
     /// Returns the value stored for `key`. O(log n).
     pub fn get(self : Self, key : K) -> Option<V> {
         lookup(self.root, key)
+    }
+
+    /// Returns the stored key and value for `key`. This exposes the
+    /// canonical stored key when the query compares equal but is not
+    /// identical. O(log n).
+    pub fn get_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        lookup_entry(self.root, key)
     }
 
     /// Returns true if an entry exists for `key`. O(log n).
@@ -521,9 +887,60 @@ impl<K : Ord, V> WavlMap<K, V> {
         max_tree(self.root)
     }
 
+    /// Returns the entry whose key is greatest among those at most `key`.
+    /// O(log n).
+    pub fn floor_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        floor_entry_tree(self.root, key, true)
+    }
+
+    /// Returns the entry whose key is least among those at least `key`.
+    /// O(log n).
+    pub fn ceiling_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        ceil_entry_tree(self.root, key, true)
+    }
+
+    /// Returns the entry whose key is greatest among those strictly below
+    /// `key`. O(log n).
+    pub fn predecessor_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        floor_entry_tree(self.root, key, false)
+    }
+
+    /// Returns the entry whose key is least among those strictly above
+    /// `key`. O(log n).
+    pub fn successor_entry(self : Self, key : K) -> Option<Entry<K, V>> {
+        ceil_entry_tree(self.root, key, false)
+    }
+
+    /// Returns the entries keyed by `[low, high)` in ascending key order,
+    /// visiting only the spanning subtrees. O(log n + k) for k entries.
+    pub fn range_to_list(self : Self, low : K, high : K) -> List<Entry<K, V>> {
+        range_acc(self.root, low, high, List::Nil)
+    }
+
+    /// Returns the entries keyed by `[low, high)` as a map.
+    /// O(k log k + log n).
+    pub fn range(self : Self, low : K, high : K) -> Self {
+        WavlMap::from_list(self.range_to_list(low, high))
+    }
+
     /// Returns the entries in ascending key order. O(n).
     pub fn to_list(self : Self) -> List<Entry<K, V>> {
         to_list_acc(self.root, List::Nil)
+    }
+
+    /// Returns the entries in descending key order. O(n).
+    pub fn to_list_desc(self : Self) -> List<Entry<K, V>> {
+        to_list_desc_acc(self.root, List::Nil)
+    }
+
+    /// Returns the keys in ascending order. O(n).
+    pub fn keys(self : Self) -> List<K> {
+        keys_acc(self.root, List::Nil)
+    }
+
+    /// Returns the values ordered by their keys. O(n).
+    pub fn values(self : Self) -> List<V> {
+        values_acc(self.root, List::Nil)
     }
 
     /// Folds the entries in ascending key order. O(n).
@@ -531,8 +948,190 @@ impl<K : Ord, V> WavlMap<K, V> {
         fold_tree(self.root, initial, f)
     }
 
+    /// Folds the entries in descending key order, each entry seeing the
+    /// result for every greater key. O(n).
+    pub fn fold_right<U>(self : Self, initial : U, f : (K, V, U) -> U) -> U {
+        fold_right_tree(self.root, initial, f)
+    }
+
     /// Creates a map from entries, later duplicates replacing earlier ones. O(n log n).
     pub fn from_list(values : List<Entry<K, V>>) -> Self {
         from_list_impl(values, WavlMap::new())
     }
+
+    /// Transforms every value while retaining its key. O(n log n).
+    pub fn map_values<U>(self : Self, f : V -> U) -> WavlMap<K, U> {
+        let initial : WavlMap<K, U> = WavlMap::new();
+        self.fold_left(initial, |map, key, value| map.insert(key, f(value)))
+    }
+
+    /// Transforms entries into a map with possibly different key and value
+    /// types. Later transformed duplicates replace earlier values.
+    /// O(n log n).
+    pub fn map_entries<L : Ord, U>(
+        self : Self,
+        f : (K, V) -> Entry<L, U>
+    ) -> WavlMap<L, U> {
+        let initial : WavlMap<L, U> = WavlMap::new();
+        self.fold_left(initial, |map, key, value| {
+            let entry = f(key, value);
+            map.insert(entry.key, entry.value)
+        })
+    }
+
+    /// Transforms every key while retaining its value. Later transformed
+    /// duplicates replace earlier values. O(n log n).
+    pub fn map_keys<L : Ord>(self : Self, f : K -> L) -> WavlMap<L, V> {
+        self.map_entries(|key, value| Entry { key: f(key), value })
+    }
+
+    /// Keeps entries for which `predicate` returns true. O(n log n).
+    pub fn filter(self : Self, predicate : (K, V) -> bool) -> Self {
+        let initial : WavlMap<K, V> = WavlMap::new();
+        self.fold_left(initial, |map, key, value| {
+            if predicate(key, value) { map.insert(key, value) } else { map }
+        })
+    }
+
+    /// Transforms retained values and discards entries mapped to `None`.
+    /// O(n log n).
+    pub fn filter_map<U>(self : Self, f : (K, V) -> Option<U>) -> WavlMap<K, U> {
+        let initial : WavlMap<K, U> = WavlMap::new();
+        self.fold_left(initial, |map, key, value| match f(key, value) {
+            Option::Some(next) => map.insert(key, next),
+            Option::None => map
+        })
+    }
+
+    /// Counts entries satisfying `predicate`. O(n).
+    pub fn count_if(self : Self, predicate : (K, V) -> bool) -> u64 {
+        self.fold_left(0, |count, key, value| {
+            if predicate(key, value) { count + 1 } else { count }
+        })
+    }
+
+    /// Returns true if any entry satisfies `predicate`, stopping at the
+    /// first match. O(n) worst case.
+    pub fn any(self : Self, predicate : (K, V) -> bool) -> bool {
+        any_tree(self.root, predicate)
+    }
+
+    /// Returns true if every entry satisfies `predicate`, stopping at the
+    /// first counterexample. O(n) worst case.
+    pub fn all(self : Self, predicate : (K, V) -> bool) -> bool {
+        all_tree(self.root, predicate)
+    }
+
+    /// Returns the matching entry with the least key, or `None`. Unlike the
+    /// hash containers, the ordering makes this choice deterministic.
+    /// O(n) worst case.
+    pub fn find(self : Self, predicate : (K, V) -> bool) -> Option<Entry<K, V>> {
+        find_tree(self.root, predicate)
+    }
+
+    /// Inserts every entry from `other`; values from `other` win on
+    /// duplicate keys. O(m log(n + m)).
+    pub fn union(self : Self, other : Self) -> Self {
+        other.fold_left(self, |map, key, value| map.insert(key, value))
+    }
+
+    /// Unions two maps and combines duplicate values, receiving the value
+    /// from this map first and `other` second. O(m log(n + m)).
+    pub fn union_with(self : Self, other : Self, combine : (V, V) -> V) -> Self {
+        other.fold_left(self, |map, key, right| match map.get(key) {
+            Option::Some(left) => map.insert(key, combine(left, right)),
+            Option::None => map.insert(key, right)
+        })
+    }
+
+    /// Keeps entries from this map whose keys also occur in `other`, with
+    /// this map's values. O(n log m).
+    pub fn intersection<W>(self : Self, other : WavlMap<K, W>) -> Self {
+        self.filter(|key, ignored_value| other.contains_key(key))
+    }
+
+    /// Keeps shared keys and combines their values, using this map's stored
+    /// keys. O(n log m).
+    pub fn intersection_with<W, U>(
+        self : Self,
+        other : WavlMap<K, W>,
+        combine : (V, W) -> U
+    ) -> WavlMap<K, U> {
+        let initial : WavlMap<K, U> = WavlMap::new();
+        self.fold_left(initial, |map, key, value| match other.get(key) {
+            Option::Some(right) => map.insert(key, combine(value, right)),
+            Option::None => map
+        })
+    }
+
+    /// Removes every key occurring in `other`. O(m log n).
+    pub fn difference<W>(self : Self, other : WavlMap<K, W>) -> Self {
+        other.fold_left(self, |map, key, ignored_value| map.remove(key))
+    }
+
+    /// Returns true when the maps share no key. O(min(n, m) log max(n, m)).
+    pub fn is_disjoint<W>(self : Self, other : WavlMap<K, W>) -> bool {
+        if self.len() <= other.len() {
+            self.all(|key, ignored_value| !other.contains_key(key))
+        } else {
+            other.all(|key, ignored_value| !self.contains_key(key))
+        }
+    }
+
+    /// Returns true when every entry in this map has a matching key and
+    /// predicate-compatible value in `other`. O(n log m). The size test
+    /// short-circuits the scan away entirely on a mismatch.
+    pub fn is_submap_by<W>(
+        self : Self,
+        other : WavlMap<K, W>,
+        predicate : (V, W) -> bool
+    ) -> bool {
+        self.len() <= other.len() && self.all(|key, value| match other.get(key) {
+            Option::Some(right) => predicate(value, right),
+            Option::None => false
+        })
+    }
+
+    /// Returns true when this map is a strict predicate-compatible submap of
+    /// `other`. O(n log m).
+    pub fn is_proper_submap_by<W>(
+        self : Self,
+        other : WavlMap<K, W>,
+        predicate : (V, W) -> bool
+    ) -> bool {
+        self.len() < other.len() && self.is_submap_by(other, predicate)
+    }
 }
+
+impl<K : Ord, V : PartialEq> WavlMap<K, V> {
+    /// Returns true when both maps contain equal values for exactly the same
+    /// keys. O(n log n).
+    pub fn equals(self : Self, other : Self) -> bool {
+        self.len() == other.len()
+            && self.is_submap_by(other, |left, right| left == right)
+    }
+
+    /// Returns true when every entry in this map also occurs in `other`.
+    /// O(n log m).
+    pub fn is_submap(self : Self, other : Self) -> bool {
+        self.is_submap_by(other, |left, right| left == right)
+    }
+
+    /// Returns true when this map is a strict submap of `other`. O(n log m).
+    pub fn is_proper_submap(self : Self, other : Self) -> bool {
+        self.is_proper_submap_by(other, |left, right| left == right)
+    }
+
+    /// Returns true if any entry has a value equal to `value`. O(n).
+    pub fn contains_value(self : Self, value : V) -> bool {
+        self.any(|ignored_key, stored| stored == value)
+    }
+}
+
+impl<K : Ord, V : PartialEq> PartialEq for WavlMap<K, V> {
+    fn eq(self : Self, other : Self) -> bool {
+        self.equals(other)
+    }
+}
+
+impl<K : Ord, V : Eq> Eq for WavlMap<K, V> {}
