@@ -734,18 +734,24 @@ impl<T : Ord> WavlSet<T> {
 
     /// Adds `value`, keeping the existing element on equality. O(log n).
     pub fn insert(self : Self, value : T) -> Self {
-        let r = ins(self.root, value);
+        // Decompose before mutating: a live `self` across `ins` would keep
+        // the root shared, forcing a path copy per update.
+        let size = self.size;
+        let root = self.root;
+        let r = ins(root, value);
         WavlSet {
-            size: if r.added { self.size + 1 } else { self.size },
+            size: if r.added { size + 1 } else { size },
             root: r.tree
         }
     }
 
     /// Removes `value` when present. O(log n).
     pub fn remove(self : Self, value : T) -> Self {
-        let r = del(self.root, value);
+        let size = self.size;
+        let root = self.root;
+        let r = del(root, value);
         WavlSet {
-            size: if r.found { self.size - 1 } else { self.size },
+            size: if r.found { size - 1 } else { size },
             root: r.tree
         }
     }
