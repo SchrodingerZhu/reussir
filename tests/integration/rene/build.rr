@@ -32,6 +32,20 @@
 
 // FRESH: up to date
 
+// Token-reuse reports are cached sidecars named after the compiled product.
+// Turning them on after the ordinary build recompiles once to materialize the
+// report; the JSON is directly consumable, and the shared plan shows the exact
+// rrc boundary.
+// RUN: %rene build --manifest-path %S/build/rene.ncl --build-dir %t.bdir --token-reuse-remarks %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// RUN: %FileCheck %s --check-prefix=REMARK < %t.bdir/dev/demo%exe_ext.token-reuse.json
+// RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands --token-reuse-remarks | %FileCheck %s --check-prefix=REMARK-PLAN
+
+// REMARK: "schema": "reussir.token-reuse.v1"
+// REMARK: "locations":
+// REMARK: "decisions":
+// REMARK-PLAN: "--token-reuse-remarks",
+// REMARK-PLAN-NEXT: "{{.*}}demo{{.*}}.token-reuse.json",
+
 // A profile builds into its own directory with its own knobs (`release`
 // here also refines the built-in with the manifest's `codegen_units = 2`,
 // exercising the multi-unit link under rene).
@@ -59,9 +73,10 @@
 // A cross-target plan needs no target toolchain to render: the public
 // contract already names the WASI target at rrc's boundary and gives the
 // executable its WebAssembly suffix.
-// RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands --target wasm32-wasip1 | %FileCheck %s --check-prefix=WASM
+// RUN: %rene inspect --manifest-path %S/build/rene.ncl --build-dir %t.bdir --frozen --commands --target wasm32-wasip1 --token-reuse-remarks | %FileCheck %s --check-prefix=WASM
 
 // WASM: "{{.*[/\\]+}}dev{{[/\\]+}}demo.wasm"
+// WASM: "{{.*[/\\]+}}dev{{[/\\]+}}demo.wasm.token-reuse.json"
 // WASM: "--target-triple",
 // WASM-NEXT: "wasm32-wasip1",
 // WASM: "target": "wasm32-wasip1"

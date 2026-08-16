@@ -33,6 +33,8 @@ pub struct Options<'a> {
     /// `rene build --linker`, overriding the profile's.
     pub linker: Option<&'a Path>,
     pub build_dir: &'a Path,
+    /// Add an rrc JSON report side output to every artifact-producing compile.
+    pub token_reuse_remarks: bool,
 }
 
 /// The placeholder argv entries for bake-decided paths.
@@ -87,6 +89,7 @@ pub(crate) fn node_commands(
                     decl.kind,
                     opts.linker,
                 ));
+                add_token_reuse_report(&mut args, &out, opts.token_reuse_remarks);
                 args.extend(polyffi_args(bake));
                 args.extend(externs.iter().cloned());
                 if decl.kind.is_linked() {
@@ -119,6 +122,7 @@ pub(crate) fn node_commands(
             TargetKind::Staticlib,
             opts.linker,
         ));
+        add_token_reuse_report(&mut staticlib, &archive, opts.token_reuse_remarks);
         staticlib.extend(polyffi_args(bake));
         staticlib.extend(externs.iter().cloned());
         vec![
@@ -135,6 +139,23 @@ pub(crate) fn node_commands(
                 args: staticlib,
             },
         ]
+    }
+}
+
+/// The deterministic sidecar path rene assigns to an artifact's token-reuse
+/// report (`demo` -> `demo.token-reuse.json`, `libx.a` ->
+/// `libx.a.token-reuse.json`). Keeping the original suffix prevents target
+/// kinds with the same stem from colliding.
+pub(crate) fn token_reuse_report_path(artifact: &Path) -> PathBuf {
+    let mut name = artifact.file_name().unwrap_or_default().to_os_string();
+    name.push(".token-reuse.json");
+    artifact.with_file_name(name)
+}
+
+fn add_token_reuse_report(args: &mut Vec<String>, artifact: &Path, enabled: bool) {
+    if enabled {
+        args.push("--token-reuse-remarks".to_owned());
+        args.push(token_reuse_report_path(artifact).display().to_string());
     }
 }
 

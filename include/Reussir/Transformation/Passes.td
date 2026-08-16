@@ -182,6 +182,10 @@ def ReussirTokenReusePass
                         /*default=*/"false",
                         "allow token reuse across function calls (may increase "
                         "peak heap usage)">,
+                 Option<"emitRemarks", "emit-remarks", "bool",
+                        /*default=*/"false",
+                        "emit structured remarks for every allocation/reuse "
+                        "decision">,
   ];
 
   let dependentDialects = ["::reussir::ReussirDialect"];

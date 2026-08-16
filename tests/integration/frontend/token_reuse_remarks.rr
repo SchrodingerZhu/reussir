@@ -1,0 +1,62 @@
+// RUN: %rrc %s --emit mlir-llvm -O none --target-triple wasm32-unknown-unknown --codegen-units 2 -o %t.mlir-llvm --token-reuse-remarks %t.json
+// RUN: %FileCheck %s --check-prefix=JSON < %t.json
+// RUN: %not %rrc %s --emit mlir -o %t.early.mlir --token-reuse-remarks %t.early.json 2>&1 | %FileCheck %s --check-prefix=EARLY
+
+pub enum Box<T> {
+    Wrap(T)
+}
+
+fn update<T>(boxed: Box<T>, value: T) -> Box<T> {
+    match boxed {
+        Box::Wrap(_) => {
+            let next = value;
+            Box::Wrap { next }
+        }
+    }
+}
+
+pub fn update_i64(boxed: Box<i64>, value: i64) -> Box<i64> {
+    update(boxed, value)
+}
+
+pub fn update_i32(boxed: Box<i32>, value: i32) -> Box<i32> {
+    update(boxed, value)
+}
+
+// JSON: "schema": "reussir.token-reuse.v1"
+// JSON: "coordinates": {
+// JSON: "line_base": 1
+// JSON: "column_base": 1
+// JSON: "column_unit": "utf-8-byte"
+// JSON: "end": "exclusive"
+// JSON: "files": [
+// JSON-NEXT: "{{.*}}token_reuse_remarks.rr"
+// JSON: "locations": [
+// JSON: "kind": "file"
+// JSON: "start": {
+// JSON-NEXT: "line": 11
+// JSON-NEXT: "column": 25
+// JSON: "end": {
+// JSON-NEXT: "line": 14
+// JSON-NEXT: "column": 10
+// JSON: "kind": "file"
+// JSON: "start": {
+// JSON-NEXT: "line": 13
+// JSON-NEXT: "column": 13
+// JSON: "end": {
+// JSON-NEXT: "line": 13
+// JSON-NEXT: "column": 31
+// JSON: "decisions": [
+// JSON: "kind": "reuse"
+// JSON-NEXT: "sink": 1
+// JSON-NEXT: "source": 0
+// JSON-NEXT: "strategy": "ensure"
+// JSON-NEXT: "score": 2
+// JSON-NEXT: "available_tokens": 1
+// JSON-NEXT: "compatible_tokens": 1
+// JSON-NEXT: "instances": [
+// JSON-NEXT: "_RIC6update{{.*}}E"
+// JSON-NEXT: "_RIC6update{{.*}}E"
+// JSON: "occurrences": 2
+
+// EARLY: --token-reuse-remarks requires the lowering pipeline

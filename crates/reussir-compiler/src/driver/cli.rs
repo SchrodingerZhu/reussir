@@ -180,6 +180,13 @@ pub(crate) struct Cli {
     #[arg(long = "reuse-across-call")]
     pub(crate) reuse_across_call: bool,
 
+    /// Write every token-reuse decision to this JSON file. The report uses a
+    /// shared location table (including source ranges and nested call-site
+    /// locations) and groups identical generic instances instead of repeating
+    /// their source/sink locations. Requires an output past the `mlir` stage.
+    #[arg(long = "token-reuse-remarks", value_name = "FILE")]
+    pub(crate) token_reuse_remarks: Option<PathBuf>,
+
     /// Disable whole-program devirtualization of closures. WPD tags every
     /// closure vtable with its return-type family id, asserts it at the
     /// indirect eval/clone/drop call sites, and lets the backend's

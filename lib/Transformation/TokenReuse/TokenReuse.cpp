@@ -38,6 +38,7 @@
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/Dominance.h>
 #include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/Remarks.h>
 #include <mlir/IR/Value.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Pass/Pass.h>
@@ -412,6 +413,41 @@ struct Free {
 };
 struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
   using Base::Base;
+
+  mlir::remark::RemarkOpts remarkOpts(llvm::StringRef name) {
+    return mlir::remark::RemarkOpts::name(name)
+        .category("TokenReuse")
+        .subCategory("OneShot")
+        .function(getOperation().getSymName());
+  }
+
+  void emitReusedRemark(TokenAcceptor acceptor, mlir::Value source,
+                        bool realloc, int score, size_t availableTokens,
+                        size_t compatibleTokens) {
+    auto remark =
+        mlir::remark::passed(acceptor->getLoc(), remarkOpts("TokenReused"));
+    if (!remark)
+      return;
+    // Preserve the LocationAttr alongside its printed form so a custom
+    // streamer can serialize its full structure instead of reparsing text.
+    remark << mlir::remark::detail::Remark::Arg(
+                  "Source", static_cast<mlir::LocationAttr>(source.getLoc()))
+           << mlir::remark::metric("Strategy", realloc ? "realloc" : "ensure")
+           << mlir::remark::metric("Score", score)
+           << mlir::remark::metric("AvailableTokens", availableTokens)
+           << mlir::remark::metric("CompatibleTokens", compatibleTokens);
+  }
+
+  void emitNotReusedRemark(TokenAcceptor acceptor, size_t availableTokens,
+                           size_t compatibleTokens) {
+    llvm::StringRef reason =
+        availableTokens == 0 ? "no-available-token" : "no-compatible-token";
+    mlir::remark::missed(acceptor->getLoc(), remarkOpts("TokenNotReused"))
+        << mlir::remark::metric("Reason", reason)
+        << mlir::remark::metric("AvailableTokens", availableTokens)
+        << mlir::remark::metric("CompatibleTokens", compatibleTokens);
+  }
+
   ValueSet oneShotTokenReuse(
       mlir::Region &region, ValueSet availableTokens,
       llvm::SmallVectorImpl<Reuse> &reuses, llvm::SmallVectorImpl<Free> &frees,
@@ -426,6 +462,10 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
       signalPassFailure();
       return {};
     }
+
+    // Keep the disabled path free of remark bookkeeping. In particular, the
+    // compatibility count would otherwise add work to this pass's hot loop.
+    const bool shouldEmitRemarks = emitRemarks;
 
     for (auto &op : region.front()) {
       if (isa<mlir::LoopLikeOpInterface>(op) ||
@@ -496,6 +536,7 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
         auto allocOp = llvm::dyn_cast_if_present<ReussirTokenAllocOp>(
             acceptor.getToken().getDefiningOp());
         if (allocOp && allocOp.getToken().hasOneUse()) {
+          size_t compatibleTokenCount = 0;
           int bestScore = -1;
           mlir::Value bestToken{};
           bool bestRealloc = false;
@@ -509,6 +550,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                   producerAsDec ? producerAsDec.getRcPtr() : nullptr;
               int score = heuristic(producer.getTokenType(), producerRc,
                                     acceptor, equivalence);
+              if (shouldEmitRemarks && score >= 0)
+                ++compatibleTokenCount;
               if (score >= 0 && (score > bestScore ||
                                  (score == bestScore && bestToken &&
                                   tokenOrderKey(dfsOrder, tokenVal) >
@@ -533,6 +576,8 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
                     llvm::cast<mlir::OpResult>(tokenVal).getResultNumber());
                 int score =
                     heuristic(producedType, producerRc, acceptor, equivalence);
+                if (shouldEmitRemarks && score >= 0)
+                  ++compatibleTokenCount;
                 if (score >= 0 && (score > bestScore ||
                                    (score == bestScore && bestToken &&
                                     tokenOrderKey(dfsOrder, tokenVal) >
@@ -547,8 +592,14 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
 
           if (bestToken) {
             mlir::Value selectedToken = bestToken;
+            if (shouldEmitRemarks)
+              emitReusedRemark(acceptor, selectedToken, bestRealloc, bestScore,
+                               availableTokens.size(), compatibleTokenCount);
             availableTokens = availableTokens.erase(bestToken);
             reuses.push_back({selectedToken, bestRealloc, acceptor});
+          } else if (shouldEmitRemarks) {
+            emitNotReusedRemark(acceptor, availableTokens.size(),
+                                compatibleTokenCount);
           }
         }
         // ReussirClosureCreateOp is a kind of acceptor.

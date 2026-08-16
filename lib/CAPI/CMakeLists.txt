@@ -7,15 +7,16 @@
 # MLIR/LLVM that mlir-sys pulls in. Requires the distro's static MLIR/LLVM
 # development packages (including libpolly-<ver>-dev for the static Polly
 # archives llvm-config references).
-add_library(ReussirCAPI STATIC Dialects.cpp Passes.cpp Types.cpp Attrs.cpp Jit.cpp
-                               Artifact.cpp)
+add_library(ReussirCAPI STATIC Dialects.cpp Passes.cpp ReuseRemarks.cpp Types.cpp
+                               Attrs.cpp Jit.cpp Artifact.cpp)
 
 # Jit.cpp runs the custom Reussir LLVM passes and (when available) TPDE. Linking
 # these as usage requirements gives ReussirCAPI their headers/defines and orders
 # the build; the archives themselves are pulled onto the final Rust link line by
 # reussir-backend-sys (see its build.rs).
 target_link_libraries(ReussirCAPI PRIVATE ReussirLLVMAllocationSimplicationPass
-                                          ReussirLLVMLinearRecurrencePass)
+                                          ReussirLLVMLinearRecurrencePass
+                                          MLIRIR LLVMSupport)
 if(REUSSIR_HAS_TPDE)
   target_compile_definitions(ReussirCAPI PRIVATE REUSSIR_HAS_TPDE)
   target_link_libraries(ReussirCAPI PRIVATE tpde_llvm)
