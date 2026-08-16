@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/Transformation/IncDecCancellation.h"
-#include "Reussir/Analysis/AliasAnalysis.h"
+#include "Reussir/Analysis/EquivalenceAnalysis.h"
 #include "Reussir/Conversion/RcDecrementExpansion.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"

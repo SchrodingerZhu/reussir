@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Reussir/Transformation/InferVariantTag.h"
-#include "Reussir/Analysis/AliasAnalysis.h"
+#include "Reussir/Analysis/EquivalenceAnalysis.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
@@ -23,7 +23,6 @@
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
-#include <mlir/Analysis/AliasAnalysis.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Dominance.h>
@@ -70,19 +69,19 @@ struct TagFact {
 /// mis-direct the drop.
 class TagInferenceDriver {
 public:
-  TagInferenceDriver(mlir::func::FuncOp func,
-                     mlir::AliasAnalysis &aliasAnalysis)
-      : aliasAnalysis(aliasAnalysis), domInfo(func) {}
+  TagInferenceDriver(mlir::func::FuncOp func, EquivalenceAnalysis &equivalence)
+      : equivalence(equivalence), domInfo(func) {}
 
   void run(mlir::func::FuncOp func) { processRegion(func.getBody()); }
 
 private:
-  /// The innermost fact aliasing `ref` among those visible to the current
-  /// block — facts the current block introduced itself are excluded.
+  /// The innermost fact whose ref is equivalent to `ref` among those visible
+  /// to the current block — facts the current block introduced itself are
+  /// excluded.
   std::optional<int64_t> lookup(mlir::TypedValue<RefType> ref) {
     for (const TagFact &fact :
          llvm::reverse(llvm::ArrayRef(facts).take_front(blockStart)))
-      if (aliasAnalysis.alias(ref, fact.ref) == mlir::AliasResult::MustAlias)
+      if (equivalence.areEquivalent(ref, fact.ref))
         return fact.tag;
     return std::nullopt;
   }
@@ -107,8 +106,8 @@ private:
     }
     if (auto dispatchOp = llvm::dyn_cast<ReussirRecordDispatchOp>(op)) {
       for (auto [idx, region] : llvm::enumerate(dispatchOp->getRegions())) {
-        auto regionTags = llvm::cast<mlir::DenseI64ArrayAttr>(
-            dispatchOp.getTagSets()[idx]);
+        auto regionTags =
+            llvm::cast<mlir::DenseI64ArrayAttr>(dispatchOp.getTagSets()[idx]);
         size_t mark = facts.size();
         if (regionTags.size() == 1)
           facts.push_back({dispatchOp.getVariant(), regionTags[0]});
@@ -157,7 +156,7 @@ private:
     processDomNode(domInfo.getRootNode(&region));
   }
 
-  mlir::AliasAnalysis &aliasAnalysis;
+  EquivalenceAnalysis &equivalence;
   mlir::DominanceInfo domInfo;
   llvm::SmallVector<TagFact> facts;
   /// Number of facts that predate the block currently being processed.
@@ -166,9 +165,8 @@ private:
 } // namespace
 
 void runTagInference(mlir::func::FuncOp func) {
-  mlir::AliasAnalysis aliasAnalysis(func);
-  registerAliasAnalysisImplementations(aliasAnalysis);
-  TagInferenceDriver(func, aliasAnalysis).run(func);
+  EquivalenceAnalysis equivalence;
+  TagInferenceDriver(func, equivalence).run(func);
 }
 
 } // namespace reussir
