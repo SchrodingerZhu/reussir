@@ -33,6 +33,11 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
+
+// Complete mlir::DialectVersion before MLIR C API headers reach
+// BytecodeWriter.h; MSVC's STL rejects destroying unique_ptr<T> when T is only
+// forward declared.
+#include <mlir/Bytecode/BytecodeImplementation.h>
 #include <mlir/CAPI/IR.h>
 #include <mlir/CAPI/Support.h>
 #include <mlir/IR/Location.h>
@@ -166,7 +171,7 @@ public:
     if (remark.getCategoryName() != "TokenReuse")
       return;
 
-    std::lock_guard lock(mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     DecisionKey incoming;
     if (remark.getRemarkName() == "TokenReused")
       incoming.kind = DecisionKind::Reuse;
@@ -208,7 +213,7 @@ public:
   }
 
   void finalize() override {
-    std::lock_guard lock(mutex);
+    std::lock_guard<std::mutex> lock(mutex);
     if (finalized)
       return;
     finalized = true;
