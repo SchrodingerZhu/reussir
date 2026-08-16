@@ -59,7 +59,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "Reussir/Analysis/AliasAnalysis.h"
+#include "Reussir/Analysis/EquivalenceAnalysis.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirOps.h"
 #include "Reussir/IR/ReussirTypes.h"
