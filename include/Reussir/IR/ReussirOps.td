@@ -81,7 +81,8 @@ def ReussirCctxEmptyOp : ReussirCctxOp<"empty", [Pure]> {
   }];
 }
 
-def ReussirCctxExtendOp : ReussirCctxOp<"extend", []> {
+def ReussirCctxExtendOp
+    : ReussirCctxOp<"extend", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Plug a constructor into a context and refocus on its hole";
   let description = [{
     `reussir.cctx.extend` plugs `rcPtr` — a constructor freshly created with a
@@ -109,7 +110,8 @@ def ReussirCctxExtendOp : ReussirCctxOp<"extend", []> {
   }];
 }
 
-def ReussirCctxApplyOp : ReussirCctxOp<"apply", []> {
+def ReussirCctxApplyOp
+    : ReussirCctxOp<"apply", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Complete a constructor context with a final value";
   let description = [{
     `reussir.cctx.apply` plugs `value` into the context's hole and yields the
@@ -163,7 +165,7 @@ def ReussirTokenFreeOp : ReussirTokenOp<"free", []> {
   }];
 
   let arguments =
-      (ins Res<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+      (ins Arg<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
                "Free Memory Token", [MemFree<DefaultResource>]>:$token);
 
   let assemblyFormat = [{
@@ -171,7 +173,7 @@ def ReussirTokenFreeOp : ReussirTokenOp<"free", []> {
   }];
 }
 
-def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", []> {
+def ReussirTokenReinterpretOp : ReussirTokenOp<"reinterpret", [Pure]> {
   let summary = "Reinterpret memory token";
   let description = [{
     `reussir.token.reinterpret` reinterprets a token into a reference.
@@ -252,7 +254,7 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
   }];
 
   let arguments =
-      (ins Res<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
+      (ins Arg<AnyTypeOf<[ReussirTokenType, ReussirNullableTokenType]>,
                "Target Token to Realloc", [MemFree<DefaultResource>]>:$token);
 
   let results = (outs Res<
@@ -269,7 +271,7 @@ def ReussirTokenReallocOp : ReussirTokenOp<"realloc", []> {
 class ReussirNullableOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"nullable."#mnemonic, traits>;
 
-def ReussirNullableCheckOp : ReussirNullableOp<"check", []> {
+def ReussirNullableCheckOp : ReussirNullableOp<"check", [Pure]> {
   let summary = "Check if a nullable token is null";
   let description = [{
     `reussir.nullable.check` checks if a nullable token is null.
@@ -286,7 +288,7 @@ def ReussirNullableCheckOp : ReussirNullableOp<"check", []> {
   }];
 }
 
-def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
+def ReussirNullableCreateOp : ReussirNullableOp<"create", [Pure]> {
   let summary = "Create a nullable token";
   let description = [{
     `reussir.nullable.create` creates a nullable token.
@@ -309,7 +311,8 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", []> {
 // should be expanded before basic ops lowering pass
 def ReussirNullableDispatchOp
     : ReussirNullableOp<
-          "dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+          "dispatch", [RecursiveMemoryEffects,
+                       DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a nullable token";
   let description = [{
     `reussir.nullable.dispatch` is a high-level structured control flow operation.
@@ -349,7 +352,7 @@ def ReussirNullableDispatchOp
   let hasVerifier = 1;
 }
 
-def ReussirNullableCoerceOp : ReussirNullableOp<"coerce", []> {
+def ReussirNullableCoerceOp : ReussirNullableOp<"coerce", [Pure]> {
   let summary = "Coerce a nullable token to a non-nullable token";
   let description = [{
     `reussir.nullable.coerce` coerces a nullable token to a non-nullable token.
@@ -388,7 +391,8 @@ def ReussirRcIncOp : ReussirRcOp<"inc", []> {
     ```
   }];
 
-  let arguments = (ins Arg<ReussirRcType, "Reference to increment">:$rcPtr);
+  let arguments = (ins Arg<ReussirRcType, "Reference to increment",
+      [MemRead, MemWrite]>:$rcPtr);
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` attr-dict
@@ -398,8 +402,10 @@ def ReussirRcIncOp : ReussirRcOp<"inc", []> {
 }
 
 def ReussirRcDecOp
-    : ReussirRcOp<"dec", [DeclareOpInterfaceMethods<TokenProducerInterface>,
-                          DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+    : ReussirRcOp<"dec",
+                  [MemoryEffects<[MemRead, MemWrite, MemFree]>,
+                   DeclareOpInterfaceMethods<TokenProducerInterface>,
+                   DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Decrement reference count";
   let description = [{
     `reussir.rc.dec` decrements the reference count of a RC pointer.
@@ -469,7 +475,8 @@ def ReussirRcFetchOp : ReussirRcOp<"fetch", []> {
     operation directly.
   }];
 
-  let arguments = (ins Arg<ReussirRcType, "Reference to inspect">:$rcPtr);
+  let arguments =
+      (ins Arg<ReussirRcType, "Reference to inspect", [MemRead]>:$rcPtr);
   let results = (outs Res<Index, "Reference count">:$refCount);
 
   let assemblyFormat = [{
@@ -496,7 +503,8 @@ def ReussirRcFetchSubOp : ReussirRcOp<"fetch_sub", []> {
     not for direct use.
   }];
 
-  let arguments = (ins Arg<ReussirRcType, "Reference to decrement">:$rcPtr);
+  let arguments = (ins Arg<ReussirRcType, "Reference to decrement",
+      [MemRead, MemWrite]>:$rcPtr);
   let results = (outs Res<Index, "Previous reference count">:$refCount);
 
   let assemblyFormat = [{
@@ -517,8 +525,9 @@ def ReussirRcSetOp : ReussirRcOp<"set", []> {
     stored — atomic boxes are decremented with `reussir.rc.fetch_sub`.
   }];
 
-  let arguments = (ins Arg<ReussirRcType, "Reference to update">:$rcPtr,
-      Arg<Index, "New reference count">:$refCount);
+  let arguments =
+      (ins Arg<ReussirRcType, "Reference to update", [MemWrite]>:$rcPtr,
+          Arg<Index, "New reference count">:$refCount);
 
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `,`
@@ -768,11 +777,20 @@ def ReussirRcReinterpretOp : ReussirRcOp<"reinterpret", []> {
     `reussir.rc.reinterpret` reinterprets a Rc pointer into a token.
 
     The token layout must meet the underlying Rc box layout.
+
+    Like `reussir.token.launder`, this is modeled as freeing the input object
+    and allocating the output token even though the storage is the same: the
+    box's lifetime ends here and its memory is reborn as a token. The free
+    effect also keeps the op (and any region holding it) out of dead-code
+    elimination — a minted token is a *responsibility*; its result may be
+    temporarily unconsumed until token reuse either matches it to an acceptor
+    or materializes the `token.free`.
   }];
 
-  let results =
-      (outs Res<ReussirTokenType, "reinterpreted token">:$reinterpreted);
-  let arguments = (ins Arg<ReussirRcType, "Rc pointer to reinterpret">:$rcPtr);
+  let results = (outs Res<ReussirTokenType, "reinterpreted token",
+      [MemAlloc<DefaultResource>]>:$reinterpreted);
+  let arguments = (ins Arg<ReussirRcType, "Rc pointer to reinterpret",
+      [MemFree<DefaultResource>]>:$rcPtr);
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` qualified(type($reinterpreted)) attr-dict
   }];
@@ -797,7 +815,7 @@ def ReussirRcFreezeOp : ReussirRcOp<"freeze", []> {
 //===----------------------------------------------------------------------===//
 // Reussir RC Borrow Operation
 //===----------------------------------------------------------------------===//
-def ReussirRcBorrowOp : ReussirRcOp<"borrow", []> {
+def ReussirRcBorrowOp : ReussirRcOp<"borrow", [Pure]> {
   let summary = "Borrow a RC pointer";
   let description = [{
     `reussir.rc.borrow` borrows a RC pointer, which gives you an access reference 
@@ -832,7 +850,8 @@ def ReussirRcIsUniqueOp : ReussirRcOp<"is_unique", []> {
   let description = [{
     `reussir.rc.is_unique` checks if a RC pointer is unique.
   }];
-  let arguments = (ins Arg<ReussirRcType, "RC pointer to check">:$rcPtr);
+  let arguments =
+      (ins Arg<ReussirRcType, "RC pointer to check", [MemRead]>:$rcPtr);
   let results = (outs Res<I1, "Is unique">:$isUnique);
   let assemblyFormat = [{
     `(` $rcPtr `:` qualified(type($rcPtr)) `)` `:` type($isUnique) attr-dict
@@ -860,7 +879,7 @@ def ReussirRcAssumeUniqueOp : ReussirRcOp<"assume_unique", []> {
 class ReussirRecordOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"record."#mnemonic, traits>;
 
-def ReussirRecordCompoundOp : ReussirRecordOp<"compound", []> {
+def ReussirRecordCompoundOp : ReussirRecordOp<"compound", [Pure]> {
   let summary = "Create a compound record";
   let description = [{
     `reussir.record.compound` creates a compound record.
@@ -876,7 +895,7 @@ def ReussirRecordCompoundOp : ReussirRecordOp<"compound", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRecordExtractOp : ReussirRecordOp<"extract", []> {
+def ReussirRecordExtractOp : ReussirRecordOp<"extract", [Pure]> {
   let summary = "Extract a field from a record";
   let description = [{
     `reussir.record.extract` extracts a field from a record.
@@ -893,7 +912,7 @@ def ReussirRecordExtractOp : ReussirRecordOp<"extract", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRecordVariantOp : ReussirRecordOp<"variant", []> {
+def ReussirRecordVariantOp : ReussirRecordOp<"variant", [Pure]> {
   let summary = "Create a variant record";
   let description = [{
     `reussir.record.variant` creates a variant record.
@@ -919,7 +938,8 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
     The input must be a reference to a variant record.
   }];
 
-  let arguments = (ins Arg<ReussirRefType, "variant record">:$variant);
+  let arguments =
+      (ins Arg<ReussirRefType, "variant record", [MemRead]>:$variant);
   let results = (outs Res<Index, "tag">:$tag);
 
   let assemblyFormat = [{
@@ -933,7 +953,8 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
 // should be expanded before basic ops lowering pass
 def ReussirRecordDispatchOp
     : ReussirRecordOp<
-          "dispatch", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+          "dispatch", [RecursiveMemoryEffects,
+                       DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
   let summary = "Dispatch a record";
   let description = [{
     `reussir.record.dispatch` is a high-level structured control flow operation.
@@ -964,7 +985,7 @@ def ReussirRecordDispatchOp
   let hasVerifier = 1;
 }
 
-def ReussirRecordCoerceOp : ReussirRecordOp<"coerce", []> {
+def ReussirRecordCoerceOp : ReussirRecordOp<"coerce", [Pure]> {
   let summary = "Coerce a variant reference to a non-variant reference";
   let description = [{
     `reussir.record.coerce` coerces a variant reference to a non-variant reference.
@@ -992,7 +1013,7 @@ def ReussirRecordCoerceOp : ReussirRecordOp<"coerce", []> {
 class ReussirArrayOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"array."#mnemonic, traits>;
 
-def ReussirArrayProjectOp : ReussirArrayOp<"project", []> {
+def ReussirArrayProjectOp : ReussirArrayOp<"project", [Pure]> {
   let summary = "Project a fixed-size array view";
   let description = [{
     `reussir.array.project` projects the leading dimension of a statically
@@ -1011,7 +1032,7 @@ def ReussirArrayProjectOp : ReussirArrayOp<"project", []> {
   let hasVerifier = 1;
 }
 
-def ReussirArrayViewOp : ReussirArrayOp<"view", []> {
+def ReussirArrayViewOp : ReussirArrayOp<"view", [Pure]> {
   let summary = "Materialize an array view from an array reference";
   let description = [{
     `reussir.array.view` turns a reference to an inline array payload into a
@@ -1245,7 +1266,8 @@ def ReussirCellInUseOp : ReussirCellOp<"in_use", []> {
     `reussir.cell.rmw` body, letting front ends implement checked access
     instead of panicking.
   }];
-  let arguments = (ins Arg<ReussirRcCellType, "cell to query">:$cell);
+  let arguments =
+      (ins Arg<ReussirRcCellType, "cell to query", [MemRead]>:$cell);
   let results = (outs Res<I1, "whether the cell is in use">:$inUse);
   let assemblyFormat = [{
     `(` $cell `:` qualified(type($cell)) `)` `:` type($inUse) attr-dict
@@ -1254,7 +1276,7 @@ def ReussirCellInUseOp : ReussirCellOp<"in_use", []> {
 }
 
 def ReussirCellYieldOp
-    : ReussirCellOp<"yield", [ReturnLike, Terminator,
+    : ReussirCellOp<"yield", [Pure, ReturnLike, Terminator,
                               ParentOneOf<["::reussir::ReussirCellRmwOp"]>]> {
   let summary = "Yield a replacement and optional output from cell.rmw";
   let arguments = (ins Arg<AnyType, "replacement value">:$newValue,
@@ -1272,7 +1294,7 @@ def ReussirCellYieldOp
 class ReussirReferenceOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"ref."#mnemonic, traits>;
 
-def ReussirRefProjectOp : ReussirReferenceOp<"project", []> {
+def ReussirRefProjectOp : ReussirReferenceOp<"project", [Pure]> {
   let summary = "Project a reference";
   let description = [{
     `reussir.ref.project` projects a reference. This is effectively a GEP 
@@ -1324,14 +1346,15 @@ def ReussirRefSpilledOp : ReussirReferenceOp<"spilled", []> {
   let arguments = (ins Arg<AnyType, "value to spill">:$value);
   let results =
       (outs Res<ReussirRefType, "spilled reference",
-                [MemAlloc<AutomaticAllocationScopeResource>]>:$spilled);
+                [MemAlloc<AutomaticAllocationScopeResource>,
+                 MemWrite]>:$spilled);
   let assemblyFormat = [{
     `(` $value `:` type($value) `)` `:` qualified(type($spilled)) attr-dict
   }];
   let hasVerifier = 1;
 }
 
-def ReussirRefToMemrefOp : ReussirReferenceOp<"to_memref", []> {
+def ReussirRefToMemrefOp : ReussirReferenceOp<"to_memref", [Pure]> {
   let summary = "Materialize a zero-rank memref view from a reference";
   let description = [{
     `reussir.ref.to_memref` turns a reference into a zero-rank memref view over
@@ -1349,7 +1372,7 @@ def ReussirRefToMemrefOp : ReussirReferenceOp<"to_memref", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRefFromMemrefOp : ReussirReferenceOp<"from_memref", []> {
+def ReussirRefFromMemrefOp : ReussirReferenceOp<"from_memref", [Pure]> {
   let summary = "Recover a reference from a zero-rank memref view";
   let description = [{
     `reussir.ref.from_memref` bridges a zero-rank memref view back to a
@@ -1372,7 +1395,8 @@ def ReussirRefLoadOp : ReussirReferenceOp<"load", []> {
     `reussir.ref.load` loads a reference.
   }];
 
-  let arguments = (ins Arg<ReussirRefType, "reference to load">:$ref,
+  let arguments = (ins Arg<ReussirRefType, "reference to load",
+      [MemRead]>:$ref,
       UnitAttr:$invariant_group);
   let results = (outs Res<AnyType, "loaded value">:$value);
 
@@ -1389,7 +1413,8 @@ def ReussirRefStoreOp : ReussirReferenceOp<"store", []> {
     `reussir.ref.store` stores a value to a reference. Target reference must have
     field capability.
   }];
-  let arguments = (ins Arg<ReussirRefType, "reference to store">:$ref,
+  let arguments = (ins Arg<ReussirRefType, "reference to store",
+      [MemWrite]>:$ref,
       Arg<AnyType, "value to store">:$value);
   let assemblyFormat = [{
     `(` $ref `:` qualified(type($ref)) `)` `(` $value `:` type($value) `)` attr-dict
@@ -1426,7 +1451,7 @@ def ReussirRefCmpXchgOp : ReussirReferenceOp<"cmpxchg", []> {
   let arguments = (ins OptionalAttr<AtomicOrdering>:$ordering, UnitAttr:$weak,
       Arg<AnyType, "expected element">:$expected,
       Arg<AnyType, "replacement element">:$desired,
-      Arg<ReussirRefType, "slot to exchange">:$ref);
+      Arg<ReussirRefType, "slot to exchange", [MemRead, MemWrite]>:$ref);
   let results = (outs Res<AnyType, "observed element">:$observed,
       Res<I1, "success flag">:$success);
   let assemblyFormat = [{
@@ -1438,7 +1463,9 @@ def ReussirRefCmpXchgOp : ReussirReferenceOp<"cmpxchg", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
+def ReussirRefDropOp
+    : ReussirReferenceOp<"drop",
+                         [MemoryEffects<[MemRead, MemWrite, MemFree]>]> {
   let summary = "Drop a reference";
   let description = [{
     `reussir.ref.drop` destructs the element behind the reference in place.
@@ -1471,7 +1498,8 @@ def ReussirRefDropOp : ReussirReferenceOp<"drop", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRefAcquireOp : ReussirReferenceOp<"acquire", []> {
+def ReussirRefAcquireOp
+    : ReussirReferenceOp<"acquire", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Acquire ownership of a reference";
   let description = [{
     `reussir.ref.acquire` acquires ownership of the element behind the reference
@@ -1506,7 +1534,7 @@ def ReussirRefAcquireOp : ReussirReferenceOp<"acquire", []> {
   let hasVerifier = 1;
 }
 
-def ReussirRefDiffOp : ReussirReferenceOp<"diff", []> {
+def ReussirRefDiffOp : ReussirReferenceOp<"diff", [Pure]> {
   let summary = "Compute difference between two reference pointers";
   let description = [{
     `reussir.ref.diff` computes the difference (target - base) between two refernece pointers.
@@ -1519,7 +1547,7 @@ def ReussirRefDiffOp : ReussirReferenceOp<"diff", []> {
   }];
 }
 
-def ReussirRefCmpOp : ReussirReferenceOp<"cmp", []> {
+def ReussirRefCmpOp : ReussirReferenceOp<"cmp", [Pure]> {
   let summary = "Compare the address numeric value of two references";
   let description = [{
     `reussir.ref.cmp` computes the difference (target - base) between two refernece pointers.
@@ -1543,8 +1571,9 @@ def ReussirRefMemcpyOp : ReussirReferenceOp<"memcpy", []> {
     This is a low-level operation that does not perform any reference counting
     or ownership transfer. It simply copies the bytes from source to destination.
   }];
-  let arguments = (ins Arg<ReussirRefType, "source reference">:$src,
-      Arg<ReussirRefType, "destination reference">:$dst);
+  let arguments = (ins Arg<ReussirRefType, "source reference",
+      [MemRead]>:$src,
+      Arg<ReussirRefType, "destination reference", [MemWrite]>:$dst);
   let assemblyFormat = [{
     $src `to` $dst `:` type($src) `to` type($dst) attr-dict
   }];
@@ -1578,7 +1607,7 @@ def ReussirRegionRunOp
 }
 
 def ReussirRegionYieldOp
-    : ReussirRegionOp<"yield", [Terminator,
+    : ReussirRegionOp<"yield", [Pure, Terminator,
                                 ParentOneOf<["::reussir::ReussirRegionRunOp"]>,
 ]> {
   let summary = "Yield a value from a region";
@@ -1638,13 +1667,16 @@ def ReussirRegionCreateOp : ReussirRegionOp<"create", []> {
     `reussir.region.create` creates a region. This is just a alloca operation
     for a pointer type.
   }];
-  let results = (outs Res<ReussirRegionType, "created region">:$region);
+  let results = (outs Res<ReussirRegionType, "created region",
+      [MemAlloc<AutomaticAllocationScopeResource>]>:$region);
   let assemblyFormat = [{
     `:` qualified(type($region)) attr-dict
   }];
 }
 
-def ReussirRegionCleanupOp : ReussirRegionOp<"cleanup", []> {
+def ReussirRegionCleanupOp
+    : ReussirRegionOp<"cleanup",
+                      [MemoryEffects<[MemRead, MemWrite, MemFree]>]> {
   let summary = "Cleanup a region";
   let description = [{
     `reussir.region.cleanup` cleans up a region. This is a placeholder for
@@ -1665,7 +1697,7 @@ class ReussirScfOp<string mnemonic, list<Trait> traits>
 
 def ReussirScfYieldOp
     : ReussirScfOp<
-          "yield", [ReturnLike, Terminator,
+          "yield", [Pure, ReturnLike, Terminator,
                     ParentOneOf<["::reussir::ReussirNullableDispatchOp",
                                  "::reussir::ReussirRecordDispatchOp",
                                  "::reussir::ReussirArrayWithUniqueViewOp",
@@ -1783,7 +1815,7 @@ def ReussirClosureCreateOp
 
 def ReussirClosureYieldOp
     : ReussirClosureOp<
-          "yield", [ReturnLike, Terminator,
+          "yield", [Pure, ReturnLike, Terminator,
                     ParentOneOf<["::reussir::ReussirClosureCreateOp"]>]> {
   let summary = "Yield from a closure";
   let description = [{
@@ -1944,7 +1976,8 @@ def ReussirClosureWpdTestOp : ReussirClosureOp<"wpd_test", []> {
   }];
 }
 
-def ReussirClosureInspectPayloadOp : ReussirClosureOp<"inspect_payload", []> {
+def ReussirClosureInspectPayloadOp
+    : ReussirClosureOp<"inspect_payload", [Pure]> {
   let summary = "Inspect closure payload";
   let description = [{
     `reussir.closure.inspect_payload` serves as an low-level intermediate operation
@@ -1966,7 +1999,8 @@ def ReussirClosureCursorOp : ReussirClosureOp<"cursor", []> {
     closure box pointer as an i8 reference.
   }];
   let arguments = (ins IndexAttr:$payloadIndex,
-      Arg<ReussirClosureBoxRefType, "reference to closure box">:$closureBoxRef);
+      Arg<ReussirClosureBoxRefType, "reference to closure box",
+          [MemRead]>:$closureBoxRef);
   let results = (outs Res<ReussirRefType, "i8 reference">:$cursor);
   let assemblyFormat = [{
    `(` $closureBoxRef `:` qualified(type($closureBoxRef)) `)` `:`
@@ -1981,7 +2015,8 @@ def ReussirClosureInstantiateOp : ReussirClosureOp<"instantiate", []> {
     `reussir.closure.instantiate` operation instantiate a token into a special
     RC-wrapped payload box and setting the refcnt to 1.
   }];
-  let arguments = (ins Arg<ReussirTokenType, "source token">:$token);
+  let arguments =
+      (ins Arg<ReussirTokenType, "source token", [MemWrite]>:$token);
   let results =
       (outs Res<ReussirRcType, "pointer to the payload box">:$closureBoxRc);
   let assemblyFormat = [{
@@ -1995,8 +2030,10 @@ def ReussirClosureTransferOp : ReussirClosureOp<"transfer", []> {
   let description = [{
     `reussir.closure.transfer` copy bytes between two closure boxes.
   }];
-  let arguments = (ins Arg<ReussirClosureBoxRefType, "source reference">:$src,
-      Arg<ReussirClosureBoxRefType, "destination reference">:$dst);
+  let arguments = (ins Arg<ReussirClosureBoxRefType, "source reference",
+      [MemRead]>:$src,
+      Arg<ReussirClosureBoxRefType, "destination reference",
+          [MemWrite]>:$dst);
   let assemblyFormat = [{
     $src `to` $dst `:` type($src) `to` type($dst) attr-dict
   }];
@@ -2053,7 +2090,7 @@ def ReussirStrGlobalOp : ReussirStrOp<"global", [Symbol]> {
 
 def ReussirStrLiteralOp
     : ReussirStrOp<
-          "literal", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+          "literal", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Create a global string literal";
   let description = [{
     `reussir.str.literal` creates a reference to a global string literal.
@@ -2066,7 +2103,7 @@ def ReussirStrLiteralOp
   let hasVerifier = 1;
 }
 
-def ReussirStrLenOp : ReussirStrOp<"len", []> {
+def ReussirStrLenOp : ReussirStrOp<"len", [Pure]> {
   let summary = "Get the length of the string";
   let description = [{
     `reussir.str.len` returns the length of the string.
@@ -2083,12 +2120,13 @@ def ReussirStrByteAtOp : ReussirStrOp<"byte_at", []> {
   let description = [{
     `reussir.str.byte_at` returns the character at a byte offset. Return 0 if the index is out of bounds.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str,
+  let arguments = (ins Arg<ReussirStrType, "String to get character from",
+      [MemRead]>:$str,
       Arg<Index, "Index of character to get">:$index);
   let results = (outs Res<I8, "Character at index">:$charVal);
   let assemblyFormat = [{
-    `(` $str `:` type($str) `)` 
-    `[` $index `:` type($index) `]` 
+    `(` $str `:` type($str) `)`
+    `[` $index `:` type($index) `]`
     `:` type($charVal) attr-dict
   }];
 }
@@ -2096,10 +2134,11 @@ def ReussirStrByteAtOp : ReussirStrOp<"byte_at", []> {
 def ReussirStrUnsafeByteAtOp : ReussirStrOp<"unsafe_byte_at", []> {
   let summary = "Get the character at a specific index without bounds check";
   let description = [{
-    `reussir.str.unsafe_byte_at` returns the character at a byte offset. 
+    `reussir.str.unsafe_byte_at` returns the character at a byte offset.
     Undefined behavior if the index is out of bounds.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to get character from">:$str,
+  let arguments = (ins Arg<ReussirStrType, "String to get character from",
+      [MemRead]>:$str,
       Arg<Index, "Index of character to get">:$index);
   let results = (outs Res<I8, "Character at index">:$charVal);
   let assemblyFormat = [{
@@ -2109,7 +2148,7 @@ def ReussirStrUnsafeByteAtOp : ReussirStrOp<"unsafe_byte_at", []> {
   }];
 }
 
-def ReussirStrCastOp : ReussirStrOp<"cast", []> {
+def ReussirStrCastOp : ReussirStrOp<"cast", [Pure]> {
   let summary = "Cast a global string literal to a local string literal";
   let description = [{
     `reussir.str.cast` casts a global string literal to a local string literal.
@@ -2127,7 +2166,8 @@ def ReussirStrSelectOp : ReussirStrOp<"select", []> {
   let description = [{
     `reussir.str.select` selects the first matched pattern of the string.
   }];
-  let arguments = (ins Arg<ReussirStrType, "String to select">:$str,
+  let arguments = (ins Arg<ReussirStrType, "String to select",
+      [MemRead]>:$str,
       Arg<ArrayAttr, "Patterns to match">:$patterns);
   let results = (outs Res<Index, "Selected pattern">:$selected,
       Res<I1, "Matched found">:$found);
@@ -2141,7 +2181,8 @@ def ReussirStrStartWithOp : ReussirStrOp<"startswith", []> {
   let description = [{
     `reussir.str.startswith` checks if the string starts with a prefix.
    }];
-  let arguments = (ins Arg<ReussirStrType, "String to check">:$str,
+  let arguments = (ins Arg<ReussirStrType, "String to check",
+      [MemRead]>:$str,
       Arg<StrAttr, "Prefix to check">:$prefix);
   let results =
       (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
@@ -2158,7 +2199,8 @@ def ReussirStrUnsafeStartWithOp : ReussirStrOp<"unsafe_startswith", []> {
     `reussir.str.unsafe_startswith` checks if the string starts with a prefix.
     Undefined behavior if the prefix is longer than the string.
    }];
-  let arguments = (ins Arg<ReussirStrType, "String to check">:$str,
+  let arguments = (ins Arg<ReussirStrType, "String to check",
+      [MemRead]>:$str,
       Arg<StrAttr, "Prefix to check">:$prefix);
   let results =
       (outs Res<I1, "Whether the string starts with the prefix">:$startsWith);
@@ -2169,7 +2211,7 @@ def ReussirStrUnsafeStartWithOp : ReussirStrOp<"unsafe_startswith", []> {
    }];
 }
 
-def ReussirStrSliceOp : ReussirStrOp<"slice", []> {
+def ReussirStrSliceOp : ReussirStrOp<"slice", [Pure]> {
   let summary = "Slice the string from a byte offset";
   let description = [{
     `reussir.str.slice` returns a substring starting from the given offset.
