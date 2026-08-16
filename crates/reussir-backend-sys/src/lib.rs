@@ -150,7 +150,7 @@ unsafe extern "C" {
         expand_decrement: bool,
         outline_record: bool,
     ) -> MlirPass;
-    pub fn reussirCreateTokenReusePass(reuse_across_call: bool) -> MlirPass;
+    pub fn reussirCreateTokenReusePass(reuse_across_call: bool, emit_remarks: bool) -> MlirPass;
 
     //==-- Upstream passes used by the pipeline --==//
 
@@ -185,6 +185,14 @@ unsafe extern "C" {
     pub fn reussirCreateReconcileUnrealizedCastsPass() -> MlirPass;
 
     //==-- Standalone helpers --==//
+
+    /// Installs the token-reuse JSON remark streamer on `context`. The report
+    /// is finalized when the context is destroyed. Returns false when the
+    /// output cannot be opened or the context already owns a remark engine.
+    pub fn reussirContextEnableTokenReuseRemarks(
+        context: MlirContext,
+        output_path: MlirStringRef,
+    ) -> bool;
 
     /// Monomorphizes and compiles polymorphic FFI operations in the module.
     /// Returns true on success. `rust_path` and the `lib_dirs` array (of

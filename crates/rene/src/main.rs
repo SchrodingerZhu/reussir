@@ -173,6 +173,13 @@ struct BuildArgs {
     /// available parallelism).
     #[arg(short = 'j', long = "jobs")]
     jobs: Option<std::num::NonZeroUsize>,
+
+    /// Ask each artifact-producing rrc invocation to write its token-reuse
+    /// decisions as JSON, for the host or any cross target. Reports are cached
+    /// next to their artifacts as `<artifact>.token-reuse.json` (including
+    /// dependency archives).
+    #[arg(long)]
+    token_reuse_remarks: bool,
 }
 
 /// Delete the build directory, unless another rene is using it.
@@ -229,6 +236,11 @@ struct InspectArgs {
     /// must judge against the same value.
     #[arg(long)]
     linker: Option<PathBuf>,
+
+    /// Render token-reuse JSON side outputs in the command plan and include
+    /// them in freshness checks, matching `rene build --token-reuse-remarks`.
+    #[arg(long)]
+    token_reuse_remarks: bool,
 }
 
 fn main() -> ExitCode {
@@ -425,6 +437,7 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
             linker: args.linker.as_deref(),
             jobs: args.jobs,
             build_dir: &root,
+            token_reuse_remarks: args.token_reuse_remarks,
             color,
         },
         &pool,
@@ -461,6 +474,7 @@ async fn build(args: &BuildArgs, color: bool) -> Result<(), String> {
                 &target,
             ),
             jobs: args.jobs,
+            token_reuse_remarks: args.token_reuse_remarks,
             color,
         },
         &graph,
@@ -584,6 +598,7 @@ async fn inspect(args: &InspectArgs, color: bool) -> Result<(), String> {
                     target: &target,
                     linker: args.linker.as_deref(),
                     build_dir: &root,
+                    token_reuse_remarks: args.token_reuse_remarks,
                 },
             )?;
             report["plan"] = plan::render(
@@ -594,6 +609,7 @@ async fn inspect(args: &InspectArgs, color: bool) -> Result<(), String> {
                     target: &target,
                     linker: args.linker.as_deref(),
                     build_dir: &root,
+                    token_reuse_remarks: args.token_reuse_remarks,
                 },
                 bake.as_ref(),
                 Some(&states),

@@ -42,6 +42,8 @@ pub struct Options<'a> {
     /// `rene build -j`: the process admission bound (held by the [`Pool`]).
     pub jobs: Option<NonZeroUsize>,
     pub build_dir: &'a Path,
+    /// Produce and track token-reuse JSON sidecars for dependency archives.
+    pub token_reuse_remarks: bool,
     /// Whether buffered rrc diagnostics retain ANSI styling.
     pub color: bool,
 }
@@ -143,6 +145,7 @@ async fn build_node(
         target: opts.target,
         linker: opts.linker,
         build_dir: opts.build_dir,
+        token_reuse_remarks: opts.token_reuse_remarks,
     };
     // At this point the node's upstream artifacts are final, so the local
     // check is exact: current means nothing to do at all.
@@ -173,6 +176,7 @@ async fn build_node(
         target: opts.target,
         linker: opts.linker,
         build_dir: opts.build_dir,
+        token_reuse_remarks: opts.token_reuse_remarks,
     };
     for command in plan::node_commands(graph, name, &plan_opts, Some(rt)) {
         bar.set_message(format!("{name}: {}", command.emit));

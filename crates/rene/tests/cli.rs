@@ -83,6 +83,7 @@ fn build_help_distinguishes_products_from_the_machine_target() {
     assert!(help.contains("--bin <NAME>"), "{help}");
     assert!(help.contains("--lib <NAME>"), "{help}");
     assert!(help.contains("--target <TRIPLE>"), "{help}");
+    assert!(help.contains("--token-reuse-remarks"), "{help}");
 }
 
 #[test]
@@ -240,11 +241,12 @@ impl Fakes {
         // fabricates the `-o` artifact.
         let rrc = script(
             "fake-rrc",
-            r#"root=""; input=""; out=""; package=""; color=auto; prev=""; scan=no
+            r#"root=""; input=""; out=""; report=""; package=""; color=auto; prev=""; scan=no
 for arg in "$@"; do
   [ "$prev" = "--package-root" ] && root="$arg"
   [ "$prev" = "--package-name" ] && package="$arg"
   [ "$prev" = "-o" ] && out="$arg"
+  [ "$prev" = "--token-reuse-remarks" ] && report="$arg"
   [ "$prev" = "--color" ] && color="$arg"
   [ "$arg" = "--scan-deps" ] && scan=yes
   case "$arg" in *.rr) input="$arg";; esac
@@ -283,6 +285,10 @@ if [ "$scan" = no ]; then
     exit 1
   fi
   echo compiled > "$out"
+  if [ -n "$report" ]; then
+    mkdir -p "$(dirname "$report")"
+    printf '{"schema":"reussir.token-reuse.v1","locations":[],"decisions":[]}\n' > "$report"
+  fi
   exit 0
 fi
 log="$(dirname "$0")/rrc-runs"
@@ -1376,6 +1382,41 @@ fn build_runs_the_dependency_pipeline() {
             .all(|line| !line.contains("--package-name app")),
         "the root re-ran despite identical upstream bytes: {after:#?}"
     );
+
+    // Reports are side outputs of artifact-producing compiles, never the interface
+    // compile. Enabling them after a normal build refreshes each affected
+    // record exactly once and uses collision-free paths beside the products.
+    let out = fakes.rene(&["build", "--token-reuse-remarks"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let with_remarks = fakes.package_compiles();
+    assert_eq!(with_remarks.len(), 8, "{with_remarks:#?}");
+    assert!(
+        !with_remarks[5].contains("--token-reuse-remarks"),
+        "interface unexpectedly requested remarks: {with_remarks:#?}"
+    );
+    let dep_report = deps_dir.join("libutil.a.token-reuse.json");
+    let root_report = root.join("dev/demo.token-reuse.json");
+    assert!(
+        with_remarks[6].contains(&format!("--token-reuse-remarks {}", dep_report.display())),
+        "{with_remarks:#?}"
+    );
+    assert!(
+        with_remarks[7].contains(&format!("--token-reuse-remarks {}", root_report.display())),
+        "{with_remarks:#?}"
+    );
+    assert!(dep_report.is_file() && root_report.is_file());
+
+    let out = fakes.rene(&["build", "--token-reuse-remarks"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(fakes.package_compiles().len(), 8, "fresh reports rebuilt");
+
+    // Deleting one tracked sidecar recompiles only its own product.
+    std::fs::remove_file(&root_report).unwrap();
+    let out = fakes.rene(&["build", "--token-reuse-remarks"], &manifest, &root);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let repaired = fakes.package_compiles();
+    assert_eq!(repaired.len(), 9, "{repaired:#?}");
+    assert!(repaired[8].contains("--package-name app"), "{repaired:#?}");
 }
 
 /// `rene new` end to end: the flags land in the scaffold, the manifest the

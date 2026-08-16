@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use reussir_backend::llvm::LlvmLowering;
 use reussir_backend::melior::ir::Module;
 use reussir_backend::pipeline::{self, LoweringOptions, OptLevel};
+use reussir_backend_sys as sys;
 
 use crate::{RelocMode, TargetMachine, TargetSpec, emit_to_file};
 
@@ -38,6 +39,25 @@ pub(crate) fn backend(
         Produced::Units(units, exports) => (units, true, exports),
         Produced::Module(module, exports) => (vec![module], false, exports),
     };
+
+    // One context-wide streamer aggregates remarks from every function pass
+    // and codegen unit, then finalizes the deterministic JSON report when the
+    // context drops at the end of this compilation.
+    if let Some(path) = &cli.token_reuse_remarks {
+        let path = path.to_string_lossy();
+        let path_ref = sys::mlir_sys::MlirStringRef {
+            data: path.as_ptr().cast(),
+            length: path.len(),
+        };
+        // SAFETY: `context` and `path` are live for the call; the C API copies
+        // the path while constructing its owned output stream.
+        if !unsafe { sys::reussirContextEnableTokenReuseRemarks(context.to_raw(), path_ref) } {
+            return Err(format!(
+                "failed to initialize token-reuse remark output `{}`",
+                path
+            ));
+        }
+    }
 
     // A static library and the linked targets are the ones whose units do not
     // each become a user-visible file: every unit is emitted into a scratch
@@ -122,6 +142,7 @@ pub(crate) fn backend_module(
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
+        emit_token_reuse_remarks: cli.token_reuse_remarks.is_some(),
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         pack_record_members: !cli.no_pack_record_members,
         closure_wpd,

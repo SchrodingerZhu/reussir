@@ -316,15 +316,23 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
     }
 
     /// Resolve a MIR span (an offset into the current function's file) to a
-    /// `FileLineColLoc`, or `unknown` without a source cache or span — or when
+    /// `FileLineColRange`, or `unknown` without a source cache or span — or when
     /// the file's content could not be obtained (a re-ingested dump whose
     /// source is virtual or missing), since offsets then resolve to nothing.
     pub(super) fn location(&self, span: Option<Span>) -> Location<'c> {
         match (self.source, span) {
             (Some(cache), Some(span)) if cache.is_available(self.cur_file.get()) => {
                 let file = self.cur_file.get();
-                let (line, col) = cache.line_col(file, span.start as usize);
-                Location::new(self.context, cache.name(file), line, col)
+                let (start_line, start_col) = cache.line_col(file, span.start as usize);
+                let (end_line, end_col) = cache.line_col(file, span.end as usize);
+                Location::file_line_col_range(
+                    self.context,
+                    cache.name(file),
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col,
+                )
             }
             _ => Location::unknown(self.context),
         }

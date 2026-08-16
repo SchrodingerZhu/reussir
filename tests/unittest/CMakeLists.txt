@@ -16,6 +16,7 @@ target_sources(
 target_link_libraries(reussir-ut
   PRIVATE
     ReussirRustCompiler
+    ReussirCAPI
     MLIRReussir
     GTest::gtest
     GTest::gtest_main

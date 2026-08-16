@@ -133,6 +133,9 @@ pub struct LoweringOptions {
     pub opt: OptLevel,
     /// Allow the token-reuse pass to reuse tokens across function calls.
     pub reuse_token_across_call: bool,
+    /// Emit structured decisions from the token-reuse pass. A driver enabling
+    /// this must install a remark streamer on the MLIR context.
+    pub emit_token_reuse_remarks: bool,
     /// How nullary variants of shared rc-boxed enums are encoded. `rrc`
     /// exposes this as `--nullary-variant-encoding`; embedders (REPL/JIT,
     /// tests) default to [`NullaryVariantEncoding::Boxed`].
@@ -164,6 +167,7 @@ impl Default for LoweringOptions {
         Self {
             opt: OptLevel::Default,
             reuse_token_across_call: false,
+            emit_token_reuse_remarks: false,
             // Boxed by default: only target-aware drivers (rrc) pick an
             // immediate encoding, so embedders (REPL/JIT, tests) keep the
             // boxed layout untouched.
@@ -277,6 +281,7 @@ pub fn run_lowering_pipeline(
         "reussir_lowering",
         opt = ?options.opt,
         reuse_token_across_call = options.reuse_token_across_call,
+        emit_token_reuse_remarks = options.emit_token_reuse_remarks,
         enable_invariant_analysis = options.enable_invariant_analysis,
         nullary_variant_encoding = ?options.nullary_variant_encoding,
         pack_record_members = options.pack_record_members,
@@ -384,7 +389,10 @@ pub fn run_lowering_pipeline(
         // Second acquire/drop expansion phase: expand decrements and outline
         // record drops.
         module: sys::reussirCreateAcquireDropExpansionPass(true, true);
-        func:   sys::reussirCreateTokenReusePass(options.reuse_token_across_call);
+        func:   sys::reussirCreateTokenReusePass(
+            options.reuse_token_across_call,
+            options.emit_token_reuse_remarks,
+        );
         module: sys::reussirCreateConvertToSTDPass();
         func:   sys::reussirCreateRcCreateSinkPass();
         func:   sys::reussirCreateRcCreateFusionPass();

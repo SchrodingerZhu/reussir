@@ -311,9 +311,9 @@ impl CodegenUnit {
 ///
 /// `tcx` is the type arena the program was monomorphized in; the ownership
 /// analysis that places reference-count ops is run per function against it.
-/// `source`, when given, labels each lowered op with a `FileLineColLoc` resolved
-/// from the MIR's byte spans (and carries the file name into the module's debug
-/// attributes); without it, ops get `unknown` locations.
+/// `source`, when given, labels each lowered op with a `FileLineColRange`
+/// resolved from the MIR's byte spans (and carries the file name into the
+/// module's debug attributes); without it, ops get `unknown` locations.
 ///
 /// `names`, when given *together with* `source`, additionally emits DWARF debug
 /// info: it resolves the interned source names of functions, parameters, and
@@ -809,7 +809,10 @@ transform [{
                 .as_operation()
                 .to_string_with_flags(OperationPrintingFlags::new().enable_debug_info(true, false))
                 .expect("print with locations");
-            assert!(printed.contains("loc(\"add.rr\":1:"), "{printed}");
+            assert!(
+                printed.contains("loc(\"add.rr\":1:") && printed.contains(" to "),
+                "{printed}"
+            );
         });
     }
 

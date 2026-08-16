@@ -177,6 +177,118 @@ fn dumps_mlir_llvm_and_llvm_ir_from_source() {
 }
 
 #[test]
+fn token_reuse_report_deduplicates_generic_instances_for_a_wasm_target() {
+    let dir = scratch("reuse-remarks-wasm");
+    let src = dir.path().join("generic.rr");
+    std::fs::write(
+        &src,
+        r#"pub enum Box<T> {
+    Wrap(T)
+}
+
+fn update<T>(boxed: Box<T>, value: T) -> Box<T> {
+    match boxed {
+        Box::Wrap(_) => {
+            let next = value;
+            Box::Wrap { next }
+        }
+    }
+}
+
+pub fn update_i64(boxed: Box<i64>, value: i64) -> Box<i64> {
+    update(boxed, value)
+}
+
+pub fn update_i32(boxed: Box<i32>, value: i32) -> Box<i32> {
+    update(boxed, value)
+}
+"#,
+    )
+    .expect("write generic source");
+    let out = dir.path().join("generic.mlir-llvm");
+    let report_path = dir.path().join("reuse.json");
+    let output = rrc(&[
+        &src,
+        Path::new("-o"),
+        &out,
+        Path::new("--emit"),
+        Path::new("mlir-llvm"),
+        Path::new("-O"),
+        Path::new("none"),
+        Path::new("--target-triple"),
+        Path::new("wasm32-unknown-unknown"),
+        Path::new("--codegen-units"),
+        Path::new("2"),
+        Path::new("--token-reuse-remarks"),
+        &report_path,
+    ]);
+    assert!(
+        output.status.success(),
+        "rrc reuse report failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report_text = read(&report_path);
+    let report: serde_json::Value = serde_json::from_str(&report_text)
+        .unwrap_or_else(|e| panic!("bad reuse JSON ({e}):\n{report_text}"));
+    assert_eq!(report["schema"], "reussir.token-reuse.v1");
+    assert_eq!(
+        report["coordinates"],
+        serde_json::json!({
+            "line_base": 1,
+            "column_base": 1,
+            "column_unit": "utf-8-byte",
+            "end": "exclusive",
+        })
+    );
+    assert_eq!(
+        report["files"],
+        serde_json::json!([src.to_string_lossy().as_ref()])
+    );
+    assert_eq!(
+        report["locations"],
+        serde_json::json!([
+            {
+                "kind": "file",
+                "file": 0,
+                "start": { "line": 7, "column": 25 },
+                "end": { "line": 10, "column": 10 },
+            },
+            {
+                "kind": "file",
+                "file": 0,
+                "start": { "line": 9, "column": 13 },
+                "end": { "line": 9, "column": 31 },
+            },
+        ])
+    );
+
+    let decisions = report["decisions"]
+        .as_array()
+        .expect("decisions is an array");
+    assert_eq!(decisions.len(), 1, "report:\n{report_text}");
+    let decision = &decisions[0];
+    assert_eq!(decision["kind"], "reuse");
+    assert_eq!(decision["source"], 0);
+    assert_eq!(decision["sink"], 1);
+    assert_eq!(decision["strategy"], "ensure");
+    assert_eq!(decision["score"], 2);
+    assert_eq!(decision["available_tokens"], 1);
+    assert_eq!(decision["compatible_tokens"], 1);
+    assert_eq!(decision["occurrences"], 2);
+    let instances = decision["instances"]
+        .as_array()
+        .expect("instances is an array");
+    assert_eq!(instances.len(), 2);
+    assert!(
+        instances.iter().all(|instance| instance
+            .as_str()
+            .is_some_and(|name| name.contains("update"))),
+        "instances: {instances:#?}"
+    );
+}
+
+#[test]
 fn compiles_source_to_object() {
     let (dir, src) = source("obj");
     let obj = dir.path().join("prog.o");

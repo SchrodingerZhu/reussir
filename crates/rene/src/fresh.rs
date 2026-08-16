@@ -115,6 +115,9 @@ pub struct DepRecord {
     /// The interface and archive this build produced.
     pub rri: PathBuf,
     pub archive: PathBuf,
+    /// The optional diagnostic sidecar produced with the archive.
+    #[serde(default)]
+    pub token_reuse_report: Option<PathBuf>,
 }
 
 /// What the check runs against.
@@ -129,6 +132,8 @@ pub struct Context<'a> {
     /// part of the root products' fingerprints.
     pub linker: Option<&'a Path>,
     pub build_dir: &'a Path,
+    /// Require token-reuse sidecars to be present and tied to the last build.
+    pub token_reuse_remarks: bool,
 }
 
 /// The recorded runtime bake, if any — the toolchain identity freshness
@@ -234,6 +239,12 @@ fn dep_state(
             return Ok(State::ArtifactMissing(artifact.display().to_string()));
         }
     }
+    if ctx.token_reuse_remarks {
+        let expected = plan::token_reuse_report_path(&record.archive);
+        if record.token_reuse_report.as_deref() != Some(expected.as_path()) || !expected.is_file() {
+            return Ok(State::ArtifactMissing(expected.display().to_string()));
+        }
+    }
     for dep in &graph.nodes[name].dependencies {
         // Direct edges suffice locally: transitive drift reaches this node
         // through its dependency's own record (and the propagation pass).
@@ -284,6 +295,7 @@ fn root_state(
             linker: ctx.linker.map(Path::to_path_buf),
             upstream,
             jobs: None,
+            token_reuse_remarks: ctx.token_reuse_remarks,
             // Output policy is deliberately absent from the fingerprint.
             color: false,
         },
@@ -292,7 +304,16 @@ fn root_state(
     for (target, decl) in &node.loaded.manifest.targets {
         let key = tables::product_key(ctx.profile_name, target);
         let path = out_dir.join(compile::artifact_file(target, decl.kind, Some(ctx.target)));
-        if !compile::product_is_current(dir, &key, &fingerprint, &path)? {
+        let token_reuse_report = ctx
+            .token_reuse_remarks
+            .then(|| plan::token_reuse_report_path(&path));
+        if !compile::product_is_current(
+            dir,
+            &key,
+            &fingerprint,
+            &path,
+            token_reuse_report.as_deref(),
+        )? {
             return Ok(State::TargetStale(target.clone()));
         }
     }
@@ -325,6 +346,9 @@ pub fn record_dep(
             .collect(),
         rri: deps_dir.join(format!("{name}.rri")),
         archive: plan::archive_path(&deps_dir, name, ctx.target),
+        token_reuse_report: ctx.token_reuse_remarks.then(|| {
+            plan::token_reuse_report_path(&plan::archive_path(&deps_dir, name, ctx.target))
+        }),
     };
     let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
     let sources = serde_json::to_string(sources).map_err(|e| e.to_string())?;
@@ -476,6 +500,7 @@ mod tests {
             target: TEST_TARGET,
             linker: None,
             build_dir: &f.build_dir,
+            token_reuse_remarks: false,
         }
     }
 

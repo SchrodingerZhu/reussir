@@ -1,4 +1,10 @@
 // RUN: %reussir-opt %s -reussir-token-reuse | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-token-reuse=emit-remarks=1 --remarks-filter=TokenReuse --remark-format=emitRemark -o %t.remarks.mlir 2>&1 | %FileCheck %s --check-prefix=REMARK
+
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=reuse | AvailableTokens=1, CompatibleTokens=1, Score=2, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=ensure
+// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_cross_bin_realloc | AvailableTokens=1, CompatibleTokens=0, Reason=no-compatible-token
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=same_bin_realloc | AvailableTokens=1, CompatibleTokens=1, Score=1, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=realloc
+// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_available | AvailableTokens=0, CompatibleTokens=0, Reason=no-available-token
 
 !rc64 = !reussir.rc<i64>
 !rc64x2 = !reussir.rc<!reussir.record<compound "test" {i64, i64}>>
@@ -55,5 +61,12 @@ module @test attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<f80, dense<
         %tk = reussir.token.alloc : !reussir.token<align: 8, size: 80>
         %6 = reussir.rc.create value(%5 : !reussir.record<compound "test9" {i64, i64, i64, i64, i64, i64, i64, i64, i64}>) token(%tk : !reussir.token<align: 8, size: 80>) : !rc64x9
         return %6 : !rc64x9
+    }
+
+    func.func @no_available() -> !rc64 {
+        %value = arith.constant 0 : i64
+        %tk = reussir.token.alloc : !reussir.token<align: 8, size: 16>
+        %result = reussir.rc.create value(%value : i64) token(%tk : !reussir.token<align: 8, size: 16>) : !rc64
+        return %result : !rc64
     }
 }

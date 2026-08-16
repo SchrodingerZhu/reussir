@@ -144,6 +144,12 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err("no output file given; pass -o".into());
     };
     let target = resolve_target(cli)?;
+    if cli.token_reuse_remarks.is_some() && target <= Stage::Mlir {
+        return Err(format!(
+            "--token-reuse-remarks requires the lowering pipeline, but `{target}` stops before \
+             token reuse; emit `mlir-llvm` or a later stage"
+        ));
+    }
     // The interface header names the package it describes; only package mode
     // has that name authoritatively (a plain file or dump does not).
     if target == Stage::Rri && package.is_none() {
@@ -271,6 +277,13 @@ fn run(cli: &Cli) -> Result<bool, String> {
         return Err("no input file (or --package-root/--package-name) given".into());
     };
     let input_stage = resolve_input_stage(cli, input)?;
+    if cli.token_reuse_remarks.is_some() && input_stage == Stage::LlvmIr {
+        return Err(
+            "--token-reuse-remarks cannot be used with LLVM IR input, which enters after the \
+             token-reuse pass"
+                .into(),
+        );
+    }
     if target < input_stage {
         return Err(format!(
             "cannot emit `{target}` from a `{input_stage}` input: the pipeline only runs forward"

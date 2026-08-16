@@ -57,6 +57,8 @@ pub struct Options {
     pub upstream: std::collections::BTreeMap<String, String>,
     /// `rene build -j`: the bound on concurrent compile processes.
     pub jobs: Option<std::num::NonZeroUsize>,
+    /// Produce and cache one token-reuse JSON sidecar per selected product.
+    pub token_reuse_remarks: bool,
     /// Whether compiler diagnostics should retain ANSI styling while they
     /// are buffered away from the terminal.
     pub color: bool,
@@ -79,6 +81,9 @@ pub struct Product {
 pub struct ProductRecord {
     pub fingerprint: String,
     pub path: PathBuf,
+    /// Present only when the compile also produced this diagnostic sidecar.
+    #[serde(default)]
+    pub token_reuse_report: Option<PathBuf>,
 }
 
 /// Build the selected targets, reusing whatever the record proves current.
@@ -123,12 +128,21 @@ pub async fn build(
     for name in selected {
         let kind = manifest.targets[name].kind;
         let path = out_dir.join(artifact_file(name, kind, Some(&opts.target)));
+        let token_reuse_report = opts
+            .token_reuse_remarks
+            .then(|| plan::token_reuse_report_path(&path));
         let key = tables::product_key(&opts.profile_name, name);
-        let current = product_is_current(dir, &key, &fingerprint, &path)?;
+        let current = product_is_current(
+            dir,
+            &key,
+            &fingerprint,
+            &path,
+            token_reuse_report.as_deref(),
+        )?;
         if current {
             tracing::debug!(target = name, "up to date");
         }
-        plan.push((name, kind, path, key, current));
+        plan.push((name, kind, path, token_reuse_report, key, current));
     }
     // The root's commands come from the same synthesis the dump prints
     // (and the dependency pipeline runs): what `inspect --commands` shows
@@ -143,6 +157,7 @@ pub async fn build(
                 target: &opts.target,
                 linker: opts.linker.as_deref(),
                 build_dir: dir.root(),
+                token_reuse_remarks: opts.token_reuse_remarks,
             },
             Some(rt),
         )
@@ -150,7 +165,7 @@ pub async fn build(
         .filter_map(|command| Some((command.target.clone()?, command)))
         .collect();
     let mut invocations = Vec::new();
-    for (name, kind, path, _, current) in &plan {
+    for (name, kind, path, _, _, current) in &plan {
         if *current {
             continue;
         }
@@ -193,11 +208,12 @@ pub async fn build(
         return Err(error);
     }
     let mut products = Vec::with_capacity(plan.len());
-    for (name, _, path, key, current) in plan {
+    for (name, _, path, token_reuse_report, key, current) in plan {
         if !current {
             let record = ProductRecord {
                 fingerprint: fingerprint.clone(),
                 path: path.clone(),
+                token_reuse_report,
             };
             let record = serde_json::to_string(&record).map_err(|e| e.to_string())?;
             dir.set_status(&[(key.as_str(), record.as_str())])
@@ -469,6 +485,7 @@ pub(crate) fn product_is_current(
     key: &str,
     fingerprint: &str,
     path: &Path,
+    token_reuse_report: Option<&Path>,
 ) -> Result<bool, String> {
     let Some(record) = dir.status(key).map_err(|e| e.to_string())? else {
         return Ok(false);
@@ -477,7 +494,13 @@ pub(crate) fn product_is_current(
         // An older rene may have written a different shape; just rebuild.
         return Ok(false);
     };
-    Ok(record.fingerprint == fingerprint && record.path == path && path.is_file())
+    let report_is_current = token_reuse_report.is_none_or(|report| {
+        record.token_reuse_report.as_deref() == Some(report) && report.is_file()
+    });
+    Ok(record.fingerprint == fingerprint
+        && record.path == path
+        && path.is_file()
+        && report_is_current)
 }
 
 /// The artifact's file name for `name`, per the target platform — the

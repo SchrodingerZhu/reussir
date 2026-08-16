@@ -144,9 +144,10 @@ MlirPass reussirCreateAcquireDropExpansionPass(bool expandDecrement,
   options.outlineRecord = outlineRecord;
   return wrapOwned(reussir::createReussirAcquireDropExpansionPass(options));
 }
-MlirPass reussirCreateTokenReusePass(bool reuseAcrossCall) {
+MlirPass reussirCreateTokenReusePass(bool reuseAcrossCall, bool emitRemarks) {
   reussir::ReussirTokenReusePassOptions options;
   options.reuseAcrossCall = reuseAcrossCall;
+  options.emitRemarks = emitRemarks;
   return wrapOwned(reussir::createReussirTokenReusePass(options));
 }
 
