@@ -324,6 +324,35 @@ mlir::TypedValue<RcType> expandedDecProducerRc(mlir::scf::IfOp scfIf,
   return nullptr;
 }
 
+/// Score one available token for an acceptor, or return -1 when the value is
+/// not a compatible token producer. Keeping this independent of remark
+/// bookkeeping lets the default analysis loop stay exactly the same shape
+/// when reporting is disabled.
+int scoreToken(mlir::Value token, TokenAcceptor acceptor,
+               EquivalenceAnalysis &equivalence) {
+  if (auto producer = dyn_cast_or_null<TokenProducer>(token.getDefiningOp())) {
+    ReussirRcDecOp producerAsDec =
+        dyn_cast<ReussirRcDecOp>(producer.getOperation());
+    mlir::TypedValue<RcType> producerRc =
+        producerAsDec ? producerAsDec.getRcPtr() : nullptr;
+    return heuristic(producer.getTokenType(), producerRc, acceptor,
+                     equivalence);
+  }
+
+  auto scfIf = dyn_cast_or_null<mlir::scf::IfOp>(token.getDefiningOp());
+  if (!scfIf || !scfIf->hasAttr(kExpandedDecrementAttr))
+    return -1;
+  auto nullableType = dyn_cast<NullableType>(token.getType());
+  if (!nullableType)
+    return -1;
+  auto producedType = dyn_cast<TokenType>(nullableType.getPtrTy());
+  if (!producedType)
+    return -1;
+  mlir::TypedValue<RcType> producerRc = expandedDecProducerRc(
+      scfIf, llvm::cast<mlir::OpResult>(token).getResultNumber());
+  return heuristic(producedType, producerRc, acceptor, equivalence);
+}
+
 bool escapeTrappedTokensSweep(mlir::func::FuncOp func) {
   llvm::SmallVector<mlir::scf::IfOp> worklist;
   func.walk<mlir::WalkOrder::PostOrder>([&](mlir::scf::IfOp op) {
@@ -448,6 +477,7 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
         << mlir::remark::metric("CompatibleTokens", compatibleTokens);
   }
 
+  template <bool EmitRemarks>
   ValueSet oneShotTokenReuse(
       mlir::Region &region, ValueSet availableTokens,
       llvm::SmallVectorImpl<Reuse> &reuses, llvm::SmallVectorImpl<Free> &frees,
@@ -463,10 +493,6 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
       return {};
     }
 
-    // Keep the disabled path free of remark bookkeeping. In particular, the
-    // compatibility count would otherwise add work to this pass's hot loop.
-    const bool shouldEmitRemarks = emitRemarks;
-
     for (auto &op : region.front()) {
       if (isa<mlir::LoopLikeOpInterface>(op) ||
           (isa<mlir::CallOpInterface>(op) &&
@@ -480,15 +506,15 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
             frees.push_back({token, &op});
           availableTokens = {};
           for (auto &nestedRegion : op.getRegions())
-            oneShotTokenReuse(nestedRegion, {}, reuses, frees, equivalence,
-                              domInfo, dfsOrder);
+            oneShotTokenReuse<EmitRemarks>(nestedRegion, {}, reuses, frees,
+                                           equivalence, domInfo, dfsOrder);
         }
       } else if (auto branchOp = dyn_cast<mlir::RegionBranchOpInterface>(op)) {
         llvm::SmallVector<ValueSet> branchResults;
         for (auto &nestedRegion : op.getRegions())
-          branchResults.push_back(
-              oneShotTokenReuse(nestedRegion, availableTokens, reuses, frees,
-                                equivalence, domInfo, dfsOrder));
+          branchResults.push_back(oneShotTokenReuse<EmitRemarks>(
+              nestedRegion, availableTokens, reuses, frees, equivalence,
+              domInfo, dfsOrder));
         // A RegionBranch op with no regions has nothing to intersect;
         // availableTokens flows through unchanged.
         if (!branchResults.empty()) {
@@ -536,70 +562,40 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
         auto allocOp = llvm::dyn_cast_if_present<ReussirTokenAllocOp>(
             acceptor.getToken().getDefiningOp());
         if (allocOp && allocOp.getToken().hasOneUse()) {
-          size_t compatibleTokenCount = 0;
           int bestScore = -1;
           mlir::Value bestToken{};
           bool bestRealloc = false;
+          [[maybe_unused]] size_t compatibleTokenCount;
+          if constexpr (EmitRemarks)
+            compatibleTokenCount = 0;
 
           for (auto tokenVal : availableTokens) {
-            if (auto producer =
-                    dyn_cast_or_null<TokenProducer>(tokenVal.getDefiningOp())) {
-              ReussirRcDecOp producerAsDec =
-                  dyn_cast<ReussirRcDecOp>(producer.getOperation());
-              mlir::TypedValue<RcType> producerRc =
-                  producerAsDec ? producerAsDec.getRcPtr() : nullptr;
-              int score = heuristic(producer.getTokenType(), producerRc,
-                                    acceptor, equivalence);
-              if (shouldEmitRemarks && score >= 0)
-                ++compatibleTokenCount;
-              if (score >= 0 && (score > bestScore ||
-                                 (score == bestScore && bestToken &&
-                                  tokenOrderKey(dfsOrder, tokenVal) >
-                                      tokenOrderKey(dfsOrder, bestToken)))) {
-                bestScore = score;
-                bestToken = tokenVal;
-                bestRealloc = (score < kReallocEnsureCutoff);
-              }
+            int score = scoreToken(tokenVal, acceptor, equivalence);
+            if constexpr (EmitRemarks)
+              compatibleTokenCount += score >= 0;
+            if (score >= 0 && (score > bestScore ||
+                               (score == bestScore && bestToken &&
+                                tokenOrderKey(dfsOrder, tokenVal) >
+                                    tokenOrderKey(dfsOrder, bestToken)))) {
+              bestScore = score;
+              bestToken = tokenVal;
+              bestRealloc = (score < kReallocEnsureCutoff);
             }
-            if (auto scfIf = dyn_cast_or_null<mlir::scf::IfOp>(
-                    tokenVal.getDefiningOp())) {
-              if (scfIf->hasAttr(kExpandedDecrementAttr)) {
-                auto nullableType = dyn_cast<NullableType>(tokenVal.getType());
-                if (!nullableType)
-                  continue;
-                auto producedType =
-                    dyn_cast<TokenType>(nullableType.getPtrTy());
-                if (!producedType)
-                  continue;
-                mlir::TypedValue<RcType> producerRc = expandedDecProducerRc(
-                    scfIf,
-                    llvm::cast<mlir::OpResult>(tokenVal).getResultNumber());
-                int score =
-                    heuristic(producedType, producerRc, acceptor, equivalence);
-                if (shouldEmitRemarks && score >= 0)
-                  ++compatibleTokenCount;
-                if (score >= 0 && (score > bestScore ||
-                                   (score == bestScore && bestToken &&
-                                    tokenOrderKey(dfsOrder, tokenVal) >
-                                        tokenOrderKey(dfsOrder, bestToken)))) {
-                  bestScore = score;
-                  bestToken = tokenVal;
-                  bestRealloc = (score < kReallocEnsureCutoff);
-                }
-              }
-            }
+          }
+
+          if constexpr (EmitRemarks) {
+            if (bestToken)
+              emitReusedRemark(acceptor, bestToken, bestRealloc, bestScore,
+                               availableTokens.size(), compatibleTokenCount);
+            else
+              emitNotReusedRemark(acceptor, availableTokens.size(),
+                                  compatibleTokenCount);
           }
 
           if (bestToken) {
             mlir::Value selectedToken = bestToken;
-            if (shouldEmitRemarks)
-              emitReusedRemark(acceptor, selectedToken, bestRealloc, bestScore,
-                               availableTokens.size(), compatibleTokenCount);
             availableTokens = availableTokens.erase(bestToken);
             reuses.push_back({selectedToken, bestRealloc, acceptor});
-          } else if (shouldEmitRemarks) {
-            emitNotReusedRemark(acceptor, availableTokens.size(),
-                                compatibleTokenCount);
           }
         }
         // ReussirClosureCreateOp is a kind of acceptor.
@@ -645,10 +641,17 @@ struct TokenReusePass : public impl::ReussirTokenReusePassBase<TokenReusePass> {
     getOperation()->walk<mlir::WalkOrder::PreOrder>(
         [&](mlir::Operation *op) { dfsOrder[op] = counter++; });
 
-    for (auto &region : getOperation()->getRegions()) {
-      oneShotTokenReuse(region, {}, reuses, frees, equivalence, domInfo,
-                        dfsOrder);
-    }
+    // Dispatch once per function. The disabled instantiation contains no
+    // compatibility counter, remark construction, or reporting branches in
+    // the candidate-selection loop.
+    if (emitRemarks)
+      for (auto &region : getOperation()->getRegions())
+        oneShotTokenReuse<true>(region, {}, reuses, frees, equivalence, domInfo,
+                                dfsOrder);
+    else
+      for (auto &region : getOperation()->getRegions())
+        oneShotTokenReuse<false>(region, {}, reuses, frees, equivalence,
+                                 domInfo, dfsOrder);
 
     mlir::IRRewriter rewriter(getOperation());
 

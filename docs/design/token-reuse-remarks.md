@@ -143,9 +143,11 @@ scheduling and multiple codegen units do not perturb the JSON bytes.
 
 ## Cost model
 
-The disabled path performs only the pass-option branch. Compatibility counting,
-remark construction, string conversion, location interning, locking, and JSON
-state do not run unless reporting is enabled.
+The pass dispatches once per function to separate reporting-enabled and
+reporting-disabled template instantiations. The disabled candidate loop has no
+reporting branch or compatibility counter. Remark construction, string
+conversion, location interning, locking, and JSON state do not run unless
+reporting is enabled.
 
 In the enabled streamer, closed state uses compact enums (`DecisionKind`,
 `ReuseStrategy`, `AllocationReason`, and `LocationKind`) and numeric location

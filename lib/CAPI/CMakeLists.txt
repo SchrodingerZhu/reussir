@@ -15,8 +15,7 @@ add_library(ReussirCAPI STATIC Dialects.cpp Passes.cpp ReuseRemarks.cpp Types.cp
 # the build; the archives themselves are pulled onto the final Rust link line by
 # reussir-backend-sys (see its build.rs).
 target_link_libraries(ReussirCAPI PRIVATE ReussirLLVMAllocationSimplicationPass
-                                          ReussirLLVMLinearRecurrencePass
-                                          MLIRIR LLVMSupport)
+                                          ReussirLLVMLinearRecurrencePass)
 if(REUSSIR_HAS_TPDE)
   target_compile_definitions(ReussirCAPI PRIVATE REUSSIR_HAS_TPDE)
   target_link_libraries(ReussirCAPI PRIVATE tpde_llvm)
