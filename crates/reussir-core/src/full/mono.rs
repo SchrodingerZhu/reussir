@@ -2301,7 +2301,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 // the operator committed to the scalar path (a late-solved
                 // hole).
                 let ty = subst_ty(self.tcx, l.ty, subst);
-                if !ty.is_scalar() {
+                // `str` compares intrinsically too: codegen lowers its
+                // comparisons through the dedicated string-compare ops.
+                if !ty.is_scalar() && !matches!(ty.kind(), TyKind::Str) {
                     let shown = match ty.kind() {
                         TyKind::Record { def, .. } => self.defs.path(*def).display(self.resolver),
                         _ => format!("{ty:?}"),

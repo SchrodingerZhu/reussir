@@ -313,6 +313,42 @@ pub enum IntrinsicOp {
     /// `core::intrinsic::cell::<func>`; cell operations have no immediates
     /// and dispatch on the operand's cell flavor rather than encoding it.
     Cell { func: CellFn },
+    /// `core::intrinsic::str::<func>`; string operations have no immediates.
+    Str { func: StrFn },
+}
+
+/// A surfaced `str` intrinsic; [`Self::as_str`] is both the surface name
+/// and the `reussir.str.<name>` mnemonic family it lowers through.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum StrFn {
+    /// `len(s)`: the byte length.
+    Len,
+    /// `byte_at(s, index)`: the byte at `index`, `0` when out of bounds.
+    ByteAt,
+    /// `slice(s, offset)`: the suffix from byte `offset`, clamped to empty
+    /// when the offset passes the end.
+    Slice,
+}
+
+impl StrFn {
+    /// Parse a surface / textual-IR name.
+    pub fn parse(name: &str) -> Option<StrFn> {
+        match name {
+            "len" => Some(StrFn::Len),
+            "byte_at" => Some(StrFn::ByteAt),
+            "slice" => Some(StrFn::Slice),
+            _ => None,
+        }
+    }
+
+    /// The surface name, also used by the textual IR.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StrFn::Len => "len",
+            StrFn::ByteAt => "byte_at",
+            StrFn::Slice => "slice",
+        }
+    }
 }
 
 impl IntrinsicOp {
@@ -322,6 +358,7 @@ impl IntrinsicOp {
             IntrinsicOp::Panic => "panic",
             IntrinsicOp::Math { .. } => "math",
             IntrinsicOp::Cell { .. } => "cell",
+            IntrinsicOp::Str { .. } => "str",
         }
     }
 
@@ -331,6 +368,7 @@ impl IntrinsicOp {
             IntrinsicOp::Panic => "panic",
             IntrinsicOp::Math { func, .. } => func.as_str(),
             IntrinsicOp::Cell { func, .. } => func.as_str(),
+            IntrinsicOp::Str { func, .. } => func.as_str(),
         }
     }
 
@@ -340,6 +378,7 @@ impl IntrinsicOp {
             IntrinsicOp::Panic => 0,
             IntrinsicOp::Math { flag, .. } => flag,
             IntrinsicOp::Cell { .. } => 0,
+            IntrinsicOp::Str { .. } => 0,
         }
     }
 
@@ -354,6 +393,9 @@ impl IntrinsicOp {
             }),
             "cell" if imm == 0 => Some(IntrinsicOp::Cell {
                 func: CellFn::parse(name)?,
+            }),
+            "str" if imm == 0 => Some(IntrinsicOp::Str {
+                func: StrFn::parse(name)?,
             }),
             _ => None,
         }

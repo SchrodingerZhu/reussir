@@ -682,7 +682,8 @@ def ReussirFFIObjectType : ReussirType<"FFIObject", "ffi_object",
   let assemblyFormat = "`<` $ffiName `,` $cleanupHook `>`";
 }
 
-def ReussirStrType : ReussirType<"Str", "str", []> {
+def ReussirStrType : ReussirType<"Str", "str",
+                  [DeclareTypeInterfaceMethods<DataLayoutTypeInterface>]> {
   let summary = "Reussir String Reference Type";
   let description = [{
     `reussir.str` is for str reference. Unlike rust, it only has two variants:

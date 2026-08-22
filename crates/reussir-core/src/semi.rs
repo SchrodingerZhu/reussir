@@ -144,8 +144,9 @@ mod tests {
             };
             assert_eq!(
                 (count(pe), count(po), count(ord), count(eq)),
-                (15, 15, 10, 0),
-                "impl completion: every scalar for PartialEq/PartialOrd, the ordered ten for Ord, none for Eq"
+                (16, 16, 11, 0),
+                "impl completion: every scalar plus `str` for PartialEq/PartialOrd, \
+                 the ordered eleven for Ord, none for Eq"
             );
             assert!(
                 elab.traits
@@ -178,6 +179,8 @@ mod tests {
     fn non_scalar_comparisons_need_core() {
         with_tcx(|tcx| {
             let interner = std::sync::Arc::new(reussir_syntax::new_threaded_interner());
+            // `str` sits in the fallback tower now, so only the record is
+            // the negative case; the str comparison must check cleanly.
             let src = "pub struct P { pub x: i64 }
                        pub fn s(a: str, b: str) -> bool { a == b }
                        pub fn r(a: P, b: P) -> bool { a < b }";
@@ -187,8 +190,7 @@ mod tests {
             let elab = elaborate(tcx, &prog, &interner);
             let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
             assert!(
-                msgs.iter()
-                    .any(|m| m.contains("`str` does not implement `PartialEq`")),
+                !msgs.iter().any(|m| m.contains("`str`")),
                 "{msgs:#?}"
             );
             assert!(
@@ -2270,7 +2272,7 @@ mod tests {
                     .impls()
                     .filter(|i| i.trait_ref.trait_id == pe)
                     .collect();
-                assert_eq!(pe_impls.len(), 15);
+                assert_eq!(pe_impls.len(), 16);
                 assert!(pe_impls.iter().all(|i| !i.compiler_provided()));
             },
         );

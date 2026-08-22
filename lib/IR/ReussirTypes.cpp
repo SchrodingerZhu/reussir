@@ -238,6 +238,9 @@ bool isTriviallyCopyable(mlir::Type type) {
       .Case<mlir::VectorType>([](mlir::VectorType vectorType) {
         return isTriviallyCopyable(vectorType.getElementType());
       })
+      // A str is a borrowed {ptr, len} view of immutable storage: no
+      // ownership to transfer, copying the pair is the copy.
+      .Case<StrType>([](auto) { return true; })
       // Default: check if it's a built-in MLIR type that might be trivially
       // copyable
       .Default([](mlir::Type type) { return false; });
@@ -1073,6 +1076,37 @@ MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
         mlir::DataLayoutEntryListRef params) const {
       auto headerTy = mlir::IntegerType::get(getContext(), 32);
       return dataLayout.getTypePreferredAlignment(headerTy);
+    })
+
+//===----------------------------------------------------------------------===//
+// Reussir Str Type DataLayoutInterface
+//===----------------------------------------------------------------------===//
+// A str lowers to `{ptr, index}` (see the type converter); both fields are
+// word-sized and word-aligned, so the pair packs without padding.
+
+llvm::TypeSize
+StrType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
+                           [[maybe_unused]] mlir::DataLayoutEntryListRef params)
+    const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  auto indexTy = mlir::IndexType::get(getContext());
+  return dataLayout.getTypeSizeInBits(ptrTy) +
+         dataLayout.getTypeSizeInBits(indexTy);
+}
+
+uint64_t StrType::getABIAlignment(
+    const mlir::DataLayout &dataLayout,
+    [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
+  auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+  return dataLayout.getTypeABIAlignment(ptrTy);
+}
+
+MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
+    uint64_t StrType::getPreferredAlignment(
+        const mlir::DataLayout &dataLayout,
+        mlir::DataLayoutEntryListRef params) const {
+      auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
+      return dataLayout.getTypePreferredAlignment(ptrTy);
     })
 
 //===----------------------------------------------------------------------===//

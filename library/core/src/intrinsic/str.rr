@@ -1,0 +1,22 @@
+// The `str` intrinsics' declaration sites. `str` is the immutable static
+// string type: values are global literals, and these operations read them —
+// there is no mutation (growable strings live outside the language, behind
+// the polymorphic FFI). Each prototype is bound to the compiler's operation
+// by its `#[lang]` marker: checking and lowering stay wired in the compiler,
+// and the prototypes are not values.
+//
+// All offsets and lengths are *byte* counts. Literals are UTF-8, but the
+// operations are byte-oriented: `slice` can split a multi-byte character.
+
+/// The byte length of the string.
+#[lang("core::intrinsic::str::len")]
+pub fn len(s: str) -> u64;
+
+/// The byte at `index`, or `0` when `index` is out of bounds.
+#[lang("core::intrinsic::str::byte_at")]
+pub fn byte_at(s: str, index: u64) -> u8;
+
+/// The suffix starting at byte `offset`; the empty string when `offset`
+/// passes the end.
+#[lang("core::intrinsic::str::slice")]
+pub fn slice(s: str, offset: u64) -> str;

@@ -81,6 +81,12 @@ impl<'a> StringRef<'a> {
     }
 }
 
+/// The FFI rendering of Reussir's `str`: bit-identical to the lowered
+/// `{ptr, len}` pair, so a `str` parameter of an `#[ffi(import)]` arrives
+/// here directly. Values built by the compiler point at `'static` literal
+/// storage and are valid UTF-8; Reussir's `slice` intrinsic is
+/// byte-granular, so a sliced `str` may start inside a multi-byte
+/// character — [`Self::new_checked`] is the guard when that matters.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct Str<'a> {
@@ -108,10 +114,48 @@ impl<'a> Str<'a> {
     }
 }
 
+impl<'a> Str<'a> {
+    /// The raw bytes. Unlike [`Deref`], this makes no UTF-8 assumption, so
+    /// it is the safe view of a byte-granular slice.
+    pub fn as_bytes(&self) -> &'a [u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
 impl<'a> std::ops::Deref for Str<'a> {
     type Target = str;
     fn deref(&self) -> &Self::Target {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.ptr, self.len)) }
+    }
+}
+
+// Comparisons and hashing are byte-wise over `as_bytes`, matching the
+// dialect's `str.equal`/`str.compare` semantics (lexicographic bytes,
+// length as the shared-prefix tiebreak) without assuming UTF-8 — this is
+// what lets a Reussir `str` key a Rust-backed container.
+impl PartialEq for Str<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for Str<'_> {}
+
+impl PartialOrd for Str<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Str<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
+    }
+}
+
+impl std::hash::Hash for Str<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state);
     }
 }
 

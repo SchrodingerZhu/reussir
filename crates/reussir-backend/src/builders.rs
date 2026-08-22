@@ -197,6 +197,77 @@ pub fn str_select<'c>(
         .expect("valid reussir.str.select")
 }
 
+/// `reussir.str.len (<str>) : index`.
+pub fn str_len<'c>(
+    context: &'c Context,
+    value: Value<'c, '_>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.len", location)
+        .add_operands(&[value])
+        .add_results(&[Type::index(context)])
+        .build()
+        .expect("valid reussir.str.len")
+}
+
+/// `reussir.str.byte_at (<str>) [<index>] : i8` — bounds-checked, `0` when
+/// out of bounds.
+pub fn str_byte_at<'c>(
+    context: &'c Context,
+    value: Value<'c, '_>,
+    index: Value<'c, '_>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.byte_at", location)
+        .add_operands(&[value, index])
+        .add_results(&[IntegerType::new(context, 8).into()])
+        .build()
+        .expect("valid reussir.str.byte_at")
+}
+
+/// `reussir.str.slice (<str>) [<offset>] : <result_type>` — clamped suffix.
+pub fn str_slice<'c>(
+    value: Value<'c, '_>,
+    offset: Value<'c, '_>,
+    result_type: Type<'c>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.slice", location)
+        .add_operands(&[value, offset])
+        .add_results(&[result_type])
+        .build()
+        .expect("valid reussir.str.slice")
+}
+
+/// `reussir.str.equal (<lhs>, <rhs>) : i1` — byte equality.
+pub fn str_equal<'c>(
+    context: &'c Context,
+    lhs: Value<'c, '_>,
+    rhs: Value<'c, '_>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.equal", location)
+        .add_operands(&[lhs, rhs])
+        .add_results(&[IntegerType::new(context, 1).into()])
+        .build()
+        .expect("valid reussir.str.equal")
+}
+
+/// `reussir.str.compare (<lhs>, <rhs>) : i32` — lexicographic, memcmp
+/// convention (negative/zero/positive).
+pub fn str_compare<'c>(
+    context: &'c Context,
+    lhs: Value<'c, '_>,
+    rhs: Value<'c, '_>,
+    location: Location<'c>,
+) -> Operation<'c> {
+    OperationBuilder::new("reussir.str.compare", location)
+        .add_operands(&[lhs, rhs])
+        .add_results(&[IntegerType::new(context, 32).into()])
+        .build()
+        .expect("valid reussir.str.compare")
+}
+
 /// `reussir.record.compound (<fields> : <types>) : <result_type>` — construct a
 /// compound record value from its (declaration-ordered) field operands.
 ///

@@ -29,6 +29,9 @@
 // RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/primitive_keys.in | %FileCheck %s --check-prefix=PRIMITIVEKEYS
 // PRIMITIVEKEYS: 1
 
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/str_keys.in | %FileCheck %s --check-prefix=STRKEYS
+// STRKEYS: 1
+
 import std::collections::cow::hashmap::HashMap;
 import std::collections::cow::hashset::HashSet;
 import std::hash::Hash;
@@ -201,6 +204,23 @@ fn test_record_values() {
 }
 
 #[main]
+fn test_str_keys() {
+    // String-literal keys: hashed on the Reussir side by std's
+    // `Hash for str`, compared on the Rust side by the runtime `Str`'s
+    // byte equality — the scalar-like crossing, no bridge wrapper.
+    let mbase : HashMap<str, i64> = HashMap::new();
+    let map = mbase.insert("apple", 1).insert("banana", 2).insert("apple", 3);
+    let sbase : HashSet<str> = HashSet::new();
+    let set = sbase.insert("x").insert("x").insert("y");
+    wb(map.len() == 2
+        && map.get("apple").unwrap_or(0 - 1) == 3
+        && map.get("banana").unwrap_or(0 - 1) == 2
+        && map.get("cherry").unwrap_or(0 - 1) == 0 - 1
+        && set.len() == 2
+        && set.contains("x")
+        && !set.contains("z"));
+}
+
 pub fn entry() {
     match test_utils::io::read_i32() {
         0 => test_map_basics(),
@@ -210,6 +230,7 @@ pub fn entry() {
         4 => test_set_basics(),
         5 => test_record_values(),
         6 => test_primitive_keys(),
+        7 => test_str_keys(),
         _ => core::intrinsic::panic::panic()
     }
 }

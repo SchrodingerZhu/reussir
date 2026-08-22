@@ -11,3 +11,4 @@ pub mod cell;
 pub mod math;
 pub mod nullable;
 pub mod panic;
+pub mod str;

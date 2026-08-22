@@ -1,0 +1,50 @@
+// `str` is the immutable static literal type: creation, `match`, the
+// `core::intrinsic::str` reads, the comparison tower, and a record field,
+// verified through the emitted ops and an end-to-end run.
+
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %s --package-name strbasics --extern core=%t.core.rri --emit mlir -o - | %FileCheck %s
+// RUN: %rrc %s --package-name strbasics --extern core=%t.core.rri -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/str_basics.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+// A str record field exercises the {ptr, len} member layout end to end.
+pub struct Named { name : str, id : i64 }
+
+fn tag(k : i64) -> str {
+    match k {
+        0 => "zero",
+        1 => "one",
+        _ => "many"
+    }
+}
+
+pub fn main() -> i64 {
+    let s = "hello";
+    let len_ok = if core::intrinsic::str::len(s) == 5 { 1 } else { 0 };
+    // byte 1 is 'e' (0x65); out of bounds reads as 0.
+    let byte_ok = if core::intrinsic::str::byte_at(s, 1) == 101 { 1 } else { 0 };
+    let oob_ok = if core::intrinsic::str::byte_at(s, 99) == 0 { 1 } else { 0 };
+    let slice_ok = if core::intrinsic::str::slice(s, 2) == "llo" { 1 } else { 0 };
+    let match_ok = match tag(1) { "one" => 1, _ => 0 };
+    let eq_ok = if s == "hello" && s != "world" { 1 } else { 0 };
+    let ord_ok = if "apple" < "banana" && "b" > "apple" && "a" <= "a" { 1 } else { 0 };
+    let cmp_ok = match "same".cmp("same") { Ordering::Equal => 1, _ => 0 };
+    let named = Named { name: "alice", id: 7 };
+    let field_ok = if named.name == "alice" { 1 } else { 0 };
+    len_ok + byte_ok * 10 + oob_ok * 100 + slice_ok * 1000 + match_ok * 10000
+        + eq_ok * 100000 + ord_ok * 1000000 + cmp_ok * 10000000
+        + field_ok * 100000000
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The literal table and every surfaced operation reach the dialect:
+// CHECK-DAG: reussir.str.global
+// CHECK-DAG: reussir.str.literal
+// CHECK-DAG: reussir.str.len
+// CHECK-DAG: reussir.str.byte_at
+// CHECK-DAG: reussir.str.slice
+// CHECK-DAG: reussir.str.equal
+// CHECK-DAG: reussir.str.compare
+// CHECK-DAG: reussir.str.select

@@ -834,6 +834,51 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     Ok(Some(self.append(block, built)))
                 }
                 IntrinsicOp::Cell { func } => self.lower_cell_intrinsic(block, env, e, *func, args),
+                IntrinsicOp::Str { func } => {
+                    use reussir_core::intrinsic::StrFn;
+                    let mut operands = Vec::with_capacity(args.len());
+                    for a in args.iter() {
+                        let v = self.expr(block, env, a)?.ok_or_else(|| {
+                            LoweringError("intrinsic operand produced no value".into())
+                        })?;
+                        operands.push(v);
+                    }
+                    // The dialect ops speak `index`; the surface speaks `u64`.
+                    let index_ty = Type::index(self.context);
+                    match func {
+                        StrFn::Len => {
+                            let len = self.append(
+                                block,
+                                builders::str_len(self.context, operands[0], loc),
+                            );
+                            let u64_ty = IntegerType::new(self.context, 64).into();
+                            Ok(Some(
+                                self.append(block, arith::index_castui(len, u64_ty, loc)),
+                            ))
+                        }
+                        StrFn::ByteAt => {
+                            let index = self.append(
+                                block,
+                                arith::index_castui(operands[1], index_ty, loc),
+                            );
+                            Ok(Some(self.append(
+                                block,
+                                builders::str_byte_at(self.context, operands[0], index, loc),
+                            )))
+                        }
+                        StrFn::Slice => {
+                            let offset = self.append(
+                                block,
+                                arith::index_castui(operands[1], index_ty, loc),
+                            );
+                            let result = self.tys.mlir_ty(e.ty)?;
+                            Ok(Some(self.append(
+                                block,
+                                builders::str_slice(operands[0], offset, result, loc),
+                            )))
+                        }
+                    }
+                }
             },
             Cmp(l, op, r) => self.cmp(block, env, l, *op, r).map(Some),
             Cast(x, t) => self.cast(block, env, x, *t),
@@ -2833,6 +2878,51 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         let rv = self
             .expr(block, env, r)?
             .ok_or_else(|| LoweringError("cmp operand is unit".into()))?;
+        // Strings compare through the dedicated ops: `==`/`!=` via byte
+        // equality, orderings via the memcmp-convention three-way compare
+        // against zero. This also serves `Ord::cmp` — the synthesized
+        // three-way function is built over these same comparisons.
+        if matches!(operand_ty.kind(), TyKind::Str) {
+            let op = match op {
+                CmpOp::Eq => builders::str_equal(self.context, lv, rv, loc),
+                CmpOp::Ne => {
+                    let eq = self
+                        .append(block, builders::str_equal(self.context, lv, rv, loc));
+                    let i1_ty = IntegerType::new(self.context, 1).into();
+                    let one = self.append(
+                        block,
+                        arith::constant(
+                            self.context,
+                            IntegerAttribute::new(i1_ty, 1).into(),
+                            loc,
+                        ),
+                    );
+                    arith::xori(eq, one, loc)
+                }
+                ordering => {
+                    let order = self
+                        .append(block, builders::str_compare(self.context, lv, rv, loc));
+                    let i32_ty = IntegerType::new(self.context, 32).into();
+                    let zero = self.append(
+                        block,
+                        arith::constant(
+                            self.context,
+                            IntegerAttribute::new(i32_ty, 0).into(),
+                            loc,
+                        ),
+                    );
+                    let pred = match ordering {
+                        CmpOp::Lt => CmpiPredicate::Slt,
+                        CmpOp::Le => CmpiPredicate::Sle,
+                        CmpOp::Gt => CmpiPredicate::Sgt,
+                        CmpOp::Ge => CmpiPredicate::Sge,
+                        CmpOp::Eq | CmpOp::Ne => unreachable!("handled above"),
+                    };
+                    arith::cmpi(self.context, pred, order, zero, loc)
+                }
+            };
+            return Ok(self.append(block, op));
+        }
         let signed = matches!(operand_ty.kind(), TyKind::Int(IntTy::Signed(_)));
         let float = matches!(operand_ty.kind(), TyKind::Fp(_));
         let op = if float {
