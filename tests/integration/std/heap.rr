@@ -318,25 +318,15 @@ fn test_invariants() {
 
 #[main]
 pub fn main() {
-    let case = test_utils::io::read_i32();
-    if case == 1 { test_pairing_basics() }
-    else {
-        if case == 2 { test_binomial_basics() }
-        else {
-            if case == 3 { test_pairing_sort() }
-            else {
-                if case == 4 { test_binomial_sort() }
-                else {
-                    if case == 5 { test_churn() }
-                    else {
-                        if case == 6 { test_agreement() }
-                        else {
-                            if case == 7 { test_api_extras() }
-                            else { test_invariants() }
-                        }
-                    }
-                }
-            }
-        }
+    match test_utils::io::read_i32() {
+        1 => test_pairing_basics(),
+        2 => test_binomial_basics(),
+        3 => test_pairing_sort(),
+        4 => test_binomial_sort(),
+        5 => test_churn(),
+        6 => test_agreement(),
+        7 => test_api_extras(),
+        8 => test_invariants(),
+        _ => core::intrinsic::panic::panic()
     }
 }
