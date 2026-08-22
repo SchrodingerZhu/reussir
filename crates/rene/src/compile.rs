@@ -424,6 +424,9 @@ pub(crate) fn profile_flags(
     if profile.reuse_across_call == Some(true) {
         args.push("--reuse-across-call".to_owned());
     }
+    if profile.instrument_nonlinear_ffi == Some(true) {
+        args.push("--instrument-nonlinear-ffi".to_owned());
+    }
     if profile.closure_wpd == Some(false) {
         args.push("--no-closure-wpd".to_owned());
     }

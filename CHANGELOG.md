@@ -42,6 +42,20 @@
   decisive element rather than folding the whole container, and `find`
   returns the least match rather than an unspecified one.
 
+### Compiler and runtime
+
+- `rrc --instrument-nonlinear-ffi` (and the matching
+  `instrument_nonlinear_ffi` profile knob in `rene`) instruments non-linear
+  ffi/array usage: the new `reussir-instrument-nonlinear-ffi` pass guards
+  every FFI-import call that consumes an rc'd `ffi_object`/`array` argument
+  with a reference-count check, and a count other than one calls the new
+  runtime entry point `__reussir_report_nonlinear_usage(file, line,
+  col)`, which reports the call's source location on stderr. A still-shared
+  value at the consuming boundary is the signature that the foreign side
+  degrades to copy-on-write instead of updating in place; the check is
+  purely diagnostic and runs after all rc optimization passes, so the
+  observed count is the final one.
+
 ## 0.1.0
 
 The first tagged release of Reussir: an MLIR-based compiler framework for

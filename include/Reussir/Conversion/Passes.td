@@ -257,6 +257,42 @@ def ReussirCompilePolymorphicFFIPass
 }
 
 //===----------------------------------------------------------------------===//
+// InstrumentNonlinearFFI
+//===----------------------------------------------------------------------===//
+def ReussirInstrumentNonlinearFFIPass
+    : Pass<"reussir-instrument-nonlinear-ffi", "::mlir::ModuleOp"> {
+  let summary = "report non-linearly used ffi/array values consumed by FFI "
+                "calls at runtime";
+  let description = [{
+    `reussir-instrument-nonlinear-ffi` instruments every call to an
+    FFI-imported function (the `target` of a `reussir.trampoline import`):
+    for each `!reussir.rc` argument whose payload is an `ffi_object` or an
+    `array`, it emits a guarded runtime report before the call:
+
+    ```mlir
+    %count = reussir.rc.fetch (%arg : ...) : index
+    %shared = arith.cmpi ne, %count, %c1
+    scf.if %shared {  // reussir.expect'ed cold
+      llvm.call @__reussir_report_nonlinear_usage(%file, %line, %col)
+    }
+    ```
+
+    The owned calling convention consumes every rc argument, so a reference
+    count above one at the boundary means the value is used non-linearly and
+    the foreign side degrades to copy-on-write instead of updating in place.
+    The runtime function reports the call's source location on stderr. The
+    check is purely diagnostic and never changes program semantics; schedule
+    it after the rc optimization passes so the observed count is the final
+    one.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::arith::ArithDialect",
+                           "::mlir::func::FuncDialect",
+                           "::mlir::scf::SCFDialect",
+                           "::mlir::LLVM::LLVMDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // ConvertToLLVM
 //===----------------------------------------------------------------------===//
 def ReussirConvertToLLVMPass

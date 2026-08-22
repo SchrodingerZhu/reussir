@@ -151,6 +151,14 @@ pub struct LoweringOptions {
     /// zero overhead: no transform pass is added and the pipeline is exactly
     /// the fixed pass list. `rrc` exposes this as `--transform-script`.
     pub transform_scripts: Vec<(Anchor, PathBuf)>,
+    /// Instrument non-linear ffi/array usage: before every FFI-import call
+    /// that consumes an rc'd `ffi_object`/`array` argument, check the
+    /// reference count and report the call's source location to the runtime
+    /// (`__reussir_report_nonlinear_usage`) when it is not one — the
+    /// signature that the foreign side degrades to copy-on-write instead of
+    /// updating in place. Purely diagnostic; `rrc` exposes it as
+    /// `--instrument-nonlinear-ffi`.
+    pub instrument_nonlinear_ffi: bool,
     /// Emit whole-program devirtualization artifacts for closures (a `!type`
     /// id per vtable, keyed by return type, plus a call-site type test at
     /// every indirect eval/clone/drop). The backend pipeline's SPECULATIVE
@@ -179,6 +187,9 @@ impl Default for LoweringOptions {
             // layout contract; only an explicit driver flag turns it off.
             pack_record_members: true,
             transform_scripts: Vec::new(),
+            // Off by default: instrumentation is an explicit diagnostic
+            // request.
+            instrument_nonlinear_ffi: false,
             // Off by default: embedders opt in explicitly; `rrc` turns it on
             // at `-O aggressive`/`-O size`.
             closure_wpd: false,
@@ -285,6 +296,7 @@ pub fn run_lowering_pipeline(
         enable_invariant_analysis = options.enable_invariant_analysis,
         nullary_variant_encoding = ?options.nullary_variant_encoding,
         pack_record_members = options.pack_record_members,
+        instrument_nonlinear_ffi = options.instrument_nonlinear_ffi,
         inline_transform,
     )
     .entered();
@@ -397,6 +409,12 @@ pub fn run_lowering_pipeline(
         func:   sys::reussirCreateRcCreateSinkPass();
         func:   sys::reussirCreateRcCreateFusionPass();
         module: sys::reussirCreateTRMCRecursionAnalysisPass();
+        // After every rc optimization pass (cancellation, token reuse,
+        // create sink/fusion), so the count each check observes is the
+        // final one, and before the scf dialect is lowered away.
+        if options.instrument_nonlinear_ffi => {
+            module: sys::reussirCreateInstrumentNonlinearFFIPass();
+        }
         module: sys::reussirCreateCompilePolymorphicFFIPass(false);
 
         // `kernel` anchor: the Reussir-level work is done (both
