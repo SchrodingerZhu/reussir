@@ -23,9 +23,10 @@
 //!
 //! It is the faster queue for all of these, by a wide margin on the
 //! insert- and merge-heavy ones. Measured against `binomial_heap` at
-//! 200k `i64` elements: insert 2.5x, delete-min 1.8x, merge 1.6x, peek
-//! 3.4x. Under callgrind an insert costs 2 allocations against
-//! binomial's 3, and 20.9M instructions against 38.9M per 100k inserts.
+//! 200k `i64` elements: insert 1.2x, delete-min 2x on a full drain,
+//! peek 2x, and several-fold on merge-heavy k-way tournaments. Under
+//! callgrind an insert costs 2 allocations against binomial's 3, and
+//! 20.9M instructions against 38.9M per 100k inserts.
 //!
 //! ## Prefer `binomial_heap` when
 //!
@@ -42,8 +43,8 @@
 //! each delete from the same version pays the full O(n) restructuring
 //! instead of its amortized share. This is Okasaki's amortization-versus
 //! persistence problem, and here it is not a small constant: 2000
-//! deletes from one 200k-element version take 3429 ms against 22 ms for
-//! `binomial_heap`, and the gap widens with n.
+//! deletes from one 200k-element version take ~2.5 s against under
+//! 10 ms for `binomial_heap`, and the gap widens with n.
 //!
 //! Note this is about *reusing* an old version, not about holding one.
 //! Keeping earlier versions around is free; only deleting from them
@@ -140,10 +141,34 @@ fn drain_acc<T : Ord>(h : PairingHeap<T>, acc : List<T>) -> List<T> {
     }
 }
 
-fn reverse_acc<T>(l : List<T>, acc : List<T>) -> List<T> {
-    match l {
-        List::Nil => acc,
-        List::Cons(h, t) => reverse_acc(t, List::Cons { h, acc })
+// Every child is a non-empty tree whose root is at least the parent's,
+// recursively. Walks the child lists by recursion, so it needs stack
+// proportional to the widest node — fine for the test-sized heaps this
+// checker is meant for.
+fn children_valid<T : Ord>(parent : T, cs : List<Tree<T>>) -> bool {
+    match cs {
+        List::Nil => true,
+        List::Cons(c, rest) => match c {
+            Tree::Empty => false,
+            Tree::Node(x, xs) =>
+                parent <= x
+                && children_valid(x, xs)
+                && children_valid(parent, rest)
+        }
+    }
+}
+
+fn tree_count<T>(t : Tree<T>) -> u64 {
+    match t {
+        Tree::Empty => 0,
+        Tree::Node(_, cs) => 1 + forest_count(cs)
+    }
+}
+
+fn forest_count<T>(cs : List<Tree<T>>) -> u64 {
+    match cs {
+        List::Nil => 0,
+        List::Cons(c, rest) => tree_count(c) + forest_count(rest)
     }
 }
 
@@ -217,6 +242,22 @@ impl<T : Ord> PairingHeap<T> {
 
     /// Returns the elements in ascending order. O(n log n).
     pub fn to_sorted_list(self : Self) -> List<T> {
-        reverse_acc(drain_acc(self, List::Nil), List::Nil)
+        drain_acc(self, List::Nil).reverse()
+    }
+
+    /// Removes every element. O(1).
+    pub fn clear(self : Self) -> Self {
+        PairingHeap::new()
+    }
+
+    /// Checks the representation invariants: the tree is heap-ordered
+    /// with no empty subtrees below the root, and the cached size
+    /// matches the structure. O(n); for tests and debugging.
+    pub fn valid(self : Self) -> bool {
+        match self.root {
+            Tree::Empty => self.size == 0,
+            Tree::Node(x, cs) =>
+                children_valid(x, cs) && 1 + forest_count(cs) == self.size
+        }
     }
 }

@@ -32,8 +32,8 @@
 //! `pairing_heap` collapses on exactly this pattern — its amortized
 //! bound assumes the credit built by earlier operations is spent once,
 //! and reusing a version spends it twice. Measured at 2000 deletes from
-//! a single 200k-element version: 22 ms here against 3429 ms there, and
-//! the gap widens with n.
+//! a single 200k-element version: under 10 ms here against ~2.5 s
+//! there, and the gap widens with n.
 //!
 //! **A single operation's cost matters**, not just the total: with worst
 //! case bounds no individual `delete_min` can degrade into a long
@@ -45,8 +45,9 @@
 //! The queue is threaded linearly — each version produced, used, and
 //! left behind — which covers most queue code: graph search frontiers,
 //! event simulation, scheduling, heapsort. It is measurably faster
-//! there: insert 2.5x, delete-min 1.8x, merge 1.6x, peek 3.4x at 200k
-//! `i64` elements.
+//! there at 200k `i64` elements: insert 1.2x, delete-min 2x on a full
+//! drain, peek 2x, and several-fold on merge-heavy k-way tournaments
+//! where its O(1) merge does no restructuring at all.
 //!
 //! Also prefer it when `peek_min` is hot. Here the minimum is found by
 //! scanning the forest roots — at most `log2(n) + 1` of them, so
@@ -125,25 +126,46 @@ fn ins_tree<T : Ord>(t : Tree<T>, ts : List<Tree<T>>) -> List<Tree<T>> {
     }
 }
 
-fn merge_trees<T : Ord>(
+fn rev_append<T>(acc : List<Tree<T>>, tail : List<Tree<T>>) -> List<Tree<T>> {
+    match acc {
+        List::Nil => tail,
+        List::Cons(t, rest) => rev_append(rest, List::Cons { t, tail })
+    }
+}
+
+// Merge with the emitted prefix accumulated in reverse, unwound by
+// `rev_append` at the end. Deliberately shaped so each step finishes
+// constructing its list cells before making the next call: the compiler
+// then reuses the memory of the cells the match just freed, which it
+// cannot do for a construction wrapping a recursive call.
+fn merge_trees_acc<T : Ord>(
     a : List<Tree<T>>,
-    b : List<Tree<T>>
+    b : List<Tree<T>>,
+    acc : List<Tree<T>>
 ) -> List<Tree<T>> {
     match a {
-        List::Nil => b,
+        List::Nil => rev_append(acc, b),
         List::Cons(x, xs) => match b {
-            List::Nil => List::Cons { x, xs },
+            List::Nil => rev_append(acc, List::Cons { x, xs }),
             List::Cons(y, ys) => {
                 if rank(x) < rank(y) {
-                    List::Cons { x, merge_trees(xs, List::Cons { y, ys }) }
+                    merge_trees_acc(
+                        xs,
+                        List::Cons { y, ys },
+                        List::Cons { x, acc }
+                    )
                 } else {
                     if rank(y) < rank(x) {
-                        List::Cons {
-                            y,
-                            merge_trees(List::Cons { x, xs }, ys)
-                        }
+                        merge_trees_acc(
+                            List::Cons { x, xs },
+                            ys,
+                            List::Cons { y, acc }
+                        )
                     } else {
-                        ins_tree(link(x, y), merge_trees(xs, ys))
+                        rev_append(
+                            acc,
+                            ins_tree(link(x, y), merge_trees_acc(xs, ys, List::Nil))
+                        )
                     }
                 }
             }
@@ -151,16 +173,31 @@ fn merge_trees<T : Ord>(
     }
 }
 
+fn merge_trees<T : Ord>(
+    a : List<Tree<T>>,
+    b : List<Tree<T>>
+) -> List<Tree<T>> {
+    merge_trees_acc(a, b, List::Nil)
+}
+
+fn min_root_from<T : Ord>(ts : List<Tree<T>>, best : T) -> T {
+    match ts {
+        List::Nil => best,
+        List::Cons(t, rest) => {
+            let r = root(t);
+            min_root_from(rest, if r <= best { r } else { best })
+        }
+    }
+}
+
+// The least root in the forest. The running best is carried as a bare
+// value and only the final result builds an `Option`; returning
+// `Option` from every level would allocate a boxed `Some` per forest
+// entry on each peek.
 fn min_root<T : Ord>(ts : List<Tree<T>>) -> Option<T> {
     match ts {
         List::Nil => Option::None,
-        List::Cons(t, rest) => match min_root(rest) {
-            Option::None => Option::Some { root(t) },
-            Option::Some(m) => {
-                let r = root(t);
-                Option::Some { if r <= m { r } else { m } }
-            }
-        }
+        List::Cons(t, rest) => Option::Some { min_root_from(rest, root(t)) }
     }
 }
 
@@ -184,26 +221,18 @@ fn remove_min_tree<T : Ord>(ts : List<Tree<T>>) -> Split<T> {
     }
 }
 
-fn reverse_trees<T>(
-    ts : List<Tree<T>>,
-    acc : List<Tree<T>>
-) -> List<Tree<T>> {
-    match ts {
-        List::Nil => acc,
-        List::Cons(t, rest) => reverse_trees(rest, List::Cons { t, acc })
-    }
-}
-
 // The forest left after removing the minimum root: the extracted tree's
 // children run high-to-low rank, so they are reversed before merging back
-// into the increasing-rank forest.
+// into the increasing-rank forest. `split` is decomposed into locals
+// before its tree is matched — matching a field of a live struct keeps
+// the struct borrowed, which shares the child list and forfeits reuse
+// in everything downstream.
 fn without_min<T : Ord>(ts : List<Tree<T>>) -> List<Tree<T>> {
     let split = remove_min_tree(ts);
     let best = split.tree;
     let others = split.rest;
     match best {
-        Tree::Node(_, _, cs) =>
-            merge_trees(reverse_trees(cs, List::Nil), others)
+        Tree::Node(_, _, cs) => merge_trees(cs.reverse(), others)
     }
 }
 
@@ -224,10 +253,45 @@ fn drain_acc<T : Ord>(h : BinomialHeap<T>, acc : List<T>) -> List<T> {
     }
 }
 
-fn reverse_acc<T>(l : List<T>, acc : List<T>) -> List<T> {
-    match l {
-        List::Nil => acc,
-        List::Cons(h, t) => reverse_acc(t, List::Cons { h, acc })
+// Children of a rank-`r` node hold ranks r-1 .. 0 in decreasing order,
+// each heap-ordered below the parent and recursively well-formed.
+fn children_valid<T : Ord>(parent : T, expected : i64, cs : List<Tree<T>>) -> bool {
+    match cs {
+        List::Nil => expected == 0,
+        List::Cons(c, rest) =>
+            rank(c) == expected - 1
+            && parent <= root(c)
+            && tree_valid(c)
+            && children_valid(parent, expected - 1, rest)
+    }
+}
+
+fn tree_valid<T : Ord>(t : Tree<T>) -> bool {
+    match t {
+        Tree::Node(r, x, cs) => r >= 0 && children_valid(x, r, cs)
+    }
+}
+
+// Root ranks strictly increase along the forest; `low` is an exclusive
+// lower bound on the next admissible rank.
+fn forest_valid<T : Ord>(low : i64, ts : List<Tree<T>>) -> bool {
+    match ts {
+        List::Nil => true,
+        List::Cons(t, rest) =>
+            rank(t) > low && tree_valid(t) && forest_valid(rank(t), rest)
+    }
+}
+
+fn pow2(r : i64) -> u64 {
+    if r == 0 { 1 } else { 2 * pow2(r - 1) }
+}
+
+// A valid rank-`r` tree has exactly 2^r nodes, so the forest's size is
+// the sum of 2^rank over its roots.
+fn forest_count<T>(ts : List<Tree<T>>) -> u64 {
+    match ts {
+        List::Nil => 0,
+        List::Cons(t, rest) => pow2(rank(t)) + forest_count(rest)
     }
 }
 
@@ -275,13 +339,19 @@ impl<T : Ord> BinomialHeap<T> {
     pub fn pop_min(self : Self) -> Pop<T> {
         match self.trees {
             List::Nil => Pop::Empty,
-            ts => match min_root(ts) {
-                Option::None => Pop::Empty,
-                Option::Some(m) => Pop::Pop {
-                    m,
-                    BinomialHeap {
-                        size: self.size - 1,
-                        trees: without_min(ts)
+            // The extracted tree's root is the least element, so one
+            // scan finds both the answer and the remaining forest.
+            ts => {
+                let split = remove_min_tree(ts);
+                let best = split.tree;
+                let others = split.rest;
+                match best {
+                    Tree::Node(_, x, cs) => Pop::Pop {
+                        x,
+                        BinomialHeap {
+                            size: self.size - 1,
+                            trees: merge_trees(cs.reverse(), others)
+                        }
                     }
                 }
             }
@@ -303,6 +373,20 @@ impl<T : Ord> BinomialHeap<T> {
 
     /// Returns the elements in ascending order. O(n log n).
     pub fn to_sorted_list(self : Self) -> List<T> {
-        reverse_acc(drain_acc(self, List::Nil), List::Nil)
+        drain_acc(self, List::Nil).reverse()
+    }
+
+    /// Removes every element. O(1).
+    pub fn clear(self : Self) -> Self {
+        BinomialHeap::new()
+    }
+
+    /// Checks the representation invariants: every tree is heap-ordered
+    /// with the child ranks a binomial node requires, root ranks
+    /// strictly increase along the forest, and the cached size matches
+    /// the structure. O(n); for tests and debugging.
+    pub fn valid(self : Self) -> bool {
+        forest_valid(0 - 1, self.trees)
+            && forest_count(self.trees) == self.size
     }
 }
