@@ -1,7 +1,8 @@
 // A downstream package instantiates both persistent priority queues.
 // Cases cover the public API, persistence of shared versions, heapsort
-// output order, a model-checked insert/delete-min churn, and agreement
-// between the two implementations on identical inputs.
+// output order, a model-checked insert/delete-min churn, agreement
+// between the two implementations on identical inputs, clear, and the
+// valid() invariant checkers across every construction path.
 
 // RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
 // LISTING: release{{[/\\]}}heap
@@ -43,6 +44,23 @@
 // RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/agreement.in | %FileCheck %s --check-prefix=AGREE
 // AGREE:      1
 // AGREE-NEXT: 1
+
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/api_extras.in | %FileCheck %s --check-prefix=API
+// API:      1
+// API-NEXT: 1
+// API-NEXT: 1
+// API-NEXT: 1
+// API-NEXT: 1
+
+// RUN: %std_rene_build/release/heap%exe_ext < %S/Inputs/heap/invariants.in | %FileCheck %s --check-prefix=INV
+// INV:      1
+// INV-NEXT: 1
+// INV-NEXT: 1
+// INV-NEXT: 1
+// INV-NEXT: 1
+// INV-NEXT: 1
+// INV-NEXT: 1
+// INV-NEXT: 1
 
 // A downstream executable package exercises both persistent priority
 // queues. Each input selects one case; case 5 checks a pseudorandom
@@ -236,21 +254,79 @@ fn test_agreement() {
     wb(list_eq(p.to_sorted_list(), b.to_sorted_list()));
 }
 
+// clear and the empty/small cases of the invariant checkers.
+fn test_api_extras() {
+    let p = build_pairing(100, 13, PairingHeap::new());
+    wb(p.valid());
+    wb(p.clear().is_empty() && p.clear().valid());
+    let b = build_binomial(100, 13, BinomialHeap::new());
+    wb(b.valid());
+    wb(b.clear().is_empty() && b.clear().valid());
+    let ep : PairingHeap<i64> = PairingHeap::new();
+    let eb : BinomialHeap<i64> = BinomialHeap::new();
+    wb(ep.valid() && eb.valid());
+}
+
+// valid() after every delete step of a pseudorandom insert/delete churn.
+fn churn_valid_pairing(ops : i64, seed : i64, h : PairingHeap<i64>) -> bool {
+    if ops == 0 {
+        h.valid()
+    } else {
+        let s = lcg(seed);
+        if s % 3 == 0 {
+            h.valid() && churn_valid_pairing(ops - 1, s, h.delete_min())
+        } else {
+            churn_valid_pairing(ops - 1, s, h.insert(s % 512))
+        }
+    }
+}
+
+fn churn_valid_binomial(ops : i64, seed : i64, h : BinomialHeap<i64>) -> bool {
+    if ops == 0 {
+        h.valid()
+    } else {
+        let s = lcg(seed);
+        if s % 3 == 0 {
+            h.valid() && churn_valid_binomial(ops - 1, s, h.delete_min())
+        } else {
+            churn_valid_binomial(ops - 1, s, h.insert(s % 512))
+        }
+    }
+}
+
+// Every construction path must leave a structurally valid queue.
+fn test_invariants() {
+    wb(churn_valid_pairing(300, 7, PairingHeap::new()));
+    wb(churn_valid_binomial(300, 7, BinomialHeap::new()));
+    let p = build_pairing(1000, 19, PairingHeap::new());
+    let b = build_binomial(1000, 19, BinomialHeap::new());
+    wb(p.merge(build_pairing(500, 23, PairingHeap::new())).valid());
+    wb(b.merge(build_binomial(500, 23, BinomialHeap::new())).valid());
+    wb(PairingHeap::from_list(p.to_sorted_list()).valid());
+    wb(BinomialHeap::from_list(b.to_sorted_list()).valid());
+    wb(match p.pop_min() {
+        std::collections::pure::pairing_heap::Pop::Pop(_, rest) =>
+            rest.valid(),
+        std::collections::pure::pairing_heap::Pop::Empty => false
+    });
+    wb(match b.pop_min() {
+        std::collections::pure::binomial_heap::Pop::Pop(_, rest) =>
+            rest.valid(),
+        std::collections::pure::binomial_heap::Pop::Empty => false
+    })
+}
+
 #[main]
 pub fn main() {
-    let case = test_utils::io::read_i32();
-    if case == 1 { test_pairing_basics() }
-    else {
-        if case == 2 { test_binomial_basics() }
-        else {
-            if case == 3 { test_pairing_sort() }
-            else {
-                if case == 4 { test_binomial_sort() }
-                else {
-                    if case == 5 { test_churn() }
-                    else { test_agreement() }
-                }
-            }
-        }
+    match test_utils::io::read_i32() {
+        1 => test_pairing_basics(),
+        2 => test_binomial_basics(),
+        3 => test_pairing_sort(),
+        4 => test_binomial_sort(),
+        5 => test_churn(),
+        6 => test_agreement(),
+        7 => test_api_extras(),
+        8 => test_invariants(),
+        _ => core::intrinsic::panic::panic()
     }
 }
