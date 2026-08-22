@@ -1325,8 +1325,13 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
         );
     }
 
-    /// Convert `core::cmp::Ordering` to the stable Rust-facing `i8` ABI code.
-    /// Variant names, not source tag order, define the mapping.
+    /// Convert `core::cmp::Ordering` to the stable Rust-facing `i32` ABI
+    /// code. Variant names, not source tag order, define the mapping. The
+    /// code is 32 bits wide on purpose: a sub-32-bit integer return relies
+    /// on a caller/callee extension convention that differs between ABIs
+    /// (standard AAPCS64 leaves the high bits to the caller; Apple's arm64
+    /// ABI requires the callee to extend, and rustc's declarations assume
+    /// it), while a 32-bit value crosses every C ABI without extension.
     fn synthesize_cmp_bridge(
         &mut self,
         base: &str,
@@ -1370,7 +1375,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             return;
         };
         self.record_symbol(def, args);
-        let ret = self.tcx.mk_int(IntTy::Signed(8));
+        let ret = self.tcx.mk_int(IntTy::Signed(32));
         let call = self.bridge_call(callee, ty, ordering);
         let arms: Vec<mir::DecisionTree<'tcx>> = codes
             .into_iter()
@@ -1440,7 +1445,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             self.error(span, "comparison predicate methods must return `bool`");
             return;
         }
-        let ret = self.tcx.mk_int(IntTy::Signed(8));
+        let ret = self.tcx.mk_int(IntTy::Signed(32));
         let gt_call = self.bridge_call(gt, ty, gt_ret);
         let greater = self.bridge_const(1, ret);
         let unordered = self.bridge_const(2, ret);
