@@ -6,27 +6,27 @@
 // their acquire glue.
 
 // RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
-// LISTING: release{{[/\\]}}cow
+// LISTING: release{{[/\\]}}cow_hash
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/map_basics.in | %FileCheck %s --check-prefix=MAPBASICS
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/map_basics.in | %FileCheck %s --check-prefix=MAPBASICS
 // MAPBASICS: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/map_cow.in | %FileCheck %s --check-prefix=MAPCOW
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/map_cow.in | %FileCheck %s --check-prefix=MAPCOW
 // MAPCOW: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/collisions.in | %FileCheck %s --check-prefix=COLLISIONS
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/collisions.in | %FileCheck %s --check-prefix=COLLISIONS
 // COLLISIONS: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/growth.in | %FileCheck %s --check-prefix=GROWTH
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/growth.in | %FileCheck %s --check-prefix=GROWTH
 // GROWTH: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/set_basics.in | %FileCheck %s --check-prefix=SETBASICS
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/set_basics.in | %FileCheck %s --check-prefix=SETBASICS
 // SETBASICS: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/record_values.in | %FileCheck %s --check-prefix=RECORDVALUES
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/record_values.in | %FileCheck %s --check-prefix=RECORDVALUES
 // RECORDVALUES: 1
 
-// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/primitive_keys.in | %FileCheck %s --check-prefix=PRIMITIVEKEYS
+// RUN: %std_rene_build/release/cow_hash%exe_ext < %S/Inputs/cow_hash/primitive_keys.in | %FileCheck %s --check-prefix=PRIMITIVEKEYS
 // PRIMITIVEKEYS: 1
 
 import std::collections::cow::hashmap::HashMap;

@@ -8,7 +8,7 @@
     test_utils = { path = "../../../library/test_utils", version = "^0.1" },
   },
   targets = {
-    cow = { kind = 'executable, path = "cow.rr" },
+    cow_hash = { kind = 'executable, path = "cow_hash.rr" },
     cow_ordered = { kind = 'executable, path = "cow_ordered.rr" },
     cow_seq = { kind = 'executable, path = "cow_seq.rr" },
     fingertree = { kind = 'executable, path = "fingertree.rr" },
