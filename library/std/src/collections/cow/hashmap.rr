@@ -1,0 +1,153 @@
+//! A copy-on-write hash map backed by the runtime's hashbrown table.
+//!
+//! Unlike the persistent `pure` map, versions do not share structure: the
+//! whole table lives in one runtime allocation behind an rc box. An update
+//! on a uniquely owned map mutates the table in place; an update on a
+//! shared map clones the table once and then mutates the copy. That makes
+//! this map the right choice for linear usage — build, query, discard —
+//! where the flat table beats a trie on locality and per-operation cost,
+//! and the wrong choice when many retained versions branch from a common
+//! ancestor.
+//!
+//! Keys are hashed on the Reussir side with `FastHasher` (`new` uses its
+//! default seed, `with_seed` chooses the entropy) and the digest crosses
+//! the FFI boundary with the key, so the runtime never hashes: each entry
+//! caches its digest, growth and the copy-on-write clone reuse it, and key
+//! equality — bridged back to the Reussir `Eq` implementation — is only
+//! consulted when the cached digests already match.
+//!
+//! Keys and values must be able to cross the FFI boundary: scalars and
+//! shared records qualify; `[value]` records, `str`, arrays, and closures
+//! do not yet.
+
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::hash_map::HashMap as RHashMap;
+}];
+
+/// The raw runtime table. Operations consume the handle (the boundary owns
+/// its arguments); [`HashMap`] wraps it together with the hash seed.
+#[ffi(rust = "::reussir_rt::collections::hash_map::HashMap")]
+pub struct RawHashMap<K : Eq, V>;
+
+#[ffi(import)]
+fn raw_new<K : Eq, V>() -> RawHashMap<K, V> [{ RHashMap::new() }];
+
+#[ffi(import)]
+fn raw_len<K : Eq, V>(map : RawHashMap<K, V>) -> u64 [{ map.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<K : Eq, V>(map : RawHashMap<K, V>) -> RawHashMap<K, V> [{
+    map.clear()
+}];
+
+#[ffi(import)]
+fn raw_insert<K : Eq, V>(
+    map : RawHashMap<K, V>,
+    hash : u64,
+    key : K,
+    value : V
+) -> RawHashMap<K, V> [{ map.insert(hash, key, value) }];
+
+#[ffi(import)]
+fn raw_contains<K : Eq, V>(map : RawHashMap<K, V>, hash : u64, key : K) -> bool [{
+    map.contains(hash, &key)
+}];
+
+// Only reachable behind a `raw_contains` guard: the runtime returns the
+// value for a key already known to be present.
+#[ffi(import)]
+fn raw_get<K : Eq, V>(map : RawHashMap<K, V>, hash : u64, key : K) -> V [{
+    map.get(hash, &key).unwrap()
+}];
+
+#[ffi(import)]
+fn raw_remove<K : Eq, V>(
+    map : RawHashMap<K, V>,
+    hash : u64,
+    key : K
+) -> RawHashMap<K, V> [{ map.remove(hash, key) }];
+
+fn hash_key<K : Hash>(key : K, seed : u64) -> u64 {
+    key.hash(std::hash::fast_hasher_seeded(seed)).finish()
+}
+
+/// A copy-on-write hash map. See the module header for when to prefer it
+/// over `std::collections::pure::hashmap::HashMap`; the API mirrors that
+/// map's core operations.
+pub struct HashMap<K : Hash + Eq, V> {
+    raw : RawHashMap<K, V>,
+    seed : u64
+}
+
+impl<K : Hash + Eq, V> HashMap<K, V> {
+    /// Creates an empty map with the default hash seed. O(1).
+    pub fn new() -> Self {
+        HashMap { raw: raw_new(), seed: 0 }
+    }
+
+    /// Creates an empty map using `seed` as caller-supplied hash entropy.
+    /// O(1).
+    pub fn with_seed(seed : u64) -> Self {
+        HashMap { raw: raw_new(), seed }
+    }
+
+    /// Creates a one-entry map with the default hash seed. Expected O(1).
+    pub fn singleton(key : K, value : V) -> Self {
+        HashMap::new().insert(key, value)
+    }
+
+    /// Returns the seed used to hash keys. O(1).
+    pub fn hash_seed(self : Self) -> u64 {
+        self.seed
+    }
+
+    /// Returns the number of entries. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the map has no entries. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every entry, keeping the seed. O(n).
+    pub fn clear(self : Self) -> Self {
+        HashMap { raw: raw_clear(self.raw), seed: self.seed }
+    }
+
+    /// Inserts a key-value pair, replacing the value under an existing
+    /// equal key (which keeps its stored key). Expected O(1); O(n) when a
+    /// shared table is cloned first.
+    pub fn insert(self : Self, key : K, value : V) -> Self {
+        let hash = hash_key(key, self.seed);
+        HashMap { raw: raw_insert(self.raw, hash, key, value), seed: self.seed }
+    }
+
+    /// Looks up the value stored under `key`. Expected O(1).
+    pub fn get(self : Self, key : K) -> Option<V> {
+        let hash = hash_key(key, self.seed);
+        if raw_contains(self.raw, hash, key) {
+            Option::Some { raw_get(self.raw, hash, key) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns whether `key` has an entry. Expected O(1).
+    pub fn contains_key(self : Self, key : K) -> bool {
+        let hash = hash_key(key, self.seed);
+        raw_contains(self.raw, hash, key)
+    }
+
+    /// Removes the entry under `key`, if any. Expected O(1); O(n) when a
+    /// shared table is cloned first. A miss never clones.
+    pub fn remove(self : Self, key : K) -> Self {
+        let hash = hash_key(key, self.seed);
+        HashMap { raw: raw_remove(self.raw, hash, key), seed: self.seed }
+    }
+}

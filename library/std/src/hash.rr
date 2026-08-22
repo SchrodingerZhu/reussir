@@ -104,6 +104,51 @@ pub trait Hash {
     fn hash<H: Hasher>(self: Self, state: H) -> H;
 }
 
+// Every scalar hashes as its own typed write, so a primitive feeds a
+// hasher directly and a composite's `write` chain accepts primitives
+// without wrapping. Signed values reinterpret as unsigned of the same
+// width and floats stay unhashable, mirroring the `Hasher` write set.
+
+impl Hash for u64 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_u64(self) }
+}
+
+impl Hash for u32 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_u32(self) }
+}
+
+impl Hash for u16 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_u16(self) }
+}
+
+impl Hash for u8 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_u8(self) }
+}
+
+impl Hash for i64 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_i64(self) }
+}
+
+impl Hash for i32 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_i32(self) }
+}
+
+impl Hash for i16 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_i16(self) }
+}
+
+impl Hash for i8 {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_i8(self) }
+}
+
+impl Hash for bool {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_bool(self) }
+}
+
+impl Hash for char {
+    fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_char(self) }
+}
+
 // ---------------------------------------------------------------- FastHasher
 
 /// The Rust compiler's Fx hash: per word, rotate the state left by five,

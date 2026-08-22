@@ -1,0 +1,113 @@
+//! A copy-on-write hash set backed by the runtime's hashbrown table.
+//!
+//! The set analogue of `std::collections::cow::hashmap`: one flat runtime
+//! table behind an rc box, in-place updates when uniquely owned, a single
+//! table clone when shared. Values are hashed on the Reussir side and the
+//! digest is cached per entry, so the runtime never hashes and equality is
+//! the only bridged callback. See the map's module header for the
+//! copy-on-write trade-off and the FFI-crossing restrictions on `T`.
+
+import std::hash::Hash;
+import std::hash::Hasher;
+
+extern "rust" [{
+    use reussir_rt::collections::hash_set::HashSet as RHashSet;
+}];
+
+/// The raw runtime table. Operations consume the handle (the boundary owns
+/// its arguments); [`HashSet`] wraps it together with the hash seed.
+#[ffi(rust = "::reussir_rt::collections::hash_set::HashSet")]
+pub struct RawHashSet<T : Eq>;
+
+#[ffi(import)]
+fn raw_new<T : Eq>() -> RawHashSet<T> [{ RHashSet::new() }];
+
+#[ffi(import)]
+fn raw_len<T : Eq>(set : RawHashSet<T>) -> u64 [{ set.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<T : Eq>(set : RawHashSet<T>) -> RawHashSet<T> [{ set.clear() }];
+
+#[ffi(import)]
+fn raw_insert<T : Eq>(set : RawHashSet<T>, hash : u64, value : T) -> RawHashSet<T> [{
+    set.insert(hash, value)
+}];
+
+#[ffi(import)]
+fn raw_contains<T : Eq>(set : RawHashSet<T>, hash : u64, value : T) -> bool [{
+    set.contains(hash, &value)
+}];
+
+#[ffi(import)]
+fn raw_remove<T : Eq>(set : RawHashSet<T>, hash : u64, value : T) -> RawHashSet<T> [{
+    set.remove(hash, value)
+}];
+
+fn hash_value<T : Hash>(value : T, seed : u64) -> u64 {
+    value.hash(std::hash::fast_hasher_seeded(seed)).finish()
+}
+
+/// A copy-on-write hash set. The API mirrors the core operations of
+/// `std::collections::pure::hashset::HashSet`.
+pub struct HashSet<T : Hash + Eq> {
+    raw : RawHashSet<T>,
+    seed : u64
+}
+
+impl<T : Hash + Eq> HashSet<T> {
+    /// Creates an empty set with the default hash seed. O(1).
+    pub fn new() -> Self {
+        HashSet { raw: raw_new(), seed: 0 }
+    }
+
+    /// Creates an empty set using `seed` as caller-supplied hash entropy.
+    /// O(1).
+    pub fn with_seed(seed : u64) -> Self {
+        HashSet { raw: raw_new(), seed }
+    }
+
+    /// Creates a one-element set with the default hash seed. Expected O(1).
+    pub fn singleton(value : T) -> Self {
+        HashSet::new().insert(value)
+    }
+
+    /// Returns the seed used to hash values. O(1).
+    pub fn hash_seed(self : Self) -> u64 {
+        self.seed
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the set has no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every element, keeping the seed. O(n).
+    pub fn clear(self : Self) -> Self {
+        HashSet { raw: raw_clear(self.raw), seed: self.seed }
+    }
+
+    /// Inserts a value; an existing equal element is kept. Expected O(1);
+    /// O(n) when a shared table is cloned first.
+    pub fn insert(self : Self, value : T) -> Self {
+        let hash = hash_value(value, self.seed);
+        HashSet { raw: raw_insert(self.raw, hash, value), seed: self.seed }
+    }
+
+    /// Returns whether `value` is an element. Expected O(1).
+    pub fn contains(self : Self, value : T) -> bool {
+        let hash = hash_value(value, self.seed);
+        raw_contains(self.raw, hash, value)
+    }
+
+    /// Removes `value`, if present. Expected O(1); O(n) when a shared table
+    /// is cloned first. A miss never clones.
+    pub fn remove(self : Self, value : T) -> Self {
+        let hash = hash_value(value, self.seed);
+        HashSet { raw: raw_remove(self.raw, hash, value), seed: self.seed }
+    }
+}

@@ -179,8 +179,41 @@ fn digest_of<H : Hasher, T : Hash>(value : T) -> u64 {
     value.hash(H::default()).finish()
 }
 
+// RUN: %std_rene_build/release/hash%exe_ext < %S/Inputs/hash/primitives.in | %FileCheck %s --check-prefix=PRIMS
+// PRIMS:      1
+// PRIMS-NEXT: 1
+// PRIMS-NEXT: 1
+// PRIMS-NEXT: 1
+// PRIMS-NEXT: 1
+// PRIMS-NEXT: 1
+// PRIMS-NEXT: 1
+
+fn test_primitives() {
+    // The primitive `Hash` impls: each scalar hashes as its own typed
+    // write, reachable through the trait bound (`fast_hash`) …
+    let n : u64 = 42;
+    wb(std::hash::fast_hash(n) ==
+        std::hash::fast_hasher().write_u64(42).finish());
+    let i : i32 = 0 - 7;
+    wb(std::hash::fast_hash(i) ==
+        std::hash::fast_hasher().write_i32(0 - 7).finish());
+    wb(std::hash::fast_hash(true) ==
+        std::hash::fast_hasher().write_bool(true).finish());
+    wb(std::hash::fast_hash('z') ==
+        std::hash::fast_hasher().write_char('z').finish());
+    // … through dot dispatch on the scalar itself …
+    wb(n.hash(std::hash::fast_hasher()).finish() == std::hash::fast_hash(n));
+    // … and through a composite's `write` chain.
+    wb(std::hash::fast_hasher().write(n).finish() == std::hash::fast_hash(n));
+    // The generic consumer works at a scalar instantiation.
+    wb(digest_of<StrongHasher, u64>(n) == std::hash::strong_hash(n));
+}
+
 #[main]
 pub fn main() {
-    let case = test_utils::io::read_i32();
-    if case == 1 { test_reference_vectors() } else { test_properties() }
+    match test_utils::io::read_i32() {
+        1 => test_reference_vectors(),
+        2 => test_primitives(),
+        _ => test_properties()
+    }
 }

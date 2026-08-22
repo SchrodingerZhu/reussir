@@ -576,3 +576,39 @@ pub fn build_switch(scrutinee: Path, arms: Vec<(Label, Tree)>) -> Tree {
     };
     Tree::Switch { scrutinee, cases }
 }
+
+/// The spelling of a scalar-type token appearing as a *path segment*: a
+/// builtin-impl member declares under the scalar head's spelling
+/// (`std::hash::Hash::u64::hash`), which lexes as a type token rather than
+/// an ident. Widths the printer never emits degrade to an unresolvable
+/// name instead of failing the parse.
+pub(crate) fn signed_segment(w: u16) -> &'static str {
+    match w {
+        8 => "i8",
+        16 => "i16",
+        32 => "i32",
+        64 => "i64",
+        _ => "i0",
+    }
+}
+
+/// See [`signed_segment`].
+pub(crate) fn unsigned_segment(w: u16) -> &'static str {
+    match w {
+        8 => "u8",
+        16 => "u16",
+        32 => "u32",
+        64 => "u64",
+        _ => "u0",
+    }
+}
+
+/// See [`signed_segment`].
+pub(crate) fn fp_segment(w: u16) -> &'static str {
+    match w {
+        16 => "f16",
+        32 => "f32",
+        64 => "f64",
+        _ => "f0",
+    }
+}

@@ -1,0 +1,15 @@
+// A builtin type's head belongs to the language, so implementing an
+// *extern* trait for it violates the orphan rule — the diagnostic must be
+// the ordinary orphan report, not an internal error. (A lang trait declared
+// by the current package keeps the intrinsic builtin-impl special form.)
+
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %not %rrc %s --package-name orphan --extern core=%t.core.rri --emit mir -o - 2>&1 | %FileCheck %s
+
+impl PartialEq for u64 {
+    fn eq(self : Self, other : Self) -> bool { true }
+}
+
+pub fn main() -> u64 { 0 }
+
+// CHECK: cannot implement extern trait `core::cmp::PartialEq` for `u64`

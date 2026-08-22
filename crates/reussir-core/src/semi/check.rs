@@ -948,7 +948,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 } else {
                     self.mk_expr(ExprKind::Proj(Box::new(base), indices), raw, span)
                 };
-                return self.infer_method_call(receiver, def, method, *name, args, span);
+                return self.infer_method_call(receiver, Some(def), method, *name, args, span);
             }
             // No inherent method: trait methods are next in line, still
             // ahead of fields. An unresolved receiver cannot probe impls —
@@ -1080,13 +1080,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     fn infer_method_call(
         &mut self,
         receiver: Expr<'tcx>,
-        record_def: DefId,
+        record_def: Option<DefId>,
         def: DefId,
         name: TokenKey,
         args: &[surface::Expr],
         span: Option<Span>,
     ) -> Expr<'tcx> {
-        let type_display = self.defs.path(record_def).display(self.resolver);
+        // A builtin receiver has no def; its type spelling names it.
+        let type_display = match record_def {
+            Some(record_def) => self.defs.path(record_def).display(self.resolver),
+            None => {
+                let recv = self.infer.resolve(receiver.ty);
+                self.ty_display(recv)
+            }
+        };
         // The absolute candidate lookup bypassed `resolve_extern`'s pub
         // gate, so an extern-owned method must re-check visibility here —
         // with the same is-private (not not-found) wording as path
@@ -1295,8 +1302,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     // errors, reported at its site.
                     return self.builtin_cmp_call(tid, mname, receiver, args, span);
                 };
-                let TyKind::Record { def: head, .. } = *peeled.kind() else {
-                    unreachable!("user impls target records, so a selected method has one");
+                // A method-carrying impl's self type is a record or a
+                // builtin scalar; only a record has a def to display.
+                let head = match *peeled.kind() {
+                    TyKind::Record { def: head, .. } => Some(head),
+                    _ => None,
                 };
                 self.infer_method_call(receiver, head, def, mname, args, span)
             }

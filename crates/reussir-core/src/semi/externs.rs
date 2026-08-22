@@ -111,36 +111,10 @@ impl<'tcx> Elaborator<'_, 'tcx> {
             .collect();
         self.defs.set_module(module);
 
-        for (pdef, rec) in &parsed.records {
-            let def = defs[pdef.0 as usize];
-            let generics =
-                self.remap_generics(&rec.ty_params, &keys, &parsed.generic_bounds, interner);
-            let remap = Remapper {
-                tcx: self.tcx,
-                defs: &defs,
-                keys: &keys,
-                generics: &generics.map,
-            };
-            let record = Record {
-                def,
-                name: remap.key(rec.name),
-                visibility: rec.visibility,
-                ty_params: generics.binder,
-                kind: rec.kind,
-                default_cap: rec.default_cap,
-                repr_fixed: rec.repr_fixed,
-                ffi: rec.ffi.clone(),
-                fields: rec.fields.as_ref().map(|f| remap.fields(f)),
-                regional_generics: remap.generic_ids(&rec.regional_generics),
-                span: rec.span,
-                file: file_of(rec.file),
-            };
-            self.records.entry(def).or_insert(record);
-        }
-
         // Trait items: rebuild each declaration in consumer space and
         // register it in the session TraitDb — so bounds on imported
-        // binders resolve (the funcs loop below reads them), methods
+        // binders resolve (the records and funcs loops below read them),
+        // methods
         // dispatch, and coherence sees the dependency's impls. Two passes,
         // because a super-trait may be declared later in the dump than its
         // sub-trait (exactly like the elaborator's stub/populate split).
@@ -249,6 +223,37 @@ impl<'tcx> Elaborator<'_, 'tcx> {
             let def = self.traits.trait_def_mut(id);
             def.supertraits = supertraits;
             def.methods = methods;
+        }
+
+        // Record items. After the traits above: a record binder's bounds may
+        // name a trait this same interface declares (`struct Holder<T :
+        // dep::Digest>`), and `remap_generics` resolves every bound through
+        // the TraitDb.
+        for (pdef, rec) in &parsed.records {
+            let def = defs[pdef.0 as usize];
+            let generics =
+                self.remap_generics(&rec.ty_params, &keys, &parsed.generic_bounds, interner);
+            let remap = Remapper {
+                tcx: self.tcx,
+                defs: &defs,
+                keys: &keys,
+                generics: &generics.map,
+            };
+            let record = Record {
+                def,
+                name: remap.key(rec.name),
+                visibility: rec.visibility,
+                ty_params: generics.binder,
+                kind: rec.kind,
+                default_cap: rec.default_cap,
+                repr_fixed: rec.repr_fixed,
+                ffi: rec.ffi.clone(),
+                fields: rec.fields.as_ref().map(|f| remap.fields(f)),
+                regional_generics: remap.generic_ids(&rec.regional_generics),
+                span: rec.span,
+                file: file_of(rec.file),
+            };
+            self.records.entry(def).or_insert(record);
         }
 
         // Impl items. An impl identical to a registered one (same trait and
