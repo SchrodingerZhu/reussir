@@ -1,0 +1,20 @@
+// A dependency may own a generic Rust-backed container: the FFI struct,
+// its generic imports, a generic wrapper, and a trait bounded by one of
+// its own records all round-trip through the interface. This pins three
+// behaviors at once: interface loading registers traits before record
+// binders resolve (`Holder<T : Digest>`), dev-profile builds stamp debug
+// locations onto cross-package monomorphized glue, and the equality
+// bridge plus copy-on-write clone work for downstream key types.
+
+// UNSUPPORTED: darwin
+
+// RUN: %rene build --manifest-path %S/dep_ffi_generics/rene.ncl --build-dir %t.bdir %rrc_linker | %FileCheck %s --check-prefix=DEV
+// DEV: {{[/\\]}}dev{{[/\\]}}holder
+
+// RUN: %t.bdir/dev/holder%exe_ext | %FileCheck %s --check-prefix=OUT
+// OUT: 127
+
+// RUN: %rene build --manifest-path %S/dep_ffi_generics/rene.ncl --build-dir %t.bdir --profile release %rrc_linker | %FileCheck %s --check-prefix=RELEASE
+// RELEASE: {{[/\\]}}release{{[/\\]}}holder
+
+// RUN: %t.bdir/release/holder%exe_ext | %FileCheck %s --check-prefix=OUT

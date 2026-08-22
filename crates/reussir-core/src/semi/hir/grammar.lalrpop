@@ -318,6 +318,15 @@ Name: &'input str = {
     "interface" => "interface",
     "package" => "package",
     "producer" => "producer",
+    // Scalar-type spellings: a builtin-impl member path names its scalar
+    // head (`std::hash::Hash::u64::hash`), and those segments lex as type
+    // tokens rather than idents.
+    <w:"ints"> => raw::signed_segment(w),
+    <w:"intu"> => raw::unsigned_segment(w),
+    <w:"fp"> => raw::fp_segment(w),
+    "bool" => "bool",
+    "str" => "str",
+    "char" => "char",
 };
 
 /// A user debug name (parameter, let, and variant names). A name that

@@ -1,0 +1,215 @@
+// The copy-on-write hash containers, backed by the runtime's hashbrown
+// table through the polymorphic FFI. Cases cover the core map and set
+// API, copy-on-write isolation of a retained version, full-digest
+// collisions resolved through the bridged `Eq`, growth across many
+// resizes, seeded hashing, and shared-record values cloned through
+// their acquire glue.
+
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}cow
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/map_basics.in | %FileCheck %s --check-prefix=MAPBASICS
+// MAPBASICS: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/map_cow.in | %FileCheck %s --check-prefix=MAPCOW
+// MAPCOW: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/collisions.in | %FileCheck %s --check-prefix=COLLISIONS
+// COLLISIONS: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/growth.in | %FileCheck %s --check-prefix=GROWTH
+// GROWTH: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/set_basics.in | %FileCheck %s --check-prefix=SETBASICS
+// SETBASICS: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/record_values.in | %FileCheck %s --check-prefix=RECORDVALUES
+// RECORDVALUES: 1
+
+// RUN: %std_rene_build/release/cow%exe_ext < %S/Inputs/cow/primitive_keys.in | %FileCheck %s --check-prefix=PRIMITIVEKEYS
+// PRIMITIVEKEYS: 1
+
+import std::collections::cow::hashmap::HashMap;
+import std::collections::cow::hashset::HashSet;
+import std::hash::Hash;
+import std::hash::Hasher;
+import std::option::Option;
+
+fn wb(value : bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+// A shared record key ([value] records cannot cross the FFI boundary):
+// equality is decided by `id` alone while `digest` controls the hash, so
+// collision behavior is drivable from the tests.
+pub struct Key {
+    id : i64,
+    digest : u64
+}
+
+impl PartialEq for Key {
+    fn eq(self : Self, other : Self) -> bool { self.id == other.id }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H : Hasher>(self : Self, state : H) -> H {
+        state.write_u64(self.digest)
+    }
+}
+
+fn controlled(id : i64, digest : u64) -> Key {
+    Key { id, digest }
+}
+
+fn int_key(id : i64) -> Key {
+    controlled(id, id as u64)
+}
+
+fn value_or(map : HashMap<Key, i64>, key : i64, fallback : i64) -> i64 {
+    map.get(int_key(key)).unwrap_or(fallback)
+}
+
+fn test_map_basics() {
+    let empty : HashMap<Key, i64> = HashMap::new();
+    let base : HashMap<Key, i64> = HashMap::new();
+    let map = base.insert(int_key(1), 10).insert(int_key(2), 20).insert(int_key(4), 40);
+    let replaced = map.insert(int_key(2), 21);
+    let removed = replaced.remove(int_key(1));
+    let missed = removed.remove(int_key(9));
+    let single : HashMap<Key, i64> = HashMap::singleton(int_key(3), 33);
+    wb(empty.is_empty()
+        && map.len() == 3
+        && value_or(map, 2, 0 - 1) == 20
+        && value_or(map, 7, 0 - 1) == 0 - 1
+        && map.contains_key(int_key(4))
+        && !map.contains_key(int_key(7))
+        && replaced.len() == 3
+        && value_or(replaced, 2, 0 - 1) == 21
+        && removed.len() == 2
+        && value_or(removed, 1, 0 - 1) == 0 - 1
+        && value_or(removed, 4, 0 - 1) == 40
+        && missed.len() == 2
+        && missed.clear().is_empty()
+        && single.len() == 1);
+}
+
+fn test_map_cow() {
+    let base : HashMap<Key, i64> = HashMap::new();
+    let old = base.insert(int_key(1), 10).insert(int_key(2), 20);
+    // `old` stays live below, so deriving `changed` shares the runtime
+    // table; the first update takes the copy-on-write clone and must leave
+    // the retained version untouched.
+    let changed = old.insert(int_key(3), 30).remove(int_key(1));
+    wb(old.len() == 2
+        && value_or(old, 1, 0 - 1) == 10
+        && value_or(old, 3, 0 - 1) == 0 - 1
+        && changed.len() == 2
+        && value_or(changed, 1, 0 - 1) == 0 - 1
+        && value_or(changed, 3, 0 - 1) == 30);
+}
+
+fn test_collisions() {
+    // One shared digest: the cached-hash prefilter always passes and the
+    // bridged `Eq` on `id` must tell the entries apart.
+    let base : HashMap<Key, i64> = HashMap::new();
+    let map = base
+        .insert(controlled(1, 7), 100)
+        .insert(controlled(2, 7), 200)
+        .insert(controlled(3, 7), 300);
+    let removed = map.remove(controlled(1, 7));
+    wb(map.len() == 3
+        && map.get(controlled(2, 7)).unwrap_or(0 - 1) == 200
+        && removed.len() == 2
+        && removed.get(controlled(1, 7)).unwrap_or(0 - 1) == 0 - 1
+        && removed.get(controlled(3, 7)).unwrap_or(0 - 1) == 300);
+}
+
+fn fill(map : HashMap<Key, i64>, n : i64) -> HashMap<Key, i64> {
+    match n {
+        0 => map,
+        _ => fill(map.insert(int_key(n), n * 2), n - 1)
+    }
+}
+
+fn check(map : HashMap<Key, i64>, n : i64) -> bool {
+    match n {
+        0 => true,
+        _ => value_or(map, n, 0 - 1) == n * 2 && check(map, n - 1)
+    }
+}
+
+fn test_growth() {
+    // Enough entries to resize the table repeatedly; every rehash reuses
+    // the cached digests.
+    let base : HashMap<Key, i64> = HashMap::new();
+    let map = fill(base, 500);
+    wb(map.len() == 500 && check(map, 500));
+}
+
+fn test_set_basics() {
+    let empty : HashSet<Key> = HashSet::new();
+    let base : HashSet<Key> = HashSet::new();
+    let old = base
+        .insert(int_key(1))
+        .insert(int_key(2))
+        .insert(int_key(2))
+        .insert(int_key(4));
+    let changed = old.remove(int_key(2)).insert(int_key(8));
+    let seeded = HashSet::with_seed(20260822).insert(int_key(5));
+    wb(empty.is_empty()
+        && old.len() == 3
+        && old.contains(int_key(2))
+        && !old.contains(int_key(7))
+        && !old.contains(int_key(8))
+        && changed.len() == 3
+        && !changed.contains(int_key(2))
+        && changed.contains(int_key(8))
+        && old.clear().is_empty()
+        && seeded.hash_seed() == 20260822
+        && seeded.contains(int_key(5))
+        && HashSet::singleton(int_key(6)).len() == 1);
+}
+
+fn test_primitive_keys() {
+    // Scalar keys and values: `std::hash`'s primitive `Hash` impls feed
+    // the digest, and the scalar crosses the FFI boundary directly — no
+    // equality bridge, the Rust side compares natively.
+    let mbase : HashMap<i64, i64> = HashMap::new();
+    let map = mbase.insert(1, 10).insert(2, 20).insert(1, 11);
+    let sbase : HashSet<u64> = HashSet::new();
+    let set = sbase.insert(7).insert(7).insert(9);
+    wb(map.len() == 2
+        && map.get(1).unwrap_or(0 - 1) == 11
+        && map.get(2).unwrap_or(0 - 1) == 20
+        && map.get(3).unwrap_or(0 - 1) == 0 - 1
+        && set.len() == 2
+        && set.contains(7)
+        && !set.contains(8));
+}
+
+fn test_record_values() {
+    // Shared records as values: the copy-on-write clone runs their
+    // acquire glue, and both versions keep independent entries.
+    let base : HashMap<Key, Key> = HashMap::new();
+    let old = base.insert(int_key(1), int_key(10)).insert(int_key(2), int_key(20));
+    let changed = old.insert(int_key(1), int_key(11));
+    wb(old.get(int_key(1)).unwrap_or(int_key(0 - 1)).id == 10
+        && changed.get(int_key(1)).unwrap_or(int_key(0 - 1)).id == 11
+        && changed.get(int_key(2)).unwrap_or(int_key(0 - 1)).id == 20);
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_map_basics(),
+        1 => test_map_cow(),
+        2 => test_collisions(),
+        3 => test_growth(),
+        4 => test_set_basics(),
+        5 => test_record_values(),
+        6 => test_primitive_keys(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

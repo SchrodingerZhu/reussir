@@ -290,7 +290,12 @@ fn collect_private_records<'tcx>(
 /// The impl-block context a member is scanned under: the resolved target
 /// record and the block-level generics its signature shares.
 pub(super) struct ImplCtx<'x, 'tcx> {
-    pub target: DefId,
+    /// The target record — `None` for a builtin (scalar) trait-impl
+    /// target, which has no def; `head_name` still names the head.
+    pub target: Option<DefId>,
+    /// The head's name segment, for member declaration paths and
+    /// diagnostics: the record's name, or the builtin's spelling.
+    pub head_name: TokenKey,
     pub generics: &'x [(TokenKey, GenericId)],
     /// The applied target type — what `Self` (and a receiver annotation)
     /// means inside the block, in the record's unrefined coloring.
@@ -2026,7 +2031,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     (Some(target), Some(generics), Some(self_ty)) => {
                         self.defs.set_module(scope.module.to_vec());
                         let ctx = ImplCtx {
-                            target,
+                            target: Some(target),
+                            head_name: self.defs.path(target).name(),
                             generics,
                             self_ty,
                             trait_of: None,
@@ -2632,10 +2638,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         };
         // The builtin-impl special form: `impl Trait for <primitive> { }`.
         // Detected before the sealed guard — `core` declares the sealed
-        // tower's own impls this way; every other package is rejected by
-        // the form's locality rule instead.
-        if let Some(scalar) = self.prim_impl_target(&ib.target, &ib.target_args) {
-            return self.scan_builtin_impl(ib, tid, targs_surface, scalar, span);
+        // tower's own impls this way. Only a *lang* trait declared by the
+        // current package takes the intrinsic form; a method-carrying impl
+        // of an ordinary trait for a builtin type (`impl Hash for u64`)
+        // flows through the general path below with the scalar as its self
+        // type, where the orphan rule demands the local trait.
+        let scalar_target = self.prim_impl_target(&ib.target, &ib.target_args);
+        if let Some(scalar) = scalar_target {
+            let tdef = self.traits.trait_def(tid);
+            let lang_bound = self.lang.item_of(tdef.def).is_some();
+            let local = !self.extern_defs.contains_key(&tdef.def);
+            if lang_bound && local {
+                return self.scan_builtin_impl(ib, tid, targs_surface, scalar, span);
+            }
         }
         if self.traits.trait_def(tid).sealed {
             self.error(
@@ -2676,8 +2691,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
         }
 
-        let Some(target) = self.scan_impl_target(ib, true, span) else {
-            return nones;
+        let target = match scalar_target {
+            Some(_) => None,
+            None => match self.scan_impl_target(ib, true, span) {
+                Some(target) => Some(target),
+                None => return nones,
+            },
         };
         let generics = self.collect_generics(&ib.generics, span);
 
@@ -2687,11 +2706,17 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let trait_args: Vec<Ty<'tcx>> = targs_surface.iter().map(|a| self.eval_type(a)).collect();
         let self_args: Vec<Ty<'tcx>> = ib.target_args.iter().map(|a| self.eval_type(a)).collect();
         self.generic_names.clear();
-        let flex = match self.records[&target].default_cap {
-            DefaultCap::Value | DefaultCap::Shared => Flexivity::Irrelevant,
-            DefaultCap::Regional => Flexivity::Regional,
+        let self_ty = match (scalar_target, target) {
+            (Some(scalar), _) => scalar,
+            (None, Some(target)) => {
+                let flex = match self.records[&target].default_cap {
+                    DefaultCap::Value | DefaultCap::Shared => Flexivity::Irrelevant,
+                    DefaultCap::Regional => Flexivity::Regional,
+                };
+                self.tcx.mk_record(target, &self_args, flex)
+            }
+            (None, None) => unreachable!("a non-scalar impl target resolved above"),
         };
-        let self_ty = self.tcx.mk_record(target, &self_args, flex);
 
         let expected = self.traits.trait_def(tid).params.len();
         if trait_args.len() != expected {
@@ -2729,19 +2754,20 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         // ORPHAN (package granularity): the trait or the self type's head
         // must be local — extern provenance is exactly the extern_defs map.
+        // A builtin head belongs to the language, never to this package, so
+        // a scalar target demands the local trait.
         let trait_local = !self
             .extern_defs
             .contains_key(&self.traits.trait_def(tid).def);
-        let head_local = !self.extern_defs.contains_key(&target);
+        let head_local = target.is_some_and(|t| !self.extern_defs.contains_key(&t));
         if !trait_local && !head_local {
             self.error(
                 span,
                 format!(
-                    "cannot implement extern trait `{}` for extern type `{}`: \
-                     the trait or the self type's head must be local to this \
-                     package",
+                    "cannot implement extern trait `{}` for `{}`: the trait \
+                     or the self type's head must be local to this package",
                     self.trait_display(tid),
-                    self.defs.path(target).display(self.resolver)
+                    self.ty_display(self_ty)
                 ),
             );
             return nones;
@@ -2752,7 +2778,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // (`Pair<T, i32>` vs `Pair<u8, U>`) conflict. Coherence is what
         // makes selection's committed choice unique.
         let head = crate::semi::traits::coherence::head_key(self_ty)
-            .expect("impl targets resolve to record heads");
+            .expect("impl targets resolve to ground heads");
         let new_args: Vec<Ty<'tcx>> = std::iter::once(self_ty)
             .chain(trait_args.iter().copied())
             .collect();
@@ -2826,6 +2852,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.defs.set_module(self.defs.module().to_vec());
                 let ctx = ImplCtx {
                     target,
+                    head_name: target.map_or(ib.target.basename, |t| self.defs.path(t).name()),
                     generics: &generics,
                     self_ty,
                     trait_of: Some(tid),
@@ -3165,18 +3192,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     TyKind::Arc(inner) => *inner,
                     _ => *pty,
                 };
-                let TyKind::Record {
-                    def: target,
-                    args: target_args,
-                    ..
-                } = ctx.self_ty.kind()
-                else {
-                    unreachable!("an impl target is always a record type");
+                let matches_target = match ctx.self_ty.kind() {
+                    TyKind::Record {
+                        def: target,
+                        args: target_args,
+                        ..
+                    } => matches!(
+                        peeled.kind(),
+                        TyKind::Record { def, args, .. } if def == target && args == target_args
+                    ),
+                    // A builtin impl target: the receiver is the scalar
+                    // itself (types are interned, so identity is equality).
+                    _ => peeled == ctx.self_ty,
                 };
-                let matches_target = matches!(
-                    peeled.kind(),
-                    TyKind::Record { def, args, .. } if def == target && args == target_args
-                );
                 if !matches_target {
                     self.error(
                         span,
@@ -3197,7 +3225,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let module = self.defs.module().to_vec();
                 let mut decl = module.clone();
                 decl.extend(self.defs.path(self.traits.trait_def(tid).def).0.iter());
-                decl.push(self.defs.path(ctx.target).name());
+                decl.push(ctx.head_name);
                 self.defs.set_module(decl);
                 let def = self.defs.declare_function(name);
                 self.defs.set_module(module);
@@ -3207,7 +3235,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             // path, so `Type::method` resolves like any path.
             Some(ctx) => {
                 let module = self.defs.module().to_vec();
-                let type_path = self.defs.path(ctx.target).0.clone();
+                let target = ctx.target.expect("inherent impls target records");
+                let type_path = self.defs.path(target).0.clone();
                 self.defs.set_module(type_path);
                 let def = self.defs.declare_function(name);
                 self.defs.set_module(module);
@@ -3219,7 +3248,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             match impl_ctx {
                 Some(ctx) if ctx.trait_of.is_some() => {
                     let tid = ctx.trait_of.expect("checked");
-                    let ty = self.sym(self.defs.path(ctx.target).name()).to_owned();
+                    let ty = self.sym(ctx.head_name).to_owned();
                     let tr = self.trait_display(tid);
                     self.error(
                         span,
@@ -3232,7 +3261,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     );
                 }
                 Some(ctx) => {
-                    let ty = self.sym(self.defs.path(ctx.target).name());
+                    let ty = self.sym(ctx.head_name);
                     self.error(
                         span,
                         format!(

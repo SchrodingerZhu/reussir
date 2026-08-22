@@ -1,0 +1,29 @@
+// The consumer: Key and its trait evidence live here; every generic —
+// the FFI container, the wrapper, and the bounded record — instantiates
+// from hashdep's interface.
+
+#[ffi(import)]
+fn print_u64(value : u64) [{ println!("{value}") }];
+
+pub struct Key { id : i64 }
+
+impl PartialEq for Key {
+    fn eq(self : Self, other : Self) -> bool { self.id == other.id }
+}
+
+impl Eq for Key {}
+
+impl hashdep::Digest for Key {
+    fn digest(self : Self) -> u64 { self.id as u64 }
+}
+
+#[main]
+pub fn entry() {
+    // The duplicate insertion under one hash exercises the equality
+    // bridge; keeping `old` live across `bigger` forces the runtime
+    // set's copy-on-write clone through Key's acquire glue.
+    let old = hashdep::Wrapper::make().add(5, Key { id: 1 }).add(5, Key { id: 1 });
+    let bigger = old.add(9, Key { id: 2 });
+    let held = hashdep::hold(hashdep::Holder { value: Key { id: 7 } });
+    print_u64(old.size() * 100 + bigger.size() * 10 + held.value.digest());
+}

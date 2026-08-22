@@ -1,0 +1,30 @@
+// A local trait implemented for a builtin type with real method bodies:
+// the impl declares under the scalar's spelling, and both dot dispatch on
+// the scalar and dispatch through a generic bound select it.
+
+// RUN: %rrc %s --emit mlir -o - | %FileCheck %s
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/builtin_trait_impl.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+pub trait Doubled {
+    fn doubled(self : Self) -> Self;
+}
+
+impl Doubled for u64 {
+    fn doubled(self : Self) -> Self { self * 2 }
+}
+
+fn twice<T : Doubled>(value : T) -> T { value.doubled().doubled() }
+
+pub fn main() -> u64 {
+    let n : u64 = 5;
+    n.doubled() + twice(n)
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The member declares under `[trait-path, head-spelling, method]`, and
+// both the dot call and the bound-dispatched call resolve to it:
+// CHECK-DAG: call @_RNvNv{{.*}}7Doubled3u647doubled
+// CHECK-DAG: func.func @_RNvNv{{.*}}7Doubled3u647doubled(%{{.*}}: i64) -> i64

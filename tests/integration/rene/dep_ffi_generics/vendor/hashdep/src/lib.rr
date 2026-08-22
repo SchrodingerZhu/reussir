@@ -1,0 +1,52 @@
+// A dependency owning a generic Rust-backed hash set: the FFI struct, its
+// generic imports, a generic wrapper calling them, and a trait that one of
+// its own records bounds. Downstream packages instantiate all of it through
+// this package's interface.
+
+extern "rust" [{
+    use reussir_rt::collections::hash_set::HashSet as RHashSet;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::hash_set::HashSet")]
+pub struct RawHashSet<T : Eq>;
+
+#[ffi(import)]
+pub fn raw_new<T : Eq>() -> RawHashSet<T> [{ RHashSet::new() }];
+
+#[ffi(import)]
+pub fn raw_insert<T : Eq>(set : RawHashSet<T>, hash : u64, value : T) -> RawHashSet<T> [{
+    set.insert(hash, value)
+}];
+
+#[ffi(import)]
+pub fn raw_len<T : Eq>(set : RawHashSet<T>) -> u64 [{ set.len() as u64 }];
+
+pub struct Wrapper<T : Eq> {
+    raw : RawHashSet<T>
+}
+
+impl<T : Eq> Wrapper<T> {
+    pub fn make() -> Self {
+        Wrapper { raw: raw_new() }
+    }
+
+    pub fn add(self : Self, hash : u64, value : T) -> Self {
+        Wrapper { raw: raw_insert(self.raw, hash, value) }
+    }
+
+    pub fn size(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+}
+
+/// A trait a record of this same package bounds: loading the interface
+/// downstream must register it before `Holder`'s binder resolves.
+pub trait Digest {
+    fn digest(self : Self) -> u64;
+}
+
+pub struct Holder<T : Digest> {
+    pub value : T
+}
+
+pub fn hold<T : Digest>(h : Holder<T>) -> Holder<T> { h }

@@ -679,6 +679,19 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
         auto updated =
             mlir::FusedLoc::get(context, fused.getLocations(), subprogram);
         funcOp->setLoc(updated);
+        // Once the function carries a `DISubprogram`, LLVM requires every
+        // inlinable call in its body to carry a debug location. Synthesized
+        // ops — cross-package monomorphized glue, lowering-created calls —
+        // may have none; stamp them with the conventional line-0
+        // ("no source line") location, the same convention the argument
+        // spills below use for the prologue.
+        mlir::Location artificialLoc = mlir::FileLineColLoc::get(
+            context, funcFileAttr.getName().getValue(), /*line=*/0,
+            /*column=*/0);
+        funcOp->walk([&](mlir::Operation *op) {
+          if (op != funcOp && llvm::isa<mlir::UnknownLoc>(op->getLoc()))
+            op->setLoc(artificialLoc);
+        });
       }
 
       // Process function argument debug info attribute

@@ -41,8 +41,43 @@
 - The ordered containers' `any`, `all`, and `find` stop at the first
   decisive element rather than folding the whole container, and `find`
   returns the least match rather than an unspecified one.
+- New `std::collections::cow` module: copy-on-write `HashMap` and
+  `HashSet` backed by the runtime's hashbrown table
+  (`reussir_rt::collections::{hash_map, hash_set}`, built on
+  `hashbrown::HashTable`). Keys hash on the Reussir side with
+  `FastHasher` and the digest crosses the FFI boundary with the key, so
+  the runtime never hashes: each entry caches its digest, growth and the
+  copy-on-write clone reuse it, and key equality — bridged to the
+  Reussir `Eq` impl — is consulted only when the cached digests match.
+  Core operations for both containers: `new`, `with_seed`, `singleton`,
+  `len`, `is_empty`, `clear`, `insert`, `get`/`contains`, `remove`.
+  Prefer them for linear build-query-discard usage; retained versions
+  pay a full-table clone per divergence, where the `pure` tries share.
+- `std::hash` implements `Hash` for the primitives (`u8`–`u64`,
+  `i8`–`i64`, `bool`, `char`): each scalar hashes as its own typed
+  write, so primitives feed hashers, `write` chains, and hash-container
+  key positions directly.
 
 ### Compiler and runtime
+
+- Trait impls with method bodies are now accepted for builtin types
+  (`impl Hash for u64 { … }`) when the trait is local to the package,
+  taking the ordinary impl path with the scalar as the self type; dot
+  dispatch on scalars and generic-bound dispatch select them like any
+  impl. The intrinsic method-less special form stays reserved to lang
+  traits declared by the current package, and implementing an extern
+  trait for a builtin now reports the ordinary orphan violation. Member
+  paths name the scalar head by its spelling
+  (`std::hash::Hash::u64::hash`), which the interface grammar accepts
+  as path segments.
+- Interface loading registers a dependency's traits before its records,
+  so a record binder bounding an interface-local trait
+  (`struct Holder<T : Digest>`) no longer crashes every downstream
+  compile of that dependency.
+- Debug builds no longer fail LLVM verification on cross-package
+  monomorphized instances: once a function carries a `DISubprogram`,
+  location-less synthesized ops in its body are stamped with the
+  conventional line-0 location.
 
 - `rrc --instrument-nonlinear-ffi` (and the matching
   `instrument_nonlinear_ffi` profile knob in `rene`) instruments non-linear
