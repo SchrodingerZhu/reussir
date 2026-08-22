@@ -1,0 +1,97 @@
+//! A copy-on-write max-priority queue backed by the runtime's Rust
+//! `BinaryHeap`.
+//!
+//! Elements order through the compiler-emitted `Ord` bridge, and this is
+//! Rust's `BinaryHeap`, so it is a *max*-heap: `peek` and `pop` see the
+//! greatest element; a min-heap comes from a reversed `Ord`. One flat
+//! array behind an rc box. For persistent min-priority queues whose
+//! retained versions share structure, use the `pure` heaps
+//! (`pairing_heap`, `binomial_heap`).
+
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::binary_heap::BinaryHeap as RBinaryHeap;
+}];
+
+/// The raw runtime heap. Operations consume the handle (the boundary owns
+/// its arguments); [`BinaryHeap`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::binary_heap::BinaryHeap")]
+pub struct RawBinaryHeap<T : Ord>;
+
+#[ffi(import)]
+fn raw_new<T : Ord>() -> RawBinaryHeap<T> [{ RBinaryHeap::new() }];
+
+#[ffi(import)]
+fn raw_len<T : Ord>(heap : RawBinaryHeap<T>) -> u64 [{ heap.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<T : Ord>(heap : RawBinaryHeap<T>) -> RawBinaryHeap<T> [{
+    heap.clear()
+}];
+
+#[ffi(import)]
+fn raw_push<T : Ord>(heap : RawBinaryHeap<T>, value : T) -> RawBinaryHeap<T> [{
+    heap.push(value)
+}];
+
+#[ffi(import)]
+fn raw_pop<T : Ord>(heap : RawBinaryHeap<T>) -> RawBinaryHeap<T> [{ heap.pop() }];
+
+// Only reachable behind an emptiness guard.
+#[ffi(import)]
+fn raw_peek<T : Ord>(heap : RawBinaryHeap<T>) -> T [{ heap.peek().unwrap() }];
+
+/// A copy-on-write max-priority queue.
+pub struct BinaryHeap<T : Ord> {
+    raw : RawBinaryHeap<T>
+}
+
+impl<T : Ord> BinaryHeap<T> {
+    /// Creates an empty heap. O(1).
+    pub fn new() -> Self {
+        BinaryHeap { raw: raw_new() }
+    }
+
+    /// Creates a one-element heap. O(1).
+    pub fn singleton(value : T) -> Self {
+        BinaryHeap::new().push(value)
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the heap has no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every element. O(n).
+    pub fn clear(self : Self) -> Self {
+        BinaryHeap { raw: raw_clear(self.raw) }
+    }
+
+    /// Inserts an element. O(log n); O(n) when a shared heap is cloned
+    /// first.
+    pub fn push(self : Self, value : T) -> Self {
+        BinaryHeap { raw: raw_push(self.raw, value) }
+    }
+
+    /// Drops the greatest element; a no-op on an empty heap. Retrieve it
+    /// with [`Self::peek`] first. O(log n); O(n) when a shared heap is
+    /// cloned first.
+    pub fn pop(self : Self) -> Self {
+        BinaryHeap { raw: raw_pop(self.raw) }
+    }
+
+    /// Returns the greatest element, or `None` when empty. O(1).
+    pub fn peek(self : Self) -> Option<T> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_peek(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+}

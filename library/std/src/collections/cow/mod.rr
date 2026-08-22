@@ -3,6 +3,12 @@
 //!
 //! - `hashmap`, `hashset` — hash-based map and set on the runtime's
 //!   hashbrown table, with Reussir-side hashing.
+//! - `btreemap`, `btreeset` — ordered map and set on Rust's B-tree,
+//!   comparing through the `Ord` bridge.
+//! - `vec` — a growable array; `vecdeque` — a double-ended queue over a
+//!   ring buffer.
+//! - `binaryheap` — a max-priority queue (Rust's `BinaryHeap`; reverse
+//!   the `Ord` for a min-heap).
 //!
 //! Reach for these when usage is linear — build, query, discard — where a
 //! flat table beats the `pure` tries on locality and per-operation cost.
@@ -14,5 +20,10 @@
 //! shared records qualify; `[value]` records, `str`, arrays, and closures
 //! do not yet.
 
+pub mod binaryheap;
+pub mod btreemap;
+pub mod btreeset;
 pub mod hashmap;
 pub mod hashset;
+pub mod vec;
+pub mod vecdeque;

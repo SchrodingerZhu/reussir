@@ -1,0 +1,132 @@
+//! A copy-on-write double-ended queue backed by the runtime's Rust
+//! `VecDeque`.
+//!
+//! Constant-time pushes and pops at both ends over one ring buffer behind
+//! an rc box. See the `cow` module header for the copy-on-write trade-off
+//! and the FFI-crossing restrictions on `T`; for a persistent queue whose
+//! retained versions share structure, use `std::collections::pure::rtqueue`.
+
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::vec_deque::VecDeque as RVecDeque;
+}];
+
+/// The raw runtime deque. Operations consume the handle (the boundary
+/// owns its arguments); [`VecDeque`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::vec_deque::VecDeque")]
+pub struct RawVecDeque<T>;
+
+#[ffi(import)]
+fn raw_new<T>() -> RawVecDeque<T> [{ RVecDeque::new() }];
+
+#[ffi(import)]
+fn raw_len<T>(d : RawVecDeque<T>) -> u64 [{ d.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<T>(d : RawVecDeque<T>) -> RawVecDeque<T> [{ d.clear() }];
+
+#[ffi(import)]
+fn raw_push_front<T>(d : RawVecDeque<T>, value : T) -> RawVecDeque<T> [{
+    d.push_front(value)
+}];
+
+#[ffi(import)]
+fn raw_push_back<T>(d : RawVecDeque<T>, value : T) -> RawVecDeque<T> [{
+    d.push_back(value)
+}];
+
+#[ffi(import)]
+fn raw_pop_front<T>(d : RawVecDeque<T>) -> RawVecDeque<T> [{ d.pop_front() }];
+
+#[ffi(import)]
+fn raw_pop_back<T>(d : RawVecDeque<T>) -> RawVecDeque<T> [{ d.pop_back() }];
+
+// Only reachable behind an emptiness or bounds guard.
+#[ffi(import)]
+fn raw_front<T>(d : RawVecDeque<T>) -> T [{ d.front().unwrap() }];
+
+#[ffi(import)]
+fn raw_back<T>(d : RawVecDeque<T>) -> T [{ d.back().unwrap() }];
+
+#[ffi(import)]
+fn raw_get<T>(d : RawVecDeque<T>, index : u64) -> T [{
+    d.get(index as usize).unwrap()
+}];
+
+/// A copy-on-write double-ended queue.
+pub struct VecDeque<T> {
+    raw : RawVecDeque<T>
+}
+
+impl<T> VecDeque<T> {
+    /// Creates an empty deque. O(1).
+    pub fn new() -> Self {
+        VecDeque { raw: raw_new() }
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the deque has no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every element. O(n).
+    pub fn clear(self : Self) -> Self {
+        VecDeque { raw: raw_clear(self.raw) }
+    }
+
+    /// Prepends an element. Amortized O(1); O(n) when a shared buffer is
+    /// cloned first.
+    pub fn push_front(self : Self, value : T) -> Self {
+        VecDeque { raw: raw_push_front(self.raw, value) }
+    }
+
+    /// Appends an element. Amortized O(1); O(n) when a shared buffer is
+    /// cloned first.
+    pub fn push_back(self : Self, value : T) -> Self {
+        VecDeque { raw: raw_push_back(self.raw, value) }
+    }
+
+    /// Drops the front element; a no-op on an empty deque. O(1).
+    pub fn pop_front(self : Self) -> Self {
+        VecDeque { raw: raw_pop_front(self.raw) }
+    }
+
+    /// Drops the back element; a no-op on an empty deque. O(1).
+    pub fn pop_back(self : Self) -> Self {
+        VecDeque { raw: raw_pop_back(self.raw) }
+    }
+
+    /// Returns the front element, or `None` when empty. O(1).
+    pub fn front(self : Self) -> Option<T> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_front(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the back element, or `None` when empty. O(1).
+    pub fn back(self : Self) -> Option<T> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_back(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the element at `index` from the front, or `None` past the
+    /// end. O(1).
+    pub fn get(self : Self, index : u64) -> Option<T> {
+        if raw_len(self.raw) > index {
+            Option::Some { raw_get(self.raw, index) }
+        } else {
+            Option::None
+        }
+    }
+}
