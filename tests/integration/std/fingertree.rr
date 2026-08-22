@@ -165,12 +165,41 @@
 // EXHAUSTIVE-NEXT: 1
 // EXHAUSTIVE-NEXT: 1
 
+// RUN: %std_rene_build/release/fingertree%exe_ext < %S/Inputs/fingertree/api_extras.in | %FileCheck %s --check-prefix=API_EXTRAS
+// API_EXTRAS:      1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 123
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+// API_EXTRAS-NEXT: 1
+
+// RUN: %std_rene_build/release/fingertree%exe_ext < %S/Inputs/fingertree/invariants.in | %FileCheck %s --check-prefix=INVARIANTS
+// INVARIANTS:      1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+// INVARIANTS-NEXT: 1
+
 import std::collections::pure::fingertree::FingerTree;
-import std::collections::pure::fingertree::Remove;
-import std::collections::pure::fingertree::Split;
+import std::collections::pure::fingertree::RemoveResult;
 import std::collections::pure::fingertree::ViewLeft;
 import std::collections::pure::fingertree::ViewRight;
 import std::collections::pure::list::List;
+import std::option::Option;
 
 fn empty_tree() -> FingerTree<i32> {
     FingerTree::new()
@@ -412,49 +441,31 @@ fn test_random_access() {
 
 fn test_split() {
     let tree = build(0, 128, empty_tree());
-    match tree.split_at(37) {
-        Split::Split(left, right) => {
-            write_bool(left.len() == 37);
-            write_bool(right.len() == 91);
-            write_bool(verify_left(0, 37, left));
-            write_bool(verify_left(37, 128, right));
-            test_utils::io::write_i32(left.back().unwrap_or(-1));
-            test_utils::io::write_i32(right.front().unwrap_or(-1));
-            write_bool(verify_left(0, 128, left.concat(right)));
-        }
-    };
-    match tree.split(|measure| measure >= 73) {
-        Split::Split(left, right) => {
-            write_bool(left.len() == 72);
-            write_bool(right.len() == 56);
-            test_utils::io::write_i32(left.back().unwrap_or(-1));
-            test_utils::io::write_i32(right.front().unwrap_or(-1));
-        }
-    };
-    match tree.split_at(0) {
-        Split::Split(left, right) => {
-            write_bool(left.is_empty());
-            write_bool(right.len() == 128);
-        }
-    };
-    match tree.split_at(999) {
-        Split::Split(left, right) => {
-            write_bool(left.len() == 128);
-            write_bool(right.is_empty());
-        }
-    };
-    match tree.split(|measure| measure < 0) {
-        Split::Split(left, right) => {
-            write_bool(left.len() == 128);
-            write_bool(right.is_empty());
-        }
-    };
-    match tree.split(|measure| measure >= 0) {
-        Split::Split(left, right) => {
-            write_bool(left.is_empty());
-            write_bool(right.len() == 128);
-        }
-    }
+    let at37 = tree.split_at(37);
+    write_bool(at37.left.len() == 37);
+    write_bool(at37.right.len() == 91);
+    write_bool(verify_left(0, 37, at37.left));
+    write_bool(verify_left(37, 128, at37.right));
+    test_utils::io::write_i32(at37.left.back().unwrap_or(-1));
+    test_utils::io::write_i32(at37.right.front().unwrap_or(-1));
+    write_bool(verify_left(0, 128, at37.left.concat(at37.right)));
+    let measured = tree.split(|measure| measure >= 73);
+    write_bool(measured.left.len() == 72);
+    write_bool(measured.right.len() == 56);
+    test_utils::io::write_i32(measured.left.back().unwrap_or(-1));
+    test_utils::io::write_i32(measured.right.front().unwrap_or(-1));
+    let at_start = tree.split_at(0);
+    write_bool(at_start.left.is_empty());
+    write_bool(at_start.right.len() == 128);
+    let past_end = tree.split_at(999);
+    write_bool(past_end.left.len() == 128);
+    write_bool(past_end.right.is_empty());
+    let never = tree.split(|measure| measure < 0);
+    write_bool(never.left.len() == 128);
+    write_bool(never.right.is_empty());
+    let always = tree.split(|measure| measure >= 0);
+    write_bool(always.left.is_empty());
+    write_bool(always.right.len() == 128);
 }
 
 fn test_concat() {
@@ -482,19 +493,19 @@ fn test_editing() {
     test_utils::io::write_i32(inserted.insert_at(0, 800).front().unwrap_or(-1));
     test_utils::io::write_i32(inserted.insert_at(999, 900).back().unwrap_or(-1));
     match inserted.remove_at(37) {
-        Remove::Removed(value, rest) => {
+        RemoveResult::Removed(value, rest) => {
             test_utils::io::write_i32(value);
             write_bool(rest.len() == 100);
             write_bool(verify_left(0, 100, rest));
         },
-        Remove::OutOfBounds(_) => core::intrinsic::panic::panic()
+        RemoveResult::OutOfBounds(_) => core::intrinsic::panic::panic()
     };
     match tree.remove_at(1000) {
-        Remove::OutOfBounds(original) => {
+        RemoveResult::OutOfBounds(original) => {
             write_bool(original.len() == 100);
             write_bool(verify_left(0, 100, original));
         },
-        Remove::Removed(_, _) => core::intrinsic::panic::panic()
+        RemoveResult::Removed(_, _) => core::intrinsic::panic::panic()
     };
     let deleted = tree.delete_at(50);
     write_bool(deleted.len() == 99);
@@ -591,18 +602,15 @@ fn verify_all_index_splits(
     if index > end {
         true
     } else {
-        match tree.split_at(index as u64) {
-            Split::Split(left, right) => {
-                if left.len() == index as u64 &&
-                    right.len() == (end - index) as u64 &&
-                    verify_left(0, index, left) &&
-                    verify_left(index, end, right) &&
-                    verify_left(0, end, left.concat(right)) {
-                    verify_all_index_splits(index + 1, end, tree)
-                } else {
-                    false
-                }
-            }
+        let parts = tree.split_at(index as u64);
+        if parts.left.len() == index as u64 &&
+            parts.right.len() == (end - index) as u64 &&
+            verify_left(0, index, parts.left) &&
+            verify_left(index, end, parts.right) &&
+            verify_left(0, end, parts.left.concat(parts.right)) {
+            verify_all_index_splits(index + 1, end, tree)
+        } else {
+            false
         }
     }
 }
@@ -616,17 +624,14 @@ fn verify_all_measured_splits(
         true
     } else {
         let threshold = (index + 1) as u64;
-        match tree.split(|measure| measure >= threshold) {
-            Split::Split(left, right) => {
-                if left.len() == index as u64 &&
-                    right.len() == (end - index) as u64 &&
-                    verify_left(0, index, left) &&
-                    verify_left(index, end, right) {
-                    verify_all_measured_splits(index + 1, end, tree)
-                } else {
-                    false
-                }
-            }
+        let parts = tree.split(|measure| measure >= threshold);
+        if parts.left.len() == index as u64 &&
+            parts.right.len() == (end - index) as u64 &&
+            verify_left(0, index, parts.left) &&
+            verify_left(index, end, parts.right) {
+            verify_all_measured_splits(index + 1, end, tree)
+        } else {
+            false
         }
     }
 }
@@ -636,6 +641,62 @@ fn test_exhaustive_measures() {
     write_bool(verify_all_gets(0, 128, tree));
     write_bool(verify_all_index_splits(0, 128, tree));
     write_bool(verify_all_measured_splits(0, 128, tree));
+}
+
+fn test_api_extras() {
+    let tree = build(0, 10, empty_tree());
+    write_bool(tree.clear().is_empty());
+    write_bool(tree.equals(build(0, 10, empty_tree())));
+    write_bool(tree == build(0, 10, empty_tree()));
+    write_bool(tree != build(0, 9, empty_tree()));
+    write_bool(tree != tree.set(3, 33));
+    test_utils::io::write_i32(drain_left_decimal(
+        4,
+        tree.filter_map(|value| {
+            if value % 3 == 0 {
+                Option::Some { value / 3 }
+            } else {
+                Option::None
+            }
+        }),
+        0
+    ));
+    write_bool(tree.find_index(|value| value >= 6).unwrap_or(999) == 6);
+    write_bool(tree.find_last_index(|value| value < 7).unwrap_or(999) == 6);
+    write_bool(tree.find_index(|value| value < 0).is_none());
+    write_bool(tree.find_last_index(|value| value > 100).is_none());
+    write_bool(tree.index_of(4).unwrap_or(999) == 4);
+    write_bool(tree.index_of(42).is_none());
+}
+
+fn churn_tree(remaining : i32, tree : FingerTree<i32>) -> FingerTree<i32> {
+    if remaining == 0 {
+        tree
+    } else {
+        match tree.view_left() {
+            ViewLeft::Cons(value, rest) =>
+                churn_tree(remaining - 1, rest.snoc(value)),
+            ViewLeft::Empty => empty_tree()
+        }
+    }
+}
+
+fn test_invariants() {
+    let tree = build(0, 100, empty_tree());
+    write_bool(tree.valid());
+    write_bool(churn_tree(150, tree).valid());
+    write_bool(tree.set(50, 500).valid());
+    write_bool(tree.adjust(51, |value| value + 1).valid());
+    write_bool(tree.insert_at(37, 999).valid());
+    write_bool(tree.delete_at(37).valid());
+    let parts = tree.split_at(63);
+    write_bool(parts.left.valid());
+    write_bool(parts.right.valid());
+    write_bool(parts.left.concat(parts.right).valid());
+    write_bool(tree.reverse().valid());
+    write_bool(tree.map(|value| value * 2).valid());
+    write_bool(tree.filter(|value| value % 2 == 0).valid());
+    write_bool(empty_tree().valid());
 }
 
 #[main]
@@ -658,6 +719,8 @@ pub fn entry() {
         14 => test_predicates(),
         15 => test_take_drop(),
         16 => test_exhaustive_measures(),
+        17 => test_api_extras(),
+        18 => test_invariants(),
         _ => core::intrinsic::panic::panic()
     }
 }
