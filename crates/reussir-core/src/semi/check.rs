@@ -914,10 +914,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
             return self.dispatch_generic_dot(g, cur, receiver, *name, args, span);
         }
-        // A scalar receiver has no fields either; its dot calls dispatch
-        // through the traits the builtin impls provide (`a.eq(b)`,
-        // `a.cmp(b)` — lowered intrinsically by the selected impl).
-        if cur.is_scalar()
+        // A scalar (or `str`) receiver has no fields either; its dot calls
+        // dispatch through the traits the builtin impls provide (`a.eq(b)`,
+        // `a.cmp(b)` — lowered intrinsically by the selected impl, or a
+        // method-carrying builtin impl like `Hash for str`).
+        if (cur.is_scalar() || matches!(cur.kind(), TyKind::Str))
             && let surface::Access::Named(name) = last
         {
             let receiver = if indices.is_empty() {
@@ -2415,6 +2416,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             "math" => Some(self.infer_math_intrinsic(fc, span)),
             "array" => Some(self.infer_array_intrinsic(fc, span)),
             "cell" => Some(self.infer_cell_intrinsic(fc, span)),
+            "str" => Some(self.infer_str_intrinsic(fc, span)),
             other => {
                 self.error(
                     span,
@@ -2594,6 +2596,66 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// `alloc` has no cell operand to dispatch on: it defaults to a plain
     /// `Cell`, and an explicit type argument naming the cell type selects
     /// the flavor (`alloc<RefCell<i64>>(1)`).
+    /// (STR) `core::intrinsic::str::<fn>(…)`: `len(s: str) -> u64`,
+    /// `byte_at(s: str, index: u64) -> u8` (`0` out of bounds), and
+    /// `slice(s: str, offset: u64) -> str` (clamped past the end; byte
+    /// granularity, so an offset inside a multi-byte character splits it).
+    /// No type arguments.
+    fn infer_str_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::{IntrinsicOp, StrFn};
+
+        let name = self.sym(fc.name.basename).to_string();
+        let Some(func) = StrFn::parse(&name) else {
+            self.error(
+                span,
+                format!("unknown str intrinsic `core::intrinsic::str::{name}`"),
+            );
+            return self.poison(span);
+        };
+        if !fc.ty_args.is_empty() {
+            self.error(
+                span,
+                format!("`core::intrinsic::str::{name}` takes no type arguments"),
+            );
+            return self.poison(span);
+        }
+        let str_ty = self.tcx.mk_str();
+        let u64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Unsigned(64));
+        let (params, result) = match func {
+            StrFn::Len => (vec![str_ty], u64_ty),
+            StrFn::ByteAt => (
+                vec![str_ty, u64_ty],
+                self.tcx.mk_int(crate::semi::ty::IntTy::Unsigned(8)),
+            ),
+            StrFn::Slice => (vec![str_ty, u64_ty], str_ty),
+        };
+        if fc.args.len() != params.len() {
+            self.error(
+                span,
+                format!(
+                    "`core::intrinsic::str::{name}` expects {} argument(s), got {}",
+                    params.len(),
+                    fc.args.len()
+                ),
+            );
+            return self.poison(span);
+        }
+        let args = fc
+            .args
+            .iter()
+            .zip(&params)
+            .map(|(a, &t)| self.check_expr(a, t))
+            .collect();
+        self.mk_expr(
+            ExprKind::Intrinsic {
+                op: IntrinsicOp::Str { func },
+                args,
+            },
+            result,
+            span,
+        )
+    }
+
     fn infer_cell_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
         use crate::intrinsic::{CellFn, IntrinsicOp};
 

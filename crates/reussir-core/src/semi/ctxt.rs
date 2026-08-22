@@ -1627,11 +1627,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         ) else {
             return;
         };
+        // `str` joins the totally ordered set (byte-wise lexicographic),
+        // after the integers so the `ints()` prefix below stays intact.
         let ordered: Vec<Ty<'tcx>> = [8u16, 16, 32, 64]
             .into_iter()
             .flat_map(|width| [IntTy::Signed(width), IntTy::Unsigned(width)])
             .map(|int| self.tcx.mk_int(int))
-            .chain([self.tcx.mk_bool(), self.tcx.mk_char()])
+            .chain([self.tcx.mk_bool(), self.tcx.mk_char(), self.tcx.mk_str()])
             .collect();
         let floats: Vec<Ty<'tcx>> = [
             FpTy::Ieee(16),

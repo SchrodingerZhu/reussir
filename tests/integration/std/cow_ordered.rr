@@ -74,6 +74,13 @@
 // HEAPCOW-NEXT: 1
 // HEAPCOW-NEXT: 1
 
+// RUN: %std_rene_build/release/cow_ordered%exe_ext < %S/Inputs/cow_ordered/str_keys.in | %FileCheck %s --check-prefix=STRKEYS
+// STRKEYS:      1
+// STRKEYS-NEXT: 1
+// STRKEYS-NEXT: 1
+// STRKEYS-NEXT: 1
+// STRKEYS-NEXT: 1
+
 // RUN: %std_rene_build/release/cow_ordered%exe_ext < %S/Inputs/cow_ordered/primitive_keys.in | %FileCheck %s --check-prefix=PRIMITIVEKEYS
 // PRIMITIVEKEYS:      1
 // PRIMITIVEKEYS-NEXT: 1
@@ -264,6 +271,28 @@ fn test_primitive_keys() {
     wb(heap.pop().peek().unwrap_or(0 - 1) == 5);
 }
 
+fn str_key_or(value : Option<str>, fallback : str) -> str {
+    match value {
+        Option::Some(s) => s,
+        Option::None => fallback
+    }
+}
+
+fn test_str_keys() {
+    // String-literal keys order through the runtime `Str`'s byte-wise
+    // `Ord` — the same lexicographic semantics as Reussir's own
+    // `str.compare`.
+    let mbase : BTreeMap<str, i64> = BTreeMap::new();
+    let map = mbase.insert("banana", 2).insert("apple", 1);
+    let hbase : BinaryHeap<str> = BinaryHeap::new();
+    let heap = hbase.push("apple").push("cherry").push("banana");
+    wb(map.len() == 2);
+    wb(map.get("apple").unwrap_or(0 - 1) == 1);
+    wb(str_key_or(map.first_key(), "?") == "apple");
+    wb(str_key_or(map.last_key(), "?") == "banana");
+    wb(str_key_or(heap.peek(), "?") == "cherry");
+}
+
 #[main]
 pub fn entry() {
     match test_utils::io::read_i32() {
@@ -274,6 +303,7 @@ pub fn entry() {
         4 => test_heap_basics(),
         5 => test_heap_cow(),
         6 => test_primitive_keys(),
+        7 => test_str_keys(),
         _ => core::intrinsic::panic::panic()
     }
 }

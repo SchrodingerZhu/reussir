@@ -22,6 +22,22 @@
   Enum-variant payloads are unaffected — variants stay
   exactly as visible as their enum.
 
+- `str` is now usable, not just constructible (see `docs/design/str.md`:
+  `str` is exactly the immutable static literal; growable strings stay
+  outside the language behind the FFI). String literals gain the read
+  intrinsics `core::intrinsic::str::{len, byte_at, slice}` (byte
+  granularity, checked/clamped), the full builtin comparison tower
+  (`==`/`!=`/orderings/`cmp` via new `reussir.str.equal` and
+  `reussir.str.compare` ops — one unconditional `memcmp` over the shorter
+  length, branchless), record-field placement (`str` now carries a data
+  layout and is trivially copyable), and FFI crossing: a `str` parameter
+  or return renders as the runtime's `#[repr(C)]`
+  `collections::string::Str<'static>`, bit-identical to the lowered
+  `{ptr, len}` pair. With `std::hash::Hash for str` (byte stream plus
+  length) a string literal keys every container: the hash containers
+  hash it on the Reussir side, and the Rust-backed ordered containers
+  order the runtime `Str` byte-wise, matching `str.compare`.
+
 ### Standard library
 
 - `WavlSet` and `WavlMap` now carry the same interface as the hash

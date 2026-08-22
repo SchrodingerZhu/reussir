@@ -66,6 +66,7 @@ impl PartialEq for bfloat16 { }
 impl PartialEq for float8 { }
 impl PartialEq for bool { }
 impl PartialEq for char { }
+impl PartialEq for str { }
 
 impl Eq for i8 { }
 impl Eq for i16 { }
@@ -77,6 +78,7 @@ impl Eq for u32 { }
 impl Eq for u64 { }
 impl Eq for bool { }
 impl Eq for char { }
+impl Eq for str { }
 
 impl PartialOrd for i8 { }
 impl PartialOrd for i16 { }
@@ -93,6 +95,7 @@ impl PartialOrd for bfloat16 { }
 impl PartialOrd for float8 { }
 impl PartialOrd for bool { }
 impl PartialOrd for char { }
+impl PartialOrd for str { }
 
 impl Ord for i8 { }
 impl Ord for i16 { }
@@ -104,3 +107,4 @@ impl Ord for u32 { }
 impl Ord for u64 { }
 impl Ord for bool { }
 impl Ord for char { }
+impl Ord for str { }

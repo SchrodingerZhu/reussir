@@ -1,0 +1,28 @@
+// A `str` crosses the polymorphic FFI boundary as the runtime's
+// `#[repr(C)] Str<'static>` — bit-identical to the lowered `{ptr, len}`
+// pair — in both directions: as a parameter into a Rust body, and back out
+// as a return.
+
+// UNSUPPORTED: darwin
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/str_ffi_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+#[ffi(import)]
+fn rust_len(s: str) -> u64 [{ s.len() as u64 }];
+
+#[ffi(import)]
+fn rust_nth(s: str, i: u64) -> u8 [{ s.as_bytes()[i as usize] }];
+
+#[ffi(import)]
+fn rust_echo(s: str) -> str [{ s }];
+
+pub fn main() -> u64 {
+    let s = "bridge";
+    let echoed = if rust_echo(s) == s { 1 } else { 0 };
+    // len 6, byte 1 is 'r' (0x72 = 114).
+    rust_len(s) * 1000 + (rust_nth(s, 1) as u64) + echoed * 10000
+}
+
+extern "C" trampoline "reussir_main" = main;

@@ -33,6 +33,7 @@ pub enum IntrinsicItem {
     Math(crate::intrinsic::MathFn),
     Array(crate::intrinsic::ArrayFn),
     Cell(crate::intrinsic::CellFn),
+    Str(crate::intrinsic::StrFn),
 }
 
 impl IntrinsicItem {
@@ -42,6 +43,7 @@ impl IntrinsicItem {
             IntrinsicItem::Math(_) => "math",
             IntrinsicItem::Array(_) => "array",
             IntrinsicItem::Cell(_) => "cell",
+            IntrinsicItem::Str(_) => "str",
         }
     }
 
@@ -51,6 +53,7 @@ impl IntrinsicItem {
             IntrinsicItem::Math(f) => f.as_str(),
             IntrinsicItem::Array(f) => f.as_str(),
             IntrinsicItem::Cell(f) => f.as_str(),
+            IntrinsicItem::Str(f) => f.as_str(),
         }
     }
 
@@ -60,6 +63,7 @@ impl IntrinsicItem {
             "math" => crate::intrinsic::MathFn::parse(name).map(IntrinsicItem::Math),
             "array" => crate::intrinsic::ArrayFn::parse(name).map(IntrinsicItem::Array),
             "cell" => crate::intrinsic::CellFn::parse(name).map(IntrinsicItem::Cell),
+            "str" => crate::intrinsic::StrFn::parse(name).map(IntrinsicItem::Str),
             _ => None,
         }
     }

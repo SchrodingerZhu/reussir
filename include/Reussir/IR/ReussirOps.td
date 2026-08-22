@@ -2225,6 +2225,40 @@ def ReussirStrSliceOp : ReussirStrOp<"slice", [Pure]> {
   }];
 }
 
+def ReussirStrEqualOp : ReussirStrOp<"equal", [Pure]> {
+  let summary = "Byte equality of two strings";
+  let description = [{
+    `reussir.str.equal` compares two strings byte-wise: true iff the lengths
+    match and every byte matches. Unlike `str.startswith`, both sides are
+    runtime values rather than attribute patterns.
+  }];
+  let arguments = (ins Arg<ReussirStrType, "Left string", [MemRead]>:$lhs,
+      Arg<ReussirStrType, "Right string", [MemRead]>:$rhs);
+  let results = (outs Res<I1, "Whether the strings are equal">:$equal);
+  let assemblyFormat = [{
+    `(` $lhs `:` type($lhs) `,` $rhs `:` type($rhs) `)`
+    `:` type($equal) attr-dict
+  }];
+}
+
+def ReussirStrCompareOp : ReussirStrOp<"compare", [Pure]> {
+  let summary = "Lexicographic three-way comparison of two strings";
+  let description = [{
+    `reussir.str.compare` compares two strings lexicographically by bytes,
+    with length as the tiebreak for a shared prefix. The result follows the
+    `memcmp` convention: negative for less, zero for equal, positive for
+    greater — consumers compare it against zero rather than relying on
+    exact -1/1 values.
+  }];
+  let arguments = (ins Arg<ReussirStrType, "Left string", [MemRead]>:$lhs,
+      Arg<ReussirStrType, "Right string", [MemRead]>:$rhs);
+  let results = (outs Res<I32, "Negative, zero, or positive ordering">:$order);
+  let assemblyFormat = [{
+    `(` $lhs `:` type($lhs) `,` $rhs `:` type($rhs) `)`
+    `:` type($order) attr-dict
+  }];
+}
+
 def ReussirTrampolineOp
     : ReussirOp<"trampoline", [Symbol, DeclareOpInterfaceMethods<
                                            SymbolUserOpInterface>]> {
