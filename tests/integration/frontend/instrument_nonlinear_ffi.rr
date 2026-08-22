@@ -4,10 +4,11 @@
 // `__reussir_report_nonlinear_usage`; without the flag nothing is
 // instrumented.
 
+// The absent pattern runs as `OFF-NOT` lines rather than through
+// `--implicit-check-not`: the Python `filecheck` replacement used on
+// Windows rejects that flag.
 // RUN: %rrc %s --emit mlir-llvm --instrument-nonlinear-ffi -o - | %FileCheck %s
-// RUN: %rrc %s --emit mlir-llvm -o - \
-// RUN:   | %FileCheck %s --check-prefix=OFF \
-// RUN:     --implicit-check-not=__reussir_report_nonlinear_usage
+// RUN: %rrc %s --emit mlir-llvm -o - | %FileCheck %s --check-prefix=OFF
 
 extern "rust" [{
     use reussir_rt::collections::vec::Vec as RVec;
@@ -36,4 +37,6 @@ extern "C" trampoline "reussir_main" = main;
 // The consumed vec at `push` and at both `len` calls is guarded:
 // CHECK-COUNT-3: llvm.call @__reussir_report_nonlinear_usage
 
+// OFF-NOT: __reussir_report_nonlinear_usage
 // OFF: llvm.func @reussir_main
+// OFF-NOT: __reussir_report_nonlinear_usage
