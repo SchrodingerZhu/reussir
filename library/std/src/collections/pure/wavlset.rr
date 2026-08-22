@@ -1,82 +1,137 @@
-//! A persistent ordered set on a WAVL (weak AVL) tree.
+//! A persistent ordered set built on a weak AVL (WAVL) tree.
 //!
-//! WAVL was selected over a red-black tree (Okasaki insert, Kahrs delete)
-//! by measurement: recursive WAVL won every probed workload — bulk insert
-//! ~1.08x, delete ~1.15x, in-order iteration ~1.26x, lookup at parity —
-//! with ~22% fewer instructions and ~9% fewer allocations per insert
-//! (shallower trees, less rotation churn). A zipper-style formulation
-//! (explicit path frames, loop-converted descent/ascent) was measured and
-//! rejected for both trees: the heap-allocated path list roughly doubles
-//! allocator traffic while recursion depth is only O(log n).
+//! Elements are ordered by `Ord`. Values smaller than a node are stored in its
+//! left subtree, and greater values are stored in its right subtree. When two
+//! values compare equal, the set keeps the value that is already stored.
 //!
-//! ## Rank representation
+//! "Persistent" means that an update returns a new set while any retained old
+//! version remains valid. The versions share subtrees that the update did not
+//! change. When the input set has only one owner, Reussir's memory-reuse
+//! analysis can use its existing nodes for the result.
 //!
-//! Nodes store no rank. The algorithm only ever consults rank
-//! *differences*, and those are recovered from a single parity bit: a
-//! parent-child difference is 1 when their parities differ and 2 when
-//! they match (WAVL admits no other value). The transient 0 and 3
-//! differences that appear mid-rebalance are disambiguated by the
-//! `raised`/`dropped` flag each recursive step already returns.
+//! ## How WAVL balancing works
 //!
-//! The parity lives in the **variant tag** (`Even`/`Odd` node arms)
-//! rather than in a field, which costs zero payload bytes: with
-//! per-constructor box sizing a node is `header + 3 words` = 32 B against
-//! 40 B for an `i64` rank. That is a real allocator-bin change (mimalloc
-//! bins at 16-byte granularity: 40 B occupies the 48-byte bin, 32 B its
-//! own), and the bin change *is* the win — the parity form executes
-//! slightly **more** instructions, so it pays off through cache footprint
-//! rather than path length. Measured against the rank field: bulk insert
-//! 1.10x, delete 1.09x, lookup 1.03x, iteration at parity, with an 8.6x
-//! drop in L1 data write misses on the tree microbenchmark.
+//! WAVL assigns an integer rank to each non-empty node. Rank is related to
+//! height, but it is maintained by local rules rather than recomputed from the
+//! whole subtree:
 //!
-//! A `bool` *field* is not an equivalent encoding and was measured and
-//! rejected: member alignment padding puts the node back at 40 B, so it
-//! keeps the bin and loses the win while still paying the parity
-//! bookkeeping.
+//! - An empty subtree has rank -1.
+//! - A node with two empty children has rank 0.
+//! - The difference between a node's rank and either child's rank is 1 or 2.
 //!
-//! Verified equivalent by differential fuzzing: for identical operation
-//! sequences the parity and rank implementations produce structurally
-//! identical trees (compared by shape hash), so this is purely a change
-//! of representation.
+//! Edge labels in the diagrams below are rank differences. Here the left
+//! child has difference 1 and the right child has difference 2:
 //!
-//! ## Interface
+//! ```text
+//!                [p, rank 2]
+//!              1 /          \ 2
+//!               /            \
+//!      [a, rank 1]       [b, rank 0]
+//! ```
 //!
-//! The set carries the whole `HashSet` interface, so the two are
-//! interchangeable at the call site, plus the operations an ordering makes
-//! possible: `pop_min`/`pop_max`, the neighbour queries (`floor`,
-//! `ceiling`, `predecessor`, `successor`), the half-open window queries
-//! (`range`, `range_to_list`), and the descending traversals
-//! (`to_list_desc`, `fold_right`). `to_list` and `fold_left` are ascending
-//! here, where the hash containers promise no order at all, and `find`
-//! returns the *least* match rather than an unspecified one.
+//! These rules keep every root-to-leaf path logarithmic in the number of
+//! elements. Lookup, insertion, removal, and the nearest-value queries are
+//! therefore O(log n) in the worst case.
 //!
-//! Three of these are written against the tree rather than composed out of
-//! the existing operations, and each pays for the extra code (200k i64
-//! elements, best-of-7 wall clock):
+//! Insertion can make a child have the same rank as its parent, giving a rank
+//! difference of 0. The repair either raises the parent's rank by one and
+//! continues toward the root, or uses one or two rotations and stops. A step
+//! that raises a rank changes the two differences as follows:
 //!
-//! - `range_to_list` prunes the subtrees that cannot meet the window:
-//!   475 ns against 9.24 ms for the equivalent `filter` over the whole
-//!   set, ~19000x on a window of a hundred thousand key values.
-//! - `pop_min` descends once where `min` followed by `remove` descends
-//!   twice: 192 ns against 366 ns per element when draining a set.
-//! - `any`/`all` leave the traversal at the first decisive element rather
-//!   than folding the whole set the way the hash containers do: 6.45 ms
-//!   per call for the full fold, below timer noise once it exits early.
+//! ```text
+//!          before                   after raising p
+//!
+//!            p:r                         p:r+1
+//!           /   \                        /     \
+//!        0 /     \ 1                  1 /       \ 2
+//!         x       s                    x         s
+//! ```
+//!
+//! Removal can create a rank difference of 3. Its repair lowers ranks while
+//! needed, and may finish with one or two rotations. One step that lowers a
+//! rank is the reverse kind of change:
+//!
+//! ```text
+//!          before                   after lowering p
+//!
+//!            p:r                         p:r-1
+//!           /   \                        /     \
+//!        3 /     \ 2                  2 /       \ 1
+//!         x       s                    x         s
+//! ```
+//!
+//! A rotation changes a few parent-child links without changing element
+//! order. For example, a left rotation changes this shape while preserving
+//! `A < p < B < q < C`:
+//!
+//! ```text
+//!            p                              q
+//!           / \                            / \
+//!          A   q          ---->           p   C
+//!             / \                        / \
+//!            B   C                      A   B
+//! ```
+//!
+//! Only rank changes can continue through several ancestors; over a sequence
+//! of updates, the average number of rank changes per update is constant.
+//!
+//! With insertions alone, a WAVL tree has the same shape as an AVL tree.
+//! Removal may leave a non-leaf node whose rank is two greater than both child
+//! ranks. Allowing this case is what makes WAVL less strict than AVL after
+//! removals.
+//!
+//! ## Rank storage
+//!
+//! `WavlSet` stores whether each rank is even or odd instead of storing the
+//! full integer. In a valid tree, a parent and child have different parity for
+//! a rank difference of 1 and the same parity for a difference of 2. During an
+//! update, the `raised` and `dropped` results distinguish the temporary
+//! differences of 0 and 3.
+//!
+//! The `Even` and `Odd` node cases hold this parity without adding a field.
+//! `Leaf`, which represents an empty subtree of rank -1, is treated as odd. In
+//! the measured 64-bit build, this representation reduced a set node from 40
+//! bytes to 32 bytes. A separate `bool` field did not reduce its allocated
+//! size because the machine layout added padding.
+//!
+//! The parity and full-rank versions were also checked with the same randomly
+//! generated updates. They produced the same tree shape after every update.
+//!
+//! ## Ordered operations
+//!
+//! `WavlSet` provides the general set operations also available on `HashSet`.
+//! Ordering adds `pop_min` and `pop_max`, which remove an element from either
+//! end, and the nearest-value queries `floor`, `ceiling`, `predecessor`, and
+//! `successor`. `range` and `range_to_list` use the half-open interval
+//! `[low, high)` and skip subtrees outside that interval.
+//!
+//! `to_list` and `fold_left` visit elements from least to greatest;
+//! `to_list_desc` and `fold_right` use the reverse order. `find` returns the
+//! least matching element. Hash-based collections do not promise any of these
+//! traversal orders.
+//!
+//! ## References
+//!
+//! - Haeupler, Sen, and Tarjan, "Rank-Balanced Trees":
+//!   https://doi.org/10.1145/2689412
+//! - Goodrich and Tamassia, "Weak AVL Trees":
+//!   https://ics.uci.edu/~goodrich/teach/cs165/notes/WeakAVLTrees.pdf
 
 import std::option::Option;
 import std::collections::pure::list::List;
 
-/// The parity-tagged tree node. `Even`/`Odd` encode the node's rank
-/// parity; `Leaf` has rank -1 and is therefore odd. Public because
-/// `WavlSet` stores it in its representation; construct sets through
-/// `WavlSet` so the rank and size invariants hold.
+/// The internal tree representation. `Even` and `Odd` record whether a node's
+/// rank is even or odd. `Leaf` is an empty subtree with rank -1. This type is
+/// public because it appears inside `WavlSet`; construct sets through
+/// `WavlSet` so ordering, rank, and size remain valid.
 pub enum Tree<T> {
     Leaf,
     Even(Tree<T>, T, Tree<T>),
     Odd(Tree<T>, T, Tree<T>)
 }
 
-/// A persistent ordered set with O(log n) insert, remove, and lookup.
+/// A persistent ordered set with worst-case O(log n) insert, remove, and
+/// lookup.
 pub struct WavlSet<T> {
     size : u64,
     root : Tree<T>
@@ -114,8 +169,8 @@ fn mk<T>(p : bool, l : Tree<T>, k : T, r : Tree<T>) -> Tree<T> {
     if p { Tree::Odd { l, k, r } } else { Tree::Even { l, k, r } }
 }
 
-// An inline destructuring view: the node's parity plus its fields, so the
-// shared rebalancing helpers need not repeat the two-arm match.
+// A common view of both non-empty node cases. It exposes the rank parity and
+// fields so the balancing functions do not repeat the same two-case match.
 enum [value] View<T> {
     Leaf,
     Node(bool, Tree<T>, T, Tree<T>)
@@ -247,9 +302,10 @@ fn ins<T : Ord>(t : Tree<T>, x : T) -> Ins<T> {
             },
         View::Node(p, l, k, rt) => match x.cmp(k) {
             Ordering::Less => {
-                // Project the whole carrier before the call: leaving a
-                // field unread across it would keep the carrier alive and
-                // make the subtree a second reference, costing a retain.
+                // Read every field before the recursive call. Leaving one
+                // unread would keep the original node alive, create a second
+                // reference to the subtree, and require a reference-count
+                // increment.
                 let below = ins(l, x);
                 let sub = below.tree;
                 let added = below.added;
@@ -285,8 +341,8 @@ fn bal_left_del<T>(
         Reb { tree: mk(p, l, k, rt), moved: false }
     } else {
         if p == parity(l) {
-            // The difference was 1 and is now 2, which is legal unless a
-            // (2,2) leaf formed — that must demote to rank 0.
+            // The difference was 1 and is now 2. This is legal unless the node
+            // now has two empty children; such a node must have rank 0.
             if is_leaf(l) && is_leaf(rt) {
                 Reb { tree: mk(false, l, k, rt), moved: true }
             } else {
@@ -296,7 +352,8 @@ fn bal_left_del<T>(
             match view(rt) {
                 View::Node(py, yl, yk, yr) => {
                     if py == p {
-                        // The sibling is a 2-child: demote and keep climbing.
+                        // The sibling's rank difference is 2. Lower the
+                        // parent's rank and continue toward the root.
                         Reb {
                             tree: mk(!p, l, k, mk(py, yl, yk, yr)),
                             moved: true
@@ -305,15 +362,17 @@ fn bal_left_del<T>(
                         let same_yl = parity(yl) == py;
                         let same_yr = parity(yr) == py;
                         if same_yl && same_yr {
-                            // The sibling is (2,2): demote both, keep climbing.
+                            // Both of the sibling's rank differences are 2.
+                            // Lower both ranks and continue toward the root.
                             Reb {
                                 tree: mk(!p, l, k, mk(p, yl, yk, yr)),
                                 moved: true
                             }
                         } else {
                             if !same_yr {
-                                // One left rotation. The demoted pivot may
-                                // end up a leaf, which must take rank 0.
+                                // One left rotation. The lowered node may end
+                                // with two empty children and must then use
+                                // rank 0.
                                 let xp = if is_leaf(l) && is_leaf(yl) {
                                     false
                                 } else {
@@ -418,7 +477,8 @@ fn del_min<T>(t : Tree<T>) -> Min<T> {
     match view(t) {
         View::Node(p, l, k, rt) => {
             if is_leaf(l) {
-                // A leaf or right-unary node: removing it drops the rank.
+                // This node has no left child. Replacing it with its right
+                // child lowers the subtree's rank.
                 Min { key: k, tree: rt, dropped: true }
             } else {
                 let least = del_min(l);
@@ -433,13 +493,14 @@ fn del_min<T>(t : Tree<T>) -> Min<T> {
     }
 }
 
-// The mirror of `del_min`: strip the rightmost key and rebalance up the
-// right spine.
+// The mirror of `del_min`: remove the rightmost key and rebalance along the
+// path of right children.
 fn del_max<T>(t : Tree<T>) -> Min<T> {
     match view(t) {
         View::Node(p, l, k, rt) => {
             if is_leaf(rt) {
-                // A leaf or left-unary node: removing it drops the rank.
+                // This node has no right child. Replacing it with its left
+                // child lowers the subtree's rank.
                 Min { key: k, tree: l, dropped: true }
             } else {
                 let greatest = del_max(rt);
@@ -652,9 +713,9 @@ fn fold_right_tree<U, T>(t : Tree<T>, initial : U, f : (T, U) -> U) -> U {
     }
 }
 
-// The searching traversals stop as soon as the answer is settled, which a
-// fold cannot do: `||` and `&&` short-circuit, so a subtree is only walked
-// while the answer is still open.
+// These searches stop as soon as the answer is known, which a fold cannot do.
+// The `||` and `&&` expressions only visit another subtree while its result
+// can still change the answer.
 // `find_tree` keeps ascending order, so the element it returns is the least
 // match rather than an arbitrary one.
 fn any_tree<T>(t : Tree<T>, predicate : T -> bool) -> bool {
@@ -725,9 +786,8 @@ impl<T : Ord> WavlSet<T> {
     }
 
     /// Returns the number of nodes on the longest root-to-leaf path, zero
-    /// for an empty set. The WAVL discipline bounds this by `2·log2(n) + 1`,
-    /// which is what makes the balance observable from outside the module —
-    /// tests assert against that bound. O(n).
+    /// for an empty set. The WAVL rank rules bound this by `2·log2(n) + 1`;
+    /// tests use this bound to check that updates preserve balance. O(n).
     pub fn depth(self : Self) -> u64 {
         depth_tree(self.root)
     }
@@ -802,8 +862,8 @@ impl<T : Ord> WavlSet<T> {
         member(self.root, value)
     }
 
-    /// Returns the stored element equal to `value`. This exposes the
-    /// canonical stored element when the query compares equal but is not
+    /// Returns the actual stored element equal to `value`. The returned value
+    /// can differ from the query when they compare equal but are not
     /// identical. O(log n).
     pub fn get(self : Self, value : T) -> Option<T> {
         lookup(self.root, value)
@@ -839,8 +899,9 @@ impl<T : Ord> WavlSet<T> {
         ceil_tree(self.root, value, false)
     }
 
-    /// Returns the elements of `[low, high)` in ascending order, visiting
-    /// only the spanning subtrees. O(log n + k) for k reported elements.
+    /// Returns the elements of `[low, high)` in ascending order, visiting only
+    /// subtrees that can contain a matching element. O(log n + k) for k
+    /// returned elements.
     pub fn range_to_list(self : Self, low : T, high : T) -> List<T> {
         range_acc(self.root, low, high, List::Nil)
     }
@@ -884,7 +945,8 @@ impl<T : Ord> WavlSet<T> {
         })
     }
 
-    /// Transforms every element, coalescing equal results. O(n log n).
+    /// Transforms every element, keeping one when results compare equal.
+    /// O(n log n).
     pub fn map<U : Ord>(self : Self, f : T -> U) -> WavlSet<U> {
         let initial : WavlSet<U> = WavlSet::new();
         self.fold_left(initial, |set, value| set.insert(f(value)))
@@ -939,8 +1001,7 @@ impl<T : Ord> WavlSet<T> {
     }
 
     /// Returns true when every element of this set occurs in `other`.
-    /// O(n log m). The size test short-circuits the scan away entirely on a
-    /// mismatch.
+    /// O(n log m). When this set is larger, the size test returns immediately.
     pub fn is_subset(self : Self, other : Self) -> bool {
         self.len() <= other.len() && self.all(|value| other.contains(value))
     }
