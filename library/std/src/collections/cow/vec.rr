@@ -1,0 +1,133 @@
+//! A copy-on-write growable array backed by the runtime's Rust `Vec`.
+//!
+//! One flat allocation behind an rc box: updates on a uniquely owned
+//! vector mutate in place, updates on a shared vector clone the buffer
+//! once. See the `cow` module header for the copy-on-write trade-off and
+//! the FFI-crossing restrictions on `T`.
+
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+/// The raw runtime vector. Operations consume the handle (the boundary
+/// owns its arguments); [`Vec`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct RawVec<T>;
+
+#[ffi(import)]
+fn raw_new<T>() -> RawVec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+fn raw_len<T>(v : RawVec<T>) -> u64 [{ v.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<T>(v : RawVec<T>) -> RawVec<T> [{ v.clear() }];
+
+#[ffi(import)]
+fn raw_push<T>(v : RawVec<T>, value : T) -> RawVec<T> [{ v.push(value) }];
+
+#[ffi(import)]
+fn raw_pop<T>(v : RawVec<T>) -> RawVec<T> [{ v.pop() }];
+
+// Only reachable behind a bounds guard.
+#[ffi(import)]
+fn raw_get<T>(v : RawVec<T>, index : u64) -> T [{
+    v.get(index as usize).unwrap()
+}];
+
+#[ffi(import)]
+fn raw_set<T>(v : RawVec<T>, index : u64, value : T) -> RawVec<T> [{
+    v.set(index as usize, value)
+}];
+
+#[ffi(import)]
+fn raw_insert_at<T>(v : RawVec<T>, index : u64, value : T) -> RawVec<T> [{
+    v.insert_at(index as usize, value)
+}];
+
+#[ffi(import)]
+fn raw_remove_at<T>(v : RawVec<T>, index : u64) -> RawVec<T> [{
+    v.remove_at(index as usize)
+}];
+
+/// A copy-on-write growable array.
+pub struct Vec<T> {
+    raw : RawVec<T>
+}
+
+impl<T> Vec<T> {
+    /// Creates an empty vector. O(1).
+    pub fn new() -> Self {
+        Vec { raw: raw_new() }
+    }
+
+    /// Creates a one-element vector. O(1).
+    pub fn singleton(value : T) -> Self {
+        Vec::new().push(value)
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the vector has no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every element. O(n).
+    pub fn clear(self : Self) -> Self {
+        Vec { raw: raw_clear(self.raw) }
+    }
+
+    /// Appends an element. Amortized O(1); O(n) when a shared buffer is
+    /// cloned first.
+    pub fn push(self : Self, value : T) -> Self {
+        Vec { raw: raw_push(self.raw, value) }
+    }
+
+    /// Drops the last element; a no-op on an empty vector. O(1).
+    pub fn pop(self : Self) -> Self {
+        Vec { raw: raw_pop(self.raw) }
+    }
+
+    /// Returns the element at `index`, or `None` past the end. O(1).
+    pub fn get(self : Self, index : u64) -> Option<T> {
+        if raw_len(self.raw) > index {
+            Option::Some { raw_get(self.raw, index) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the last element, or `None` when empty. O(1).
+    pub fn last(self : Self) -> Option<T> {
+        let len = raw_len(self.raw);
+        if len > 0 {
+            Option::Some { raw_get(self.raw, len - 1) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Replaces the element at `index`, which must be in bounds. O(1);
+    /// O(n) when a shared buffer is cloned first.
+    pub fn set(self : Self, index : u64, value : T) -> Self {
+        Vec { raw: raw_set(self.raw, index, value) }
+    }
+
+    /// Inserts at `index` (which must be at most `len`), shifting the
+    /// tail right. O(n).
+    pub fn insert_at(self : Self, index : u64, value : T) -> Self {
+        Vec { raw: raw_insert_at(self.raw, index, value) }
+    }
+
+    /// Removes at `index`, which must be in bounds, shifting the tail
+    /// left. O(n).
+    pub fn remove_at(self : Self, index : u64) -> Self {
+        Vec { raw: raw_remove_at(self.raw, index) }
+    }
+}

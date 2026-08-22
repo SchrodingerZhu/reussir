@@ -1,0 +1,141 @@
+//! A copy-on-write ordered map backed by the runtime's Rust `BTreeMap`.
+//!
+//! Keys order through the compiler-emitted `Ord` bridge, so every probe
+//! calls back into the Reussir `cmp` implementation. One tree behind an rc
+//! box: updates on a uniquely owned map mutate in place, updates on a
+//! shared map clone the tree once. See the `cow` module header for the
+//! copy-on-write trade-off and the FFI-crossing restrictions on keys and
+//! values; for a persistent ordered map, use
+//! `std::collections::pure::wavlmap`.
+
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::btree_map::BTreeMap as RBTreeMap;
+}];
+
+/// The raw runtime map. Operations consume the handle (the boundary owns
+/// its arguments); [`BTreeMap`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::btree_map::BTreeMap")]
+pub struct RawBTreeMap<K : Ord, V>;
+
+#[ffi(import)]
+fn raw_new<K : Ord, V>() -> RawBTreeMap<K, V> [{ RBTreeMap::new() }];
+
+#[ffi(import)]
+fn raw_len<K : Ord, V>(map : RawBTreeMap<K, V>) -> u64 [{ map.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<K : Ord, V>(map : RawBTreeMap<K, V>) -> RawBTreeMap<K, V> [{
+    map.clear()
+}];
+
+#[ffi(import)]
+fn raw_insert<K : Ord, V>(
+    map : RawBTreeMap<K, V>,
+    key : K,
+    value : V
+) -> RawBTreeMap<K, V> [{ map.insert(key, value) }];
+
+#[ffi(import)]
+fn raw_remove<K : Ord, V>(map : RawBTreeMap<K, V>, key : K) -> RawBTreeMap<K, V> [{
+    map.remove(key)
+}];
+
+#[ffi(import)]
+fn raw_contains<K : Ord, V>(map : RawBTreeMap<K, V>, key : K) -> bool [{
+    map.contains_key(&key)
+}];
+
+// Only reachable behind a `raw_contains` or emptiness guard.
+#[ffi(import)]
+fn raw_get<K : Ord, V>(map : RawBTreeMap<K, V>, key : K) -> V [{
+    map.get(&key).unwrap()
+}];
+
+#[ffi(import)]
+fn raw_first_key<K : Ord, V>(map : RawBTreeMap<K, V>) -> K [{
+    map.first_key().unwrap()
+}];
+
+#[ffi(import)]
+fn raw_last_key<K : Ord, V>(map : RawBTreeMap<K, V>) -> K [{
+    map.last_key().unwrap()
+}];
+
+/// A copy-on-write ordered map.
+pub struct BTreeMap<K : Ord, V> {
+    raw : RawBTreeMap<K, V>
+}
+
+impl<K : Ord, V> BTreeMap<K, V> {
+    /// Creates an empty map. O(1).
+    pub fn new() -> Self {
+        BTreeMap { raw: raw_new() }
+    }
+
+    /// Creates a one-entry map. O(1).
+    pub fn singleton(key : K, value : V) -> Self {
+        BTreeMap::new().insert(key, value)
+    }
+
+    /// Returns the number of entries. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the map has no entries. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every entry. O(n).
+    pub fn clear(self : Self) -> Self {
+        BTreeMap { raw: raw_clear(self.raw) }
+    }
+
+    /// Inserts a key-value pair, replacing the value under an existing
+    /// equal key (which keeps its stored key). O(log n); O(n) when a
+    /// shared tree is cloned first.
+    pub fn insert(self : Self, key : K, value : V) -> Self {
+        BTreeMap { raw: raw_insert(self.raw, key, value) }
+    }
+
+    /// Removes the entry under `key`, if any. O(log n); O(n) when a
+    /// shared tree is cloned first. A miss never clones.
+    pub fn remove(self : Self, key : K) -> Self {
+        BTreeMap { raw: raw_remove(self.raw, key) }
+    }
+
+    /// Returns whether `key` has an entry. O(log n).
+    pub fn contains_key(self : Self, key : K) -> bool {
+        raw_contains(self.raw, key)
+    }
+
+    /// Looks up the value stored under `key`. O(log n).
+    pub fn get(self : Self, key : K) -> Option<V> {
+        if raw_contains(self.raw, key) {
+            Option::Some { raw_get(self.raw, key) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the least key, or `None` when empty. O(log n).
+    pub fn first_key(self : Self) -> Option<K> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_first_key(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the greatest key, or `None` when empty. O(log n).
+    pub fn last_key(self : Self) -> Option<K> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_last_key(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+}

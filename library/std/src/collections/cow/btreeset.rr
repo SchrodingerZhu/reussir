@@ -1,0 +1,114 @@
+//! A copy-on-write ordered set backed by the runtime's Rust `BTreeSet`.
+//!
+//! The set analogue of `std::collections::cow::btreemap`: elements order
+//! through the compiler-emitted `Ord` bridge, one tree behind an rc box.
+//! For a persistent ordered set, use `std::collections::pure::wavlset`.
+
+import std::option::Option;
+
+extern "rust" [{
+    use reussir_rt::collections::btree_set::BTreeSet as RBTreeSet;
+}];
+
+/// The raw runtime set. Operations consume the handle (the boundary owns
+/// its arguments); [`BTreeSet`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::btree_set::BTreeSet")]
+pub struct RawBTreeSet<T : Ord>;
+
+#[ffi(import)]
+fn raw_new<T : Ord>() -> RawBTreeSet<T> [{ RBTreeSet::new() }];
+
+#[ffi(import)]
+fn raw_len<T : Ord>(set : RawBTreeSet<T>) -> u64 [{ set.len() as u64 }];
+
+#[ffi(import)]
+fn raw_clear<T : Ord>(set : RawBTreeSet<T>) -> RawBTreeSet<T> [{ set.clear() }];
+
+#[ffi(import)]
+fn raw_insert<T : Ord>(set : RawBTreeSet<T>, value : T) -> RawBTreeSet<T> [{
+    set.insert(value)
+}];
+
+#[ffi(import)]
+fn raw_remove<T : Ord>(set : RawBTreeSet<T>, value : T) -> RawBTreeSet<T> [{
+    set.remove(value)
+}];
+
+#[ffi(import)]
+fn raw_contains<T : Ord>(set : RawBTreeSet<T>, value : T) -> bool [{
+    set.contains(&value)
+}];
+
+// Only reachable behind an emptiness guard.
+#[ffi(import)]
+fn raw_first<T : Ord>(set : RawBTreeSet<T>) -> T [{ set.first().unwrap() }];
+
+#[ffi(import)]
+fn raw_last<T : Ord>(set : RawBTreeSet<T>) -> T [{ set.last().unwrap() }];
+
+/// A copy-on-write ordered set.
+pub struct BTreeSet<T : Ord> {
+    raw : RawBTreeSet<T>
+}
+
+impl<T : Ord> BTreeSet<T> {
+    /// Creates an empty set. O(1).
+    pub fn new() -> Self {
+        BTreeSet { raw: raw_new() }
+    }
+
+    /// Creates a one-element set. O(1).
+    pub fn singleton(value : T) -> Self {
+        BTreeSet::new().insert(value)
+    }
+
+    /// Returns the number of elements. O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the set has no elements. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Removes every element. O(n).
+    pub fn clear(self : Self) -> Self {
+        BTreeSet { raw: raw_clear(self.raw) }
+    }
+
+    /// Inserts a value; an existing equal element is kept. O(log n); O(n)
+    /// when a shared tree is cloned first.
+    pub fn insert(self : Self, value : T) -> Self {
+        BTreeSet { raw: raw_insert(self.raw, value) }
+    }
+
+    /// Removes `value`, if present. O(log n); O(n) when a shared tree is
+    /// cloned first.
+    pub fn remove(self : Self, value : T) -> Self {
+        BTreeSet { raw: raw_remove(self.raw, value) }
+    }
+
+    /// Returns whether `value` is an element. O(log n).
+    pub fn contains(self : Self, value : T) -> bool {
+        raw_contains(self.raw, value)
+    }
+
+    /// Returns the least element, or `None` when empty. O(log n).
+    pub fn first(self : Self) -> Option<T> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_first(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+
+    /// Returns the greatest element, or `None` when empty. O(log n).
+    pub fn last(self : Self) -> Option<T> {
+        if raw_len(self.raw) > 0 {
+            Option::Some { raw_last(self.raw) }
+        } else {
+            Option::None
+        }
+    }
+}

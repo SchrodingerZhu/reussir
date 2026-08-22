@@ -57,6 +57,17 @@
   `i8`–`i64`, `bool`, `char`): each scalar hashes as its own typed
   write, so primitives feed hashers, `write` chains, and hash-container
   key positions directly.
+- `std::collections::cow` grows five more containers over the runtime's
+  Rust structures (`reussir_rt::collections::{vec, vec_deque, btree_map,
+  btree_set, binary_heap}`): `Vec` (push/pop/get/set/insert_at/
+  remove_at/last), `VecDeque` (push/pop at both ends, front/back/get),
+  `BTreeMap` and `BTreeSet` (insert/get/contains/remove plus
+  first/last), and `BinaryHeap` (push/pop/peek — Rust's max-heap;
+  reverse the `Ord` for a min-heap). The ordered containers compare
+  through the `Ord` bridge; the sequences need no bounds beyond
+  FFI-crossability. All follow the module's copy-on-write contract:
+  in-place when uniquely owned, one clone when shared, and empty pops
+  and lookup misses never clone.
 
 ### Compiler and runtime
 
