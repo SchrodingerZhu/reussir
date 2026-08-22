@@ -161,6 +161,8 @@ pub struct Profile {
     pub target_features: Option<String>,
     /// `rrc --reuse-across-call` when true.
     pub reuse_across_call: Option<bool>,
+    /// `rrc --instrument-nonlinear-ffi` when true.
+    pub instrument_nonlinear_ffi: Option<bool>,
     /// `rrc --no-closure-wpd` when false (the knob is spelled positively
     /// here; unset leaves rrc's own default).
     pub closure_wpd: Option<bool>,
@@ -196,6 +198,7 @@ impl Profile {
             target_cpu,
             target_features,
             reuse_across_call,
+            instrument_nonlinear_ffi,
             closure_wpd,
             pack_record_members
         );

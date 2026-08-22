@@ -143,6 +143,7 @@ unsafe extern "C" {
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;
     pub fn reussirCreateCompilePolymorphicFFIPass(optimized: bool) -> MlirPass;
+    pub fn reussirCreateInstrumentNonlinearFFIPass() -> MlirPass;
     pub fn reussirCreateInvariantGroupAnalysisPass() -> MlirPass;
     pub fn reussirCreateBasicOpsLoweringPass(closure_wpd: bool) -> MlirPass;
     pub fn reussirCreateDebugInfoConversionPass() -> MlirPass;

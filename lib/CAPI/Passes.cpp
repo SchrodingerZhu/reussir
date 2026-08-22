@@ -126,6 +126,9 @@ MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized) {
   options.optimized = optimized;
   return wrapOwned(reussir::createReussirCompilePolymorphicFFIPass(options));
 }
+MlirPass reussirCreateInstrumentNonlinearFFIPass(void) {
+  return wrapOwned(reussir::createReussirInstrumentNonlinearFFIPass());
+}
 MlirPass reussirCreateInvariantGroupAnalysisPass(void) {
   return wrapOwned(reussir::createReussirInvariantGroupAnalysisPass());
 }

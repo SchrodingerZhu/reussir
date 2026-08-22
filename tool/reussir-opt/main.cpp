@@ -92,6 +92,9 @@ int main(int argc, char **argv) {
     return reussir::createReussirCompilePolymorphicFFIPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return reussir::createReussirInstrumentNonlinearFFIPass();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return reussir::createReussirClosureOutliningPass();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {

@@ -180,6 +180,14 @@ pub(crate) struct Cli {
     #[arg(long = "reuse-across-call")]
     pub(crate) reuse_across_call: bool,
 
+    /// Instrument non-linear ffi/array usage: before every FFI-import call
+    /// that consumes an rc'd ffi/array value, check its reference count and
+    /// report the call's source location on stderr when it is not 1 — the
+    /// signature that the foreign side copies-on-write instead of updating
+    /// in place. Purely diagnostic; program semantics are unchanged.
+    #[arg(long = "instrument-nonlinear-ffi")]
+    pub(crate) instrument_nonlinear_ffi: bool,
+
     /// Write every token-reuse decision to this JSON file. The report uses a
     /// shared location table (including source ranges and nested call-site
     /// locations) and groups identical generic instances instead of repeating

@@ -65,6 +65,11 @@ MlirPass reussirCreatePartialMovePass(void);
 MlirPass reussirCreateRcCreateFusionPass(void);
 MlirPass reussirCreateTRMCRecursionAnalysisPass(void);
 MlirPass reussirCreateCompilePolymorphicFFIPass(bool optimized);
+// Instruments FFI-import calls that consume rc'd ffi_object/array arguments:
+// a count != 1 at the call reports the source location to the runtime
+// (`__reussir_report_nonlinear_usage`). Add only when instrumentation is
+// requested; schedule after the rc optimization passes.
+MlirPass reussirCreateInstrumentNonlinearFFIPass(void);
 MlirPass reussirCreateInvariantGroupAnalysisPass(void);
 MlirPass reussirCreateBasicOpsLoweringPass(bool closureWpd);
 MlirPass reussirCreateDebugInfoConversionPass(void);

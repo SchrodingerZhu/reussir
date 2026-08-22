@@ -1,0 +1,41 @@
+// UNSUPPORTED: darwin
+// End-to-end `--instrument-nonlinear-ffi`: `v` is consumed by the first
+// `total` while still shared with the second (Perceus retains it before the
+// first call), so the runtime reports that call site — and only that one —
+// on stderr. The result is unchanged: the foreign side copies on write.
+
+// RUN: %rrc %s -o %t.o --relocation-mode pic --instrument-nonlinear-ffi
+// RUN: %cc %t.o %S/instrument_nonlinear_ffi_e2e.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe 2>&1 | %FileCheck %s
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn total(v: Vec<f64>) -> f64 [{
+    let mut sum = 0.0;
+    for i in 0..v.len() {
+        sum += v.get(i).unwrap();
+    }
+    sum
+}];
+
+pub fn main() -> f64 {
+    let v = push(new<f64>(), 1.5);
+    total(v) + total(v)
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// CHECK: non-linear ffi/array usage at {{.*}}instrument_nonlinear_ffi_e2e.rr:{{[0-9]+}}:{{[0-9]+}}
+// CHECK-NOT: non-linear ffi/array usage

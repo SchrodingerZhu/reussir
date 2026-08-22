@@ -1,0 +1,39 @@
+// UNSUPPORTED: darwin
+// `--instrument-nonlinear-ffi` guards every FFI-import call that consumes an
+// rc'd ffi/array value with a reference-count check reporting to
+// `__reussir_report_nonlinear_usage`; without the flag nothing is
+// instrumented.
+
+// RUN: %rrc %s --emit mlir-llvm --instrument-nonlinear-ffi -o - | %FileCheck %s
+// RUN: %rrc %s --emit mlir-llvm -o - \
+// RUN:   | %FileCheck %s --check-prefix=OFF \
+// RUN:     --implicit-check-not=__reussir_report_nonlinear_usage
+
+extern "rust" [{
+    use reussir_rt::collections::vec::Vec as RVec;
+}];
+
+#[ffi(rust = "::reussir_rt::collections::vec::Vec")]
+pub struct Vec<T>;
+
+#[ffi(import)]
+pub fn new<T>() -> Vec<T> [{ RVec::new() }];
+
+#[ffi(import)]
+pub fn push<T>(v: Vec<T>, x: T) -> Vec<T> [{ RVec::push(v, x) }];
+
+#[ffi(import)]
+pub fn len<T>(v: Vec<T>) -> u64 [{ v.len() as u64 }];
+
+pub fn main() -> u64 {
+    let v = push(new<f64>(), 1.5);
+    len(v) + len(v)
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// CHECK: llvm.func @__reussir_report_nonlinear_usage(!llvm.ptr, i32, i32)
+// The consumed vec at `push` and at both `len` calls is guarded:
+// CHECK-COUNT-3: llvm.call @__reussir_report_nonlinear_usage
+
+// OFF: llvm.func @reussir_main

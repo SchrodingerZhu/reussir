@@ -35,6 +35,7 @@ const REUSSIR_ARCHIVES: &[&str] = &[
     "MLIRReussirTokenInstantiation",
     "MLIRReussirClosureOutlining",
     "MLIRReussirCompilePolymorphicFFI",
+    "MLIRReussirInstrumentNonlinearFFI",
     "MLIRReussirAttachNativeTarget",
     "MLIRReussirClosureBetaReduction",
     "MLIRReussirDefaultInliner",

@@ -142,6 +142,7 @@ pub(crate) fn backend_module(
     let options = LoweringOptions {
         opt,
         reuse_token_across_call: cli.reuse_across_call,
+        instrument_nonlinear_ffi: cli.instrument_nonlinear_ffi,
         emit_token_reuse_remarks: cli.token_reuse_remarks.is_some(),
         nullary_variant_encoding: cli.nullary_variant_encoding.resolve(machine.triple()),
         pack_record_members: !cli.no_pack_record_members,

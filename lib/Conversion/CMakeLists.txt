@@ -7,6 +7,7 @@ add_subdirectory(RcDecrementExpansion)
 add_subdirectory(TokenInstantiation)
 add_subdirectory(ClosureOutlining)
 add_subdirectory(CompilePolymorphicFFI)
+add_subdirectory(InstrumentNonlinearFFI)
 add_subdirectory(AttachNativeTarget)
 
 set(REUSSIR_CONVERSION_AGGREGATE_LIBS
@@ -19,6 +20,7 @@ set(REUSSIR_CONVERSION_AGGREGATE_LIBS
   MLIRReussirTokenInstantiation
   MLIRReussirClosureOutlining
   MLIRReussirCompilePolymorphicFFI
+  MLIRReussirInstrumentNonlinearFFI
   MLIRReussirAttachNativeTarget
 )
 
