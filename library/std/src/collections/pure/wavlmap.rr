@@ -1,51 +1,129 @@
-//! A persistent ordered map on a WAVL (weak AVL) tree.
+//! A persistent ordered map built on a weak AVL (WAVL) tree.
 //!
-//! Same tree discipline as `wavlset`: ranks with differences of 1 or 2,
-//! leaves at rank 0, at most two rotations per update. Nodes additionally
-//! carry the mapped value. Unlike `wavlset`, updates run bottom-up over an
-//! explicit zipper rather than by recursion: the recursive formulation
-//! threads a `Changed` result through every level, a shape whose
-//! intermediate binding currently defeats reuse inference (each level then
-//! allocates; ~9% of update time surfaced inside the allocator and the
-//! ordered-map benchmark ran 2.7x slower). The zipper builds one result
-//! value per operation at the point the outcome is decided, keeps every
-//! frame node-sized for 1:1 reuse, and measured fastest of the recursive,
-//! flag-free, and zipper formulations tried.
+//! Entries are ordered by their keys using `Ord`. Keys smaller than a node's
+//! key are stored in its left subtree, and greater keys are stored in its right
+//! subtree. Inserting a key that compares equal keeps the stored key and
+//! replaces its value.
 //!
-//! Unlike `wavlset`, the map stores the rank as a **field** rather than
-//! encoding its parity in the variant tag, and that difference is
-//! measured rather than accidental. Parity encoding pays for itself only
-//! when the word it saves moves the node into a smaller allocator bin.
-//! With word-sized keys and values, a rank node is 48 B and a parity node
-//! 40 B — both land in mimalloc's 48-byte bin, so the encoding buys no
-//! locality while costing ~13% more instructions for the parity
-//! bookkeeping; it measured ~1.07x *slower* on bulk insert. The set's
-//! nodes cross 40 B -> 32 B, an actual bin change, which is why it uses
-//! the parity form. (For a map with narrower keys and values — an
-//! `i32`-to-`i32` map is 40 B against 32 B — the arithmetic favours
-//! parity again; revisit this if such maps become the common case.)
+//! "Persistent" means that an update returns a new map while any retained old
+//! version remains valid. The versions share subtrees that the update did not
+//! change. When the input map has only one owner, Reussir's memory-reuse
+//! analysis can use its existing nodes for the result.
 //!
-//! ## Interface
+//! ## How WAVL balancing works
 //!
-//! The map carries the whole `HashMap` interface, so the two are
-//! interchangeable at the call site, plus the ordered operations
-//! `wavlset` documents: `pop_min`/`pop_max`, the neighbour queries
-//! (`floor_entry`, `ceiling_entry`, `predecessor_entry`,
-//! `successor_entry`), the half-open window queries (`range`,
-//! `range_to_list`), and the descending traversals (`to_list_desc`,
-//! `fold_right`). `to_list`, `keys`, `values`, and `fold_left` are in
-//! ascending key order, where the hash containers promise no order at
-//! all, and `find` returns the entry with the *least* matching key rather
-//! than an unspecified one. See `wavlset` for why the window walk, the
-//! end removals, and the searching traversals are written against the
-//! tree instead of composed, and for what that buys.
+//! WAVL assigns an integer rank to each non-empty node. Rank is related to
+//! height, but it is maintained by local rules rather than recomputed from the
+//! whole subtree:
+//!
+//! - An empty subtree has rank -1.
+//! - A node with two empty children has rank 0.
+//! - The difference between a node's rank and either child's rank is 1 or 2.
+//!
+//! Edge labels in the diagrams below are rank differences. Here the left
+//! child has difference 1 and the right child has difference 2:
+//!
+//! ```text
+//!                [p, rank 2]
+//!              1 /          \ 2
+//!               /            \
+//!      [a, rank 1]       [b, rank 0]
+//! ```
+//!
+//! These rules keep every root-to-leaf path logarithmic in the number of
+//! entries. Lookup, insertion, removal, and the nearest-key queries are
+//! therefore O(log n) in the worst case.
+//!
+//! Insertion can make a child have the same rank as its parent, giving a rank
+//! difference of 0. The repair either raises the parent's rank by one and
+//! continues toward the root, or uses one or two rotations and stops. A step
+//! that raises a rank changes the two differences as follows:
+//!
+//! ```text
+//!          before                   after raising p
+//!
+//!            p:r                         p:r+1
+//!           /   \                        /     \
+//!        0 /     \ 1                  1 /       \ 2
+//!         x       s                    x         s
+//! ```
+//!
+//! Removal can create a rank difference of 3. Its repair lowers ranks while
+//! needed, and may finish with one or two rotations. One step that lowers a
+//! rank is the reverse kind of change:
+//!
+//! ```text
+//!          before                   after lowering p
+//!
+//!            p:r                         p:r-1
+//!           /   \                        /     \
+//!        3 /     \ 2                  2 /       \ 1
+//!         x       s                    x         s
+//! ```
+//!
+//! A rotation changes a few parent-child links without changing key order.
+//! For example, a left rotation changes this shape while preserving
+//! `A < p < B < q < C`:
+//!
+//! ```text
+//!            p                              q
+//!           / \                            / \
+//!          A   q          ---->           p   C
+//!             / \                        / \
+//!            B   C                      A   B
+//! ```
+//!
+//! Only rank changes can continue through several ancestors; over a sequence
+//! of updates, the average number of rank changes per update is constant.
+//!
+//! With insertions alone, a WAVL tree has the same shape as an AVL tree.
+//! Removal may leave a non-leaf node whose rank is two greater than both child
+//! ranks. Allowing this case is what makes WAVL less strict than AVL after
+//! removals.
+//!
+//! ## Update path and rank storage
+//!
+//! During an update, `Path` records each node visited and the subtree that was
+//! not visited. Once the key is found, or an empty subtree is reached, the map
+//! walks this saved path back to the root. It repairs rank differences and
+//! rebuilds each ancestor along the way. A `Path` item is the same size as a
+//! tree node, so uniquely owned path storage can be reused for rebuilt nodes.
+//! This avoids allocating a separate result at every recursive return.
+//!
+//! Unlike `WavlSet`, the map stores the full rank in each node. In the measured
+//! 64-bit build with word-sized keys and values, the full-rank and parity forms
+//! both required a 48-byte allocation. Storing only parity therefore saved no
+//! memory and added work to each rank check. The full-rank form was faster in
+//! that case, while the set's smaller nodes do benefit from storing parity.
+//!
+//! ## Ordered operations
+//!
+//! `WavlMap` provides the general map operations also available on `HashMap`.
+//! Ordering adds `pop_min` and `pop_max`, which remove an entry from either
+//! end, and the nearest-key queries `floor_entry`, `ceiling_entry`,
+//! `predecessor_entry`, and `successor_entry`. `range` and `range_to_list` use
+//! the half-open interval `[low, high)` and skip subtrees outside that
+//! interval.
+//!
+//! `to_list`, `keys`, `values`, and `fold_left` visit entries from least key to
+//! greatest key; `to_list_desc` and `fold_right` use the reverse order. `find`
+//! returns the matching entry with the least key. Hash-based collections do
+//! not promise any of these traversal orders.
+//!
+//! ## References
+//!
+//! - Haeupler, Sen, and Tarjan, "Rank-Balanced Trees":
+//!   https://doi.org/10.1145/2689412
+//! - Goodrich and Tamassia, "Weak AVL Trees":
+//!   https://ics.uci.edu/~goodrich/teach/cs165/notes/WeakAVLTrees.pdf
 
 import std::option::Option;
 import std::collections::pure::list::List;
 
-/// The rank-carrying tree node. Public because `WavlMap` stores it in
-/// its representation; construct maps through `WavlMap` so the rank and
-/// size invariants hold.
+/// The internal tree representation. `Node` stores its rank, children, key,
+/// and value; `Leaf` is an empty subtree with rank -1. This type is public
+/// because it appears inside `WavlMap`; construct maps through `WavlMap` so
+/// ordering, rank, and size remain valid.
 pub enum Tree<K, V> {
     Leaf,
     Node(i64, Tree<K, V>, K, V, Tree<K, V>)
@@ -57,7 +135,8 @@ pub struct [value] Entry<K, V> {
     pub value : V
 }
 
-/// A persistent ordered map with O(log n) insert, remove, and lookup.
+/// A persistent ordered map with worst-case O(log n) insert, remove, and
+/// lookup.
 pub struct WavlMap<K, V> {
     size : u64,
     root : Tree<K, V>
@@ -88,14 +167,12 @@ fn rank<K, V>(t : Tree<K, V>) -> i64 {
     }
 }
 
-// The traversal spine, held as an explicit zipper: each frame records
-// the parent's rank and entry plus the sibling not descended into. The
-// descent is a tail-recursive walk that pushes frames; the way back up
-// is `fixup_ins`/`fixup_del`, which promote or demote while a rank rule
-// is violated (amortized O(1) frames) and then fall into `rebuild`, a
-// tight loop that reconstructs the untouched remainder of the spine.
-// Every frame is node-sized, so under uniqueness each rebuilt node
-// reuses a frame's storage and updates allocate nothing.
+// The saved search path. Each item records the parent's rank and entry, plus
+// the sibling subtree that was not visited. `fixup_ins` and `fixup_del` walk
+// back over this path to repair rank differences. `rebuild` then reconstructs
+// the ancestors that need no further repair. Each non-empty path item is the
+// same size as a node, so a uniquely owned item can provide the storage for a
+// rebuilt node.
 enum Path<K, V> {
     ToL(i64, Path<K, V>, K, V, Tree<K, V>),
     ToR(i64, Tree<K, V>, K, V, Path<K, V>),
@@ -110,11 +187,10 @@ fn rebuild<K, V>(z : Path<K, V>, t : Tree<K, V>) -> Tree<K, V> {
     }
 }
 
-// Rank fixup after the child under the top frame grew to rank `tr`:
-// promote while the parent would sit at rank difference 0 against a
-// difference-1 sibling, otherwise perform the single or double rotation
-// and stop. Rotation results keep the parent's old rank, so the
-// remaining spine rebuilds unchanged.
+// Repair the tree after the child in the next path item grows to rank `tr`.
+// Raise a parent while it has rank difference 0 beside a difference-1
+// sibling; otherwise use one or two rotations and stop. A rotation restores
+// the parent's old rank, so the remaining ancestors only need rebuilding.
 fn fixup_ins<K, V>(z : Path<K, V>, t : Tree<K, V>, tr : i64) -> Tree<K, V> {
     match z {
         Path::ToL(r, z1, k, v, rt) =>
@@ -191,10 +267,9 @@ fn fixup_ins<K, V>(z : Path<K, V>, t : Tree<K, V>, tr : i64) -> Tree<K, V> {
 
 struct [value] Changed<K, V> { tree : Tree<K, V>, changed : bool }
 
-// The descent is pass-through: the one `Changed` per operation is built
-// where the outcome is decided (fresh leaf or value replace) and tail
-// calls carry it out unchanged, so no per-level result threading exists
-// for the reuse analysis to lose.
+// Build one `Changed` value where the outcome is known: at a new node or a
+// replaced value. Calls on the path carry that value back unchanged, avoiding
+// a new result allocation at every level.
 fn ins_at<K : Ord, V>(
     t : Tree<K, V>,
     x : K,
@@ -221,11 +296,10 @@ fn ins<K : Ord, V>(t : Tree<K, V>, x : K, xv : V) -> Changed<K, V> {
     ins_at(t, x, xv, Path::Top)
 }
 
-// Rank fixup after the child under the top frame shrank: demote or
-// double-demote while a rank-difference-3 violation propagates
-// (amortized O(1) frames), rotate and stop otherwise. The demote cases
-// recurse; every rotation restores the parent's rank so the rest of the
-// spine rebuilds unchanged.
+// Repair the tree after the child in the next path item loses rank. Lower one
+// or two ranks while a difference of 3 continues toward the root; otherwise
+// rotate and stop. A rotation restores the parent's rank, so the remaining
+// ancestors only need rebuilding.
 fn fixup_del<K, V>(z : Path<K, V>, t : Tree<K, V>) -> Tree<K, V> {
     match z {
         Path::ToL(r, z1, k, v, rt) => {
@@ -358,11 +432,10 @@ fn fixup_del<K, V>(z : Path<K, V>, t : Tree<K, V>) -> Tree<K, V> {
     }
 }
 
-// Remove the inorder successor along the right subtree's left spine,
-// tracked by an inner zipper. `fixup_del` over the inner spine repairs
-// the splice; resuming through a `ToR` frame continues the same fixup at
-// the removal point, so a rank drop propagates across the join without
-// any per-level result threading.
+// Replace a removed node with the next entry in key order. That entry is the
+// leftmost one in the removed node's right subtree. `rz` records the path to
+// it. Repair that path first, then continue through a `ToR` item at the
+// original removal point so a lost rank can keep moving toward the root.
 fn splice_succ<K, V>(
     r0 : i64,
     l0 : Tree<K, V>,
@@ -426,8 +499,8 @@ fn del_min<K, V>(t : Tree<K, V>) -> DelMin<K, V> {
     del_min_at(t, Path::Top)
 }
 
-// The mirror of `del_min`: strip the rightmost entry and repair up the
-// right spine.
+// The mirror of `del_min`: remove the rightmost entry and repair along the
+// path of right children.
 fn del_max_at<K, V>(t : Tree<K, V>, z : Path<K, V>) -> DelMin<K, V> {
     match t {
         Tree::Node(_, l, k, v, Tree::Leaf) =>
@@ -453,8 +526,8 @@ fn lookup<K : Ord, V>(t : Tree<K, V>, x : K) -> Option<V> {
     }
 }
 
-// The stored entry, which exposes the canonical key when the probe only
-// compares equal to it rather than being identical.
+// Return the actual stored entry, including its key, when the query compares
+// equal to that key but is not identical to it.
 fn lookup_entry<K : Ord, V>(t : Tree<K, V>, x : K) -> Option<Entry<K, V>> {
     match t {
         Tree::Leaf => Option::None,
@@ -651,9 +724,9 @@ fn fold_right_tree<U, K, V>(
     }
 }
 
-// The searching traversals stop as soon as the answer is settled, which a
-// fold cannot do: `||` and `&&` short-circuit, so a subtree is only walked
-// while the answer is still open.
+// These searches stop as soon as the answer is known, which a fold cannot do.
+// The `||` and `&&` expressions only visit another subtree while its result
+// can still change the answer.
 // `find_tree` keeps ascending order, so the entry it returns is the one
 // with the least key rather than an arbitrary one.
 fn any_tree<K, V>(t : Tree<K, V>, predicate : (K, V) -> bool) -> bool {
@@ -733,9 +806,8 @@ impl<K : Ord, V> WavlMap<K, V> {
     }
 
     /// Returns the number of nodes on the longest root-to-leaf path, zero
-    /// for an empty map. The WAVL discipline bounds this by `2·log2(n) + 1`,
-    /// which is what makes the balance observable from outside the module —
-    /// tests assert against that bound. O(n).
+    /// for an empty map. The WAVL rank rules bound this by `2·log2(n) + 1`;
+    /// tests use this bound to check that updates preserve balance. O(n).
     pub fn depth(self : Self) -> u64 {
         depth_tree(self.root)
     }
@@ -861,8 +933,8 @@ impl<K : Ord, V> WavlMap<K, V> {
         lookup(self.root, key)
     }
 
-    /// Returns the stored key and value for `key`. This exposes the
-    /// canonical stored key when the query compares equal but is not
+    /// Returns the actual stored key and value equal to `key`. The returned key
+    /// can differ from the query when they compare equal but are not
     /// identical. O(log n).
     pub fn get_entry(self : Self, key : K) -> Option<Entry<K, V>> {
         lookup_entry(self.root, key)
@@ -908,7 +980,8 @@ impl<K : Ord, V> WavlMap<K, V> {
     }
 
     /// Returns the entries keyed by `[low, high)` in ascending key order,
-    /// visiting only the spanning subtrees. O(log n + k) for k entries.
+    /// visiting only subtrees that can contain a matching key. O(log n + k)
+    /// for k returned entries.
     pub fn range_to_list(self : Self, low : K, high : K) -> List<Entry<K, V>> {
         range_acc(self.root, low, high, List::Nil)
     }
@@ -1075,8 +1148,8 @@ impl<K : Ord, V> WavlMap<K, V> {
     }
 
     /// Returns true when every entry in this map has a matching key and
-    /// predicate-compatible value in `other`. O(n log m). The size test
-    /// short-circuits the scan away entirely on a mismatch.
+    /// value accepted by `predicate` in `other`. O(n log m). When this map is
+    /// larger, the size test returns immediately.
     pub fn is_submap_by<W>(
         self : Self,
         other : WavlMap<K, W>,
@@ -1088,8 +1161,9 @@ impl<K : Ord, V> WavlMap<K, V> {
         })
     }
 
-    /// Returns true when this map is a strict predicate-compatible submap of
-    /// `other`. O(n log m).
+    /// Returns true when this map is smaller than `other` and every entry has
+    /// a matching key whose two values are accepted by `predicate`.
+    /// O(n log m).
     pub fn is_proper_submap_by<W>(
         self : Self,
         other : WavlMap<K, W>,
