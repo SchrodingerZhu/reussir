@@ -2367,9 +2367,10 @@ mod tests {
     }
 
     /// The builtin-impl special form is fenced: reserved to lang-bound
-    /// traits of the declaring package, body must be empty, duplicates
-    /// conflict — and a former anchor is a declaration site, not a
-    /// constructible struct.
+    /// traits of the declaring package (an ordinary local trait takes the
+    /// general impl path instead, so an empty body reports the missing
+    /// members), body must be empty, duplicates conflict — and a former
+    /// anchor is a declaration site, not a constructible struct.
     #[test]
     fn builtin_impl_and_anchor_matrix() {
         with_tcx(|tcx| {
@@ -2394,9 +2395,9 @@ mod tests {
             let elab = elaborate(tcx, &prog, &interner);
             let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
             assert!(
-                msgs.iter().any(|m| m.contains(
-                    "cannot implement `Plain` for a builtin type: builtin impls are reserved"
-                )),
+                msgs.iter()
+                    .any(|m| m
+                        .contains("impl of trait `Plain` for `i64` is missing method(s) `p`")),
                 "{msgs:#?}"
             );
             assert!(
