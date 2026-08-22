@@ -129,13 +129,13 @@ impl WrapperDecl<'_> {
         if self.needs.partial_ord() && !self.needs.ord() {
             let _ = writeln!(
                 d,
-                "    unsafe fn {sym}_ffi_partial_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i8;"
+                "    unsafe fn {sym}_ffi_partial_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i32;"
             );
         }
         if self.needs.ord() {
             let _ = writeln!(
                 d,
-                "    unsafe fn {sym}_ffi_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i8;"
+                "    unsafe fn {sym}_ffi_cmp(lhs: *mut ::std::ffi::c_void, rhs: *mut ::std::ffi::c_void) -> i32;"
             );
         }
         let _ = write!(
