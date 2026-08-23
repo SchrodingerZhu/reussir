@@ -1,0 +1,86 @@
+{
+  "name": "reussir",
+  "displayName": "Reussir",
+  "description": "Semantic highlighting for the Reussir programming language",
+  "version": "0.1.0",
+  "publisher": "reussir-lang",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/reussir-lang/reussir"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "reussir",
+    "language-server",
+    "semantic-highlighting",
+    "wasm"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onLanguage:reussir"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The native reussir-lsp process requires a workspace extension host."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "reussir",
+        "aliases": [
+          "Reussir",
+          "reussir"
+        ],
+        "extensions": [
+          ".rr"
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Reussir",
+      "properties": {
+        "reussir.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Path to the native reussir-lsp executable. Empty searches the development build and then PATH."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[reussir]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    }
+  },
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "check": "tsc --noEmit",
+    "compile": "node esbuild.mjs",
+    "build": "npm run build:wasm && npm run check && npm run compile",
+    "test:protocol": "node dist/test/protocol-smoke.cjs",
+    "package:vsix": "node scripts/package-vsix.mjs",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.27.0",
+    "typescript": "^5.9.0"
+  }
+}

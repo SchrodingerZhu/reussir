@@ -1,0 +1,23 @@
+// RUN: %python %S/Inputs/semantic_tokens.py %reussir-lsp %s | %FileCheck %s
+
+/* UTF-16 offset check: λ */ pub fn main(value: i64) -> i64 { value }
+
+transform [{
+  %constant = arith.constant 1 : i64
+}];
+
+extern "rust" [{
+  use crate::Thing;
+}];
+
+#[ffi(import)]
+pub fn make<T>() -> T [{ Vec::<[:T:]>::new() }];
+
+// CHECK: CAPABILITIES full-sync full-semantic
+// CHECK: TOKEN main function
+// CHECK: TOKEN arith.constant function
+// CHECK: TOKEN use keyword
+// CHECK: TOKEN new function
+// CHECK: TOKEN changed function
+// CHECK: CHANGE replaced-whole-document
+// CHECK: CLOSE returned-null

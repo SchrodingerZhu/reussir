@@ -111,8 +111,8 @@ The repository is split by responsibility:
   (elaboration, monomorphization, ownership analysis), `reussir-codegen`
   (MLIR lowering), `reussir-backend`/`reussir-jit` (the melior/MLIR bridge and
   JIT), `reussir-compiler` (the `rrc` driver), `reussir-repl` (the `rrepl`
-  REPL), `rene` (the package manager and build driver), and `reussir-rt`
-  (the RC-object runtime).
+  REPL), `reussir-lsp` (semantic highlighting), `rene` (the package manager
+  and build driver), and `reussir-rt` (the RC-object runtime).
 - `include/` and `lib/`:
   the Reussir MLIR dialect, analyses, conversions, bridge code, and backend
   support libraries.
@@ -167,6 +167,7 @@ the Rust frontend tools:
 - `reussir-translate`
 - `rrc` — the compiler driver
 - `reussir-syntax` — the parser (JSON AST emitter)
+- `reussir-lsp` — the stdio language server (semantic tokens)
 - `rrepl` — the REPL
 - `rene` — the package manager and build driver
 
@@ -179,6 +180,8 @@ cmake --build build --target reussir-rt
 cmake --build build --target rrc
 cmake --build build --target rrepl
 cmake --build build --target rene
+cmake --build build --target reussir-lsp
+cmake --build build --target reussir-vscode-package
 ```
 
 Built binaries are placed under `build/bin/`, and runtime libraries are
@@ -204,6 +207,25 @@ Run the REPL:
 cmake --build build --target rrepl
 build/bin/rrepl
 ```
+
+Configure an editor to launch `build/bin/reussir-lsp` as a stdio language
+server for Reussir files. The initial server intentionally provides only
+whole-document semantic tokens. Reussir syntax is classified from its lossless
+cstree; inline MLIR transform schedules and Rust poly-FFI bodies receive
+syntax-only Tree-sitter highlighting.
+
+The VS Code extension keeps `reussir-lsp` native while implementing its
+bounded client state and LSP wire framing in Rust/WebAssembly. Build a
+sideloadable extension with:
+
+```bash
+cmake --build build --target reussir-vscode-package
+code --install-extension build/reussir-vscode.vsix
+```
+
+The extension first uses the `reussir.server.path` setting, then the repository
+development build, and finally `reussir-lsp` from `PATH`. Open
+`editors/vscode/` in VS Code and press F5 for an Extension Development Host.
 
 Build a package with `rene` (the manifest is `rene.ncl`; artifacts land in
 `reussir-build/<profile>/` next to it):
@@ -241,6 +263,8 @@ cmake --build build --target reussir-codegen-test
 cmake --build build --target reussir-backend-test
 cmake --build build --target reussir-core-test
 cmake --build build --target reussir-syntax-test
+cmake --build build --target reussir-lsp-test
+cmake --build build --target reussir-vscode-test
 cmake --build build --target reussir-jit-test
 cmake --build build --target rrepl-test
 cmake --build build --target rene-test

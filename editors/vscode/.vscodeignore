@@ -1,0 +1,13 @@
+.vscode/**
+src/**
+test/**
+scripts/**
+node_modules/**
+tsconfig.json
+esbuild.mjs
+CMakeLists.txt
+CMakeUserPresets.json
+package-lock.json
+dist/test/**
+dist/**/*.map
+*.vsix

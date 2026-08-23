@@ -112,12 +112,12 @@ jobs:
           mkdir -p "${PREFIX}/bin"
 
           # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, and rene links no
-          # native code at all — so there are no bundled shared libraries and
-          # no rpath fixups. No Rust toolchain and no prebuilt runtime ship
-          # either: rene carries the reussir-rt source bundle and bakes it
+          # LLVM/MLIR and the Reussir backend statically, while rene and
+          # reussir-lsp link no native LLVM code — so there are no shared
+          # libraries and no rpath fixups. No Rust toolchain and no prebuilt
+          # runtime ship either: rene carries the reussir-rt source bundle and bakes it
           # with the user's own rust/cargo on first use.
-          for bin in rrc rene rrepl; do
+          for bin in rrc rene rrepl reussir-lsp; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
@@ -128,7 +128,7 @@ jobs:
           # Verify the binaries really are self-contained: nothing may
           # resolve to an LLVM/MLIR shared library, and each must start from
           # a bare environment.
-          for bin in rrc rene rrepl; do
+          for bin in rrc rene rrepl reussir-lsp; do
             echo "--- ldd ${bin}"
             ldd "${PREFIX}/bin/${bin}"
             if ldd "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR|not found'; then
@@ -228,12 +228,12 @@ jobs:
           mkdir -p "${PREFIX}/bin"
 
           # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, and rene links no
-          # native code at all — so there are no bundled dylibs and no
-          # install_name_tool fixups. No Rust toolchain and no prebuilt
-          # runtime ship either: rene carries the reussir-rt source bundle
+          # LLVM/MLIR and the Reussir backend statically, while rene and
+          # reussir-lsp link no native LLVM code — so there are no bundled
+          # dylibs and no install_name_tool fixups. No Rust toolchain and no
+          # prebuilt runtime ship either: rene carries the reussir-rt source bundle
           # and bakes it with the user's own rust/cargo on first use.
-          for bin in rrc rene rrepl; do
+          for bin in rrc rene rrepl reussir-lsp; do
             cp -a "build/bin/${bin}" "${PREFIX}/bin/"
           done
 
@@ -246,7 +246,7 @@ jobs:
           # Verify the binaries really are self-contained: nothing may
           # reference the Homebrew LLVM/MLIR dylibs, and each must start
           # from a bare environment.
-          for bin in rrc rene rrepl; do
+          for bin in rrc rene rrepl reussir-lsp; do
             echo "--- otool -L ${bin}"
             otool -L "${PREFIX}/bin/${bin}"
             if otool -L "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR'; then
@@ -523,12 +523,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$prefix\bin" | Out-Null
 
           # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, and rene links no
-          # native code at all — no MLIR/LLVM DLLs and no Bridge DLL. No Rust
-          # toolchain and no prebuilt runtime ship either: rene carries the
-          # reussir-rt source bundle and bakes it with the user's own
+          # LLVM/MLIR and the Reussir backend statically, while rene and
+          # reussir-lsp link no native LLVM code — no MLIR/LLVM DLLs and no
+          # Bridge DLL. No Rust toolchain and no prebuilt runtime ship either:
+          # rene carries the reussir-rt source bundle and bakes it with the user's own
           # rust/cargo on first use.
-          foreach ($bin in @("rrc", "rene", "rrepl")) {
+          foreach ($bin in @("rrc", "rene", "rrepl", "reussir-lsp")) {
             Copy-Item "build\bin\$bin.exe" "$prefix\bin\"
           }
 
@@ -559,7 +559,7 @@ jobs:
           # Verify each binary starts with only the OS on PATH (the bundled
           # DLLs, if any, resolve from the exe's own directory).
           $binDir = (Resolve-Path "$prefix\bin").Path
-          foreach ($bin in @("rrc", "rene", "rrepl")) {
+          foreach ($bin in @("rrc", "rene", "rrepl", "reussir-lsp")) {
             cmd /c "set PATH=%SystemRoot%\System32;%SystemRoot%&& `"$binDir\$bin.exe`" --help > NUL"
             if ($LASTEXITCODE -ne 0) {
               throw "$bin.exe failed to run from a bare PATH (exit $LASTEXITCODE)"
@@ -621,7 +621,7 @@ jobs:
           body: |
             Automated nightly build from `${{ github.sha }}`.
 
-            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), and `rrepl` (REPL). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
+            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
             - Linux x86_64 (built against LLVM 22)
@@ -648,7 +648,7 @@ jobs:
           body: |
             Reussir ${{ github.ref_name }}, built from `${{ github.sha }}`. See `CHANGELOG.md` for the release notes.
 
-            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), and `rrepl` (REPL). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
+            **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
             - Linux x86_64 (built against LLVM 22)

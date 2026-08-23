@@ -1,0 +1,22 @@
+[package]
+name = "reussir-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Semantic-token language server for Reussir"
+
+[[bin]]
+name = "reussir-lsp"
+path = "src/main.rs"
+
+[dependencies]
+async-lsp.workspace = true
+reussir-syntax = { path = "../reussir-syntax" }
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-mlir.workspace = true

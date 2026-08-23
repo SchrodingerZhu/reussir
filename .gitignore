@@ -11,6 +11,9 @@ rustc-ice-*
 # Editors / IDEs
 .idea
 .vscode
+!editors/vscode/.vscode/
+!editors/vscode/.vscode/launch.json
+!editors/vscode/.vscode/tasks.json
 .clice
 
 # Build trees
@@ -30,6 +33,8 @@ reussir_rust_module_*
 # Misc tooling
 _codeql_detected_source_root
 node_modules
+editors/vscode/dist/
+editors/vscode/LICENSE
 *.vsix
 
 # Nix devShell auto-generated cmake preset (created by flake.nix shellHook)

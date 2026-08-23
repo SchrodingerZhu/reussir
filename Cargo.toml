@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "crates/reussir-rt",
     "crates/reussir-syntax",
+    "crates/reussir-lsp",
+    "crates/reussir-vscode-wasm",
     "crates/reussir-core",
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
@@ -20,6 +22,8 @@ members = [
 default-members = [
     "crates/reussir-rt",
     "crates/reussir-syntax",
+    "crates/reussir-lsp",
+    "crates/reussir-vscode-wasm",
     "crates/reussir-core",
     "crates/rene",
     "crates/reussir-trait-dsl",
@@ -121,6 +125,18 @@ stacker = "0.1.21"
 tracing = "0.1"
 # Log-level plumbing for the REPL binary's `-l` flag.
 tracing-subscriber = "0.3"
+# The language server uses async-lsp's Tower service stack over stdio. Document
+# contents are synchronized as whole snapshots; semantic highlighting work is
+# dispatched to Tokio's blocking pool.
+async-lsp = { version = "=0.2.4", default-features = false, features = ["client-monitor", "stdio", "tokio", "tracing"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tower = "0.5"
+# Embedded Rust poly-FFI bodies and MLIR transform schedules are deliberately
+# syntax-highlighted without invoking either language's semantic frontend.
+tree-sitter-highlight = "=0.26.11"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-mlir = "=0.1.7"
 # Platform data directories for the REPL's persisted history
 # (XDG_DATA_HOME/~/.local/share on Linux, %LOCALAPPDATA% on Windows,
 # ~/Library/Application Support on macOS).

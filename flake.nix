@@ -183,6 +183,11 @@
             # Rust LSP — works alongside the pinned toolchain
             pkgs.rust-analyzer
 
+            # VS Code extension: TypeScript bundling and VSIX packaging. The
+            # Rust client component's wasm32-unknown-unknown standard library
+            # is supplied by rust-toolchain.toml through rustToolchain above.
+            pkgs.nodejs_24
+
             # cargo-nextest is convenient for `cargo nextest run` workflows
             pkgs.cargo-nextest
 
@@ -315,6 +320,7 @@ PRESETS_EOF
             echo "  Quick start (CMakeUserPresets.json 'nix-dev' preset written):"
             echo "    cmake --preset nix-dev -B build    # configure into ./build"
             echo "    cmake --build build                # compile"
+            echo "    cmake --build build --target reussir-vscode-package # build VSIX"
             echo "    ln -sf build/compile_commands.json .   # for clangd"
             echo ""
           '';

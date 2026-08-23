@@ -158,13 +158,14 @@ jobs:
       - name: Run Sanitizer Integration Tests
         run: cmake --build build --target check-sanitizer
 
-      - name: Build and Test reussir-syntax and reussir-core
+      - name: Build and Test pure-Rust frontend tools
         # Pure-Rust frontend crates: the parser/CST tests and the
         # elaboration/monomorphization/ownership tests. Cheap (sub-second
         # test run) but previously never executed in CI.
         run: |
           cmake --build build --target reussir-syntax-test
           cmake --build build --target reussir-core-test
+          cmake --build build --target reussir-lsp-test
 
       - name: Build and Test reussir-backend
         run: cmake --build build --target reussir-backend-test

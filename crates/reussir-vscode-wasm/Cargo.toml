@@ -1,0 +1,13 @@
+[package]
+name = "reussir-vscode-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust/WebAssembly LSP client codec for the Reussir VS Code extension"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
