@@ -139,6 +139,7 @@ unsafe extern "C" {
     pub fn reussirCreateSpecialPointerTagPass(arch_independent: bool) -> MlirPass;
     pub fn reussirCreateClosureBetaReductionPass() -> MlirPass;
     pub fn reussirCreateRcDispatchFusionPass() -> MlirPass;
+    pub fn reussirCreateEarlyPartialMovePass() -> MlirPass;
     pub fn reussirCreatePartialMovePass() -> MlirPass;
     pub fn reussirCreateRcCreateFusionPass() -> MlirPass;
     pub fn reussirCreateTRMCRecursionAnalysisPass() -> MlirPass;

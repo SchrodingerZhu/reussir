@@ -100,6 +100,25 @@ def ReussirRcCreateFusionPass
 //===----------------------------------------------------------------------===//
 // PartialMove
 //===----------------------------------------------------------------------===//
+def ReussirEarlyPartialMovePass
+    : Pass<"reussir-early-partial-move", "::mlir::func::FuncOp"> {
+  let summary = "schedule fresh owned constructions before inlining";
+  let description = [{
+    `reussir-early-partial-move` recognizes a closed fresh-owned construction
+    placed immediately after a call despite all inputs being available before
+    it. If the chain consumes a retained projected owner, it moves the
+    compound, variant, and allocation before the call. This changes placement
+    rather than RC volume and recovers the ordering available to
+    hand-scheduled source.
+
+    This pass deliberately omits complete-owner scheduling and adjacent
+    retain/decrement fusion. Those rewrites remain in
+    `reussir-partial-move`, after dispatch fusion has exposed their canonical
+    late forms.
+  }];
+  let dependentDialects = ["::reussir::ReussirDialect"];
+}
+
 def ReussirPartialMovePass
     : Pass<"reussir-partial-move", "::mlir::func::FuncOp"> {
   let summary = "recognize and materialize partial moves";
@@ -112,10 +131,10 @@ def ReussirPartialMovePass
     count observation that may alias the root. Complete transfer is required
     because an unbound member's early drop may invoke observable cleanup glue.
 
-    The already-adjacent retain/decrement pattern is the degenerate case. Both
-    forms materialize as a tagless destructuring decrement whose
-    `boundMembers` transfer on the unique path and rematerialize their retains
-    on the shared path.
+    For shared boxed owners, the already-adjacent retain/decrement pattern is
+    the degenerate case. Both forms materialize as a tagless destructuring
+    decrement whose `boundMembers` transfer on the unique path and
+    rematerialize their retains on the shared path.
   }];
   let dependentDialects = ["::reussir::ReussirDialect"];
 }

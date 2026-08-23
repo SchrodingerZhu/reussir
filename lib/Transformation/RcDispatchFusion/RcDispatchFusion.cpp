@@ -65,13 +65,14 @@
 #include "Reussir/IR/ReussirTypes.h"
 #include "Reussir/Transformation/Passes.h"
 
-#include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Support/ErrorHandling.h>
 #include <mlir/Analysis/AliasAnalysis.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Builders.h>
+#include <mlir/IR/Dominance.h>
 #include <mlir/Interfaces/CallInterfaces.h>
 #include <mlir/Interfaces/ControlFlowInterfaces.h>
 #include <mlir/Pass/Pass.h>
@@ -79,6 +80,7 @@
 namespace reussir {
 
 #define GEN_PASS_DEF_REUSSIRRCDISPATCHFUSIONPASS
+#define GEN_PASS_DEF_REUSSIREARLYPARTIALMOVEPASS
 #define GEN_PASS_DEF_REUSSIRPARTIALMOVEPASS
 #include "Reussir/Transformation/Passes.h.inc"
 
@@ -435,7 +437,7 @@ bool scheduleCompleteCompoundMove(ReussirRcDecOp dec,
 
   llvm::SmallVector<llvm::SmallVector<mlir::Operation *>> retainsByMember(
       record.getMembers().size());
-  for (const CompoundExtraction &extraction : extractions) {
+  for (CompoundExtraction &extraction : extractions) {
     if (extraction.index < 0 ||
         static_cast<size_t>(extraction.index) >= retainsByMember.size())
       return false;
@@ -513,6 +515,107 @@ bool scheduleCompleteCompoundMove(ReussirRcDecOp dec,
     }
   }
   return true;
+}
+
+bool isOwnedConstruction(mlir::Operation *op) {
+  return op && llvm::isa<ReussirRecordCompoundOp, ReussirRecordVariantOp,
+                         ReussirRcCreateOp>(op);
+}
+
+// Match the source-level scheduling lever available in a pattern arm:
+// materialize a fresh owned value immediately after a call even though every
+// input was already available before it. Moving that closed construction
+// chain before the call consumes projected owners eagerly and exactly matches
+// the hand-scheduled spelling, without advancing any release or changing RC
+// volume. Keep this deliberately narrow: fresh nonregional allocation, a
+// contiguous compound/variant/create chain, and at least one retained value
+// loaded from a projected reference.
+bool scheduleOwnedConstructionBeforeCall(ReussirRcCreateOp create,
+                                         mlir::DominanceInfo &dominance) {
+  if (create.getToken() || create.getRegion() || create.getSkipRc())
+    return false;
+
+  llvm::SmallPtrSet<mlir::Operation *, 4> chainSet;
+  llvm::SmallVector<mlir::Operation *> worklist{create};
+  while (!worklist.empty()) {
+    mlir::Operation *op = worklist.pop_back_val();
+    if (!chainSet.insert(op).second)
+      continue;
+    if (!isOwnedConstruction(op))
+      return false;
+    for (mlir::Value operand : op->getOperands()) {
+      mlir::Operation *def = operand.getDefiningOp();
+      if (def && def->getBlock() == create->getBlock() &&
+          isOwnedConstruction(def))
+        worklist.push_back(def);
+    }
+  }
+
+  llvm::SmallVector<mlir::Operation *> chain;
+  for (mlir::Operation &op : *create->getBlock())
+    if (chainSet.contains(&op))
+      chain.push_back(&op);
+  if (chain.empty() || chain.back() != create)
+    return false;
+
+  mlir::Operation *call = chain.front()->getPrevNode();
+  if (!llvm::isa_and_present<mlir::CallOpInterface>(call))
+    return false;
+  for (auto [left, right] : llvm::zip(chain, llvm::drop_begin(chain)))
+    if (left->getNextNode() != right)
+      return false;
+
+  mlir::Operation *insertionPoint = call;
+  while (isOwnedConstruction(insertionPoint->getPrevNode()))
+    insertionPoint = insertionPoint->getPrevNode();
+
+  bool consumesProjectedOwner = false;
+  for (mlir::Operation *op : chain) {
+    for (mlir::Value operand : op->getOperands()) {
+      mlir::Operation *def = operand.getDefiningOp();
+      if (def && chainSet.contains(def))
+        continue;
+      if (!dominance.properlyDominates(operand, insertionPoint))
+        return false;
+      if (!llvm::isa<RcType>(operand.getType()))
+        continue;
+      auto load = llvm::dyn_cast_if_present<ReussirRefLoadOp>(def);
+      if (!load || !llvm::isa_and_present<ReussirRefProjectOp>(
+                       load.getRef().getDefiningOp()))
+        continue;
+      for (mlir::Operation *user : operand.getUsers()) {
+        auto retain = llvm::dyn_cast<ReussirRcIncOp>(user);
+        if (retain && retain->getBlock() == call->getBlock() &&
+            retain->isBeforeInBlock(insertionPoint)) {
+          consumesProjectedOwner = true;
+          break;
+        }
+      }
+    }
+  }
+  if (!consumesProjectedOwner)
+    return false;
+
+  for (mlir::Operation *op : chain)
+    op->moveBefore(insertionPoint);
+  return true;
+}
+
+void scheduleOwnedConstructions(mlir::func::FuncOp function) {
+  mlir::DominanceInfo dominance(function);
+  llvm::SmallVector<ReussirRcCreateOp> creates;
+  function.walk([&](ReussirRcCreateOp create) { creates.push_back(create); });
+  for (ReussirRcCreateOp create : creates)
+    scheduleOwnedConstructionBeforeCall(create, dominance);
+}
+
+void scheduleCompleteMoves(mlir::func::FuncOp function) {
+  mlir::AliasAnalysis aliasAnalysis(function);
+  registerAliasAnalysisImplementations(aliasAnalysis);
+  llvm::SmallVector<ReussirRcDecOp> decrements;
+  function.walk([&](ReussirRcDecOp dec) { decrements.push_back(dec); });
+  for (ReussirRcDecOp dec : decrements)
+    scheduleCompleteCompoundMove(dec, aliasAnalysis);
 }
 
 // Fuse a rebuild-style consumption of a compound box: scan backward from a
@@ -614,20 +717,24 @@ struct RcDispatchFusionPass
   }
 };
 
+struct EarlyPartialMovePass
+    : public impl::ReussirEarlyPartialMovePassBase<EarlyPartialMovePass> {
+  using Base::Base;
+
+  void runOnOperation() override { scheduleOwnedConstructions(getOperation()); }
+};
+
 struct PartialMovePass
     : public impl::ReussirPartialMovePassBase<PartialMovePass> {
   using Base::Base;
 
   void runOnOperation() override {
-    mlir::AliasAnalysis aliasAnalysis(getOperation());
-    registerAliasAnalysisImplementations(aliasAnalysis);
+    scheduleCompleteMoves(getOperation());
     llvm::SmallVector<ReussirRcDecOp> decrements;
     getOperation()->walk(
         [&](ReussirRcDecOp dec) { decrements.push_back(dec); });
-    for (ReussirRcDecOp dec : decrements) {
-      scheduleCompleteCompoundMove(dec, aliasAnalysis);
+    for (ReussirRcDecOp dec : decrements)
       fuseCompoundConsumption(dec);
-    }
   }
 };
 
