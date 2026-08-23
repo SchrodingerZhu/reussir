@@ -121,17 +121,6 @@ impl<'a> Str<'a> {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 
-    /// A well-mixed digest of the byte content, stable within a process.
-    /// Backs `std::hash::Hash for str`: a proper hasher chunks the byte
-    /// stream into words, which the surface language cannot express until
-    /// bare-pointer intrinsics land, so the chunking happens here and the
-    /// digest feeds the Reussir-side hasher.
-    pub fn content_hash(&self) -> u64 {
-        use std::hash::{DefaultHasher, Hasher};
-        let mut hasher = DefaultHasher::new();
-        hasher.write(self.as_bytes());
-        hasher.finish()
-    }
 }
 
 impl<'a> std::ops::Deref for Str<'a> {

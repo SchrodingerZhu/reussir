@@ -2242,6 +2242,25 @@ def ReussirStrRefEqOp : ReussirStrOp<"ref_eq", [Pure]> {
   }];
 }
 
+def ReussirStrUnsafeMemcmpOp : ReussirStrOp<"unsafe_memcmp", []> {
+  let summary = "Byte comparison of two strings' leading bytes";
+  let description = [{
+    `reussir.str.unsafe_memcmp` compares the first `len` bytes of two
+    strings with `memcmp` semantics: negative, zero, or positive. The
+    straight-line byte-scan residue behind the content comparisons — the
+    scf-level expansion supplies the guards. Undefined behavior when `len`
+    exceeds either string's length.
+  }];
+  let arguments = (ins Arg<ReussirStrType, "Left string", [MemRead]>:$lhs,
+      Arg<ReussirStrType, "Right string", [MemRead]>:$rhs,
+      Arg<Index, "Number of leading bytes to compare">:$len);
+  let results = (outs Res<I32, "Negative, zero, or positive ordering">:$order);
+  let assemblyFormat = [{
+    `(` $lhs `:` type($lhs) `,` $rhs `:` type($rhs) `)`
+    `[` $len `]` `:` type($order) attr-dict
+  }];
+}
+
 def ReussirStrEqualOp : ReussirStrOp<"equal", [Pure]> {
   let summary = "Byte equality of two strings";
   let description = [{

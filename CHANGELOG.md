@@ -28,8 +28,9 @@
   intrinsics `core::intrinsic::str::{len, byte_at, slice}` (byte
   granularity, checked/clamped), the full builtin comparison tower
   (`==`/`!=`/orderings/`cmp` via new `reussir.str.equal` and
-  `reussir.str.compare` ops, expanded in `convert-to-std` into outlined
-  `scf` helpers with a `str.ref_eq` view-identity fast path), record-field
+  `reussir.str.compare` ops, expanded inline in `convert-to-std`: `scf`
+  fast paths — `str.ref_eq` view identity and the length gate — around a
+  `memcmp` call through the `str.unsafe_memcmp` residue), record-field
   placement (`str` now carries a data layout and is trivially copyable),
   and FFI crossing: a `str` parameter or return renders as the runtime's
   `#[repr(C)]` `collections::string::Str<'static>`, bit-identical to the
