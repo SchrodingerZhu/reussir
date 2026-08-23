@@ -203,7 +203,6 @@ fn test_record_values() {
         && changed.get(int_key(2)).unwrap_or(int_key(0 - 1)).id == 20);
 }
 
-#[main]
 fn test_str_keys() {
     // String-literal keys: hashed on the Reussir side by std's
     // `Hash for str`, compared on the Rust side by the runtime `Str`'s
@@ -221,6 +220,7 @@ fn test_str_keys() {
         && !set.contains("z"));
 }
 
+#[main]
 pub fn entry() {
     match test_utils::io::read_i32() {
         0 => test_map_basics(),
