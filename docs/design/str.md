@@ -21,19 +21,21 @@ future functional rope built on the `cow`/`pure` collections.
   (`core::cmp`). Equality and ordering are byte-wise lexicographic with
   length as the shared-prefix tiebreak, through `reussir.str.equal` /
   `reussir.str.compare` (`compare` follows the `memcmp` sign convention).
-  Both expand in `reussir-convert-to-std` — the layering every high-level
-  op follows — into outlined internal `func.func` helpers built from `scf`:
-  a `str.ref_eq` view-identity fast path (same `{ptr, len}` pair, no byte
-  scan), the length gate for equality, then an `scf.while` byte scan over
-  the `unsafe_byte_at` residue. Only the straight-line residues reach the
-  LLVM conversion; `ref_eq` lowers to a two-field compare.
-- **Hash**: `std::hash::Hash for str` feeds the caller's hasher one `u64`
-  content digest computed by the runtime (`Str::content_hash`) — a proper
-  hasher consumes bytes in word-sized chunks, which needs raw-pointer
-  reads the surface language cannot express yet (TODO: go native when
-  bare-pointer intrinsics land). The outer hasher's seed still mixes the
-  digest. The ordered containers key on the runtime `Str`'s byte-wise
-  `Ord`, which matches `str.compare`.
+  Both expand inline in `reussir-convert-to-std` — the layering every
+  high-level op follows — with `scf.if` carrying only the fast paths: the
+  `str.ref_eq` view-identity check (same `{ptr, len}` pair, no byte scan)
+  and, for equality, the length gate. The main comparison stays a `memcmp`
+  call through the straight-line `str.unsafe_memcmp` residue; the residues
+  (`ref_eq` as a two-field compare, `unsafe_memcmp` as the libc call)
+  lower at the LLVM level.
+- **Hash**: `Hasher` carries `write_str`, and `Hash for str` routes
+  through it. Each hasher's chunked byte protocol (Fx words for
+  `FastHasher`, the aHash pair updates for `StrongHasher`) is implemented
+  in `reussir_rt::hash`, continuing the hasher's algorithm from its
+  current state; the word-granular reads need raw-pointer access the
+  surface language cannot express yet (TODO: go native when bare-pointer
+  intrinsics land). The ordered containers key on the runtime `Str`'s
+  byte-wise `Ord`, which matches `str.compare`.
 - **Cross the FFI boundary**: a `str` parameter or return renders as
   `::reussir_rt::collections::string::Str<'static>` — a `#[repr(C)]`
   `{ptr, len}` bit-identical to the lowered value. Sound because every

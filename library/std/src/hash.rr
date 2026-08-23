@@ -80,6 +80,9 @@ pub trait Hasher {
     fn write_bool(self: Self, value: bool) -> Self;
     /// Writes the character's code point as a 32-bit value.
     fn write_char(self: Self, value: char) -> Self;
+    /// Writes a string's bytes through the hasher's chunked byte
+    /// protocol.
+    fn write_str(self: Self, value: str) -> Self;
     /// Writes any hashable value, so nested fields chain like scalars.
     fn write<T: Hash>(self: Self, value: T) -> Self;
     /// The digest of everything written so far.
@@ -149,19 +152,26 @@ impl Hash for char {
     fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_char(self) }
 }
 
-// A proper hasher consumes a byte stream in word-sized chunks (head, tail,
-// and 16-byte blocks folded together), not one byte at a time — which needs
-// raw-pointer word reads the surface language cannot express yet. The
-// runtime hashes the content and the digest feeds the caller's hasher, so
-// the outer seed still mixes.
-// TODO: migrate to a native chunked implementation when bare-pointer
-// unsafe intrinsics land.
+// The byte protocols read the payload in word-sized chunks, which needs
+// raw-pointer access the surface language cannot express yet. The runtime
+// continues each hasher's algorithm from its current state
+// (`reussir_rt::hash` mirrors the constants and update shapes in this
+// file).
+// TODO: migrate to native chunked reads when bare-pointer unsafe
+// intrinsics land.
 #[ffi(import)]
-fn str_content_hash(s: str) -> u64 [{ s.content_hash() }];
+fn fx_write_str(state: u64, s: str) -> u64 [{
+    reussir_rt::hash::fx_write_bytes(state, s.as_bytes())
+}];
+
+#[ffi(import)]
+fn strong_write_str(buffer: u64, pad: u64, key0: u64, key1: u64, s: str) -> u64 [{
+    reussir_rt::hash::strong_write_bytes(buffer, pad, key0, key1, s.as_bytes())
+}];
 
 impl Hash for str {
     fn hash<H: Hasher>(self: Self, state: H) -> H {
-        state.write_u64(str_content_hash(self))
+        state.write_str(self)
     }
 }
 
@@ -203,6 +213,9 @@ impl Hasher for FastHasher {
     }
     fn write_char(self: Self, value: char) -> Self {
         self.write_u64(char_code(value) as u64)
+    }
+    fn write_str(self: Self, value: str) -> Self {
+        FastHasher { state: fx_write_str(self.state, value) }
     }
     fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { self.state }
@@ -347,6 +360,14 @@ impl Hasher for StrongHasher {
     }
     fn write_char(self: Self, value: char) -> Self {
         self.write_u64(char_code(value) as u64)
+    }
+    fn write_str(self: Self, value: str) -> Self {
+        StrongHasher {
+            buffer: strong_write_str(self.buffer, self.pad, self.key0, self.key1, value),
+            pad: self.pad,
+            key0: self.key0,
+            key1: self.key1
+        }
     }
     fn write<T: Hash>(self: Self, value: T) -> Self { value.hash(self) }
     fn finish(self: Self) -> u64 { self.digest() }

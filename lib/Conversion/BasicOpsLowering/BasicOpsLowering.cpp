@@ -3229,6 +3229,44 @@ struct ReussirStrSliceOpConversionPattern
   }
 };
 
+// The byte-scan residue behind the content comparisons: `memcmp` over the
+// caller-guarded leading bytes (the scf-level expansion in
+// `reussir-convert-to-std` supplies the bounds and fast paths).
+struct ReussirStrUnsafeMemcmpOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirStrUnsafeMemcmpOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(ReussirStrUnsafeMemcmpOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    mlir::Location loc = op.getLoc();
+    mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
+    auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto i32Type = rewriter.getI32Type();
+    auto i64Type = rewriter.getI64Type();
+    auto lhsPtr = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getLhs(), llvm::ArrayRef<int64_t>{0});
+    auto rhsPtr = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getRhs(), llvm::ArrayRef<int64_t>{0});
+    // declare i32 @memcmp(ptr, ptr, i64), shared with the prefix pattern.
+    if (!module.lookupSymbol<mlir::LLVM::LLVMFuncOp>("memcmp")) {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto fnType = mlir::LLVM::LLVMFunctionType::get(
+          i32Type, {llvmPtrType, llvmPtrType, i64Type});
+      mlir::LLVM::LLVMFuncOp::create(rewriter, loc, "memcmp", fnType);
+    }
+    // The converted `index` length is `i32` on 32-bit targets.
+    mlir::Value len = adaptor.getLen();
+    if (len.getType() != i64Type)
+      len = mlir::LLVM::ZExtOp::create(rewriter, loc, i64Type, len);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::CallOp>(
+        op, i32Type, mlir::SymbolRefAttr::get(rewriter.getContext(), "memcmp"),
+        mlir::ValueRange{lhsPtr, rhsPtr, len});
+    return mlir::success();
+  }
+};
+
 // View identity: both fields of the `{ptr, len}` pair coincide. The
 // straight-line residue behind the content comparisons' fast path; the
 // content logic itself expands at the scf level in `reussir-convert-to-std`.
@@ -3847,7 +3885,7 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirRcSetOp, ReussirStrGlobalOp, ReussirStrLiteralOp,
         ReussirStrCastOp, ReussirStrLenOp, ReussirStrUnsafeByteAtOp,
         ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirStrRefEqOp,
-        ReussirTrampolineOp,
+        ReussirStrUnsafeMemcmpOp, ReussirTrampolineOp,
         ReussirTokenLaunderOp>();
     // `reussir.closure.wpd_test` is created BY the dispatch conversion
     // patterns above, already in its final form (operand = the loaded vtable
@@ -4010,6 +4048,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirStrUnsafeByteAtOpConversionPattern,
       ReussirStrUnsafeStartWithOpConversionPattern,
       ReussirStrSliceOpConversionPattern, ReussirStrRefEqOpConversionPattern,
+      ReussirStrUnsafeMemcmpOpConversionPattern,
       ReussirTrampolineOpConversionPattern,
       ReussirTokenLaunderOpConversionPattern,
       ReussirRcFetchSubConversionPattern>(converter, patterns.getContext());
