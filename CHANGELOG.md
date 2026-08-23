@@ -22,6 +22,13 @@
   Enum-variant payloads are unaffected — variants stay
   exactly as visible as their enum.
 
+- `char` casts to any integer type: `as` on a `char` source reads the
+  code point as an unsigned 32-bit value, truncating to narrower targets
+  (`'\u{1F600}' as u8` is `0`) and zero-extending to wider ones. Nothing
+  casts *to* `char` — an arbitrary integer is not necessarily a scalar
+  value, and the FFI boundary relies on every `char` being one. This
+  retires `std::hash`'s `char_code` FFI shim: `write_char` now casts
+  natively.
 - `str` is now usable, not just constructible (see `docs/design/str.md`:
   `str` is exactly the immutable static literal; growable strings stay
   outside the language behind the FFI). String literals gain the read

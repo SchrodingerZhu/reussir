@@ -49,12 +49,6 @@
 //! A hasher is a plain value: creating one is free, writes are a few
 //! arithmetic instructions, and the whole chain inlines.
 
-// `char` carries no `Num` bound, so the language's `as` casts do not
-// apply to it; the code point is obtained across the FFI instead, where
-// a Reussir `char` is rendered as a Rust `char`.
-#[ffi(import)]
-fn char_code(value: char) -> u32 [{ value as u32 }];
-
 /// A hash state that absorbs values and produces a digest.
 ///
 /// Every method consumes `self` and returns the advanced state, so
@@ -212,7 +206,7 @@ impl Hasher for FastHasher {
         self.write_u64(if value { 1 } else { 0 })
     }
     fn write_char(self: Self, value: char) -> Self {
-        self.write_u64(char_code(value) as u64)
+        self.write_u64(value as u64)
     }
     fn write_str(self: Self, value: str) -> Self {
         FastHasher { state: fx_write_str(self.state, value) }
@@ -359,7 +353,7 @@ impl Hasher for StrongHasher {
         self.write_u64(if value { 1 } else { 0 })
     }
     fn write_char(self: Self, value: char) -> Self {
-        self.write_u64(char_code(value) as u64)
+        self.write_u64(value as u64)
     }
     fn write_str(self: Self, value: str) -> Self {
         StrongHasher {
