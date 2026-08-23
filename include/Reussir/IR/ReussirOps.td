@@ -2225,6 +2225,23 @@ def ReussirStrSliceOp : ReussirStrOp<"slice", [Pure]> {
   }];
 }
 
+def ReussirStrRefEqOp : ReussirStrOp<"ref_eq", [Pure]> {
+  let summary = "Identity of two string views";
+  let description = [{
+    `reussir.str.ref_eq` compares two strings as *views*: true iff both the
+    storage pointer and the length coincide. A straight-line residue for the
+    fast paths of the content comparisons — identical views are equal
+    without a byte scan; the converse implies nothing.
+  }];
+  let arguments = (ins Arg<ReussirStrType, "Left string">:$lhs,
+      Arg<ReussirStrType, "Right string">:$rhs);
+  let results = (outs Res<I1, "Whether the views are identical">:$same);
+  let assemblyFormat = [{
+    `(` $lhs `:` type($lhs) `,` $rhs `:` type($rhs) `)`
+    `:` type($same) attr-dict
+  }];
+}
+
 def ReussirStrEqualOp : ReussirStrOp<"equal", [Pure]> {
   let summary = "Byte equality of two strings";
   let description = [{

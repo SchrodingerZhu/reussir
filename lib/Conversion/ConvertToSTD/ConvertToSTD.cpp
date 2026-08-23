@@ -375,6 +375,222 @@ std::string emitDecisionFunction(mlir::ModuleOp module,
   return funcName;
 }
 
+/// The outlined helper's scaffold shared by the two content comparisons: a
+/// private internal function over two `<local>` strings whose body starts
+/// with the `str.ref_eq` fast path — identical views short-circuit without
+/// a byte scan.
+mlir::func::FuncOp emitStrComparisonScaffold(mlir::ModuleOp module,
+                                             mlir::OpBuilder &builder,
+                                             llvm::StringRef funcName,
+                                             mlir::Type resultType) {
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  auto strType =
+      reussir::StrType::get(builder.getContext(), reussir::LifeScope::local);
+  auto funcType = builder.getFunctionType({strType, strType}, {resultType});
+  auto func = mlir::func::FuncOp::create(builder, module.getLoc(), funcName,
+                                         funcType);
+  func.setVisibility(mlir::SymbolTable::Visibility::Private);
+  func->setAttr("llvm.linkage",
+                mlir::LLVM::LinkageAttr::get(builder.getContext(),
+                                             mlir::LLVM::Linkage::Internal));
+  inheritSanitizerPassthrough(module, func);
+  func.addEntryBlock();
+  return func;
+}
+
+/// `__reussir`'s byte equality: ref-identical → true; length mismatch →
+/// false; otherwise an `scf.while` over the bytes that exits at the first
+/// mismatch.
+std::string emitStrEqualFunction(mlir::ModuleOp module,
+                                 mlir::OpBuilder &builder) {
+  std::string funcName = mangledBlake3Symbol("REUSSIR_STRING_EQUAL", "equal");
+  if (module.lookupSymbol<mlir::func::FuncOp>(funcName))
+    return funcName;
+  auto i1Type = builder.getI1Type();
+  auto func = emitStrComparisonScaffold(module, builder, funcName, i1Type);
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  mlir::Block *entry = &func.getBody().front();
+  builder.setInsertionPointToStart(entry);
+  mlir::Location loc = module.getLoc();
+  auto indexType = builder.getIndexType();
+  mlir::Value lhs = entry->getArgument(0);
+  mlir::Value rhs = entry->getArgument(1);
+
+  auto refEq = ReussirStrRefEqOp::create(builder, loc, i1Type, lhs, rhs);
+  auto outer = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{i1Type},
+                                       refEq, true, true);
+  {
+    mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(outer.thenBlock());
+    auto t = mlir::arith::ConstantIntOp::create(builder, loc, 1, 1);
+    mlir::scf::YieldOp::create(builder, loc, t.getResult());
+  }
+  {
+    mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(outer.elseBlock());
+    auto lhsLen = ReussirStrLenOp::create(builder, loc, indexType, lhs);
+    auto rhsLen = ReussirStrLenOp::create(builder, loc, indexType, rhs);
+    auto lenEq =
+        mlir::arith::CmpIOp::create(builder, loc, mlir::arith::CmpIPredicate::eq,
+                                    lhsLen.getResult(), rhsLen.getResult());
+    auto inner = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{i1Type},
+                                         lenEq, true, true);
+    {
+      mlir::OpBuilder::InsertionGuard g2(builder);
+      builder.setInsertionPointToStart(inner.thenBlock());
+      auto zero = mlir::arith::ConstantIndexOp::create(builder, loc, 0);
+      auto trueVal = mlir::arith::ConstantIntOp::create(builder, loc, 1, 1);
+      auto loop = mlir::scf::WhileOp::create(
+          builder, loc, mlir::TypeRange{indexType, i1Type},
+          mlir::ValueRange{zero, trueVal},
+          [&](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+            auto inRange = mlir::arith::CmpIOp::create(
+                b, l, mlir::arith::CmpIPredicate::ult, args[0],
+                lhsLen.getResult());
+            auto keepGoing =
+                mlir::arith::AndIOp::create(b, l, args[1], inRange.getResult());
+            mlir::scf::ConditionOp::create(b, l, keepGoing.getResult(), args);
+          },
+          [&](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+            auto i8Type = b.getI8Type();
+            auto lhsByte = ReussirStrUnsafeByteAtOp::create(b, l, i8Type, lhs,
+                                                            args[0]);
+            auto rhsByte = ReussirStrUnsafeByteAtOp::create(b, l, i8Type, rhs,
+                                                            args[0]);
+            auto byteEq = mlir::arith::CmpIOp::create(
+                b, l, mlir::arith::CmpIPredicate::eq, lhsByte.getResult(),
+                rhsByte.getResult());
+            auto one = mlir::arith::ConstantIndexOp::create(b, l, 1);
+            auto next = mlir::arith::AddIOp::create(b, l, args[0], one);
+            mlir::scf::YieldOp::create(
+                b, l, mlir::ValueRange{next.getResult(), byteEq.getResult()});
+          });
+      mlir::scf::YieldOp::create(builder, loc, loop.getResult(1));
+    }
+    {
+      mlir::OpBuilder::InsertionGuard g2(builder);
+      builder.setInsertionPointToStart(inner.elseBlock());
+      auto f = mlir::arith::ConstantIntOp::create(builder, loc, 0, 1);
+      mlir::scf::YieldOp::create(builder, loc, f.getResult());
+    }
+    mlir::scf::YieldOp::create(builder, loc, inner.getResult(0));
+  }
+  builder.setInsertionPointToEnd(entry);
+  mlir::func::ReturnOp::create(builder, loc, outer.getResult(0));
+  return funcName;
+}
+
+/// Lexicographic three-way byte comparison, memcmp sign convention:
+/// ref-identical → 0; otherwise an `scf.while` over min(len) that exits at
+/// the first differing byte (its zero-extended difference is the order),
+/// with length as the shared-prefix tiebreak.
+std::string emitStrCompareFunction(mlir::ModuleOp module,
+                                   mlir::OpBuilder &builder) {
+  std::string funcName =
+      mangledBlake3Symbol("REUSSIR_STRING_COMPARE", "compare");
+  if (module.lookupSymbol<mlir::func::FuncOp>(funcName))
+    return funcName;
+  auto i32Type = builder.getI32Type();
+  auto func = emitStrComparisonScaffold(module, builder, funcName, i32Type);
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  mlir::Block *entry = &func.getBody().front();
+  builder.setInsertionPointToStart(entry);
+  mlir::Location loc = module.getLoc();
+  auto indexType = builder.getIndexType();
+  auto i1Type = builder.getI1Type();
+  mlir::Value lhs = entry->getArgument(0);
+  mlir::Value rhs = entry->getArgument(1);
+
+  auto refEq = ReussirStrRefEqOp::create(builder, loc, i1Type, lhs, rhs);
+  auto outer = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{i32Type},
+                                       refEq, true, true);
+  {
+    mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(outer.thenBlock());
+    auto zero = mlir::arith::ConstantIntOp::create(builder, loc, 0, 32);
+    mlir::scf::YieldOp::create(builder, loc, zero.getResult());
+  }
+  {
+    mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointToStart(outer.elseBlock());
+    auto lhsLen = ReussirStrLenOp::create(builder, loc, indexType, lhs);
+    auto rhsLen = ReussirStrLenOp::create(builder, loc, indexType, rhs);
+    auto minLen = mlir::arith::MinUIOp::create(builder, loc, lhsLen.getResult(),
+                                               rhsLen.getResult());
+    auto zeroIdx = mlir::arith::ConstantIndexOp::create(builder, loc, 0);
+    auto zeroI32 = mlir::arith::ConstantIntOp::create(builder, loc, 0, 32);
+    auto loop = mlir::scf::WhileOp::create(
+        builder, loc, mlir::TypeRange{indexType, i32Type},
+        mlir::ValueRange{zeroIdx, zeroI32},
+        [&](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+          auto inRange = mlir::arith::CmpIOp::create(
+              b, l, mlir::arith::CmpIPredicate::ult, args[0],
+              minLen.getResult());
+          auto undecided = mlir::arith::CmpIOp::create(
+              b, l, mlir::arith::CmpIPredicate::eq, args[1],
+              zeroI32.getResult());
+          auto keepGoing = mlir::arith::AndIOp::create(
+              b, l, inRange.getResult(), undecided.getResult());
+          mlir::scf::ConditionOp::create(b, l, keepGoing.getResult(), args);
+        },
+        [&](mlir::OpBuilder &b, mlir::Location l, mlir::ValueRange args) {
+          auto i8Type = b.getI8Type();
+          auto i32 = b.getI32Type();
+          auto lhsByte =
+              ReussirStrUnsafeByteAtOp::create(b, l, i8Type, lhs, args[0]);
+          auto rhsByte =
+              ReussirStrUnsafeByteAtOp::create(b, l, i8Type, rhs, args[0]);
+          auto lhsWide =
+              mlir::arith::ExtUIOp::create(b, l, i32, lhsByte.getResult());
+          auto rhsWide =
+              mlir::arith::ExtUIOp::create(b, l, i32, rhsByte.getResult());
+          auto diff = mlir::arith::SubIOp::create(b, l, lhsWide.getResult(),
+                                                  rhsWide.getResult());
+          auto one = mlir::arith::ConstantIndexOp::create(b, l, 1);
+          auto next = mlir::arith::AddIOp::create(b, l, args[0], one);
+          mlir::scf::YieldOp::create(
+              b, l, mlir::ValueRange{next.getResult(), diff.getResult()});
+        });
+    // The shared prefix agreed: the shorter string orders first.
+    auto lhsShorter =
+        mlir::arith::CmpIOp::create(builder, loc,
+                                    mlir::arith::CmpIPredicate::ult,
+                                    lhsLen.getResult(), rhsLen.getResult());
+    auto lhsLonger =
+        mlir::arith::CmpIOp::create(builder, loc,
+                                    mlir::arith::CmpIPredicate::ugt,
+                                    lhsLen.getResult(), rhsLen.getResult());
+    auto minusOne = mlir::arith::ConstantIntOp::create(builder, loc, -1, 32);
+    auto plusOne = mlir::arith::ConstantIntOp::create(builder, loc, 1, 32);
+    auto longerOrEq = mlir::arith::SelectOp::create(
+        builder, loc, lhsLonger, plusOne.getResult(), zeroI32.getResult());
+    auto lenOrder = mlir::arith::SelectOp::create(
+        builder, loc, lhsShorter, minusOne.getResult(), longerOrEq.getResult());
+    auto bytesDiffer = mlir::arith::CmpIOp::create(
+        builder, loc, mlir::arith::CmpIPredicate::ne, loop.getResult(1),
+        zeroI32.getResult());
+    auto order = mlir::arith::SelectOp::create(
+        builder, loc, bytesDiffer, loop.getResult(1), lenOrder.getResult());
+    mlir::scf::YieldOp::create(builder, loc, order.getResult());
+  }
+  builder.setInsertionPointToEnd(entry);
+  mlir::func::ReturnOp::create(builder, loc, outer.getResult(0));
+  return funcName;
+}
+
+/// The comparison helpers take `<local>` strings (they must not be
+/// rematerialized); a `<global>` operand downgrades through `str.cast`.
+mlir::Value localizedStr(mlir::ConversionPatternRewriter &rewriter,
+                         mlir::Location loc, mlir::Value value) {
+  auto strType = llvm::cast<reussir::StrType>(value.getType());
+  if (strType.getLifeScope() == reussir::LifeScope::local)
+    return value;
+  auto localType =
+      reussir::StrType::get(rewriter.getContext(), reussir::LifeScope::local);
+  return ReussirStrCastOp::create(rewriter, loc, localType, value);
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1063,6 +1279,42 @@ struct ReussirStrSelectOpRewritePattern
     return mlir::success();
   }
 };
+struct ReussirStrEqualOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirStrEqualOp> {
+  using OpConversionPattern::OpConversionPattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirStrEqualOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto funcName = emitStrEqualFunction(module, rewriter);
+    auto func = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    auto lhs = localizedStr(rewriter, op.getLoc(), op.getLhs());
+    auto rhs = localizedStr(rewriter, op.getLoc(), op.getRhs());
+    auto call = mlir::func::CallOp::create(rewriter, op.getLoc(), func,
+                                           mlir::ValueRange{lhs, rhs});
+    rewriter.replaceOp(op, call.getResults());
+    return mlir::success();
+  }
+};
+
+struct ReussirStrCompareOpRewritePattern
+    : public mlir::OpConversionPattern<ReussirStrCompareOp> {
+  using OpConversionPattern::OpConversionPattern;
+  mlir::LogicalResult
+  matchAndRewrite(ReussirStrCompareOp op, OpAdaptor adaptor,
+                  mlir::ConversionPatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto funcName = emitStrCompareFunction(module, rewriter);
+    auto func = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    auto lhs = localizedStr(rewriter, op.getLoc(), op.getLhs());
+    auto rhs = localizedStr(rewriter, op.getLoc(), op.getRhs());
+    auto call = mlir::func::CallOp::create(rewriter, op.getLoc(), func,
+                                           mlir::ValueRange{lhs, rhs});
+    rewriter.replaceOp(op, call.getResults());
+    return mlir::success();
+  }
+};
+
 struct ReussirStrStartWithOpRewritePattern
     : public mlir::OpConversionPattern<ReussirStrStartWithOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -1904,7 +2156,8 @@ struct ConvertToSTDPass
         ReussirNullableDispatchOp, ReussirRecordDispatchOp, ReussirScfYieldOp,
         ReussirClosureUniqifyOp, ReussirArrayWithUniqueViewOp,
         ReussirTokenEnsureOp, ReussirStrByteAtOp, ReussirStrSelectOp,
-        ReussirStrStartWithOp, ReussirCellCreateOp, ReussirCellRdlockOp,
+        ReussirStrStartWithOp, ReussirStrEqualOp, ReussirStrCompareOp,
+        ReussirCellCreateOp, ReussirCellRdlockOp,
         ReussirCellInUseOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
@@ -1951,7 +2204,8 @@ void populateConvertToSTDConversionPatterns(mlir::RewritePatternSet &patterns) {
       ReussirScfYieldOpRewritePattern, ReussirTokenEnsureOpRewritePattern,
       ReussirNullableTokenFreeOpRewritePattern,
       ReussirStrByteAtOpRewritePattern, ReussirStrSelectOpRewritePattern,
-      ReussirStrStartWithOpRewritePattern, ReussirCellCreateOpRewritePattern,
+      ReussirStrStartWithOpRewritePattern, ReussirStrEqualOpRewritePattern,
+      ReussirStrCompareOpRewritePattern, ReussirCellCreateOpRewritePattern,
       ReussirCellGetOpRewritePattern, ReussirCellSetOpRewritePattern,
       ReussirCellRmwOpRewritePattern, ReussirCellRdlockOpRewritePattern,
       ReussirAtomicCellRmwOpRewritePattern,

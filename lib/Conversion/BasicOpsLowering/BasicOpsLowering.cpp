@@ -3229,45 +3229,17 @@ struct ReussirStrSliceOpConversionPattern
   }
 };
 
-// Declares `i32 @memcmp(ptr, ptr, i64)` at module scope if absent and calls
-// it over `len` bytes. `len` is widened/narrowed to `i64` as needed (the
-// string struct's length field carries the index type, which is `i32` on
-// 32-bit targets).
-static mlir::Value emitMemcmpCall(mlir::ConversionPatternRewriter &rewriter,
-                                  mlir::Location loc, mlir::ModuleOp module,
-                                  mlir::Value lhsPtr, mlir::Value rhsPtr,
-                                  mlir::Value len) {
-  auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-  auto i32Type = rewriter.getI32Type();
-  auto i64Type = rewriter.getI64Type();
-  if (!module.lookupSymbol<mlir::LLVM::LLVMFuncOp>("memcmp")) {
-    mlir::OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(module.getBody());
-    auto fnType = mlir::LLVM::LLVMFunctionType::get(
-        i32Type, {llvmPtrType, llvmPtrType, i64Type});
-    mlir::LLVM::LLVMFuncOp::create(rewriter, loc, "memcmp", fnType);
-  }
-  if (len.getType() != i64Type)
-    len = mlir::LLVM::ZExtOp::create(rewriter, loc, i64Type, len);
-  auto call = mlir::LLVM::CallOp::create(
-      rewriter, loc, i32Type,
-      mlir::SymbolRefAttr::get(rewriter.getContext(), "memcmp"),
-      mlir::ValueRange{lhsPtr, rhsPtr, len});
-  return call.getResult();
-}
-
-// Both dynamic comparisons run `memcmp` over min(len_lhs, len_rhs)
-// unconditionally — always in bounds, so the whole expansion is branchless
-// selects and LLVM keeps its `memcmp` optimizations.
-struct ReussirStrEqualOpConversionPattern
-    : public mlir::OpConversionPattern<ReussirStrEqualOp> {
+// View identity: both fields of the `{ptr, len}` pair coincide. The
+// straight-line residue behind the content comparisons' fast path; the
+// content logic itself expands at the scf level in `reussir-convert-to-std`.
+struct ReussirStrRefEqOpConversionPattern
+    : public mlir::OpConversionPattern<ReussirStrRefEqOp> {
   using OpConversionPattern::OpConversionPattern;
 
   mlir::LogicalResult
-  matchAndRewrite(ReussirStrEqualOp op, OpAdaptor adaptor,
+  matchAndRewrite(ReussirStrRefEqOp op, OpAdaptor adaptor,
                   mlir::ConversionPatternRewriter &rewriter) const override {
     mlir::Location loc = op.getLoc();
-    mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
     auto lhsPtr = mlir::LLVM::ExtractValueOp::create(
         rewriter, loc, adaptor.getLhs(), llvm::ArrayRef<int64_t>{0});
     auto lhsLen = mlir::LLVM::ExtractValueOp::create(
@@ -3276,63 +3248,11 @@ struct ReussirStrEqualOpConversionPattern
         rewriter, loc, adaptor.getRhs(), llvm::ArrayRef<int64_t>{0});
     auto rhsLen = mlir::LLVM::ExtractValueOp::create(
         rewriter, loc, adaptor.getRhs(), llvm::ArrayRef<int64_t>{1});
-
+    auto ptrEq = mlir::LLVM::ICmpOp::create(
+        rewriter, loc, mlir::LLVM::ICmpPredicate::eq, lhsPtr, rhsPtr);
     auto lenEq = mlir::LLVM::ICmpOp::create(
         rewriter, loc, mlir::LLVM::ICmpPredicate::eq, lhsLen, rhsLen);
-    auto lhsShorter = mlir::LLVM::ICmpOp::create(
-        rewriter, loc, mlir::LLVM::ICmpPredicate::ult, lhsLen, rhsLen);
-    auto minLen = mlir::LLVM::SelectOp::create(rewriter, loc, lhsShorter,
-                                               lhsLen, rhsLen);
-    mlir::Value cmp =
-        emitMemcmpCall(rewriter, loc, module, lhsPtr, rhsPtr, minLen);
-    auto zero = mlir::arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-    auto bytesEq = mlir::LLVM::ICmpOp::create(
-        rewriter, loc, mlir::LLVM::ICmpPredicate::eq, cmp, zero);
-    rewriter.replaceOpWithNewOp<mlir::LLVM::AndOp>(op, lenEq, bytesEq);
-    return mlir::success();
-  }
-};
-
-struct ReussirStrCompareOpConversionPattern
-    : public mlir::OpConversionPattern<ReussirStrCompareOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  mlir::LogicalResult
-  matchAndRewrite(ReussirStrCompareOp op, OpAdaptor adaptor,
-                  mlir::ConversionPatternRewriter &rewriter) const override {
-    mlir::Location loc = op.getLoc();
-    mlir::ModuleOp module = op->getParentOfType<mlir::ModuleOp>();
-    auto lhsPtr = mlir::LLVM::ExtractValueOp::create(
-        rewriter, loc, adaptor.getLhs(), llvm::ArrayRef<int64_t>{0});
-    auto lhsLen = mlir::LLVM::ExtractValueOp::create(
-        rewriter, loc, adaptor.getLhs(), llvm::ArrayRef<int64_t>{1});
-    auto rhsPtr = mlir::LLVM::ExtractValueOp::create(
-        rewriter, loc, adaptor.getRhs(), llvm::ArrayRef<int64_t>{0});
-    auto rhsLen = mlir::LLVM::ExtractValueOp::create(
-        rewriter, loc, adaptor.getRhs(), llvm::ArrayRef<int64_t>{1});
-
-    auto lhsShorter = mlir::LLVM::ICmpOp::create(
-        rewriter, loc, mlir::LLVM::ICmpPredicate::ult, lhsLen, rhsLen);
-    auto minLen = mlir::LLVM::SelectOp::create(rewriter, loc, lhsShorter,
-                                               lhsLen, rhsLen);
-    mlir::Value cmp =
-        emitMemcmpCall(rewriter, loc, module, lhsPtr, rhsPtr, minLen);
-
-    // The shared prefix matched: the shorter string orders first. -1/0/1
-    // here, but the op only promises the sign.
-    auto lhsLonger = mlir::LLVM::ICmpOp::create(
-        rewriter, loc, mlir::LLVM::ICmpPredicate::ugt, lhsLen, rhsLen);
-    auto minusOne = mlir::arith::ConstantIntOp::create(rewriter, loc, -1, 32);
-    auto one = mlir::arith::ConstantIntOp::create(rewriter, loc, 1, 32);
-    auto zero = mlir::arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-    auto longerOrEq =
-        mlir::LLVM::SelectOp::create(rewriter, loc, lhsLonger, one, zero);
-    auto lenOrder = mlir::LLVM::SelectOp::create(rewriter, loc, lhsShorter,
-                                                 minusOne, longerOrEq);
-    auto bytesNe = mlir::LLVM::ICmpOp::create(
-        rewriter, loc, mlir::LLVM::ICmpPredicate::ne, cmp, zero);
-    rewriter.replaceOpWithNewOp<mlir::LLVM::SelectOp>(op, bytesNe, cmp,
-                                                      lenOrder);
+    rewriter.replaceOpWithNewOp<mlir::LLVM::AndOp>(op, ptrEq, lenEq);
     return mlir::success();
   }
 };
@@ -3926,8 +3846,8 @@ struct ReussirConvertToLLVMPatternInterface
         ReussirClosureCreateOp, ReussirRcFetchOp, ReussirRcFetchSubOp,
         ReussirRcSetOp, ReussirStrGlobalOp, ReussirStrLiteralOp,
         ReussirStrCastOp, ReussirStrLenOp, ReussirStrUnsafeByteAtOp,
-        ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirStrEqualOp,
-        ReussirStrCompareOp, ReussirTrampolineOp,
+        ReussirStrUnsafeStartWithOp, ReussirStrSliceOp, ReussirStrRefEqOp,
+        ReussirTrampolineOp,
         ReussirTokenLaunderOp>();
     // `reussir.closure.wpd_test` is created BY the dispatch conversion
     // patterns above, already in its final form (operand = the loaded vtable
@@ -4089,8 +4009,7 @@ void populateBasicOpsLoweringToLLVMConversionPatterns(
       ReussirStrCastOpConversionPattern, ReussirStrLenOpConversionPattern,
       ReussirStrUnsafeByteAtOpConversionPattern,
       ReussirStrUnsafeStartWithOpConversionPattern,
-      ReussirStrSliceOpConversionPattern, ReussirStrEqualOpConversionPattern,
-      ReussirStrCompareOpConversionPattern,
+      ReussirStrSliceOpConversionPattern, ReussirStrRefEqOpConversionPattern,
       ReussirTrampolineOpConversionPattern,
       ReussirTokenLaunderOpConversionPattern,
       ReussirRcFetchSubConversionPattern>(converter, patterns.getContext());
