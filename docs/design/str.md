@@ -19,13 +19,21 @@ future functional rope built on the `cow`/`pure` collections.
   mirror the dialect ops one for one.
 - **Compare**: the full builtin tower — `PartialEq`/`Eq`/`PartialOrd`/`Ord`
   (`core::cmp`). Equality and ordering are byte-wise lexicographic with
-  length as the shared-prefix tiebreak, lowered through
-  `reussir.str.equal` / `reussir.str.compare` (one unconditional `memcmp`
-  over the shorter length, branchless selects; `compare` follows the
-  `memcmp` sign convention).
-- **Hash**: `std::hash::Hash for str` walks the bytes and finishes with the
-  length, so a `str` keys the hash containers; the ordered containers key
-  on the runtime `Str`'s byte-wise `Ord`, which matches `str.compare`.
+  length as the shared-prefix tiebreak, through `reussir.str.equal` /
+  `reussir.str.compare` (`compare` follows the `memcmp` sign convention).
+  Both expand in `reussir-convert-to-std` — the layering every high-level
+  op follows — into outlined internal `func.func` helpers built from `scf`:
+  a `str.ref_eq` view-identity fast path (same `{ptr, len}` pair, no byte
+  scan), the length gate for equality, then an `scf.while` byte scan over
+  the `unsafe_byte_at` residue. Only the straight-line residues reach the
+  LLVM conversion; `ref_eq` lowers to a two-field compare.
+- **Hash**: `std::hash::Hash for str` feeds the caller's hasher one `u64`
+  content digest computed by the runtime (`Str::content_hash`) — a proper
+  hasher consumes bytes in word-sized chunks, which needs raw-pointer
+  reads the surface language cannot express yet (TODO: go native when
+  bare-pointer intrinsics land). The outer hasher's seed still mixes the
+  digest. The ordered containers key on the runtime `Str`'s byte-wise
+  `Ord`, which matches `str.compare`.
 - **Cross the FFI boundary**: a `str` parameter or return renders as
   `::reussir_rt::collections::string::Str<'static>` — a `#[repr(C)]`
   `{ptr, len}` bit-identical to the lowered value. Sound because every

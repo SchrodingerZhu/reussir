@@ -1081,8 +1081,12 @@ MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(
 //===----------------------------------------------------------------------===//
 // Reussir Str Type DataLayoutInterface
 //===----------------------------------------------------------------------===//
-// A str lowers to `{ptr, index}` (see the type converter); both fields are
-// word-sized and word-aligned, so the pair packs without padding.
+// A str lowers to `{ptr, index}` (see the type converter). The two fields
+// need not share a size or alignment — a CHERI-style target has 128-bit,
+// 16-byte-aligned capabilities over a 64-bit index — so the layout is the
+// ordinary struct computation: index at the aligned offset past the
+// pointer, the whole padded to the max field alignment. This must agree
+// with what LLVM derives for the literal `{ptr, index}` struct.
 
 llvm::TypeSize
 StrType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
@@ -1090,15 +1094,22 @@ StrType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
     const {
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
   auto indexTy = mlir::IndexType::get(getContext());
-  return dataLayout.getTypeSizeInBits(ptrTy) +
-         dataLayout.getTypeSizeInBits(indexTy);
+  uint64_t ptrSize = dataLayout.getTypeSize(ptrTy).getFixedValue();
+  uint64_t idxSize = dataLayout.getTypeSize(indexTy).getFixedValue();
+  uint64_t idxAlign = dataLayout.getTypeABIAlignment(indexTy);
+  uint64_t align = getABIAlignment(dataLayout, params);
+  uint64_t idxOffset = llvm::alignTo(ptrSize, idxAlign);
+  return llvm::TypeSize::getFixed(llvm::alignTo(idxOffset + idxSize, align) *
+                                  8);
 }
 
 uint64_t StrType::getABIAlignment(
     const mlir::DataLayout &dataLayout,
     [[maybe_unused]] mlir::DataLayoutEntryListRef params) const {
   auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
-  return dataLayout.getTypeABIAlignment(ptrTy);
+  auto indexTy = mlir::IndexType::get(getContext());
+  return std::max(dataLayout.getTypeABIAlignment(ptrTy),
+                  dataLayout.getTypeABIAlignment(indexTy));
 }
 
 MLIR_DATA_LAYOUT_EXPAND_PREFERRED_ALIGN(

@@ -1,9 +1,13 @@
-// RUN: %reussir-opt %s --convert-to-llvm | %FileCheck %s
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=EQFN
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=CMPFN
+// RUN: %reussir-opt %s --reussir-convert-to-std | %FileCheck %s --check-prefix=CALLS
+// RUN: %reussir-opt %s --reussir-convert-to-std --convert-scf-to-cf -reussir-lowering-basic-ops --convert-to-llvm --reconcile-unrealized-casts | %FileCheck %s --check-prefix=LLVM
 
-// The dynamic string comparisons expand branchlessly: one memcmp over
-// min(len_lhs, len_rhs) — always in bounds — then selects. `equal` is a
-// length check AND-ed with the byte check; `compare` follows the memcmp
-// convention (negative/zero/positive) with length as the tiebreak.
+// The dynamic string comparisons expand at the scf level: each call site
+// becomes a `func.call` into an outlined helper whose body short-circuits
+// through the `str.ref_eq` view-identity fast path (and, for `equal`, the
+// length mismatch) before an `scf.while` byte scan. Only the straight-line
+// residues (`ref_eq`, `len`, `unsafe_byte_at`) reach the LLVM conversion.
 
 module @test {
   func.func @str_eq(%a : !reussir.str<local>, %b : !reussir.str<local>) -> i1 {
@@ -17,20 +21,33 @@ module @test {
   }
 }
 
-// CHECK-DAG: llvm.func @memcmp(!llvm.ptr, !llvm.ptr, i64) -> i32
+// The outlined equality helper: ref_eq fast path, length gate, byte loop.
+// EQFN-LABEL: func.func private @_RNvC20REUSSIR_STRING_EQUAL
+// EQFN: reussir.str.ref_eq
+// EQFN: scf.if
+// EQFN: reussir.str.len
+// EQFN: reussir.str.len
+// EQFN: arith.cmpi eq
+// EQFN: scf.while
+// EQFN: reussir.str.unsafe_byte_at
+// EQFN: reussir.str.unsafe_byte_at
 
-// CHECK-LABEL: @str_eq
-// CHECK-DAG: %[[LLEN:.+]] = llvm.extractvalue %{{.+}}[1]
-// CHECK-DAG: %[[RLEN:.+]] = llvm.extractvalue %{{.+}}[1]
-// CHECK: %[[LENEQ:.+]] = llvm.icmp "eq" %[[LLEN]], %[[RLEN]]
-// CHECK: %[[SHORTER:.+]] = llvm.icmp "ult" %[[LLEN]], %[[RLEN]]
-// CHECK: %[[MIN:.+]] = llvm.select %[[SHORTER]], %[[LLEN]], %[[RLEN]]
-// CHECK: %[[CMP:.+]] = llvm.call @memcmp(%{{.+}}, %{{.+}}, %[[MIN]])
-// CHECK: %[[BYTESEQ:.+]] = llvm.icmp "eq" %[[CMP]]
-// CHECK: llvm.and %[[LENEQ]], %[[BYTESEQ]]
+// The three-way helper: ref_eq → 0, then a byte scan over min(len) with
+// the length tiebreak.
+// CMPFN-LABEL: func.func private @_RNvC22REUSSIR_STRING_COMPARE
+// CMPFN: reussir.str.ref_eq
+// CMPFN: arith.minui
+// CMPFN: scf.while
+// CMPFN: arith.subi
 
-// CHECK-LABEL: @str_cmp
-// CHECK: %[[MIN2:.+]] = llvm.select
-// CHECK: %[[CMP2:.+]] = llvm.call @memcmp(%{{.+}}, %{{.+}}, %[[MIN2]])
-// CHECK: %[[NE:.+]] = llvm.icmp "ne" %[[CMP2]]
-// CHECK: llvm.select %[[NE]], %[[CMP2]]
+// The call sites route through the helpers.
+// CALLS-LABEL: func.func @str_eq
+// CALLS: call @_RNvC20REUSSIR_STRING_EQUAL
+// CALLS-LABEL: func.func @str_cmp
+// CALLS: call @_RNvC22REUSSIR_STRING_COMPARE
+
+// The view-identity residue lowers to a two-field compare, and no libc
+// call is involved anywhere.
+// LLVM-NOT: memcmp
+// LLVM: llvm.icmp "eq" {{.*}} : !llvm.ptr
+// LLVM: llvm.icmp "eq" {{.*}} : i64

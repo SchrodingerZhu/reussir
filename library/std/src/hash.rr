@@ -149,27 +149,19 @@ impl Hash for char {
     fn hash<H: Hasher>(self: Self, state: H) -> H { state.write_char(self) }
 }
 
-// Walks the bytes through the checked `byte_at` intrinsic; the caller
-// finishes with the length so equal byte streams of different lengths
-// (impossible here, but cheap insurance for the stream contract) and
-// prefix-extension chains cannot collide.
-fn hash_str_bytes<H: Hasher>(s: str, index: u64, len: u64, state: H) -> H {
-    if index == len {
-        state
-    } else {
-        hash_str_bytes(
-            s,
-            index + 1,
-            len,
-            state.write_u8(core::intrinsic::str::byte_at(s, index))
-        )
-    }
-}
+// A proper hasher consumes a byte stream in word-sized chunks (head, tail,
+// and 16-byte blocks folded together), not one byte at a time — which needs
+// raw-pointer word reads the surface language cannot express yet. The
+// runtime hashes the content and the digest feeds the caller's hasher, so
+// the outer seed still mixes.
+// TODO: migrate to a native chunked implementation when bare-pointer
+// unsafe intrinsics land.
+#[ffi(import)]
+fn str_content_hash(s: str) -> u64 [{ s.content_hash() }];
 
 impl Hash for str {
     fn hash<H: Hasher>(self: Self, state: H) -> H {
-        let len = core::intrinsic::str::len(self);
-        hash_str_bytes(self, 0, len, state).write_u64(len)
+        state.write_u64(str_content_hash(self))
     }
 }
 
