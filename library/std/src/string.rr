@@ -1,0 +1,97 @@
+//! A growable UTF-8 string backed by the runtime's Rust `String`.
+//!
+//! `str` is the immutable static literal; this is the buildable
+//! counterpart (`docs/design/str.md`): one heap buffer behind an rc box,
+//! crossing the polymorphic FFI the same way the `cow` collections do.
+//! Appends on a uniquely owned string mutate in place; appends on a
+//! shared string clone the buffer once (copy-on-write).
+//!
+//! The buffer is always valid UTF-8, so every `str` fed to it must be
+//! too: literals and whole-literal slices are, but `str::slice` is
+//! byte-granular and can cut a multi-byte character in half — pushing
+//! such a slice is not allowed.
+
+extern "rust" [{
+    use reussir_rt::collections::string::String as RString;
+}];
+
+/// The raw runtime string. Operations consume the handle (the boundary
+/// owns its arguments); [`String`] wraps it.
+#[ffi(rust = "::reussir_rt::collections::string::String")]
+pub struct RawString;
+
+#[ffi(import)]
+fn raw_new() -> RawString [{ RString::new() }];
+
+#[ffi(import)]
+fn raw_len(s : RawString) -> u64 [{ s.len() as u64 }];
+
+#[ffi(import)]
+fn raw_push_char(s : RawString, ch : char) -> RawString [{ s.push(ch) }];
+
+#[ffi(import)]
+fn raw_push_str(s : RawString, tail : str) -> RawString [{ s.push_str(tail) }];
+
+#[ffi(import)]
+fn raw_eq(lhs : RawString, rhs : RawString) -> bool [{
+    lhs.as_str() == rhs.as_str()
+}];
+
+#[ffi(import)]
+fn raw_eq_str(s : RawString, other : str) -> bool [{
+    s.as_str().as_bytes() == other.as_bytes()
+}];
+
+/// A growable copy-on-write string.
+pub struct String {
+    raw : RawString
+}
+
+impl String {
+    /// Creates an empty string. O(1).
+    pub fn new() -> Self {
+        String { raw: raw_new() }
+    }
+
+    /// Creates a string holding a copy of `value`. O(n).
+    pub fn from_str(value : str) -> Self {
+        String::new().push_str(value)
+    }
+
+    /// Returns the length in bytes (a multi-byte character counts by its
+    /// UTF-8 length). O(1).
+    pub fn len(self : Self) -> u64 {
+        raw_len(self.raw)
+    }
+
+    /// Returns whether the string has no bytes. O(1).
+    pub fn is_empty(self : Self) -> bool {
+        raw_len(self.raw) == 0
+    }
+
+    /// Appends one character. Amortized O(1); O(n) when a shared buffer
+    /// is cloned first.
+    pub fn push_char(self : Self, ch : char) -> Self {
+        String { raw: raw_push_char(self.raw, ch) }
+    }
+
+    /// Appends a string literal, which must not split a character (see
+    /// the module header). O(len of `tail`); O(n) when a shared buffer
+    /// is cloned first.
+    pub fn push_str(self : Self, tail : str) -> Self {
+        String { raw: raw_push_str(self.raw, tail) }
+    }
+
+    /// Returns whether the contents equal the literal, byte-wise. O(n).
+    pub fn eq_str(self : Self, other : str) -> bool {
+        raw_eq_str(self.raw, other)
+    }
+}
+
+impl PartialEq for String {
+    fn eq(self : Self, other : Self) -> bool {
+        raw_eq(self.raw, other.raw)
+    }
+}
+
+impl Eq for String {}

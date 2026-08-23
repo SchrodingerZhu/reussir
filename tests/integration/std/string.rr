@@ -1,0 +1,84 @@
+// The growable copy-on-write string, backed by the runtime's Rust
+// `String` through the polymorphic FFI. Cases cover building through
+// `push_char`/`push_str`, copy-on-write isolation of a retained version,
+// equality between strings and against literals, and multi-byte
+// characters counting by their UTF-8 length.
+
+// RUN: %rene build --manifest-path %S/rene.ncl --build-dir %std_rene_build --profile release %rrc_linker | %FileCheck %s --check-prefix=LISTING
+// LISTING: release{{[/\\]}}string
+
+// RUN: %std_rene_build/release/string%exe_ext < %S/Inputs/string/build.in | %FileCheck %s --check-prefix=BUILD
+// BUILD: 1
+
+// RUN: %std_rene_build/release/string%exe_ext < %S/Inputs/string/cow.in | %FileCheck %s --check-prefix=COW
+// COW: 1
+
+// RUN: %std_rene_build/release/string%exe_ext < %S/Inputs/string/eq.in | %FileCheck %s --check-prefix=EQ
+// EQ: 1
+
+// RUN: %std_rene_build/release/string%exe_ext < %S/Inputs/string/unicode.in | %FileCheck %s --check-prefix=UNICODE
+// UNICODE: 1
+
+import std::string::String;
+
+fn wb(value : bool) {
+    test_utils::io::write_i32(if value { 1 } else { 0 })
+}
+
+fn test_build() {
+    let empty = String::new();
+    let hello = String::new().push_str("hel").push_char('l').push_char('o');
+    let greeting = hello.push_str(", world");
+    wb(empty.is_empty()
+        && empty.eq_str("")
+        && hello.len() == 5
+        && hello.eq_str("hello")
+        && !hello.eq_str("hello!")
+        && !hello.eq_str("hellp")
+        && greeting.len() == 12
+        && greeting.eq_str("hello, world")
+        && String::from_str("abc").eq_str("abc"));
+}
+
+fn test_cow() {
+    let old = String::from_str("ab");
+    // `old` stays live below, so deriving `grown` shares the runtime
+    // buffer; the append takes the copy-on-write clone and must leave
+    // the retained version untouched.
+    let grown = old.push_char('c').push_str("de");
+    wb(old.len() == 2
+        && old.eq_str("ab")
+        && grown.len() == 5
+        && grown.eq_str("abcde"));
+}
+
+fn test_eq() {
+    // The same contents through different build paths compare equal; the
+    // comparison is over the bytes, not the handle.
+    let pushed = String::new().push_char('a').push_char('b');
+    let copied = String::from_str("ab");
+    wb(pushed == copied
+        && !(pushed == String::from_str("ba"))
+        && pushed != String::new()
+        && String::new() == String::new());
+}
+
+fn test_unicode() {
+    // 'é' is two bytes and '🦀' four; literals append by their UTF-8
+    // length too.
+    let s = String::new().push_char('a').push_char('é').push_char('🦀');
+    wb(s.len() == 7
+        && s.eq_str("aé🦀")
+        && String::from_str("héllo").len() == 6);
+}
+
+#[main]
+pub fn entry() {
+    match test_utils::io::read_i32() {
+        0 => test_build(),
+        1 => test_cow(),
+        2 => test_eq(),
+        3 => test_unicode(),
+        _ => core::intrinsic::panic::panic()
+    }
+}

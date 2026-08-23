@@ -5,9 +5,10 @@ of an immutable global, interned by content (BLAKE3 `StringToken`, one
 `reussir.str.global` per distinct payload, shared across compilation units
 by construction of the name). There is no mutation and no concatenation on
 `str` — every growable or mutable string lives outside the language, as an
-FFI-wrapped Rust `String` (`reussir_rt::collections::string::String`, an
-rc-boxed copy-on-write value crossing as an opaque `ffi_object`) or a
-future functional rope built on the `cow`/`pure` collections.
+FFI-wrapped Rust `String` (`std::string::String`, wrapping
+`reussir_rt::collections::string::String`: an rc-boxed copy-on-write
+value crossing as an opaque `ffi_object`) or a future functional rope
+built on the `cow`/`pure` collections.
 
 ## What a `str` can do
 

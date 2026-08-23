@@ -42,6 +42,13 @@
 
 ### Standard library
 
+- `std::string::String`: the growable counterpart to `str`, wrapping the
+  runtime's rc-boxed copy-on-write Rust `String` through the polymorphic
+  FFI (the same raw-handle pattern as the `cow` collections). Initial
+  surface: `new`, `from_str`, `len`, `is_empty`, `push_char`, `push_str`,
+  `eq_str`, and `PartialEq`/`Eq`. The buffer is always UTF-8, so
+  `push_str` must not be fed a `str::slice` that splits a multi-byte
+  character.
 - `WavlSet` and `WavlMap` now carry the same interface as the hash
   containers, plus the operations only an ordered container can offer.
   Shared with `HashSet`/`HashMap`: `singleton`, `clear`, `get`/`get_entry`,

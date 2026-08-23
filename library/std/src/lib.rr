@@ -3,6 +3,7 @@ pub mod hash;
 pub mod option;
 pub mod process;
 pub mod result;
+pub mod string;
 
 pub struct [value] LibVersion(i64, i64, i64)
 
