@@ -19,6 +19,7 @@
     list = { kind = 'executable, path = "list.rr" },
     option = { kind = 'executable, path = "option.rr" },
     rtqueue = { kind = 'executable, path = "rtqueue.rr" },
+    string = { kind = 'executable, path = "string.rr" },
     wavl = { kind = 'executable, path = "wavl.rr" },
   },
 }
