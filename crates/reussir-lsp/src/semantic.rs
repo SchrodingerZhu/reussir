@@ -38,7 +38,10 @@ pub(crate) const TOKEN_LEGEND: &[(SemanticKind, SemanticTokenType)] = &[
     (SemanticKind::Struct, SemanticTokenType::STRUCT),
     (SemanticKind::Enum, SemanticTokenType::ENUM),
     (SemanticKind::Interface, SemanticTokenType::INTERFACE),
-    (SemanticKind::TypeParameter, SemanticTokenType::TYPE_PARAMETER),
+    (
+        SemanticKind::TypeParameter,
+        SemanticTokenType::TYPE_PARAMETER,
+    ),
     (SemanticKind::Parameter, SemanticTokenType::PARAMETER),
     (SemanticKind::Variable, SemanticTokenType::VARIABLE),
     (SemanticKind::Property, SemanticTokenType::PROPERTY),
@@ -60,7 +63,10 @@ pub(crate) const TOKEN_LEGEND: &[(SemanticKind, SemanticTokenType)] = &[
 pub(crate) const MODIFIER_LEGEND: &[(u32, SemanticTokenModifier)] = &[
     (modifier::DECLARATION, SemanticTokenModifier::DECLARATION),
     (modifier::READONLY, SemanticTokenModifier::READONLY),
-    (modifier::DEFAULT_LIBRARY, SemanticTokenModifier::DEFAULT_LIBRARY),
+    (
+        modifier::DEFAULT_LIBRARY,
+        SemanticTokenModifier::DEFAULT_LIBRARY,
+    ),
 ];
 
 pub(crate) fn legend_token_types() -> Vec<SemanticTokenType> {
@@ -99,21 +105,22 @@ struct AbsoluteSemanticToken {
 
 pub(crate) fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
     let parsed = parse(source);
-    let mut raw = Vec::new();
-    for element in parsed.root.descendants_with_tokens() {
-        let Some(token) = element.into_token() else {
-            continue;
-        };
-        if let Some((kind, modifiers)) = classify_reussir(token) {
-            let range = token.text_range();
-            raw.push(RawSemanticToken {
-                start: u32::from(range.start()) as usize,
-                end: u32::from(range.end()) as usize,
-                kind,
-                modifiers,
-            });
-        }
-    }
+    let raw = parsed
+        .root
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter_map(|token| {
+            classify_reussir(token).map(|(kind, modifiers)| {
+                let range = token.text_range();
+                RawSemanticToken {
+                    start: u32::from(range.start()) as usize,
+                    end: u32::from(range.end()) as usize,
+                    kind,
+                    modifiers,
+                }
+            })
+        })
+        .collect();
     encode(source, raw)
 }
 
