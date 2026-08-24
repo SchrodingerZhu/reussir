@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/reussir-rt",
     "crates/reussir-syntax",
+    "crates/reussir-lsp",
     "crates/reussir-core",
     "crates/reussir-backend-sys",
     "crates/reussir-backend",
@@ -20,6 +21,7 @@ members = [
 default-members = [
     "crates/reussir-rt",
     "crates/reussir-syntax",
+    "crates/reussir-lsp",
     "crates/reussir-core",
     "crates/rene",
     "crates/reussir-trait-dsl",
@@ -121,6 +123,10 @@ stacker = "0.1.21"
 tracing = "0.1"
 # Log-level plumbing for the REPL binary's `-l` flag.
 tracing-subscriber = "0.3"
+# The language server uses async-lsp's Tower service stack over stdio. Document
+# contents are synchronized as whole snapshots; semantic highlighting work is
+# dispatched to Tokio's blocking pool.
+async-lsp = { version = "=0.2.4", default-features = false, features = ["client-monitor", "stdio", "tokio", "tracing"] }
 # Platform data directories for the REPL's persisted history
 # (XDG_DATA_HOME/~/.local/share on Linux, %LOCALAPPDATA% on Windows,
 # ~/Library/Application Support on macOS).

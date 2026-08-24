@@ -1,0 +1,13 @@
+[package]
+name = "reussir-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Semantic-token language server for Reussir"
+
+[[bin]]
+name = "reussir-lsp"
+path = "src/main.rs"
+
+[dependencies]
+async-lsp.workspace = true
