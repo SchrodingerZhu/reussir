@@ -4,6 +4,8 @@ use async_lsp::lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenTy
 use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind};
 use reussir_syntax::parse;
 
+use crate::embedded::{self, EmbeddedLanguage};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub(crate) enum SemanticKind {
@@ -105,23 +107,44 @@ struct AbsoluteSemanticToken {
 
 pub(crate) fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
     let parsed = parse(source);
-    let raw = parsed
+    let mut raw = Vec::new();
+    for token in parsed
         .root
         .descendants_with_tokens()
         .filter_map(|element| element.into_token())
-        .filter_map(|token| {
-            classify_reussir(token).map(|(kind, modifiers)| {
-                let range = token.text_range();
-                RawSemanticToken {
-                    start: u32::from(range.start()) as usize,
-                    end: u32::from(range.end()) as usize,
-                    kind,
-                    modifiers,
-                }
-            })
-        })
-        .collect();
+    {
+        if token.kind() == SyntaxKind::RawMlirLiteral {
+            raw.extend(highlight_embedded(token));
+        } else if let Some((kind, modifiers)) = classify_reussir(token) {
+            let range = token.text_range();
+            raw.push(RawSemanticToken {
+                start: u32::from(range.start()) as usize,
+                end: u32::from(range.end()) as usize,
+                kind,
+                modifiers,
+            });
+        }
+    }
     encode(source, raw)
+}
+
+fn highlight_embedded(token: &ResolvedToken) -> Vec<RawSemanticToken> {
+    let text = token.text();
+    let Some(body) = text
+        .strip_prefix("[{")
+        .and_then(|text| text.strip_suffix("}]"))
+    else {
+        return Vec::new();
+    };
+    let token_start = u32::from(token.text_range().start()) as usize;
+    let body_start = token_start + 2;
+    let language = match token.parent().kind() {
+        SyntaxKind::TransformStmt => EmbeddedLanguage::Mlir,
+        SyntaxKind::ExternSourceStmt => EmbeddedLanguage::RustSource,
+        SyntaxKind::FnStmt => EmbeddedLanguage::RustBody,
+        _ => return Vec::new(),
+    };
+    embedded::highlight(body, body_start, language)
 }
 
 fn classify_reussir(token: &ResolvedToken) -> Option<(SemanticKind, u32)> {
@@ -667,6 +690,52 @@ fn use_it(p: Point<i64>) -> i64 { m::sqrt(p.get()) }"#;
                 "missing {text:?} as {kind:?}: {tokens:#?}"
             );
         }
+    }
+
+    #[test]
+    fn highlights_embedded_mlir_and_rust_without_raw_overlap() {
+        let source = r#"transform [{ %x = arith.constant 1 : i64 }];
+extern "rust" [{ use crate::Thing; }];
+#[ffi(import)] fn make<T>() -> T [{ println!("{}", 1); Vec::<[:T:]>::new() }];"#;
+        let tokens = decoded(source);
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "arith.constant"
+                    && *kind == SemanticKind::Function)
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "use" && *kind == SemanticKind::Keyword)
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "new" && *kind == SemanticKind::Function),
+            "{tokens:#?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "println!" && *kind == SemanticKind::Macro)
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "[:T:]" && *kind == SemanticKind::Type)
+        );
+        assert!(!tokens.iter().any(|(text, _, _, _)| text.starts_with("[{")));
+    }
+
+    #[test]
+    fn malformed_embedded_block_does_not_hide_outer_reussir() {
+        let tokens = decoded("transform [{ %x = <not mlir }]; fn okay() -> i64 { 1 }");
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "okay" && *kind == SemanticKind::Function)
+        );
     }
 
     #[test]

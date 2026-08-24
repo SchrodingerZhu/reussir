@@ -127,6 +127,11 @@ tracing-subscriber = "0.3"
 # contents are synchronized as whole snapshots; semantic highlighting work is
 # dispatched to Tokio's blocking pool.
 async-lsp = { version = "=0.2.4", default-features = false, features = ["client-monitor", "stdio", "tokio", "tracing"] }
+# Embedded Rust poly-FFI bodies and MLIR transform schedules are deliberately
+# syntax-highlighted without invoking either language's semantic frontend.
+tree-sitter-highlight = "=0.26.11"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-mlir = "=0.1.7"
 # Platform data directories for the REPL's persisted history
 # (XDG_DATA_HOME/~/.local/share on Linux, %LOCALAPPDATA% on Windows,
 # ~/Library/Application Support on macOS).
