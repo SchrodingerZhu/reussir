@@ -65,7 +65,22 @@
       "[reussir]": {
         "editor.semanticHighlighting.enabled": true
       }
-    }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "modifier",
+        "description": "Declaration modifiers such as pub, regional, and capability flags"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "scopes": {
+          "modifier": [
+            "storage.modifier"
+          ]
+        }
+      }
+    ]
   },
   "scripts": {
     "build:wasm": "node scripts/build-wasm.mjs",

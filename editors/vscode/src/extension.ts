@@ -27,7 +27,7 @@ interface PendingTokens {
 
 class ReussirExtension implements vscode.Disposable {
   private readonly output = vscode.window.createOutputChannel('Reussir LSP', { log: true });
-  private readonly disposables: vscode.Disposable[] = [this.output];
+  private readonly sessionDisposables: vscode.Disposable[] = [];
   private readonly openDocuments = new Map<string, number>();
   private readonly pendingTokens = new Map<number, PendingTokens>();
   private process: ChildProcessWithoutNullStreams | undefined;
@@ -47,18 +47,26 @@ class ReussirExtension implements vscode.Disposable {
     const command = resolveServerCommand(this.context);
     const cwd = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'file')?.uri.fsPath;
     this.output.info(`Starting ${command}`);
-    this.process = spawn(command, [], {
+    const child = spawn(command, [], {
       cwd,
       env: process.env,
       windowsHide: true,
       stdio: 'pipe'
     });
-    this.process.stdout.on('data', (chunk: Buffer) => this.acceptServerBytes(chunk));
-    this.process.stderr.on('data', (chunk: Buffer) => this.output.append(chunk.toString('utf8')));
-    this.process.on('error', error => this.failAll(error));
-    this.process.on('exit', (code, signal) => {
-      if (!this.stopping) {
-        this.failAll(new Error(`reussir-lsp exited unexpectedly (code ${code}, signal ${signal})`));
+    this.process = child;
+    child.stdout.on('data', (chunk: Buffer) => this.acceptServerBytes(chunk));
+    child.stderr.on('data', (chunk: Buffer) => this.output.append(chunk.toString('utf8')));
+    // Pipe writes fail asynchronously when the server dies mid-write; without
+    // this listener the EPIPE becomes an uncaught extension-host exception.
+    child.stdin.on('error', error => this.output.error(`reussir-lsp stdin: ${error.message}`));
+    child.on('error', error => {
+      if (this.process === child) {
+        this.failSession(error);
+      }
+    });
+    child.on('exit', (code, signal) => {
+      if (!this.stopping && this.process === child) {
+        this.failSession(new Error(`reussir-lsp exited unexpectedly (code ${code}, signal ${signal})`));
       }
     });
 
@@ -80,7 +88,7 @@ class ReussirExtension implements vscode.Disposable {
         this.open(document);
       }
     }
-    this.disposables.push(
+    this.sessionDisposables.push(
       vscode.workspace.onDidOpenTextDocument(document => {
         if (document.languageId === 'reussir') {
           this.open(document);
@@ -112,33 +120,31 @@ class ReussirExtension implements vscode.Disposable {
       return;
     }
     this.stopping = true;
-    for (const disposable of this.disposables.splice(0)) {
-      disposable.dispose();
-    }
 
     const client = this.client;
     const child = this.process;
-    if (client && child && child.exitCode === null) {
-      const shutdown = client.shutdown();
-      const response = new Promise<void>(resolve => {
-        this.shutdownWaiter = { id: shutdown.id, resolve };
-      });
-      this.write(shutdown.bytes);
-      await Promise.race([response, new Promise<void>(resolve => setTimeout(resolve, 1_000))]);
-      if (child.exitCode === null) {
-        this.write(client.exit());
-        child.stdin.end();
-      }
-      await Promise.race([
-        new Promise<void>(resolve => child.once('exit', () => resolve())),
-        new Promise<void>(resolve => setTimeout(resolve, 1_000))
-      ]);
-      if (child.exitCode === null) {
-        child.kill();
+    if (client && child && serverAlive(child)) {
+      try {
+        const shutdown = client.shutdown();
+        const response = new Promise<void>(resolve => {
+          this.shutdownWaiter = { id: shutdown.id, resolve };
+        });
+        this.write(shutdown.bytes);
+        await Promise.race([response, delay(1_000)]);
+        if (serverAlive(child)) {
+          this.write(client.exit());
+          child.stdin.end();
+        }
+        await Promise.race([
+          new Promise<void>(resolve => child.once('exit', () => resolve())),
+          delay(1_000)
+        ]);
+      } catch (error) {
+        this.output.error(`shutdown handshake failed: ${asError(error).message}`);
       }
     }
-    this.process = undefined;
-    this.client = undefined;
+    this.teardownSession(new Error('the Reussir extension is shutting down'));
+    this.output.dispose();
   }
 
   dispose(): void {
@@ -178,10 +184,14 @@ class ReussirExtension implements vscode.Disposable {
     this.open(document);
     const request = this.requiredClient().semanticTokens(document.uri.toString());
     return new Promise((resolve, reject) => {
-      this.pendingTokens.set(request.id, { resolve, reject });
       const subscription = cancellation.onCancellationRequested(() => {
         if (this.pendingTokens.delete(request.id)) {
-          this.write(this.requiredClient().cancel(request.id));
+          subscription.dispose();
+          try {
+            this.write(this.requiredClient().cancel(request.id));
+          } catch (error) {
+            this.output.debug(`could not cancel request ${request.id}: ${asError(error).message}`);
+          }
           resolve(null);
         }
       });
@@ -195,7 +205,14 @@ class ReussirExtension implements vscode.Disposable {
           reject(error);
         }
       });
-      this.write(request.bytes);
+      try {
+        this.write(request.bytes);
+      } catch (error) {
+        if (this.pendingTokens.delete(request.id)) {
+          subscription.dispose();
+          reject(asError(error));
+        }
+      }
     });
   }
 
@@ -204,7 +221,7 @@ class ReussirExtension implements vscode.Disposable {
     try {
       events = this.requiredClient().feed(chunk);
     } catch (error) {
-      this.failAll(asError(error));
+      this.failSession(asError(error));
       return;
     }
     for (const event of events) {
@@ -252,7 +269,7 @@ class ReussirExtension implements vscode.Disposable {
           this.output.warn(`Ignoring response for unknown request ${event.id}`);
           break;
         case 'protocolError':
-          this.failAll(new Error(event.message));
+          this.failSession(new Error(event.message));
           break;
       }
     }
@@ -260,7 +277,7 @@ class ReussirExtension implements vscode.Disposable {
 
   private write(bytes: Uint8Array): void {
     const child = this.process;
-    if (!child || child.exitCode !== null || !child.stdin.writable) {
+    if (!child || !serverAlive(child)) {
       throw new Error('reussir-lsp is not running');
     }
     child.stdin.write(bytes);
@@ -273,18 +290,56 @@ class ReussirExtension implements vscode.Disposable {
     return this.client;
   }
 
-  private failAll(error: Error): void {
+  // Fatal-session handler: rejects in-flight work, tears the session down so
+  // dead listeners stop firing, and offers a restart.
+  private failSession(error: Error): void {
     this.output.error(error.message);
+    this.teardownSession(error);
+    if (this.stopping) {
+      return;
+    }
+    void vscode.window
+      .showErrorMessage(`Reussir language server: ${error.message}`, 'Restart Server')
+      .then(choice => {
+        if (choice === 'Restart Server' && !this.stopping) {
+          this.start().catch(startError => {
+            void vscode.window.showErrorMessage(
+              `Reussir language server failed to restart: ${asError(startError).message}`
+            );
+          });
+        }
+      });
+  }
+
+  private teardownSession(error: Error): void {
+    for (const disposable of this.sessionDisposables.splice(0)) {
+      disposable.dispose();
+    }
+    this.openDocuments.clear();
     this.initializeWaiter?.reject(error);
     this.initializeWaiter = undefined;
+    this.shutdownWaiter = undefined;
     for (const pending of this.pendingTokens.values()) {
       pending.reject(error);
     }
     this.pendingTokens.clear();
-    if (!this.stopping) {
-      void vscode.window.showErrorMessage(`Reussir language server: ${error.message}`);
+    const child = this.process;
+    this.process = undefined;
+    this.client = undefined;
+    if (child && serverAlive(child)) {
+      child.kill();
     }
   }
+}
+
+function serverAlive(child: ChildProcessWithoutNullStreams): boolean {
+  // exitCode stays null forever for a signal-killed process; signalCode is
+  // what records that death.
+  return child.exitCode === null && child.signalCode === null && child.stdin.writable;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
 function resolveServerCommand(context: vscode.ExtensionContext): string {

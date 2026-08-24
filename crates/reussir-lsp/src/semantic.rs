@@ -31,34 +31,50 @@ pub(crate) enum SemanticKind {
     Decorator,
 }
 
-pub(crate) const TOKEN_TYPES: &[SemanticTokenType] = &[
-    SemanticTokenType::NAMESPACE,
-    SemanticTokenType::TYPE,
-    SemanticTokenType::STRUCT,
-    SemanticTokenType::ENUM,
-    SemanticTokenType::INTERFACE,
-    SemanticTokenType::TYPE_PARAMETER,
-    SemanticTokenType::PARAMETER,
-    SemanticTokenType::VARIABLE,
-    SemanticTokenType::PROPERTY,
-    SemanticTokenType::ENUM_MEMBER,
-    SemanticTokenType::FUNCTION,
-    SemanticTokenType::METHOD,
-    SemanticTokenType::MACRO,
-    SemanticTokenType::KEYWORD,
-    SemanticTokenType::MODIFIER,
-    SemanticTokenType::COMMENT,
-    SemanticTokenType::STRING,
-    SemanticTokenType::NUMBER,
-    SemanticTokenType::OPERATOR,
-    SemanticTokenType::DECORATOR,
+/// One row per `SemanticKind`, in discriminant order. The advertised legend
+/// and the test decoder both derive from this table, and a test asserts each
+/// row's position matches its discriminant, so the three cannot drift apart.
+pub(crate) const TOKEN_LEGEND: &[(SemanticKind, SemanticTokenType)] = &[
+    (SemanticKind::Namespace, SemanticTokenType::NAMESPACE),
+    (SemanticKind::Type, SemanticTokenType::TYPE),
+    (SemanticKind::Struct, SemanticTokenType::STRUCT),
+    (SemanticKind::Enum, SemanticTokenType::ENUM),
+    (SemanticKind::Interface, SemanticTokenType::INTERFACE),
+    (SemanticKind::TypeParameter, SemanticTokenType::TYPE_PARAMETER),
+    (SemanticKind::Parameter, SemanticTokenType::PARAMETER),
+    (SemanticKind::Variable, SemanticTokenType::VARIABLE),
+    (SemanticKind::Property, SemanticTokenType::PROPERTY),
+    (SemanticKind::EnumMember, SemanticTokenType::ENUM_MEMBER),
+    (SemanticKind::Function, SemanticTokenType::FUNCTION),
+    (SemanticKind::Method, SemanticTokenType::METHOD),
+    (SemanticKind::Macro, SemanticTokenType::MACRO),
+    (SemanticKind::Keyword, SemanticTokenType::KEYWORD),
+    (SemanticKind::Modifier, SemanticTokenType::MODIFIER),
+    (SemanticKind::Comment, SemanticTokenType::COMMENT),
+    (SemanticKind::String, SemanticTokenType::STRING),
+    (SemanticKind::Number, SemanticTokenType::NUMBER),
+    (SemanticKind::Operator, SemanticTokenType::OPERATOR),
+    (SemanticKind::Decorator, SemanticTokenType::DECORATOR),
 ];
 
-pub(crate) const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
-    SemanticTokenModifier::DECLARATION,
-    SemanticTokenModifier::READONLY,
-    SemanticTokenModifier::DEFAULT_LIBRARY,
+/// One row per modifier bit, in bit order; validated the same way as
+/// [`TOKEN_LEGEND`].
+pub(crate) const MODIFIER_LEGEND: &[(u32, SemanticTokenModifier)] = &[
+    (modifier::DECLARATION, SemanticTokenModifier::DECLARATION),
+    (modifier::READONLY, SemanticTokenModifier::READONLY),
+    (modifier::DEFAULT_LIBRARY, SemanticTokenModifier::DEFAULT_LIBRARY),
 ];
+
+pub(crate) fn legend_token_types() -> Vec<SemanticTokenType> {
+    TOKEN_LEGEND.iter().map(|(_, ty)| ty.clone()).collect()
+}
+
+pub(crate) fn legend_token_modifiers() -> Vec<SemanticTokenModifier> {
+    MODIFIER_LEGEND
+        .iter()
+        .map(|(_, modifier)| modifier.clone())
+        .collect()
+}
 
 pub(crate) mod modifier {
     pub(crate) const DECLARATION: u32 = 1 << 0;
@@ -360,11 +376,15 @@ fn is_operator(kind: SyntaxKind, parent: SyntaxKind) -> bool {
     ) || matches!(kind, K::LAngle | K::RAngle) && parent == K::BinExpr
 }
 
-fn encode(source: &str, raw: Vec<RawSemanticToken>) -> Vec<SemanticToken> {
+fn encode(source: &str, mut raw: Vec<RawSemanticToken>) -> Vec<SemanticToken> {
     let lines = LineIndex::new(source);
+    // Sorting lets one forward-only UTF-16 cursor serve every token, keeping
+    // column conversion linear instead of re-encoding each line prefix.
+    raw.sort_unstable_by_key(|token| (token.start, token.end));
+    let mut cursor = Utf16Cursor::default();
     let mut absolute = Vec::new();
     for token in raw {
-        absolute.extend(lines.split(source, token));
+        absolute.extend(lines.split(source, token, &mut cursor));
     }
     absolute.sort_by_key(|token| (token.line, token.start, token.length, token.kind));
 
@@ -433,22 +453,41 @@ struct LineIndex {
     lines: Vec<LineInfo>,
 }
 
+/// Forward-only byte-offset → UTF-16-column state shared across tokens.
+/// A lookup behind the previous position falls back to the line start, so it
+/// stays correct for arbitrary inputs and linear for sorted ones.
+#[derive(Debug, Default)]
+struct Utf16Cursor {
+    line: usize,
+    byte: usize,
+    utf16: u32,
+}
+
 impl LineIndex {
     fn new(source: &str) -> Self {
+        // The LSP position contract (and VS Code's document model) treats
+        // `\n`, `\r\n`, and a lone `\r` as line terminators.
+        let bytes = source.as_bytes();
         let mut lines = Vec::new();
         let mut start = 0;
-        for (newline, _) in source.match_indices('\n') {
-            let content_end = if newline > start && source.as_bytes()[newline - 1] == b'\r' {
-                newline - 1
-            } else {
-                newline
+        let mut index = 0;
+        while index < bytes.len() {
+            let next_start = match bytes[index] {
+                b'\n' => index + 1,
+                b'\r' if bytes.get(index + 1) == Some(&b'\n') => index + 2,
+                b'\r' => index + 1,
+                _ => {
+                    index += 1;
+                    continue;
+                }
             };
             lines.push(LineInfo {
                 start,
-                content_end,
-                next_start: newline + 1,
+                content_end: index,
+                next_start,
             });
-            start = newline + 1;
+            index = next_start;
+            start = next_start;
         }
         lines.push(LineInfo {
             start,
@@ -458,7 +497,12 @@ impl LineIndex {
         Self { lines }
     }
 
-    fn split(&self, source: &str, token: RawSemanticToken) -> Vec<AbsoluteSemanticToken> {
+    fn split(
+        &self,
+        source: &str,
+        token: RawSemanticToken,
+        columns: &mut Utf16Cursor,
+    ) -> Vec<AbsoluteSemanticToken> {
         let mut output = Vec::new();
         let mut cursor = token.start.min(source.len());
         let end = token.end.min(source.len());
@@ -470,8 +514,8 @@ impl LineIndex {
             let line = &self.lines[line_index];
             let segment_end = end.min(line.content_end);
             if cursor < segment_end {
-                let start = source[line.start..cursor].encode_utf16().count() as u32;
-                let length = source[cursor..segment_end].encode_utf16().count() as u32;
+                let start = self.utf16_column(source, columns, line_index, cursor);
+                let length = self.utf16_column(source, columns, line_index, segment_end) - start;
                 output.push(AbsoluteSemanticToken {
                     line: line_index as u32,
                     start,
@@ -486,6 +530,23 @@ impl LineIndex {
             cursor = line.next_start;
         }
         output
+    }
+
+    fn utf16_column(
+        &self,
+        source: &str,
+        columns: &mut Utf16Cursor,
+        line_index: usize,
+        byte: usize,
+    ) -> u32 {
+        if line_index != columns.line || byte < columns.byte {
+            columns.line = line_index;
+            columns.byte = self.lines[line_index].start;
+            columns.utf16 = 0;
+        }
+        columns.utf16 += source[columns.byte..byte].encode_utf16().count() as u32;
+        columns.byte = byte;
+        columns.utf16
     }
 }
 
@@ -525,29 +586,20 @@ mod tests {
         type Error = ();
 
         fn try_from(value: u32) -> Result<Self, Self::Error> {
-            Ok(match value {
-                0 => SemanticKind::Namespace,
-                1 => SemanticKind::Type,
-                2 => SemanticKind::Struct,
-                3 => SemanticKind::Enum,
-                4 => SemanticKind::Interface,
-                5 => SemanticKind::TypeParameter,
-                6 => SemanticKind::Parameter,
-                7 => SemanticKind::Variable,
-                8 => SemanticKind::Property,
-                9 => SemanticKind::EnumMember,
-                10 => SemanticKind::Function,
-                11 => SemanticKind::Method,
-                12 => SemanticKind::Macro,
-                13 => SemanticKind::Keyword,
-                14 => SemanticKind::Modifier,
-                15 => SemanticKind::Comment,
-                16 => SemanticKind::String,
-                17 => SemanticKind::Number,
-                18 => SemanticKind::Operator,
-                19 => SemanticKind::Decorator,
-                _ => return Err(()),
-            })
+            TOKEN_LEGEND
+                .get(value as usize)
+                .map(|(kind, _)| *kind)
+                .ok_or(())
+        }
+    }
+
+    #[test]
+    fn legend_rows_match_their_discriminants() {
+        for (index, (kind, _)) in TOKEN_LEGEND.iter().enumerate() {
+            assert_eq!(*kind as usize, index, "row {index} is out of order");
+        }
+        for (index, (bit, _)) in MODIFIER_LEGEND.iter().enumerate() {
+            assert_eq!(*bit, 1 << index, "modifier row {index} is out of order");
         }
     }
 
@@ -573,6 +625,30 @@ mod tests {
         assert_eq!(encoded.len(), 2);
         assert_eq!((encoded[0].delta_line, encoded[0].delta_start), (0, 10));
         assert_eq!((encoded[1].delta_line, encoded[1].delta_start), (1, 0));
+    }
+
+    #[test]
+    fn lone_carriage_return_terminates_a_line() {
+        let source = "let a = 1\rlet b = 2";
+        let start = source.rfind("let").unwrap();
+        let raw = vec![RawSemanticToken {
+            start,
+            end: start + 3,
+            kind: SemanticKind::Keyword,
+            modifiers: 0,
+        }];
+        let encoded = encode(source, raw);
+        assert_eq!(encoded.len(), 1);
+        assert_eq!((encoded[0].delta_line, encoded[0].delta_start), (1, 0));
+    }
+
+    #[test]
+    fn line_index_handles_mixed_line_endings() {
+        let index = LineIndex::new("a\r\nb\rc\nd");
+        let starts: Vec<usize> = index.lines.iter().map(|line| line.start).collect();
+        let content_ends: Vec<usize> = index.lines.iter().map(|line| line.content_end).collect();
+        assert_eq!(starts, [0, 3, 5, 7]);
+        assert_eq!(content_ends, [1, 4, 6, 8]);
     }
 
     #[test]

@@ -99,8 +99,9 @@ impl ClientCodec {
                         "tokenTypes": [
                             "namespace", "type", "class", "enum", "interface", "struct",
                             "typeParameter", "parameter", "variable", "property", "enumMember",
-                            "event", "function", "method", "macro", "label", "comment", "string",
-                            "keyword", "number", "regexp", "operator", "decorator"
+                            "event", "function", "method", "macro", "keyword", "modifier",
+                            "label", "comment", "string", "number", "regexp", "operator",
+                            "decorator"
                         ],
                         "tokenModifiers": [
                             "declaration", "definition", "readonly", "static", "deprecated",

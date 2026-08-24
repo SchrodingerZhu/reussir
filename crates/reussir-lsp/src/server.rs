@@ -15,7 +15,7 @@ use async_lsp::lsp_types::{
 use async_lsp::router::Router;
 use async_lsp::{ErrorCode, ResponseError};
 
-use crate::semantic::{TOKEN_MODIFIERS, TOKEN_TYPES, semantic_tokens};
+use crate::semantic::{legend_token_modifiers, legend_token_types, semantic_tokens};
 
 #[derive(Clone, Debug)]
 struct Document {
@@ -134,8 +134,8 @@ pub(crate) fn initialize(_params: InitializeParams) -> InitializeResult {
                         work_done_progress: None,
                     },
                     legend: async_lsp::lsp_types::SemanticTokensLegend {
-                        token_types: TOKEN_TYPES.to_vec(),
-                        token_modifiers: TOKEN_MODIFIERS.to_vec(),
+                        token_types: legend_token_types(),
+                        token_modifiers: legend_token_modifiers(),
                     },
                     range: None,
                     full: Some(SemanticTokensFullOptions::Bool(true)),
@@ -203,7 +203,7 @@ mod tests {
             options.full,
             Some(SemanticTokensFullOptions::Bool(true))
         ));
-        assert_eq!(options.legend.token_types, TOKEN_TYPES);
+        assert_eq!(options.legend.token_types, legend_token_types());
     }
 
     #[test]
