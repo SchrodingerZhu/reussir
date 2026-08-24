@@ -1,6 +1,8 @@
-//! LSP semantic-token encoding for Reussir.
+//! Reussir cstree classification and LSP semantic-token encoding.
 
 use async_lsp::lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use reussir_syntax::kind::{ResolvedNode, ResolvedToken, SyntaxKind};
+use reussir_syntax::parse;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -93,6 +95,262 @@ struct AbsoluteSemanticToken {
     length: u32,
     kind: SemanticKind,
     modifiers: u32,
+}
+
+pub(crate) fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
+    let parsed = parse(source);
+    let mut raw = Vec::new();
+    for element in parsed.root.descendants_with_tokens() {
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        if let Some((kind, modifiers)) = classify_reussir(token) {
+            let range = token.text_range();
+            raw.push(RawSemanticToken {
+                start: u32::from(range.start()) as usize,
+                end: u32::from(range.end()) as usize,
+                kind,
+                modifiers,
+            });
+        }
+    }
+    encode(source, raw)
+}
+
+fn classify_reussir(token: &ResolvedToken) -> Option<(SemanticKind, u32)> {
+    use SemanticKind as S;
+    use SyntaxKind as K;
+
+    let parent = token.parent();
+    let declaration = modifier::DECLARATION;
+
+    // Declaration sites take priority over the lexical kind. Reussir permits
+    // hard-keyword spellings wherever an identifier is expected.
+    if token.kind().is_ident_like() {
+        let declaration_kind = match parent.kind() {
+            K::GenericParam if first_ident(parent, token) => Some(S::TypeParameter),
+            K::Param | K::LambdaParam if first_ident(parent, token) => Some(S::Parameter),
+            K::NamedField if first_ident(parent, token) => Some(S::Property),
+            K::Variant if first_ident(parent, token) => Some(S::EnumMember),
+            K::BindPat if path_basename(token) => Some(S::Variable),
+            K::FnStmt if name_after(parent, token, |candidate| candidate.kind() == K::FnKw) => {
+                Some(
+                    if parent
+                        .ancestors()
+                        .any(|node| matches!(node.kind(), K::ImplStmt | K::TraitStmt))
+                    {
+                        S::Method
+                    } else {
+                        S::Function
+                    },
+                )
+            }
+            K::StructStmt
+                if name_after(parent, token, |candidate| candidate.kind() == K::StructKw) =>
+            {
+                Some(S::Struct)
+            }
+            K::EnumStmt if name_after(parent, token, |candidate| candidate.kind() == K::EnumKw) => {
+                Some(S::Enum)
+            }
+            K::ModStmt if name_after(parent, token, |candidate| candidate.kind() == K::ModKw) => {
+                Some(S::Namespace)
+            }
+            K::TraitStmt if contextual_name_after(parent, token, "trait") => Some(S::Interface),
+            K::LetExpr if name_after(parent, token, |candidate| candidate.kind() == K::LetKw) => {
+                Some(S::Variable)
+            }
+            K::ImportStmt if name_after(parent, token, |candidate| candidate.kind() == K::AsKw) => {
+                Some(S::Namespace)
+            }
+            K::CtorArg | K::PatArg
+                if has_direct_token(parent, K::Colon) && first_ident(parent, token) =>
+            {
+                Some(S::Property)
+            }
+            _ => None,
+        };
+        if let Some(kind) = declaration_kind {
+            return Some((kind, declaration));
+        }
+
+        if matches!(
+            parent.kind(),
+            K::Capability | K::FieldFlag | K::FlexFlag | K::VisFlag
+        ) {
+            return Some((S::Modifier, 0));
+        }
+        if parent.kind() == K::AttrList {
+            return Some((S::Decorator, 0));
+        }
+        if parent.kind() == K::TransformStmt && token.text() == "transform"
+            || parent.kind() == K::TraitStmt
+                && token.text() == "trait"
+                && first_ident(parent, token)
+            || parent.kind() == K::ImplStmt && matches!(token.text(), "impl" | "for")
+            || parent.kind() == K::ExternTrampolineStmt && token.text() == "trampoline"
+        {
+            return Some((S::Keyword, 0));
+        }
+        if parent.kind() == K::AccessSeg {
+            let is_callee = parent
+                .parent()
+                .filter(|node| node.kind() == K::AccessChain)
+                .and_then(ResolvedNode::parent)
+                .is_some_and(|node| node.kind() == K::CallExpr);
+            let kind = if is_callee { S::Method } else { S::Property };
+            return Some((kind, 0));
+        }
+        if parent.kind() == K::PrimType {
+            return Some((S::Type, modifier::DEFAULT_LIBRARY));
+        }
+        if parent.kind() == K::Path {
+            return Some(classify_path(token));
+        }
+    }
+
+    if parent.kind() == K::AccessSeg && matches!(token.kind(), K::IntLit | K::FloatLit) {
+        return Some((S::Property, 0));
+    }
+
+    match token.kind() {
+        K::Whitespace | K::ErrorToken => None,
+        K::LineComment | K::BlockComment => Some((S::Comment, 0)),
+        K::StringLit | K::CharLit => Some((S::String, 0)),
+        K::IntLit | K::FloatLit => Some((S::Number, 0)),
+        K::TrueKw | K::FalseKw => Some((S::Keyword, 0)),
+        K::PubKw | K::RegionalKw
+            if matches!(
+                parent.kind(),
+                K::FnStmt | K::StructStmt | K::EnumStmt | K::TraitStmt
+            ) =>
+        {
+            Some((S::Modifier, 0))
+        }
+        kind if is_hard_keyword(kind) => Some((S::Keyword, 0)),
+        kind if is_operator(kind, parent.kind()) => Some((S::Operator, 0)),
+        K::Ident => Some((S::Variable, 0)),
+        _ => None,
+    }
+}
+
+fn classify_path(token: &ResolvedToken) -> (SemanticKind, u32) {
+    use SemanticKind as S;
+    use SyntaxKind as K;
+
+    if !path_basename(token) {
+        return (S::Namespace, 0);
+    }
+    let path = token.parent();
+    let owner = path.parent().map(|node| node.kind());
+    let ancestors = || path.ancestors().map(|node| node.kind());
+    match owner {
+        Some(K::PathType | K::GenericParam) => (S::Type, 0),
+        Some(K::FuncCallExpr | K::ExternTrampolineStmt) => (S::Function, 0),
+        Some(K::CtorCallExpr | K::CtorPat) => (S::Type, 0),
+        Some(K::ImportStmt) => (S::Namespace, 0),
+        Some(K::BindPat) => (S::Variable, modifier::DECLARATION),
+        Some(K::VarExpr) => (S::Variable, 0),
+        _ if ancestors().any(|kind| kind == K::PathType) => (S::Type, 0),
+        _ => (S::Variable, 0),
+    }
+}
+
+fn first_ident(node: &ResolvedNode, token: &ResolvedToken) -> bool {
+    direct_tokens(node)
+        .find(|candidate| candidate.kind().is_ident_like())
+        .is_some_and(|candidate| same_token(candidate, token))
+}
+
+fn name_after(
+    node: &ResolvedNode,
+    token: &ResolvedToken,
+    mut is_introducer: impl FnMut(&ResolvedToken) -> bool,
+) -> bool {
+    let mut seen = false;
+    for candidate in direct_tokens(node) {
+        if !seen && is_introducer(candidate) {
+            seen = true;
+        } else if seen && candidate.kind().is_ident_like() {
+            return same_token(candidate, token);
+        }
+    }
+    false
+}
+
+fn contextual_name_after(node: &ResolvedNode, token: &ResolvedToken, introducer: &str) -> bool {
+    name_after(node, token, |candidate| candidate.text() == introducer)
+}
+
+fn path_basename(token: &ResolvedToken) -> bool {
+    token.parent().kind() == SyntaxKind::Path
+        && direct_tokens(token.parent())
+            .filter(|candidate| candidate.kind().is_ident_like())
+            .last()
+            .is_some_and(|candidate| same_token(candidate, token))
+}
+
+fn has_direct_token(node: &ResolvedNode, kind: SyntaxKind) -> bool {
+    direct_tokens(node).any(|token| token.kind() == kind)
+}
+
+fn direct_tokens(node: &ResolvedNode) -> impl Iterator<Item = &ResolvedToken> {
+    node.children_with_tokens()
+        .filter_map(|element| element.as_token().copied())
+        .filter(|token| !token.kind().is_trivia())
+}
+
+fn same_token(left: &ResolvedToken, right: &ResolvedToken) -> bool {
+    left.text_range() == right.text_range()
+}
+
+fn is_hard_keyword(kind: SyntaxKind) -> bool {
+    use SyntaxKind as K;
+    matches!(
+        kind,
+        K::FnKw
+            | K::StructKw
+            | K::EnumKw
+            | K::PubKw
+            | K::ModKw
+            | K::LetKw
+            | K::IfKw
+            | K::ElseKw
+            | K::MatchKw
+            | K::RegionalKw
+            | K::ExternKw
+            | K::AsKw
+            | K::TrueKw
+            | K::FalseKw
+            | K::ImportKw
+    )
+}
+
+fn is_operator(kind: SyntaxKind, parent: SyntaxKind) -> bool {
+    use SyntaxKind as K;
+    matches!(
+        kind,
+        K::Arrow
+            | K::FatArrow
+            | K::ColonEq
+            | K::EqEq
+            | K::BangEq
+            | K::LtEq
+            | K::GtEq
+            | K::AmpAmp
+            | K::PipePipe
+            | K::DotDot
+            | K::Eq
+            | K::Plus
+            | K::Minus
+            | K::Star
+            | K::Slash
+            | K::Percent
+            | K::Bang
+            | K::Pipe
+            | K::Amp
+            | K::Caret
+    ) || matches!(kind, K::LAngle | K::RAngle) && parent == K::BinExpr
 }
 
 fn encode(source: &str, mut raw: Vec<RawSemanticToken>) -> Vec<SemanticToken> {
@@ -273,6 +531,34 @@ impl LineIndex {
 mod tests {
     use super::*;
 
+    fn decoded(source: &str) -> Vec<(String, SemanticKind, u32, u32)> {
+        let encoded = semantic_tokens(source);
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0;
+        let mut start = 0;
+        encoded
+            .into_iter()
+            .map(|token| {
+                line += token.delta_line;
+                start = if token.delta_line == 0 {
+                    start + token.delta_start
+                } else {
+                    token.delta_start
+                };
+                let units: Vec<u16> = lines[line as usize].encode_utf16().collect();
+                let text = String::from_utf16_lossy(
+                    &units[start as usize..(start + token.length) as usize],
+                );
+                (
+                    text,
+                    SemanticKind::try_from(token.token_type).unwrap(),
+                    line,
+                    start,
+                )
+            })
+            .collect()
+    }
+
     impl TryFrom<u32> for SemanticKind {
         type Error = ();
 
@@ -331,5 +617,63 @@ mod tests {
         let content_ends: Vec<usize> = index.lines.iter().map(|line| line.content_end).collect();
         assert_eq!(starts, [0, 3, 5, 7]);
         assert_eq!(content_ends, [1, 4, 6, 8]);
+    }
+
+    #[test]
+    fn classifies_context_before_keyword_spelling() {
+        let tokens = decoded("fn fn(struct: i64) -> i64 { let if = struct; if }");
+        assert!(tokens.contains(&("fn".into(), SemanticKind::Function, 0, 3)));
+        assert!(tokens.contains(&("struct".into(), SemanticKind::Parameter, 0, 6)));
+        assert!(tokens.contains(&("if".into(), SemanticKind::Variable, 0, 32)));
+        assert!(tokens.contains(&("struct".into(), SemanticKind::Variable, 0, 37)));
+    }
+
+    #[test]
+    fn classifies_declarations_paths_and_members_from_cst_context() {
+        let source = r#"#[repr(fixed)]
+pub struct Point<T> { pub x: T }
+enum Maybe<T> { Some(T), None }
+trait Show<T> { fn show(self: Point<T>) -> T; }
+impl<T> Point<T> { pub fn get(self: Point<T>) -> T { self.x } }
+mod math;
+import core::intrinsic::math as m;
+fn use_it(p: Point<i64>) -> i64 { m::sqrt(p.get()) }"#;
+        let tokens = decoded(source);
+        for (text, kind) in [
+            ("repr", SemanticKind::Decorator),
+            ("Point", SemanticKind::Struct),
+            ("T", SemanticKind::TypeParameter),
+            ("x", SemanticKind::Property),
+            ("Maybe", SemanticKind::Enum),
+            ("Some", SemanticKind::EnumMember),
+            ("Show", SemanticKind::Interface),
+            ("show", SemanticKind::Method),
+            ("get", SemanticKind::Method),
+            ("math", SemanticKind::Namespace),
+            ("m", SemanticKind::Namespace),
+            ("sqrt", SemanticKind::Function),
+        ] {
+            assert!(
+                tokens
+                    .iter()
+                    .any(|(actual, actual_kind, _, _)| actual == text && *actual_kind == kind),
+                "missing {text:?} as {kind:?}: {tokens:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_reussir_still_produces_tokens() {
+        let tokens = decoded("fn broken(x: i64 { let y = 1");
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "broken" && *kind == SemanticKind::Function)
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(text, kind, _, _)| text == "1" && *kind == SemanticKind::Number)
+        );
     }
 }
