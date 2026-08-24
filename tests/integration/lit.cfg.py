@@ -256,6 +256,8 @@ config.substitutions.append((r'%rrepl', sh_path(config.rrepl_path)))
 if config.rrepl_path and os.path.exists(config.rrepl_path):
     config.available_features.add('rrepl')
 config.substitutions.append((r'%reussir-syntax', sh_path(config.reussir_syntax_path)))
+config.substitutions.append((r'%reussir-lsp', sh_path(config.reussir_lsp_path)))
+config.substitutions.append((r'%python', sh_path(sys.executable)))
 config.substitutions.append((r'%asan_flags', config.asan_flags))
 config.substitutions.append((r'%lsan_flags', config.lsan_flags))
 config.substitutions.append((r'%msan_flags', config.msan_flags))

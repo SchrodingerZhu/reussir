@@ -204,6 +204,7 @@ set(rene_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rene${CMAKE_EXECUTABLE_SUFFIX})
 # The Rust REPL (`crates/reussir-repl`, binary `rrepl`).
 set(rrepl_path ${REUSSIR_RREPL_BINARY})
 set(reussir_syntax_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-syntax${CMAKE_EXECUTABLE_SUFFIX})
+set(reussir_lsp_path ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/reussir-lsp${CMAKE_EXECUTABLE_SUFFIX})
 set(reussir_rt_asan_path ${REUSSIR_RT_ASAN_LIBRARY})
 set(reussir_rt_lsan_path ${REUSSIR_RT_LSAN_LIBRARY})
 set(reussir_rt_msan_path ${REUSSIR_RT_MSAN_LIBRARY})
@@ -270,7 +271,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_target(check
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/lit "${CMAKE_CURRENT_BINARY_DIR}" -v
   DEPENDS reussir-opt reussir-rt reussir-translate reussir-llvm-opt
-          reussir-syntax rrc rrepl rene
+          reussir-syntax reussir-lsp rrc rrepl rene
   USES_TERMINAL)
 
 # Rust compiler caches need an explicit content key for native archives. The

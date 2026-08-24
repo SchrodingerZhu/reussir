@@ -1,0 +1,68 @@
+name: VS Code Extension
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-vsix:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-03-15
+          components: rust-src, rustfmt, clippy
+          target: wasm32-unknown-unknown
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Install extension dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Test Rust client codec
+        run: cargo test --locked --package reussir-vscode-wasm
+
+      - name: Lint Rust client codec
+        run: cargo clippy --locked --package reussir-vscode-wasm --all-targets -- -D warnings
+
+      - name: Build native language server
+        run: cargo build --locked --package reussir-lsp
+
+      - name: Build extension and run protocol smoke test
+        working-directory: editors/vscode
+        run: |
+          npm run build
+          npm run test:protocol
+
+      - name: Package VSIX
+        working-directory: editors/vscode
+        env:
+          REUSSIR_VSIX_OUT: ${{ github.workspace }}/reussir-vscode.vsix
+        run: npm run package:vsix
+
+      - name: Inspect VSIX contents
+        working-directory: editors/vscode
+        run: npx --no-install vsce ls --no-dependencies
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: reussir-vscode
+          path: reussir-vscode.vsix
+          if-no-files-found: error
