@@ -12,7 +12,11 @@ path = "src/main.rs"
 [dependencies]
 async-lsp.workspace = true
 reussir-syntax = { path = "../reussir-syntax" }
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 tree-sitter-highlight.workspace = true
 tree-sitter-rust.workspace = true
 tree-sitter-mlir.workspace = true

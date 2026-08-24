@@ -127,6 +127,9 @@ tracing-subscriber = "0.3"
 # contents are synchronized as whole snapshots; semantic highlighting work is
 # dispatched to Tokio's blocking pool.
 async-lsp = { version = "=0.2.4", default-features = false, features = ["client-monitor", "stdio", "tokio", "tracing"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tower = "0.5"
 # Embedded Rust poly-FFI bodies and MLIR transform schedules are deliberately
 # syntax-highlighted without invoking either language's semantic frontend.
 tree-sitter-highlight = "=0.26.11"
