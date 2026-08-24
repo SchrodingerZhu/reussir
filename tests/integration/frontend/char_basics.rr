@@ -1,0 +1,47 @@
+// `char` end to end: literals (including escapes and multi-byte scalars),
+// `match`, the comparison tower, casts to integers, and a record field,
+// verified through the emitted ops and an end-to-end run.
+
+// RUN: %rrc --package-root %S/../../../library/core/src --package-name core --core --emit rri -o %t.core.rri
+// RUN: %rrc %s --package-name charbasics --extern core=%t.core.rri --emit mlir -o - | %FileCheck %s
+// RUN: %rrc %s --package-name charbasics --extern core=%t.core.rri -o %t.o --relocation-mode pic
+// RUN: %cc %t.o %S/char_basics.c -o %t.exe -L%library_path -lreussir_rt %rpath_flag %extra_sys_libs
+// RUN: %t.exe
+
+pub struct Keyed { key : char, id : i64 }
+
+fn classify(c : char) -> i64 {
+    match c {
+        'x' => 1,
+        '\n' => 2,
+        '\u{1F980}' => 3,
+        _ => 0
+    }
+}
+
+pub fn main() -> i64 {
+    let eq_ok = if 'a' == 'a' && 'a' != 'b' { 1 } else { 0 };
+    // Code points order as unsigned values: 'é' (U+00E9) sits above ASCII.
+    let ord_ok = if 'a' < 'b' && 'é' > 'z' && 'a' <= 'a' { 1 } else { 0 };
+    let match_ok = if classify('x') == 1 && classify('\n') == 2
+        && classify('🦀') == 3 && classify('q') == 0 { 1 } else { 0 };
+    let cmp_ok = match 'm'.cmp('m') { Ordering::Equal => 1, _ => 0 };
+    let widen_ok = if 'a' as u32 == 97 && 'é' as u32 == 233
+        && '🦀' as u64 == 129408 { 1 } else { 0 };
+    // 'a' widens signed too; U+1F600's low byte is 0, so `as u8` truncates.
+    let signed_ok = if 'a' as i64 == 97 { 1 } else { 0 };
+    let trunc_ok = if '\u{1F600}' as u8 == 0 && 'é' as u8 == 233 { 1 } else { 0 };
+    let keyed = Keyed { key: '@', id: 7 };
+    let field_ok = if keyed.key == '@' && keyed.key as u32 == 64 { 1 } else { 0 };
+    eq_ok + ord_ok * 10 + match_ok * 100 + cmp_ok * 1000 + widen_ok * 10000
+        + signed_ok * 100000 + trunc_ok * 1000000 + field_ok * 10000000
+}
+
+extern "C" trampoline "reussir_main" = main;
+
+// The match dispatches through the shared index switch, and the casts
+// stay unsigned: zero-extension outward, truncation down to `u8`.
+// CHECK-DAG: scf.index_switch
+// CHECK-DAG: arith.extui
+// CHECK-DAG: arith.trunci
+// CHECK-NOT: arith.extsi

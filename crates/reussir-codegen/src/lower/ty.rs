@@ -682,6 +682,9 @@ pub(super) fn num_class(ty: Ty<'_>) -> Result<NumClass> {
         TyKind::Int(IntTy::Signed(w)) => (w, true, false),
         TyKind::Int(IntTy::Unsigned(w)) => (w, false, false),
         TyKind::Bool => (1, false, false),
+        // A code point is an unsigned 32-bit scalar; only reachable as a
+        // cast *source* (the checker rejects casts to `char`).
+        TyKind::Char => (32, false, false),
         TyKind::Fp(FpTy::Ieee(w)) => (w, true, true),
         TyKind::Fp(FpTy::BFloat16) => (16, true, true),
         _ => return err("cast operand is not a numeric scalar"),

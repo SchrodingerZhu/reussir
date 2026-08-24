@@ -732,7 +732,34 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         // must satisfy `Num`. Registering a `Num` obligation on each means a
         // concrete non-numeric operand fails in the fulfillment loop with a
         // clear diagnostic, instead of surviving to a lowering-time crash.
+        //
+        // `char` is its own rule outside `Num`: the value is a code point, so
+        // a cast to any integer type is allowed (`as u8` truncates to the low
+        // byte, wider targets zero-extend), but nothing casts *to* `char` —
+        // an arbitrary integer is not necessarily a scalar value, and the FFI
+        // boundary relies on every `char` being one.
         let src_ty = self.infer.shallow_resolve(e.ty);
+        let target_head = self.infer.shallow_resolve(target);
+        if matches!(target_head.kind(), TyKind::Char) {
+            self.error(
+                span,
+                "cannot cast to `char`: not every integer is a valid code point",
+            );
+            return self.poison(span);
+        }
+        if matches!(src_ty.kind(), TyKind::Char) {
+            if !matches!(target_head.kind(), TyKind::Int(_)) {
+                self.error(
+                    span,
+                    format!(
+                        "`char` casts only to an integer type, not `{}`",
+                        self.ty_display(target_head)
+                    ),
+                );
+                return self.poison(span);
+            }
+            return self.mk_expr(ExprKind::Cast(Box::new(e), target), target, span);
+        }
         self.register_bound(self.lang.num, target, span);
         self.register_bound(self.lang.num, src_ty, span);
 

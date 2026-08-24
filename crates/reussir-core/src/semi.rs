@@ -4322,6 +4322,36 @@ pub struct Rect { pub w: i64 }",
         );
     }
 
+    #[test]
+    fn char_casts_to_any_integer() {
+        // A code point casts to integers without a `Num` bound on `char`:
+        // truncating to a narrow width and zero-extending to a wide one.
+        let src = "fn f(c: char) -> u64 { (c as u8) as u64 + c as u64 + (c as i64) as u64 }";
+        assert!(reports_of(src).is_empty(), "{:#?}", reports_of(src));
+    }
+
+    #[test]
+    fn rejects_cast_to_char() {
+        // Nothing casts to `char`: an arbitrary integer is not necessarily a
+        // scalar value.
+        let src = "fn f(x: u32) -> char { x as char }";
+        assert!(
+            has_error(src, "cannot cast to `char`"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
+    #[test]
+    fn rejects_char_to_float_cast() {
+        let src = "fn f(c: char) -> f64 { c as f64 }";
+        assert!(
+            has_error(src, "casts only to an integer type"),
+            "{:#?}",
+            reports_of(src)
+        );
+    }
+
     // ----- closure-arity-and-convention -----
 
     #[test]
