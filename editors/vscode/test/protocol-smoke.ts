@@ -1,17 +1,14 @@
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { type ClientEvent, WasmLspClient } from '../src/wasm-client';
+import { type ClientEvent, WasmClient, feedEvents } from '../src/wasm-client';
 
 async function main(): Promise<void> {
   const extensionRoot = process.cwd();
   const repositoryRoot = path.resolve(extensionRoot, '../..');
   const executable = process.platform === 'win32' ? 'reussir-lsp.exe' : 'reussir-lsp';
   const server = process.env.REUSSIR_LSP_PATH || path.join(repositoryRoot, 'target', 'debug', executable);
-  const wasm = await WasmLspClient.instantiate(
-    await readFile(path.join(extensionRoot, 'dist', 'reussir_vscode_wasm.wasm'))
-  );
+  const wasm = new WasmClient();
   const child = spawn(server, [], { stdio: 'pipe', windowsHide: true });
 
   const waiting = new Map<number, (event: ClientEvent) => void>();
@@ -24,7 +21,7 @@ async function main(): Promise<void> {
     }
   });
   child.stdout.on('data', chunk => {
-    for (const event of wasm.feed(chunk)) {
+    for (const event of feedEvents(wasm, chunk)) {
       if ('id' in event && typeof event.id === 'number') {
         waiting.get(event.id)?.(event);
         waiting.delete(event.id);
@@ -52,7 +49,7 @@ async function main(): Promise<void> {
   try {
     const initialize = wasm.initialize(`file://${repositoryRoot}`, process.pid);
     const initialized = response(initialize.id);
-    write(initialize.bytes);
+    write(initialize.frame);
     const initializeEvent = await initialized;
     if (initializeEvent.kind !== 'initialized') {
       throw new Error(`initialization failed: ${JSON.stringify(initializeEvent)}`);
@@ -63,7 +60,7 @@ async function main(): Promise<void> {
     write(wasm.didOpen(uri, 1, 'pub fn highlighted(value: i64) -> i64 { value }'));
     const tokens = wasm.semanticTokens(uri);
     const tokenResponse = response(tokens.id);
-    write(tokens.bytes);
+    write(tokens.frame);
     const tokenEvent = await tokenResponse;
     if (tokenEvent.kind !== 'semanticTokens') {
       throw new Error(`semantic token request failed: ${JSON.stringify(tokenEvent)}`);
@@ -76,7 +73,7 @@ async function main(): Promise<void> {
 
     const shutdown = wasm.shutdown();
     const shutdownResponse = response(shutdown.id);
-    write(shutdown.bytes);
+    write(shutdown.frame);
     const shutdownEvent = await shutdownResponse;
     if (shutdownEvent.kind !== 'shutdown') {
       throw new Error(`shutdown failed: ${JSON.stringify(shutdownEvent)}`);
