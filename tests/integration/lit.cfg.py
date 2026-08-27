@@ -3,7 +3,14 @@ import os
 import sys
 
 config.name = 'Reussir'
-config.test_format = lit.formats.ShTest(True)
+# lit 23 (LLVM 23) hard-errors on execute_external=True unless the migration
+# escape hatch force_execute_external is set; lit <= 22 does not know that
+# kwarg at all. Keep the external shell on both until the suites migrate to
+# lit's internal shell.
+try:
+    config.test_format = lit.formats.ShTest(True, force_execute_external=True)
+except TypeError:
+    config.test_format = lit.formats.ShTest(True)
 
 config.suffixes = ['.mlir', '.rr', '.repl', '.ll']
 # `Inputs/` directories hold companion files (transform scripts, C drivers)
