@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
-          sudo pip install lit --break-system-packages
+          sudo pip install 'lit<24' --break-system-packages
 
       - name: Install LLVM ${{ matrix.llvm-version }}
         run: |
@@ -163,7 +163,7 @@ jobs:
         run: |
           brew update
           brew install cmake ninja llvm spdlog googletest python@3
-          pip3 install lit --break-system-packages
+          pip3 install 'lit<24' --break-system-packages
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
