@@ -7,6 +7,16 @@
 
 use std::collections::HashMap;
 
+use lsp_types::{
+    CancelParams, ClientCapabilities, ClientInfo, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, GeneralClientCapabilities,
+    InitializeParams, InitializedParams, NumberOrString, PositionEncodingKind,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokensClientCapabilities,
+    SemanticTokensClientCapabilitiesRequests, SemanticTokensFullOptions, SemanticTokensParams,
+    TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentSyncClientCapabilities, TokenFormat, Url,
+    VersionedTextDocumentIdentifier,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -72,64 +82,34 @@ impl ClientCodec {
         root_uri: Option<&str>,
         process_id: Option<u32>,
     ) -> (i32, Vec<u8>) {
-        let params = json!({
-            "processId": process_id,
-            "clientInfo": {
-                "name": "reussir-vscode",
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "rootUri": root_uri,
-            "capabilities": {
-                "general": {
-                    "positionEncodings": ["utf-16"],
-                },
-                "textDocument": {
-                    "synchronization": {
-                        "dynamicRegistration": false,
-                        "didSave": false,
-                    },
-                    "semanticTokens": {
-                        "dynamicRegistration": false,
-                        "requests": {
-                            "range": false,
-                            "full": true,
-                        },
-                        "tokenTypes": [
-                            "namespace", "type", "class", "enum", "interface", "struct",
-                            "typeParameter", "parameter", "variable", "property", "enumMember",
-                            "event", "function", "method", "macro", "keyword", "modifier",
-                            "label", "comment", "string", "number", "regexp", "operator",
-                            "decorator"
-                        ],
-                        "tokenModifiers": [
-                            "declaration", "definition", "readonly", "static", "deprecated",
-                            "abstract", "async", "modification", "documentation", "defaultLibrary"
-                        ],
-                        "formats": ["relative"],
-                        "overlappingTokenSupport": false,
-                        "multilineTokenSupport": false
-                    }
-                }
-            },
-            "workspaceFolders": Value::Null,
-        });
-        self.request("initialize", params, RequestKind::Initialize)
+        #[allow(deprecated)]
+        let params = InitializeParams {
+            process_id,
+            root_uri: root_uri.map(parse_uri),
+            client_info: Some(ClientInfo {
+                name: "reussir-vscode".into(),
+                version: Some(env!("CARGO_PKG_VERSION").into()),
+            }),
+            capabilities: client_capabilities(),
+            ..InitializeParams::default()
+        };
+        self.request("initialize", to_value(params), RequestKind::Initialize)
     }
 
     pub fn initialized(&self) -> Vec<u8> {
-        notification("initialized", json!({}))
+        notification("initialized", to_value(InitializedParams {}))
     }
 
     pub fn did_open(&self, uri: &str, version: i32, text: &str) -> Vec<u8> {
         notification(
             "textDocument/didOpen",
-            json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "reussir",
-                    "version": version,
-                    "text": text,
-                }
+            to_value(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parse_uri(uri),
+                    language_id: "reussir".into(),
+                    version,
+                    text: text.into(),
+                },
             }),
         )
     }
@@ -137,9 +117,16 @@ impl ClientCodec {
     pub fn did_change(&self, uri: &str, version: i32, text: &str) -> Vec<u8> {
         notification(
             "textDocument/didChange",
-            json!({
-                "textDocument": { "uri": uri, "version": version },
-                "contentChanges": [{ "text": text }],
+            to_value(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: parse_uri(uri),
+                    version,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: text.into(),
+                }],
             }),
         )
     }
@@ -147,20 +134,35 @@ impl ClientCodec {
     pub fn did_close(&self, uri: &str) -> Vec<u8> {
         notification(
             "textDocument/didClose",
-            json!({ "textDocument": { "uri": uri } }),
+            to_value(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier {
+                    uri: parse_uri(uri),
+                },
+            }),
         )
     }
 
     pub fn semantic_tokens(&mut self, uri: &str) -> (i32, Vec<u8>) {
         self.request(
             "textDocument/semanticTokens/full",
-            json!({ "textDocument": { "uri": uri } }),
+            to_value(SemanticTokensParams {
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                text_document: TextDocumentIdentifier {
+                    uri: parse_uri(uri),
+                },
+            }),
             RequestKind::SemanticTokens,
         )
     }
 
     pub fn cancel(&self, id: i32) -> Vec<u8> {
-        notification("$/cancelRequest", json!({ "id": id }))
+        notification(
+            "$/cancelRequest",
+            to_value(CancelParams {
+                id: NumberOrString::Number(id),
+            }),
+        )
     }
 
     pub fn shutdown(&mut self) -> (i32, Vec<u8>) {
@@ -187,6 +189,83 @@ impl ClientCodec {
     }
 }
 
+fn client_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        general: Some(GeneralClientCapabilities {
+            position_encodings: Some(vec![PositionEncodingKind::UTF16]),
+            ..GeneralClientCapabilities::default()
+        }),
+        text_document: Some(TextDocumentClientCapabilities {
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                dynamic_registration: Some(false),
+                did_save: Some(false),
+                ..TextDocumentSyncClientCapabilities::default()
+            }),
+            semantic_tokens: Some(SemanticTokensClientCapabilities {
+                dynamic_registration: Some(false),
+                requests: SemanticTokensClientCapabilitiesRequests {
+                    range: Some(false),
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                },
+                token_types: vec![
+                    SemanticTokenType::NAMESPACE,
+                    SemanticTokenType::TYPE,
+                    SemanticTokenType::CLASS,
+                    SemanticTokenType::ENUM,
+                    SemanticTokenType::INTERFACE,
+                    SemanticTokenType::STRUCT,
+                    SemanticTokenType::TYPE_PARAMETER,
+                    SemanticTokenType::PARAMETER,
+                    SemanticTokenType::VARIABLE,
+                    SemanticTokenType::PROPERTY,
+                    SemanticTokenType::ENUM_MEMBER,
+                    SemanticTokenType::EVENT,
+                    SemanticTokenType::FUNCTION,
+                    SemanticTokenType::METHOD,
+                    SemanticTokenType::MACRO,
+                    SemanticTokenType::KEYWORD,
+                    SemanticTokenType::MODIFIER,
+                    SemanticTokenType::new("label"),
+                    SemanticTokenType::COMMENT,
+                    SemanticTokenType::STRING,
+                    SemanticTokenType::NUMBER,
+                    SemanticTokenType::REGEXP,
+                    SemanticTokenType::OPERATOR,
+                    SemanticTokenType::DECORATOR,
+                ],
+                token_modifiers: vec![
+                    SemanticTokenModifier::DECLARATION,
+                    SemanticTokenModifier::DEFINITION,
+                    SemanticTokenModifier::READONLY,
+                    SemanticTokenModifier::STATIC,
+                    SemanticTokenModifier::DEPRECATED,
+                    SemanticTokenModifier::ABSTRACT,
+                    SemanticTokenModifier::ASYNC,
+                    SemanticTokenModifier::MODIFICATION,
+                    SemanticTokenModifier::DOCUMENTATION,
+                    SemanticTokenModifier::DEFAULT_LIBRARY,
+                ],
+                formats: vec![TokenFormat::RELATIVE],
+                overlapping_token_support: Some(false),
+                multiline_token_support: Some(false),
+                ..SemanticTokensClientCapabilities::default()
+            }),
+            ..TextDocumentClientCapabilities::default()
+        }),
+        ..ClientCapabilities::default()
+    }
+}
+
+/// The TypeScript host constructs every URI it passes in; a URI that does not
+/// parse is a host bug, not a recoverable protocol state.
+fn parse_uri(uri: &str) -> Url {
+    Url::parse(uri).expect("the host must pass valid URIs")
+}
+
+fn to_value(params: impl Serialize) -> Value {
+    serde_json::to_value(params).expect("LSP params are serializable")
+}
+
 fn notification(method: &str, params: Value) -> Vec<u8> {
     frame(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
 }
@@ -205,7 +284,11 @@ mod tests {
     use super::*;
 
     fn body(frame: &[u8]) -> Value {
-        let split = frame.windows(4).position(|window| window == b"\r\n\r\n").unwrap() + 4;
+        let split = frame
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
         serde_json::from_slice(&frame[split..]).unwrap()
     }
 
@@ -219,6 +302,25 @@ mod tests {
         let change = body(&client.did_change("file:///demo.rr", 4, "fn changed() {}"));
         assert_eq!(change["method"], "textDocument/didChange");
         assert!(change["params"]["contentChanges"][0].get("range").is_none());
+    }
+
+    #[test]
+    fn initialize_advertises_utf16_and_full_only_semantic_tokens() {
+        let mut client = ClientCodec::default();
+        let (_, frame) = client.initialize(Some("file:///workspace"), Some(7));
+        let init = body(&frame);
+        assert_eq!(init["method"], "initialize");
+        assert_eq!(init["params"]["processId"], 7);
+        assert_eq!(init["params"]["rootUri"], "file:///workspace");
+        let capabilities = &init["params"]["capabilities"];
+        assert_eq!(capabilities["general"]["positionEncodings"][0], "utf-16");
+        let semantic = &capabilities["textDocument"]["semanticTokens"];
+        assert_eq!(semantic["requests"]["full"], true);
+        assert_eq!(semantic["requests"]["range"], false);
+        assert_eq!(semantic["formats"], json!(["relative"]));
+        let token_types = semantic["tokenTypes"].as_array().unwrap();
+        assert!(token_types.iter().any(|value| value == "label"));
+        assert!(token_types.iter().any(|value| value == "decorator"));
     }
 
     #[test]

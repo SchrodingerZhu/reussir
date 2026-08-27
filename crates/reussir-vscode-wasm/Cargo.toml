@@ -9,5 +9,6 @@ description = "Rust/WebAssembly LSP client codec for the Reussir VS Code extensi
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
