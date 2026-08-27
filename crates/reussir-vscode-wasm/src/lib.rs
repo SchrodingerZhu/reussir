@@ -452,10 +452,15 @@ mod wasm_binding {
         }
 
         /// Feed bytes read from the server's stdout; returns the decoded
-        /// `ClientEvent`s as a JS array.
+        /// `ClientEvent`s as a JS array. The json-compatible serializer keeps
+        /// nested payloads as plain objects rather than ES2015 Maps.
         pub fn feed(&mut self, chunk: &[u8]) -> JsValue {
+            use serde::Serialize;
+
             let events = self.codec.feed(chunk);
-            serde_wasm_bindgen::to_value(&events).expect("client events are serializable")
+            events
+                .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+                .expect("client events are serializable")
         }
     }
 }
