@@ -123,11 +123,12 @@ stacker = "0.1.21"
 tracing = "0.1"
 # Log-level plumbing for the REPL binary's `-l` flag.
 tracing-subscriber = "0.3"
-# The language server uses async-lsp's Tower service stack over stdio. Document
-# contents are synchronized as whole snapshots; semantic highlighting work is
-# dispatched to Tokio's blocking pool.
+# The language server uses async-lsp's Tower service stack over stdio on the
+# multi-threaded runtime. Document contents are synchronized as whole
+# snapshots in a concurrent map.
 async-lsp = { version = "=0.2.4", default-features = false, features = ["client-monitor", "stdio", "tokio", "tracing"] }
-tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt"] }
+dashmap = "6.2"
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tower = "0.5"
 # Embedded Rust poly-FFI bodies and MLIR transform schedules are deliberately

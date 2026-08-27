@@ -1,6 +1,5 @@
 //! async-lsp routing and whole-document synchronization.
 
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -13,7 +12,7 @@ use async_lsp::lsp_types::{
     request,
 };
 use async_lsp::router::Router;
-use async_lsp::{ErrorCode, ResponseError};
+use dashmap::DashMap;
 
 use crate::semantic::{legend_token_modifiers, legend_token_types, semantic_tokens};
 
@@ -25,7 +24,7 @@ struct Document {
 
 #[derive(Default)]
 pub(crate) struct ServerState {
-    documents: HashMap<Url, Document>,
+    documents: Arc<DashMap<Url, Document>>,
 }
 
 impl ServerState {
@@ -35,22 +34,14 @@ impl ServerState {
             .request::<request::Initialize, _>(|_, params| async move { Ok(initialize(params)) })
             .request::<request::Shutdown, _>(|_, ()| async move { Ok(()) })
             .request::<request::SemanticTokensFullRequest, _>(|state, params| {
-                let snapshot = state.snapshot(&params);
+                let documents = Arc::clone(&state.documents);
                 async move {
-                    let Some(text) = snapshot else {
+                    let Some(text) = snapshot(&documents, &params) else {
                         return Ok(None);
                     };
-                    let data = tokio::task::spawn_blocking(move || semantic_tokens(&text))
-                        .await
-                        .map_err(|error| {
-                            ResponseError::new(
-                                ErrorCode::INTERNAL_ERROR,
-                                format!("semantic-token worker failed: {error}"),
-                            )
-                        })?;
                     Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                         result_id: None,
-                        data,
+                        data: semantic_tokens(&text),
                     })))
                 }
             })
@@ -85,7 +76,7 @@ impl ServerState {
     fn did_change(&mut self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
-        let Some(document) = self.documents.get_mut(&uri) else {
+        let Some(mut document) = self.documents.get_mut(&uri) else {
             tracing::warn!(%uri, version, "ignoring change for unopened document");
             return;
         };
@@ -109,12 +100,12 @@ impl ServerState {
     fn did_close(&mut self, params: DidCloseTextDocumentParams) {
         self.documents.remove(&params.text_document.uri);
     }
+}
 
-    fn snapshot(&self, params: &SemanticTokensParams) -> Option<Arc<str>> {
-        self.documents
-            .get(&params.text_document.uri)
-            .map(|document| Arc::clone(&document.text))
-    }
+fn snapshot(documents: &DashMap<Url, Document>, params: &SemanticTokensParams) -> Option<Arc<str>> {
+    documents
+        .get(&params.text_document.uri)
+        .map(|document| Arc::clone(&document.text))
 }
 
 pub(crate) fn initialize(_params: InitializeParams) -> InitializeResult {
@@ -217,7 +208,7 @@ mod tests {
                 text: "fn old() {}".into(),
             },
         });
-        let in_flight_snapshot = state.snapshot(&semantic_params()).unwrap();
+        let in_flight_snapshot = snapshot(&state.documents, &semantic_params()).unwrap();
         state.did_change(DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
                 uri: uri(),
@@ -229,7 +220,10 @@ mod tests {
                 text: "fn new() {}".into(),
             }],
         });
-        assert_eq!(&*state.snapshot(&semantic_params()).unwrap(), "fn new() {}");
+        assert_eq!(
+            &*snapshot(&state.documents, &semantic_params()).unwrap(),
+            "fn new() {}"
+        );
         assert_eq!(&*in_flight_snapshot, "fn old() {}");
 
         state.did_change(DidChangeTextDocumentParams {
@@ -243,7 +237,10 @@ mod tests {
                 text: "fn stale() {}".into(),
             }],
         });
-        assert_eq!(&*state.snapshot(&semantic_params()).unwrap(), "fn new() {}");
+        assert_eq!(
+            &*snapshot(&state.documents, &semantic_params()).unwrap(),
+            "fn new() {}"
+        );
 
         state.did_change(DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
@@ -256,11 +253,14 @@ mod tests {
                 text: "fn".into(),
             }],
         });
-        assert_eq!(&*state.snapshot(&semantic_params()).unwrap(), "fn new() {}");
+        assert_eq!(
+            &*snapshot(&state.documents, &semantic_params()).unwrap(),
+            "fn new() {}"
+        );
 
         state.did_close(DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier { uri: uri() },
         });
-        assert!(state.snapshot(&semantic_params()).is_none());
+        assert!(snapshot(&state.documents, &semantic_params()).is_none());
     }
 }

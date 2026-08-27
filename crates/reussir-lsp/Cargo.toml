@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-lsp.workspace = true
+dashmap.workspace = true
 palc.workspace = true
 reussir-syntax = { path = "../reussir-syntax" }
 tokio.workspace = true

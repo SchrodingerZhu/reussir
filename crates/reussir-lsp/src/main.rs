@@ -20,7 +20,7 @@ use tracing::Level;
 #[command(name = "reussir-lsp", version)]
 struct Cli {}
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> ExitCode {
     // `palc` represents `--help` as a parse error. Keep the conventional CLI
     // contract used by `rrc` and `rene`: help goes to stdout with exit 0,
