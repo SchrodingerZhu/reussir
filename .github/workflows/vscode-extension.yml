@@ -31,6 +31,13 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
 
+      # Must equal the workspace's exact wasm-bindgen pin (Cargo.toml);
+      # scripts/build-wasm.mjs verifies the match and fails the build fast.
+      - name: Install wasm-bindgen CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.121
+
       - name: Install extension dependencies
         working-directory: editors/vscode
         run: npm ci
