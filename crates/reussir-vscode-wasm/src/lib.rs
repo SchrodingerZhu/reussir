@@ -20,8 +20,6 @@ use lsp_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const ABI_VERSION: u32 = 1;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequestKind {
     Initialize,
@@ -382,204 +380,83 @@ fn parse_content_length(header: &[u8]) -> Option<usize> {
 }
 
 #[cfg(target_arch = "wasm32")]
-mod wasm_abi {
-    use std::cell::RefCell;
-    use std::mem;
-    use std::slice;
+mod wasm_binding {
+    use wasm_bindgen::prelude::*;
 
-    use super::{ABI_VERSION, ClientCodec, ClientEvent};
+    use super::ClientCodec;
 
-    thread_local! {
-        static CLIENT: RefCell<ClientCodec> = RefCell::new(ClientCodec::default());
-        static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// A request's id together with the framed bytes to write to the server.
+    #[wasm_bindgen(getter_with_clone)]
+    pub struct Request {
+        pub id: i32,
+        pub frame: Vec<u8>,
     }
 
-    fn text(pointer: u32, length: u32) -> Result<String, String> {
-        if length == 0 {
-            return Ok(String::new());
+    /// The stateful LSP client codec; the host constructs one per server
+    /// process. wasm-bindgen generates the JS class and marshals every
+    /// string and byte buffer across the boundary.
+    #[wasm_bindgen]
+    #[derive(Default)]
+    pub struct WasmClient {
+        codec: ClientCodec,
+    }
+
+    #[wasm_bindgen]
+    impl WasmClient {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> Self {
+            Self::default()
         }
-        // SAFETY: the host obtains this region from `reussir_vscode_alloc` and
-        // writes exactly `length` bytes before making the synchronous call.
-        let bytes = unsafe { slice::from_raw_parts(pointer as *const u8, length as usize) };
-        std::str::from_utf8(bytes)
-            .map(str::to_owned)
-            .map_err(|error| format!("host supplied invalid UTF-8: {error}"))
-    }
 
-    fn bytes(pointer: u32, length: u32) -> &'static [u8] {
-        if length == 0 {
-            return &[];
+        pub fn initialize(&mut self, root_uri: Option<String>, process_id: Option<u32>) -> Request {
+            let (id, frame) = self.codec.initialize(root_uri.as_deref(), process_id);
+            Request { id, frame }
         }
-        // SAFETY: identical allocation contract to `text`; the slice is used
-        // only during the exported synchronous call.
-        unsafe { slice::from_raw_parts(pointer as *const u8, length as usize) }
-    }
 
-    fn publish(data: Vec<u8>) {
-        OUTPUT.with_borrow_mut(|output| *output = data);
-    }
-
-    fn publish_protocol_error(message: String) {
-        publish(
-            serde_json::to_vec(&[ClientEvent::ProtocolError { message }])
-                .expect("client events are serializable"),
-        );
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_abi_version() -> u32 {
-        ABI_VERSION
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_alloc(length: u32) -> u32 {
-        let mut allocation = Vec::<u8>::with_capacity(length as usize);
-        let pointer = allocation.as_mut_ptr();
-        mem::forget(allocation);
-        pointer as u32
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn reussir_vscode_dealloc(pointer: u32, length: u32) {
-        if length == 0 {
-            return;
+        pub fn initialized(&self) -> Vec<u8> {
+            self.codec.initialized()
         }
-        // SAFETY: the pointer and capacity were returned by
-        // `reussir_vscode_alloc` and are released exactly once by the host.
-        drop(unsafe { Vec::from_raw_parts(pointer as *mut u8, 0, length as usize) });
-    }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_output_pointer() -> u32 {
-        OUTPUT.with_borrow(|output| output.as_ptr() as u32)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_output_length() -> u32 {
-        OUTPUT.with_borrow(|output| output.len() as u32)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_reset() {
-        CLIENT.with_borrow_mut(|client| *client = ClientCodec::default());
-        publish(Vec::new());
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_initialize(
-        root_pointer: u32,
-        root_length: u32,
-        process_id: i32,
-    ) -> i32 {
-        let root = match text(root_pointer, root_length) {
-            Ok(root) => root,
-            Err(error) => {
-                publish_protocol_error(error);
-                return -1;
-            }
-        };
-        let process_id = u32::try_from(process_id).ok();
-        CLIENT.with_borrow_mut(|client| {
-            let (id, output) = client.initialize((!root.is_empty()).then_some(&root), process_id);
-            publish(output);
-            id
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_initialized() {
-        CLIENT.with_borrow(|client| publish(client.initialized()));
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_did_open(
-        uri_pointer: u32,
-        uri_length: u32,
-        version: i32,
-        text_pointer: u32,
-        text_length: u32,
-    ) {
-        let (uri, source) = match (
-            text(uri_pointer, uri_length),
-            text(text_pointer, text_length),
-        ) {
-            (Ok(uri), Ok(source)) => (uri, source),
-            (Err(error), _) | (_, Err(error)) => {
-                publish_protocol_error(error);
-                return;
-            }
-        };
-        CLIENT.with_borrow(|client| publish(client.did_open(&uri, version, &source)));
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_did_change(
-        uri_pointer: u32,
-        uri_length: u32,
-        version: i32,
-        text_pointer: u32,
-        text_length: u32,
-    ) {
-        let (uri, source) = match (
-            text(uri_pointer, uri_length),
-            text(text_pointer, text_length),
-        ) {
-            (Ok(uri), Ok(source)) => (uri, source),
-            (Err(error), _) | (_, Err(error)) => {
-                publish_protocol_error(error);
-                return;
-            }
-        };
-        CLIENT.with_borrow(|client| publish(client.did_change(&uri, version, &source)));
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_did_close(uri_pointer: u32, uri_length: u32) {
-        match text(uri_pointer, uri_length) {
-            Ok(uri) => CLIENT.with_borrow(|client| publish(client.did_close(&uri))),
-            Err(error) => publish_protocol_error(error),
+        #[wasm_bindgen(js_name = didOpen)]
+        pub fn did_open(&self, uri: &str, version: i32, text: &str) -> Vec<u8> {
+            self.codec.did_open(uri, version, text)
         }
-    }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_semantic_tokens(uri_pointer: u32, uri_length: u32) -> i32 {
-        let uri = match text(uri_pointer, uri_length) {
-            Ok(uri) => uri,
-            Err(error) => {
-                publish_protocol_error(error);
-                return -1;
-            }
-        };
-        CLIENT.with_borrow_mut(|client| {
-            let (id, output) = client.semantic_tokens(&uri);
-            publish(output);
-            id
-        })
-    }
+        #[wasm_bindgen(js_name = didChange)]
+        pub fn did_change(&self, uri: &str, version: i32, text: &str) -> Vec<u8> {
+            self.codec.did_change(uri, version, text)
+        }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_cancel(id: i32) {
-        CLIENT.with_borrow(|client| publish(client.cancel(id)));
-    }
+        #[wasm_bindgen(js_name = didClose)]
+        pub fn did_close(&self, uri: &str) -> Vec<u8> {
+            self.codec.did_close(uri)
+        }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_shutdown() -> i32 {
-        CLIENT.with_borrow_mut(|client| {
-            let (id, output) = client.shutdown();
-            publish(output);
-            id
-        })
-    }
+        #[wasm_bindgen(js_name = semanticTokens)]
+        pub fn semantic_tokens(&mut self, uri: &str) -> Request {
+            let (id, frame) = self.codec.semantic_tokens(uri);
+            Request { id, frame }
+        }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_exit() {
-        CLIENT.with_borrow(|client| publish(client.exit()));
-    }
+        pub fn cancel(&self, id: i32) -> Vec<u8> {
+            self.codec.cancel(id)
+        }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn reussir_vscode_feed(pointer: u32, length: u32) {
-        let events = CLIENT.with_borrow_mut(|client| client.feed(bytes(pointer, length)));
-        publish(serde_json::to_vec(&events).expect("client events are serializable"));
+        pub fn shutdown(&mut self) -> Request {
+            let (id, frame) = self.codec.shutdown();
+            Request { id, frame }
+        }
+
+        pub fn exit(&self) -> Vec<u8> {
+            self.codec.exit()
+        }
+
+        /// Feed bytes read from the server's stdout; returns the decoded
+        /// `ClientEvent`s as a JS array.
+        pub fn feed(&mut self, chunk: &[u8]) -> JsValue {
+            let events = self.codec.feed(chunk);
+            serde_wasm_bindgen::to_value(&events).expect("client events are serializable")
+        }
     }
 }
 

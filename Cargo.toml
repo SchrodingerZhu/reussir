@@ -132,6 +132,11 @@ async-lsp = { version = "=0.2.4", default-features = false, features = ["client-
 # The wasm client codec builds its payloads from the same LSP type definitions
 # async-lsp re-exports to the server; the pin keeps the two in lockstep.
 lsp-types = "=0.95.1"
+# JS↔wasm glue for the VS Code extension's codec module: wasm-bindgen
+# generates the exported class and marshals strings/buffers; the CLI that
+# emits the matching JS/TS must match this crate version exactly.
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
 dashmap = "6.2"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }
