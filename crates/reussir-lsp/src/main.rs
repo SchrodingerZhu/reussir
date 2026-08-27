@@ -2,33 +2,42 @@ mod embedded;
 mod semantic;
 mod server;
 
+use std::process::ExitCode;
+
 use async_lsp::client_monitor::ClientProcessMonitorLayer;
 use async_lsp::concurrency::ConcurrencyLayer;
 use async_lsp::panic::CatchUnwindLayer;
 use async_lsp::server::LifecycleLayer;
 use async_lsp::tracing::TracingLayer;
+use palc::Parser;
 use tower::ServiceBuilder;
 use tracing::Level;
 
-const HELP: &str = "reussir-lsp — semantic-token language server for Reussir\n\nUSAGE:\n    reussir-lsp\n\nThe server communicates with one LSP client over stdin/stdout.\n";
+/// Semantic-token language server for Reussir.
+///
+/// The server communicates with one LSP client over stdin/stdout.
+#[derive(Parser)]
+#[command(name = "reussir-lsp", version)]
+struct Cli {}
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
-    match std::env::args().nth(1).as_deref() {
-        Some("-h" | "--help") => {
-            print!("{HELP}");
-            return;
-        }
-        Some("-V" | "--version") => {
-            println!("reussir-lsp {}", env!("CARGO_PKG_VERSION"));
-            return;
-        }
-        Some(argument) => {
-            eprintln!("reussir-lsp: unexpected argument: {argument}\n\n{HELP}");
-            std::process::exit(2);
-        }
-        None => {}
-    }
+async fn main() -> ExitCode {
+    // `palc` represents `--help` as a parse error. Keep the conventional CLI
+    // contract used by `rrc` and `rene`: help goes to stdout with exit 0,
+    // while genuine usage errors go to stderr with exit 2.
+    let Cli {} = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => match err.try_into_help() {
+            Ok(help) => {
+                println!("{help}");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(2);
+            }
+        },
+    };
 
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
@@ -59,6 +68,7 @@ async fn main() {
 
     if let Err(error) = main_loop.run_buffered(stdin, stdout).await {
         tracing::error!(%error, "language server stopped");
-        std::process::exit(1);
+        return ExitCode::from(1);
     }
+    ExitCode::SUCCESS
 }

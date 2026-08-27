@@ -3402,6 +3402,7 @@ name = "reussir-lsp"
 version = "0.1.0"
 dependencies = [
  "async-lsp",
+ "palc",
  "reussir-syntax",
  "tokio",
  "tokio-util",
