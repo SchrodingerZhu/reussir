@@ -64,7 +64,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
-          sudo pip install lit --break-system-packages
+          sudo pip install 'lit<24' --break-system-packages
 
       # The engine that runs what the WebAssembly suite builds. The official
       # installer drops the binary in ~/.wasmer/bin; putting that on PATH is
