@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { type ClientEvent, WasmLspClient } from './wasm-client';
+import { type ClientEvent, WasmClient, feedEvents } from './wasm-client';
 
 interface InitializeResult {
   capabilities?: {
@@ -31,7 +31,7 @@ class ReussirExtension implements vscode.Disposable {
   private readonly openDocuments = new Map<string, number>();
   private readonly pendingTokens = new Map<number, PendingTokens>();
   private process: ChildProcessWithoutNullStreams | undefined;
-  private client: WasmLspClient | undefined;
+  private client: WasmClient | undefined;
   private initializeWaiter:
     | { id: number; resolve(result: InitializeResult): void; reject(error: Error): void }
     | undefined;
@@ -41,8 +41,9 @@ class ReussirExtension implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   async start(): Promise<void> {
-    const wasmUri = vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'reussir_vscode_wasm.wasm');
-    this.client = await WasmLspClient.instantiate(await vscode.workspace.fs.readFile(wasmUri));
+    // The wasm-bindgen module loads and instantiates its wasm when first
+    // required; constructing the client allocates a fresh codec.
+    this.client = new WasmClient();
 
     const command = resolveServerCommand(this.context);
     const cwd = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'file')?.uri.fsPath;
@@ -74,7 +75,7 @@ class ReussirExtension implements vscode.Disposable {
     const initialize = this.client.initialize(rootUri, process.pid);
     const result = await new Promise<InitializeResult>((resolve, reject) => {
       this.initializeWaiter = { id: initialize.id, resolve, reject };
-      this.write(initialize.bytes);
+      this.write(initialize.frame);
     });
     this.write(this.client.initialized());
 
@@ -129,7 +130,7 @@ class ReussirExtension implements vscode.Disposable {
         const response = new Promise<void>(resolve => {
           this.shutdownWaiter = { id: shutdown.id, resolve };
         });
-        this.write(shutdown.bytes);
+        this.write(shutdown.frame);
         await Promise.race([response, delay(1_000)]);
         if (serverAlive(child)) {
           this.write(client.exit());
@@ -206,7 +207,7 @@ class ReussirExtension implements vscode.Disposable {
         }
       });
       try {
-        this.write(request.bytes);
+        this.write(request.frame);
       } catch (error) {
         if (this.pendingTokens.delete(request.id)) {
           subscription.dispose();
@@ -219,7 +220,7 @@ class ReussirExtension implements vscode.Disposable {
   private acceptServerBytes(chunk: Uint8Array): void {
     let events: ClientEvent[];
     try {
-      events = this.requiredClient().feed(chunk);
+      events = feedEvents(this.requiredClient(), chunk);
     } catch (error) {
       this.failSession(asError(error));
       return;
@@ -283,7 +284,7 @@ class ReussirExtension implements vscode.Disposable {
     child.stdin.write(bytes);
   }
 
-  private requiredClient(): WasmLspClient {
+  private requiredClient(): WasmClient {
     if (!this.client) {
       throw new Error('Reussir WASM client is not initialized');
     }
@@ -325,6 +326,9 @@ class ReussirExtension implements vscode.Disposable {
     this.pendingTokens.clear();
     const child = this.process;
     this.process = undefined;
+    // Release the codec's wasm-side memory eagerly; a restart constructs a
+    // fresh client rather than reusing this one.
+    this.client?.free();
     this.client = undefined;
     if (child && serverAlive(child)) {
       child.kill();
