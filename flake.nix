@@ -188,6 +188,11 @@
             # is supplied by rust-toolchain.toml through rustToolchain above.
             pkgs.nodejs_24
 
+            # Generates the JS/TS bindings for the extension's wasm codec.
+            # Its version must equal the workspace's exact wasm-bindgen pin
+            # (Cargo.toml); scripts/build-wasm.mjs enforces the match.
+            pkgs.wasm-bindgen-cli
+
             # cargo-nextest is convenient for `cargo nextest run` workflows
             pkgs.cargo-nextest
 
