@@ -78,6 +78,46 @@
           '';
         };
 
+        # Rust standard library for the MSVC target, at the same pinned
+        # nightly as rust-toolchain.toml (same channel manifest, same hash).
+        # Kept out of rust-toolchain.toml so rustup users and the default
+        # shell don't download a Windows std they never use; only the
+        # windows-cross shell below pays for it.
+        windowsRustToolchain = fenix.packages.${system}.combine [
+          rustToolchain
+          (fenix.packages.${system}.targets."x86_64-pc-windows-msvc".toolchainOf {
+            channel = "nightly";
+            date = "2026-03-15";
+            sha256 = "sha256-4ot8+Fs79G1hUwlEYI6700QBLKdkLb33yzwOou1o5Yk=";
+          }).rust-std
+        ];
+
+        # Bakes the conda-forge MSVC LLVM/MLIR toolchain the Windows CI uses
+        # (.github/conda/windows-msvc.yml) into a local win-64 prefix, so the
+        # backend crates have the same import libraries and headers to build
+        # against as the GitHub runners. Only the library subset of the CI
+        # env file is fetched: the host-side tools (cmake, ninja, python,
+        # lit) come from nix, and the pip section cannot execute inside a
+        # foreign-platform prefix. Versions must track windows-msvc.yml.
+        bakeMsvcLlvm = pkgs.writeShellScriptBin "reussir-bake-msvc-llvm" ''
+          set -euo pipefail
+          prefix="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda"
+          if [ -e "$prefix/Library/lib/cmake/mlir/MLIRConfig.cmake" ] && [ "''${1:-}" != "--force" ]; then
+            echo "MSVC LLVM/MLIR already baked at $prefix (use --force to redo)"
+            exit 0
+          fi
+          # --platform win-64 extracts the Windows packages without running
+          # their activation scripts, which is all a cross link needs.
+          ${pkgs.micromamba}/bin/micromamba create --yes \
+            --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
+            --prefix "$prefix" \
+            --platform win-64 \
+            --channel conda-forge \
+            'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
+            'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+          echo "Baked MSVC LLVM/MLIR into $prefix/Library"
+        '';
+
         # System header flags for the clang-scan-deps workaround.
         #
         # cmake 3.28+ with C++23 uses clang-scan-deps (the raw binary, not the
@@ -327,6 +367,81 @@ PRESETS_EOF
             echo "    cmake --build build                # compile"
             echo "    cmake --build build --target reussir-vscode-package # build VSIX"
             echo "    ln -sf build/compile_commands.json .   # for clangd"
+            echo ""
+          '';
+        };
+        # ---------------------------------------------------------------------------
+        # Windows cross shell (optional): `nix develop .#windows-cross`.
+        #
+        # Cross-builds the LLVM-free Rust crates (the workspace default
+        # members) for x86_64-pc-windows-msvc with cargo-xwin and runs their
+        # test binaries under Wine:
+        #
+        #   cargo xwin build --target x86_64-pc-windows-msvc
+        #   cargo xwin test  --target x86_64-pc-windows-msvc
+        #
+        # cargo-xwin downloads the MSVC CRT and Windows SDK once (into
+        # ~/.cache/cargo-xwin) via the xwin tool; entering this shell
+        # accepts the Microsoft license for those downloads
+        # (XWIN_ACCEPT_LICENSE below). The MLIR-linking crates are out of
+        # scope here — they would additionally need the conda-forge MSVC
+        # LLVM/MLIR toolchain the Windows CI uses.
+        # ---------------------------------------------------------------------------
+        devShells.windows-cross = pkgs.mkShell {
+          name = "reussir-windows-cross";
+
+          packages = [
+            windowsRustToolchain
+            pkgs.cargo-xwin
+
+            # lld-link links the MSVC-target binaries; llvm-lib/llvm-rc back
+            # the cc crate's archiver/resource steps. clang-unwrapped supplies
+            # clang-cl for the C sources the tree-sitter grammar crates build —
+            # deliberately unwrapped: the nix cc wrapper would inject host
+            # (glibc) include and link paths into a Windows cross compile.
+            llvmPkgs.lld
+            llvmPkgs.llvm
+            llvmPkgs.clang-unwrapped
+
+            # 64-bit-only Wine is enough: the msvc target produces x64
+            # binaries, and the wow64 build runs them without multilib.
+            pkgs.wineWow64Packages.minimal
+
+            # One-shot fetch of the conda-forge MSVC LLVM/MLIR toolchain
+            # (same versions as the Windows CI) for backend-crate linking.
+            bakeMsvcLlvm
+          ];
+
+          # The user of this shell accepts the Microsoft Software License for
+          # the MSVC CRT/SDK components xwin fetches.
+          XWIN_ACCEPT_LICENSE = "1";
+
+          # `cargo xwin test` (and `cargo run --target …`) execute the
+          # produced .exe files through this runner.
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "wine";
+
+          shellHook = ''
+            # Keep the Wine prefix project-local so first-run initialization
+            # never touches ~/.wine.
+            export WINEPREFIX="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-wineprefix"
+            # Wine is chatty on stderr (fixme:...) — silence it so cargo test
+            # output stays readable.
+            export WINEDEBUG="-all"
+
+            # MSVC LLVM/MLIR (conda-forge, as in the Windows CI): advertise
+            # the baked prefix when present so backend-crate cross builds can
+            # point their *_PREFIX discovery at it.
+            msvc_llvm="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda/Library"
+            if [ -e "$msvc_llvm/lib/cmake/mlir/MLIRConfig.cmake" ]; then
+              export REUSSIR_MSVC_LLVM_PREFIX="$msvc_llvm"
+            fi
+
+            echo ""
+            echo "  Reussir Windows cross shell — cargo-xwin + Wine"
+            echo ""
+            echo "    cargo xwin build --target x86_64-pc-windows-msvc   # default members"
+            echo "    cargo xwin test  --target x86_64-pc-windows-msvc  # tests run under wine"
+            echo "    reussir-bake-msvc-llvm   # fetch the conda-forge MSVC LLVM/MLIR (once)"
             echo ""
           '';
         };
