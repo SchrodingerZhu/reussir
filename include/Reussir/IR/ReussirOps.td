@@ -144,15 +144,25 @@ def ReussirTokenAllocOp : ReussirTokenOp<"alloc", []> {
     ```mlir
     reussir.token.alloc : !reussir.token<align: 8, size: 16>
     ```
+    A dynamically sized token (`token<align, ?>`) takes its byte size as an
+    SSA operand instead (a dynamic-extent array box, whose size is
+    `header + product(sizes) * elemsize`):
+    ```mlir
+    reussir.token.alloc(%bytes : index) : !reussir.token<align: 8, size: ?>
+    ```
   }];
+
+  let arguments = (ins Arg<Optional<Index>, "dynamic byte size">:$dynamicSize);
 
   let results =
       (outs Res<ReussirTokenType,
                 "Allocated Memory Token", [MemAlloc<DefaultResource>]>:$token);
 
   let assemblyFormat = [{
-    `:` type($token) attr-dict
+    ( `(` $dynamicSize^ `:` `index` `)` )? `:` type($token) attr-dict
   }];
+
+  let hasVerifier = 1;
 }
 
 def ReussirTokenFreeOp : ReussirTokenOp<"free", []> {
@@ -581,6 +591,7 @@ def ReussirRcCreateOp
 
   let arguments = (ins Arg<AnyType, "value">:$value,
       Optional<ReussirTokenType>:$token, Optional<ReussirRegionType>:$region,
+      Variadic<Index>:$extents,
       OptionalAttr<FlatSymbolRefAttr>:$vtable, UnitAttr:$skipRc);
   let results = (outs Res<ReussirRcType, "Created RC pointer">:$rcPtr);
 
@@ -589,6 +600,7 @@ def ReussirRcCreateOp
     oilist ( 
       `token` `(` $token `:` type($token) `)`
     | `region` `(` $region `:` type($region) `)` 
+    | `extents` `(` $extents `)`
     | `vtable` `(` $vtable `)`
     | `skip_rc` $skipRc
     )

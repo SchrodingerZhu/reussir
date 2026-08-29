@@ -849,11 +849,13 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
       TokenType tokenType = TokenType::get(
           rewriter.getContext(), dataLayout.getTypeABIAlignment(rcBoxType),
           dataLayout.getTypeSize(rcBoxType).getFixedValue());
-      auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType);
+      auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType,
+                                  /*dynamicSize=*/mlir::Value());
       auto poison = mlir::ub::PoisonOp::create(rewriter, loc, arrayType);
       auto cloned = ReussirRcCreateOp::create(
           rewriter, loc, rcType, poison.getResult(), token.getResult(),
-          mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+          mlir::Value{}, mlir::ValueRange{}, mlir::FlatSymbolRefAttr{},
+          mlir::UnitAttr{});
       auto dstRef = ReussirRcBorrowOp::create(rewriter, loc, borrowedType,
                                               cloned.getResult());
       ReussirRefMemcpyOp::create(rewriter, loc, srcRef.getResult(),
@@ -955,7 +957,8 @@ struct ReussirTokenEnsureOpRewritePattern
           rewriter.createBlock(&nullableDispatchOp.getNullRegion());
       rewriter.setInsertionPointToStart(elseBlock);
       auto allocatedToken =
-          ReussirTokenAllocOp::create(rewriter, op.getLoc(), op.getType());
+          ReussirTokenAllocOp::create(rewriter, op.getLoc(), op.getType(),
+                                      /*dynamicSize=*/mlir::Value());
       mlir::scf::YieldOp::create(rewriter, op.getLoc(),
                                  allocatedToken->getResults());
     }
@@ -1420,7 +1423,8 @@ public:
         mlir::ub::PoisonOp::create(rewriter, op.getLoc(), cellType);
     auto created = ReussirRcCreateOp::create(
         rewriter, op.getLoc(), op.getCell().getType(), poison, op.getToken(),
-        mlir::Value{}, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+        mlir::Value{}, mlir::ValueRange{}, mlir::FlatSymbolRefAttr{},
+        mlir::UnitAttr{});
     CellAccess access = borrowCell(created.getRcPtr(), op.getLoc(), rewriter);
     if (cellType.getKind() == CellKind::mutex) {
       mlir::Value mutexView = getMutexView(access, op.getLoc(), rewriter);

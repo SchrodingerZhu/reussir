@@ -113,6 +113,20 @@ aliased elements would break the drop traversal's exactly-once contract.
 
 ## Status
 
+Dialect landed: `!reussir.array<? x T>` parses/verifies (`?` extents,
+`ShapedType::kDynamic`); the strided-header box (`RcBoxType`
+`hasDynamicArrayPayload` — `{i32 count | index offset | sizes | strides |
+tail}`, index-typed so the width follows the target); `array.view` builds
+the strided descriptor from header loads (box recovered from the payload
+ref by the static header offset); `token.alloc` takes an SSA byte size
+for `token<align, ?>`; `rc.create … extents(…)` writes the canonical
+header and its instantiated token computes `header + product(sizes) *
+elemsize`; `rc.dec`/`rc.reinterpret` produce dynamic tokens freed
+unsized. Executable e2e: `dynamic_array_e2e.mlir`. Open backend halves:
+the `with_unique_view` clone branch (runtime-length copy), dynamic
+`array.project`, restride ops, `expand-strided-metadata` in the shipping
+pipeline, and wiring the frontend codegen off its `err(…)` stubs.
+
 Frontend landed: `?` extents, the `DYNAMIC_EXTENT` sentinel through the
 type system, leading runtime extents on `splat`/`tabulate`, `array::dim`,
 display/mangling/textual-IR spellings, and `err(…)` stubs at every

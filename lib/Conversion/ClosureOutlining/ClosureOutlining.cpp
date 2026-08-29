@@ -451,7 +451,8 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
   size_t size = dataLayout.getTypeSize(rcBoxType).getFixedValue();
   size_t align = dataLayout.getTypeABIAlignment(rcBoxType);
   TokenType tokenType = TokenType::get(rewriter.getContext(), align, size);
-  mlir::Value token = ReussirTokenAllocOp::create(rewriter, loc, tokenType);
+  mlir::Value token = ReussirTokenAllocOp::create(rewriter, loc, tokenType,
+                                  /*dynamicSize=*/mlir::Value());
 
   // Allocate assemble space on stack first
   mlir::Value dstRc = ReussirClosureInstantiateOp::create(

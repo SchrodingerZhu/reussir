@@ -317,8 +317,13 @@ void populateReussirToLLVMTypeConversions(mlir::LLVMTypeConverter &converter) {
                                                   {ptrTy, indexTy});
   });
 
-  converter.addConversion([&converter](ArrayType type) {
+  converter.addConversion([&converter](ArrayType type) -> mlir::Type {
     mlir::Type lowered = converter.convertType(type.getElementType());
+    // A dynamic-extent array has no LLVM array type; as a box payload it is
+    // the zero-length tail after the strided header (GEPs index it by
+    // element, never by whole-payload value).
+    if (!type.hasStaticShape())
+      return mlir::LLVM::LLVMArrayType::get(lowered, 0);
     for (int64_t extent : llvm::reverse(type.getShape()))
       lowered = mlir::LLVM::LLVMArrayType::get(lowered, extent);
     return lowered;

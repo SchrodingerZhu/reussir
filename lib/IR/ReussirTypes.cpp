@@ -149,24 +149,34 @@ parseShapeAndElementType(mlir::AsmParser &parser,
     shape.push_back(extent.getSExtValue());
     return mlir::success();
   };
+  // An extent is an integer or `?` for a dynamic dimension
+  // (`ShapedType::kDynamic`), mirroring the memref spelling.
+  auto parseOptionalExtent = [&]() -> mlir::OptionalParseResult {
+    if (mlir::succeeded(parser.parseOptionalQuestion())) {
+      shape.push_back(mlir::ShapedType::kDynamic);
+      return mlir::success();
+    }
+    llvm::APInt extent;
+    mlir::OptionalParseResult parsed = parser.parseOptionalInteger(extent);
+    if (!parsed.has_value())
+      return std::nullopt;
+    if (mlir::failed(*parsed))
+      return mlir::failure();
+    return appendExtent(extent);
+  };
 
-  llvm::APInt extent;
-  if (parser.parseInteger(extent))
-    return mlir::failure();
-  if (mlir::failed(appendExtent(extent)))
-    return mlir::failure();
-
-  if (parser.parseKeyword("x"))
+  mlir::OptionalParseResult first = parseOptionalExtent();
+  if (!first.has_value())
+    return parser.emitError(parser.getCurrentLocation(),
+                            "expected an array extent (an integer or `?`)");
+  if (mlir::failed(*first) || parser.parseKeyword("x"))
     return mlir::failure();
 
   while (true) {
-    llvm::APInt nextExtent;
-    mlir::OptionalParseResult parseNextExtent =
-        parser.parseOptionalInteger(nextExtent);
+    mlir::OptionalParseResult parseNextExtent = parseOptionalExtent();
     if (!parseNextExtent.has_value())
       break;
-    if (mlir::failed(*parseNextExtent) ||
-        mlir::failed(appendExtent(nextExtent)) || parser.parseKeyword("x"))
+    if (mlir::failed(*parseNextExtent) || parser.parseKeyword("x"))
       return mlir::failure();
   }
   return parser.parseType(elementType);
@@ -175,8 +185,13 @@ parseShapeAndElementType(mlir::AsmParser &parser,
 void printShapeAndElementType(mlir::AsmPrinter &printer,
                               llvm::ArrayRef<int64_t> shape,
                               mlir::Type elementType) {
-  for (int64_t extent : shape)
-    printer << extent << " x ";
+  for (int64_t extent : shape) {
+    if (mlir::ShapedType::isDynamic(extent))
+      printer << "?";
+    else
+      printer << extent;
+    printer << " x ";
+  }
   printer.printType(elementType);
 }
 } // namespace
@@ -660,7 +675,44 @@ llvm::SmallVector<mlir::Type> RcBoxType::getHeaderTypes() const {
     auto ptrTy = mlir::LLVM::LLVMPointerType::get(getContext());
     return {ptrTy, ptrTy, ptrTy};
   }
+  // A dynamic-extent array box stores the full strided-memref encoding —
+  // exactly what `memref.extract_strided_metadata` returns, minus the base
+  // pointer: offset, then one size and one stride per dimension, all
+  // index-typed so the width follows the target's data layout.
+  if (auto arrayTy = llvm::dyn_cast<ArrayType>(getEleTy());
+      arrayTy && !arrayTy.hasStaticShape()) {
+    llvm::SmallVector<mlir::Type> header;
+    auto indexTy = mlir::IndexType::get(getContext());
+    header.push_back(mlir::IntegerType::get(getContext(), 32));
+    header.push_back(indexTy); // offset
+    for (size_t i = 0, rank = arrayTy.getRank(); i < 2 * rank; ++i)
+      header.push_back(indexTy); // sizes, then strides
+    return header;
+  }
   return {mlir::IntegerType::get(getContext(), 32)};
+}
+
+bool RcBoxType::hasDynamicArrayPayload() const {
+  auto arrayTy = llvm::dyn_cast<ArrayType>(getEleTy());
+  return arrayTy && !arrayTy.hasStaticShape();
+}
+
+uint64_t
+RcBoxType::getDynamicPayloadOffset(const mlir::DataLayout &dataLayout) const {
+  assert(hasDynamicArrayPayload() &&
+         "payload offset is the strided-header layout's; static boxes use "
+         "deriveLayoutForRcBox");
+  uint64_t offset = 0;
+  uint64_t align = 1;
+  for (mlir::Type header : getHeaderTypes()) {
+    uint64_t memberAlign = dataLayout.getTypeABIAlignment(header);
+    offset = llvm::alignTo(offset, memberAlign);
+    offset += dataLayout.getTypeSize(header);
+    align = std::max(align, memberAlign);
+  }
+  uint64_t elemAlign = dataLayout.getTypeABIAlignment(
+      llvm::cast<ArrayType>(getEleTy()).getElementType());
+  return llvm::alignTo(offset, std::max(align, elemAlign));
 }
 
 bool RecordType::hasFusedHeader() const {
@@ -1363,6 +1415,9 @@ RcBoxType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
   // overlays the element's leading count slot.
   if (isHeaderFused())
     return dataLayout.getTypeSizeInBits(getElementType());
+  assert(!hasDynamicArrayPayload() &&
+         "a dynamic-array box has no static size; the allocation computes "
+         "header + product(sizes) * elemsize at runtime");
   auto derived = deriveLayoutForRcBox(*this, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed size");
@@ -1373,6 +1428,15 @@ uint64_t RcBoxType::getABIAlignment(const mlir::DataLayout &dataLayout,
                                     mlir::DataLayoutEntryListRef params) const {
   if (isHeaderFused())
     return dataLayout.getTypeABIAlignment(getElementType());
+  if (hasDynamicArrayPayload()) {
+    // max over the header members (index-heavy) and the element type; the
+    // shape never affects alignment.
+    uint64_t align = dataLayout.getTypeABIAlignment(
+        llvm::cast<ArrayType>(getEleTy()).getElementType());
+    for (mlir::Type header : getHeaderTypes())
+      align = std::max(align, dataLayout.getTypeABIAlignment(header));
+    return align;
+  }
   auto derived = deriveLayoutForRcBox(*this, dataLayout);
   if (!derived)
     llvm_unreachable("RcBoxType must have a fixed alignment");
@@ -1448,8 +1512,8 @@ ArrayType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
   for (int64_t extent : shape) {
-    if (extent < 0) {
-      emitError() << "array extents must be non-negative";
+    if (extent < 0 && !mlir::ShapedType::isDynamic(extent)) {
+      emitError() << "array extents must be non-negative or `?`";
       return mlir::failure();
     }
   }
@@ -1491,6 +1555,9 @@ void ArrayType::print(mlir::AsmPrinter &printer) const {
 llvm::TypeSize
 ArrayType::getTypeSizeInBits(const mlir::DataLayout &dataLayout,
                              mlir::DataLayoutEntryListRef params) const {
+  assert(hasStaticShape() &&
+         "a dynamic-extent array has no static size; its box carries the "
+         "strided-header layout instead");
   llvm::TypeSize elementSize = dataLayout.getTypeSize(getElementType());
   uint64_t totalElements = 1;
   for (int64_t extent : getShape())
