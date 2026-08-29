@@ -23,18 +23,23 @@ jobs:
   miri-test:
     name: Miri Test (reussir-rt)
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: nightly-2026-03-15
-        components: rust-src, rustfmt, clippy, miri
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v22
 
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
+    # The flake's pinned toolchain carries the miri component
+    # (rust-toolchain.toml), so this is the same interpreter every
+    # developer gets from `nix develop .#rust`.
     - name: Run Miri tests on reussir-rt
       run: |
-        cd crates/reussir-rt
-        cargo miri test -p reussir-rt
+        nix develop .#rust --command bash -c '
+          cd crates/reussir-rt
+          cargo miri test -p reussir-rt
+        '
