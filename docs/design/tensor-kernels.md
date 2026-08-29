@@ -77,24 +77,52 @@ aliasing proof needed. Guardrail the frontend enforces: one live tensor
 materialization per array per scope (two `to_tensor restrict` over
 aliasing memrefs is UB).
 
-**The anchoring rule.** Every materialization — the fresh case included —
-is anchored as `bufferization.materialize_in_destination %t in %view`
-where `%view` is the Reussir-owned `restrict writable` view of the
-destination box. One-shot's empty-tensor elimination then folds the fused
-loop nest's output directly into the rc payload. The failure shape to
-guard against is the result surfacing as a bufferization-owned buffer
-that gets copied into the box afterward: it silently doubles every
-kernel's cost and is invisible in the surface language.
+**The anchoring rule (PoC-corrected).** Two facts the
+`linalg_*` conversion tests pin empirically:
 
-**Fresh materialize reuses for free.** In
-`map(Tensor::of(xs), f).materialize()` where the view is `xs`'s last use,
-the tensor's rooted dup dies at the kernel boundary; its `rc.dec` token
-(dynamic `token<align, ?>` or an exact static size) is a donor for the
-materialize's `token.alloc`. Same shape → same bin → `token.realloc`
-pointer-identity: the kernel writes into the buffer it read from. This
-requires the usual window discipline — the dec and the alloc sit in the
-same reuse window with no intervening call — which the lowering controls
-since it emits both boundary ops.
+- The write-back anchor must be the **memref-destination** form,
+  `bufferization.materialize_in_destination %t in writable %view :
+  (tensor<…>, memref<…>) -> ()`. The tensor-destination form returns a
+  tensor, and when that result is unused the whole kernel is dead code
+  by value semantics — canonicalize deletes it before bufferization runs
+  (the pre-existing e2e test survives only because its asserting
+  extracts keep the chain alive).
+- In-place comes from **DPS-threading the view tensor through every
+  stage's `outs`**, not from empty-tensor elimination:
+  `eliminate-empty-tensors` refuses when an ins operand aliases the
+  destination (it lacks one-shot's elementwise-access reasoning), while
+  one-shot bufferizes `ins(%t) outs(%t)` in place happily. Threaded
+  this way, fill → matmul → bias runs on the rc payload with zero
+  temporaries and zero copies in both CoW branches
+  (`linalg_matmul_bias_dps.mlir`).
+
+Corollary: `linalg-fuse-elementwise-ops` **breaks** the threading — the
+fused op's `outs` is rebuilt from `tensor.empty`, and the result is an
+alloc + copy that is strictly worse than the unfused two-pass form. A
+small post-fusion DPS re-anchoring rewrite (replace `outs(tensor.empty)`
+with the destination when the result feeds the materialize anchor and
+the op is elementwise with identity maps) is the missing piece before
+fusion can be enabled in the pipeline.
+
+**Fresh materialize reuses for free (PoC-verified, with a contract).**
+`linalg_axpy_token_reuse.mlir`: views taken, inputs dec'd, result box
+created before the kernel region — `TokenReuse` pairs the dead
+exact-size array tokens at the ensure tier (Score=2) *unadjusted*, and
+after `rc-create-sink`/`rc-create-fusion` the unique path degenerates to
+`rc.reinterpret` + `token.launder` + `rc.create … skip_rc`: the dead box
+becomes the result box with no free, no alloc, and no refcount write.
+The executable sibling verifies both modes element-by-element.
+
+The contract this exposes: the kernel still *reads* the donor's payload
+after the create — tensor reads are deferred into loops that bufferize
+later, unlike pure-Reussir loads which always precede a dec. With
+pointer-identity reuse the kernel reads and writes the same buffer,
+correct **only for elementwise stages with identical index maps**.
+`TokenReuse` cannot see this, so the rule is the frontend's: emit
+consuming decs before the kernel only when every stage touching that
+input is elementwise-aligned; after the kernel otherwise. (A permuting
+kernel — reverse, transpose — over a reused donor would read
+already-overwritten elements.)
 
 ## Pipeline and registry
 
@@ -113,8 +141,12 @@ since it emits both boundary ops.
   on linalg-on-tensors: tiling/fusion via the surface `transform [{ … }]`
   item at upstream's intended scheduling point, before bufferization.
 - Fusion-surviving intermediates are plain `memref.alloc`s — scope-
-  confined, invisible to rc and to token reuse. Acceptable first;
-  unifiable later by pointing bufferization's allocation hooks at
+  confined, invisible to rc and to token reuse, and **leaked** by the
+  bare bufferization sequence (`linalg_reduction_buffer_cleanup.mlir`
+  pins the leak and both remedies): run
+  `promote-buffers-to-stack` first (bounded temporaries become allocas),
+  then the ownership-based deallocation pipeline for what stays on the
+  heap. Unifiable later by pointing bufferization's allocation hooks at
   `__reussir_allocate`.
 - `--token-reuse-remarks` learns to tag materialization sites, so "did
   my kernel run in place" is checked from the remarks JSON, not by
