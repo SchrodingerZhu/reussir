@@ -498,7 +498,19 @@ impl Emitter<'_> {
                 let elem = nodes(node)
                     .find(|n| is_type_kind(n.kind()))
                     .expect("array element type");
-                let extents: Vec<Value> = expr_children(node).map(|e| self.expr(e)).collect();
+                // A `?` extent (dynamic dimension) projects as `null`, the
+                // same convention as `_` in a type argument list.
+                let extents: Vec<Value> = node
+                    .children()
+                    .filter(|n| is_expr_kind(n.kind()) || n.kind() == DynExtent)
+                    .map(|n| {
+                        if n.kind() == DynExtent {
+                            Value::Null
+                        } else {
+                            self.expr(n)
+                        }
+                    })
+                    .collect();
                 tagged("TypeArray", json!([self.type_(elem), extents]))
             }
             k => unreachable!("unexpected type node {k:?}"),

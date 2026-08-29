@@ -304,11 +304,10 @@ impl<'a, 'tcx> FfiCtx<'a, 'tcx> {
             // `'static` global literal, so the spelled lifetime is sound —
             // and unlike `'_`, it is legal in the packed-args struct field
             // the nontrivial boundary generates.
-            TyKind::Str => {
-                Ok("::reussir_rt::collections::string::Str<'static>".into())
-            }
+            TyKind::Str => Ok("::reussir_rt::collections::string::Str<'static>".into()),
             TyKind::Cell { .. } => Err("a cell cannot cross the FFI boundary".into()),
             TyKind::Array { .. } => Err("an array cannot cross the FFI boundary yet".into()),
+            TyKind::Tensor { .. } => Err("a tensor cannot cross the FFI boundary".into()),
             TyKind::Closure { .. } => Err("a closure cannot cross the FFI boundary yet".into()),
             TyKind::Bottom | TyKind::Generic(_) | TyKind::Hole(_) => {
                 Err("the type is not ground".into())

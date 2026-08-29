@@ -344,6 +344,12 @@ pub enum ExprKind<'tcx> {
         op: crate::intrinsic::ArrayFn,
         args: &'tcx [Expr<'tcx>],
     },
+    /// A built-in operation on a transient tensor, mirroring
+    /// [`crate::semi::hir::ExprKind::TensorOp`].
+    TensorOp {
+        op: crate::intrinsic::TensorFn,
+        args: &'tcx [Expr<'tcx>],
+    },
     Match(&'tcx Expr<'tcx>, DecisionTree<'tcx>),
     /// Error-recovery placeholder.
     Poison,

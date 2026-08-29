@@ -223,6 +223,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let elem = self.resolve(*elem);
                 self.tcx.mk_array(elem, dims)
             }
+            TyKind::Tensor { elem, dims } => {
+                let elem = self.resolve(*elem);
+                self.tcx.mk_tensor(elem, dims)
+            }
             TyKind::Cell { elem, kind } => {
                 let elem = self.resolve(*elem);
                 self.tcx.mk_cell(elem, *kind)
@@ -324,6 +328,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             {
                 self.unify(*e1, *e2)
             }
+            (TyKind::Tensor { elem: e1, dims: d1 }, TyKind::Tensor { elem: e2, dims: d2 })
+                if d1 == d2 =>
+            {
+                self.unify(*e1, *e2)
+            }
 
             (TyKind::Int(x), TyKind::Int(y)) if x == y => Ok(()),
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
@@ -374,7 +383,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Nullable(inner) => self.occurs(h, *inner),
             TyKind::Arc(inner) => self.occurs(h, *inner),
             TyKind::Cell { elem: inner, .. } => self.occurs(h, *inner),
-            TyKind::Array { elem, .. } => self.occurs(h, *elem),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => self.occurs(h, *elem),
             _ => false,
         }
     }
@@ -536,6 +545,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             {
                 self.unify_instantiated(*e1, inst, *e2)
             }
+            (TyKind::Tensor { elem: e1, dims: d1 }, TyKind::Tensor { elem: e2, dims: d2 })
+                if d1 == d2 =>
+            {
+                self.unify_instantiated(*e1, inst, *e2)
+            }
 
             (TyKind::Int(x), TyKind::Int(y)) if x == y => Ok(()),
             (TyKind::Fp(x), TyKind::Fp(y)) if x == y => Ok(()),
@@ -596,6 +610,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             TyKind::Array { elem, dims } => {
                 let elem = self.materialize(*elem, inst);
                 self.tcx.mk_array(elem, dims)
+            }
+            TyKind::Tensor { elem, dims } => {
+                let elem = self.materialize(*elem, inst);
+                self.tcx.mk_tensor(elem, dims)
             }
             TyKind::Cell { elem, kind } => {
                 let elem = self.materialize(*elem, inst);

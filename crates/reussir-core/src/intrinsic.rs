@@ -178,6 +178,11 @@ pub enum ArrayFn {
     /// `fold(a, init, |acc, x| e)`: row-major reduction. Value operands:
     /// `[a, init]`; `a` is borrowed, not consumed.
     Fold,
+    /// `dim(a, k)`: the `k`-th extent as `u64`. Value operands: `[a, k]`;
+    /// `a` is borrowed, not consumed. The interesting case is a dynamic
+    /// dimension (`[T; ?, 4]`), whose extent lives in the box header; on a
+    /// fully static array it folds to a constant.
+    Dim,
 }
 
 /// A built-in operation on a shared mutable [`Cell`](crate::semi::ty::TyKind::Cell),
@@ -272,6 +277,7 @@ impl ArrayFn {
             "get" => Some(ArrayFn::Get),
             "set" => Some(ArrayFn::Set),
             "fold" => Some(ArrayFn::Fold),
+            "dim" => Some(ArrayFn::Dim),
             _ => None,
         }
     }
@@ -284,12 +290,52 @@ impl ArrayFn {
             ArrayFn::Get => "get",
             ArrayFn::Set => "set",
             ArrayFn::Fold => "fold",
+            ArrayFn::Dim => "dim",
         }
     }
 
     /// Whether the op takes an inline kernel body.
     pub fn has_kernel(self) -> bool {
         matches!(self, ArrayFn::Tabulate | ArrayFn::Fold)
+    }
+}
+
+/// A built-in operation on a transient tensor (`TyKind::Tensor`), spelled
+/// `core::intrinsic::tensor::<fn>`. Like [`ArrayFn`], these carry their own
+/// HIR/MIR node (`ExprKind::TensorOp`). The boundary contract
+/// (docs/design/tensor-kernels.md): `of` roots a reference to the backing
+/// array for the tensor's lifetime, `materialize` is the only way a
+/// tensor's data escapes back into the rc world.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TensorFn {
+    /// `of(a)`: view an array as a tensor. Value operands: `[a]`; consumes
+    /// the reference (the tensor owns the rooted dup).
+    Of,
+    /// `materialize(t)`: build a fresh array from the tensor's value.
+    /// Value operands: `[t]`.
+    Materialize,
+    /// `dim(t, k)`: the `k`-th extent as `u64`. Value operands: `[t, k]`.
+    Dim,
+}
+
+impl TensorFn {
+    /// Parse a surface / textual-IR name.
+    pub fn parse(name: &str) -> Option<TensorFn> {
+        match name {
+            "of" => Some(TensorFn::Of),
+            "materialize" => Some(TensorFn::Materialize),
+            "dim" => Some(TensorFn::Dim),
+            _ => None,
+        }
+    }
+
+    /// The surface name, also used by the textual IR (`tensor#<name>`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TensorFn::Of => "of",
+            TensorFn::Materialize => "materialize",
+            TensorFn::Dim => "dim",
+        }
     }
 }
 

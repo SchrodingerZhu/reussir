@@ -556,11 +556,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 let bool_ty = self.tcx.mk_bool();
                 let l = self.check_expr(l, bool_ty);
                 let r = self.check_expr(r, bool_ty);
-                let shortcut = self.mk_expr(
-                    ExprKind::ConstBool(matches!(op, BinOp::Or)),
-                    bool_ty,
-                    span,
-                );
+                let shortcut =
+                    self.mk_expr(ExprKind::ConstBool(matches!(op, BinOp::Or)), bool_ty, span);
                 let (t, f) = match op {
                     // `l && r` ⇒ `if l { r } else { false }`
                     BinOp::And => (r, shortcut),
@@ -2147,6 +2144,8 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
         // A flex value cannot be materialized, so it cannot escape its region by
         // being captured in a closure (the closure may outlive the region).
+        // A tensor is confined the same way: the closure may outlive the
+        // chain the view belongs to (flex : freeze :: tensor : materialize).
         for &(v, ty) in &captures {
             if self.is_flex(ty) {
                 let name = self.sym(self.vars.def(v).name);
@@ -2154,6 +2153,16 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     span,
                     format!(
                         "closure cannot capture `{name}`: a flex value cannot escape its region"
+                    ),
+                );
+            }
+            if crate::semi::ctxt::contains_tensor(self.infer.resolve(ty)) {
+                let name = self.sym(self.vars.def(v).name);
+                self.error(
+                    span,
+                    format!(
+                        "closure cannot capture `{name}`: a tensor is scope-confined \
+                         (materialize to an array first)"
                     ),
                 );
             }
@@ -2167,6 +2176,13 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             self.error(
                 span,
                 "closure cannot return a flex value: a flex value cannot escape its region",
+            );
+        }
+        if crate::semi::ctxt::contains_tensor(self.infer.resolve(body.ty)) {
+            self.error(
+                span,
+                "closure cannot return a tensor: tensors are scope-confined \
+                 (materialize to an array first)",
             );
         }
 
@@ -2442,6 +2458,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             "panic" => Some(self.infer_panic_intrinsic(fc, span)),
             "math" => Some(self.infer_math_intrinsic(fc, span)),
             "array" => Some(self.infer_array_intrinsic(fc, span)),
+            "tensor" => Some(self.infer_tensor_intrinsic(fc, span)),
             "cell" => Some(self.infer_cell_intrinsic(fc, span)),
             "str" => Some(self.infer_str_intrinsic(fc, span)),
             other => {
@@ -2976,13 +2993,31 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             return self.poison(span);
         };
-        if fc.args.len() != 1 {
+        // A dynamic dimension (`[T; ?, 4]`) has no extent in the type; its
+        // runtime value is a leading `u64` operand of the constructor, in
+        // dimension order.
+        let n_dynamic = dims
+            .iter()
+            .filter(|&&d| d == crate::semi::ty::DYNAMIC_EXTENT)
+            .count();
+        if fc.args.len() != n_dynamic + 1 {
+            let extents = if n_dynamic == 0 {
+                String::new()
+            } else {
+                format!(" and {n_dynamic} leading dynamic extent(s)")
+            };
             self.error(
                 span,
-                format!("`core::intrinsic::array::{method}` expects exactly one argument"),
+                format!("`core::intrinsic::array::{method}` expects exactly one argument{extents}"),
             );
             return self.poison(span);
         }
+        let u64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Unsigned(64));
+        let extent_args: Vec<Expr<'tcx>> = fc.args[..n_dynamic]
+            .iter()
+            .map(|a| self.check_expr(a, u64_ty))
+            .collect();
+        let payload_arg = &fc.args[n_dynamic];
         // `tabulate` fills the payload through the raw view with no
         // per-element ownership hooks, so rc elements stay out of it; a
         // deferred (generic) element re-checks at monomorphization. `splat`
@@ -3002,22 +3037,19 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
         match op {
             ArrayFn::Splat => {
-                let v = self.check_expr(&fc.args[0], elem);
-                self.mk_expr(ExprKind::ArrayOp { op, args: vec![v] }, arr, span)
+                let v = self.check_expr(payload_arg, elem);
+                let mut args = extent_args;
+                args.push(v);
+                self.mk_expr(ExprKind::ArrayOp { op, args }, arr, span)
             }
             ArrayFn::Tabulate => {
                 let i64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Signed(64));
                 let params = vec![i64_ty; dims.len()];
                 let kernel_ty = self.tcx.mk_closure(&params, elem);
-                let kernel = self.check_expr(&fc.args[0], kernel_ty);
-                self.mk_expr(
-                    ExprKind::ArrayOp {
-                        op,
-                        args: vec![kernel],
-                    },
-                    arr,
-                    span,
-                )
+                let kernel = self.check_expr(payload_arg, kernel_ty);
+                let mut args = extent_args;
+                args.push(kernel);
+                self.mk_expr(ExprKind::ArrayOp { op, args }, arr, span)
             }
             _ => unreachable!("filtered above"),
         }
@@ -3132,7 +3164,138 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                     span,
                 )
             }
-            _ => unreachable!("routed here only for get/set/fold"),
+            "dim" => {
+                if args.len() != 1 {
+                    self.error(span, "`dim` expects one dimension-index argument");
+                    return self.poison(span);
+                }
+                let u64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Unsigned(64));
+                let k = self.check_expr(&args[0], u64_ty);
+                self.mk_expr(
+                    ExprKind::ArrayOp {
+                        op: ArrayFn::Dim,
+                        args: vec![base, k],
+                    },
+                    u64_ty,
+                    span,
+                )
+            }
+            _ => unreachable!("routed here only for get/set/fold/dim"),
+        }
+    }
+
+    /// The tensor boundary intrinsics (docs/design/tensor-kernels.md):
+    /// `of(a)` views an array as a tensor of the same shape (consuming the
+    /// reference — the tensor owns the rooted dup, which is what keeps a
+    /// later in-place update of the array from mutating the viewed buffer);
+    /// `materialize(t)` builds a fresh array from the tensor's value;
+    /// `dim(t, k)` reads the `k`-th extent as `u64`.
+    fn infer_tensor_intrinsic(&mut self, fc: &surface::FuncCall, span: Option<Span>) -> Expr<'tcx> {
+        use crate::intrinsic::TensorFn;
+        let name = self.sym(fc.name.basename).to_string();
+        let Some(op) = TensorFn::parse(&name) else {
+            self.error(
+                span,
+                format!("unknown tensor intrinsic `core::intrinsic::tensor::{name}`"),
+            );
+            return self.poison(span);
+        };
+        if !fc.ty_args.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`core::intrinsic::tensor::{name}` takes no type arguments \
+                     (the shape comes from its argument)"
+                ),
+            );
+            return self.poison(span);
+        }
+        let expected_args = match op {
+            TensorFn::Of | TensorFn::Materialize => 1,
+            TensorFn::Dim => 2,
+        };
+        if fc.args.len() != expected_args {
+            self.error(
+                span,
+                format!(
+                    "`core::intrinsic::tensor::{name}` expects exactly \
+                     {expected_args} argument(s), got {}",
+                    fc.args.len()
+                ),
+            );
+            return self.poison(span);
+        }
+        let base = self.infer_expr(&fc.args[0]);
+        let bty = self.infer.shallow_resolve(base.ty);
+        match op {
+            TensorFn::Of => {
+                let TyKind::Array { elem, dims } = *bty.kind() else {
+                    let shown = self.infer.resolve(base.ty);
+                    self.error(
+                        span,
+                        format!(
+                            "`of` expects an array argument, found `{}`",
+                            self.ty_display(shown)
+                        ),
+                    );
+                    return self.poison(span);
+                };
+                let tensor = self.tcx.mk_tensor(elem, dims);
+                self.mk_expr(
+                    ExprKind::TensorOp {
+                        op,
+                        args: vec![base],
+                    },
+                    tensor,
+                    span,
+                )
+            }
+            TensorFn::Materialize => {
+                let TyKind::Tensor { elem, dims } = *bty.kind() else {
+                    let shown = self.infer.resolve(base.ty);
+                    self.error(
+                        span,
+                        format!(
+                            "`materialize` expects a tensor argument, found `{}`",
+                            self.ty_display(shown)
+                        ),
+                    );
+                    return self.poison(span);
+                };
+                let arr = self.tcx.mk_array(elem, dims);
+                self.mk_expr(
+                    ExprKind::TensorOp {
+                        op,
+                        args: vec![base],
+                    },
+                    arr,
+                    span,
+                )
+            }
+            TensorFn::Dim => {
+                if !matches!(bty.kind(), TyKind::Tensor { .. }) {
+                    let shown = self.infer.resolve(base.ty);
+                    self.error(
+                        span,
+                        format!(
+                            "`dim` expects a tensor argument, found `{}` \
+                             (use `core::intrinsic::array::dim` for arrays)",
+                            self.ty_display(shown)
+                        ),
+                    );
+                    return self.poison(span);
+                }
+                let u64_ty = self.tcx.mk_int(crate::semi::ty::IntTy::Unsigned(64));
+                let k = self.check_expr(&fc.args[1], u64_ty);
+                self.mk_expr(
+                    ExprKind::TensorOp {
+                        op,
+                        args: vec![base, k],
+                    },
+                    u64_ty,
+                    span,
+                )
+            }
         }
     }
 
@@ -3886,6 +4049,10 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 op,
                 args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
             },
+            TensorOp { op, args } => TensorOp {
+                op,
+                args: args.into_iter().map(|e| self.zonk_expr(e)).collect(),
+            },
             TraitCall {
                 trait_def,
                 method,
@@ -4007,7 +4174,9 @@ fn var_occurrences<'tcx>(e: &Expr<'tcx>, used: &mut Vec<VarId>, bound: &mut Vec<
             bound.extend(c.params.iter().map(|&(v, _)| v));
             var_occurrences(&c.body, used, bound);
         }
-        ArrayOp { args, .. } => args.iter().for_each(|e| var_occurrences(e, used, bound)),
+        ArrayOp { args, .. } | TensorOp { args, .. } => {
+            args.iter().for_each(|e| var_occurrences(e, used, bound))
+        }
         Match(scrut, tree) => {
             var_occurrences(scrut, used, bound);
             tree_occurrences(tree, used, bound);

@@ -269,7 +269,7 @@ fn note_records<'tcx>(ty: Ty<'tcx>, records: &mut FxHashSet<DefId>, queue: &mut 
             }
             note_records(ret, records, queue);
         }
-        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => {
+        TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } | TyKind::Cell { elem, .. } => {
             note_records(elem, records, queue);
         }
         TyKind::Nullable(inner) | TyKind::Arc(inner) => {

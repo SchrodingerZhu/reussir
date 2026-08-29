@@ -10,6 +10,16 @@ unmaterialized. (`str<local>`'s transient lifescope and the #344 note
 "`modify`'s view must not escape its region" are the other in-tree
 precedents.)
 
+## Status
+
+Frontend landed: `Tensor<[T; dims]>` (path-based builtin former),
+`core::intrinsic::tensor::{of, materialize, dim}` on a `TensorOp`
+HIR/MIR node, the escape rules below (record members, closure
+captures/returns, signatures, container elements, FFI), and ownership
+treating `of` as consuming the rooted dup. Lowering stops at `err(…)`
+stubs; the pipeline/registry stages and the combinator surface are the
+open half.
+
 ## Why combinators cannot live on arrays directly
 
 The two in-place systems do not compose per-op. Rc/CoW decides

@@ -1,0 +1,48 @@
+// Dynamic-extent arrays (docs/design/dynamic-extent-arrays.md): a `?`
+// extent marks a dimension dynamic; its runtime value is a leading operand
+// of the constructing intrinsic. Frontend-complete; lowering is pending the
+// strided-header box, so `--emit mlir` stops with a diagnostic.
+
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %not %rrc %s --emit mlir -o - 2>&1 | %FileCheck %s --check-prefix=STUB
+
+// STUB: not lower yet
+
+import core::intrinsic::array;
+
+// CHECK: pub fn #make(v0 (n): u64) -> [i32; ?]
+// CHECK: array#splat(v0 : u64 {{.*}}, 42 : i32 {{.*}}) : [i32; ?]
+pub fn make(n : u64) -> [i32; ?] {
+    array::splat<[i32; ?]>(n, 42)
+}
+
+// CHECK: pub fn #make2(v0 (n): u64) -> [i32; ?, 4]
+// CHECK: array#tabulate(v0 : u64 {{.*}}, closure
+pub fn make2(n : u64) -> [i32; ?, 4] {
+    array::tabulate<[i32; ?, 4]>(n, |i : i64, j : i64| 0)
+}
+
+// CHECK: pub fn #read(v0 (a): [i32; ?], v1 (i): i64) -> i32
+// CHECK: array#get(v0 : [i32; ?] {{.*}}, v1 : i64 {{.*}}) : i32
+pub fn read(a : [i32; ?], i : i64) -> i32 {
+    array::get(a, i)
+}
+
+// CHECK: pub fn #put(v0 (a): [i32; ?], v1 (i): i64, v2 (v): i32) -> [i32; ?]
+// CHECK: array#set(v0 : [i32; ?] {{.*}}) : [i32; ?]
+pub fn put(a : [i32; ?], i : i64, v : i32) -> [i32; ?] {
+    array::set(a, i, v)
+}
+
+// CHECK: pub fn #extent(v0 (a): [i32; ?, 4]) -> u64
+// CHECK: array#dim(v0 : [i32; ?, 4] {{.*}}, 0 : u64 {{.*}}) : u64
+pub fn extent(a : [i32; ?, 4]) -> u64 {
+    array::dim(a, 0)
+}
+
+// A fully static array still takes no leading extents and `dim` works on it.
+// CHECK: pub fn #static_dim(v0 (a): [f64; 4, 4]) -> u64
+// CHECK: array#dim(v0 : [f64; 4, 4] {{.*}}, 1 : u64 {{.*}}) : u64
+pub fn static_dim(a : [f64; 4, 4]) -> u64 {
+    array::dim(a, 1)
+}

@@ -242,6 +242,31 @@ pub struct FuncProto<'tcx> {
 /// their arguments, through every structural former — for the
 /// private-in-public check. Deduplicated so each offender reports once per
 /// surface.
+/// Whether a tensor occurs anywhere in `ty`'s structure. Tensors are
+/// scope-confined values (docs/design/tensor-kernels.md); this is the
+/// predicate behind the escape rules (record members, function signatures,
+/// closure captures).
+pub(crate) fn contains_tensor(ty: Ty<'_>) -> bool {
+    match *ty.kind() {
+        TyKind::Tensor { .. } => true,
+        TyKind::Record { args, .. } => args.iter().any(|&a| contains_tensor(a)),
+        TyKind::Closure { params, ret } => {
+            params.iter().any(|&p| contains_tensor(p)) || contains_tensor(ret)
+        }
+        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => contains_tensor(elem),
+        TyKind::Nullable(inner) | TyKind::Arc(inner) => contains_tensor(inner),
+        TyKind::Int(_)
+        | TyKind::Fp(_)
+        | TyKind::Bool
+        | TyKind::Str
+        | TyKind::Char
+        | TyKind::Unit
+        | TyKind::Generic(_)
+        | TyKind::Hole(_)
+        | TyKind::Bottom => false,
+    }
+}
+
 fn collect_private_records<'tcx>(
     records: &FxHashMap<DefId, Record<'tcx>>,
     ty: Ty<'tcx>,
@@ -266,7 +291,7 @@ fn collect_private_records<'tcx>(
             }
             collect_private_records(records, ret, out);
         }
-        TyKind::Array { elem, .. } | TyKind::Cell { elem, .. } => {
+        TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } | TyKind::Cell { elem, .. } => {
             collect_private_records(records, elem, out);
         }
         TyKind::Nullable(inner) | TyKind::Arc(inner) => {
@@ -676,6 +701,24 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         out
     }
 
+    /// `[elem; d0, d1]`, printing a dynamic dimension as `?` — the same
+    /// spelling the surface syntax uses.
+    fn push_shape_display(&self, out: &mut String, elem: Ty<'tcx>, dims: &[u64]) {
+        use std::fmt::Write as _;
+        out.push('[');
+        self.push_ty_display(out, elem);
+        out.push(';');
+        for (i, &extent) in dims.iter().enumerate() {
+            let sep = if i > 0 { "," } else { "" };
+            if extent == crate::semi::ty::DYNAMIC_EXTENT {
+                let _ = write!(out, "{sep} ?");
+            } else {
+                let _ = write!(out, "{sep} {extent}");
+            }
+        }
+        out.push(']');
+    }
+
     fn push_ty_display(&self, out: &mut String, ty: Ty<'tcx>) {
         use crate::semi::ty::{FpTy, IntTy};
         use std::fmt::Write as _;
@@ -719,14 +762,12 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 out.push('>');
             }
             TyKind::Array { elem, dims } => {
-                out.push('[');
-                self.push_ty_display(out, elem);
-                out.push(';');
-                for (i, extent) in dims.iter().enumerate() {
-                    let sep = if i > 0 { "," } else { "" };
-                    let _ = write!(out, "{sep} {extent}");
-                }
-                out.push(']');
+                self.push_shape_display(out, elem, dims);
+            }
+            TyKind::Tensor { elem, dims } => {
+                out.push_str("Tensor<");
+                self.push_shape_display(out, elem, dims);
+                out.push('>');
             }
             TyKind::Record { def, args, flex } => {
                 match flex {
@@ -3160,6 +3201,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             if *flex {
                 collect_regional_generic(t, &mut regional_generics);
             }
+            self.reject_tensor_signature(t, Some(ty.span()));
             params.push((*name, t));
         }
         let return_ty = match &func.return_type {
@@ -3168,6 +3210,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 if *flex {
                     collect_regional_generic(t, &mut regional_generics);
                 }
+                self.reject_tensor_signature(t, Some(ty.span()));
                 t
             }
             None => self.tcx.mk_unit(),
@@ -3499,7 +3542,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         let params: Vec<Ty<'tcx>> = func
             .params
             .iter()
-            .map(|(_, ty, flex)| self.eval_type_flex(ty, *flex))
+            .map(|(_, ty, flex)| {
+                let t = self.eval_type_flex(ty, *flex);
+                self.reject_tensor_signature(t, Some(ty.span()));
+                t
+            })
             .collect();
         // The receiver is the leading parameter named `self`; its evaluated
         // type (or the `[flex]` marker) picks the form.
@@ -3526,7 +3573,11 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 }
             });
         let ret = match &func.return_type {
-            Some((ty, flex)) => self.eval_type_flex(ty, *flex),
+            Some((ty, flex)) => {
+                let t = self.eval_type_flex(ty, *flex);
+                self.reject_tensor_signature(t, Some(ty.span()));
+                t
+            }
             None => self.tcx.mk_unit(),
         };
         self.generic_names.clear();
@@ -3645,6 +3696,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (name, ty, mutable, vis) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         self.reject_arc_member(default_cap, fty, span);
+                        self.reject_tensor_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -3658,6 +3710,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                         let (ty, mutable, vis) = &f.value;
                         let fty = self.field_ty(ty, *mutable);
                         self.reject_arc_member(default_cap, fty, span);
+                        self.reject_tensor_member(fty, span);
                         if *mutable {
                             self.note_link_element(fty, &mut regional_generics, span);
                         }
@@ -3676,6 +3729,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                                 .map(|t| {
                                     let fty = self.eval_type(t);
                                     self.reject_arc_member(default_cap, fty, span);
+                                    self.reject_tensor_member(fty, span);
                                     fty
                                 })
                                 .collect(),
@@ -3882,6 +3936,32 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// freeze/rigid release, region teardown) is deliberately left
     /// undecided. Shared and `[value]` records may hold `Arc` members —
     /// the member type spells its own atomic link (§3.3).
+    /// A tensor is scope-confined (docs/design/tensor-kernels.md): storing
+    /// one in a record would let the transient view outlive its chain, so a
+    /// member type may not contain a tensor anywhere in its structure.
+    fn reject_tensor_member(&mut self, fty: Ty<'tcx>, span: Option<Span>) {
+        if contains_tensor(fty) {
+            self.error(
+                span,
+                "a record member cannot contain a tensor: tensors are \
+                 scope-confined (materialize to an array to store the data)",
+            );
+        }
+    }
+
+    /// A tensor may not appear in a function signature: the transient view
+    /// stays inside the chain that produced it (kernels compose through
+    /// intrinsics for now; a future `kernel fn` would lift this).
+    fn reject_tensor_signature(&mut self, ty: Ty<'tcx>, span: Option<Span>) {
+        if contains_tensor(ty) {
+            self.error(
+                span,
+                "a tensor cannot appear in a function signature: tensors are \
+                 scope-confined (pass the array and take the view inside)",
+            );
+        }
+    }
+
     fn reject_arc_member(&mut self, record_cap: DefaultCap, fty: Ty<'tcx>, span: Option<Span>) {
         if record_cap == DefaultCap::Regional && matches!(fty.kind(), TyKind::Arc(_)) {
             self.error(
@@ -3916,7 +3996,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             // Arrays, cells, and arcs are pointer-like (one shared rc box), so
             // the `Nullable` check lets them through — but a `[field]` link
             // stores a regional record, never a shared box.
-            TyKind::Array { .. } | TyKind::Cell { .. } | TyKind::Arc(_) => {
+            TyKind::Array { .. } | TyKind::Tensor { .. } | TyKind::Cell { .. } | TyKind::Arc(_) => {
                 self.error(span, "a `[field]` link element must be a regional record")
             }
             // Regional records are fine; non-record elements are already rejected

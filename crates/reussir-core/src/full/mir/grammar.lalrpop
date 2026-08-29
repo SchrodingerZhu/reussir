@@ -169,10 +169,19 @@ Ty: raw::Ty = {
     "Arc" "<" <t:Ty> ">" => raw::Ty::Arc(Box::new(t)),
     <cap:Cap> <path:TyPathArgs>
         => raw::Ty::Record { cap, path: path.0, args: path.1 },
-    "[" <elem:Ty> ";" <dims:CommaPlus<"int">> "]"
-        => raw::Ty::Array { elem: Box::new(elem), dims: dims.iter().map(raw::small_u64).collect() },
+    "[" <elem:Ty> ";" <dims:CommaPlus<Extent>> "]"
+        => raw::Ty::Array { elem: Box::new(elem), dims },
+    "Tensor" "<" "[" <elem:Ty> ";" <dims:CommaPlus<Extent>> "]" ">"
+        => raw::Ty::Tensor { elem: Box::new(elem), dims },
     "(" ")" "->" <ret:Ty> => raw::Ty::Closure { params: vec![], ret: Box::new(ret) },
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
+};
+
+/// One shape dimension: a static extent, or `?` for a dynamic one
+/// (the DYNAMIC_EXTENT sentinel, matching MLIR's spelling).
+Extent: u64 = {
+    <i:"int"> => raw::small_u64(&i),
+    "?" => crate::semi::ty::DYNAMIC_EXTENT,
 };
 
 /// A qualified record-type path with an optional turbofish
@@ -265,6 +274,8 @@ Atom: raw::Kind = {
         => raw::Kind::Intrinsic { family: family.to_string(), name: name.to_string(), imm: raw::small_u32(&imm), args },
     "array" "#" <op:"ident"> "(" <args:Comma<Expr>> ")"
         => raw::Kind::ArrayOp { op: op.to_string(), args },
+    "tensor" "#" <op:"ident"> "(" <args:Comma<Expr>> ")"
+        => raw::Kind::TensorOp { op: op.to_string(), args },
     "NonNull" "(" <e:Expr> ")" => raw::Kind::NullableCall(Some(e)),
     "Null" => raw::Kind::NullableCall(None),
     "apply" "(" <target:Expr> <args:("," <Expr>)*> ")"
@@ -413,6 +424,7 @@ extern {
         "proj" => Token::Proj,
         "intrinsic" => Token::Intrinsic,
         "array" => Token::Array,
+        "tensor" => Token::TensorKw,
         "assign" => Token::Assign,
         "Nullable" => Token::Nullable,
         "Cell" => Token::Cell,
@@ -422,6 +434,7 @@ extern {
         "FlatLock" => Token::FlatLockCell,
         "RwLock" => Token::RwLockCell,
         "Arc" => Token::Arc,
+        "Tensor" => Token::Tensor,
         "NonNull" => Token::NonNull,
         "Null" => Token::Null,
         "poison" => Token::Poison,
@@ -450,6 +463,7 @@ extern {
         "=" => Token::Eq,
         "=>" => Token::FatArrow,
         "_" => Token::Underscore,
+        "?" => Token::Question,
         "->" => Token::Arrow,
         "@" => Token::At,
         "#" => Token::Hash,

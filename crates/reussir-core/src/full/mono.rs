@@ -253,7 +253,8 @@ pub(crate) fn for_each_expr<'e, 'tcx>(expr: &'e Expr<'tcx>, f: &mut impl FnMut(&
         CompoundCall { args, .. }
         | VariantCall { args, .. }
         | Intrinsic { args, .. }
-        | ArrayOp { args, .. } => {
+        | ArrayOp { args, .. }
+        | TensorOp { args, .. } => {
             args.iter().for_each(|e| for_each_expr(e, f));
         }
         NullableCall(inner) => {
@@ -867,7 +868,7 @@ fn ty_depth(ty: Ty<'_>) -> usize {
         TyKind::Nullable(inner) => 1 + ty_depth(inner),
         TyKind::Cell { elem: inner, .. } => 1 + ty_depth(inner),
         TyKind::Arc(inner) => 1 + ty_depth(inner),
-        TyKind::Array { elem, .. } => 1 + ty_depth(elem),
+        TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => 1 + ty_depth(elem),
         TyKind::Record { args, .. } => 1 + args.iter().map(|&a| ty_depth(a)).max().unwrap_or(0),
         TyKind::Closure { params, ret } => {
             1 + params
@@ -1819,7 +1820,7 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             TyKind::Nullable(inner) => self.note_records(inner),
             TyKind::Cell { elem: inner, .. } => self.note_records(inner),
             TyKind::Arc(inner) => self.note_records(inner),
-            TyKind::Array { elem, .. } => self.note_records(elem),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => self.note_records(elem),
             _ => {}
         }
     }
@@ -1948,7 +1949,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 }
                 self.check_arc_inners(inner, span);
             }
-            TyKind::Array { elem, .. } => self.check_arc_inners(elem, span),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => {
+                self.check_arc_inners(elem, span)
+            }
             _ => {}
         }
     }
@@ -1984,7 +1987,9 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
             TyKind::Nullable(inner) => self.discover_records(inner, worklist),
             TyKind::Cell { elem: inner, .. } => self.discover_records(inner, worklist),
             TyKind::Arc(inner) => self.discover_records(inner, worklist),
-            TyKind::Array { elem, .. } => self.discover_records(elem, worklist),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => {
+                self.discover_records(elem, worklist)
+            }
             _ => {}
         }
     }
@@ -2409,11 +2414,14 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                 use crate::semi::ty::TyKind;
                 use crate::semi::ty_eval::{array_element_rejection, is_plain_scalar_or_deferred};
                 let arg0 = args.first().map(|a| subst_ty(self.tcx, a.ty, subst));
+                // The constructors' payload operand is the *last* argument
+                // (dynamic extents, if any, lead).
+                let last = args.last().map(|a| subst_ty(self.tcx, a.ty, subst));
                 let elem = match op {
-                    // `splat`'s one argument *is* an element value.
-                    ArrayFn::Splat => arg0,
+                    // `splat`'s payload argument *is* an element value.
+                    ArrayFn::Splat => last,
                     // `tabulate`'s kernel returns the element.
-                    ArrayFn::Tabulate => arg0.and_then(|t| match t.kind() {
+                    ArrayFn::Tabulate => last.and_then(|t| match t.kind() {
                         TyKind::Closure { ret, .. } => Some(*ret),
                         _ => None,
                     }),
@@ -2450,6 +2458,14 @@ impl<'a, 'tcx> Driver<'a, 'tcx> {
                     args: self.lower_slice(args, subst),
                 }
             }
+            // The tensor boundary intrinsics are shape-generic pass-throughs
+            // here; `of`'s array operand goes through the array element
+            // checks on its own type, and the lowering stubs stop anything
+            // from reaching codegen.
+            ExprKind::TensorOp { op, args } => M::TensorOp {
+                op: *op,
+                args: self.lower_slice(args, subst),
+            },
             ExprKind::Match(scrut, tree) => {
                 M::Match(self.lower_ref(scrut, subst), self.lower_tree(tree, subst))
             }
@@ -3512,7 +3528,7 @@ mod tests {
             TyKind::Nullable(inner) => is_ground(inner),
             TyKind::Cell { elem: inner, .. } => is_ground(inner),
             TyKind::Arc(inner) => is_ground(inner),
-            TyKind::Array { elem, .. } => is_ground(elem),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => is_ground(elem),
             _ => true,
         }
     }
@@ -3521,7 +3537,7 @@ mod tests {
     fn children<'tcx>(e: &mir::Expr<'tcx>) -> Vec<&'tcx mir::Expr<'tcx>> {
         use mir::ExprKind::*;
         match e.kind {
-            ArrayOp { args, .. } => args.iter().collect(),
+            ArrayOp { args, .. } | TensorOp { args, .. } => args.iter().collect(),
             GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
             | Poison => vec![],
             Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],

@@ -847,30 +847,24 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                     let index_ty = Type::index(self.context);
                     match func {
                         StrFn::Len => {
-                            let len = self.append(
-                                block,
-                                builders::str_len(self.context, operands[0], loc),
-                            );
+                            let len = self
+                                .append(block, builders::str_len(self.context, operands[0], loc));
                             let u64_ty = IntegerType::new(self.context, 64).into();
                             Ok(Some(
                                 self.append(block, arith::index_castui(len, u64_ty, loc)),
                             ))
                         }
                         StrFn::ByteAt => {
-                            let index = self.append(
-                                block,
-                                arith::index_castui(operands[1], index_ty, loc),
-                            );
+                            let index =
+                                self.append(block, arith::index_castui(operands[1], index_ty, loc));
                             Ok(Some(self.append(
                                 block,
                                 builders::str_byte_at(self.context, operands[0], index, loc),
                             )))
                         }
                         StrFn::Slice => {
-                            let offset = self.append(
-                                block,
-                                arith::index_castui(operands[1], index_ty, loc),
-                            );
+                            let offset =
+                                self.append(block, arith::index_castui(operands[1], index_ty, loc));
                             let result = self.tys.mlir_ty(e.ty)?;
                             Ok(Some(self.append(
                                 block,
@@ -950,6 +944,10 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             Closure(c) => self.closure(block, env, c).map(Some),
             ClosureCall { target, args } => self.closure_call(block, env, target, args),
             ArrayOp { op, args } => self.lower_array_op(block, env, e, *op, args),
+            // Frontend-complete, backend-pending (docs/design/tensor-kernels.md):
+            // the tensor boundary ops lower to array views / linalg once the
+            // bufferization stages land in the pipeline.
+            TensorOp { .. } => err("tensor operations do not lower yet"),
             GlobalStr(token) => self.global_str(block, e, *token).map(Some),
             Poison => err("poison expression reached lowering"),
         }
@@ -2886,30 +2884,21 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
             let op = match op {
                 CmpOp::Eq => builders::str_equal(self.context, lv, rv, loc),
                 CmpOp::Ne => {
-                    let eq = self
-                        .append(block, builders::str_equal(self.context, lv, rv, loc));
+                    let eq = self.append(block, builders::str_equal(self.context, lv, rv, loc));
                     let i1_ty = IntegerType::new(self.context, 1).into();
                     let one = self.append(
                         block,
-                        arith::constant(
-                            self.context,
-                            IntegerAttribute::new(i1_ty, 1).into(),
-                            loc,
-                        ),
+                        arith::constant(self.context, IntegerAttribute::new(i1_ty, 1).into(), loc),
                     );
                     arith::xori(eq, one, loc)
                 }
                 ordering => {
-                    let order = self
-                        .append(block, builders::str_compare(self.context, lv, rv, loc));
+                    let order =
+                        self.append(block, builders::str_compare(self.context, lv, rv, loc));
                     let i32_ty = IntegerType::new(self.context, 32).into();
                     let zero = self.append(
                         block,
-                        arith::constant(
-                            self.context,
-                            IntegerAttribute::new(i32_ty, 0).into(),
-                            loc,
-                        ),
+                        arith::constant(self.context, IntegerAttribute::new(i32_ty, 0).into(), loc),
                     );
                     let pred = match ordering {
                         CmpOp::Lt => CmpiPredicate::Slt,
@@ -3252,12 +3241,23 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
         op: ArrayFn,
         args: &'tcx [Expr<'tcx>],
     ) -> Result<Option<Value<'c, 'b>>> {
+        // Frontend-complete, backend-pending: a dynamic-extent array
+        // (docs/design/dynamic-extent-arrays.md) lowers to the strided-header
+        // box; until that lands every op on one stops here.
+        let shaped = match op {
+            ArrayFn::Splat | ArrayFn::Tabulate => e.ty,
+            _ => args[0].ty,
+        };
+        if Self::array_dims(shaped).is_ok_and(reussir_core::semi::ty::has_dynamic_extent) {
+            return err("dynamic-extent arrays do not lower yet");
+        }
         match op {
             ArrayFn::Get => self.array_get(block, env, e, args).map(Some),
             ArrayFn::Set => self.array_set(block, env, args).map(Some),
             ArrayFn::Splat => self.array_splat(block, env, e, args).map(Some),
             ArrayFn::Tabulate => self.array_tabulate(block, env, e, args).map(Some),
             ArrayFn::Fold => self.array_fold(block, env, e, args).map(Some),
+            ArrayFn::Dim => err("`array::dim` does not lower yet"),
         }
     }
 

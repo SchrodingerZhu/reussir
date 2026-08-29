@@ -112,6 +112,8 @@ pub enum SyntaxKind {
     Pound,
     /// `_`
     Underscore,
+    /// `?`
+    Question,
     /// Unrecognized input or token-level error (kept in the tree for
     /// losslessness).
     ErrorToken,
@@ -175,7 +177,10 @@ pub enum SyntaxKind {
     TypeArgList,
     /// `_` placeholder inside a type argument list.
     InferType,
-    /// A statically shaped array type: `[T; 512]`, `[T; 5, 16, 8]`.
+    /// `?` in array-extent position: a dynamic dimension (`[T; ?, 4]`),
+    /// mirroring MLIR's `memref<?x…>` spelling.
+    DynExtent,
+    /// An array type: `[T; 512]`, `[T; 5, 16, 8]`, `[T; ?, 4]`.
     ArrayType,
 
     // ===== Nodes: expressions =====
@@ -323,6 +328,7 @@ impl SyntaxKind {
             Caret => "`^`",
             Pound => "`#`",
             Underscore => "`_`",
+            Question => "`?`",
             Eof => "the end of the input",
             ErrorToken => "invalid input",
             _ => "a syntax node",

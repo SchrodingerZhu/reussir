@@ -313,6 +313,10 @@ impl<'a, 'tcx> Rr<'a, 'tcx> {
             // An array is one rc-managed box regardless of its (Plain)
             // element type.
             TyKind::Array { .. } => true,
+            // A tensor is a transient value-semantics view; it carries no rc
+            // box of its own (the backing array's reference is rooted by the
+            // intrinsic that produced the tensor, not by the tensor value).
+            TyKind::Tensor { .. } => false,
             // A cell is always one shared rc-managed box, independent of its
             // element type (which the cell's drop recursively releases).
             TyKind::Cell { .. } => true,
@@ -526,7 +530,7 @@ impl<'tcx> Analyzer<'_, 'tcx> {
             }
             // An array op uses its value operands (a Tabulate/Fold kernel is
             // an ordinary closure-typed operand among them).
-            ExprKind::ArrayOp { args, .. } => {
+            ExprKind::ArrayOp { args, .. } | ExprKind::TensorOp { args, .. } => {
                 for arg in args {
                     s.union_with(&self.free(arg));
                 }
@@ -647,6 +651,12 @@ impl<'tcx> Analyzer<'_, 'tcx> {
                 self.place_closure_call(target, args, live_after)
             }
             ExprKind::ArrayOp { op, args } => self.place_array_op(e, op, args, live_after),
+            // Tensor boundary ops consume their operands like call
+            // arguments: `of` consumes the array reference (the tensor owns
+            // the rooted dup — a later use of the array sees count ≥ 2 and
+            // clones, which is what makes the view's `restrict` contract
+            // hold); tensors themselves are not rc-managed.
+            ExprKind::TensorOp { args, .. } => self.place_args(args, live_after),
         }
     }
 
@@ -724,7 +734,7 @@ impl<'tcx> Analyzer<'_, 'tcx> {
         live_after: &VarSet,
     ) {
         use crate::intrinsic::ArrayFn;
-        let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold);
+        let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold | ArrayFn::Dim);
 
         let mut borrowed = VarSet::default();
         let mut base_is_borrowed_var = false;

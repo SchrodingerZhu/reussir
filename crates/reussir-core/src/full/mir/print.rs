@@ -302,6 +302,21 @@ impl Render<'_> {
 
     // ----- types -----
 
+    /// `[elem; d0, d1]`; a dynamic dimension prints as `?`, matching the
+    /// grammar's extent rule.
+    fn shape(&self, elem: Ty<'_>, dims: &[u64]) -> Doc<'static> {
+        let mut d = text("[") + self.ty(elem) + text(";");
+        for (i, &extent) in dims.iter().enumerate() {
+            let sep = if i > 0 { "," } else { "" };
+            if extent == crate::semi::ty::DYNAMIC_EXTENT {
+                d = d + text(format!("{sep} ?"));
+            } else {
+                d = d + text(format!("{sep} {extent}"));
+            }
+        }
+        d + text("]")
+    }
+
     fn ty(&self, ty: Ty<'_>) -> Doc<'static> {
         match *ty.kind() {
             TyKind::Int(IntTy::Signed(w)) => text(format!("i{w}")),
@@ -319,14 +334,8 @@ impl Render<'_> {
                 text(kind.surface_name()) + text("<") + self.ty(elem) + text(">")
             }
             TyKind::Arc(inner) => text("Arc<") + self.ty(inner) + text(">"),
-            TyKind::Array { elem, dims } => {
-                let mut d = text("[") + self.ty(elem) + text(";");
-                for (i, extent) in dims.iter().enumerate() {
-                    let sep = if i > 0 { "," } else { "" };
-                    d = d + text(format!("{sep} {extent}"));
-                }
-                d + text("]")
-            }
+            TyKind::Array { elem, dims } => self.shape(elem, dims),
+            TyKind::Tensor { elem, dims } => text("Tensor<") + self.shape(elem, dims) + text(">"),
             TyKind::Record { def, args, flex } => {
                 let mut d = match flex {
                     Flexivity::Flex | Flexivity::Rigid | Flexivity::Regional => {
@@ -534,6 +543,9 @@ impl Render<'_> {
             }
             ArrayOp { op, args } => {
                 text(format!("array#{}(", op.as_str())) + self.arg_list(args) + text(")")
+            }
+            TensorOp { op, args } => {
+                text(format!("tensor#{}(", op.as_str())) + self.arg_list(args) + text(")")
             }
             Let { .. } | Seq(_) | If(..) | Match(..) => {
                 unreachable!("structural forms are rendered by `value`")

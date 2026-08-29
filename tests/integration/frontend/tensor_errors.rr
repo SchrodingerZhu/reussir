@@ -1,0 +1,49 @@
+// Tensor escape rules (docs/design/tensor-kernels.md): a tensor is
+// scope-confined — flex : freeze :: tensor : materialize. It may not be
+// stored in a record, captured or returned by a closure, appear in a
+// function signature, or sit inside another container.
+
+// RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
+
+import core::intrinsic::tensor;
+
+// CHECK-DAG: a record member cannot contain a tensor
+pub struct Holder { t : Tensor<[i32; 4]> }
+
+// CHECK-DAG: a tensor cannot appear in a function signature
+fn sig_escape(t : Tensor<[i32; 4]>) -> u64 {
+    tensor::dim(t, 0)
+}
+
+// CHECK-DAG: array element type `Tensor<[i32; 4]>` is not supported yet (a tensor)
+fn bad_elem(x : [Tensor<[i32; 4]>; 2]) -> i64 { 0 }
+
+// CHECK-DAG: `Tensor` takes an array type argument
+fn bad_arg(x : [i32; 4]) -> i64 {
+    let t : Tensor<i32> = tensor::of(x);
+    0
+}
+
+// CHECK: closure cannot capture `t`: a tensor is scope-confined
+fn capture_escape(a : [i32; 8]) -> i64 {
+    let t = tensor::of(a);
+    let f = |x : i64| tensor::dim(t, 0);
+    0
+}
+
+// CHECK: closure cannot return a tensor
+fn ret_escape(a : [i32; 8]) -> i64 {
+    let f = |x : i64| tensor::of(a);
+    0
+}
+
+// CHECK: `of` expects an array argument
+fn of_scalar() -> i64 {
+    let t = tensor::of(0);
+    0
+}
+
+// CHECK: `materialize` expects a tensor argument
+fn mat_scalar(a : [i32; 8]) -> [i32; 8] {
+    tensor::materialize(a)
+}
