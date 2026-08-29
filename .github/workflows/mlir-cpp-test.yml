@@ -1,5 +1,10 @@
 name: MLIR Backend MultiArch
 
+# The toolchain comes from the Nix flake: the same pinned LLVM/MLIR 22,
+# clang, lit, wasmer, and Rust toolchain every developer gets from
+# `nix develop`, on both architectures. No apt.llvm.org, no external
+# installers — a formula or repository bump upstream cannot break this
+# pipeline (see the lit 23 and Homebrew LLVM 23 incidents).
 on:
   push:
     branches: [ main ]
@@ -14,7 +19,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        llvm-version: [22]
         os: [ubuntu-24.04, ubuntu-24.04-arm]
 
     runs-on: ${{ matrix.os }}
@@ -29,8 +33,9 @@ jobs:
       # ~15G of scratch, but the runner image already uses ~60G and hosted
       # runner disks vary in size, so smaller runners tip over. Reclaim the
       # large toolchains this C++/Rust/LLVM build never uses (~25G+) — Android
-      # SDK, .NET, Haskell (GHC), and Swift — to restore headroom. Best-effort:
-      # a missing path on any given image is not an error.
+      # SDK, .NET, Haskell (GHC), and Swift — to restore headroom (the Nix
+      # store adds its own several GB on top). Best-effort: a missing path on
+      # any given image is not an error.
       - name: Free up disk space
         run: |
           before=$(df -B1 --output=avail / | tail -1)
@@ -47,97 +52,33 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-03-15
-          components: rust-src, rustfmt, clippy
-          # The WebAssembly suites (tests/integration/rene/wasi_*.rr)
-          # cross-build packages for these targets: the runtime bake, the
-          # polyffi textures, and the launcher link are all rustc
-          # invocations that need the target's standard library. Without one
-          # the matching lit feature (`wasip1`, `wasip1-threads`) stays off
-          # and its suite reports UNSUPPORTED instead of running.
-          target: wasm32-wasip1, wasm32-wasip1-threads
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
-          sudo pip install 'lit<24' --break-system-packages
-
-      # The engine that runs what the WebAssembly suite builds. The official
-      # installer drops the binary in ~/.wasmer/bin; putting that on PATH is
-      # what lets CMake's find_program see it at configure time, which is what
-      # turns the `wasmer` lit feature on.
-      - name: Install wasmer
-        run: |
-          curl https://get.wasmer.io -sSfL | sh
-          echo "$HOME/.wasmer/bin" >> $GITHUB_PATH
-          "$HOME/.wasmer/bin/wasmer" --version
-
-      - name: Install LLVM ${{ matrix.llvm-version }}
-        run: |
-          # Add LLVM apt repository GPG key
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          
-          # Get Ubuntu codename
-          CODENAME=$(lsb_release -cs)
-          
-          # Add LLVM apt repository with consistent suffix pattern
-          echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-${{ matrix.llvm-version }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          
-          # Update apt cache
-          sudo apt-get update
-          
-          # Install LLVM/Clang toolchain. libpolly-*-dev provides the static
-          # Polly archives that llvm-config --link-static references (needed by
-          # mlir-sys / tblgen / llvm-sys); libclang-*-dev provides libclang for
-          # their bindgen step. python3-lldb-* provides lldb's script support,
-          # which the debuginfo lit suite needs to load the Reussir formatters
-          # (tests/integration/debuginfo; gdb comes with the runner image).
-          # libomp-*-dev lets lit's `%cc -fopenmp` probe succeed so the
-          # OpenMP e2e drivers (conversion/*_omp_e2e and the omp sanitizer
-          # tests) actually run instead of reporting UNSUPPORTED.
-          sudo apt-get install -y \
-            clang-${{ matrix.llvm-version }} \
-            lldb-${{ matrix.llvm-version }} \
-            python3-lldb-${{ matrix.llvm-version }} \
-            lld-${{ matrix.llvm-version }} \
-            clangd-${{ matrix.llvm-version }} \
-            libclang-${{ matrix.llvm-version }}-dev \
-            libmlir-${{ matrix.llvm-version }}-dev \
-            mlir-${{ matrix.llvm-version }}-tools \
-            llvm-${{ matrix.llvm-version }}-dev \
-            llvm-${{ matrix.llvm-version }}-tools \
-            libpolly-${{ matrix.llvm-version }}-dev \
-            libomp-${{ matrix.llvm-version }}-dev
-          
-          echo "LD_LIBRARY_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "LLVM_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-${{ matrix.llvm-version }}" >> $GITHUB_ENV
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           variant: sccache
-          key: ${{ matrix.os }}-${{ matrix.llvm-version }}
+          key: ${{ matrix.os }}-nix
+
+      # Materialize the dev shell up front so toolchain substitution has its
+      # own timing and log section. The shellHook writes CMakeUserPresets.json
+      # (the nix-dev preset used below) on every entry.
+      - name: Build dev shell
+        run: nix develop --command true
 
       - name: Configure CMake
         run: |
-          env RUSTC_WRAPPER=sccache \
-          cmake -B build \
-          -G Ninja \
-          -DLLVM_USE_LINKER=lld \
-          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm-version }} \
-          -DCMAKE_C_COMPILER=clang-${{ matrix.llvm-version }} \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=ON \
-          -DREUSSIR_RUNTIME_SANITIZERS="address;leak;memory;thread" \
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-          -DLLVM_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/llvm \
-          -DMLIR_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/mlir
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --preset nix-dev -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DREUSSIR_ENABLE_PEDANTIC=ON \
+            -DREUSSIR_ENABLE_TESTS=ON \
+            -DREUSSIR_RUNTIME_SANITIZERS="address;leak;memory;thread" \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          '
 
       - name: Build
         # Also build the sanitized runtime variants here: the `check` target
@@ -145,33 +86,41 @@ jobs:
         # features by whether the libraries exist when it starts — built only
         # later (by check-sanitizer), the whole sanitizer/ suite shows up as
         # UNSUPPORTED in the main integration-test run.
-        run: cmake --build build --parallel --target all reussir-rt-sanitizers
+        run: |
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --build build --parallel --target all reussir-rt-sanitizers
+          '
 
       - name: Run Unit Tests
         run: |
-          cmake --build build --target reussir-ut
-          ctest --test-dir build --output-on-failure
+          nix develop --command bash -c '
+            cmake --build build --target reussir-ut
+            ctest --test-dir build --output-on-failure
+          '
 
       - name: Run Integration Tests
-        run: cmake --build build --target check
+        run: nix develop --command cmake --build build --target check
 
       - name: Run Sanitizer Integration Tests
-        run: cmake --build build --target check-sanitizer
+        run: nix develop --command cmake --build build --target check-sanitizer
 
       - name: Build and Test pure-Rust frontend tools
         # Pure-Rust frontend crates: the parser/CST tests and the
         # elaboration/monomorphization/ownership tests. Cheap (sub-second
         # test run) but previously never executed in CI.
         run: |
-          cmake --build build --target reussir-syntax-test
-          cmake --build build --target reussir-core-test
-          cmake --build build --target reussir-lsp-test
+          nix develop --command bash -c '
+            cmake --build build --target reussir-syntax-test
+            cmake --build build --target reussir-core-test
+            cmake --build build --target reussir-lsp-test
+          '
 
       - name: Build and Test reussir-backend
-        run: cmake --build build --target reussir-backend-test
+        run: nix develop --command cmake --build build --target reussir-backend-test
 
       - name: Build and Test reussir-codegen
-        run: cmake --build build --target reussir-codegen-test
+        run: nix develop --command cmake --build build --target reussir-codegen-test
 
       - name: Build and Test rrc
-        run: cmake --build build --target rrc-test
+        run: nix develop --command cmake --build build --target rrc-test

@@ -445,6 +445,33 @@ PRESETS_EOF
             echo ""
           '';
         };
+
+        # ---------------------------------------------------------------------------
+        # Lean CI shells. The pure-Rust pipelines don't need the LLVM/MLIR
+        # closure the default shell drags in, and CI startup time is dominated
+        # by store downloads — so give them exactly what they use.
+        # ---------------------------------------------------------------------------
+
+        # rene tests and the reussir-rt Miri pipeline: the pinned toolchain
+        # (rust-toolchain.toml supplies miri and the wasm stds) plus the
+        # stdenv cc that build scripts and test links need.
+        devShells.rust = pkgs.mkShell {
+          name = "reussir-rust";
+          packages = [ rustToolchain ];
+        };
+
+        # VS Code extension pipeline: the wasm codec build, the TypeScript
+        # bundling, and the VSIX packaging. wasm-bindgen-cli from nixpkgs is
+        # the same version-lockstep pin the default shell documents;
+        # scripts/build-wasm.mjs still verifies it against Cargo.lock.
+        devShells.vscode = pkgs.mkShell {
+          name = "reussir-vscode";
+          packages = [
+            rustToolchain
+            pkgs.nodejs_24
+            pkgs.wasm-bindgen-cli
+          ];
+        };
       }
     );
 }

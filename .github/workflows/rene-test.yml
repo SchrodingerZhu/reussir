@@ -27,20 +27,61 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# rene is a plain Rust crate (no LLVM/MLIR build), so testing it on every
+# platform users run it on is cheap. The Linux legs run from the Nix flake's
+# lean Rust shell (the same pinned toolchain as `nix develop .#rust`); macOS
+# and Windows provision the toolchain with rustup. On Windows the
+# fake-toolchain CLI tests sit out (#[cfg(unix)] shell scripts), but the
+# crate must build and its unit and locking tests hold there — and the real
+# Windows e2e (rene/build.rr, driving the bake and the rrc links with the
+# pinned MSVC linker) runs under the MSVC full pipeline, not here.
 jobs:
+  test-linux:
+    name: Test (rene)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # See the sailfish template-lock rationale on the portable job below.
+      - name: Clear stale sailfish template locks
+        run: find target -path '*sailfish-compiler*/out/templates/*.lock' -delete 2>/dev/null || true
+
+      - name: Warm the sailfish template cache
+        run: nix develop .#rust --command cargo clippy -p rene --lib
+
+      - name: Clippy
+        run: nix develop .#rust --command cargo clippy -p rene --all-targets -- -D warnings
+
+      # The fast suite: manifest loading, build-dir locking, the clean
+      # protocol, and the bake driven through fake cargo/rustc scripts.
+      - name: Run tests
+        run: nix develop .#rust --command cargo test -p rene
+
+      # The real thing, ignored by default because it is slow and
+      # network-dependent: unpack the bundled runtime and bake reussir-rt
+      # with the host toolchain (crates.io + the pinned mlir-sync git rev).
+      - name: Run host-toolchain bake test
+        run: nix develop .#rust --command cargo test -p rene --test cli -- --ignored
+
   test:
     name: Test (rene)
     strategy:
       fail-fast: false
       matrix:
-        # rene is a plain Rust crate (no LLVM/MLIR build), so testing it on
-        # every platform users run it on is cheap. On Windows the
-        # fake-toolchain CLI tests sit out (#[cfg(unix)] shell scripts), but
-        # the crate must build and its unit and locking tests hold there —
-        # and the real Windows e2e (rene/build.rr, driving the bake and the
-        # rrc links with the pinned MSVC linker) runs under the MSVC full
-        # pipeline, not here.
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
+        os: [macos-15, windows-2025]
 
     runs-on: ${{ matrix.os }}
 
@@ -86,13 +127,8 @@ jobs:
       - name: Clippy
         run: cargo clippy -p rene --all-targets -- -D warnings
 
-      # The fast suite: manifest loading, build-dir locking, the clean
-      # protocol, and the bake driven through fake cargo/rustc scripts.
       - name: Run tests
         run: cargo test -p rene
 
-      # The real thing, ignored by default because it is slow and
-      # network-dependent: unpack the bundled runtime and bake reussir-rt
-      # with the host toolchain (crates.io + the pinned mlir-sync git rev).
       - name: Run host-toolchain bake test
         run: cargo test -p rene --test cli -- --ignored
