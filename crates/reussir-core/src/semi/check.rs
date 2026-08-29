@@ -2993,7 +2993,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             }
             return self.poison(span);
         };
-        // A dynamic dimension (`[T; _, 4]`) has no extent in the type; its
+        // A dynamic dimension (`[T; ?, 4]`) has no extent in the type; its
         // runtime value is a leading `u64` operand of the constructor, in
         // dimension order.
         let n_dynamic = dims

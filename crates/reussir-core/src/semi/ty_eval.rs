@@ -231,7 +231,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         }
 
         // The built-in tensor type former, `core::intrinsic::tensor::Tensor`.
-        // `Tensor<[f64; _, 4]>` is the transient value-semantics view of an
+        // `Tensor<[f64; ?, 4]>` is the transient value-semantics view of an
         // array of that shape (docs/design/tensor-kernels.md): same element
         // and extent rules as the array type argument it wraps, but
         // scope-confined — not storable, capturable, or FFI-crossing.
@@ -291,7 +291,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     }
 
     /// Evaluate an array type (`[f64; 512]`, `[f64; 5, 16, 8]`,
-    /// `[f64; _, 4]`) into a [`TyKind::Array`]. A `_` extent marks the
+    /// `[f64; ?, 4]`) into a [`TyKind::Array`]. A `?` extent marks the
     /// dimension dynamic ([`DYNAMIC_EXTENT`]): its runtime value travels as
     /// an operand of the constructing intrinsic, not in the type.
     pub(crate) fn eval_array_type(
@@ -347,7 +347,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
     /// Evaluate one array extent expression. The grammar admits any
     /// expression; for now only an integer literal evaluates — everything
     /// else reports and recovers with extent 1 (a *dynamic* dimension is
-    /// spelled `_`, not an expression).
+    /// spelled `?`, not an expression).
     fn eval_extent(&mut self, e: &surface::Expr) -> u64 {
         match e.kind() {
             surface::ExprKind::ConstExpr(crate::surface::Const::ConstInt(n)) => {

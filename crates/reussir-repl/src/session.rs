@@ -616,13 +616,13 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         Self::render_ty_with(&self.elab, ty)
     }
 
-    /// `d0, d1` with a dynamic dimension rendered as `_`.
+    /// `d0, d1` with a dynamic dimension rendered as `?`.
     fn render_dims(dims: &[u64]) -> String {
         let parts: Vec<String> = dims
             .iter()
             .map(|&d| {
                 if d == reussir_core::semi::ty::DYNAMIC_EXTENT {
-                    "_".to_owned()
+                    "?".to_owned()
                 } else {
                     d.to_string()
                 }

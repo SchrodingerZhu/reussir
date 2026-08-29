@@ -701,7 +701,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         out
     }
 
-    /// `[elem; d0, d1]`, printing a dynamic dimension as `_` — the same
+    /// `[elem; d0, d1]`, printing a dynamic dimension as `?` — the same
     /// spelling the surface syntax uses.
     fn push_shape_display(&self, out: &mut String, elem: Ty<'tcx>, dims: &[u64]) {
         use std::fmt::Write as _;
@@ -711,7 +711,7 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         for (i, &extent) in dims.iter().enumerate() {
             let sep = if i > 0 { "," } else { "" };
             if extent == crate::semi::ty::DYNAMIC_EXTENT {
-                let _ = write!(out, "{sep} _");
+                let _ = write!(out, "{sep} ?");
             } else {
                 let _ = write!(out, "{sep} {extent}");
             }

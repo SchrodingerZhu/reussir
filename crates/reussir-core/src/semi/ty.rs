@@ -37,7 +37,7 @@ pub struct GenericId(pub u32);
 pub struct HoleId(pub u32);
 
 /// The sentinel marking a dynamic dimension in an array or tensor shape
-/// (`[f64; _, 4]`) — the extent is a runtime value carried by the
+/// (`[f64; ?, 4]`) — the extent is a runtime value carried by the
 /// constructing intrinsic, not by the type. Same `~0` convention as the
 /// dialect's dynamic `token<align, ?>` size and MLIR's
 /// `ShapedType::kDynamic`. A static extent can never collide with it: the
@@ -225,7 +225,7 @@ pub enum TyKind<'tcx> {
     },
     /// A multidimensional array of `Plain` elements, reference counted as a
     /// whole; the extents are part of the type (`[f64; 512, 512]`). See
-    /// issue #344. A dimension may be dynamic (`[f64; _, 512]`), encoded as
+    /// issue #344. A dimension may be dynamic (`[f64; ?, 512]`), encoded as
     /// the [`DYNAMIC_EXTENT`] sentinel — the same `~0` convention as the
     /// dialect's `token<align, ?>` and MLIR's `ShapedType::kDynamic`; the
     /// runtime extent then travels as an operand of the constructing
@@ -235,7 +235,7 @@ pub enum TyKind<'tcx> {
         dims: &'tcx [u64],
     },
     /// A transient value-semantics view of an array's data
-    /// (`Tensor<[f64; _, 4]>`): the kernel-side tier that lowers to
+    /// (`Tensor<[f64; ?, 4]>`): the kernel-side tier that lowers to
     /// linalg-on-tensors (docs/design/tensor-kernels.md). Same element and
     /// extent rules as [`TyKind::Array`], including [`DYNAMIC_EXTENT`].
     /// Tensors are scope-confined: not storable in records, not capturable

@@ -302,14 +302,14 @@ impl Render<'_> {
 
     // ----- types -----
 
-    /// `[elem; d0, d1]`; a dynamic dimension prints as `_`, matching the
+    /// `[elem; d0, d1]`; a dynamic dimension prints as `?`, matching the
     /// grammar's extent rule.
     fn shape(&self, elem: Ty<'_>, dims: &[u64]) -> Doc<'static> {
         let mut d = text("[") + self.ty(elem) + text(";");
         for (i, &extent) in dims.iter().enumerate() {
             let sep = if i > 0 { "," } else { "" };
             if extent == crate::semi::ty::DYNAMIC_EXTENT {
-                d = d + text(format!("{sep} _"));
+                d = d + text(format!("{sep} ?"));
             } else {
                 d = d + text(format!("{sep} {extent}"));
             }

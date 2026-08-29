@@ -180,7 +180,7 @@ pub enum ArrayFn {
     Fold,
     /// `dim(a, k)`: the `k`-th extent as `u64`. Value operands: `[a, k]`;
     /// `a` is borrowed, not consumed. The interesting case is a dynamic
-    /// dimension (`[T; _, 4]`), whose extent lives in the box header; on a
+    /// dimension (`[T; ?, 4]`), whose extent lives in the box header; on a
     /// fully static array it folds to a constant.
     Dim,
 }

@@ -718,11 +718,11 @@ impl Parser<'_> {
     }
 
     /// An array type: `[T; e1, e2, ...]` with one extent per dimension. An
-    /// extent is an expression, or `_` for a dynamic dimension (its value is
-    /// then a runtime operand of the constructing intrinsic). The grammar
-    /// accepts any expression so the tree stays forward-compatible with
-    /// constant expressions; what an extent may evaluate to is the
-    /// elaborator's concern.
+    /// extent is an expression, or `?` for a dynamic dimension (its value is
+    /// then a runtime operand of the constructing intrinsic), mirroring
+    /// MLIR's `memref<?x…>`. The grammar accepts any expression so the tree
+    /// stays forward-compatible with constant expressions; what an extent
+    /// may evaluate to is the elaborator's concern.
     fn array_type(&mut self) -> CompletedMarker {
         let m = self.start();
         self.bump();
@@ -737,13 +737,13 @@ impl Parser<'_> {
         m.complete(self, ArrayType)
     }
 
-    /// One extent position: `_` (a dynamic dimension, kept as an `InferType`
+    /// One extent position: `?` (a dynamic dimension, kept as a `DynExtent`
     /// node so it never enters the expression grammar) or an expression.
     fn array_extent(&mut self) {
-        if self.at(Underscore) {
+        if self.at(Question) {
             let h = self.start();
             self.bump();
-            h.complete(self, InferType);
+            h.complete(self, DynExtent);
         } else {
             self.expr();
         }

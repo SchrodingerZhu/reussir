@@ -113,7 +113,7 @@ aliased elements would break the drop traversal's exactly-once contract.
 
 ## Status
 
-Frontend landed: `_` extents, the `DYNAMIC_EXTENT` sentinel through the
+Frontend landed: `?` extents, the `DYNAMIC_EXTENT` sentinel through the
 type system, leading runtime extents on `splat`/`tabulate`, `array::dim`,
 display/mangling/textual-IR spellings, and `err(…)` stubs at every
 lowering path (`--emit mlir` reports "do not lower yet"). The

@@ -202,6 +202,8 @@ pub enum Token<'a> {
     Hash,
     #[token("_", priority = 3)]
     Underscore,
+    #[token("?")]
+    Question,
 
     // ----- operators -----
     #[token("+")]

@@ -152,6 +152,8 @@ pub enum RawToken {
     Pound,
     #[token("_")]
     Underscore,
+    #[token("?")]
+    Question,
 }
 
 /// Pre-classified identifier-or-keyword. Hard keywords get their own class;
@@ -393,6 +395,7 @@ impl RawToken {
             RawToken::Caret => SyntaxKind::Caret,
             RawToken::Pound => SyntaxKind::Pound,
             RawToken::Underscore => SyntaxKind::Underscore,
+            RawToken::Question => SyntaxKind::Question,
         }
     }
 }

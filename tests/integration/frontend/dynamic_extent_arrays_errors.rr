@@ -1,5 +1,5 @@
 // Dynamic-extent arrays: what still errors. A dynamic dimension is spelled
-// `_` and only `_`; extent expressions stay literal-only, and the
+// `?` and only `?`; extent expressions stay literal-only, and the
 // constructor arity accounts for the leading runtime extents.
 
 // RUN: %not %rrc %s --emit hir -o - 2>&1 | %FileCheck %s
@@ -13,11 +13,11 @@ fn expr_extent(a : [f64; 2 + 2]) -> i64 { 0 }
 fn name_extent(a : [f64; n]) -> i64 { 0 }
 
 // CHECK-DAG: array extents must be positive
-fn zero_extent(a : [f64; 0, _]) -> i64 { 0 }
+fn zero_extent(a : [f64; 0, ?]) -> i64 { 0 }
 
 // CHECK: `core::intrinsic::array::splat` expects exactly one argument and 1 leading dynamic extent(s)
-fn missing_extent() -> [i32; _] {
-    array::splat<[i32; _]>(42)
+fn missing_extent() -> [i32; ?] {
+    array::splat<[i32; ?]>(42)
 }
 
 // CHECK: `core::intrinsic::array::splat` expects exactly one argument
@@ -26,6 +26,6 @@ fn extra_arg_static() -> [i32; 4] {
 }
 
 // CHECK: `dim` expects one dimension-index argument
-fn dim_arity(a : [i32; _]) -> u64 {
+fn dim_arity(a : [i32; ?]) -> u64 {
     array::dim(a)
 }

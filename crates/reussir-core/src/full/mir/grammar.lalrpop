@@ -177,11 +177,11 @@ Ty: raw::Ty = {
     "(" <ps:CommaPlus<Ty>> ")" "->" <ret:Ty> => raw::Ty::Closure { params: ps, ret: Box::new(ret) },
 };
 
-/// One shape dimension: a static extent, or `_` for a dynamic one
-/// (the DYNAMIC_EXTENT sentinel, mirroring MLIR's `?`).
+/// One shape dimension: a static extent, or `?` for a dynamic one
+/// (the DYNAMIC_EXTENT sentinel, matching MLIR's spelling).
 Extent: u64 = {
     <i:"int"> => raw::small_u64(&i),
-    "_" => crate::semi::ty::DYNAMIC_EXTENT,
+    "?" => crate::semi::ty::DYNAMIC_EXTENT,
 };
 
 /// A qualified record-type path with an optional turbofish
@@ -463,6 +463,7 @@ extern {
         "=" => Token::Eq,
         "=>" => Token::FatArrow,
         "_" => Token::Underscore,
+        "?" => Token::Question,
         "->" => Token::Arrow,
         "@" => Token::At,
         "#" => Token::Hash,

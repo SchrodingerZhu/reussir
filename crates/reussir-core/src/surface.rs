@@ -424,9 +424,9 @@ pub enum TypeKind {
     TypeArray(Type, SmallVec<[ArrayExtent; 2]>),
 }
 
-/// One dimension of an array (or tensor) type: an extent expression, or `_`
+/// One dimension of an array (or tensor) type: an extent expression, or `?`
 /// for a dynamic dimension whose value is a runtime operand of the
-/// constructing intrinsic.
+/// constructing intrinsic (mirroring MLIR's `memref<?x…>`).
 #[derive(Debug, Clone)]
 pub enum ArrayExtent {
     Expr(Expr),
@@ -467,9 +467,9 @@ impl Type {
                     .expect("array element type");
                 let extents = node
                     .children()
-                    .filter(|n| is_expr_kind(n.kind()) || n.kind() == InferType)
+                    .filter(|n| is_expr_kind(n.kind()) || n.kind() == DynExtent)
                     .map(|n| {
-                        if n.kind() == InferType {
+                        if n.kind() == DynExtent {
                             ArrayExtent::Dynamic(node_span(n))
                         } else {
                             ArrayExtent::Expr(Expr::new(n))
