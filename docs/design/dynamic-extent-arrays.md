@@ -111,6 +111,14 @@ aliased elements would break the drop traversal's exactly-once contract.
   dim dynamic and the value an argument of `splat`/`tabulate`); add an
   `array::dim` intrinsic; lengths stay `u64` until `usize` lands.
 
+## Status
+
+Frontend landed: `_` extents, the `DYNAMIC_EXTENT` sentinel through the
+type system, leading runtime extents on `splat`/`tabulate`, `array::dim`,
+display/mangling/textual-IR spellings, and `err(…)` stubs at every
+lowering path (`--emit mlir` reports "do not lower yet"). The
+strided-header box and the descriptor lowering are the open backend half.
+
 ## Deferred
 
 - Const-generic extents (the monomorphization half of #344 Phase C)
