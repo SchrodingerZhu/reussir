@@ -1,5 +1,11 @@
 name: VS Code Extension
 
+# Runs from the Nix flake's vscode shell: the pinned Rust toolchain (with
+# the wasm32-unknown-unknown std from rust-toolchain.toml), Node 24, and
+# the wasm-bindgen CLI at the flake's version — the same lockstep pin the
+# dev shell documents, so the CLI can never drift from the Cargo.toml
+# wasm-bindgen pin the way an independently-installed binary could.
+# scripts/build-wasm.mjs still verifies the match and fails fast.
 on:
   push:
     branches: [ main ]
@@ -17,55 +23,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-03-15
-          components: rust-src, rustfmt, clippy
-          target: wasm32-unknown-unknown
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: editors/vscode/package-lock.json
-
-      # Must equal the workspace's exact wasm-bindgen pin (Cargo.toml);
-      # scripts/build-wasm.mjs verifies the match and fails the build fast.
-      - name: Install wasm-bindgen CLI
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-bindgen@0.2.121
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Install extension dependencies
-        working-directory: editors/vscode
-        run: npm ci
+        run: nix develop .#vscode --command bash -c 'cd editors/vscode && npm ci'
 
       - name: Test Rust client codec
-        run: cargo test --locked --package reussir-vscode-wasm
+        run: nix develop .#vscode --command cargo test --locked --package reussir-vscode-wasm
 
       - name: Lint Rust client codec
-        run: cargo clippy --locked --package reussir-vscode-wasm --all-targets -- -D warnings
+        run: nix develop .#vscode --command cargo clippy --locked --package reussir-vscode-wasm --all-targets -- -D warnings
 
       - name: Build native language server
-        run: cargo build --locked --package reussir-lsp
+        run: nix develop .#vscode --command cargo build --locked --package reussir-lsp
 
       - name: Build extension and run protocol smoke test
-        working-directory: editors/vscode
         run: |
-          npm run build
-          npm run test:protocol
+          nix develop .#vscode --command bash -c '
+            cd editors/vscode
+            npm run build
+            npm run test:protocol
+          '
 
       - name: Package VSIX
-        working-directory: editors/vscode
         env:
           REUSSIR_VSIX_OUT: ${{ github.workspace }}/reussir-vscode.vsix
-        run: npm run package:vsix
+        run: nix develop .#vscode --command bash -c 'cd editors/vscode && npm run package:vsix'
 
       - name: Inspect VSIX contents
-        working-directory: editors/vscode
-        run: npx --no-install vsce ls --no-dependencies
+        run: nix develop .#vscode --command bash -c 'cd editors/vscode && npx --no-install vsce ls --no-dependencies'
 
       - name: Upload VSIX
         uses: actions/upload-artifact@v4

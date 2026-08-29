@@ -3,5 +3,10 @@ channel = "nightly-2026-03-15"
 # rust-src feeds the sanitized runtime variants: the memory/thread builds
 # compile std themselves (-Zbuild-std, see crates/reussir-rt/CMakeLists.txt).
 # Declaring it here provisions it through rustup and the Nix flake alike.
-components = ["rust-src"]
-targets = ["wasm32-unknown-unknown", "wasm32-wasip1-threads"]
+# miri backs the reussir-rt Miri CI pipeline, which runs from the flake
+# toolchain.
+components = ["rust-src", "miri"]
+# Both wasip1 flavors: the WebAssembly lit suites cross-build packages for
+# each, and a missing std turns the matching suite UNSUPPORTED instead of
+# running it.
+targets = ["wasm32-unknown-unknown", "wasm32-wasip1", "wasm32-wasip1-threads"]

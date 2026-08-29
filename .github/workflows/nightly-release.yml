@@ -13,6 +13,11 @@ permissions:
   contents: write
 
 jobs:
+  # Deliberately NOT built from the Nix flake (unlike the test pipelines):
+  # binaries linked inside a nix shell carry a /nix/store ELF interpreter
+  # and glibc, which would break the release artifacts' "runs from a bare
+  # environment" guarantee. The apt toolchain below links against the
+  # runner's stock glibc, which is what end-user machines have.
   build-linux:
     strategy:
       fail-fast: false
