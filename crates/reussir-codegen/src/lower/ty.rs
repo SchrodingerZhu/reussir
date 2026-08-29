@@ -151,6 +151,8 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
             // A statically shaped array is one shared `rc` box holding the whole
             // payload (`!reussir.rc<!reussir.array<dims x elem>>`); see #344.
             TyKind::Array { .. } => Ok(self.rc_type(self.array_inner_of(ty)?)),
+            // Frontend-complete, backend-pending (docs/design/tensor-kernels.md).
+            TyKind::Tensor { .. } => err("tensor types do not lower yet"),
             // A cell is one shared rc box around its payload container. Unlike
             // arrays, its element may itself be a managed type. A sync-kind
             // cell is born in an *atomically counted* box — the dialect
@@ -464,6 +466,11 @@ impl<'c, 'p, 'tcx> TypeCtx<'c, 'p, 'tcx> {
         let TyKind::Array { elem, dims } = *ty.kind() else {
             return err("array payload requested for a non-array type");
         };
+        if reussir_core::semi::ty::has_dynamic_extent(dims) {
+            // Frontend-complete, backend-pending: the strided-header box
+            // (docs/design/dynamic-extent-arrays.md).
+            return err("dynamic-extent arrays do not lower yet");
+        }
         let elem = self.mlir_ty(elem)?;
         let shape: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
         Ok(array(&shape, elem))
@@ -655,6 +662,7 @@ fn scalar_ty<'c>(context: &'c Context, ty: Ty<'_>) -> Result<Type<'c>> {
         TyKind::Str => Ok(str_type(context, ReussirLifeScope::Global)),
         TyKind::Record { .. } => err("record type reached scalar lowering without a layout"),
         TyKind::Array { .. } => err("array type reached scalar lowering without its rc wrapper"),
+        TyKind::Tensor { .. } => err("tensor types do not lower yet"),
         TyKind::Cell { .. } => err("cell type reached scalar lowering without its rc wrapper"),
         TyKind::Arc(_) => err("arc type reached scalar lowering without its rc wrapper"),
         TyKind::Nullable(_) => err("nullable type lowering not yet implemented"),

@@ -446,6 +446,7 @@ fn kind_name(kind: &ExprKind<'_>) -> &'static str {
         ExprKind::Closure(_) => "Closure",
         ExprKind::ClosureCall { .. } => "ClosureCall",
         ExprKind::ArrayOp { .. } => "ArrayOp",
+        ExprKind::TensorOp { .. } => "TensorOp",
         ExprKind::Match(..) => "Match",
         ExprKind::Poison => "Poison",
     }
@@ -856,13 +857,19 @@ fn interp<'tcx>(
         // array base, which follows the `Proj` borrow rule.
         ExprKind::ArrayOp { op, args } => {
             use crate::intrinsic::ArrayFn;
-            let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold);
+            let borrows_base = matches!(op, ArrayFn::Get | ArrayFn::Fold | ArrayFn::Dim);
             for (i, a) in args.iter().enumerate() {
                 if i == 0 && borrows_base {
                     interp_borrow(a, ot, rr, rc);
                 } else {
                     interp(a, ot, rr, rc);
                 }
+            }
+        }
+        // Tensor boundary ops consume all operands like call args.
+        ExprKind::TensorOp { args, .. } => {
+            for a in args {
+                interp(a, ot, rr, rc);
             }
         }
         ExprKind::GlobalStr(_)
@@ -980,7 +987,7 @@ fn uses_var(e: &Expr<'_>, y: VarId) -> bool {
 fn children<'tcx>(e: &Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
     use ExprKind::*;
     match e.kind {
-        ArrayOp { args, .. } => args.iter().collect(),
+        ArrayOp { args, .. } | TensorOp { args, .. } => args.iter().collect(),
         GlobalStr(_) | ConstChar(_) | ConstInt(_) | ConstFloat(_) | ConstBool(_) | Var(_)
         | Poison => vec![],
         Negate(x) | Not(x) | Cast(x, _) | RegionRun(x) | Proj(x, _) => vec![x],

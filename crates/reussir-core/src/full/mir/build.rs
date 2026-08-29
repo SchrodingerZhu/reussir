@@ -343,6 +343,10 @@ impl<'tcx> Builder<'_, 'tcx> {
                 let elem = self.ty(elem);
                 self.tcx.mk_array(elem, dims)
             }
+            raw::Ty::Tensor { elem, dims } => {
+                let elem = self.ty(elem);
+                self.tcx.mk_tensor(elem, dims)
+            }
         }
     }
 
@@ -535,6 +539,11 @@ impl<'tcx> Builder<'_, 'tcx> {
             raw::Kind::ArrayOp { op, args } => M::ArrayOp {
                 op: crate::intrinsic::ArrayFn::parse(op)
                     .expect("known array op in machine-emitted IR"),
+                args: self.expr_slice(args),
+            },
+            raw::Kind::TensorOp { op, args } => M::TensorOp {
+                op: crate::intrinsic::TensorFn::parse(op)
+                    .expect("known tensor op in machine-emitted IR"),
                 args: self.expr_slice(args),
             },
             raw::Kind::NullableCall(inner) => {

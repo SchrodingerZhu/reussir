@@ -282,6 +282,11 @@ pub enum Ty {
         elem: Box<Ty>,
         dims: Vec<u64>,
     },
+    /// `Tensor<[elem; extents…]>` — a transient value-semantics view.
+    Tensor {
+        elem: Box<Ty>,
+        dims: Vec<u64>,
+    },
 }
 
 /// The per-use capability prefix printed before a record type (absent = value).
@@ -424,6 +429,11 @@ pub enum Kind {
     /// `array#<op>(args…)` — a built-in array op; a `tabulate`/`fold`
     /// kernel closure is an ordinary argument.
     ArrayOp {
+        op: String,
+        args: Vec<Expr>,
+    },
+    /// `tensor#<op>(args…)` — a built-in tensor op.
+    TensorOp {
         op: String,
         args: Vec<Expr>,
     },

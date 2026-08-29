@@ -584,6 +584,10 @@ impl<'tcx> Remapper<'_, '_, 'tcx> {
                 let elem = self.ty(elem);
                 self.tcx.mk_array(elem, dims)
             }
+            TyKind::Tensor { elem, dims } => {
+                let elem = self.ty(elem);
+                self.tcx.mk_tensor(elem, dims)
+            }
             TyKind::Closure { params, ret } => {
                 let params: Vec<Ty<'tcx>> = params.iter().map(|&p| self.ty(p)).collect();
                 let ret = self.ty(ret);
@@ -714,6 +718,10 @@ impl<'tcx> Remapper<'_, '_, 'tcx> {
                 args: self.exprs(args),
             },
             ExprKind::ArrayOp { op, args } => ExprKind::ArrayOp {
+                op: *op,
+                args: self.exprs(args),
+            },
+            ExprKind::TensorOp { op, args } => ExprKind::TensorOp {
                 op: *op,
                 args: self.exprs(args),
             },

@@ -165,14 +165,13 @@ impl<'a> Mangler<'a> {
             }
             TyKind::Array { elem, dims } => {
                 // An array mangles as a synthetic record whose identifier
-                // carries the extents (`Array512x512`), applied to the element.
-                let mut name = String::from("Array");
-                for (i, d) in dims.iter().enumerate() {
-                    if i > 0 {
-                        name.push('x');
-                    }
-                    name.push_str(&d.to_string());
-                }
+                // carries the extents (`Array512x512`), applied to the
+                // element; a dynamic dimension mangles as `D` (`ArrayDx512`).
+                let name = shaped_name("Array", dims);
+                self.path_with_args_segs(out, &[&name], &[elem]);
+            }
+            TyKind::Tensor { elem, dims } => {
+                let name = shaped_name("Tensor", dims);
                 self.path_with_args_segs(out, &[&name], &[elem]);
             }
             TyKind::Record { def, args, .. } => {
@@ -224,6 +223,24 @@ fn push_ident_body(out: &mut String, body: &str, len: usize) {
         out.push('_');
     }
     out.push_str(body);
+}
+
+/// The synthetic record identifier for a shaped type: the base name with
+/// `x`-joined extents (`Array512x512`); a dynamic dimension spells `D`
+/// (`ArrayDx512`), which cannot collide with a static extent's digits.
+fn shaped_name(base: &str, dims: &[u64]) -> String {
+    let mut name = String::from(base);
+    for (i, &d) in dims.iter().enumerate() {
+        if i > 0 {
+            name.push('x');
+        }
+        if d == crate::semi::ty::DYNAMIC_EXTENT {
+            name.push('D');
+        } else {
+            name.push_str(&d.to_string());
+        }
+    }
+    name
 }
 
 /// The integral-type code; panics on widths the ABI does not define.

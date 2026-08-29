@@ -230,6 +230,41 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             };
         }
 
+        // The built-in tensor type former, `core::intrinsic::tensor::Tensor`.
+        // `Tensor<[f64; _, 4]>` is the transient value-semantics view of an
+        // array of that shape (docs/design/tensor-kernels.md): same element
+        // and extent rules as the array type argument it wraps, but
+        // scope-confined — not storable, capturable, or FFI-crossing.
+        if (bare_unshadowed || self.is_core_intrinsic_prefix(&path.segments, "tensor"))
+            && self.sym(key) == "Tensor"
+        {
+            return match args {
+                [inner] => {
+                    let inner = self.eval_type(inner);
+                    match *inner.kind() {
+                        TyKind::Array { elem, dims } => self.tcx.mk_tensor(elem, dims),
+                        // Error recovery from the argument itself.
+                        TyKind::Bottom => inner,
+                        _ => {
+                            self.error(
+                                Some(span),
+                                format!(
+                                    "`Tensor` takes an array type argument \
+                                     (`Tensor<[f64; 4, 4]>`), got `{}`",
+                                    self.ty_display(inner)
+                                ),
+                            );
+                            self.tcx.mk(TyKind::Bottom)
+                        }
+                    }
+                }
+                _ => {
+                    self.error(Some(span), "`Tensor` takes exactly one type argument");
+                    self.tcx.mk(TyKind::Bottom)
+                }
+            };
+        }
+
         // Nothing else under the reserved `core` package names a type.
         if path.segments.first().map(|&k| self.sym(k)) == Some("core") {
             let shown = self.path_display(path);
@@ -255,12 +290,14 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
         array_element_rejection(|def| self.records.get(&def).map(|r| r.default_cap), t)
     }
 
-    /// Evaluate a statically shaped array type (`[f64; 512]`,
-    /// `[f64; 5, 16, 8]`) into a [`TyKind::Array`].
+    /// Evaluate an array type (`[f64; 512]`, `[f64; 5, 16, 8]`,
+    /// `[f64; _, 4]`) into a [`TyKind::Array`]. A `_` extent marks the
+    /// dimension dynamic ([`DYNAMIC_EXTENT`]): its runtime value travels as
+    /// an operand of the constructing intrinsic, not in the type.
     pub(crate) fn eval_array_type(
         &mut self,
         elem: &surface::Type,
-        extents: &[surface::Expr],
+        extents: &[surface::ArrayExtent],
         span: surface::Span,
     ) -> Ty<'tcx> {
         if extents.is_empty() {
@@ -283,14 +320,23 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
             );
         }
         let mut dims = Vec::with_capacity(extents.len());
+        // The element-count cap applies to the static factor of the shape;
+        // dynamic dimensions are bounded at construction, not here.
         let mut product: u128 = 1;
         for e in extents {
-            let extent = self.eval_extent(e);
-            if extent == 0 {
-                self.error(Some(e.span()), "array extents must be positive");
+            match e {
+                surface::ArrayExtent::Dynamic(_) => {
+                    dims.push(crate::semi::ty::DYNAMIC_EXTENT);
+                }
+                surface::ArrayExtent::Expr(e) => {
+                    let extent = self.eval_extent(e);
+                    if extent == 0 {
+                        self.error(Some(e.span()), "array extents must be positive");
+                    }
+                    product = product.saturating_mul(u128::from(extent.max(1)));
+                    dims.push(extent.max(1));
+                }
             }
-            product = product.saturating_mul(u128::from(extent.max(1)));
-            dims.push(extent.max(1));
         }
         if product > (1u128 << 32) {
             self.error(Some(span), "array is too large (more than 2^32 elements)");
@@ -300,12 +346,18 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
 
     /// Evaluate one array extent expression. The grammar admits any
     /// expression; for now only an integer literal evaluates — everything
-    /// else reports and recovers with extent 1. An out-of-range literal
-    /// clamps; the product check reports it as too large.
+    /// else reports and recovers with extent 1 (a *dynamic* dimension is
+    /// spelled `_`, not an expression).
     fn eval_extent(&mut self, e: &surface::Expr) -> u64 {
         match e.kind() {
             surface::ExprKind::ConstExpr(crate::surface::Const::ConstInt(n)) => {
-                u64::try_from(&n).unwrap_or(u64::MAX)
+                match u64::try_from(&n) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        self.error(Some(e.span()), "array extent is out of range");
+                        1
+                    }
+                }
             }
             _ => {
                 self.error(
@@ -461,6 +513,7 @@ pub fn array_element_rejection<'tcx>(
         TyKind::Cell { .. } => Some("a cell"),
         TyKind::Closure { .. } => Some("a closure"),
         TyKind::Array { .. } => Some("a nested rc array"),
+        TyKind::Tensor { .. } => Some("a tensor"),
         TyKind::Str => Some("a string"),
         _ => Some("not a scalar or `[shared]` record"),
     }
@@ -531,6 +584,7 @@ pub fn arc_inner_rejection<'tcx>(
         // An array or a closure is one shared rc box exactly like a
         // `[shared]` record, so it takes the atomic coloring the same way.
         TyKind::Array { .. } | TyKind::Closure { .. } => None,
+        TyKind::Tensor { .. } => Some("a tensor is scope-confined and cannot be arc'd"),
         TyKind::Generic(_) | TyKind::Hole(_) | TyKind::Bottom => None,
         // A cell is a shared box too, but synchronization is the cell's own
         // axis (plain vs exclusive, and the atomic flavor at the MLIR level)
@@ -778,7 +832,9 @@ impl<'a, 'tcx> Elaborator<'a, 'tcx> {
                 self.report_cell_wf(elem, kind, span);
                 self.sweep_arc_wf(elem, span);
             }
-            TyKind::Array { elem, .. } => self.sweep_arc_wf(elem, span),
+            TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => {
+                self.sweep_arc_wf(elem, span)
+            }
             _ => {}
         }
     }

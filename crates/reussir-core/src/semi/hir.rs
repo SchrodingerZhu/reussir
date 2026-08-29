@@ -229,6 +229,13 @@ pub enum ExprKind<'tcx> {
         op: crate::intrinsic::ArrayFn,
         args: Vec<Expr<'tcx>>,
     },
+    /// A built-in operation on a transient tensor
+    /// (docs/design/tensor-kernels.md): the resolved op and its value
+    /// operands (see [`crate::intrinsic::TensorFn`]).
+    TensorOp {
+        op: crate::intrinsic::TensorFn,
+        args: Vec<Expr<'tcx>>,
+    },
     /// Error-recovery placeholder.
     Poison,
 }

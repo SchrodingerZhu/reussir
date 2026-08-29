@@ -421,7 +421,16 @@ pub enum TypeKind {
     /// A statically shaped array: an element type and one extent expression
     /// per dimension (`[f64; 512]`, `[f64; 5, 16, 8]`). The extents are kept
     /// as expressions; the elaborator decides which forms it can evaluate.
-    TypeArray(Type, SmallVec<[Expr; 2]>),
+    TypeArray(Type, SmallVec<[ArrayExtent; 2]>),
+}
+
+/// One dimension of an array (or tensor) type: an extent expression, or `_`
+/// for a dynamic dimension whose value is a runtime operand of the
+/// constructing intrinsic.
+#[derive(Debug, Clone)]
+pub enum ArrayExtent {
+    Expr(Expr),
+    Dynamic(Span),
 }
 
 /// A type expression (a view over a `PrimType` / `PathType` / `ArrowType` node).
@@ -456,7 +465,17 @@ impl Type {
                 let elem = nodes(node)
                     .find(|n| is_type_kind(n.kind()))
                     .expect("array element type");
-                let extents = expr_children(node).map(Expr::new).collect();
+                let extents = node
+                    .children()
+                    .filter(|n| is_expr_kind(n.kind()) || n.kind() == InferType)
+                    .map(|n| {
+                        if n.kind() == InferType {
+                            ArrayExtent::Dynamic(node_span(n))
+                        } else {
+                            ArrayExtent::Expr(Expr::new(n))
+                        }
+                    })
+                    .collect();
                 TypeKind::TypeArray(Type::new(elem), extents)
             }
             PathType => {

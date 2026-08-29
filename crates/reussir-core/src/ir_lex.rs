@@ -98,6 +98,8 @@ pub enum Token<'a> {
     Intrinsic,
     #[token("array")]
     Array,
+    #[token("tensor")]
+    TensorKw,
     #[token("assign")]
     Assign,
     #[token("scrut")]
@@ -122,6 +124,8 @@ pub enum Token<'a> {
     RwLockCell,
     #[token("Arc")]
     Arc,
+    #[token("Tensor")]
+    Tensor,
     #[token("NonNull")]
     NonNull,
     #[token("Null")]

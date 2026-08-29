@@ -51,6 +51,10 @@ pub fn replace_generics<'tcx>(
                 tcx.mk_closure(&new, r)
             }
         }
+        TyKind::Tensor { elem, dims } => {
+            let elem = replace_generics(tcx, elem, map);
+            tcx.mk_tensor(elem, dims)
+        }
         TyKind::Array { elem, dims } => {
             let n = replace_generics(tcx, elem, map);
             if n == elem { ty } else { tcx.mk_array(n, dims) }
@@ -72,7 +76,7 @@ pub fn collect_generics_of(ty: Ty<'_>, out: &mut rustc_hash::FxHashSet<GenericId
             params.iter().for_each(|&p| collect_generics_of(p, out));
             collect_generics_of(ret, out);
         }
-        TyKind::Array { elem, .. } => collect_generics_of(elem, out),
+        TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => collect_generics_of(elem, out),
         _ => {}
     }
 }

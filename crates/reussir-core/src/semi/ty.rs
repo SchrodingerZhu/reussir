@@ -36,6 +36,19 @@ pub struct GenericId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct HoleId(pub u32);
 
+/// The sentinel marking a dynamic dimension in an array or tensor shape
+/// (`[f64; _, 4]`) — the extent is a runtime value carried by the
+/// constructing intrinsic, not by the type. Same `~0` convention as the
+/// dialect's dynamic `token<align, ?>` size and MLIR's
+/// `ShapedType::kDynamic`. A static extent can never collide with it: the
+/// element-count cap (2^32) rejects any product that large.
+pub const DYNAMIC_EXTENT: u64 = u64::MAX;
+
+/// Whether a shape has any dynamic dimension.
+pub fn has_dynamic_extent(dims: &[u64]) -> bool {
+    dims.contains(&DYNAMIC_EXTENT)
+}
+
 /// The per-use *flexivity* a value carries — its regional memory coloring:
 /// `Flex` is mutable but cannot be materialized out of its region, `Rigid` is
 /// immutable but materializable (the frozen form that escapes a region),
@@ -210,10 +223,25 @@ pub enum TyKind<'tcx> {
         params: &'tcx [Ty<'tcx>],
         ret: Ty<'tcx>,
     },
-    /// A statically shaped multidimensional array of `Plain` elements,
-    /// reference counted as a whole; the extents are part of the type
-    /// (`[f64; 512, 512]`). See issue #344.
+    /// A multidimensional array of `Plain` elements, reference counted as a
+    /// whole; the extents are part of the type (`[f64; 512, 512]`). See
+    /// issue #344. A dimension may be dynamic (`[f64; _, 512]`), encoded as
+    /// the [`DYNAMIC_EXTENT`] sentinel — the same `~0` convention as the
+    /// dialect's `token<align, ?>` and MLIR's `ShapedType::kDynamic`; the
+    /// runtime extent then travels as an operand of the constructing
+    /// intrinsic, not in the type.
     Array {
+        elem: Ty<'tcx>,
+        dims: &'tcx [u64],
+    },
+    /// A transient value-semantics view of an array's data
+    /// (`Tensor<[f64; _, 4]>`): the kernel-side tier that lowers to
+    /// linalg-on-tensors (docs/design/tensor-kernels.md). Same element and
+    /// extent rules as [`TyKind::Array`], including [`DYNAMIC_EXTENT`].
+    /// Tensors are scope-confined: not storable in records, not capturable
+    /// by closures, not FFI-crossing, and absent from plain `fn`
+    /// signatures — materialization back to an array is the only way out.
+    Tensor {
         elem: Ty<'tcx>,
         dims: &'tcx [u64],
     },
@@ -359,6 +387,11 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn mk_array(&self, elem: Ty<'tcx>, dims: &[u64]) -> Ty<'tcx> {
         let dims = self.alloc_slice(dims);
         self.mk(TyKind::Array { elem, dims })
+    }
+
+    pub fn mk_tensor(&self, elem: Ty<'tcx>, dims: &[u64]) -> Ty<'tcx> {
+        let dims = self.alloc_slice(dims);
+        self.mk(TyKind::Tensor { elem, dims })
     }
 
     pub fn mk_cell(&self, elem: Ty<'tcx>, kind: CellKind) -> Ty<'tcx> {

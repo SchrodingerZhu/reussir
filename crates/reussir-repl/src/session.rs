@@ -616,6 +616,21 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
         Self::render_ty_with(&self.elab, ty)
     }
 
+    /// `d0, d1` with a dynamic dimension rendered as `_`.
+    fn render_dims(dims: &[u64]) -> String {
+        let parts: Vec<String> = dims
+            .iter()
+            .map(|&d| {
+                if d == reussir_core::semi::ty::DYNAMIC_EXTENT {
+                    "_".to_owned()
+                } else {
+                    d.to_string()
+                }
+            })
+            .collect();
+        parts.join(", ")
+    }
+
     fn render_ty_with(elab: &Elaborator<'a, 'tcx>, ty: Ty<'tcx>) -> String {
         match *ty.kind() {
             TyKind::Int(reussir_core::semi::ty::IntTy::Signed(w)) => format!("i{w}"),
@@ -642,11 +657,17 @@ impl<'a, 'tcx> ReplSession<'a, 'tcx> {
                 format!("Arc<{}>", Self::render_ty_with(elab, inner))
             }
             TyKind::Array { elem, dims } => {
-                let dims: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
                 format!(
                     "[{}; {}]",
                     Self::render_ty_with(elab, elem),
-                    dims.join(", ")
+                    Self::render_dims(dims)
+                )
+            }
+            TyKind::Tensor { elem, dims } => {
+                format!(
+                    "Tensor<[{}; {}]>",
+                    Self::render_ty_with(elab, elem),
+                    Self::render_dims(dims)
                 )
             }
             TyKind::Record { def, args, .. } => {

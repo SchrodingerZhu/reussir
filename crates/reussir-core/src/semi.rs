@@ -189,10 +189,7 @@ mod tests {
             let prog = surface::program(&parse.root);
             let elab = elaborate(tcx, &prog, &interner);
             let msgs: Vec<_> = elab.reports.iter().map(|r| r.message.as_str()).collect();
-            assert!(
-                !msgs.iter().any(|m| m.contains("`str`")),
-                "{msgs:#?}"
-            );
+            assert!(!msgs.iter().any(|m| m.contains("`str`")), "{msgs:#?}");
             assert!(
                 msgs.iter()
                     .any(|m| m.contains("`P` does not implement `PartialOrd`")),

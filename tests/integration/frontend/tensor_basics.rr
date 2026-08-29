@@ -1,0 +1,38 @@
+// The tensor type and its boundary intrinsics
+// (docs/design/tensor-kernels.md): `Tensor<[T; dims]>` is the transient
+// value-semantics view of an array — `of` takes the view (consuming the
+// reference; the tensor owns the rooted dup), `materialize` builds a fresh
+// array back, `dim` reads an extent. Frontend-complete; lowering is pending
+// the linalg pipeline stages, so `--emit mlir` stops with a diagnostic.
+
+// RUN: %rrc %s --emit hir -o - | %FileCheck %s
+// RUN: %not %rrc %s --emit mlir -o - 2>&1 | %FileCheck %s --check-prefix=STUB
+
+// STUB: not lower yet
+
+import core::intrinsic::tensor;
+
+// CHECK: pub fn #roundtrip(v0 (a): [i32; 8]) -> [i32; 8]
+// CHECK: tensor#of(v0 : [i32; 8] {{.*}}) : Tensor<[i32; 8]>
+// CHECK: tensor#materialize(v1 : Tensor<[i32; 8]> {{.*}}) : [i32; 8]
+pub fn roundtrip(a : [i32; 8]) -> [i32; 8] {
+    let t = tensor::of(a);
+    tensor::materialize(t)
+}
+
+// A tensor over a dynamic-extent array keeps the dynamic shape.
+// CHECK: pub fn #tdim(v0 (a): [i32; _, 4]) -> u64
+// CHECK: tensor#of(v0 : [i32; _, 4] {{.*}}) : Tensor<[i32; _, 4]>
+// CHECK: tensor#dim(v1 : Tensor<[i32; _, 4]> {{.*}}, 1 : u64 {{.*}}) : u64
+pub fn tdim(a : [i32; _, 4]) -> u64 {
+    let t = tensor::of(a);
+    tensor::dim(t, 1)
+}
+
+// Tensors flow through let-bindings and branches (scf-shaped control flow);
+// only escapes are rejected (see tensor_errors.rr).
+// CHECK: pub fn #pick(v0 (a): [i32; 8], v1 (b): [i32; 8], v2 (c): bool) -> [i32; 8]
+pub fn pick(a : [i32; 8], b : [i32; 8], c : bool) -> [i32; 8] {
+    let t = if c { tensor::of(a) } else { tensor::of(b) };
+    tensor::materialize(t)
+}

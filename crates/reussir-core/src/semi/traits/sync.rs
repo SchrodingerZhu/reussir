@@ -77,7 +77,9 @@ pub fn collect_record_defs<'tcx>(ty: Ty<'tcx>, out: &mut Vec<DefId>) {
             }
         }
         TyKind::Arc(inner) | TyKind::Nullable(inner) => collect_record_defs(inner, out),
-        TyKind::Cell { elem, .. } | TyKind::Array { elem, .. } => collect_record_defs(elem, out),
+        TyKind::Cell { elem, .. } | TyKind::Array { elem, .. } | TyKind::Tensor { elem, .. } => {
+            collect_record_defs(elem, out)
+        }
         TyKind::Closure { params, ret } => {
             for &p in params {
                 collect_record_defs(p, out);
@@ -313,8 +315,9 @@ impl<'tcx> Cx<'_, 'tcx> {
             }
             // Bare shared rc boxes: never `Sync`, regardless of contents —
             // shareability is carried by the box coloring (`Arc`), not the
-            // nominal type.
-            TyKind::Array { .. } | TyKind::Closure { .. } => {
+            // nominal type. A tensor refutes for the same reason its backing
+            // array does: it is a scope-confined view of that box's data.
+            TyKind::Array { .. } | TyKind::Tensor { .. } | TyKind::Closure { .. } => {
                 self.refute(ty, NotSyncReason::NonAtomicBox)
             }
             TyKind::Record { def, args, .. } => match self.env.default_cap(def) {
