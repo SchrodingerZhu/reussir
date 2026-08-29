@@ -1,8 +1,15 @@
 name: Nightly Release
 
 # Every push to main refreshes the rolling `nightly` prerelease; pushing a
-# `v*` tag runs the same build matrix and tests but publishes a versioned
-# release under that tag instead (marked latest, nightly untouched).
+# `v*` tag runs the same build matrix but publishes a versioned release
+# under that tag instead (marked latest, nightly untouched).
+#
+# This pipeline builds and packages only — no tests run here. Correctness
+# is gated by the test pipelines (MLIR Backend MultiArch, the macOS and
+# Windows full pipelines, Rene Tests, Miri) on every PR and push; a
+# release build repeating them doubles the wall-clock for no signal. The
+# packaging steps still verify each shipped binary is self-contained and
+# starts from a bare environment.
 on:
   push:
     branches: [ main ]
@@ -44,8 +51,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build wget libgtest-dev libgmock-dev libspdlog-dev libgmp-dev
-          sudo pip install 'lit<24' --break-system-packages
+          sudo apt-get install -y cmake ninja-build wget libspdlog-dev libgmp-dev
 
       - name: Install LLVM ${{ matrix.llvm-version }}
         run: |
@@ -85,7 +91,7 @@ jobs:
           -DCMAKE_C_COMPILER=clang-${{ matrix.llvm-version }} \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=ON \
+          -DREUSSIR_ENABLE_TESTS=OFF \
           -DCMAKE_C_COMPILER_LAUNCHER=sccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
           -DLLVM_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/llvm \
@@ -93,14 +99,6 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
-
-      - name: Run Unit Tests
-        run: |
-          cmake --build build --target reussir-ut
-          ctest --test-dir build --output-on-failure
-
-      - name: Run Integration Tests
-        run: cmake --build build --target check
 
       - name: Stage rrepl
         run: cmake --build build --target rrepl
@@ -169,8 +167,7 @@ jobs:
           brew update
           # llvm@22 (keg-only) pins the toolchain: FindLLVM.cmake requires
           # LLVM 22.x and the unversioned formula moved on to 23.
-          brew install cmake ninja llvm@22 spdlog googletest python@3
-          pip3 install 'lit<24' --break-system-packages
+          brew install cmake ninja llvm@22 spdlog python@3
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -205,7 +202,7 @@ jobs:
           -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=ON \
+          -DREUSSIR_ENABLE_TESTS=OFF \
           -DCMAKE_C_COMPILER_LAUNCHER=sccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
           -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
@@ -213,16 +210,6 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
-
-      - name: Run Unit Tests
-        run: |
-          cmake --build build --target reussir-ut
-          ctest --test-dir build --output-on-failure
-
-      - name: Run Integration Tests
-        run: |
-          export DYLD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/lib:${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH"
-          cmake --build build --target check
 
       - name: Stage rrepl
         run: cmake --build build --target rrepl
@@ -489,12 +476,11 @@ jobs:
             -DCMAKE_CXX_COMPILER="$env:LLVM_PREFIX\bin\clang++.exe" `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DREUSSIR_ENABLE_PEDANTIC=ON `
-            -DREUSSIR_ENABLE_TESTS=ON `
+            -DREUSSIR_ENABLE_TESTS=OFF `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DLLVM_DIR="$env:LLVM_PREFIX\lib\cmake\llvm" `
-            -DMLIR_DIR="$env:LLVM_PREFIX\lib\cmake\mlir" `
-            -Dfilecheck_path="$env:FILECHECK_PATH"
+            -DMLIR_DIR="$env:LLVM_PREFIX\lib\cmake\mlir"
 
       - name: Build
         shell: pwsh
@@ -503,14 +489,6 @@ jobs:
           $env:RUSTC_WRAPPER = "sccache"
           $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
           cmake --build build --parallel
-
-      - name: Run Integration Tests
-        shell: pwsh
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          $env:RUSTC_WRAPPER = "sccache"
-          $env:PATH = "$env:DEV_DRIVE_WORKSPACE\build\bin;$env:LLVM_PREFIX\bin;$env:PATH"
-          cmake --build build --target check
 
       - name: Stage rrepl
         shell: pwsh
