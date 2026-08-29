@@ -53,6 +53,10 @@ jobs:
           LLVM_PREFIX=$(brew --prefix llvm@22)
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> $GITHUB_ENV
           echo "${LLVM_PREFIX}/bin" >> $GITHUB_PATH
+          # llvm@22 is keg-only: its lib dir no longer implies the shared
+          # Homebrew lib dir on the linker path, so -lzstd/-lxml2 from
+          # llvm-sys/tblgen-sys stop resolving without this.
+          echo "LIBRARY_PATH=$(brew --prefix)/lib" >> $GITHUB_ENV
           echo "DYLD_LIBRARY_PATH=${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "LLVM_SYMBOLIZER_PATH=${LLVM_PREFIX}/bin/llvm-symbolizer" >> $GITHUB_ENV
 
