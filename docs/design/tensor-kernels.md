@@ -102,7 +102,21 @@ alloc + copy that is strictly worse than the unfused two-pass form. A
 small post-fusion DPS re-anchoring rewrite (replace `outs(tensor.empty)`
 with the destination when the result feeds the materialize anchor and
 the op is elementwise with identity maps) is the missing piece before
-fusion can be enabled in the pipeline.
+that pass can be enabled in the pipeline.
+
+**The fusion path that works today is transform-driven tile-and-fuse**
+(`linalg_tile_fuse_forall.mlir`, executed e2e): tile the trailing stage
+into an `scf.forall` with `transform.structured.tile_using_forall`, fuse
+producers in with `fuse_into_containing_op` — the destination stays
+threaded through `shared_outs`/`parallel_insert_slice`, so one-shot
+bufferizes the whole fused tile loop onto the rc payload with zero
+temporaries, reading and writing `memref.subview`s with runtime offsets.
+Scheduling runs *before* the reussir expansion, so one kernel body is
+tiled once and cloned into both CoW branches — exactly the `kernel`
+transform anchor's slot. From there `scf-forall-to-parallel` materializes
+`scf.parallel` in both arms and `convert-scf-to-openmp` lowers those to
+`omp.parallel`/`omp.wsloop` — the OpenMP direction in AGENTS.md is
+reachable from this path.
 
 **Fresh materialize reuses for free (PoC-verified, with a contract).**
 `linalg_axpy_token_reuse.mlir`: views taken, inputs dec'd, result box
@@ -148,6 +162,15 @@ already-overwritten elements.)
   then the ownership-based deallocation pipeline for what stays on the
   heap. Unifiable later by pointing bufferization's allocation hooks at
   `__reussir_allocate`.
+- Two pass-ordering facts from the tile-and-fuse experiment: tiling
+  emits `affine.apply`, and `affine` is not in
+  `reussir-convert-to-std`'s legal set — the `with_unique_view`
+  expansion rolls back on a tiled body, so `lower-affine` must run after
+  the interpreter (or `affine` joins the pass's dependent dialects); and
+  bufferized tile loops address `memref.subview`s, so
+  `expand-strided-metadata` (plus a second `lower-affine`) is required
+  before `reussir-lowering-basic-ops` — the same insertion the
+  dynamic-extent design already calls for.
 - `--token-reuse-remarks` learns to tag materialization sites, so "did
   my kernel run in place" is checked from the remarks JSON, not by
   reading LLVM IR.
