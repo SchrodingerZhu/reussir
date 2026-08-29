@@ -115,6 +115,26 @@
             --channel conda-forge \
             'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
             'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+
+          # Import-library aliases the LLVM link line expects but conda does
+          # not ship under those names (the native Windows CI generates the
+          # same two with dumpbin/lib.exe): zstd.dll.lib aliases zstd.lib,
+          # and xml2.lib is synthesized from libxml2.dll's export table —
+          # newer conda libxml2 ships no import library at all.
+          lib="$prefix/Library/lib"
+          [ -e "$lib/zstd.dll.lib" ] || cp "$lib/zstd.lib" "$lib/zstd.dll.lib"
+          if [ ! -e "$lib/xml2.lib" ]; then
+            def=$(mktemp -d)/xml2.def
+            {
+              echo "LIBRARY libxml2.dll"
+              echo "EXPORTS"
+              ${llvmPkgs.llvm}/bin/llvm-readobj --coff-exports \
+                "$prefix/Library/bin/libxml2.dll" \
+                | sed -n 's/^ *Name: //p' | grep -v '^libxml2\.dll$' | sed 's/^/  /'
+            } > "$def"
+            ${llvmPkgs.llvm}/bin/llvm-dlltool -m i386:x86-64 \
+              -d "$def" -D libxml2.dll -l "$lib/xml2.lib"
+          fi
           echo "Baked MSVC LLVM/MLIR into $prefix/Library"
         '';
 
@@ -390,6 +410,12 @@ PRESETS_EOF
         devShells.windows-cross = pkgs.mkShell {
           name = "reussir-windows-cross";
 
+          # Same rationale as the default shell: cargo builds build scripts
+          # at -O0, and the nix cc wrapper's fortify defines turn the glibc
+          # "#warning _FORTIFY_SOURCE requires optimization" into a -Werror
+          # failure in the tblgen crate's host C++.
+          hardeningDisable = [ "fortify" "fortify3" ];
+
           packages = [
             windowsRustToolchain
             pkgs.cargo-xwin
@@ -397,11 +423,23 @@ PRESETS_EOF
             # lld-link links the MSVC-target binaries; llvm-lib/llvm-rc back
             # the cc crate's archiver/resource steps. clang-unwrapped supplies
             # clang-cl for the C sources the tree-sitter grammar crates build —
-            # deliberately unwrapped: the nix cc wrapper would inject host
-            # (glibc) include and link paths into a Windows cross compile.
+            # and the GNU-driver clang/clang++ that
+            # cmake/toolchains/linux-to-windows-msvc.cmake compiles the C++
+            # backend with — deliberately unwrapped: the nix cc wrapper would
+            # inject host (glibc) include and link paths into a Windows cross
+            # compile.
             llvmPkgs.lld
             llvmPkgs.llvm
             llvmPkgs.clang-unwrapped
+
+            # Drive the C++ backend cross build (see the toolchain file
+            # above); python3 backs the wine llvm-config wrapper that
+            # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys.
+            pkgs.cmake
+            pkgs.ninja
+            pkgs.python3
+            # Host tblgen for the dialect's .td generation under cross.
+            llvmPkgs.tblgen
 
             # 64-bit-only Wine is enough: the msvc target produces x64
             # binaries, and the wow64 build runs them without multilib.
@@ -412,6 +450,14 @@ PRESETS_EOF
             bakeMsvcLlvm
           ];
 
+          # Host-side link deps for the backend cross build: the tblgen and
+          # melior-macro proc-macros statically link the HOST LLVM TableGen
+          # C++, whose system-libs pull in -lz and -lxml2 at .so link time.
+          buildInputs = [
+            pkgs.zlib
+            pkgs.libxml2
+          ];
+
           # The user of this shell accepts the Microsoft Software License for
           # the MSVC CRT/SDK components xwin fetches.
           XWIN_ACCEPT_LICENSE = "1";
@@ -420,7 +466,18 @@ PRESETS_EOF
           # produced .exe files through this runner.
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER = "wine";
 
+          # Host prefixes for the backend cross build: proc-macros (tblgen,
+          # melior-macro's TableGen link) execute on the HOST, so they get the
+          # host LLVM join — the MSVC target prefixes (MLIR_SYS_*/LLVM_SYS_*)
+          # are staged per-build by cmake/FindLLVM.cmake's wine wrapper.
+          TABLEGEN_220_PREFIX = "${llvmMlirJoin}";
+          MLIR_TABLEGEN_EXE_OVERRIDE = "${llvmPkgs.tblgen}/bin/mlir-tblgen";
+          LIBCLANG_PATH = "${llvmPkgs.libclang.lib}/lib";
+
           shellHook = ''
+            # Host dylibs for proc-macro dlopen (libstdc++, LLVM/MLIR, zlib):
+            # same rationale as the default shell.
+            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             # Keep the Wine prefix project-local so first-run initialization
             # never touches ~/.wine.
             export WINEPREFIX="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-wineprefix"

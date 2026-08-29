@@ -263,301 +263,106 @@ jobs:
           name: reussir-nightly-macos-arm64
           path: ${{ env.ARCHIVE_NAME }}
 
+  # Cross-built from Linux in the flake's windows-cross shell — no Windows
+  # runner: GNU-driver clang + the xwin CRT/SDK compile the C++ backend to
+  # COFF, the conda-forge MSVC LLVM (the same 22.1.8 the old windows-2025
+  # job used) is linked statically through lld-link, cargo-xwin drives the
+  # Rust side, and Wine smoke-runs every shipped binary from its packaged
+  # directory. See scripts/build-windows-cross.sh.
   build-windows:
-    runs-on: windows-2025
-    env:
-      LLVM_VERSION: 22.1.8
-      CONDA_ENV_FILE: .github/conda/windows-msvc.yml
-      CONDA_PKGS_DIR: D:\conda_pkgs_dir
-      CONDA_ENV_PATH: D:\conda_envs\reussir-msvc
-
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Dev Drive
-        uses: samypr100/setup-dev-drive@v3
-        with:
-          drive-size: 20GB
-          workspace-copy: true
-          trusted-dev-drive: true
-
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
-        with:
-          working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
 
-      - name: Setup MSVC environment
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vsPath) {
-            throw "Could not find a Visual Studio installation with the x64 C++ tools."
-          }
-          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-          $before = @{}
-          cmd /c set | ForEach-Object {
-            if ($_ -match "^(.*?)=(.*)$") {
-              $before[$matches[1].ToUpperInvariant()] = $matches[2]
-            }
-          }
-          cmd /c "`"$vcvars`" && set" | ForEach-Object {
-            if ($_ -match "^(.*?)=(.*)$") {
-              $name = $matches[1]
-              $value = $matches[2]
-              $upper = $name.ToUpperInvariant()
-              $skip = $upper.StartsWith("GITHUB_") -or $upper.StartsWith("RUNNER_") -or $upper.StartsWith("ACTIONS_")
-              if (-not $skip -and ((-not $before.ContainsKey($upper)) -or $before[$upper] -ne $value)) {
-                "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              }
-            }
-          }
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
-      - name: Cache Conda packages
-        uses: actions/cache@v4
-        with:
-          enableCrossOsArchive: true
-          path: ${{ env.CONDA_PKGS_DIR }}
-          key: windows-msvc-conda-pkgs-${{ runner.arch }}-${{ hashFiles('.github/conda/windows-msvc.yml') }}-v1
-          restore-keys: |
-            windows-msvc-conda-pkgs-${{ runner.arch }}-
-
-      - name: Cache Conda environment
-        id: cache-conda-env
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CONDA_ENV_PATH }}
-          key: windows-msvc-conda-env-${{ runner.arch }}-${{ hashFiles('.github/conda/windows-msvc.yml') }}-v1
-
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v4
-        with:
-          miniforge-version: latest
-          activate-environment: ${{ env.CONDA_ENV_PATH }}
-          auto-activate: true
-          channels: conda-forge
-          channel-priority: strict
-          conda-remove-defaults: "true"
-          pkgs-dirs: ${{ env.CONDA_PKGS_DIR }}
-
-      - name: Install Conda dependencies
-        shell: pwsh
-        run: |
-          $llvmRoot = Join-Path $env:CONDA_ENV_PATH "Library"
-          $mlirConfig = Join-Path $llvmRoot "lib\cmake\mlir\MLIRConfig.cmake"
-          $llvmConfig = Join-Path $llvmRoot "lib\cmake\llvm\LLVMConfig.cmake"
-          if ((Test-Path $mlirConfig) -and (Test-Path $llvmConfig)) {
-            Write-Host "Using cached Conda environment at $env:CONDA_ENV_PATH"
-            conda list --prefix "$env:CONDA_ENV_PATH"
-          } else {
-            Write-Host "Cached Conda environment is missing LLVM/MLIR; updating $env:CONDA_ENV_PATH"
-            conda env update --prefix "$env:CONDA_ENV_PATH" --file "$env:CONDA_ENV_FILE" --prune
-          }
-
-      - name: Setup LLVM paths
-        shell: pwsh
-        run: |
-          conda list
-          $llvmRoot = Join-Path $env:CONDA_PREFIX "Library"
-          if (-not (Test-Path "$llvmRoot\lib\cmake\mlir\MLIRConfig.cmake")) {
-            throw "Conda MLIR package did not provide MLIRConfig.cmake."
-          }
-          if (-not (Test-Path "$llvmRoot\lib\cmake\llvm\LLVMConfig.cmake")) {
-            throw "Conda LLVM package did not provide LLVMConfig.cmake."
-          }
-          $xml2ImportLib = Join-Path $llvmRoot "lib\xml2.lib"
-          if (-not (Test-Path $xml2ImportLib)) {
-            $xml2Candidates = @(
-              (Join-Path $llvmRoot "lib\libxml2.lib"),
-              (Join-Path $llvmRoot "lib\libxml2.dll.lib"),
-              (Join-Path $llvmRoot "lib\xml2.dll.lib")
-            )
-            $xml2Source = $xml2Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-            if (-not $xml2Source) {
-              $xml2Source = Get-ChildItem -Path (Join-Path $llvmRoot "lib") -Filter "*xml2*.lib" -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName -First 1
-            }
-            if ($xml2Source) {
-              Copy-Item $xml2Source $xml2ImportLib
-              Write-Host "Created xml2 import library alias: $xml2ImportLib -> $xml2Source"
-            } else {
-              $xml2Dll = Get-ChildItem -Path (Join-Path $llvmRoot "bin") -Filter "*xml2*.dll" -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-              if (-not $xml2Dll) {
-                throw "Conda libxml2 package did not provide a DLL matching *xml2*.dll."
-              }
-              $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-              $libTool = Get-Command lib.exe -ErrorAction SilentlyContinue
-              if (-not $dumpbin -or -not $libTool) {
-                throw "MSVC dumpbin.exe and lib.exe are required to generate xml2.lib."
-              }
-              $exports = & $dumpbin.Source /exports $xml2Dll.FullName | ForEach-Object {
-                if ($_ -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+([^=\s]+)') { $matches[1] }
-              } | Sort-Object -Unique
-              if (-not $exports) {
-                throw "Could not read exports from $($xml2Dll.FullName)."
-              }
-              $tempDir = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-              $xml2Def = Join-Path $tempDir "xml2.def"
-              @("LIBRARY $($xml2Dll.Name)", "EXPORTS") + ($exports | ForEach-Object { "  $_" }) |
-                Set-Content -Path $xml2Def -Encoding ascii
-              & $libTool.Source /nologo /def:$xml2Def /machine:x64 /out:$xml2ImportLib
-              if ($LASTEXITCODE -ne 0 -or -not (Test-Path $xml2ImportLib)) {
-                throw "Failed to generate xml2.lib from $($xml2Dll.FullName)."
-              }
-              Write-Host "Generated xml2 import library: $xml2ImportLib from $($xml2Dll.FullName)"
-            }
-          }
-          function Ensure-LibAlias($aliasName, [string[]]$candidates) {
-            $aliasPath = Join-Path $llvmRoot "lib\$aliasName"
-            if (Test-Path $aliasPath) {
-              return
-            }
-            $source = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-            if (-not $source) {
-              $stem = [System.IO.Path]::GetFileNameWithoutExtension($aliasName)
-              $source = Get-ChildItem -Path (Join-Path $llvmRoot "lib") -Filter "*$stem*.lib" -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName -First 1
-            }
-            if (-not $source) {
-              throw "Conda package did not provide a source import library for $aliasName."
-            }
-            Copy-Item $source $aliasPath
-            Write-Host "Created import library alias: $aliasPath -> $source"
-          }
-          Ensure-LibAlias "zstd.dll.lib" @(
-            (Join-Path $llvmRoot "lib\zstd.lib"),
-            (Join-Path $llvmRoot "lib\libzstd.lib"),
-            (Join-Path $llvmRoot "lib\zstd.dll.lib")
-          )
-          $fileCheck = Get-Command FileCheck.exe -ErrorAction SilentlyContinue
-          if (-not $fileCheck) {
-            $fileCheck = Get-Command filecheck.exe -ErrorAction SilentlyContinue
-          }
-          if (-not $fileCheck) {
-            $fileCheck = Get-Command filecheck -ErrorAction SilentlyContinue
-          }
-          if (-not $fileCheck) {
-            throw "Neither LLVM FileCheck nor the Python filecheck replacement is available."
-          }
-          $fileCheckDir = Split-Path -Parent $fileCheck.Source
-          Write-Host "FileCheck-compatible tool: $($fileCheck.Source)"
-          "LLVM_PREFIX=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "LLVM_SYMBOLIZER_PATH=$llvmRoot\bin\llvm-symbolizer.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CMAKE_PREFIX_PATH=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "FILECHECK_PATH=$($fileCheck.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $fileCheckDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-03-15
-          components: rust-src, rustfmt, clippy
-
-      - name: sccache
+      - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           variant: sccache
-          key: windows-msvc-conda-llvm-${{ env.LLVM_VERSION }}
+          key: windows-cross-llvm
 
-      - name: Configure CMake
-        shell: pwsh
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          $env:RUSTC_WRAPPER = "sccache"
-          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
-          cmake -B build `
-            -G Ninja `
-            -DCMAKE_C_COMPILER="$env:LLVM_PREFIX\bin\clang.exe" `
-            -DCMAKE_CXX_COMPILER="$env:LLVM_PREFIX\bin\clang++.exe" `
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
-            -DREUSSIR_ENABLE_PEDANTIC=ON `
-            -DREUSSIR_ENABLE_TESTS=OFF `
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
-            -DLLVM_DIR="$env:LLVM_PREFIX\lib\cmake\llvm" `
-            -DMLIR_DIR="$env:LLVM_PREFIX\lib\cmake\mlir"
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The MSVC CRT + Windows SDK cargo-xwin unpacks on first use. Bump the
+      # suffix when the workspace moves to a new xwin/SDK version.
+      - name: Cache xwin CRT/SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-sdk-${{ runner.os }}-v1
+
+      # The conda-forge MSVC LLVM/MLIR prefix reussir-bake-msvc-llvm stages.
+      # Keyed on the pinned LLVM version; bump the suffix when the bake's
+      # package list in flake.nix changes.
+      - name: Cache conda MSVC LLVM
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/reussir-msvc-conda
+          key: reussir-msvc-conda-llvm-22.1.8-v1
+
+      - name: Bake conda MSVC LLVM/MLIR
+        run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
 
       - name: Build
-        shell: pwsh
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          $env:RUSTC_WRAPPER = "sccache"
-          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
-          cmake --build build --parallel
-
-      - name: Stage rrepl
-        shell: pwsh
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        run: |
-          $env:RUSTC_WRAPPER = "sccache"
-          $env:PATH = "$env:LLVM_PREFIX\bin;$env:PATH"
-          cmake --build build --target rrepl
+          nix develop .#windows-cross --command bash -c '
+            env RUSTC_WRAPPER=sccache scripts/build-windows-cross.sh
+          '
 
       - name: Package
-        shell: pwsh
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: |
-          # Tag builds carry the version; main builds carry the date.
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $prefix = "reussir-$($env:GITHUB_REF_NAME)-windows-x64-msvc"
-          } else {
-            $date = Get-Date -Format "yyyy-MM-dd"
-            $prefix = "reussir-nightly-$date-windows-x64-msvc"
-          }
-          New-Item -ItemType Directory -Force -Path "$prefix\bin" | Out-Null
+          nix develop .#windows-cross --command bash -c '
+            set -euo pipefail
+            # Tag builds carry the version; main builds carry the date.
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              PREFIX="reussir-${GITHUB_REF_NAME}-windows-x64-msvc"
+            else
+              PREFIX="reussir-nightly-$(date +%Y-%m-%d)-windows-x64-msvc"
+            fi
+            mkdir -p "${PREFIX}/bin"
+            REL=target/x86_64-pc-windows-msvc/release
+            for bin in rrc rene rrepl reussir-lsp; do
+              cp "${REL}/${bin}.exe" "${PREFIX}/bin/"
+            done
 
-          # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, while rene and
-          # reussir-lsp link no native LLVM code — no MLIR/LLVM DLLs and no
-          # Bridge DLL. No Rust toolchain and no prebuilt runtime ship either:
-          # rene carries the reussir-rt source bundle and bakes it with the user's own
-          # rust/cargo on first use.
-          foreach ($bin in @("rrc", "rene", "rrepl", "reussir-lsp")) {
-            Copy-Item "build\bin\$bin.exe" "$prefix\bin\"
-          }
+            # Ship the transitive closure of conda-toolchain DLLs the
+            # binaries actually import (zlib/zstd/libxml2 — the static LLVM
+            # references their import libraries); everything else must come
+            # from the OS.
+            CONDA_BIN="$HOME/.cache/reussir-msvc-conda/Library/bin"
+            changed=1
+            while [ "$changed" = 1 ]; do
+              changed=0
+              for f in "${PREFIX}"/bin/*.exe "${PREFIX}"/bin/*.dll; do
+                [ -e "$f" ] || continue
+                for dll in $(llvm-readobj --coff-imports "$f" | sed -n "s/^ *Name: //p"); do
+                  if [ -e "${CONDA_BIN}/${dll}" ] && [ ! -e "${PREFIX}/bin/${dll}" ]; then
+                    cp "${CONDA_BIN}/${dll}" "${PREFIX}/bin/"
+                    echo "Bundled conda DLL dependency: ${dll}"
+                    changed=1
+                  fi
+                done
+              done
+            done
 
-          # Ship the transitive closure of conda-toolchain DLLs the binaries
-          # actually import (zstd and friends, if the static LLVM referenced
-          # their import libraries); everything else must come from the OS.
-          $condaBin = "$env:LLVM_PREFIX\bin"
-          $queue = [System.Collections.Generic.Queue[string]]::new()
-          Get-ChildItem "$prefix\bin\*.exe" | ForEach-Object { $queue.Enqueue($_.FullName) }
-          $seen = @{}
-          while ($queue.Count -gt 0) {
-            $file = $queue.Dequeue()
-            $deps = (& dumpbin /nologo /dependents $file) -match '^\s+\S+\.dll\s*$' |
-              ForEach-Object { $_.Trim() }
-            foreach ($dll in $deps) {
-              $key = $dll.ToLowerInvariant()
-              if ($seen.ContainsKey($key)) { continue }
-              $seen[$key] = $true
-              $src = Join-Path $condaBin $dll
-              if (Test-Path $src) {
-                Copy-Item $src "$prefix\bin\"
-                Write-Host "Bundled conda DLL dependency: $dll"
-                $queue.Enqueue((Join-Path "$prefix\bin" $dll))
-              }
-            }
-          }
+            # Every binary must start under Wine resolving DLLs only from
+            # its own packaged directory.
+            for bin in rrc rene rrepl reussir-lsp; do
+              WINEDEBUG=-all wine "${PREFIX}/bin/${bin}.exe" --help > /dev/null
+            done
 
-          # Verify each binary starts with only the OS on PATH (the bundled
-          # DLLs, if any, resolve from the exe's own directory).
-          $binDir = (Resolve-Path "$prefix\bin").Path
-          foreach ($bin in @("rrc", "rene", "rrepl", "reussir-lsp")) {
-            cmd /c "set PATH=%SystemRoot%\System32;%SystemRoot%&& `"$binDir\$bin.exe`" --help > NUL"
-            if ($LASTEXITCODE -ne 0) {
-              throw "$bin.exe failed to run from a bare PATH (exit $LASTEXITCODE)"
-            }
-          }
-
-          7z a -tzip "$prefix.zip" $prefix
-          $archivePath = (Resolve-Path "$prefix.zip").Path
-          "ARCHIVE_NAME=$archivePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            python3 -m zipfile -c "${PREFIX}.zip" "${PREFIX}"
+            echo "ARCHIVE_NAME=${PREFIX}.zip" >> "$GITHUB_ENV"
+          '
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
