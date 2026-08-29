@@ -65,7 +65,7 @@ fn result_of<'c, 'a>(block: &'a Block<'c>, operation: impl Into<Operation<'c>>) 
 // Builds a `reussir.rc.create` that takes only a value (no token/region). The op
 // carries `AttrSizedOperandSegments`, and melior's generated builder does not
 // populate `operandSegmentSizes`, so we construct it directly and set the segment
-// sizes ([value, token, region] = [1, 0, 0]). The pipeline's token-instantiation
+// sizes ([value, token, region, extents] = [1, 0, 0, 0]). The pipeline's token-instantiation
 // pass supplies the missing allocation token.
 fn rc_create_value<'c, 'a>(
     context: &'c Context,
@@ -78,7 +78,7 @@ fn rc_create_value<'c, 'a>(
         .add_operands(&[value])
         .add_attributes(&[(
             Identifier::new(context, "operandSegmentSizes"),
-            DenseI32ArrayAttribute::new(context, &[1, 0, 0]).into(),
+            DenseI32ArrayAttribute::new(context, &[1, 0, 0, 0]).into(),
         )])
         .add_results(&[rc_type])
         .build()
