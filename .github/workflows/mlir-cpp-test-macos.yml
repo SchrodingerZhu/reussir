@@ -32,8 +32,10 @@ jobs:
           # wasmer runs the WebAssembly suites' modules
           # (tests/integration/rene/wasi_*.rr); CMake finds it on PATH at
           # configure time, which is what turns the `wasmer` lit feature on.
-          brew install cmake ninja llvm spdlog googletest python@3 wasmer
-          pip3 install 'lit<24' --break-system-packages
+          # llvm@22 (keg-only) pins the toolchain: FindLLVM.cmake requires
+          # LLVM 22.x and the unversioned formula moved on to 23.
+          brew install cmake ninja llvm@22 spdlog googletest python@3 wasmer
+          pip3 install lit --break-system-packages
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -48,7 +50,7 @@ jobs:
 
       - name: Setup environment paths
         run: |
-          LLVM_PREFIX=$(brew --prefix llvm)
+          LLVM_PREFIX=$(brew --prefix llvm@22)
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> $GITHUB_ENV
           echo "${LLVM_PREFIX}/bin" >> $GITHUB_PATH
           echo "DYLD_LIBRARY_PATH=${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
