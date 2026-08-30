@@ -158,15 +158,15 @@ elseif(WIN32)
 endif()
 
 set(REUSSIR_CARGO_CXX_ENV)
-if(WIN32)
-  if(CMAKE_CROSSCOMPILING)
-    # The host clang-cl (from the toolchain file) compiles the build
-    # scripts' target C++ with --target=x86_64-pc-windows-msvc.
-    set(REUSSIR_CARGO_CXX "${CMAKE_CXX_COMPILER}")
-  else()
-    set(REUSSIR_CARGO_CXX
-      "${REUSSIR_LLVM_PREFIX}/bin/clang-cl${CMAKE_EXECUTABLE_SUFFIX}")
-  endif()
+if(WIN32 AND CMAKE_CROSSCOMPILING)
+  # Nothing to export: cargo-xwin supplies the TARGET C++ environment
+  # itself (target-scoped CC/CXX/CFLAGS beat a generic CXX in cc-rs), and
+  # the HOST side — the tblgen proc-macro's C++ — must keep the dev
+  # shell's default compiler; a generic CXX= here would misroute it to an
+  # unwrapped clang with cl-style flags.
+elseif(WIN32)
+  set(REUSSIR_CARGO_CXX
+    "${REUSSIR_LLVM_PREFIX}/bin/clang-cl${CMAKE_EXECUTABLE_SUFFIX}")
   if(NOT EXISTS "${REUSSIR_CARGO_CXX}")
     message(FATAL_ERROR
       "Windows Cargo C++ build scripts require clang-cl at "
