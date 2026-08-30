@@ -207,22 +207,68 @@ jobs:
               cp -a "build/bin/${bin}" "${PREFIX}/bin/"
             done
 
-            # Un-nix the Mach-O load commands: every /nix/store dylib
-            # reference is rewritten to the OS-provided /usr/lib equivalent
-            # (libc++, libz, libiconv, libxml2 — all ABI-stable system
-            # libraries on macOS). Stripping and the rewrite invalidate the
-            # ad-hoc signature, so re-sign afterwards.
+            # Un-nix the Mach-O load commands. ABI-stable system libraries
+            # are rewritten to their canonical /usr/lib names (an explicit
+            # allowlist: dyld-cache libraries cannot be existence-tested, and
+            # blind basename mapping broke on libxml2 — nix ships soversion
+            # 16, macOS soversion 2). Every other nix dylib is bundled into
+            # <prefix>/lib and referenced relatively; bundled dylibs get the
+            # same treatment recursively (libxml2 pulls in liblzma etc.).
+            # Stripping and the rewrites invalidate the ad-hoc signature, so
+            # everything is re-signed at the end.
             strip -x "${PREFIX}"/bin/*
-            for bin in "${PREFIX}"/bin/*; do
-              otool -L "$bin" | awk "/\/nix\/store/ {print \$1}" | while read -r dep; do
-                install_name_tool -change "$dep" "/usr/lib/$(basename "$dep")" "$bin"
+            rewrite() {
+              local file=$1 ref_prefix=$2
+              otool -L "$file" | awk "/\/nix\/store/ {print \$1}" | while read -r dep; do
+                local base; base=$(basename "$dep")
+                case "$base" in
+                  libc++.1.dylib|libc++abi.dylib|libc++abi.1.dylib|libSystem.B.dylib|libiconv.2.dylib|libcharset.1.dylib|libobjc.A.dylib|libresolv.9.dylib)
+                    install_name_tool -change "$dep" "/usr/lib/$base" "$file" ;;
+                  libz.dylib|libz.1.dylib)
+                    install_name_tool -change "$dep" /usr/lib/libz.1.dylib "$file" ;;
+                  *)
+                    mkdir -p "${PREFIX}/lib"
+                    if [ ! -e "${PREFIX}/lib/$base" ]; then
+                      cp "$dep" "${PREFIX}/lib/$base"
+                      chmod +w "${PREFIX}/lib/$base"
+                      install_name_tool -id "@loader_path/$base" "${PREFIX}/lib/$base"
+                    fi
+                    install_name_tool -change "$dep" "$ref_prefix/$base" "$file" ;;
+                esac
               done
-              codesign --force --sign - "$bin"
+            }
+            for bin in "${PREFIX}"/bin/*; do
+              rewrite "$bin" "@executable_path/../lib"
+            done
+            # Fixpoint over the bundled dylibs (each pass may add new ones).
+            for _ in 1 2 3 4 5; do
+              found=0
+              for lib in "${PREFIX}"/lib/*.dylib; do
+                [ -e "$lib" ] || continue
+                if otool -L "$lib" | grep -q "/nix/store"; then
+                  found=1
+                  rewrite "$lib" "@loader_path"
+                fi
+              done
+              [ "$found" = 0 ] && break
+            done
+            for macho in "${PREFIX}"/bin/* "${PREFIX}"/lib/*.dylib; do
+              [ -e "$macho" ] || continue
+              codesign --force --sign - "$macho"
             done
 
-            # Verify: no store references survive, nothing may resolve to an
-            # LLVM/MLIR dylib, and each binary starts from a bare
-            # environment.
+            # Verify: no store references survive anywhere in the archive,
+            # nothing may resolve to an LLVM/MLIR dylib, and each binary
+            # starts from a bare environment.
+            for macho in "${PREFIX}"/lib/*.dylib; do
+              [ -e "$macho" ] || continue
+              echo "--- otool -L $(basename "$macho")"
+              otool -L "$macho"
+              if otool -L "$macho" | grep -Ei "libLLVM|libMLIR|/nix/store"; then
+                echo "::error::bundled $(basename "$macho") still references the nix store"
+                exit 1
+              fi
+            done
             for bin in rrc rene rrepl reussir-lsp; do
               echo "--- otool -L ${bin}"
               otool -L "${PREFIX}/bin/${bin}"
