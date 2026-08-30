@@ -262,7 +262,6 @@
             # zlib / libxml2 are LLVM link-time deps on some targets
             pkgs.zlib
             pkgs.libxml2
-            pkgs.gdb
 
             # The engine the WebAssembly lit suites run their modules on
             # (tests/integration/rene/wasi_*.rr). Those suites also want the
@@ -272,6 +271,13 @@
             # to the fenix toolchain above. Missing either piece, a suite
             # reports UNSUPPORTED rather than failing.
             pkgs.wasmer
+          ]
+          # Linux only: gdb cannot properly debug arm64 Mach-O binaries, and
+          # shipping it on darwin flips the lit `gdb` feature on — which made
+          # tests/integration/debuginfo/gdb_print.rr run (and fail) on macOS
+          # where it had always been UNSUPPORTED. lldb covers darwin.
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.gdb
           ];
 
           # libomp: the OpenMP e2e lit tests probe `clang -fopenmp` and are
