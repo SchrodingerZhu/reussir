@@ -102,22 +102,33 @@
         bakeMsvcLlvm = pkgs.writeShellScriptBin "reussir-bake-msvc-llvm" ''
           set -euo pipefail
           prefix="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda"
-          if [ -e "$prefix/Library/lib/cmake/mlir/MLIRConfig.cmake" ] && [ "''${1:-}" != "--force" ]; then
-            echo "MSVC LLVM/MLIR already baked at $prefix (use --force to redo)"
-            exit 0
+          # Full bake and later additions are separately idempotent: a prefix
+          # baked (or cache-restored) before clangxx/ml64 joined the recipe
+          # still gets them.
+          if [ ! -e "$prefix/Library/lib/cmake/mlir/MLIRConfig.cmake" ] || [ "''${1:-}" = "--force" ]; then
+            # --platform win-64 extracts the Windows packages without running
+            # their activation scripts, which is all a cross link needs.
+            # clangxx supplies the windows clang-cl.exe that cc-rs build
+            # scripts need when the windows-native cargo runs under Wine.
+            ${pkgs.micromamba}/bin/micromamba create --yes \
+              --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
+              --prefix "$prefix" \
+              --platform win-64 \
+              --channel conda-forge \
+              'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
+              'clangxx=22.1.8' \
+              'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+          elif [ ! -x "$prefix/Library/bin/clang-cl.exe" ]; then
+            echo "existing bake lacks clangxx; installing into $prefix"
+            ${pkgs.micromamba}/bin/micromamba install --yes \
+              --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
+              --prefix "$prefix" \
+              --platform win-64 \
+              --channel conda-forge \
+              'clangxx=22.1.8'
+          else
+            echo "MSVC LLVM/MLIR already baked at $prefix"
           fi
-          # --platform win-64 extracts the Windows packages without running
-          # their activation scripts, which is all a cross link needs.
-          # clangxx supplies the windows clang-cl.exe that cc-rs build
-          # scripts need when the windows-native cargo runs under Wine.
-          ${pkgs.micromamba}/bin/micromamba create --yes \
-            --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
-            --prefix "$prefix" \
-            --platform win-64 \
-            --channel conda-forge \
-            'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
-            'clangxx=22.1.8' \
-            'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
 
           # cc-rs assembles MASM (the psm crate) through ml64.exe; llvm-ml64
           # is a drop-in.

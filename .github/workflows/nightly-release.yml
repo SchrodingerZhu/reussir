@@ -288,7 +288,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/reussir-msvc-conda
-          key: reussir-msvc-conda-llvm-22.1.8-v1
+          key: reussir-msvc-conda-llvm-22.1.8-v2
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm

@@ -90,7 +90,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/reussir-msvc-conda
-          key: reussir-msvc-conda-llvm-22.1.8-v1
+          key: reussir-msvc-conda-llvm-22.1.8-v2
 
       # The windows-native rustc/cargo the reussir compilers spawn under
       # Wine (polyffi, rene's bake). Cached; keyed to the pinned nightly.
