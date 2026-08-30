@@ -30,8 +30,17 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # Windows-target tools driven from a linux host (the xwin cross build, run
 # through Wine/binfmt): a feature for the few tests that straddle the
 # unix/windows process boundary in ways Wine cannot bridge.
+# REUSSIR_CROSS_WINE_UNGATE=1 suppresses the gate for experiments with a
+# windows-native rustc under Wine; REUSSIR_RUSTC_OVERRIDE and
+# REUSSIR_LIBRARY_PATH_OVERRIDE redirect %rustc_path / %library_path (and
+# REUSSIR_RUSTC) without reconfiguring.
 if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
-    config.available_features.add('cross-wine')
+    if not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
+        config.available_features.add('cross-wine')
+if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
+    config.environment['REUSSIR_RUSTC'] = os.environ['REUSSIR_RUSTC_OVERRIDE']
+if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
+    config.library_path = os.environ['REUSSIR_LIBRARY_PATH_OVERRIDE']
 
 # WINEPATH rides along for the Windows cross runs: binfmt-launched PE
 # binaries resolve the conda runtime DLLs through it.
