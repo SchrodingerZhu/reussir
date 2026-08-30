@@ -383,7 +383,12 @@ if _probe_rustc_lto_link():
 
 # Executables' platform suffix, for running artifacts whose name a tool
 # derived (`rene build`'s `<profile>/<target>`), not a RUN line's `-o`.
-config.substitutions.append((r'%exe_ext', '.exe' if sys.platform == 'win32' else ''))
+# Keyed on the TARGET, not the host: cross runs execute windows .exe
+# artifacts from a unix shell, which does not append the suffix the way
+# CreateProcess does.
+_target_is_windows = (sys.platform == 'win32'
+                      or config.reussir_rrc_path.endswith('.exe'))
+config.substitutions.append((r'%exe_ext', '.exe' if _target_is_windows else ''))
 
 # TODO: should we support macos?
 if sys.platform == 'win32':
