@@ -58,7 +58,14 @@ def append_flags(command, flags):
 
 def bin_tool(name):
     suffix = '.exe' if sys.platform == 'win32' else ''
-    return sh_path(os.path.join(config.binary_path, name + suffix))
+    path = os.path.join(config.binary_path, name + suffix)
+    # Cross runs (windows target, linux host): the staged tool is name.exe
+    # even though the host shell is unix — probe instead of assuming. The
+    # native Windows pipeline never noticed because CreateProcess appends
+    # .exe on its own; a unix shell does not.
+    if not os.path.exists(path) and os.path.exists(path + '.exe'):
+        path += '.exe'
+    return sh_path(path)
 
 config.substitutions.append((r'%reussir-opt',
                              bin_tool('reussir-opt')))
