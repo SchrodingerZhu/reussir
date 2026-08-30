@@ -37,6 +37,9 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
     if not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
         config.available_features.add('cross-wine')
+    # Genuine Wine-environment limitations (console emulation quirks etc.)
+    # stay gated even in ungated experiment runs.
+    config.available_features.add('wine-quirks')
 if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
     config.environment['REUSSIR_RUSTC'] = os.environ['REUSSIR_RUSTC_OVERRIDE']
 if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
