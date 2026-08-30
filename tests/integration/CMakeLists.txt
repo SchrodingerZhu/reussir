@@ -183,6 +183,13 @@ if (WIN32)
     # Rust MSVC targets use DLL CRT imports; keep lit-linked test drivers matched.
     set(cc_runtime_flags "-fms-runtime-lib=dll")
   endif()
+  if(CMAKE_CROSSCOMPILING)
+    # The cross target and xwin sysroot flags live in CMAKE_C_FLAGS /
+    # CMAKE_EXE_LINKER_FLAGS (seeded by the toolchain file). %cc RUN lines
+    # invoke the raw compiler, which otherwise defaults to the HOST target
+    # and hands Windows-style link inputs to the unix linker.
+    string(APPEND cc_runtime_flags " ${CMAKE_C_FLAGS} ${CMAKE_EXE_LINKER_FLAGS}")
+  endif()
   set(REUSSIR_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR})
   set(REUSSIR_RT_LIBRARY_PATH ${REUSSIR_RT_DEPS_DIR}/reussir_rt.dll)
   set(rpath_flag "")
