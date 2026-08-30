@@ -8,11 +8,9 @@ name: Windows Cross (xwin + wine)
 # with the same pinned toolchain a developer gets from
 # `nix develop .#windows-cross`.
 #
-# What this deliberately does NOT cover: the MLIR-linking C++ side (rrc,
-# the backend crates, the lit integration suite) on Windows. That now
-# gets its Windows build proven by the nightly release's build-windows
-# job (real MSVC conda toolchain, packaging self-containment checks
-# included), not by a per-PR pipeline.
+# The `lit` job covers the full integration suite against the cross-built
+# toolchain — including the polyffi and rene suites through the baked
+# windows-native rustc/cargo running under Wine.
 on:
   push:
     branches: [ main ]
@@ -94,8 +92,19 @@ jobs:
           path: ~/.cache/reussir-msvc-conda
           key: reussir-msvc-conda-llvm-22.1.8-v1
 
+      # The windows-native rustc/cargo the reussir compilers spawn under
+      # Wine (polyffi, rene's bake). Cached; keyed to the pinned nightly.
+      - name: Cache windows rustc
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/reussir-msvc-rustc
+          key: reussir-msvc-rustc-nightly-2026-03-15-v1
+
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
+
+      - name: Bake windows rustc
+        run: nix develop .#windows-cross --command reussir-bake-msvc-rustc
 
       # Teach the kernel to run PE executables through Wine, using the wine
       # binary from the windows-cross shell. F = resolve the interpreter at
@@ -137,6 +146,18 @@ jobs:
         run: |
           nix develop .#windows-cross --command bash -c '
             env RUSTC_WRAPPER=sccache cmake --build build-xwin --parallel --target all
+          '
+
+      # The runtime tree the polyffi/rene suites resolve against must be
+      # built by the windows toolchain itself so its proc macros are
+      # windows DLLs; the host cargo fetch shares its cache through the
+      # unix CARGO_HOME the shell exports.
+      - name: Build Wine runtime tree
+        run: |
+          nix develop .#windows-cross --command bash -c '
+            cargo fetch --locked
+            CARGO_TARGET_DIR="$PWD/build-xwin/target-rt-wine" CARGO_NET_OFFLINE=true \
+              wine "$REUSSIR_MSVC_RUSTC_PREFIX/bin/cargo.exe" build --offline --locked --release -p reussir-rt
           '
 
       - name: Run lit suite under Wine
