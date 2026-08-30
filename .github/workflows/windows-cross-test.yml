@@ -1,0 +1,51 @@
+name: Windows Cross (xwin + wine)
+
+# Replaces the conda/MSVC full pipeline that ran on windows-2025 runners:
+# the workspace default members (every LLVM-free crate, including all
+# binaries the release ships except rrc/rrepl) are cross-compiled for
+# x86_64-pc-windows-msvc with cargo-xwin from the flake's windows-cross
+# shell, and their test suites execute under Wine — on a Linux runner,
+# with the same pinned toolchain a developer gets from
+# `nix develop .#windows-cross`.
+#
+# What this deliberately does NOT cover: the MLIR-linking C++ side (rrc,
+# the backend crates, the lit integration suite) on Windows. That now
+# gets its Windows build proven by the nightly release's build-windows
+# job (real MSVC conda toolchain, packaging self-containment checks
+# included), not by a per-PR pipeline.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The MSVC CRT + Windows SDK that cargo-xwin unpacks on first use
+      # (~/.cache/cargo-xwin). Keyed manually: bump the suffix when the
+      # workspace moves to a new xwin/SDK version.
+      - name: Cache xwin CRT/SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-sdk-${{ runner.os }}-v1
+
+      - name: Cross-build for x86_64-pc-windows-msvc
+        run: nix develop .#windows-cross --command cargo xwin build --target x86_64-pc-windows-msvc
+
+      - name: Run test suites under Wine
+        run: nix develop .#windows-cross --command cargo xwin test --target x86_64-pc-windows-msvc
