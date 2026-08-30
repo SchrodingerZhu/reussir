@@ -1,3 +1,6 @@
+// polyffi spawns the host rustc, which Wine cannot await (no waitable
+// handle for unix children); see tests/integration/rene/lit.local.cfg.
+// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // The polymorphic-FFI frontend surface (docs/design/polymorphic-ffi.md):
 // an opaque `#[ffi]` record lowers to an rc'd `ffi_object`, every

@@ -102,19 +102,38 @@
         bakeMsvcLlvm = pkgs.writeShellScriptBin "reussir-bake-msvc-llvm" ''
           set -euo pipefail
           prefix="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda"
-          if [ -e "$prefix/Library/lib/cmake/mlir/MLIRConfig.cmake" ] && [ "''${1:-}" != "--force" ]; then
-            echo "MSVC LLVM/MLIR already baked at $prefix (use --force to redo)"
-            exit 0
+          # Full bake and later additions are separately idempotent: a prefix
+          # baked (or cache-restored) before clangxx/ml64 joined the recipe
+          # still gets them.
+          if [ ! -e "$prefix/Library/lib/cmake/mlir/MLIRConfig.cmake" ] || [ "''${1:-}" = "--force" ]; then
+            # --platform win-64 extracts the Windows packages without running
+            # their activation scripts, which is all a cross link needs.
+            # clangxx supplies the windows clang-cl.exe that cc-rs build
+            # scripts need when the windows-native cargo runs under Wine.
+            ${pkgs.micromamba}/bin/micromamba create --yes \
+              --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
+              --prefix "$prefix" \
+              --platform win-64 \
+              --channel conda-forge \
+              'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
+              'clangxx=22.1.8' \
+              'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+          elif [ ! -x "$prefix/Library/bin/clang-cl.exe" ]; then
+            echo "existing bake lacks clangxx; installing into $prefix"
+            ${pkgs.micromamba}/bin/micromamba install --yes \
+              --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
+              --prefix "$prefix" \
+              --platform win-64 \
+              --channel conda-forge \
+              'clangxx=22.1.8'
+          else
+            echo "MSVC LLVM/MLIR already baked at $prefix"
           fi
-          # --platform win-64 extracts the Windows packages without running
-          # their activation scripts, which is all a cross link needs.
-          ${pkgs.micromamba}/bin/micromamba create --yes \
-            --root-prefix "''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-micromamba" \
-            --prefix "$prefix" \
-            --platform win-64 \
-            --channel conda-forge \
-            'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
-            'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+
+          # cc-rs assembles MASM (the psm crate) through ml64.exe; llvm-ml64
+          # is a drop-in.
+          [ -e "$prefix/Library/bin/ml64.exe" ] || \
+            cp "$prefix/Library/bin/llvm-ml64.exe" "$prefix/Library/bin/ml64.exe"
 
           # Import-library aliases the LLVM link line expects but conda does
           # not ship under those names (the native Windows CI generates the
@@ -136,6 +155,38 @@
               -d "$def" -D libxml2.dll -l "$lib/xml2.lib"
           fi
           echo "Baked MSVC LLVM/MLIR into $prefix/Library"
+        '';
+
+        # Bakes the official windows-msvc Rust dist (same pinned nightly as
+        # rust-toolchain.toml) so the reussir compilers can spawn a
+        # windows-native rustc/cargo under Wine: PE parents awaiting PE
+        # children work (Wine returns no waitable handle for unix children,
+        # which is what broke rrc's polyffi rustc and rene's cargo bake).
+        # rustc.exe resolves its sysroot from its own location; rust-lld is
+        # additionally staged as lld-link.exe so linker-flavor detection by
+        # argv[0] picks the link.exe style.
+        bakeMsvcRustc = pkgs.writeShellScriptBin "reussir-bake-msvc-rustc" ''
+          set -euo pipefail
+          prefix="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-rustc"
+          if [ -x "$prefix/bin/rustc.exe" ] && [ "''${1:-}" != "--force" ]; then
+            echo "windows rustc already baked at $prefix (use --force to redo)"
+            exit 0
+          fi
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          for c in rustc cargo rust-std; do
+            ${pkgs.curl}/bin/curl -sSfLO \
+              "https://static.rust-lang.org/dist/2026-03-15/$c-nightly-x86_64-pc-windows-msvc.tar.xz"
+            tar xf "$c-nightly-x86_64-pc-windows-msvc.tar.xz"
+          done
+          mkdir -p "$prefix"
+          cp -r rustc-nightly-x86_64-pc-windows-msvc/rustc/* "$prefix/"
+          cp -r cargo-nightly-x86_64-pc-windows-msvc/cargo/* "$prefix/"
+          cp -r rust-std-nightly-x86_64-pc-windows-msvc/rust-std-x86_64-pc-windows-msvc/* "$prefix/"
+          bindir="$prefix/lib/rustlib/x86_64-pc-windows-msvc/bin"
+          cp -f "$bindir/rust-lld.exe" "$bindir/lld-link.exe"
+          echo "Baked windows rustc/cargo into $prefix"
         '';
 
         # System header flags for the clang-scan-deps workaround.
@@ -439,11 +490,15 @@ PRESETS_EOF
             llvmPkgs.clang-unwrapped
 
             # Drive the C++ backend cross build (see the toolchain file
-            # above); python3 backs the wine llvm-config wrapper that
-            # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys.
+            # above); python backs the wine llvm-config wrapper that
+            # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys, and lit
+            # (with psutil for --timeout) runs the integration suite under
+            # Wine via the `check` target. util-linux supplies the flock
+            # that cmake/ReussirCargo.cmake serializes cargo-xwin with.
             pkgs.cmake
             pkgs.ninja
-            pkgs.python3
+            pkgs.util-linux
+            (pkgs.python3.withPackages (ps: [ ps.lit ps.psutil ]))
             # Host tblgen for the dialect's .td generation under cross.
             llvmPkgs.tblgen
 
@@ -454,6 +509,9 @@ PRESETS_EOF
             # One-shot fetch of the conda-forge MSVC LLVM/MLIR toolchain
             # (same versions as the Windows CI) for backend-crate linking.
             bakeMsvcLlvm
+            # One-shot fetch of the windows-native rustc/cargo the reussir
+            # compilers spawn under Wine (polyffi, rene's bake).
+            bakeMsvcRustc
           ];
 
           # Host-side link deps for the backend cross build: the tblgen and
@@ -497,6 +555,35 @@ PRESETS_EOF
             msvc_llvm="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda/Library"
             if [ -e "$msvc_llvm/lib/cmake/mlir/MLIRConfig.cmake" ]; then
               export REUSSIR_MSVC_LLVM_PREFIX="$msvc_llvm"
+              # Wine executions of cross-built binaries resolve the conda
+              # runtime DLLs (zlib/zstd/libxml2 behind the static LLVM)
+              # through the Windows-side PATH extension.
+              export WINEPATH="z:''${msvc_llvm//\//\\}\\bin"
+            fi
+
+            # The windows-native Rust toolchain (reussir-bake-msvc-rustc):
+            # the full spawn-PE-children environment for polyffi and rene
+            # under Wine. cc-rs build scripts get clang-cl (conda) with the
+            # xwin CRT/SDK through INCLUDE/LIB; cargo links through
+            # rust-lld; the shared unix CARGO_HOME keeps the host-side
+            # `cargo fetch` cache visible to wine-cargo.
+            msvc_rustc="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-rustc"
+            xwin_splat="''${XDG_CACHE_HOME:-$HOME/.cache}/cargo-xwin/xwin"
+            if [ -x "$msvc_rustc/bin/rustc.exe" ]; then
+              export REUSSIR_MSVC_RUSTC="$msvc_rustc/bin/rustc.exe"
+              export REUSSIR_MSVC_RUSTC_PREFIX="$msvc_rustc"
+              export WINEPATH="''${WINEPATH:+$WINEPATH;}z:''${msvc_rustc//\//\\}\\bin"
+              export CARGO_HOME="''${CARGO_HOME:-$HOME/.cargo}"
+              export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld
+              export CC_x86_64_pc_windows_msvc=clang-cl
+              export CXX_x86_64_pc_windows_msvc=clang-cl
+              export AR_x86_64_pc_windows_msvc=llvm-lib
+              if [ -d "$xwin_splat/crt/include" ]; then
+                _w() { echo "z:''${1//\//\\}"; }
+                export LIB="$(_w "$xwin_splat/crt/lib/x86_64");$(_w "$xwin_splat/sdk/lib/um/x86_64");$(_w "$xwin_splat/sdk/lib/ucrt/x86_64")"
+                export INCLUDE="$(_w "$xwin_splat/crt/include");$(_w "$xwin_splat/sdk/include/ucrt");$(_w "$xwin_splat/sdk/include/um");$(_w "$xwin_splat/sdk/include/shared")"
+                unset -f _w
+              fi
             fi
 
             echo ""
@@ -505,6 +592,11 @@ PRESETS_EOF
             echo "    cargo xwin build --target x86_64-pc-windows-msvc   # default members"
             echo "    cargo xwin test  --target x86_64-pc-windows-msvc  # tests run under wine"
             echo "    reussir-bake-msvc-llvm   # fetch the conda-forge MSVC LLVM/MLIR (once)"
+            echo "    reussir-bake-msvc-rustc  # fetch the windows-native rustc/cargo (once)"
+            echo "    # then build the Wine runtime tree for the polyffi/rene suites:"
+            echo "    #   cargo fetch --locked && CARGO_TARGET_DIR=\$PWD/build-xwin/target-rt-wine \\"
+            echo "    #     CARGO_NET_OFFLINE=true wine \$REUSSIR_MSVC_RUSTC_PREFIX/bin/cargo.exe \\"
+            echo "    #     build --offline --locked --release -p reussir-rt"
             echo ""
           '';
         };

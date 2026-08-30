@@ -1,3 +1,6 @@
+// polyffi spawns the host rustc, which Wine cannot await (no waitable
+// handle for unix children); see tests/integration/rene/lit.local.cfg.
+// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // End-to-end polymorphic FFI: build a Rust `Vec<f64>` from Reussir, sum it
 // on the Rust side (consuming and dropping the vector there), and export

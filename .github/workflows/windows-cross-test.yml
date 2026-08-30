@@ -8,11 +8,9 @@ name: Windows Cross (xwin + wine)
 # with the same pinned toolchain a developer gets from
 # `nix develop .#windows-cross`.
 #
-# What this deliberately does NOT cover: the MLIR-linking C++ side (rrc,
-# the backend crates, the lit integration suite) on Windows. That now
-# gets its Windows build proven by the nightly release's build-windows
-# job (real MSVC conda toolchain, packaging self-containment checks
-# included), not by a per-PR pipeline.
+# The `lit` job covers the full integration suite against the cross-built
+# toolchain — including the polyffi and rene suites through the baked
+# windows-native rustc/cargo running under Wine.
 on:
   push:
     branches: [ main ]
@@ -49,3 +47,121 @@ jobs:
 
       - name: Run test suites under Wine
         run: nix develop .#windows-cross --command cargo xwin test --target x86_64-pc-windows-msvc
+
+  # The lit integration suite against the cross-built toolchain. The whole
+  # dependency graph — C++ dialect libs, rrc, rene, rrepl, the runtime —
+  # cross-compiles through the cmake cargo plumbing
+  # (REUSSIR_CARGO_BUILD_TARGET), and a binfmt_misc registration teaches the
+  # kernel to run PE binaries through Wine, so both the staged tools and the
+  # executables the tests produce execute transparently. Suites that need a
+  # native host toolchain (rustc-driven polyffi/bake, sanitizers, debuggers,
+  # wasm engines) report UNSUPPORTED, exactly as on any host missing those
+  # features.
+  lit:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore file timestamps
+        uses: chetan/git-restore-mtime-action@v2
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          variant: sccache
+          key: windows-cross-llvm
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache xwin CRT/SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-sdk-${{ runner.os }}-v1
+
+      - name: Cache conda MSVC LLVM
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/reussir-msvc-conda
+          key: reussir-msvc-conda-llvm-22.1.8-v2
+
+      # The windows-native rustc/cargo the reussir compilers spawn under
+      # Wine (polyffi, rene's bake). Cached; keyed to the pinned nightly.
+      - name: Cache windows rustc
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/reussir-msvc-rustc
+          key: reussir-msvc-rustc-nightly-2026-03-15-v1
+
+      - name: Bake conda MSVC LLVM/MLIR
+        run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
+
+      - name: Bake windows rustc
+        run: nix develop .#windows-cross --command reussir-bake-msvc-rustc
+
+      # Teach the kernel to run PE executables through Wine, using the wine
+      # binary from the windows-cross shell. F = resolve the interpreter at
+      # registration time so it works from any mount namespace.
+      - name: Register Wine binfmt
+        run: |
+          WINE=$(nix develop .#windows-cross --command sh -c 'command -v wine' | tail -1)
+          echo "wine at $WINE"
+          if [ ! -d /proc/sys/fs/binfmt_misc ]; then
+            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+          fi
+          echo ":DOSWin:M::MZ::$WINE:F" | sudo tee /proc/sys/fs/binfmt_misc/register
+          # Prime the wine prefix outside the test run.
+          nix develop .#windows-cross --command wine --version
+
+      # xwin fetches the CRT/SDK on first cargo-xwin use; run the Rust-only
+      # crates first so the splat exists before the cmake toolchain file
+      # checks for it.
+      - name: Populate xwin splat
+        run: nix develop .#windows-cross --command cargo xwin build --locked --release --target x86_64-pc-windows-msvc -p reussir-syntax
+
+      - name: Configure CMake
+        run: |
+          nix develop .#windows-cross --command bash -c '
+            CONDA="$HOME/.cache/reussir-msvc-conda/Library"
+            env -u NIX_STORE RUSTC_WRAPPER=sccache cmake -B build-xwin -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/linux-to-windows-msvc.cmake \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DREUSSIR_ENABLE_TESTS=ON \
+              -DREUSSIR_CARGO_BUILD_TARGET=x86_64-pc-windows-msvc \
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+              -DCMAKE_PREFIX_PATH="$CONDA" \
+              -DLLVM_DIR="$CONDA/lib/cmake/llvm" \
+              -DMLIR_DIR="$CONDA/lib/cmake/mlir"
+          '
+
+      - name: Build toolchain
+        run: |
+          nix develop .#windows-cross --command bash -c '
+            env RUSTC_WRAPPER=sccache cmake --build build-xwin --parallel --target all
+          '
+
+      # The runtime tree the polyffi/rene suites resolve against must be
+      # built by the windows toolchain itself so its proc macros are
+      # windows DLLs; the host cargo fetch shares its cache through the
+      # unix CARGO_HOME the shell exports.
+      - name: Build Wine runtime tree
+        run: |
+          nix develop .#windows-cross --command bash -c '
+            cargo fetch --locked
+            CARGO_TARGET_DIR="$PWD/build-xwin/target-rt-wine" CARGO_NET_OFFLINE=true \
+              wine "$REUSSIR_MSVC_RUSTC_PREFIX/bin/cargo.exe" build --offline --locked --release -p reussir-rt
+          '
+
+      - name: Run lit suite under Wine
+        run: |
+          nix develop .#windows-cross --command bash -c '
+            env RUSTC_WRAPPER=sccache cmake --build build-xwin --target check
+          '

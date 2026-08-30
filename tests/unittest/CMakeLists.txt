@@ -54,4 +54,7 @@ target_compile_definitions(reussir-ut
     REUSSIR_UT_RUSTC_DEPS="${REUSSIR_RT_TARGET_DIR}/deps")
 
 # Register with CTest
-gtest_discover_tests(reussir-ut)
+# The generous timeout covers the Windows cross build, where discovery runs
+# the .exe through a cold Wine on the CI runner — the 5s default dies in
+# prefix/loader warm-up.
+gtest_discover_tests(reussir-ut DISCOVERY_TIMEOUT 120)

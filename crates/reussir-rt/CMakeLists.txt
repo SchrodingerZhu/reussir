@@ -19,7 +19,7 @@ endif()
 # clobber each other's libreussir_rt.rlib. A dedicated directory keeps the
 # uplifted dylib/staticlib and the deps/ tree (polyffi's `rustc -L`)
 # coherent, whatever else builds concurrently.
-set(REUSSIR_RT_TARGET_DIR ${CMAKE_BINARY_DIR}/target-rt/${CARGO_PROFILE_DIR})
+set(REUSSIR_RT_TARGET_DIR ${CMAKE_BINARY_DIR}/target-rt/${REUSSIR_CARGO_TARGET_SUBDIR}${CARGO_PROFILE_DIR})
 set(REUSSIR_RT_TARGET_DIR "${REUSSIR_RT_TARGET_DIR}" PARENT_SCOPE)
 
 # The developer toolchain, resolved once: the test suites pin rrc's polyffi
@@ -45,7 +45,7 @@ add_custom_target(reussir-rt ALL
     COMMAND ${CMAKE_COMMAND} -E env
         CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target-rt
         RUSTFLAGS=-Awarnings
-        cargo build --locked --profile ${CARGO_PROFILE} --quiet
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${CARGO_PROFILE} --quiet
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building reussir-rt with cargo (${CARGO_PROFILE} profile)"
 )

@@ -27,8 +27,63 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # -fopenmp` links fine in the probe below (a direct subprocess of this
 # config, full environment) but fails inside RUN lines with `cannot find
 # -lomp`.
+# Windows-target tools driven from a linux host (the xwin cross build, run
+# through Wine/binfmt): a feature for the few tests that straddle the
+# unix/windows process boundary in ways Wine cannot bridge.
+# REUSSIR_CROSS_WINE_UNGATE=1 suppresses the gate for experiments with a
+# windows-native rustc under Wine; REUSSIR_RUSTC_OVERRIDE and
+# REUSSIR_LIBRARY_PATH_OVERRIDE redirect %rustc_path / %library_path (and
+# REUSSIR_RUSTC) without reconfiguring.
+# The TARGET platform: a cross run produces and executes windows binaries
+# even though the host is unix; platform-keyed features and substitutions
+# key on this, not on sys.platform.
+_target_is_windows = (sys.platform == 'win32'
+                      or config.reussir_rrc_path.endswith('.exe'))
+if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
+    # Genuine Wine-environment limitations (console emulation quirks etc.)
+    # stay gated even when everything below is available.
+    config.available_features.add('wine-quirks')
+    # With the windows-native Rust toolchain baked
+    # (reussir-bake-msvc-rustc; the windows-cross shell exports
+    # REUSSIR_MSVC_RUSTC) and the runtime tree built by wine-cargo
+    # (target-rt-wine — proc macros as windows DLLs), the polyffi/rene/link
+    # suites run under Wine and the cross-wine gate lifts itself. Missing
+    # either piece, those suites stay gated.
+    _wine_rustc = os.environ.get('REUSSIR_MSVC_RUSTC', '')
+    _wine_deps = os.path.join(
+        os.path.dirname(os.path.dirname(config.test_output_root)),
+        'target-rt-wine', 'release', 'deps')
+    _wine_ready = bool(_wine_rustc) and os.path.exists(_wine_rustc) \
+        and os.path.isdir(_wine_deps)
+    if _wine_ready:
+        config.environment['REUSSIR_RUSTC'] = _wine_rustc
+        config.environment['REUSSIR_RUSTC_DEPS'] = _wine_deps
+        config.library_path = _wine_deps
+        _prev_winepath = os.environ.get('WINEPATH', '')
+        os.environ['WINEPATH'] = (
+            (_prev_winepath + ';' if _prev_winepath else '')
+            + 'z:' + _wine_deps.replace('/', '\\'))
+    elif not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
+        config.available_features.add('cross-wine')
+else:
+    _wine_ready = False
+if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
+    config.environment['REUSSIR_RUSTC'] = os.environ['REUSSIR_RUSTC_OVERRIDE']
+if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
+    config.library_path = os.environ['REUSSIR_LIBRARY_PATH_OVERRIDE']
+    # rrc discovers the polyffi libdir through this env when the RUN line
+    # passes no explicit --polyffi-libdir.
+    config.environment['REUSSIR_RUSTC_DEPS'] = os.environ['REUSSIR_LIBRARY_PATH_OVERRIDE']
+
+# WINEPATH rides along for the Windows cross runs: binfmt-launched PE
+# binaries resolve the conda runtime DLLs through it.
+# CARGO_*/CC_*/... ride along for the wine-toolchain runs: rene's bake and
+# the polyffi rustc need the shared cargo home, offline mode, and the
+# cross C toolchain env inside RUN lines.
 for _var, _value in os.environ.items():
-    if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH'):
+    if (_var.startswith(('NIX_', 'CARGO_', 'CC_', 'CXX_', 'AR_'))
+            or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH', 'WINEPATH',
+                        'LIB', 'INCLUDE', 'RUSTFLAGS')):
         config.environment[_var] = _value
 
 # The runtime dylib links libstd dynamically, and nothing stages libstd next
@@ -55,7 +110,14 @@ def append_flags(command, flags):
 
 def bin_tool(name):
     suffix = '.exe' if sys.platform == 'win32' else ''
-    return sh_path(os.path.join(config.binary_path, name + suffix))
+    path = os.path.join(config.binary_path, name + suffix)
+    # Cross runs (windows target, linux host): the staged tool is name.exe
+    # even though the host shell is unix — probe instead of assuming. The
+    # native Windows pipeline never noticed because CreateProcess appends
+    # .exe on its own; a unix shell does not.
+    if not os.path.exists(path) and os.path.exists(path + '.exe'):
+        path += '.exe'
+    return sh_path(path)
 
 config.substitutions.append((r'%reussir-opt',
                              bin_tool('reussir-opt')))
@@ -77,7 +139,7 @@ config.substitutions.append((
 ))
 linkage_check_prefixes = (
     '--check-prefixes=CHECK,CHECK-COFF'
-    if sys.platform == 'win32'
+    if _target_is_windows
     else '--check-prefixes=CHECK,CHECK-DEDUP'
 )
 config.substitutions.append((r'%linkage_check_prefixes', linkage_check_prefixes))
@@ -251,6 +313,16 @@ config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 _rrc_linker = ''
 if sys.platform == 'win32' and config.msvc_linker_path:
     _rrc_linker = '--linker "%s"' % sh_path(config.msvc_linker_path)
+elif os.environ.get('REUSSIR_RRC_LINKER_OVERRIDE'):
+    _rrc_linker = '--linker "%s"' % os.environ['REUSSIR_RRC_LINKER_OVERRIDE']
+elif _wine_ready and os.environ.get('REUSSIR_MSVC_RUSTC_PREFIX'):
+    # rustc.exe has no link.exe under Wine; rust-lld is staged as
+    # lld-link.exe in its sysroot (argv[0] picks the link flavor), with the
+    # CRT import libraries resolved through LIB (exported by the shell,
+    # passed through above).
+    _rrc_linker = '--linker "%s"' % (
+        os.environ['REUSSIR_MSVC_RUSTC_PREFIX']
+        + '/lib/rustlib/x86_64-pc-windows-msvc/bin/lld-link.exe')
 config.substitutions.append((r'%rrc_linker', _rrc_linker))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
@@ -346,10 +418,17 @@ if _probe_rustc_lto_link():
 
 # Executables' platform suffix, for running artifacts whose name a tool
 # derived (`rene build`'s `<profile>/<target>`), not a RUN line's `-o`.
-config.substitutions.append((r'%exe_ext', '.exe' if sys.platform == 'win32' else ''))
+# Keyed on the TARGET, not the host: cross runs execute windows .exe
+# artifacts from a unix shell, which does not append the suffix the way
+# CreateProcess does.
+config.substitutions.append((r'%exe_ext', '.exe' if _target_is_windows else ''))
 
 # TODO: should we support macos?
-if sys.platform == 'win32':
+# Keyed on the TARGET (see _target_is_windows): a cross run producing and
+# executing windows binaries must satisfy `UNSUPPORTED: windows` /
+# `REQUIRES: linux` the way a native windows run would, or target-gated
+# tests run against the wrong platform.
+if _target_is_windows:
     config.available_features.add('windows')
     config.substitutions.append((r'%reussir_rt', 'reussir_rt.dll'))
 elif sys.platform == 'darwin':

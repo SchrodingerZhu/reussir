@@ -1,0 +1,10 @@
+// Split from build.rr: a real parallel failure is buffered per rrc
+// process — both diagnostics keep their ANSI prefixes even though rrc sees
+// a pipe, and each reaches stderr as a complete block.
+//
+// Wine's console emulation strips the ANSI prefixes that real Windows
+// keeps even under --color always, so the cross run cannot assert them.
+// UNSUPPORTED: wine-quirks
+// RUN: %not %rene --color always build --manifest-path %S/diagnostics/rene.ncl --build-dir %t.bdir -j 2 2> %t.color.log
+// RUN: printf '// COLOR-COUNT-2: \033[31mError:' > %t.color.check
+// RUN: %FileCheck --check-prefix=COLOR %t.color.check < %t.color.log

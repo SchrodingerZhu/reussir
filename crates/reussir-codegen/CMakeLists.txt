@@ -28,7 +28,7 @@ set(REUSSIR_CODEGEN_CARGO_ENV
 
 add_custom_target(reussir-codegen
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_CODEGEN_CARGO_ENV}
-        cargo build --locked --profile ${REUSSIR_CODEGEN_CARGO_PROFILE}
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_CODEGEN_CARGO_PROFILE}
         --package reussir-codegen --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
@@ -38,7 +38,7 @@ add_custom_target(reussir-codegen
 
 add_custom_target(reussir-codegen-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_CODEGEN_CARGO_ENV}
-        cargo test --locked --profile ${REUSSIR_CODEGEN_CARGO_PROFILE}
+        ${REUSSIR_CARGO} test ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_CODEGEN_CARGO_PROFILE}
         --package reussir-codegen
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir

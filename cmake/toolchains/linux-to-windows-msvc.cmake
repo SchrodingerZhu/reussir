@@ -32,6 +32,12 @@ endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
 set(CMAKE_TRY_COMPILE_CONFIGURATION RelWithDebInfo)
 
+# Target executables run through Wine: gtest_discover_tests enumerates the
+# unit-test binary at build time, and ctest executes it, both via this
+# emulator. (The lit suites run PE binaries through a binfmt_misc
+# registration instead; see the windows-cross-test workflow.)
+set(CMAKE_CROSSCOMPILING_EMULATOR wine)
+
 set(CMAKE_C_COMPILER clang)
 set(CMAKE_CXX_COMPILER clang++)
 # GNU archiver syntax (cmake drives <AR> qc ... for the GNU frontend

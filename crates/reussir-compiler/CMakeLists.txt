@@ -35,7 +35,7 @@ set(REUSSIR_RRC_BIN rrc${CMAKE_EXECUTABLE_SUFFIX})
 
 add_custom_target(rrc-build
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_COMPILER_CARGO_ENV}
-        cargo build --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
@@ -47,7 +47,7 @@ add_custom_target(rrc-build
 # same way reussir-syntax is installed.
 add_custom_target(rrc-install ALL
     COMMAND ${CMAKE_COMMAND} -E copy
-        ${CMAKE_BINARY_DIR}/target/${REUSSIR_COMPILER_CARGO_PROFILE_DIR}/${REUSSIR_RRC_BIN}
+        ${CMAKE_BINARY_DIR}/target/${REUSSIR_CARGO_TARGET_SUBDIR}${REUSSIR_COMPILER_CARGO_PROFILE_DIR}/${REUSSIR_RRC_BIN}
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${REUSSIR_RRC_BIN}
     DEPENDS rrc-build
     COMMENT "Installing rrc executable"
@@ -57,7 +57,7 @@ add_custom_target(rrc DEPENDS rrc-build rrc-install)
 
 add_custom_target(rrc-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_COMPILER_CARGO_ENV}
-        cargo test --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
+        ${REUSSIR_CARGO} test ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_COMPILER_CARGO_PROFILE}
         --package reussir-compiler
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
