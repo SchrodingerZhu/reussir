@@ -40,11 +40,33 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 _target_is_windows = (sys.platform == 'win32'
                       or config.reussir_rrc_path.endswith('.exe'))
 if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
-    if not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
-        config.available_features.add('cross-wine')
     # Genuine Wine-environment limitations (console emulation quirks etc.)
-    # stay gated even in ungated experiment runs.
+    # stay gated even when everything below is available.
     config.available_features.add('wine-quirks')
+    # With the windows-native Rust toolchain baked
+    # (reussir-bake-msvc-rustc; the windows-cross shell exports
+    # REUSSIR_MSVC_RUSTC) and the runtime tree built by wine-cargo
+    # (target-rt-wine — proc macros as windows DLLs), the polyffi/rene/link
+    # suites run under Wine and the cross-wine gate lifts itself. Missing
+    # either piece, those suites stay gated.
+    _wine_rustc = os.environ.get('REUSSIR_MSVC_RUSTC', '')
+    _wine_deps = os.path.join(
+        os.path.dirname(os.path.dirname(config.test_output_root)),
+        'target-rt-wine', 'release', 'deps')
+    _wine_ready = bool(_wine_rustc) and os.path.exists(_wine_rustc) \
+        and os.path.isdir(_wine_deps)
+    if _wine_ready:
+        config.environment['REUSSIR_RUSTC'] = _wine_rustc
+        config.environment['REUSSIR_RUSTC_DEPS'] = _wine_deps
+        config.library_path = _wine_deps
+        _prev_winepath = os.environ.get('WINEPATH', '')
+        os.environ['WINEPATH'] = (
+            (_prev_winepath + ';' if _prev_winepath else '')
+            + 'z:' + _wine_deps.replace('/', '\\'))
+    elif not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
+        config.available_features.add('cross-wine')
+else:
+    _wine_ready = False
 if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
     config.environment['REUSSIR_RUSTC'] = os.environ['REUSSIR_RUSTC_OVERRIDE']
 if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
@@ -292,10 +314,15 @@ _rrc_linker = ''
 if sys.platform == 'win32' and config.msvc_linker_path:
     _rrc_linker = '--linker "%s"' % sh_path(config.msvc_linker_path)
 elif os.environ.get('REUSSIR_RRC_LINKER_OVERRIDE'):
-    # Wine-toolchain experiments: rustc.exe has no link.exe; `rust-lld`
-    # resolves inside its own sysroot, with the CRT import libraries found
-    # through the LIB environment (passed through above).
     _rrc_linker = '--linker "%s"' % os.environ['REUSSIR_RRC_LINKER_OVERRIDE']
+elif _wine_ready and os.environ.get('REUSSIR_MSVC_RUSTC_PREFIX'):
+    # rustc.exe has no link.exe under Wine; rust-lld is staged as
+    # lld-link.exe in its sysroot (argv[0] picks the link flavor), with the
+    # CRT import libraries resolved through LIB (exported by the shell,
+    # passed through above).
+    _rrc_linker = '--linker "%s"' % (
+        os.environ['REUSSIR_MSVC_RUSTC_PREFIX']
+        + '/lib/rustlib/x86_64-pc-windows-msvc/bin/lld-link.exe')
 config.substitutions.append((r'%rrc_linker', _rrc_linker))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
