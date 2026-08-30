@@ -18,7 +18,11 @@ if(REUSSIR_CARGO_BUILD_TARGET)
   set(REUSSIR_CARGO_TARGET_ARGS --target ${REUSSIR_CARGO_BUILD_TARGET})
   set(REUSSIR_CARGO_TARGET_SUBDIR "${REUSSIR_CARGO_BUILD_TARGET}/")
   if(REUSSIR_CARGO_BUILD_TARGET MATCHES "windows-msvc")
-    set(REUSSIR_CARGO cargo xwin)
+    # flock serializes the cargo-xwin invocations ninja runs in parallel:
+    # each one re-creates the clang-cl symlink in its cache dir, and two
+    # doing so concurrently race to a "failed to remove file" crash. Each
+    # cargo build parallelizes internally, so the wall-clock cost is small.
+    set(REUSSIR_CARGO flock ${CMAKE_BINARY_DIR}/cargo-xwin.lock cargo xwin)
   endif()
   message(STATUS "Cargo components cross-compile for ${REUSSIR_CARGO_BUILD_TARGET} (driver: ${REUSSIR_CARGO})")
 endif()

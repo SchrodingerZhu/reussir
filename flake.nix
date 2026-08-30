@@ -436,9 +436,11 @@ PRESETS_EOF
             # above); python backs the wine llvm-config wrapper that
             # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys, and lit
             # (with psutil for --timeout) runs the integration suite under
-            # Wine via the `check` target.
+            # Wine via the `check` target. util-linux supplies the flock
+            # that cmake/ReussirCargo.cmake serializes cargo-xwin with.
             pkgs.cmake
             pkgs.ninja
+            pkgs.util-linux
             (pkgs.python3.withPackages (ps: [ ps.lit ps.psutil ]))
             # Host tblgen for the dialect's .td generation under cross.
             llvmPkgs.tblgen
