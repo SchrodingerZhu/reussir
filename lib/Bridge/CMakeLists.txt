@@ -61,3 +61,23 @@ target_sources(MLIRReussirBridge
 if(REUSSIR_HAS_TPDE)
   target_compile_definitions(MLIRReussirBridge PRIVATE REUSSIR_HAS_TPDE)
 endif()
+
+# Nix scan-deps workaround, spdlog/fmt edition (see the NIX_STORE branch in
+# the top-level CMakeLists): on darwin, spdlog's and fmt's interface include
+# dirs coincide with the nix cc wrapper's implicit dirs, so CMake elides
+# their -I flags — the wrapped compiler still finds the headers through its
+# environment, but clang-scan-deps (the raw binary) does not and the module
+# scan fails with "spdlog/spdlog.h file not found". Raw compile options are
+# never elided. Kept out of the top level because find_package(spdlog) there
+# would leak SPDLOG_FMT_EXTERNAL into tpde's vendored spdlog subproject.
+if(DEFINED ENV{NIX_STORE})
+  get_target_property(REUSSIR_SPDLOG_INCS spdlog::spdlog INTERFACE_INCLUDE_DIRECTORIES)
+  set(REUSSIR_SCANDEP_INCS ${REUSSIR_SPDLOG_INCS})
+  if(TARGET fmt::fmt)
+    get_target_property(REUSSIR_FMT_INCS fmt::fmt INTERFACE_INCLUDE_DIRECTORIES)
+    list(APPEND REUSSIR_SCANDEP_INCS ${REUSSIR_FMT_INCS})
+  endif()
+  foreach(inc IN LISTS REUSSIR_SCANDEP_INCS)
+    target_compile_options(MLIRReussirBridge PRIVATE "-I${inc}")
+  endforeach()
+endif()
