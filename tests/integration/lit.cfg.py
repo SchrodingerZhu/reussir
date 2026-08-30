@@ -27,8 +27,11 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # -fopenmp` links fine in the probe below (a direct subprocess of this
 # config, full environment) but fails inside RUN lines with `cannot find
 # -lomp`.
+# WINEPATH rides along for the Windows cross runs: binfmt-launched PE
+# binaries resolve the conda runtime DLLs through it.
 for _var, _value in os.environ.items():
-    if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH'):
+    if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH',
+                                           'WINEPATH'):
         config.environment[_var] = _value
 
 # The runtime dylib links libstd dynamically, and nothing stages libstd next
