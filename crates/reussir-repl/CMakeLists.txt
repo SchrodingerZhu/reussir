@@ -19,7 +19,7 @@ endif()
 
 # Where cargo puts the binary; exported for the lit `%rrepl` substitution.
 set(REUSSIR_RREPL_BINARY
-    ${CMAKE_BINARY_DIR}/target/${REUSSIR_REPL_CARGO_PROFILE_DIR}/rrepl${CMAKE_EXECUTABLE_SUFFIX}
+    ${CMAKE_BINARY_DIR}/target/${REUSSIR_CARGO_TARGET_SUBDIR}${REUSSIR_REPL_CARGO_PROFILE_DIR}/rrepl${CMAKE_EXECUTABLE_SUFFIX}
     CACHE INTERNAL "Path of the rrepl binary built by cargo")
 
 # The same environment as reussir-jit: the crate pulls in reussir-backend
@@ -40,7 +40,7 @@ set(REUSSIR_RREPL_BIN rrepl${CMAKE_EXECUTABLE_SUFFIX})
 
 add_custom_target(rrepl-build
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}
-        cargo build --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
         --package reussir-repl --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir
@@ -64,7 +64,7 @@ add_custom_target(rrepl DEPENDS rrepl-build rrepl-install)
 
 add_custom_target(rrepl-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_REPL_CARGO_ENV}
-        cargo test --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
+        ${REUSSIR_CARGO} test ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_REPL_CARGO_PROFILE}
         --package reussir-repl
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS ReussirCAPI MLIRReussir

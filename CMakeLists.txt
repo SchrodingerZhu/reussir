@@ -28,6 +28,7 @@ set(CMAKE_CXX_STANDARD 23)
 # Find LLVM and MLIR
 include(cmake/FindLLVM.cmake)
 include(cmake/FindMLIR.cmake)
+include(cmake/ReussirCargo.cmake)
 if(DEFINED ENV{NIX_STORE})
   find_package(GTest REQUIRED)
   message(STATUS "Detected Nix environment; injecting MLIR/LLVM/GTest include flags to walk around scan-deps issue")

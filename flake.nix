@@ -433,11 +433,13 @@ PRESETS_EOF
             llvmPkgs.clang-unwrapped
 
             # Drive the C++ backend cross build (see the toolchain file
-            # above); python3 backs the wine llvm-config wrapper that
-            # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys.
+            # above); python backs the wine llvm-config wrapper that
+            # cmake/FindLLVM.cmake stages for llvm-sys/mlir-sys, and lit
+            # (with psutil for --timeout) runs the integration suite under
+            # Wine via the `check` target.
             pkgs.cmake
             pkgs.ninja
-            pkgs.python3
+            (pkgs.python3.withPackages (ps: [ ps.lit ps.psutil ]))
             # Host tblgen for the dialect's .td generation under cross.
             llvmPkgs.tblgen
 

@@ -53,7 +53,9 @@ def main():
 if __name__ == "__main__":
     sys.exit(main())
 ]=])
-    if(WIN32)
+    # Cross runs (windows target, linux host shell) need the unix wrapper:
+    # the lit RUN lines execute on the host, where a .cmd is inert.
+    if(WIN32 AND NOT CMAKE_CROSSCOMPILING)
         set(not_wrapper_path "${CMAKE_CURRENT_BINARY_DIR}/reussir-lit-not.cmd")
         file(WRITE "${not_wrapper_path}" "@echo off\r\n\"${Python3_EXECUTABLE}\" \"${not_script_path}\" %*\r\n")
     else()

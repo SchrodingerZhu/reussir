@@ -15,12 +15,12 @@ set(REUSSIR_LSP_CARGO_ENV
     RUSTFLAGS=-Awarnings)
 set(REUSSIR_LSP_BIN reussir-lsp${CMAKE_EXECUTABLE_SUFFIX})
 set(REUSSIR_LSP_BINARY
-    ${CMAKE_BINARY_DIR}/target/${REUSSIR_LSP_CARGO_PROFILE_DIR}/${REUSSIR_LSP_BIN}
+    ${CMAKE_BINARY_DIR}/target/${REUSSIR_CARGO_TARGET_SUBDIR}${REUSSIR_LSP_CARGO_PROFILE_DIR}/${REUSSIR_LSP_BIN}
     CACHE INTERNAL "Path of the reussir-lsp binary built by cargo")
 
 add_custom_target(reussir-lsp-build
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_LSP_CARGO_ENV}
-        cargo build --locked --profile ${REUSSIR_LSP_CARGO_PROFILE}
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_LSP_CARGO_PROFILE}
         --package reussir-lsp --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building reussir-lsp with cargo (${REUSSIR_LSP_CARGO_PROFILE} profile)"
@@ -39,7 +39,7 @@ add_custom_target(reussir-lsp DEPENDS reussir-lsp-build reussir-lsp-install)
 
 add_custom_target(reussir-lsp-test
     COMMAND ${CMAKE_COMMAND} -E env ${REUSSIR_LSP_CARGO_ENV}
-        cargo test --locked --profile ${REUSSIR_LSP_CARGO_PROFILE}
+        ${REUSSIR_CARGO} test ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${REUSSIR_LSP_CARGO_PROFILE}
         --package reussir-lsp
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Testing reussir-lsp with cargo"

@@ -26,7 +26,7 @@ set(RENE_BIN rene${CMAKE_EXECUTABLE_SUFFIX})
 
 add_custom_target(rene-build
     COMMAND ${CMAKE_COMMAND} -E env ${RENE_CARGO_ENV}
-        cargo build --locked --profile ${RENE_CARGO_PROFILE}
+        ${REUSSIR_CARGO} build ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${RENE_CARGO_PROFILE}
         --package rene --quiet
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building rene with cargo (${RENE_CARGO_PROFILE} profile)"
@@ -36,7 +36,7 @@ add_custom_target(rene-build
 # Stage the binary next to the other lit tools so `%rene` resolves it.
 add_custom_target(rene-install ALL
     COMMAND ${CMAKE_COMMAND} -E copy
-        ${CMAKE_BINARY_DIR}/target/${RENE_CARGO_PROFILE_DIR}/${RENE_BIN}
+        ${CMAKE_BINARY_DIR}/target/${REUSSIR_CARGO_TARGET_SUBDIR}${RENE_CARGO_PROFILE_DIR}/${RENE_BIN}
         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${RENE_BIN}
     DEPENDS rene-build
     COMMENT "Installing rene executable"
@@ -46,7 +46,7 @@ add_custom_target(rene DEPENDS rene-build rene-install)
 
 add_custom_target(rene-test
     COMMAND ${CMAKE_COMMAND} -E env ${RENE_CARGO_ENV}
-        cargo test --locked --profile ${RENE_CARGO_PROFILE}
+        ${REUSSIR_CARGO} test ${REUSSIR_CARGO_TARGET_ARGS} --locked --profile ${RENE_CARGO_PROFILE}
         --package rene
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Testing rene with cargo"
