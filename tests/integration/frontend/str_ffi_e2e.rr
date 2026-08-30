@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // A `str` crosses the polymorphic FFI boundary as the runtime's
 // `#[repr(C)] Str<'static>` — bit-identical to the lowered `{ptr, len}`
 // pair — in both directions: as a parameter into a Rust body, and back out

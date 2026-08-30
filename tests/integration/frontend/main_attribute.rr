@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // `#[main]` names the program's entry point. It is exported under the fixed
 // symbol `__reussir_main`, through the same trampoline path an explicit
 // `extern "C" trampoline` takes.

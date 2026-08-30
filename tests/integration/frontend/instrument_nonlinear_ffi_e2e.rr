@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // End-to-end `--instrument-nonlinear-ffi`: `v` is consumed by the first
 // `total` while still shared with the second (Perceus retains it before the

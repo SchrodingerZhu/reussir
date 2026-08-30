@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // The full cross-package build: the dependency compiles once into a
 // staticlib + interface, the consumer instantiates its generics locally
 // (`weak_odr`, so any other unit's identical instance collapses with it)

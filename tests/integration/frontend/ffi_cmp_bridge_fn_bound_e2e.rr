@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // An `#[ffi(import)]` signature can be the only source of a comparison
 // requirement: no bounded container appears here, yet the Rust bodies compare

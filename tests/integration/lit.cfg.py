@@ -30,41 +30,42 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # Windows-target tools driven from a linux host (the xwin cross build, run
 # through Wine/binfmt): a feature for the few tests that straddle the
 # unix/windows process boundary in ways Wine cannot bridge.
-# REUSSIR_CROSS_WINE_UNGATE=1 suppresses the gate for experiments with a
-# windows-native rustc under Wine; REUSSIR_RUSTC_OVERRIDE and
-# REUSSIR_LIBRARY_PATH_OVERRIDE redirect %rustc_path / %library_path (and
-# REUSSIR_RUSTC) without reconfiguring.
+# REUSSIR_RUSTC_OVERRIDE and REUSSIR_LIBRARY_PATH_OVERRIDE redirect
+# %rustc_path / %library_path (and REUSSIR_RUSTC) without reconfiguring.
 # The TARGET platform: a cross run produces and executes windows binaries
 # even though the host is unix; platform-keyed features and substitutions
 # key on this, not on sys.platform.
 _target_is_windows = (sys.platform == 'win32'
                       or config.reussir_rrc_path.endswith('.exe'))
 if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
-    # Genuine Wine-environment limitations (console emulation quirks etc.)
-    # stay gated even when everything below is available.
+    # Genuine Wine-environment limitations (console emulation quirks, JIT
+    # section layout) stay gated even with the full toolchain available.
     config.available_features.add('wine-quirks')
-    # With the windows-native Rust toolchain baked
-    # (reussir-bake-msvc-rustc; the windows-cross shell exports
-    # REUSSIR_MSVC_RUSTC) and the runtime tree built by wine-cargo
-    # (target-rt-wine — proc macros as windows DLLs), the polyffi/rene/link
-    # suites run under Wine and the cross-wine gate lifts itself. Missing
-    # either piece, those suites stay gated.
+    # The windows-native Rust toolchain (reussir-bake-msvc-rustc; the
+    # windows-cross shell exports REUSSIR_MSVC_RUSTC) and the runtime tree
+    # built by wine-cargo (target-rt-wine — proc macros as windows DLLs)
+    # are REQUIRED for cross lit runs: without them the polyffi suites
+    # cannot compile and rene would wait forever on an unspawnable unix
+    # cargo. Fail fast with instructions instead of degrading.
     _wine_rustc = os.environ.get('REUSSIR_MSVC_RUSTC', '')
     _wine_deps = os.path.join(
         os.path.dirname(os.path.dirname(config.test_output_root)),
         'target-rt-wine', 'release', 'deps')
     _wine_ready = bool(_wine_rustc) and os.path.exists(_wine_rustc) \
         and os.path.isdir(_wine_deps)
-    if _wine_ready:
-        config.environment['REUSSIR_RUSTC'] = _wine_rustc
-        config.environment['REUSSIR_RUSTC_DEPS'] = _wine_deps
-        config.library_path = _wine_deps
-        _prev_winepath = os.environ.get('WINEPATH', '')
-        os.environ['WINEPATH'] = (
-            (_prev_winepath + ';' if _prev_winepath else '')
-            + 'z:' + _wine_deps.replace('/', '\\'))
-    elif not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
-        config.available_features.add('cross-wine')
+    if not _wine_ready:
+        lit_config.fatal(
+            'cross lit runs need the windows-native Rust toolchain: run '
+            'reussir-bake-msvc-rustc, then build the Wine runtime tree '
+            '(see the windows-cross shell banner for the cargo.exe '
+            'command).')
+    config.environment['REUSSIR_RUSTC'] = _wine_rustc
+    config.environment['REUSSIR_RUSTC_DEPS'] = _wine_deps
+    config.library_path = _wine_deps
+    _prev_winepath = os.environ.get('WINEPATH', '')
+    os.environ['WINEPATH'] = (
+        (_prev_winepath + ';' if _prev_winepath else '')
+        + 'z:' + _wine_deps.replace('/', '\\'))
 else:
     _wine_ready = False
 if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
