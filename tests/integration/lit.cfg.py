@@ -27,6 +27,12 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # -fopenmp` links fine in the probe below (a direct subprocess of this
 # config, full environment) but fails inside RUN lines with `cannot find
 # -lomp`.
+# Windows-target tools driven from a linux host (the xwin cross build, run
+# through Wine/binfmt): a feature for the few tests that straddle the
+# unix/windows process boundary in ways Wine cannot bridge.
+if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
+    config.available_features.add('cross-wine')
+
 # WINEPATH rides along for the Windows cross runs: binfmt-launched PE
 # binaries resolve the conda runtime DLLs through it.
 for _var, _value in os.environ.items():
