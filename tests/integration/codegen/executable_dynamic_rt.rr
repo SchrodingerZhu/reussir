@@ -1,7 +1,3 @@
-// The link stage has the host rustc drive the linker, which Wine cannot
-// await (no waitable handle for unix children); see
-// tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // REQUIRES: linux
 // `--runtime-linkage dynamic`: the executable records the shared runtime
 // library (by soname, through `-L`/`-l`, not by path) instead of bundling

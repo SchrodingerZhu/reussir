@@ -34,6 +34,11 @@ config.test_exec_root = os.path.join(config.test_output_root, 'test')
 # windows-native rustc under Wine; REUSSIR_RUSTC_OVERRIDE and
 # REUSSIR_LIBRARY_PATH_OVERRIDE redirect %rustc_path / %library_path (and
 # REUSSIR_RUSTC) without reconfiguring.
+# The TARGET platform: a cross run produces and executes windows binaries
+# even though the host is unix; platform-keyed features and substitutions
+# key on this, not on sys.platform.
+_target_is_windows = (sys.platform == 'win32'
+                      or config.reussir_rrc_path.endswith('.exe'))
 if config.reussir_rrc_path.endswith('.exe') and sys.platform != 'win32':
     if not os.environ.get('REUSSIR_CROSS_WINE_UNGATE'):
         config.available_features.add('cross-wine')
@@ -112,7 +117,7 @@ config.substitutions.append((
 ))
 linkage_check_prefixes = (
     '--check-prefixes=CHECK,CHECK-COFF'
-    if sys.platform == 'win32'
+    if _target_is_windows
     else '--check-prefixes=CHECK,CHECK-DEDUP'
 )
 config.substitutions.append((r'%linkage_check_prefixes', linkage_check_prefixes))
@@ -389,12 +394,14 @@ if _probe_rustc_lto_link():
 # Keyed on the TARGET, not the host: cross runs execute windows .exe
 # artifacts from a unix shell, which does not append the suffix the way
 # CreateProcess does.
-_target_is_windows = (sys.platform == 'win32'
-                      or config.reussir_rrc_path.endswith('.exe'))
 config.substitutions.append((r'%exe_ext', '.exe' if _target_is_windows else ''))
 
 # TODO: should we support macos?
-if sys.platform == 'win32':
+# Keyed on the TARGET (see _target_is_windows): a cross run producing and
+# executing windows binaries must satisfy `UNSUPPORTED: windows` /
+# `REQUIRES: linux` the way a native windows run would, or target-gated
+# tests run against the wrong platform.
+if _target_is_windows:
     config.available_features.add('windows')
     config.substitutions.append((r'%reussir_rt', 'reussir_rt.dll'))
 elif sys.platform == 'darwin':
