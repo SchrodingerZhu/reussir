@@ -116,6 +116,24 @@ jobs:
             cmake --build build --target reussir-lsp-test
           '
 
+      # rene lives here rather than in a standalone workflow. The lib-only
+      # warm-up defuses the sailfish template-derive race: `--all-targets`
+      # expands the same derive from two concurrent rustc processes, and the
+      # loser gives up on the compilation lock after only one second.
+      - name: Build and Test rene
+        run: |
+          nix develop --command bash -c '
+            cargo clippy -p rene --lib
+            cargo clippy -p rene --all-targets -- -D warnings
+            cargo test -p rene
+          '
+
+      # The real thing, ignored by default because it is slow and
+      # network-dependent: unpack the bundled runtime and bake reussir-rt
+      # with the host toolchain (crates.io + the pinned mlir-sync git rev).
+      - name: Run rene host-toolchain bake test
+        run: nix develop --command cargo test -p rene --test cli -- --ignored
+
       - name: Build and Test reussir-backend
         run: nix develop --command cmake --build build --target reussir-backend-test
 

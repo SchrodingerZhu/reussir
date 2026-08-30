@@ -20,16 +20,18 @@ permissions:
   contents: write
 
 jobs:
-  # Deliberately NOT built from the Nix flake (unlike the test pipelines):
-  # binaries linked inside a nix shell carry a /nix/store ELF interpreter
-  # and glibc, which would break the release artifacts' "runs from a bare
-  # environment" guarantee. The apt toolchain below links against the
-  # runner's stock glibc, which is what end-user machines have.
+  # Both jobs build from the Nix flake (same toolchain as every test
+  # pipeline and every developer). Portability of the artifacts is restored
+  # in the packaging steps: on Linux, patchelf points the ELF interpreter at
+  # the standard /lib*/ld-linux path and drops the /nix/store rpath (the
+  # binaries' real glibc symbol floor is 2.39 = Ubuntu 24.04, same as the
+  # old apt builds); on macOS, install_name_tool rewrites the /nix/store
+  # dylib references to the OS-provided /usr/lib equivalents. Each shipped
+  # binary is then executed from a bare environment as proof.
   build-linux:
     strategy:
       fail-fast: false
       matrix:
-        llvm-version: [22]
         os: [ubuntu-24.04, ubuntu-24.04-arm]
 
     runs-on: ${{ matrix.os }}
@@ -42,112 +44,96 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-03-15
-          components: rust-src, rustfmt, clippy
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build wget libspdlog-dev libgmp-dev
-
-      - name: Install LLVM ${{ matrix.llvm-version }}
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          CODENAME=$(lsb_release -cs)
-          echo "deb http://apt.llvm.org/${CODENAME}/ llvm-toolchain-${CODENAME}-${{ matrix.llvm-version }} main" | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          # Install LLVM/Clang toolchain. libpolly-*-dev provides the static
-          # Polly archives that llvm-config --link-static references (needed by
-          # mlir-sys / tblgen / llvm-sys).
-          sudo apt-get install -y \
-            clang-${{ matrix.llvm-version }} \
-            lldb-${{ matrix.llvm-version }} \
-            lld-${{ matrix.llvm-version }} \
-            clangd-${{ matrix.llvm-version }} \
-            libmlir-${{ matrix.llvm-version }}-dev \
-            mlir-${{ matrix.llvm-version }}-tools \
-            llvm-${{ matrix.llvm-version }}-dev \
-            llvm-${{ matrix.llvm-version }}-tools \
-            libpolly-${{ matrix.llvm-version }}-dev
-          echo "LD_LIBRARY_PATH=/usr/lib/llvm-${{ matrix.llvm-version }}/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "LLVM_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-${{ matrix.llvm-version }}" >> $GITHUB_ENV
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           variant: sccache
-          key: ${{ matrix.os }}-${{ matrix.llvm-version }}
+          key: ${{ matrix.os }}-nix
+
+      - name: Build dev shell
+        run: nix develop --command true
 
       - name: Configure CMake
         run: |
-          env RUSTC_WRAPPER=sccache \
-          cmake -B build \
-          -G Ninja \
-          -DLLVM_USE_LINKER=lld \
-          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm-version }} \
-          -DCMAKE_C_COMPILER=clang-${{ matrix.llvm-version }} \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=OFF \
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-          -DLLVM_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/llvm \
-          -DMLIR_DIR=/usr/lib/llvm-${{ matrix.llvm-version }}/lib/cmake/mlir
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --preset nix-dev -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DREUSSIR_ENABLE_PEDANTIC=ON \
+            -DREUSSIR_ENABLE_TESTS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          '
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --build build --parallel
+          '
 
       - name: Stage rrepl
-        run: cmake --build build --target rrepl
+        run: nix develop --command bash -c 'env RUSTC_WRAPPER=sccache cmake --build build --target rrepl'
 
       - name: Package
         run: |
-          ARCH=$(uname -m)
-          # Tag builds carry the version; main builds carry the date.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            PREFIX="reussir-${GITHUB_REF_NAME}-linux-${ARCH}"
-          else
-            PREFIX="reussir-nightly-$(date +%Y-%m-%d)-linux-${ARCH}"
-          fi
-          mkdir -p "${PREFIX}/bin"
-
-          # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, while rene and
-          # reussir-lsp link no native LLVM code — so there are no shared
-          # libraries and no rpath fixups. No Rust toolchain and no prebuilt
-          # runtime ship either: rene carries the reussir-rt source bundle and bakes it
-          # with the user's own rust/cargo on first use.
-          for bin in rrc rene rrepl reussir-lsp; do
-            cp -a "build/bin/${bin}" "${PREFIX}/bin/"
-          done
-
-          # The statically linked C++ archives are built RelWithDebInfo;
-          # drop their debug info.
-          strip --strip-debug "${PREFIX}"/bin/*
-
-          # Verify the binaries really are self-contained: nothing may
-          # resolve to an LLVM/MLIR shared library, and each must start from
-          # a bare environment.
-          for bin in rrc rene rrepl reussir-lsp; do
-            echo "--- ldd ${bin}"
-            ldd "${PREFIX}/bin/${bin}"
-            if ldd "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR|not found'; then
-              echo "::error::${bin} has unexpected dynamic dependencies"
-              exit 1
+          nix develop --command bash -c '
+            set -euo pipefail
+            ARCH=$(uname -m)
+            # Tag builds carry the version; main builds carry the date.
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              PREFIX="reussir-${GITHUB_REF_NAME}-linux-${ARCH}"
+            else
+              PREFIX="reussir-nightly-$(date +%Y-%m-%d)-linux-${ARCH}"
             fi
-            env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
-          done
+            mkdir -p "${PREFIX}/bin"
 
-          XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
-          echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> $GITHUB_ENV
+            # Only the user-facing toolchain ships: rrc and rrepl link
+            # LLVM/MLIR and the Reussir backend statically, while rene and
+            # reussir-lsp link no native LLVM code. No Rust toolchain and no
+            # prebuilt runtime ship either: rene bakes reussir-rt from its
+            # embedded source with the end-user rust/cargo toolchain on first use.
+            for bin in rrc rene rrepl reussir-lsp; do
+              cp -a "build/bin/${bin}" "${PREFIX}/bin/"
+            done
+
+            # The statically linked C++ archives are built RelWithDebInfo;
+            # drop their debug info.
+            strip --strip-debug "${PREFIX}"/bin/*
+
+            # Un-nix the ELFs: standard interpreter path, no store rpath.
+            case "$ARCH" in
+              x86_64)  INTERP=/lib64/ld-linux-x86-64.so.2 ;;
+              aarch64) INTERP=/lib/ld-linux-aarch64.so.1 ;;
+              *) echo "::error::unknown arch $ARCH"; exit 1 ;;
+            esac
+            nix run --inputs-from . nixpkgs#patchelf -- \
+              --set-interpreter "$INTERP" --remove-rpath "${PREFIX}"/bin/*
+
+            # Verify: system-resolved dynamic deps only, and each binary
+            # starts from a bare environment against the stock runner
+            # glibc — exactly what end-user machines provide.
+            for bin in rrc rene rrepl reussir-lsp; do
+              echo "--- ldd ${bin}"
+              ldd "${PREFIX}/bin/${bin}"
+              if ldd "${PREFIX}/bin/${bin}" | grep -Ei "libLLVM|libMLIR|/nix/store|not found"; then
+                echo "::error::${bin} has unexpected dynamic dependencies"
+                exit 1
+              fi
+              env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
+            done
+
+            XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
+            echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> "$GITHUB_ENV"
+          '
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: reussir-nightly-linux-${{ runner.arch }}-llvm${{ matrix.llvm-version }}
+          name: reussir-nightly-linux-${{ runner.arch }}
           path: ${{ env.ARCHIVE_NAME }}
 
   build-macos:
@@ -162,106 +148,93 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
-      - name: Install Homebrew dependencies
-        run: |
-          brew update
-          # llvm@22 (keg-only) pins the toolchain: FindLLVM.cmake requires
-          # LLVM 22.x and the unversioned formula moved on to 23.
-          brew install cmake ninja llvm@22 spdlog python@3
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-03-15
-          components: rust-src, rustfmt, clippy
-
-      - name: Setup environment paths
-        run: |
-          LLVM_PREFIX=$(brew --prefix llvm@22)
-          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> $GITHUB_ENV
-          echo "${LLVM_PREFIX}/bin" >> $GITHUB_PATH
-          # llvm@22 is keg-only: its lib dir no longer implies the shared
-          # Homebrew lib dir on the linker path, so -lzstd/-lxml2 from
-          # llvm-sys/tblgen-sys stop resolving without this.
-          echo "LIBRARY_PATH=$(brew --prefix)/lib" >> $GITHUB_ENV
-          echo "DYLD_LIBRARY_PATH=${LLVM_PREFIX}/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "LLVM_SYMBOLIZER_PATH=${LLVM_PREFIX}/bin/llvm-symbolizer" >> $GITHUB_ENV
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           variant: sccache
-          key: macos-15-llvm
+          key: macos-15-nix
+
+      - name: Build dev shell
+        run: nix develop --command true
 
       - name: Configure CMake
         run: |
-          env RUSTC_WRAPPER=sccache \
-          cmake -B build \
-          -G Ninja \
-          -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-          -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DREUSSIR_ENABLE_PEDANTIC=ON \
-          -DREUSSIR_ENABLE_TESTS=OFF \
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-          -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-          -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --preset nix-dev -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DREUSSIR_ENABLE_PEDANTIC=ON \
+            -DREUSSIR_ENABLE_TESTS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          '
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --build build --parallel
+          '
 
       - name: Stage rrepl
-        run: cmake --build build --target rrepl
+        run: nix develop --command bash -c 'env RUSTC_WRAPPER=sccache cmake --build build --target rrepl'
 
       - name: Package
         run: |
-          ARCH=$(uname -m)
-          # Tag builds carry the version; main builds carry the date.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            PREFIX="reussir-${GITHUB_REF_NAME}-macos-${ARCH}"
-          else
-            PREFIX="reussir-nightly-$(date +%Y-%m-%d)-macos-${ARCH}"
-          fi
-          mkdir -p "${PREFIX}/bin"
-
-          # Only the user-facing toolchain ships: rrc and rrepl link
-          # LLVM/MLIR and the Reussir backend statically, while rene and
-          # reussir-lsp link no native LLVM code — so there are no bundled
-          # dylibs and no install_name_tool fixups. No Rust toolchain and no
-          # prebuilt runtime ship either: rene carries the reussir-rt source bundle
-          # and bakes it with the user's own rust/cargo on first use.
-          for bin in rrc rene rrepl reussir-lsp; do
-            cp -a "build/bin/${bin}" "${PREFIX}/bin/"
-          done
-
-          # The statically linked C++ archives are built RelWithDebInfo;
-          # drop their debug info. Stripping invalidates the ad-hoc (linker)
-          # signature on arm64, so re-sign afterwards.
-          strip -x "${PREFIX}"/bin/*
-          codesign --force --sign - "${PREFIX}"/bin/*
-
-          # Verify the binaries really are self-contained: nothing may
-          # reference the Homebrew LLVM/MLIR dylibs, and each must start
-          # from a bare environment.
-          for bin in rrc rene rrepl reussir-lsp; do
-            echo "--- otool -L ${bin}"
-            otool -L "${PREFIX}/bin/${bin}"
-            if otool -L "${PREFIX}/bin/${bin}" | grep -Ei 'libLLVM|libMLIR'; then
-              echo "::error::${bin} has unexpected LLVM/MLIR dylib dependencies"
-              exit 1
+          nix develop --command bash -c '
+            set -euo pipefail
+            ARCH=$(uname -m)
+            # Tag builds carry the version; main builds carry the date.
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              PREFIX="reussir-${GITHUB_REF_NAME}-macos-${ARCH}"
+            else
+              PREFIX="reussir-nightly-$(date +%Y-%m-%d)-macos-${ARCH}"
             fi
-            env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
-          done
+            mkdir -p "${PREFIX}/bin"
 
-          XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
-          echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> $GITHUB_ENV
+            for bin in rrc rene rrepl reussir-lsp; do
+              cp -a "build/bin/${bin}" "${PREFIX}/bin/"
+            done
+
+            # Un-nix the Mach-O load commands: every /nix/store dylib
+            # reference is rewritten to the OS-provided /usr/lib equivalent
+            # (libc++, libz, libiconv, libxml2 — all ABI-stable system
+            # libraries on macOS). Stripping and the rewrite invalidate the
+            # ad-hoc signature, so re-sign afterwards.
+            strip -x "${PREFIX}"/bin/*
+            for bin in "${PREFIX}"/bin/*; do
+              otool -L "$bin" | awk "/\/nix\/store/ {print \$1}" | while read -r dep; do
+                install_name_tool -change "$dep" "/usr/lib/$(basename "$dep")" "$bin"
+              done
+              codesign --force --sign - "$bin"
+            done
+
+            # Verify: no store references survive, nothing may resolve to an
+            # LLVM/MLIR dylib, and each binary starts from a bare
+            # environment.
+            for bin in rrc rene rrepl reussir-lsp; do
+              echo "--- otool -L ${bin}"
+              otool -L "${PREFIX}/bin/${bin}"
+              if otool -L "${PREFIX}/bin/${bin}" | grep -Ei "libLLVM|libMLIR|/nix/store"; then
+                echo "::error::${bin} still references the nix store or LLVM dylibs"
+                exit 1
+              fi
+              env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
+            done
+
+            XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
+            echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> "$GITHUB_ENV"
+          '
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: reussir-nightly-macos-arm64
           path: ${{ env.ARCHIVE_NAME }}
+
 
   # Cross-built from Linux in the flake's windows-cross shell — no Windows
   # runner: GNU-driver clang + the xwin CRT/SDK compile the C++ backend to
@@ -418,10 +391,10 @@ jobs:
             **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
-            - Linux x86_64 (built against LLVM 22)
-            - Linux aarch64 (built against LLVM 22)
-            - macOS ARM64 (built against Homebrew LLVM 22)
-            - Windows x64 (built against MSVC LLVM via conda-forge)
+            - Linux x86_64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
+            - Linux aarch64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
+            - macOS ARM64 (Nix flake toolchain, LLVM 22)
+            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 22)
 
             **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
 
@@ -445,10 +418,10 @@ jobs:
             **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
-            - Linux x86_64 (built against LLVM 22)
-            - Linux aarch64 (built against LLVM 22)
-            - macOS ARM64 (built against Homebrew LLVM 22)
-            - Windows x64 (built against MSVC LLVM via conda-forge)
+            - Linux x86_64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
+            - Linux aarch64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
+            - macOS ARM64 (Nix flake toolchain, LLVM 22)
+            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 22)
 
             **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
 
