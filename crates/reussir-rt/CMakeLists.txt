@@ -27,6 +27,16 @@ set(REUSSIR_RT_TARGET_DIR "${REUSSIR_RT_TARGET_DIR}" PARENT_SCOPE)
 # dylib's dynamically linked libstd lives at link and load time. Going
 # through PATH respects rustup shims, so rust-toolchain.toml still selects
 # the pinned toolchain.
+#
+# find_program caches never re-validate: after a toolchain bump the nix
+# store path this resolved to can be garbage-collected, and every later
+# reconfigure of the build dir dies on the dead cache entry. Drop a stale
+# entry so the lookup re-runs against the current shell.
+if(REUSSIR_RUSTC_PATH AND NOT EXISTS "${REUSSIR_RUSTC_PATH}")
+    message(STATUS
+        "Cached rustc ${REUSSIR_RUSTC_PATH} no longer exists; re-resolving")
+    unset(REUSSIR_RUSTC_PATH CACHE)
+endif()
 find_program(REUSSIR_RUSTC_PATH rustc REQUIRED)
 execute_process(
     COMMAND ${REUSSIR_RUSTC_PATH} --print target-libdir
