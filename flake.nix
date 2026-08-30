@@ -495,6 +495,10 @@ PRESETS_EOF
             msvc_llvm="''${XDG_CACHE_HOME:-$HOME/.cache}/reussir-msvc-conda/Library"
             if [ -e "$msvc_llvm/lib/cmake/mlir/MLIRConfig.cmake" ]; then
               export REUSSIR_MSVC_LLVM_PREFIX="$msvc_llvm"
+              # Wine executions of cross-built binaries resolve the conda
+              # runtime DLLs (zlib/zstd/libxml2 behind the static LLVM)
+              # through the Windows-side PATH extension.
+              export WINEPATH="z:''${msvc_llvm//\//\\}\\bin"
             fi
 
             echo ""
