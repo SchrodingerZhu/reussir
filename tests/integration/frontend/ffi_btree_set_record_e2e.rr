@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // A Rust BTreeSet orders compiler-owned Reussir records through the Ord
 // bridge. Keeping `old` live while deriving `new` shares the runtime set;

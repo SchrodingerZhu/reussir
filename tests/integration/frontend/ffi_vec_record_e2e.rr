@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // End-to-end clone/drop across the FFI in both directions: a Rust
 // `Vec<List>` holds Reussir enum boxes through the generated

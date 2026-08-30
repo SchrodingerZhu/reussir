@@ -1,7 +1,3 @@
-// The link stage has the host rustc drive the linker, which Wine cannot
-// await (no waitable handle for unix children); see
-// tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // `rrc --emit executable`: the driver finishes the stage chain with a link
 // step — the program's objects, the embedded Rust launcher
 // (crates/reussir-rt/launcher/main.rs, so the program starts under the full

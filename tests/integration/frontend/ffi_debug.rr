@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // Debug info over opaque FFI records: an `ffi_object` payload answers
 // layout queries with its visible header (the `u32` refcount the FFI

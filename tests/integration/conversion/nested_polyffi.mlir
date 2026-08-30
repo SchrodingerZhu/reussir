@@ -1,8 +1,4 @@
 // UNSUPPORTED: darwin
-// cross-wine: the polyffi pass writes its generated Rust module into the
-// Wine-side temp directory and spawns the host rustc, which cannot see it
-// across the unix/windows filesystem boundary.
-// UNSUPPORTED: cross-wine
 // RUN: %reussir-opt --reussir-compile-polymorphic-ffi=optimized %s \
 // RUN:   -reussir-lowering-basic-ops --convert-to-llvm \
 // RUN:   --reconcile-unrealized-casts | %reussir-translate --reussir-to-llvmir \

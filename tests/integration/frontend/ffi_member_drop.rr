@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // Regression test: an FFI object stored inside a record/variant member,
 // released through the transitive drop glue. The acquire/drop expansion

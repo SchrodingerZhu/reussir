@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // Exact comparison capabilities on compiler-owned shared values crossing
 // PolyFFI. Each probe takes the element before its bounded Vec: rendering the

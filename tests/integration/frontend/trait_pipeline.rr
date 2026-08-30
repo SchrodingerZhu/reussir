@@ -1,6 +1,3 @@
-// polyffi spawns the host rustc, which Wine cannot await (no waitable
-// handle for unix children); see tests/integration/rene/lit.local.cfg.
-// UNSUPPORTED: cross-wine
 // A self-contained trait program through the whole resumable pipeline: the
 // HIR dump carries the trait items and `TraitCall`s, re-prints losslessly,
 // reaches the same MIR whether monomorphized directly or resumed from the
