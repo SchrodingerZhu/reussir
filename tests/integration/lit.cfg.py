@@ -47,9 +47,13 @@ if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
 
 # WINEPATH rides along for the Windows cross runs: binfmt-launched PE
 # binaries resolve the conda runtime DLLs through it.
+# CARGO_*/CC_*/... ride along for the wine-toolchain runs: rene's bake and
+# the polyffi rustc need the shared cargo home, offline mode, and the
+# cross C toolchain env inside RUN lines.
 for _var, _value in os.environ.items():
-    if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH',
-                                           'WINEPATH', 'LIB'):
+    if (_var.startswith(('NIX_', 'CARGO_', 'CC_', 'CXX_', 'AR_'))
+            or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH', 'WINEPATH',
+                        'LIB', 'INCLUDE', 'RUSTFLAGS')):
         config.environment[_var] = _value
 
 # The runtime dylib links libstd dynamically, and nothing stages libstd next
