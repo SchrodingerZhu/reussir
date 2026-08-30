@@ -41,6 +41,9 @@ if os.environ.get('REUSSIR_RUSTC_OVERRIDE'):
     config.environment['REUSSIR_RUSTC'] = os.environ['REUSSIR_RUSTC_OVERRIDE']
 if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
     config.library_path = os.environ['REUSSIR_LIBRARY_PATH_OVERRIDE']
+    # rrc discovers the polyffi libdir through this env when the RUN line
+    # passes no explicit --polyffi-libdir.
+    config.environment['REUSSIR_RUSTC_DEPS'] = os.environ['REUSSIR_LIBRARY_PATH_OVERRIDE']
 
 # WINEPATH rides along for the Windows cross runs: binfmt-launched PE
 # binaries resolve the conda runtime DLLs through it.
