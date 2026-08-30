@@ -1,3 +1,6 @@
+// polyffi spawns the host rustc, which Wine cannot await (no waitable
+// handle for unix children); see tests/integration/rene/lit.local.cfg.
+// UNSUPPORTED: cross-wine
 // UNSUPPORTED: darwin
 // End-to-end polymorphic FFI over the runtime's copy-on-write string:
 // build a Rust `String` from Reussir one `char` at a time, measure it on
