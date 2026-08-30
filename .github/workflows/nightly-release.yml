@@ -113,22 +113,30 @@ jobs:
             nix run --inputs-from . nixpkgs#patchelf -- \
               --set-interpreter "$INTERP" --remove-rpath "${PREFIX}"/bin/*
 
-            # Verify: system-resolved dynamic deps only, and each binary
-            # starts from a bare environment against the stock runner
-            # glibc — exactly what end-user machines provide.
-            for bin in rrc rene rrepl reussir-lsp; do
-              echo "--- ldd ${bin}"
-              ldd "${PREFIX}/bin/${bin}"
-              if ldd "${PREFIX}/bin/${bin}" | grep -Ei "libLLVM|libMLIR|/nix/store|not found"; then
-                echo "::error::${bin} has unexpected dynamic dependencies"
-                exit 1
-              fi
-              env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
-            done
-
-            XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
-            echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> "$GITHUB_ENV"
+            echo "REUSSIR_PREFIX=${PREFIX}" >> "$GITHUB_ENV"
           '
+
+      # Deliberately OUTSIDE nix develop: the dev shell exports
+      # LD_LIBRARY_PATH full of store paths, which makes ldd resolve every
+      # library to /nix/store and trips the gate below even on correctly
+      # patched binaries. The stock runner environment is exactly what
+      # end-user machines provide.
+      - name: Verify and archive
+        run: |
+          set -euo pipefail
+          PREFIX="${REUSSIR_PREFIX}"
+          for bin in rrc rene rrepl reussir-lsp; do
+            echo "--- ldd ${bin}"
+            ldd "${PREFIX}/bin/${bin}"
+            if ldd "${PREFIX}/bin/${bin}" | grep -Ei "libLLVM|libMLIR|/nix/store|not found"; then
+              echo "::error::${bin} has unexpected dynamic dependencies"
+              exit 1
+            fi
+            env -i PATH=/usr/bin:/bin "${PREFIX}/bin/${bin}" --help > /dev/null
+          done
+
+          XZ_OPT=-6 tar -cJf "${PREFIX}.tar.xz" "${PREFIX}"
+          echo "ARCHIVE_NAME=${PREFIX}.tar.xz" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
