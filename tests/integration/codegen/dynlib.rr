@@ -1,3 +1,7 @@
+// The link stage has the host rustc drive the linker, which Wine cannot
+// await (no waitable handle for unix children); see
+// tests/integration/rene/lit.local.cfg.
+// UNSUPPORTED: cross-wine
 // UNSUPPORTED: windows
 // `rrc --emit dynlib`: a shared library whose export surface is exactly the
 // program's `extern` trampolines. rustc's cdylib machinery localizes every
