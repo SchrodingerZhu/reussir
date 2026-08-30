@@ -49,7 +49,7 @@ if os.environ.get('REUSSIR_LIBRARY_PATH_OVERRIDE'):
 # binaries resolve the conda runtime DLLs through it.
 for _var, _value in os.environ.items():
     if _var.startswith('NIX_') or _var in ('LIBRARY_PATH', 'LD_LIBRARY_PATH',
-                                           'WINEPATH'):
+                                           'WINEPATH', 'LIB'):
         config.environment[_var] = _value
 
 # The runtime dylib links libstd dynamically, and nothing stages libstd next
@@ -279,6 +279,11 @@ config.substitutions.append((r'%rpath_flag', sh_path(config.rpath_flag)))
 _rrc_linker = ''
 if sys.platform == 'win32' and config.msvc_linker_path:
     _rrc_linker = '--linker "%s"' % sh_path(config.msvc_linker_path)
+elif os.environ.get('REUSSIR_RRC_LINKER_OVERRIDE'):
+    # Wine-toolchain experiments: rustc.exe has no link.exe; `rust-lld`
+    # resolves inside its own sysroot, with the CRT import libraries found
+    # through the LIB environment (passed through above).
+    _rrc_linker = '--linker "%s"' % os.environ['REUSSIR_RRC_LINKER_OVERRIDE']
 config.substitutions.append((r'%rrc_linker', _rrc_linker))
 config.substitutions.append((r'%rrc', sh_path(config.reussir_rrc_path)))
 # The package manager. It shells out to `rrc` for the source-graph scan, so
