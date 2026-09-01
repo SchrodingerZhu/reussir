@@ -88,8 +88,20 @@ mlir::LogicalResult emitOwnershipAcquisition(mlir::Value value,
                                              mlir::OpBuilder &builder,
                                              mlir::Location loc);
 
-/// Traverses a statically shaped Reussir array view and invokes `emitElement`
-/// with a reference to each element.
+/// The memref type `reussir.array.view` produces for an array: identity
+/// layout for a static shape, a fully dynamic strided layout for a
+/// dynamic-extent one (the box header carries the strided encoding).
+mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType);
+
+/// The memref type `reussir.array.project` produces for a non-final
+/// dimension of `viewType`: the shape loses its front, and the layout kind
+/// (identity or dynamic strided) is inherited from the view being projected.
+mlir::MemRefType getProjectedArrayViewType(mlir::MemRefType viewType);
+
+/// Traverses a Reussir array view and invokes `emitElement` with a reference
+/// to each element. A static shape at or below the unroll threshold is
+/// emitted straight-line; anything else is an `scf.for` nest whose bounds are
+/// constants for static extents and `memref.dim` loads for dynamic ones.
 mlir::LogicalResult emitArrayElementTraversal(
     mlir::Value view, mlir::OpBuilder &builder, mlir::Location loc,
     llvm::function_ref<mlir::LogicalResult(mlir::OpBuilder &, mlir::Location,

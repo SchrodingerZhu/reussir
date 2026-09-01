@@ -1026,13 +1026,21 @@ class ReussirArrayOp<string mnemonic, list<Trait> traits>
     : ReussirOp<"array."#mnemonic, traits>;
 
 def ReussirArrayProjectOp : ReussirArrayOp<"project", [Pure]> {
-  let summary = "Project a fixed-size array view";
+  let summary = "Project the leading dimension of an array view";
   let description = [{
-    `reussir.array.project` projects the leading dimension of a statically
-    shaped memref produced by `reussir.array.view`.
+    `reussir.array.project` projects the leading dimension of a memref
+    produced by `reussir.array.view` (or by a previous projection).
     When the remaining element is scalar, the result is a field reference.
-    Otherwise, the result is another statically shaped memref with one fewer
-    dimension.
+    Otherwise, the result is another memref with one fewer dimension.
+
+    A static array views as an identity-layout memref and projects to one; a
+    dynamic-extent array views as a strided memref with dynamic offset and
+    strides (docs/design/dynamic-extent-arrays.md) and every projection of it
+    keeps that dynamic strided layout, even once the remaining shape is
+    static — the strides live in the box header, not in the type. The
+    projection is descriptor arithmetic (`offset += index * stride[0]`, drop
+    the leading size/stride) guarded by a bounds assumption against the
+    leading extent, static or loaded.
   }];
   let arguments = (ins Arg<AnyType, "array view to project">:$view,
       Arg<Index, "dynamic index">:$index);
@@ -1582,12 +1590,23 @@ def ReussirRefMemcpyOp : ReussirReferenceOp<"memcpy", []> {
 
     This is a low-level operation that does not perform any reference counting
     or ownership transfer. It simply copies the bytes from source to destination.
+
+    The byte count is the element's static size. An element without one — a
+    dynamic-extent array payload, whose size is `product(sizes) * elemsize`
+    at runtime — takes the count as an SSA operand instead, and the operand
+    is required exactly then:
+    ```mlir
+    reussir.ref.memcpy %src to %dst size(%bytes : index)
+        : <!reussir.array<? x i32>> to <!reussir.array<? x i32>>
+    ```
   }];
   let arguments = (ins Arg<ReussirRefType, "source reference",
       [MemRead]>:$src,
-      Arg<ReussirRefType, "destination reference", [MemWrite]>:$dst);
+      Arg<ReussirRefType, "destination reference", [MemWrite]>:$dst,
+      Arg<Optional<Index>, "byte count of a dynamically sized element">:$size);
   let assemblyFormat = [{
-    $src `to` $dst `:` type($src) `to` type($dst) attr-dict
+    $src `to` $dst (`size` `(` $size^ `:` `index` `)`)?
+    `:` type($src) `to` type($dst) attr-dict
   }];
   let hasVerifier = 1;
 }

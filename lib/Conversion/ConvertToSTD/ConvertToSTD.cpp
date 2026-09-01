@@ -774,11 +774,6 @@ static void cloneArrayWithUniqueViewBody(ReussirArrayWithUniqueViewOp op,
   mlir::scf::YieldOp::create(rewriter, op.getLoc(), yieldedValues);
 }
 
-static mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType) {
-  return mlir::MemRefType::get(arrayType.getShape(),
-                               arrayType.getElementType());
-}
-
 static mlir::Value
 materializeArrayViewValue(mlir::Location loc, mlir::PatternRewriter &rewriter,
                           ArrayType arrayType, mlir::Value ref,
@@ -818,6 +813,125 @@ struct ReussirArrayViewOpRewritePattern
   }
 };
 
+// The clone branch of `array.with_unique_view` for a dynamic-extent array
+// (docs/design/dynamic-extent-arrays.md, "Clone compacts"): the source's
+// strided header is read through `memref.extract_strided_metadata` on its
+// view, the clone is constructed canonical (offset 0, suffix-product
+// strides) from the same sizes with a runtime-sized token, and the payload
+// is copied as one flat `ref.memcpy` when the source is canonical too, or
+// through an element-wise loop nest that walks the source strides otherwise.
+// Returns the clone and the borrowed reference to its payload.
+static std::pair<mlir::Value, mlir::Value> cloneDynamicArrayPayload(
+    mlir::PatternRewriter &rewriter, mlir::Location loc, ArrayType arrayType,
+    RcType rcType, RcBoxType rcBoxType, const mlir::DataLayout &dataLayout,
+    mlir::Value srcRef) {
+  auto borrowedType = RefType::get(rewriter.getContext(), arrayType);
+  mlir::MemRefType viewType = getArrayViewMemRefType(arrayType);
+  auto srcView =
+      ReussirArrayViewOp::create(rewriter, loc, viewType, srcRef).getView();
+  auto metadata =
+      mlir::memref::ExtractStridedMetadataOp::create(rewriter, loc, srcView);
+  mlir::ValueRange sizes = metadata.getSizes();
+  mlir::ValueRange strides = metadata.getStrides();
+  int64_t rank = arrayType.getRank();
+
+  auto indexConst = [&](int64_t value) -> mlir::Value {
+    return mlir::arith::ConstantIndexOp::create(rewriter, loc, value);
+  };
+  auto mul = [&](mlir::Value a, mlir::Value b) -> mlir::Value {
+    return mlir::arith::MulIOp::create(rewriter, loc, a, b);
+  };
+
+  // Canonical suffix-product strides from the sizes; the product of all
+  // sizes falls out as `stride[0] * size[0]`.
+  llvm::SmallVector<mlir::Value> canonicalStrides(rank);
+  mlir::Value stride = indexConst(1);
+  for (int64_t i = rank - 1; i >= 0; --i) {
+    canonicalStrides[i] = stride;
+    stride = mul(stride, sizes[i]);
+  }
+  mlir::Value elementCount = stride;
+  mlir::Value payloadBytes =
+      mul(elementCount,
+          indexConst(dataLayout.getTypeSize(arrayType.getElementType())));
+  mlir::Value boxBytes = mlir::arith::AddIOp::create(
+      rewriter, loc, payloadBytes,
+      indexConst(rcBoxType.getDynamicPayloadOffset(dataLayout)));
+
+  TokenType tokenType = TokenType::getDynamic(
+      rewriter.getContext(), dataLayout.getTypeABIAlignment(rcBoxType));
+  auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType, boxBytes);
+  auto poison = mlir::ub::PoisonOp::create(rewriter, loc, arrayType);
+  llvm::SmallVector<mlir::Value> extents;
+  for (auto [dim, extent] : llvm::enumerate(arrayType.getShape()))
+    if (mlir::ShapedType::isDynamic(extent))
+      extents.push_back(sizes[dim]);
+  auto cloned = ReussirRcCreateOp::create(
+      rewriter, loc, rcType, poison.getResult(), token.getResult(),
+      mlir::Value{}, extents, mlir::FlatSymbolRefAttr{}, mlir::UnitAttr{});
+  mlir::Value dstRef = ReussirRcBorrowOp::create(rewriter, loc, borrowedType,
+                                                 cloned.getResult());
+
+  // Canonical source: offset 0 and suffix-product strides, so the payload is
+  // one contiguous run of `elementCount` elements.
+  mlir::Value canonical =
+      mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::eq,
+                                  metadata.getOffset(), indexConst(0));
+  for (int64_t i = 0; i < rank; ++i) {
+    mlir::Value same = mlir::arith::CmpIOp::create(
+        rewriter, loc, mlir::arith::CmpIPredicate::eq, strides[i],
+        canonicalStrides[i]);
+    canonical = mlir::arith::AndIOp::create(rewriter, loc, canonical, same);
+  }
+
+  auto ifOp = mlir::scf::IfOp::create(rewriter, loc, canonical,
+                                      /*withElseRegion=*/true);
+  {
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(ifOp.thenBlock());
+    ReussirRefMemcpyOp::create(rewriter, loc, srcRef, dstRef, payloadBytes);
+  }
+  {
+    mlir::OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(ifOp.elseBlock());
+    // Strided-to-canonical compaction: walk the logical index space and
+    // copy element by element; both sides project through their own
+    // descriptor, so the source strides and the clone's canonical strides
+    // are each honoured.
+    auto dstView =
+        ReussirArrayViewOp::create(rewriter, loc, viewType, dstRef).getView();
+    llvm::SmallVector<mlir::Value> lowerBounds(rank, indexConst(0));
+    llvm::SmallVector<mlir::Value> steps(rank, indexConst(1));
+    llvm::SmallVector<mlir::Value> upperBounds(sizes.begin(), sizes.end());
+    mlir::scf::buildLoopNest(
+        rewriter, loc, lowerBounds, upperBounds, steps,
+        [&](mlir::OpBuilder &bodyBuilder, mlir::Location bodyLoc,
+            mlir::ValueRange indices) {
+          RefType elementRefType =
+              RefType::get(bodyBuilder.getContext(), arrayType.getElementType(),
+                           Capability::unspecified);
+          auto projectElement = [&](mlir::Value view) -> mlir::Value {
+            for (mlir::Value index : indices) {
+              auto currentType = llvm::cast<mlir::MemRefType>(view.getType());
+              mlir::Type projectedType =
+                  currentType.getRank() == 1
+                      ? mlir::Type(elementRefType)
+                      : mlir::Type(getProjectedArrayViewType(currentType));
+              view = ReussirArrayProjectOp::create(bodyBuilder, bodyLoc,
+                                                   projectedType, view, index)
+                         .getProjected();
+            }
+            return view;
+          };
+          ReussirRefMemcpyOp::create(bodyBuilder, bodyLoc,
+                                     projectElement(srcView),
+                                     projectElement(dstView),
+                                     /*size=*/mlir::Value());
+        });
+  }
+  return {cloned.getResult(), dstRef};
+}
+
 struct ReussirArrayWithUniqueViewOpRewritePattern
     : public mlir::OpConversionPattern<ReussirArrayWithUniqueViewOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -846,22 +960,26 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
       RcBoxType rcBoxType = RcBoxType::get(rewriter.getContext(), arrayType,
                                            /*regional=*/false);
       auto dataLayout = mlir::DataLayout::closest(op.getOperation());
-      TokenType tokenType = TokenType::get(
-          rewriter.getContext(), dataLayout.getTypeABIAlignment(rcBoxType),
-          dataLayout.getTypeSize(rcBoxType).getFixedValue());
-      auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType,
-                                  /*dynamicSize=*/mlir::Value());
-      auto poison = mlir::ub::PoisonOp::create(rewriter, loc, arrayType);
-      auto cloned = ReussirRcCreateOp::create(
-          rewriter, loc, rcType, poison.getResult(), token.getResult(),
-          mlir::Value{}, mlir::ValueRange{}, mlir::FlatSymbolRefAttr{},
-          mlir::UnitAttr{});
-      auto dstRef = ReussirRcBorrowOp::create(rewriter, loc, borrowedType,
-                                              cloned.getResult());
-      ReussirRefMemcpyOp::create(rewriter, loc, srcRef.getResult(),
-                                 dstRef.getResult());
-      ReussirRefAcquireOp::create(rewriter, loc, dstRef.getResult(), false,
-                                  nullptr);
+      mlir::Value cloned, dstRef;
+      if (arrayType.hasStaticShape()) {
+        TokenType tokenType = TokenType::get(
+            rewriter.getContext(), dataLayout.getTypeABIAlignment(rcBoxType),
+            dataLayout.getTypeSize(rcBoxType).getFixedValue());
+        auto token = ReussirTokenAllocOp::create(rewriter, loc, tokenType,
+                                                 /*dynamicSize=*/mlir::Value());
+        auto poison = mlir::ub::PoisonOp::create(rewriter, loc, arrayType);
+        cloned = ReussirRcCreateOp::create(
+            rewriter, loc, rcType, poison.getResult(), token.getResult(),
+            mlir::Value{}, mlir::ValueRange{}, mlir::FlatSymbolRefAttr{},
+            mlir::UnitAttr{});
+        dstRef = ReussirRcBorrowOp::create(rewriter, loc, borrowedType, cloned);
+        ReussirRefMemcpyOp::create(rewriter, loc, srcRef.getResult(), dstRef,
+                                   /*size=*/mlir::Value());
+      } else {
+        std::tie(cloned, dstRef) = cloneDynamicArrayPayload(
+            rewriter, loc, arrayType, rcType, rcBoxType, dataLayout, srcRef);
+      }
+      ReussirRefAcquireOp::create(rewriter, loc, dstRef, false, nullptr);
 
       auto refCount = ReussirRcFetchOp::create(rewriter, loc, op.getArray());
       auto decremented = mlir::arith::SubIOp::create(
@@ -869,7 +987,7 @@ struct ReussirArrayWithUniqueViewOpRewritePattern
           mlir::arith::ConstantIndexOp::create(rewriter, loc, 1));
       ReussirRcSetOp::create(rewriter, loc, op.getArray(),
                              decremented.getResult());
-      return {cloned.getResult(), dstRef.getResult()};
+      return {cloned, dstRef};
     };
 
     auto isUnique =

@@ -1427,13 +1427,20 @@ struct ReussirArrayProjectConversionPattern
     auto converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto viewType = llvm::cast<mlir::MemRefType>(op.getView().getType());
-    auto extent = mlir::arith::ConstantOp::create(
-        rewriter, loc,
-        mlir::IntegerAttr::get(converter->getIndexType(),
-                               viewType.getShape().front()));
-    auto inBounds = mlir::arith::CmpIOp::create(
-        rewriter, loc, mlir::arith::CmpIPredicate::ult, adaptor.getIndex(),
-        extent.getResult());
+    mlir::MemRefDescriptor srcDesc(adaptor.getView());
+    // The leading extent is a constant for a static dim and a descriptor
+    // (box header) load for a dynamic one.
+    mlir::Value extent =
+        viewType.isDynamicDim(0)
+            ? srcDesc.size(rewriter, loc, 0)
+            : mlir::arith::ConstantOp::create(
+                  rewriter, loc,
+                  mlir::IntegerAttr::get(converter->getIndexType(),
+                                         viewType.getShape().front()))
+                  .getResult();
+    auto inBounds = mlir::arith::CmpIOp::create(rewriter, loc,
+                                                mlir::arith::CmpIPredicate::ult,
+                                                adaptor.getIndex(), extent);
     mlir::LLVM::AssumeOp::create(rewriter, loc, inBounds);
 
     if (viewType.getRank() == 1) {
@@ -1457,28 +1464,37 @@ struct ReussirArrayProjectConversionPattern
     auto resultMemRefType =
         llvm::cast<mlir::MemRefType>(op.getProjected().getType());
     mlir::Type resultType = converter->convertType(resultMemRefType);
-    mlir::MemRefDescriptor srcDesc(adaptor.getView());
     auto resultDesc = mlir::MemRefDescriptor::poison(rewriter, loc, resultType);
     resultDesc.setAllocatedPtr(rewriter, loc,
                                srcDesc.allocatedPtr(rewriter, loc));
 
-    // The projected type keeps the static identity layout (offset 0), and
-    // consumers such as `getStridedElementPtr` fold that static offset —
-    // the descriptor's runtime offset field is dead to them. Carry the row
-    // shift in the aligned pointer itself instead.
     auto offset = srcDesc.offset(rewriter, loc);
     auto stride0 = srcDesc.stride(rewriter, loc, 0);
     auto delta =
         mlir::arith::MulIOp::create(rewriter, loc, adaptor.getIndex(), stride0);
     auto shift = mlir::arith::AddIOp::create(rewriter, loc, offset, delta);
-    mlir::Type llvmElemTy =
-        converter->convertType(resultMemRefType.getElementType());
-    auto llvmPtrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto shifted = mlir::LLVM::GEPOp::create(
-        rewriter, loc, llvmPtrTy, llvmElemTy, srcDesc.alignedPtr(rewriter, loc),
-        mlir::ValueRange{shift.getResult()});
-    resultDesc.setAlignedPtr(rewriter, loc, shifted);
-    resultDesc.setConstantOffset(rewriter, loc, 0);
+    if (resultMemRefType.getLayout().isIdentity()) {
+      // The projected type keeps the static identity layout (offset 0), and
+      // consumers such as `getStridedElementPtr` fold that static offset —
+      // the descriptor's runtime offset field is dead to them. Carry the row
+      // shift in the aligned pointer itself instead.
+      mlir::Type llvmElemTy =
+          converter->convertType(resultMemRefType.getElementType());
+      auto llvmPtrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+      auto shifted =
+          mlir::LLVM::GEPOp::create(rewriter, loc, llvmPtrTy, llvmElemTy,
+                                    srcDesc.alignedPtr(rewriter, loc),
+                                    mlir::ValueRange{shift.getResult()});
+      resultDesc.setAlignedPtr(rewriter, loc, shifted);
+      resultDesc.setConstantOffset(rewriter, loc, 0);
+    } else {
+      // A dynamic strided projection is pure descriptor arithmetic: the
+      // offset field is live to consumers, so the row shift lands there and
+      // the aligned pointer stays the payload.
+      resultDesc.setAlignedPtr(rewriter, loc,
+                               srcDesc.alignedPtr(rewriter, loc));
+      resultDesc.setOffset(rewriter, loc, shift);
+    }
 
     for (int64_t i = 0, e = resultMemRefType.getRank(); i < e; ++i) {
       resultDesc.setSize(rewriter, loc, i, srcDesc.size(rewriter, loc, i + 1));
@@ -3455,19 +3471,23 @@ struct ReussirRefMemcpyConversionPattern
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto dataLayout = getDataLayout(*converter, op.getOperation());
 
-    // Get the element type and its size
-    RefType srcType = op.getSrc().getType();
-    mlir::Type elementType = converter->convertType(srcType.getElementType());
-    size_t size = dataLayout.getTypeSize(elementType);
+    // The byte count: the `size` operand for a dynamically sized element (a
+    // dynamic-extent array payload), the element's static size otherwise.
+    mlir::Value sizeVal = adaptor.getSize();
+    if (!sizeVal) {
+      RefType srcType = op.getSrc().getType();
+      mlir::Type elementType = converter->convertType(srcType.getElementType());
+      size_t size = dataLayout.getTypeSize(elementType);
+      sizeVal = mlir::LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), converter->getIndexType(),
+          rewriter.getIntegerAttr(converter->getIndexType(), size));
+    }
 
     // Create LLVM memcpy intrinsic (non-overlapping, so isVolatile = false).
     // The plain form, not memcpy.inline: with a constant length LLVM already
     // expands small copies to loads/stores and picks the best strategy
     // (expansion or libcall) for large ones — forcing inline expansion on a
     // big payload (e.g. a whole array clone) just unrolls it.
-    auto sizeVal = mlir::LLVM::ConstantOp::create(
-        rewriter, op.getLoc(), converter->getIndexType(),
-        rewriter.getIntegerAttr(converter->getIndexType(), size));
     rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyOp>(op, adaptor.getDst(),
                                                       adaptor.getSrc(), sizeVal,
                                                       /*isVolatile=*/false);
