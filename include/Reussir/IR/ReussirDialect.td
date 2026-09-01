@@ -29,7 +29,6 @@ def ReussirDialect : Dialect {
   let cppNamespace = "::reussir";
   let useDefaultTypePrinterParser = 0;
   let useDefaultAttributePrinterParser = 0;
-  let usePropertiesForAttributes = 1;
   let dependentDialects = [
       // arithmetic operations
       "mlir::arith::ArithDialect",

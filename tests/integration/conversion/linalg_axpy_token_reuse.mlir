@@ -23,8 +23,8 @@
 // frontend must emit consuming decs before the kernel ONLY for
 // elementwise-aligned kernels, and after it otherwise.
 
-// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=axpy | AvailableTokens=2, CompatibleTokens=2, Score=2, Source=loc({{.*}}), Strategy=ensure
-// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=axpy | AvailableTokens=1, CompatibleTokens=1, Score=2, Source=loc({{.*}}), Strategy=ensure
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=axpy | AvailableTokens=2, CompatibleTokens=2, RemarkId={{[0-9]+}}, Score=2, Source=loc({{.*}}), Strategy=ensure
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=axpy | AvailableTokens=1, CompatibleTokens=1, RemarkId={{[0-9]+}}, Score=2, Source=loc({{.*}}), Strategy=ensure
 
 #map = affine_map<(d0) -> (d0)>
 !vec = !reussir.array<64 x i32>

@@ -177,7 +177,7 @@ mlir::func::FuncOp ClosureOutliningPass::createFunctionAndInlineRegion(
   funcOp->setAttr("llvm.linkage",
                   mlir::LLVM::LinkageAttr::get(rewriter.getContext(),
                                                mlir::LLVM::Linkage::Internal));
-  funcOp->setAttr("passthrough",
+  funcOp->setAttr("llvm.passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
   inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),
@@ -299,7 +299,7 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureDropFunction(
   funcOp->setAttr("llvm.linkage",
                   mlir::LLVM::LinkageAttr::get(rewriter.getContext(),
                                                mlir::LLVM::Linkage::Internal));
-  funcOp->setAttr("passthrough",
+  funcOp->setAttr("llvm.passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
   inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),
@@ -423,7 +423,7 @@ mlir::func::FuncOp ClosureOutliningPass::createClosureCloneFunction(
   funcOp->setAttr("llvm.linkage",
                   mlir::LLVM::LinkageAttr::get(rewriter.getContext(),
                                                mlir::LLVM::Linkage::Internal));
-  funcOp->setAttr("passthrough",
+  funcOp->setAttr("llvm.passthrough",
                   rewriter.getStrArrayAttr({"mustprogress", "nounwind",
                                             "willreturn", "nocallback"}));
   inheritSanitizerPassthrough(funcOp->getParentOfType<mlir::ModuleOp>(),

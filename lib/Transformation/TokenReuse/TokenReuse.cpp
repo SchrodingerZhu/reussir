@@ -187,7 +187,7 @@ struct ValueHash {
   uint64_t operator()(mlir::Value v) const {
     void *ptr = v.getAsOpaquePointer();
     auto bytes = std::bit_cast<std::array<uint8_t, sizeof(void *)>>(ptr);
-    return llvm::xxHash64(bytes);
+    return llvm::xxh3_64bits(bytes);
   }
 };
 using ValueSet = immer::set<mlir::Value, ValueHash, std::equal_to<mlir::Value>>;

@@ -14,14 +14,14 @@ endif()
 # The union of the reussir-backend and reussir-jit environments: the crate pulls
 # in reussir-backend (mlir-sys / melior / the `dialect!` macro / staged Reussir
 # archives) and, for its end-to-end test, reussir-jit (which links LLVM via
-# llvm-sys 221), all discovered through these prefixes.
+# llvm-sys 231), all discovered through these prefixes.
 set(REUSSIR_CODEGEN_CARGO_ENV
     CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
     ${REUSSIR_CARGO_CXX_ENV}
-    MLIR_SYS_220_PREFIX=${REUSSIR_LLVM_PREFIX}
+    MLIR_SYS_230_PREFIX=${REUSSIR_LLVM_PREFIX}
     MLIR_SYS_210_PREFIX=${REUSSIR_LLVM_PREFIX}
-    TABLEGEN_220_PREFIX=${REUSSIR_TABLEGEN_PREFIX}
-    LLVM_SYS_221_PREFIX=${REUSSIR_LLVM_PREFIX}
+    TABLEGEN_230_PREFIX=${REUSSIR_TABLEGEN_PREFIX}
+    LLVM_SYS_231_PREFIX=${REUSSIR_LLVM_PREFIX}
     REUSSIR_CAPI_LIB_DIR=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
     REUSSIR_INCLUDE_DIR=${CMAKE_SOURCE_DIR}/include
     RUSTFLAGS=-Awarnings)

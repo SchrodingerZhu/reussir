@@ -17,14 +17,14 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        # LLVM/MLIR 22 — must match FindLLVM.cmake's version check (22.x only).
-        llvmPkgs = pkgs.llvmPackages_22;
+        # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
+        llvmPkgs = pkgs.llvmPackages_23;
 
         # Pinned nightly Rust toolchain from rust-toolchain.toml.
         # The sha256 covers the channel manifest downloaded by fenix.
         rustToolchain = fenix.packages.${system}.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-4ot8+Fs79G1hUwlEYI6700QBLKdkLb33yzwOou1o5Yk=";
+          sha256 = "sha256-ko0a8G9o/p60mphrxmH0dNQsUdWkKMBaGexsqEqtCF4=";
         };
 
         # Merge LLVM+MLIR outputs into one prefix so that llvm-sys/mlir-sys
@@ -43,7 +43,7 @@
         # postBuild patches LLVMConfig.cmake to set LLVM_INSTALL_PREFIX to this
         # join path rather than the original llvm.out store path.  cmake/FindLLVM.cmake
         # (project code) derives REUSSIR_LLVM_PREFIX from LLVM_INSTALL_PREFIX and
-        # passes it as LLVM_SYS_221_PREFIX to cargo.  llvm-sys needs to find
+        # passes it as LLVM_SYS_231_PREFIX to cargo.  llvm-sys needs to find
         # bin/llvm-config at that prefix — but llvm.out doesn't have it; only
         # llvm.dev does.  The patched join path has llvm-config (from llvm.dev).
         llvmMlirJoin = pkgs.symlinkJoin {
@@ -87,8 +87,8 @@
           rustToolchain
           (fenix.packages.${system}.targets."x86_64-pc-windows-msvc".toolchainOf {
             channel = "nightly";
-            date = "2026-03-15";
-            sha256 = "sha256-4ot8+Fs79G1hUwlEYI6700QBLKdkLb33yzwOou1o5Yk=";
+            date = "2026-08-31";
+            sha256 = "sha256-ko0a8G9o/p60mphrxmH0dNQsUdWkKMBaGexsqEqtCF4=";
           }).rust-std
         ];
 
@@ -115,9 +115,9 @@
               --prefix "$prefix" \
               --platform win-64 \
               --channel conda-forge \
-              'llvmdev=22.1.8' 'llvm-tools=22.1.8' 'mlir=22.1.8' \
-              'clangxx=22.1.8' \
-              'compiler-rt=22.1.8' gtest spdlog zlib zstd libxml2
+              'llvmdev=23.1.0' 'llvm-tools=23.1.0' 'mlir=23.1.0' \
+              'clangxx=23.1.0' \
+              'compiler-rt=23.1.0' gtest spdlog zlib zstd libxml2
           elif [ ! -x "$prefix/Library/bin/clang-cl.exe" ]; then
             echo "existing bake lacks clangxx; installing into $prefix"
             ${pkgs.micromamba}/bin/micromamba install --yes \
@@ -125,7 +125,7 @@
               --prefix "$prefix" \
               --platform win-64 \
               --channel conda-forge \
-              'clangxx=22.1.8'
+              'clangxx=23.1.0'
           else
             echo "MSVC LLVM/MLIR already baked at $prefix"
           fi
@@ -177,7 +177,7 @@
           cd "$tmp"
           for c in rustc cargo rust-std; do
             ${pkgs.curl}/bin/curl -sSfLO \
-              "https://static.rust-lang.org/dist/2026-03-15/$c-nightly-x86_64-pc-windows-msvc.tar.xz"
+              "https://static.rust-lang.org/dist/2026-08-31/$c-nightly-x86_64-pc-windows-msvc.tar.xz"
             tar xf "$c-nightly-x86_64-pc-windows-msvc.tar.xz"
           done
           mkdir -p "$prefix"
@@ -250,7 +250,7 @@
         #   Rust   → rust-analyzer (from pkgs), reads rust-project.json / Cargo.toml
         # ---------------------------------------------------------------------------
         devShells.default = pkgs.mkShell.override {
-          # Build C++ code with clang 22 (same toolchain as the project uses).
+          # Build C++ code with clang 23 (same toolchain as the project uses).
           stdenv = llvmPkgs.stdenv;
         } {
           name = "reussir-dev";
@@ -286,9 +286,12 @@
             llvmPkgs.llvm           # llvm tools (llvm-ar, opt, …)
             llvmPkgs.mlir           # mlir-opt, mlir-translate, etc.
             llvmPkgs.tblgen         # mlir-tblgen, llvm-tblgen (needed by cmake & mlir-sys)
-            llvmPkgs.lldb
+            # Deliberately the default nixpkgs lldb, not llvmPkgs.lldb: the
+            # debuginfo lit suite only needs a DWARF-reading debugger —
+            # version lockstep with the compiler is not required.
+            pkgs.lldb
 
-            # Rust toolchain (nightly-2026-03-15 as pinned in rust-toolchain.toml)
+            # Rust toolchain (nightly-2026-08-31 as pinned in rust-toolchain.toml)
             rustToolchain
 
             # Rust LSP — works alongside the pinned toolchain
@@ -335,8 +338,11 @@
           # skipped when it fails. As a buildInput the cc wrapper injects
           # omp.h (-isystem) and libomp.so (-L) via NIX_CFLAGS_COMPILE /
           # NIX_LDFLAGS, which `packages` (nativeBuildInputs) would not.
+          # Default nixpkgs openmp, not llvmPkgs.openmp: libomp's
+          # interface/ABI is stable across majors — the probe and the e2e
+          # runs only need a working libomp.
           buildInputs = [
-            llvmPkgs.openmp
+            pkgs.llvmPackages.openmp
           ];
 
           # --- CMake discovery: tell cmake exactly where the LLVM/MLIR configs are
@@ -348,17 +354,18 @@
           #     crates/reussir-backend/CMakeLists.txt).  We mirror them here so
           #     that plain `cargo build -p reussir-backend` also works.
           #     Two numbering schemes collide here: the melior family uses
-          #     "<llvm-major>0" (220 = LLVM 22), while llvm-sys uses its crate
-          #     major, which mashes LLVM major.minor together (221 = LLVM 22.1).
-          # read by mlir-sys 220 (the git rev patched in Cargo.toml)
-          MLIR_SYS_220_PREFIX     = "${llvmMlirJoin}";
+          #     "<llvm-major>0" (230 = LLVM 23), while llvm-sys uses its crate
+          #     major, which mashes LLVM major.minor together (231 = LLVM 23.1).
+          # read by mlir-sys 220 (the git rev patched in Cargo.toml, retargeted
+          # to LLVM 23 — its build script derives 230 from the LLVM major)
+          MLIR_SYS_230_PREFIX     = "${llvmMlirJoin}";
           # melior-macro 0.20 still uses the 210 variable name despite targeting
-          # MLIR 22; point it at the same combined prefix.
+          # MLIR 22+; point it at the same combined prefix.
           MLIR_SYS_210_PREFIX     = "${llvmMlirJoin}";
-          # read by tblgen 0.9.1 (via its llvm22-0 feature)
-          TABLEGEN_220_PREFIX     = "${llvmMlirJoin}";
-          # read by llvm-sys 221.0.1 — the only LLVM_SYS_* var in Cargo.lock
-          LLVM_SYS_221_PREFIX     = "${llvmMlirJoin}";
+          # read by the tblgen 0.9.1 fork (llvm22-0 feature retargeted to 23)
+          TABLEGEN_230_PREFIX     = "${llvmMlirJoin}";
+          # read by llvm-sys 231 — the only LLVM_SYS_* var in Cargo.lock
+          LLVM_SYS_231_PREFIX     = "${llvmMlirJoin}";
 
           # bindgen (mlir-sys / llvm-sys wrapper.h) loads libclang.so at build
           # time; the nixpkgs clang wrapper doesn't put it on any search path.
@@ -390,7 +397,7 @@
             # (no rpath — `-print-file-name=libomp.so` does not see wrapper
             # -L paths), so the probe binary finds libomp.so only through
             # LD_LIBRARY_PATH.
-            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${llvmPkgs.openmp}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${llvmPkgs.llvm.lib}/lib:${llvmPkgs.mlir}/lib:${pkgs.llvmPackages.openmp}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             # Write CMakeUserPresets.json (user-local, gitignored) so that
             # `cmake --preset nix-dev` just works with no extra flags.
@@ -534,7 +541,7 @@ PRESETS_EOF
           # melior-macro's TableGen link) execute on the HOST, so they get the
           # host LLVM join — the MSVC target prefixes (MLIR_SYS_*/LLVM_SYS_*)
           # are staged per-build by cmake/FindLLVM.cmake's wine wrapper.
-          TABLEGEN_220_PREFIX = "${llvmMlirJoin}";
+          TABLEGEN_230_PREFIX = "${llvmMlirJoin}";
           MLIR_TABLEGEN_EXE_OVERRIDE = "${llvmPkgs.tblgen}/bin/mlir-tblgen";
           LIBCLANG_PATH = "${llvmPkgs.libclang.lib}/lib";
 

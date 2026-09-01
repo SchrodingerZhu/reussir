@@ -23,6 +23,7 @@ module;
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/ExecutorProcessControl.h>
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
+#include <llvm/ExecutionEngine/Orc/MemoryAccess.h>
 #include <llvm/ExecutionEngine/Orc/IRTransformLayer.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/MaterializationUnit.h>
@@ -212,6 +213,11 @@ IRCompileLayer createCompilerLayer(llvm::orc::JITTargetMachineBuilder jtmb,
 class JITEngine final {
 private:
   std::unique_ptr<ExecutionSession> execution_session;
+  // EPCIndirectionUtils holds caller-owned references to its memory manager
+  // and memory access; they are declared before epc_indirection_utils so
+  // they outlive it.
+  std::unique_ptr<llvm::jitlink::JITLinkMemoryManager> epc_memory_manager;
+  std::unique_ptr<llvm::orc::MemoryAccess> epc_memory_access;
   std::unique_ptr<EPCIndirectionUtils> epc_indirection_utils;
 
   DataLayout data_layout;
@@ -237,10 +243,14 @@ private:
 
 public:
   JITEngine(std::unique_ptr<ExecutionSession> es,
+            std::unique_ptr<llvm::jitlink::JITLinkMemoryManager> epcMemMgr,
+            std::unique_ptr<llvm::orc::MemoryAccess> epcMemAccess,
             std::unique_ptr<EPCIndirectionUtils> epciu,
             JITTargetMachineBuilder jtmb, DataLayout dl, ReussirOptOption opt,
             ASTCallbackFn ast_callback_fn, ASTFreeFn ast_free_fn)
       : execution_session(std::move(es)),
+        epc_memory_manager(std::move(epcMemMgr)),
+        epc_memory_access(std::move(epcMemAccess)),
         epc_indirection_utils(std::move(epciu)), data_layout(dl),
         mangle_and_interner(*execution_session, dl),
         object_layer(*execution_session,
@@ -361,7 +371,21 @@ export extern "C" {
 
     auto es = std::make_unique<ExecutionSession>(std::move(*epc));
 
-    auto epciu = EPCIndirectionUtils::Create(*es);
+    // EPCIndirectionUtils::Create takes the memory manager and memory access
+    // by reference; create the EPC defaults and hand their ownership to the
+    // JITEngine below.
+    auto &epcRef = es->getExecutorProcessControl();
+    auto memMgr = epcRef.createDefaultMemoryManager();
+    if (!memMgr) {
+      spdlog::error("Failed to create default JITLink memory manager");
+      return nullptr;
+    }
+    auto memAccess = epcRef.createDefaultMemoryAccess();
+    if (!memAccess) {
+      spdlog::error("Failed to create default memory access");
+      return nullptr;
+    }
+    auto epciu = EPCIndirectionUtils::Create(epcRef, **memMgr, **memAccess);
     if (!epciu) {
       spdlog::error("Failed to create EPCIndirectionUtils");
       return nullptr;
@@ -383,7 +407,8 @@ export extern "C" {
       spdlog::error("Failed to get default data layout for target");
       return nullptr;
     }
-    return new reussir::JITEngine(std::move(es), std::move(*epciu),
+    return new reussir::JITEngine(std::move(es), std::move(*memMgr),
+                                  std::move(*memAccess), std::move(*epciu),
                                   std::move(jtmb), std::move(*dl), opt,
                                   ast_callback_fn, ast_free_fn);
   }

@@ -179,7 +179,8 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   /*baseType=*/nullptr, /*flags=*/mlir::LLVM::DIFlags::Zero,
                   sizeInBits, alignInBits, /*dataLocation=*/nullptr,
                   /*rank=*/nullptr, /*allocated=*/nullptr,
-                  /*associated=*/nullptr, members);
+                  /*associated=*/nullptr, /*identifier=*/mlir::StringAttr{},
+                  /*discriminator=*/nullptr, members);
             };
 
             // The debug type, size, and alignment (bits) for one member. A
@@ -223,9 +224,12 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                     boxedFusedVariant(boxed) ? payloadBits - 32 : payloadBits;
                 auto valueMember = mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_member,
-                    mlir::StringAttr::get(ctx, "value"), diType, valueBits,
+                    mlir::StringAttr::get(ctx, "value"), /*file=*/nullptr,
+                    /*line=*/0, /*scope=*/nullptr, diType, valueBits,
                     payloadAlignBytes * 8, valueOffBytes * 8,
-                    /*address space=*/std::nullopt, /*extraData=*/nullptr);
+                    /*address space=*/std::nullopt,
+                    /*flags=*/mlir::LLVM::DIFlags::Zero,
+                    /*extraData=*/nullptr);
                 // Named `<record>$box` so the lldb formatters' `^_R` type
                 // match engages on the wrapper (and its pointers) and can
                 // collapse the box to its payload's active case.
@@ -241,8 +245,10 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                                   payloadAlignBytes * 8, {valueMember});
                 auto pointer = mlir::LLVM::DIDerivedTypeAttr::get(
                     ctx, llvm::dwarf::DW_TAG_pointer_type,
-                    /*name=*/mlir::StringAttr{}, pointee, ptrBits, ptrAlignBits,
+                    /*name=*/mlir::StringAttr{}, /*file=*/nullptr, /*line=*/0,
+                    /*scope=*/nullptr, pointee, ptrBits, ptrAlignBits,
                     /*offsetInBits=*/0, /*address space=*/std::nullopt,
+                    /*flags=*/mlir::LLVM::DIFlags::Zero,
                     /*extraData=*/nullptr);
                 return std::make_tuple(
                     mlir::cast<mlir::LLVM::DITypeAttr>(pointer), ptrBits,
@@ -397,9 +403,11 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                   llvm::dwarf::DW_ATE_unsigned);
               auto tagMember = mlir::LLVM::DIDerivedTypeAttr::get(
                   ctx, llvm::dwarf::DW_TAG_member,
-                  mlir::StringAttr::get(ctx, "tag"), tagTy, tagSizeBits,
+                  mlir::StringAttr::get(ctx, "tag"), /*file=*/nullptr,
+                  /*line=*/0, /*scope=*/nullptr, tagTy, tagSizeBits,
                   tagSizeBytes * 8, /*offsetInBits=*/0,
-                  /*address space=*/std::nullopt, /*extraData=*/nullptr);
+                  /*address space=*/std::nullopt,
+                  /*flags=*/mlir::LLVM::DIFlags::Zero, /*extraData=*/nullptr);
 
               // Pass 2: build each view-size case struct with view-relative
               // field offsets (packed order within the arm), and the
@@ -417,16 +425,22 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                 llvm::SmallVector<mlir::LLVM::DINodeAttr> fields;
                 for (auto [field, offset] : llvm::zip(info.fields, offsets))
                   fields.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
-                      ctx, llvm::dwarf::DW_TAG_member, field.name, field.type,
-                      field.sizeBits, field.alignBits, offset,
-                      /*address space=*/std::nullopt, /*extraData=*/nullptr));
+                      ctx, llvm::dwarf::DW_TAG_member, field.name,
+                      /*file=*/nullptr, /*line=*/0, /*scope=*/nullptr,
+                      field.type, field.sizeBits, field.alignBits, offset,
+                      /*address space=*/std::nullopt,
+                      /*flags=*/mlir::LLVM::DIFlags::Zero,
+                      /*extraData=*/nullptr));
                 auto caseComposite =
                     makeComposite(llvm::dwarf::DW_TAG_structure_type, info.name,
                                   viewSizeBits, alignInBits, fields);
                 cases.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
-                    ctx, llvm::dwarf::DW_TAG_member, info.name, caseComposite,
-                    viewSizeBits, alignInBits, /*offsetInBits=*/0,
-                    /*address space=*/std::nullopt, /*extraData=*/nullptr));
+                    ctx, llvm::dwarf::DW_TAG_member, info.name,
+                    /*file=*/nullptr, /*line=*/0, /*scope=*/nullptr,
+                    caseComposite, viewSizeBits, alignInBits,
+                    /*offsetInBits=*/0, /*address space=*/std::nullopt,
+                    /*flags=*/mlir::LLVM::DIFlags::Zero,
+                    /*extraData=*/nullptr));
               }
               auto payloadUnion =
                   makeComposite(llvm::dwarf::DW_TAG_union_type,
@@ -434,9 +448,11 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
                                 payloadAlignBytes * 8, cases);
               auto payloadMember = mlir::LLVM::DIDerivedTypeAttr::get(
                   ctx, llvm::dwarf::DW_TAG_member,
-                  mlir::StringAttr::get(ctx, "payload"), payloadUnion,
-                  viewSizeBits, payloadAlignBytes * 8,
+                  mlir::StringAttr::get(ctx, "payload"), /*file=*/nullptr,
+                  /*line=*/0, /*scope=*/nullptr, payloadUnion, viewSizeBits,
+                  payloadAlignBytes * 8,
                   /*offsetInBits=*/0, /*address space=*/std::nullopt,
+                  /*flags=*/mlir::LLVM::DIFlags::Zero,
                   /*extraData=*/nullptr);
               llvm::SmallVector<mlir::LLVM::DINodeAttr> members = {
                   tagMember, payloadMember};
@@ -484,9 +500,10 @@ RetType translateDBGAttrToLLVM(mlir::ModuleOp moduleOp, mlir::Attribute dbgAttr,
             for (auto [field, offset] : llvm::zip(fields, offsets))
               members.push_back(mlir::LLVM::DIDerivedTypeAttr::get(
                   moduleOp->getContext(), llvm::dwarf::DW_TAG_member,
-                  field.name, field.type, field.sizeBits, field.alignBits,
-                  offset,
-                  /*address space=*/std::nullopt, /*extraData=*/nullptr));
+                  field.name, /*file=*/nullptr, /*line=*/0, /*scope=*/nullptr,
+                  field.type, field.sizeBits, field.alignBits, offset,
+                  /*address space=*/std::nullopt,
+                  /*flags=*/mlir::LLVM::DIFlags::Zero, /*extraData=*/nullptr));
             auto composite = makeComposite(llvm::dwarf::DW_TAG_class_type, name,
                                            sizeInBits, alignInBits, members);
             state->ancestors.erase(name);
@@ -769,6 +786,9 @@ void lowerFusedDBGAttributeInLocations(mlir::ModuleOp moduleOp) {
         if (!innerFused)
           return;
         mlir::Attribute meta = innerFused.getMetadata();
+        // A fused location need not carry metadata at all.
+        if (!meta)
+          return;
         auto localVar = translateDBGAttrToLLVM<mlir::LLVM::DILocalVariableAttr>(
             moduleOp, meta, funcFileAttr, dbgCompileUnitAttr, funcOp,
             subprogram, op->getLoc());

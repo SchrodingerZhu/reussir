@@ -99,9 +99,9 @@ pprint = "0.3"
 malachite-base = "0.9"
 malachite-nz = "0.9"
 # llvm-sys provides the ORC/LLJIT and target-machine C API that mlir-sys does
-# not bind. Its version tracks LLVM major.minor (22.1 -> 221), and it discovers
-# LLVM via LLVM_SYS_221_PREFIX (set by CMake).
-llvm-sys = "221"
+# not bind. Its version tracks LLVM major.minor (23.1 -> 231), and it discovers
+# LLVM via LLVM_SYS_231_PREFIX (set by CMake).
+llvm-sys = "231"
 melior = "0.27"
 mlir-sys = "220"
 # The stable embedding interface to the Nickel configuration language; `rene`
@@ -167,6 +167,16 @@ ratatui-textarea = "0.9"
 lto = "thin"
 
 [patch.crates-io]
-# Reussir fork carries MSVC fixes for conda-forge LLVM/MLIR 22 until they can
-# be upstreamed: enum alias normalization, .lib parsing, and static:-bundle.
-mlir-sys = { git = "https://github.com/reussir-lang/mlir-sys", rev = "eddb6b0fcab6980633eedf6e549276b3e9b7d18a" }
+# Reussir fork: the MSVC fixes for conda-forge LLVM/MLIR (enum alias
+# normalization, .lib parsing, static:-bundle) plus the LLVM 23 retarget.
+# The crate keeps its 220 version, so melior's `mlir-sys = "220"` resolves to
+# it — but its build script checks for 23.x and reads MLIR_SYS_230_PREFIX.
+mlir-sys = { git = "https://github.com/reussir-lang/mlir-sys", rev = "5541512807e3feee2ef20897261afd58b0ef859b" }
+# Reussir fork of the TableGen bindings melior-macro parses dialects with:
+# retargets the llvm22-0 feature to LLVM 23 (version check and
+# TABLEGEN_230_PREFIX).
+tblgen = { git = "https://github.com/reussir-lang/tblgen-rs", rev = "cd71346c2648b0b5a93a0be902cfbe876ff7ca38" }
+# Reussir fork of melior: the LLVM 23 retarget of its pass registrations and
+# ods dialect list.
+melior = { git = "https://github.com/reussir-lang/melior", rev = "32949974a924c0d92df66d1fd85377dd53f6d31d" }
+melior-macro = { git = "https://github.com/reussir-lang/melior", rev = "32949974a924c0d92df66d1fd85377dd53f6d31d" }

@@ -59,8 +59,9 @@ namespace reussir {
 inline constexpr llvm::StringRef kSanitizeAttr = "reussir.sanitize";
 
 // Appends the module's sanitizer attribute strings (if any) to `func`'s
-// `passthrough` attribute. `func` may be a `func.func` or an
-// `llvm.func` — both carry `passthrough` onto the translated LLVM function.
+// passthrough list. `func` may be a `func.func` (discardable
+// `llvm.passthrough`, folded into the inherent form by the func-to-llvm
+// conversion) or an `llvm.func` (inherent `passthrough`).
 void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
                                  mlir::Operation *func);
 

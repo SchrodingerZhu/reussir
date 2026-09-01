@@ -36,20 +36,21 @@ pub fn bin() -> u8 { 0b1111_1111 }
 // LL-DAG: ret i8 -1
 
 // Floats stay exact decimals in MIR; the one correctly-rounded conversion
-// happens in codegen. 0.1 in f16 is 0xH2E66 and in bfloat16 0xR3DCD --
-// bit patterns Rust has no native type for.
+// happens in codegen. 0.1 in f16 is 0x2E66 (~9.9976e-2) and in bfloat16
+// 0x3DCD (~1.00098e-1) -- bit patterns Rust has no native type for; LLVM
+// prints them as exact decimal-exponent forms.
 pub fn tenth16() -> f16 { 0.1 }
 // MIR-DAG: 0.1 : f16
-// LL-DAG: ret half 0xH2E66
+// LL-DAG: ret half 9.997550e-02
 
 pub fn tenthb() -> bfloat16 { 0.1 }
 // MIR-DAG: 0.1 : bf16
-// LL-DAG: ret bfloat 0xR3DCD
+// LL-DAG: ret bfloat 1.000980e-01
 
 // f16's largest finite value fits (anything that would round to infinity is
 // a mono-time diagnostic instead).
 pub fn f16max() -> f16 { 65504.0 }
-// LL-DAG: ret half 0xH7BFF
+// LL-DAG: ret half 6.550400e+04
 
 // IEEE signed zero: an exact decimal has no negative zero, so `-0.0` is NOT
 // folded into a constant — it stays a runtime negation, and the sign survives
@@ -61,7 +62,7 @@ pub fn negzero() -> f64 { -0.0 }
 // Single rounding, not double: this decimal sits just above the f32 tie at
 // 1 + 2^-24, but *below* f64 resolution. Rounding through f64 first would
 // collapse onto the tie and then round to even (1.0); rounding the exact
-// decimal directly must go up to 1 + 2^-23 (spelled by LLVM as the f64-form
-// hex float 0x3FF0000020000000).
+// decimal directly must go up to 1 + 2^-23 (spelled as the f32-form hex
+// float f0x3F800001).
 pub fn tie32() -> f32 { 1.0000000596046447753906251 }
-// LL-DAG: ret float 0x3FF0000020000000
+// LL-DAG: ret float f0x3F800001

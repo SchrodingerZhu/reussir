@@ -54,6 +54,30 @@
 
 #include <llvm/ADT/DenseSet.h>
 
+// The `compiled(...)` clause of `reussir.polyffi` stores an ElementsAttr — an
+// attribute *interface*. The generic `parseOptionalAttribute<AttrType>`
+// requires `AttrType::name` (interfaces have none), so the clause parses
+// through this custom directive instead: any attribute, checked to implement
+// ElementsAttr. The printed form is unchanged.
+static mlir::ParseResult parseCompiledModule(mlir::OpAsmParser &parser,
+                                             mlir::ElementsAttr &attr) {
+  llvm::SMLoc loc = parser.getCurrentLocation();
+  mlir::Attribute anyAttr;
+  if (parser.parseAttribute(anyAttr))
+    return mlir::failure();
+  attr = llvm::dyn_cast<mlir::ElementsAttr>(anyAttr);
+  if (!attr)
+    return parser.emitError(loc)
+           << "expected an ElementsAttr, but found attribute '" << anyAttr
+           << "'";
+  return mlir::success();
+}
+
+static void printCompiledModule(mlir::OpAsmPrinter &printer,
+                                mlir::Operation *, mlir::ElementsAttr attr) {
+  printer.printAttribute(attr);
+}
+
 #define GET_OP_CLASSES
 #include "Reussir/IR/ReussirOps.cpp.inc"
 
@@ -1922,7 +1946,16 @@ void ReussirRegionRunOp::getSuccessorRegions(
     return;
   }
   // Otherwise, the region branches back to the parent operation.
-  regions.emplace_back(getOperation(), getResults());
+  regions.emplace_back(getOperation());
+}
+
+// The parent edge produces the op's results; region entries receive their
+// values through the dispatch semantics, not as modeled successor inputs.
+mlir::ValueRange
+ReussirRegionRunOp::getSuccessorInputs(mlir::RegionSuccessor successor) {
+  if (successor.isOperation())
+    return getResults();
+  return mlir::ValueRange();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1939,7 +1972,14 @@ void ReussirNullableDispatchOp::getSuccessorRegions(
     return;
   }
   // Otherwise, the region branches back to the parent operation.
-  regions.emplace_back(getOperation(), getResults());
+  regions.emplace_back(getOperation());
+}
+
+mlir::ValueRange ReussirNullableDispatchOp::getSuccessorInputs(
+    mlir::RegionSuccessor successor) {
+  if (successor.isOperation())
+    return getResults();
+  return mlir::ValueRange();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1956,7 +1996,14 @@ void ReussirRecordDispatchOp::getSuccessorRegions(
     return;
   }
   // Otherwise, the region branches back to the parent operation.
-  regions.emplace_back(getOperation(), getResults());
+  regions.emplace_back(getOperation());
+}
+
+mlir::ValueRange
+ReussirRecordDispatchOp::getSuccessorInputs(mlir::RegionSuccessor successor) {
+  if (successor.isOperation())
+    return getResults();
+  return mlir::ValueRange();
 }
 
 //===----------------------------------------------------------------------===//
@@ -3297,14 +3344,19 @@ void inheritSanitizerPassthrough(mlir::ModuleOp moduleOp,
   auto attrs = moduleOp->getAttrOfType<mlir::ArrayAttr>(kSanitizeAttr);
   if (!attrs || attrs.empty())
     return;
+  // `llvm.func` holds `passthrough` as an inherent attribute; on `func.func`
+  // the same list travels as the discardable `llvm.passthrough`, which the
+  // func-to-llvm conversion folds into the inherent form.
+  llvm::StringRef name = llvm::isa<mlir::LLVM::LLVMFuncOp>(func)
+                             ? "passthrough"
+                             : "llvm.passthrough";
   llvm::SmallVector<mlir::Attribute> merged;
-  if (auto existing = func->getAttrOfType<mlir::ArrayAttr>("passthrough"))
+  if (auto existing = func->getAttrOfType<mlir::ArrayAttr>(name))
     merged.append(existing.begin(), existing.end());
   for (mlir::Attribute attr : attrs)
     if (!llvm::is_contained(merged, attr))
       merged.push_back(attr);
-  func->setAttr("passthrough",
-                mlir::ArrayAttr::get(moduleOp.getContext(), merged));
+  func->setAttr(name, mlir::ArrayAttr::get(moduleOp.getContext(), merged));
 }
 
 //===----------------------------------------------------------------------===//
@@ -3333,7 +3385,7 @@ mlir::func::FuncOp createDtorIfNotExists(mlir::ModuleOp moduleOp,
   dtor.setPrivate();
   dtor->setAttr("llvm.linkage", builder.getAttr<mlir::LLVM::LinkageAttr>(
                                     mlir::LLVM::linkage::Linkage::LinkonceODR));
-  dtor->setAttr("passthrough",
+  dtor->setAttr("llvm.passthrough",
                 builder.getStrArrayAttr(
                     {"mustprogress", "nounwind", "willreturn", "nocallback"}));
   // Drop glue is where a stale box's memory is actually touched; it must be

@@ -241,7 +241,9 @@ void runNPMOptimization(llvm::Module &llvmModule, ReussirOptOption opt) {
     optLevel = llvm::OptimizationLevel::O3;
     break;
   case REUSSIR_OPT_SIZE:
-    optLevel = llvm::OptimizationLevel::Os;
+    // Size-ness is carried by the optsize/minsize function attributes; -Os
+    // frontends build the O2 pipeline.
+    optLevel = llvm::OptimizationLevel::O2;
     break;
   case REUSSIR_OPT_TPDE:
     return;

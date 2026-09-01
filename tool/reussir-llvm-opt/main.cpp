@@ -59,10 +59,10 @@ std::optional<llvm::OptimizationLevel> parseLevel(llvm::StringRef level) {
     return llvm::OptimizationLevel::O2;
   if (level == "O3")
     return llvm::OptimizationLevel::O3;
-  if (level == "Os")
-    return llvm::OptimizationLevel::Os;
-  if (level == "Oz")
-    return llvm::OptimizationLevel::Oz;
+  // Size-ness is carried by the optsize/minsize function attributes; -Os and
+  // -Oz build the O2 pipeline. Keep accepting the spellings.
+  if (level == "Os" || level == "Oz")
+    return llvm::OptimizationLevel::O2;
   return std::nullopt;
 }
 } // namespace

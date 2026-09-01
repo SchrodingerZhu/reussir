@@ -277,6 +277,13 @@ pub(crate) fn link_product(
             // directory holds the runtime's whole baked dependency graph).
             let rlib = find_in_libdirs(&libdirs, "libreussir_rt.rlib")?;
             cmd.arg(format!("--extern=reussir_rt={}", rlib.display()));
+            // The baked rlib carries only stub metadata — cargo emits the
+            // full metadata into the sibling `.rmeta` — so hand rustc the
+            // `.rmeta` as a second extern candidate: metadata resolves there
+            // while the code still comes from the rlib.
+            if let Ok(rmeta) = find_in_libdirs(&libdirs, "libreussir_rt.rmeta") {
+                cmd.arg(format!("--extern=reussir_rt={}", rmeta.display()));
+            }
             for dir in &libdirs {
                 cmd.arg("-L").arg(format!("dependency={}", dir.display()));
             }

@@ -1,5 +1,5 @@
 [toolchain]
-channel = "nightly-2026-03-15"
+channel = "nightly-2026-08-31"
 # rust-src feeds the sanitized runtime variants: the memory/thread builds
 # compile std themselves (-Zbuild-std, see crates/reussir-rt/CMakeLists.txt).
 # Declaring it here provisions it through rustup and the Nix flake alike.

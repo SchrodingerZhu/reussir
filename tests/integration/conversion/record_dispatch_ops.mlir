@@ -92,10 +92,9 @@ module {
 // CHECK: getelementptr %Option, ptr %0, i32 0, i32 1
 // CHECK: load i32, ptr
 // CHECK: zext i32
-// CHECK: trunc i64
-// CHECK: switch i32
-// CHECK: i32 0, label
-// CHECK: i32 1, label
+// CHECK: switch i64
+// CHECK: i64 0, label
+// CHECK: i64 1, label
 // CHECK: getelementptr %"Option::Some", ptr
 // CHECK: load i32, ptr
 // CHECK: phi i32 [ poison
@@ -105,10 +104,9 @@ module {
 // CHECK: getelementptr %Result, ptr %0, i32 0, i32 1
 // CHECK: load i32, ptr
 // CHECK: zext i32
-// CHECK: trunc i64
-// CHECK: switch i32
-// CHECK: i32 0, label
-// CHECK: i32 1, label
+// CHECK: switch i64
+// CHECK: i64 0, label
+// CHECK: i64 1, label
 // CHECK: getelementptr %"Result::Ok", ptr
 // CHECK: load i32, ptr
 // CHECK: phi i32 [ poison
@@ -118,10 +116,9 @@ module {
 // CHECK: getelementptr %Option, ptr %0, i32 0, i32 1
 // CHECK: load i32, ptr
 // CHECK: zext i32
-// CHECK: trunc i64
-// CHECK: switch i32
-// CHECK: i32 0, label
-// CHECK: i32 1, label
+// CHECK: switch i64
+// CHECK: i64 0, label
+// CHECK: i64 1, label
 // CHECK: getelementptr %"Option::Some", ptr
 // CHECK: load i32, ptr
 // CHECK: mul i32

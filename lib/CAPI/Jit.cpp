@@ -62,8 +62,8 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
     if (triple.getTriple().empty())
       triple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
     std::string lookupError;
-    if (const llvm::Target *target = llvm::TargetRegistry::lookupTarget(
-            triple.getTriple(), lookupError)) {
+    if (const llvm::Target *target =
+            llvm::TargetRegistry::lookupTarget(triple, lookupError)) {
       llvm::SubtargetFeatures features;
       for (const auto &[name, enabled] : llvm::sys::getHostCPUFeatures())
         features.AddFeature(name, enabled);
@@ -109,7 +109,9 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
     level = llvm::OptimizationLevel::O3;
     break;
   case ReussirJitOptSize:
-    level = llvm::OptimizationLevel::Os;
+    // Size-ness is carried by the optsize/minsize function attributes; -Os
+    // frontends build the O2 pipeline.
+    level = llvm::OptimizationLevel::O2;
     break;
   case ReussirJitOptDefault:
   default:
@@ -141,9 +143,8 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
   // Then consume the artifacts (`llvm.type.test` + `assume`): drop the
   // assumes and fold the dead tests away so no `llvm.type.test` ever reaches
   // instruction selection. A no-op for modules without type tests.
-  mpm.addPass(llvm::LowerTypeTestsPass(
-      /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
-      llvm::lowertypetests::DropTestKind::Assume));
+  mpm.addPass(
+      llvm::DropTypeTestsPass(llvm::lowertypetests::DropTestKind::Assume));
   // Linear-recurrence strength reduction hooks into the default pipeline's
   // extension points: recursion linearization at pipeline start (before the
   // inliner tears the recursive shape apart) and the Kitamasa rewrite at

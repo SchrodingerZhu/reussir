@@ -60,7 +60,7 @@ struct ReussirLLVMTranslation : public mlir::LLVMTranslationDialectInterface {
       return test.emitError("expected the vtable to lower to a pointer");
     llvm::Value *id =
         llvm::MetadataAsValue::get(ctx, llvm::MDString::get(ctx, test.getId()));
-    llvm::CallInst *hit =
+    llvm::Value *hit =
         builder.CreateIntrinsic(llvm::Intrinsic::type_test, {}, {vtable, id});
     builder.CreateAssumption(hit);
     return mlir::success();

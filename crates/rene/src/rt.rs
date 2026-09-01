@@ -357,7 +357,13 @@ async fn cargo_build(
         .current_dir(src_dir)
         // Pin the rustc cargo delegates to, so the recorded version and
         // libdir describe the compiler that actually built the artifacts.
-        .env("RUSTC", &toolchain.rustc);
+        .env("RUSTC", &toolchain.rustc)
+        // Cargo's new build-dir layout drops target/<triple>/release/deps —
+        // the directory this bake hands rrc as --polyffi-libdir. The
+        // unpacked runtime tree sits outside the workspace, so the repo's
+        // .cargo/config.toml opt-out does not reach it; pin the old layout
+        // here until the bake hands rrc explicit artifact paths instead.
+        .env("CARGO_UNSTABLE_BUILD_DIR_NEW_LAYOUT", "false");
     if let Some(linker) = linker {
         // Cargo's target-specific linker configuration, as an environment
         // variable: `CARGO_TARGET_<TARGET>_LINKER`. Unlike RUSTFLAGS this

@@ -7,24 +7,24 @@ include(${LLVM_DIR}/AddLLVM.cmake)
 include(${LLVM_DIR}/TableGen.cmake)
 include(${LLVM_DIR}/HandleLLVMOptions.cmake)
 
-# Reussir is locked to the LLVM 22 release line. The Rust backend (mlir-sys /
-# melior / tblgen / llvm-sys) is pinned to the 22 ABI, so any other major
+# Reussir is locked to the LLVM 23 release line. The Rust backend (mlir-sys /
+# melior / tblgen / llvm-sys) is pinned to the 23 ABI, so any other major
 # version is rejected outright rather than silently mis-linking.
-if(LLVM_PACKAGE_VERSION VERSION_LESS "22.0.0" OR
-   NOT LLVM_PACKAGE_VERSION VERSION_LESS "23.0.0")
+if(LLVM_PACKAGE_VERSION VERSION_LESS "23.0.0" OR
+   NOT LLVM_PACKAGE_VERSION VERSION_LESS "24.0.0")
   message(FATAL_ERROR
-    "Reussir requires LLVM 22.x (found ${LLVM_PACKAGE_VERSION})")
+    "Reussir requires LLVM 23.x (found ${LLVM_PACKAGE_VERSION})")
 endif()
 
 # Normalized install prefix exported for the Rust crates' cargo invocations
-# (MLIR_SYS_220_PREFIX / TABLEGEN_220_PREFIX / LLVM_SYS_221_PREFIX). LLVMConfig
+# (MLIR_SYS_230_PREFIX / TABLEGEN_230_PREFIX / LLVM_SYS_231_PREFIX). LLVMConfig
 # defines LLVM_INSTALL_PREFIX; fall back to the parent of the binary dir.
 if(DEFINED LLVM_INSTALL_PREFIX)
   set(REUSSIR_LLVM_PREFIX "${LLVM_INSTALL_PREFIX}")
 else()
   get_filename_component(REUSSIR_LLVM_PREFIX "${LLVM_TOOLS_BINARY_DIR}" DIRECTORY)
 endif()
-set(REUSSIR_LLVM_MAJOR 22)
+set(REUSSIR_LLVM_MAJOR 23)
 message(STATUS "Reussir LLVM prefix for Rust crates: ${REUSSIR_LLVM_PREFIX}")
 
 set(REUSSIR_TABLEGEN_PREFIX "${REUSSIR_LLVM_PREFIX}")
@@ -33,12 +33,12 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
   # play: the HOST LLVM for everything that executes at build time (the
   # tblgen crate links LLVM TableGen C++ into a host proc-macro dylib), and
   # the MSVC target LLVM for what rrc links. The caller provides the host
-  # prefix via TABLEGEN_220_PREFIX (the nix shells export it).
-  if(DEFINED ENV{TABLEGEN_220_PREFIX})
-    set(REUSSIR_TABLEGEN_PREFIX "$ENV{TABLEGEN_220_PREFIX}")
+  # prefix via TABLEGEN_230_PREFIX (the nix shells export it).
+  if(DEFINED ENV{TABLEGEN_230_PREFIX})
+    set(REUSSIR_TABLEGEN_PREFIX "$ENV{TABLEGEN_230_PREFIX}")
   else()
     message(FATAL_ERROR
-      "Cross builds need TABLEGEN_220_PREFIX in the environment: the host "
+      "Cross builds need TABLEGEN_230_PREFIX in the environment: the host "
       "LLVM prefix whose llvm-config/TableGen archives the tblgen "
       "proc-macro can execute and link.")
   endif()
