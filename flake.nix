@@ -24,9 +24,15 @@
         # phase there rather than fail the whole closure.
         llvmPkgs =
           if pkgs.stdenv.hostPlatform.isDarwin then
-            pkgs.llvmPackages_23.overrideScope (final: prev: {
-              libllvm = prev.libllvm.overrideAttrs (old: { doCheck = false; });
-            })
+            let
+              scoped = pkgs.llvmPackages_23.overrideScope (final: prev: {
+                libllvm = prev.libllvm.overrideAttrs (old: { doCheck = false; });
+              });
+            in
+            # The set's stdenv is composed outside its fixpoint, so it would
+            # still wrap the unoverridden clang; rebuild it from the scoped
+            # one.
+            scoped // { stdenv = pkgs.overrideCC pkgs.stdenv scoped.clang; }
           else
             pkgs.llvmPackages_23;
 
