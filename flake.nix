@@ -359,9 +359,6 @@
           # read by mlir-sys 220 (the git rev patched in Cargo.toml, retargeted
           # to LLVM 23 — its build script derives 230 from the LLVM major)
           MLIR_SYS_230_PREFIX     = "${llvmMlirJoin}";
-          # melior-macro 0.20 still uses the 210 variable name despite targeting
-          # MLIR 22+; point it at the same combined prefix.
-          MLIR_SYS_210_PREFIX     = "${llvmMlirJoin}";
           # read by the tblgen 0.9.1 fork (llvm22-0 feature retargeted to 23)
           TABLEGEN_230_PREFIX     = "${llvmMlirJoin}";
           # read by llvm-sys 231 — the only LLVM_SYS_* var in Cargo.lock

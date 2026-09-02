@@ -59,7 +59,6 @@ cmake --build "$BUILD_DIR" --parallel --target MLIRReussir "${libs[@]}"
 # llvm-config wrapper FindLLVM.cmake staged; host prefixes
 # (TABLEGEN_230_PREFIX etc.) come from the windows-cross shell.
 export MLIR_SYS_230_PREFIX="$PWD/$BUILD_DIR/reussir-wine-llvm-config"
-export MLIR_SYS_210_PREFIX="$PWD/$BUILD_DIR/reussir-wine-llvm-config"
 export LLVM_SYS_231_PREFIX="$PWD/$BUILD_DIR/reussir-wine-llvm-config"
 export REUSSIR_CAPI_LIB_DIR="$PWD/$BUILD_DIR/lib"
 export REUSSIR_INCLUDE_DIR="$PWD/include"

@@ -178,5 +178,5 @@ mlir-sys = { git = "https://github.com/reussir-lang/mlir-sys", rev = "5541512807
 tblgen = { git = "https://github.com/reussir-lang/tblgen-rs", rev = "cd71346c2648b0b5a93a0be902cfbe876ff7ca38" }
 # Reussir fork of melior: the LLVM 23 retarget of its pass registrations and
 # ods dialect list.
-melior = { git = "https://github.com/reussir-lang/melior", rev = "32949974a924c0d92df66d1fd85377dd53f6d31d" }
-melior-macro = { git = "https://github.com/reussir-lang/melior", rev = "32949974a924c0d92df66d1fd85377dd53f6d31d" }
+melior = { git = "https://github.com/reussir-lang/melior", rev = "af287e4411a2dc5f9aedb7b1d78f9182f87298c6" }
+melior-macro = { git = "https://github.com/reussir-lang/melior", rev = "af287e4411a2dc5f9aedb7b1d78f9182f87298c6" }

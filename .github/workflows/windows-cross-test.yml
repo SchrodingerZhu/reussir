@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       - name: Cross-build for x86_64-pc-windows-msvc
         run: nix develop .#windows-cross --command cargo xwin build --target x86_64-pc-windows-msvc
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       - name: Cache conda MSVC LLVM
         uses: actions/cache@v4

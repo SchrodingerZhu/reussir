@@ -325,7 +325,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       # The conda-forge MSVC LLVM/MLIR prefix reussir-bake-msvc-llvm stages.
       # Keyed on the pinned LLVM version; bump the suffix when the bake's

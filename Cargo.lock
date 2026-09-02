@@ -2114,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "melior"
 version = "0.27.6"
-source = "git+https://github.com/reussir-lang/melior?rev=32949974a924c0d92df66d1fd85377dd53f6d31d#32949974a924c0d92df66d1fd85377dd53f6d31d"
+source = "git+https://github.com/reussir-lang/melior?rev=af287e4411a2dc5f9aedb7b1d78f9182f87298c6#af287e4411a2dc5f9aedb7b1d78f9182f87298c6"
 dependencies = [
  "melior-macro",
  "mlir-sys",
@@ -2123,7 +2123,7 @@ dependencies = [
 [[package]]
 name = "melior-macro"
 version = "0.20.6"
-source = "git+https://github.com/reussir-lang/melior?rev=32949974a924c0d92df66d1fd85377dd53f6d31d#32949974a924c0d92df66d1fd85377dd53f6d31d"
+source = "git+https://github.com/reussir-lang/melior?rev=af287e4411a2dc5f9aedb7b1d78f9182f87298c6#af287e4411a2dc5f9aedb7b1d78f9182f87298c6"
 dependencies = [
  "comrak",
  "convert_case 0.12.0",
@@ -4078,7 +4078,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
