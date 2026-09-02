@@ -32,9 +32,13 @@
               overlays = [
                 (final: prev: {
                   llvmPackages_23 = prev.llvmPackages_23.override {
+                    # The full llvm-project tree (llvm.src is only the llvm/,
+                    # cmake/ and third-party/ subset the libllvm build copies
+                    # out of it; clang, compiler-rt, mlir… copy their own
+                    # subdirectories from this monorepo source).
                     monorepoSrc = final.applyPatches {
-                      name = "llvm-src-23.1.0-no-codesign-test";
-                      src = prev.llvmPackages_23.llvm.src;
+                      name = "llvm-project-23.1.0-no-codesign-test";
+                      src = prev.llvmPackages_23.llvm.monorepoSrc;
                       postPatch = "rm llvm/test/tools/dsymutil/codesign.test";
                     };
                   };
