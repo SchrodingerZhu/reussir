@@ -28,11 +28,29 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # The Nix daemon gets the shared S3 bucket as a zstd binary cache for
+    # what cache.nixos.org does not serve (the fenix Rust toolchain). Without
+    # credentials — pull requests from forks — it stays on cache.nixos.org.
+    - name: Configure S3 caches
+      uses: ./.github/actions/s3-cache
+      with:
+        access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
     - name: Install Nix
       uses: DeterminateSystems/nix-installer-action@v22
+      with:
+        extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
     - name: Cache cargo
       uses: Swatinem/rust-cache@v2
+
+    - name: Build dev shell
+      run: nix develop .#rust --command true
+
+    - name: Push dev shell closure to Nix cache
+      if: env.NIX_S3_STORE != ''
+      run: scripts/ci/nix-cache-push.sh rust
 
     # The flake's pinned toolchain carries the miri component
     # (rust-toolchain.toml), so this is the same interpreter every

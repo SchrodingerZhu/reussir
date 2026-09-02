@@ -44,17 +44,29 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: ${{ matrix.os }}
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: ${{ matrix.os }}-nix
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh default
 
       - name: Configure CMake
         run: |
@@ -144,6 +156,11 @@ jobs:
           name: reussir-nightly-linux-${{ runner.arch }}
           path: ${{ env.ARCHIVE_NAME }}
 
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: nix develop --command sccache --show-stats
+
   build-macos:
     runs-on: macos-15
 
@@ -156,17 +173,29 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: macos-15
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: macos-15-nix
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh default
 
       - name: Configure CMake
         run: |
@@ -289,6 +318,11 @@ jobs:
           name: reussir-nightly-macos-arm64
           path: ${{ env.ARCHIVE_NAME }}
 
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: nix develop --command sccache --show-stats
+
 
   # Cross-built from Linux in the flake's windows-cross shell — no Windows
   # runner: GNU-driver clang + the xwin CRT/SDK compile the C++ backend to
@@ -307,14 +341,22 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: windows-cross
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: windows-cross-llvm
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -335,6 +377,13 @@ jobs:
         with:
           path: ~/.cache/reussir-msvc-conda
           key: reussir-msvc-conda-llvm-23.1.0-v1
+
+      - name: Build dev shell
+        run: nix develop .#windows-cross --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh windows-cross
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
@@ -396,6 +445,11 @@ jobs:
         with:
           name: reussir-nightly-windows-x64
           path: ${{ env.ARCHIVE_NAME }}
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: nix develop .#windows-cross --command sccache --show-stats
 
   publish-release:
     needs: [build-linux, build-macos, build-windows]

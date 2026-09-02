@@ -27,8 +27,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: windows-cross
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -42,11 +56,23 @@ jobs:
           path: ~/.cache/cargo-xwin
           key: cargo-xwin-sdk-${{ runner.os }}-v2
 
+      - name: Build dev shell
+        run: nix develop .#windows-cross --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh windows-cross
+
       - name: Cross-build for x86_64-pc-windows-msvc
-        run: nix develop .#windows-cross --command cargo xwin build --target x86_64-pc-windows-msvc
+        run: nix develop .#windows-cross --command env RUSTC_WRAPPER=sccache cargo xwin build --target x86_64-pc-windows-msvc
 
       - name: Run test suites under Wine
-        run: nix develop .#windows-cross --command cargo xwin test --target x86_64-pc-windows-msvc
+        run: nix develop .#windows-cross --command env RUSTC_WRAPPER=sccache cargo xwin test --target x86_64-pc-windows-msvc
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: nix develop .#windows-cross --command sccache --show-stats
 
   # The lit integration suite against the cross-built toolchain. The whole
   # dependency graph — C++ dialect libs, rrc, rene, rrepl, the runtime —
@@ -68,14 +94,22 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: windows-cross
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: windows-cross-llvm
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -99,6 +133,13 @@ jobs:
         with:
           path: ~/.cache/reussir-msvc-rustc
           key: reussir-msvc-rustc-nightly-2026-08-31-v1
+
+      - name: Build dev shell
+        run: nix develop .#windows-cross --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh windows-cross
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
@@ -165,3 +206,8 @@ jobs:
           nix develop .#windows-cross --command bash -c '
             env RUSTC_WRAPPER=sccache cmake --build build-xwin --target check
           '
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: nix develop .#windows-cross --command sccache --show-stats

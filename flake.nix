@@ -282,6 +282,10 @@
             pkgs.ninja
             pkgs.pkg-config
 
+            # Compiler cache for C++ and rustc; CI points it at the shared S3
+            # bucket (.github/actions/s3-cache), locally it caches on disk.
+            pkgs.sccache
+
             # Python (needed by lit and MLIR's Python bindings)
             pkgs.python3
             pkgs.python3Packages.lit
@@ -513,6 +517,8 @@ PRESETS_EOF
             pkgs.ninja
             pkgs.util-linux
             (pkgs.python3.withPackages (ps: [ ps.lit ps.psutil ]))
+            # Compiler cache (same S3-backed setup as the default shell).
+            pkgs.sccache
             # Host tblgen for the dialect's .td generation under cross.
             llvmPkgs.tblgen
 

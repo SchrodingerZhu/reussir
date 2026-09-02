@@ -1,0 +1,73 @@
+name: Configure S3 caches
+description: >-
+  Point sccache and the Nix daemon at the shared Contabo S3 bucket. A no-op
+  without credentials (pull requests from forks), so every consumer keeps
+  working with its defaults: sccache on local disk, Nix on cache.nixos.org.
+
+# Run this BEFORE the Nix installer step: it exports NIX_EXTRA_CONF (the
+# substituter line the installer writes to nix.conf) and stages the AWS
+# credentials file the daemon reads when it substitutes from that store.
+# The daemon runs as root and does not see the job environment, hence the
+# file; the runner's own processes (sccache, `nix copy`) take the AWS_*
+# variables exported to the job environment instead.
+#
+# Layout of the bucket:
+#   sccache/<key-prefix>/…   sccache objects, one namespace per platform
+#   nix/…                    the Nix binary cache (narinfo + zstd NARs)
+
+inputs:
+  access-key-id:
+    description: S3 access key (empty disables both caches)
+    required: true
+  secret-access-key:
+    description: S3 secret key
+    required: true
+  sccache-key-prefix:
+    description: sccache namespace inside the bucket; empty leaves sccache unconfigured
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Export cache configuration
+      if: inputs.access-key-id != ''
+      shell: bash
+      env:
+        S3_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        SCCACHE_KEY_PREFIX: ${{ inputs.sccache-key-prefix }}
+      run: |
+        set -euo pipefail
+        BUCKET=sccache
+        ENDPOINT_HOST=usc1.contabostorage.com
+        # zstd: xz is far too slow for multi-GB toolchain closures.
+        # priority=50 ranks below cache.nixos.org (40), so upstream paths
+        # keep coming from the CDN and this store only serves what upstream
+        # lacks. trusted=true accepts the unsigned NARs `nix copy` uploads.
+        NIX_S3_STORE="s3://${BUCKET}/nix?endpoint=${ENDPOINT_HOST}&region=default&scheme=https&compression=zstd&parallel-compression=true&want-mass-query=true&priority=50&trusted=true"
+
+        {
+          echo "AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}"
+          echo "AWS_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}"
+          echo "NIX_S3_STORE=${NIX_S3_STORE}"
+          echo "NIX_EXTRA_CONF=extra-substituters = ${NIX_S3_STORE}"
+        } >> "$GITHUB_ENV"
+
+        # Credentials for the daemon (root): the AWS default credential
+        # chain reads ~/.aws/credentials (/root on Linux, /var/root on macOS).
+        sudo sh -c 'umask 077 && mkdir -p ~root/.aws && cat > ~root/.aws/credentials' <<CREDS
+        [default]
+        aws_access_key_id = ${S3_ACCESS_KEY_ID}
+        aws_secret_access_key = ${S3_SECRET_ACCESS_KEY}
+        CREDS
+
+        if [ -n "${SCCACHE_KEY_PREFIX}" ]; then
+          {
+            echo "SCCACHE_BUCKET=${BUCKET}"
+            echo "SCCACHE_ENDPOINT=https://${ENDPOINT_HOST}"
+            echo "SCCACHE_REGION=default"
+            echo "SCCACHE_S3_USE_SSL=true"
+            echo "SCCACHE_S3_KEY_PREFIX=sccache/${SCCACHE_KEY_PREFIX}/"
+          } >> "$GITHUB_ENV"
+        fi
