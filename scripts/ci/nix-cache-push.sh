@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Push a flake dev shell's input closure to the S3 Nix binary cache — only
-# the store paths cache.nixos.org does not already serve (the fenix Rust
-# toolchains, the LLVM/MLIR symlink join, the shell itself), so the bucket
-# stays small and a run with nothing new costs a few HEAD requests.
+# Push a flake dev shell's input closure to the S3 Nix binary cache.
 #
 # Usage: scripts/ci/nix-cache-push.sh <devShell name>   (e.g. default)
 # Needs NIX_S3_STORE and AWS_* from .github/actions/s3-cache, and the shell
 # already materialized (`nix develop … --command true`) so nothing builds here.
+#
+# The whole closure goes up, cache.nixos.org paths included: a binary cache
+# refuses a path whose references it does not hold ("cannot add … because
+# the reference … is not valid"), so the store cannot be limited to the
+# paths upstream lacks. Only the first push per toolchain pays for it —
+# `nix copy` skips what the store already has — and the substituter's
+# priority (below cache.nixos.org) keeps upstream paths coming from the
+# CDN; this store effectively serves just the fenix Rust toolchains, the
+# LLVM/MLIR join, and the shells themselves.
 #
 # Before pushing, a throwaway path is round-tripped through the store and
 # realised back through the daemon: that is the only way to prove the
@@ -34,23 +40,5 @@ fi
 # mkShell's inputDerivation is a trivial derivation whose inputs are the
 # shell's inputs; its closure is exactly what `nix develop` needs.
 input=$(nix build --no-link --print-out-paths ".#devShells.${system}.${shell}.inputDerivation")
-work=$(mktemp -d)
-nix path-info -r "${input}" > "${work}/closure"
-
-# Keep only paths whose narinfo cache.nixos.org does not have. A failed
-# HEAD (network hiccup) counts as missing — an extra upload, never a gap.
-# shellcheck disable=SC2016  # $0/$1 are the sh -c arguments, not expanded here
-while read -r path; do
-  hash=${path#/nix/store/}
-  printf '%s %s\n' "${hash%%-*}" "${path}"
-done < "${work}/closure" \
-  | xargs -P 16 -n 2 sh -c \
-      'curl -sfI -o /dev/null --retry 2 "https://cache.nixos.org/$0.narinfo" || echo "$1"' \
-  | sort > "${work}/missing"
-
-echo "closure: $(wc -l < "${work}/closure") paths, not on cache.nixos.org: $(wc -l < "${work}/missing")"
-if [ -s "${work}/missing" ]; then
-  # --no-recursive: the references of these paths that live upstream must
-  # not be re-uploaded; a binary cache need not hold a path's full closure.
-  xargs nix copy --no-recursive --to "${NIX_S3_STORE}" < "${work}/missing"
-fi
+echo "closure: $(nix path-info -r "${input}" | wc -l) paths"
+nix copy --to "${NIX_S3_STORE}" "${input}"
