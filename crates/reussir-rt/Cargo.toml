@@ -27,7 +27,7 @@ libmimalloc-sys = { version = "0.1.44", optional = true, features = ["extended"]
 # sync with this build. `nightly` only opts into nightly-gated
 # optimizations (e.g. prefetch intrinsics in the combining lock), which is
 # fine unconditionally because the workspace pins a nightly toolchain.
-mlir_sync = { git = "https://github.com/reussir-lang/mlir-sync.git", rev = "c6a8493003e4cf32441d715a16f270b253ab3fe1", features = ["nightly"] }
+mlir_sync = { git = "https://github.com/reussir-lang/mlir-sync.git", rev = "16199f4865245272fbbd39574f09c4afe330ce1e", features = ["nightly"] }
 num_enum = "0.7.4"
 smallvec = "1.15.1"
 stacker.workspace = true

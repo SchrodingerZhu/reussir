@@ -2195,7 +2195,7 @@ dependencies = [
 [[package]]
 name = "mlir_sync"
 version = "0.1.0"
-source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=c6a8493003e4cf32441d715a16f270b253ab3fe1#c6a8493003e4cf32441d715a16f270b253ab3fe1"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=16199f4865245272fbbd39574f09c4afe330ce1e#16199f4865245272fbbd39574f09c4afe330ce1e"
 dependencies = [
  "portable_futex",
 ]
@@ -2782,7 +2782,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "portable_futex"
 version = "0.1.0"
-source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=c6a8493003e4cf32441d715a16f270b253ab3fe1#c6a8493003e4cf32441d715a16f270b253ab3fe1"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=16199f4865245272fbbd39574f09c4afe330ce1e#16199f4865245272fbbd39574f09c4afe330ce1e"
 dependencies = [
  "linux-raw-sys 0.11.0",
  "syscalls",
