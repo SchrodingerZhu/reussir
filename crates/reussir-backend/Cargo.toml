@@ -21,7 +21,7 @@ melior = { workspace = true, features = ["ods-dialects", "helpers"] }
 reussir-backend-sys = { path = "../reussir-backend-sys" }
 # The LLVM-IR boundary shared by the JIT and the AOT compiler: `mlir-sys` for
 # MLIR→LLVM-IR translation, `llvm-sys` for module linking and disposal. Both
-# resolve to the same LLVM the dialect statically links (LLVM_SYS_221_PREFIX set
+# resolve to the same LLVM the dialect statically links (LLVM_SYS_231_PREFIX set
 # by CMake), so `LLVMModuleRef`s cross the boundary safely.
 mlir-sys.workspace = true
 llvm-sys.workspace = true

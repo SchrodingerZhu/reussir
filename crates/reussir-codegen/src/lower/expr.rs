@@ -458,10 +458,11 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 StringAttribute::new(self.context, "private").into(),
             ));
         }
-        // Sanitizer attributes ride the `passthrough` attribute FuncToLLVM
-        // copies onto the `llvm.func` verbatim; LLVM's sanitizer passes only
-        // instrument plain memory accesses in functions carrying them. A
-        // declaration needs none — its home unit annotates the body.
+        // Sanitizer attributes ride the `llvm.passthrough` attribute
+        // FuncToLLVM folds into the `llvm.func`'s inherent `passthrough`;
+        // LLVM's sanitizer passes only instrument plain memory accesses in
+        // functions carrying them. A declaration needs none — its home unit
+        // annotates the body.
         if emit_body && !self.sanitize_attrs.is_empty() {
             let strings: Vec<Attribute> = self
                 .sanitize_attrs
@@ -469,7 +470,7 @@ impl<'c, 'p, 'tcx> Lowerer<'c, 'p, 'tcx> {
                 .map(|a| StringAttribute::new(self.context, a).into())
                 .collect();
             attributes.push((
-                Identifier::new(self.context, "passthrough"),
+                Identifier::new(self.context, "llvm.passthrough"),
                 ArrayAttribute::new(self.context, &strings).into(),
             ));
         }

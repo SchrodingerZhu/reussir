@@ -32,6 +32,7 @@
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
+#include "Reussir/LLVMPass/SizeAttributes.h"
 
 namespace {
 llvm::cl::opt<std::string> inputFilename(llvm::cl::Positional,
@@ -59,10 +60,10 @@ std::optional<llvm::OptimizationLevel> parseLevel(llvm::StringRef level) {
     return llvm::OptimizationLevel::O2;
   if (level == "O3")
     return llvm::OptimizationLevel::O3;
-  if (level == "Os")
-    return llvm::OptimizationLevel::Os;
-  if (level == "Oz")
-    return llvm::OptimizationLevel::Oz;
+  // clang's -Os/-Oz shape: the caller stamps optsize/minsize on the module's
+  // definitions and the O2 pipeline's cost models read the attributes.
+  if (level == "Os" || level == "Oz")
+    return llvm::OptimizationLevel::O2;
   return std::nullopt;
 }
 } // namespace
@@ -134,6 +135,9 @@ int main(int argc, char **argv) {
                    << linearRecurrencePipeline << "'\n";
       return 1;
     }
+    if (linearRecurrencePipeline == "Os" || linearRecurrencePipeline == "Oz")
+      reussir::llvmpass::stampSizeAttributes(
+          *module, /*minSize=*/linearRecurrencePipeline == "Oz");
     reussir::llvmpass::registerLinearRecurrencePipelines(passBuilder);
     mpm.addPass(passBuilder.buildPerModuleDefaultPipeline(*level));
   } else if (llvm::Error error =

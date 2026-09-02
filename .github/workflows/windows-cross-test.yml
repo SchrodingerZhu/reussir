@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       - name: Cross-build for x86_64-pc-windows-msvc
         run: nix develop .#windows-cross --command cargo xwin build --target x86_64-pc-windows-msvc
@@ -84,13 +84,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       - name: Cache conda MSVC LLVM
         uses: actions/cache@v4
         with:
           path: ~/.cache/reussir-msvc-conda
-          key: reussir-msvc-conda-llvm-22.1.8-v2
+          key: reussir-msvc-conda-llvm-23.1.0-v1
 
       # The windows-native rustc/cargo the reussir compilers spawn under
       # Wine (polyffi, rene's bake). Cached; keyed to the pinned nightly.
@@ -98,7 +98,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/reussir-msvc-rustc
-          key: reussir-msvc-rustc-nightly-2026-03-15-v1
+          key: reussir-msvc-rustc-nightly-2026-08-31-v1
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm

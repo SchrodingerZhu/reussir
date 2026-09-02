@@ -1,7 +1,7 @@
 name: macOS Full Pipeline (Nix)
 
 # The toolchain comes from the Nix flake, same as the Linux pipelines:
-# pinned LLVM/MLIR 22, clang, lit, wasmer, and the fenix Rust toolchain
+# pinned LLVM/MLIR 23, clang, lit, wasmer, and the fenix Rust toolchain
 # (whose rust-toolchain.toml supplies the wasm stds the WebAssembly
 # suites cross-build against). No Homebrew — an unversioned formula bump
 # cannot break this pipeline again (see the llvm@22 incident), and the

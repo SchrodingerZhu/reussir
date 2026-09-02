@@ -3833,7 +3833,11 @@ void populateLLVMInterfaceForDialect(mlir::MLIRContext *context,
 
 struct ReussirConvertToLLVMPatternInterface
     : public mlir::ConvertToLLVMPatternInterface {
-  using ConvertToLLVMPatternInterface::ConvertToLLVMPatternInterface;
+  // The interface constructor is protected, and an inheriting
+  // using-declaration keeps that access — `addInterfaces` (make_unique
+  // outside the class) needs an explicit public constructor.
+  ReussirConvertToLLVMPatternInterface(mlir::Dialect *dialect)
+      : ConvertToLLVMPatternInterface(dialect) {}
 
   void loadDependentDialects(mlir::MLIRContext *context) const override {
     context->getOrLoadDialect<mlir::arith::ArithDialect>();

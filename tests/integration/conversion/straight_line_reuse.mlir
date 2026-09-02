@@ -1,10 +1,10 @@
 // RUN: %reussir-opt %s -reussir-token-reuse | %FileCheck %s
 // RUN: %reussir-opt %s --reussir-token-reuse=emit-remarks=1 --remarks-filter=TokenReuse --remark-format=emitRemark -o %t.remarks.mlir 2>&1 | %FileCheck %s --check-prefix=REMARK
 
-// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=reuse | AvailableTokens=1, CompatibleTokens=1, Score=2, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=ensure
-// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_cross_bin_realloc | AvailableTokens=1, CompatibleTokens=0, Reason=no-compatible-token
-// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=same_bin_realloc | AvailableTokens=1, CompatibleTokens=1, Score=1, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=realloc
-// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_available | AvailableTokens=0, CompatibleTokens=0, Reason=no-available-token
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=reuse | AvailableTokens=1, CompatibleTokens=1, RemarkId={{[0-9]+}}, Score=2, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=ensure
+// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_cross_bin_realloc | AvailableTokens=1, CompatibleTokens=0, Reason=no-compatible-token, RemarkId={{[0-9]+}}
+// REMARK: remark: [Passed] TokenReused | Category:TokenReuse:OneShot | Function=same_bin_realloc | AvailableTokens=1, CompatibleTokens=1, RemarkId={{[0-9]+}}, Score=1, Source=loc("{{.*}}straight_line_reuse.mlir":{{[0-9]+}}:14), Strategy=realloc
+// REMARK: remark: [Missed] TokenNotReused | Category:TokenReuse:OneShot | Function=no_available | AvailableTokens=0, CompatibleTokens=0, Reason=no-available-token, RemarkId={{[0-9]+}}
 
 !rc64 = !reussir.rc<i64>
 !rc64x2 = !reussir.rc<!reussir.record<compound "test" {i64, i64}>>

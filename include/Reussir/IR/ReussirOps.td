@@ -312,7 +312,7 @@ def ReussirNullableCreateOp : ReussirNullableOp<"create", [Pure]> {
 def ReussirNullableDispatchOp
     : ReussirNullableOp<
           "dispatch", [RecursiveMemoryEffects,
-                       DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+                       DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>]> {
   let summary = "Dispatch a nullable token";
   let description = [{
     `reussir.nullable.dispatch` is a high-level structured control flow operation.
@@ -954,7 +954,7 @@ def ReussirRecordTagOp : ReussirRecordOp<"tag", []> {
 def ReussirRecordDispatchOp
     : ReussirRecordOp<
           "dispatch", [RecursiveMemoryEffects,
-                       DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+                       DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>]> {
   let summary = "Dispatch a record";
   let description = [{
     `reussir.record.dispatch` is a high-level structured control flow operation.
@@ -1588,7 +1588,7 @@ class ReussirRegionOp<string mnemonic, list<Trait> traits>
 
 def ReussirRegionRunOp
     : ReussirRegionOp<
-          "run", [DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+          "run", [DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>]> {
   let summary = "Execute a region";
   let description = [{
     `reussir.region.run` executes a region. The inner region must accepts one 
@@ -2062,7 +2062,7 @@ def ReussirPolyFFIOp : ReussirOp<"polyffi", []> {
   let assemblyFormat = [{
     oilist (
       `texture` `(` $moduleTexture `)`
-    | `compiled` `(` $compiledModule `)`
+    | `compiled` `(` custom<CompiledModule>($compiledModule) `)`
     | `substitutions` `(` $substitutions `)`
     ) attr-dict
   }];

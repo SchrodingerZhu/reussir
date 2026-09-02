@@ -15,3 +15,11 @@
 # The `alloc.rs` `MI_MAX_ALIGN_SIZE` constant must stay equal to this value.
 [env]
 CFLAGS = "-DMI_MAX_ALIGN_SIZE=8"
+
+# Cargo's new build-dir layout drops target/<profile>/deps — the directory
+# the RustCompiler dependency discovery, the unittests
+# (REUSSIR_UT_RUSTC_DEPS), and the lit suites (REUSSIR_RUSTC_DEPS) hand to
+# rustc as -L. Keep the old layout until that plumbing learns the new
+# per-package build directories.
+[unstable]
+build-dir-new-layout = false

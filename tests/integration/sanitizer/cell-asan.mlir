@@ -28,7 +28,7 @@
 module attributes {reussir.sanitize = ["sanitize_address"]} {
   func.func private @read_inner(%value: !inner) -> i64
       attributes {llvm.linkage = #llvm.linkage<internal>,
-                  passthrough = ["sanitize_address"]} {
+                  llvm.passthrough = ["sanitize_address"]} {
     %ref = reussir.rc.borrow(%value : !inner) : !reussir.ref<i64>
     %loaded = reussir.ref.load(%ref : !reussir.ref<i64>) : i64
     return %loaded : i64
@@ -36,7 +36,7 @@ module attributes {reussir.sanitize = ["sanitize_address"]} {
 
   func.func private @require_equal(%actual: i64, %expected: i64)
       attributes {llvm.linkage = #llvm.linkage<internal>,
-                  passthrough = ["sanitize_address"]} {
+                  llvm.passthrough = ["sanitize_address"]} {
     %wrong = arith.cmpi ne, %actual, %expected : i64
     scf.if %wrong {
       reussir.panic "cell value mismatch"
@@ -44,7 +44,7 @@ module attributes {reussir.sanitize = ["sanitize_address"]} {
     return
   }
 
-  func.func @main() -> i32 attributes {passthrough = ["sanitize_address"]} {
+  func.func @main() -> i32 attributes {llvm.passthrough = ["sanitize_address"]} {
     %c0_i32 = arith.constant 0 : i32
     %c5 = arith.constant 5 : i64
     %c6 = arith.constant 6 : i64

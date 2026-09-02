@@ -292,7 +292,7 @@ jobs:
 
   # Cross-built from Linux in the flake's windows-cross shell — no Windows
   # runner: GNU-driver clang + the xwin CRT/SDK compile the C++ backend to
-  # COFF, the conda-forge MSVC LLVM (the same 22.1.8 the old windows-2025
+  # COFF, the conda-forge MSVC LLVM (the same 23.1.0 the old windows-2025
   # job used) is linked statically through lld-link, cargo-xwin drives the
   # Rust side, and Wine smoke-runs every shipped binary from its packaged
   # directory. See scripts/build-windows-cross.sh.
@@ -325,7 +325,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/cargo-xwin
-          key: cargo-xwin-sdk-${{ runner.os }}-v1
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
 
       # The conda-forge MSVC LLVM/MLIR prefix reussir-bake-msvc-llvm stages.
       # Keyed on the pinned LLVM version; bump the suffix when the bake's
@@ -334,7 +334,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/reussir-msvc-conda
-          key: reussir-msvc-conda-llvm-22.1.8-v2
+          key: reussir-msvc-conda-llvm-23.1.0-v1
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
@@ -445,10 +445,10 @@ jobs:
             **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
-            - Linux x86_64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
-            - Linux aarch64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
-            - macOS ARM64 (Nix flake toolchain, LLVM 22)
-            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 22)
+            - Linux x86_64 (Nix flake toolchain, LLVM 23; needs glibc >= 2.39)
+            - Linux aarch64 (Nix flake toolchain, LLVM 23; needs glibc >= 2.39)
+            - macOS ARM64 (Nix flake toolchain, LLVM 23)
+            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 23)
 
             **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
 
@@ -472,10 +472,10 @@ jobs:
             **Contents:** the Reussir toolchain — `rrc` (ahead-of-time compiler), `rene` (package manager), `rrepl` (REPL), and `reussir-lsp` (semantic-token language server). LLVM/MLIR and the Reussir backend are linked statically into the binaries; no shared libraries ship and nothing needs `LD_LIBRARY_PATH`.
 
             **Platforms:**
-            - Linux x86_64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
-            - Linux aarch64 (Nix flake toolchain, LLVM 22; needs glibc >= 2.39)
-            - macOS ARM64 (Nix flake toolchain, LLVM 22)
-            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 22)
+            - Linux x86_64 (Nix flake toolchain, LLVM 23; needs glibc >= 2.39)
+            - Linux aarch64 (Nix flake toolchain, LLVM 23; needs glibc >= 2.39)
+            - macOS ARM64 (Nix flake toolchain, LLVM 23)
+            - Windows x64 (cross-built with the flake's windows-cross shell against conda-forge MSVC LLVM 23)
 
             **Usage:** Extract the archive and add `<prefix>/bin` to `PATH`.
 

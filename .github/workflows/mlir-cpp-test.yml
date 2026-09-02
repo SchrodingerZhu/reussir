@@ -1,6 +1,6 @@
 name: MLIR Backend MultiArch
 
-# The toolchain comes from the Nix flake: the same pinned LLVM/MLIR 22,
+# The toolchain comes from the Nix flake: the same pinned LLVM/MLIR 23,
 # clang, lit, wasmer, and Rust toolchain every developer gets from
 # `nix develop`, on both architectures. No apt.llvm.org, no external
 # installers — a formula or repository bump upstream cannot break this

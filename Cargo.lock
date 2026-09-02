@@ -658,9 +658,9 @@ dependencies = [
 
 [[package]]
 name = "comrak"
-version = "0.51.0"
+version = "0.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f07383e7799d964bf7ffa6fc4457d177c54a44614661c7458bb0bd91b108e32"
+checksum = "0d5910408554659ed848ff469e67ec83b30f179e72cec286cfdae64d1616f466"
 dependencies = [
  "caseless",
  "entities",
@@ -711,9 +711,9 @@ dependencies = [
 
 [[package]]
 name = "convert_case"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -1882,9 +1882,9 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llvm-sys"
-version = "221.0.1"
+version = "231.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2abcc34a3b190f03c2a61b555f218f529589ff13657bdd2ff8ac3e85f2abe6bb"
+checksum = "c0475bc87fdfb41f07d459d26d01534dbf24f51260dc8a38b661988e5e6b3432"
 dependencies = [
  "anyhow",
  "cc",
@@ -2113,9 +2113,8 @@ dependencies = [
 
 [[package]]
 name = "melior"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c388c08773539126c32f2a9c65260695ed9e2b9376164ce8b839826e3085d8d"
+version = "0.27.6"
+source = "git+https://github.com/reussir-lang/melior?rev=af287e4411a2dc5f9aedb7b1d78f9182f87298c6#af287e4411a2dc5f9aedb7b1d78f9182f87298c6"
 dependencies = [
  "melior-macro",
  "mlir-sys",
@@ -2123,16 +2122,15 @@ dependencies = [
 
 [[package]]
 name = "melior-macro"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aac876dfce9f514df46c6d4b7267f1fc513126ddc34dfde11909584fdfc87bd"
+version = "0.20.6"
+source = "git+https://github.com/reussir-lang/melior?rev=af287e4411a2dc5f9aedb7b1d78f9182f87298c6#af287e4411a2dc5f9aedb7b1d78f9182f87298c6"
 dependencies = [
  "comrak",
- "convert_case 0.11.0",
+ "convert_case 0.12.0",
  "proc-macro2",
  "quote",
  "regex",
- "syn 2.0.117",
+ "syn 3.0.4",
  "tblgen",
  "unindent",
 ]
@@ -2189,7 +2187,7 @@ dependencies = [
 [[package]]
 name = "mlir-sys"
 version = "220.0.2"
-source = "git+https://github.com/reussir-lang/mlir-sys?rev=eddb6b0fcab6980633eedf6e549276b3e9b7d18a#eddb6b0fcab6980633eedf6e549276b3e9b7d18a"
+source = "git+https://github.com/reussir-lang/mlir-sys?rev=5541512807e3feee2ef20897261afd58b0ef859b#5541512807e3feee2ef20897261afd58b0ef859b"
 dependencies = [
  "bindgen",
 ]
@@ -2197,7 +2195,7 @@ dependencies = [
 [[package]]
 name = "mlir_sync"
 version = "0.1.0"
-source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=5e9721da4911c5b256a67922193a96e8dd417692#5e9721da4911c5b256a67922193a96e8dd417692"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=16199f4865245272fbbd39574f09c4afe330ce1e#16199f4865245272fbbd39574f09c4afe330ce1e"
 dependencies = [
  "portable_futex",
 ]
@@ -2784,7 +2782,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "portable_futex"
 version = "0.1.0"
-source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=5e9721da4911c5b256a67922193a96e8dd417692#5e9721da4911c5b256a67922193a96e8dd417692"
+source = "git+https://github.com/reussir-lang/mlir-sync.git?rev=16199f4865245272fbbd39574f09c4afe330ce1e#16199f4865245272fbbd39574f09c4afe330ce1e"
 dependencies = [
  "linux-raw-sys 0.11.0",
  "syscalls",
@@ -4065,8 +4063,7 @@ dependencies = [
 [[package]]
 name = "tblgen"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15a6768dc51535aeaecbe812e2a792a77cbef10b1c4529e29bea5864a738dc6a"
+source = "git+https://github.com/reussir-lang/tblgen-rs?rev=cd71346c2648b0b5a93a0be902cfbe876ff7ca38#cd71346c2648b0b5a93a0be902cfbe876ff7ca38"
 dependencies = [
  "bindgen",
  "cc",
@@ -4081,7 +4078,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

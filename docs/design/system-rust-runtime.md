@@ -44,7 +44,7 @@ This creates three hard version couplings:
    The final binary must link that same build's staticlib/dylib, or symbols
    go unresolved.
 3. **LLVM bitcode ↔ Reussir's LLVM**: `parseBitcodeFile` in Reussir's LLVM
-   (currently pinned to LLVM 22) can only read bitcode from an equal-or-older
+   (currently pinned to LLVM 23) can only read bitcode from an equal-or-older
    LLVM. A system rustc built on a newer LLVM emits bitcode we cannot parse;
    today there is no fallback.
 

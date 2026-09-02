@@ -90,6 +90,7 @@ module;
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
+#include "Reussir/LLVMPass/SizeAttributes.h"
 #include "Reussir/Transformation/Passes.h"
 
 export module Reussir.Bridge;
@@ -241,7 +242,10 @@ void runNPMOptimization(llvm::Module &llvmModule, ReussirOptOption opt) {
     optLevel = llvm::OptimizationLevel::O3;
     break;
   case REUSSIR_OPT_SIZE:
-    optLevel = llvm::OptimizationLevel::Os;
+    // clang's -Os shape: stamp `optsize` on every definition and run the O2
+    // pipeline, whose cost models read the attribute.
+    reussir::llvmpass::stampSizeAttributes(llvmModule, /*minSize=*/false);
+    optLevel = llvm::OptimizationLevel::O2;
     break;
   case REUSSIR_OPT_TPDE:
     return;
