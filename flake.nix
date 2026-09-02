@@ -18,7 +18,17 @@
         pkgs = nixpkgs.legacyPackages.${system};
 
         # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
-        llvmPkgs = pkgs.llvmPackages_23;
+        # On darwin the in-build LLVM test suite trips over the build
+        # environment's codesigning restrictions (dsymutil's codesign test) —
+        # one test of 77k, orthogonal to the toolchain — so skip the check
+        # phase there rather than fail the whole closure.
+        llvmPkgs =
+          if pkgs.stdenv.hostPlatform.isDarwin then
+            pkgs.llvmPackages_23.overrideScope (final: prev: {
+              libllvm = prev.libllvm.overrideAttrs (old: { doCheck = false; });
+            })
+          else
+            pkgs.llvmPackages_23;
 
         # Pinned nightly Rust toolchain from rust-toolchain.toml.
         # The sha256 covers the channel manifest downloaded by fenix.
