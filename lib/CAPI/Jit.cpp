@@ -33,6 +33,7 @@
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/LinearRecurrence.h"
 #include "Reussir/LLVMPass/RuntimeFunctionAttributor.h"
+#include "Reussir/LLVMPass/SizeAttributes.h"
 
 #ifdef REUSSIR_HAS_TPDE
 #include <cstdint>
@@ -109,8 +110,9 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
     level = llvm::OptimizationLevel::O3;
     break;
   case ReussirJitOptSize:
-    // Size-ness is carried by the optsize/minsize function attributes; -Os
-    // frontends build the O2 pipeline.
+    // clang's -Os shape: stamp `optsize` on every definition and run the O2
+    // pipeline, whose cost models read the attribute.
+    reussir::llvmpass::stampSizeAttributes(m, /*minSize=*/false);
     level = llvm::OptimizationLevel::O2;
     break;
   case ReussirJitOptDefault:
