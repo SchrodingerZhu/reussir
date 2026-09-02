@@ -93,12 +93,22 @@ for _var, _value in os.environ.items():
 # (and the JIT loading the runtime dylib) resolve both libreussir_rt and its
 # libstd. An executable rpath cannot do this on Linux — DT_RUNPATH does not
 # apply to the dylib's own NEEDED entries.
-_loader_var = {'win32': 'PATH', 'darwin': 'DYLD_LIBRARY_PATH'}.get(
+#
+# darwin takes the FALLBACK variable: DYLD_LIBRARY_PATH is searched first
+# and by leaf name, so the toolchain libdir's libLLVM.dylib shadowed the
+# one every nix tool (lldb, clang behind the runtime bake's cc) was linked
+# against — "Symbol not found: _LLVMInitializeLanaiAsmParser". The fallback
+# path is consulted only for names nothing else resolves, which is exactly
+# libstd and libreussir_rt.
+_loader_var = {'win32': 'PATH', 'darwin': 'DYLD_FALLBACK_LIBRARY_PATH'}.get(
     sys.platform, 'LD_LIBRARY_PATH')
 _loader_dirs = [d for d in (config.library_path, config.rust_libdir) if d]
 _loader_prev = config.environment.get(_loader_var, os.environ.get(_loader_var, ''))
 if _loader_prev:
     _loader_dirs.append(_loader_prev)
+elif sys.platform == 'darwin':
+    # Setting the fallback variable replaces dyld's built-in default list.
+    _loader_dirs += [os.path.expanduser('~/lib'), '/usr/local/lib', '/usr/lib']
 config.environment[_loader_var] = os.pathsep.join(_loader_dirs)
 
 def sh_path(path):
