@@ -1,0 +1,22 @@
+// REQUIRES: wasmer, wasip1
+// XFAIL: *
+// RUN: %rene build --manifest-path %S/queue_depth/rene.ncl --build-dir %t.bdir --profile release --target wasm32-wasip1 | %FileCheck %s --check-prefix=LISTING
+// LISTING: queue_depth.wasm
+// RUN: %wasmer --stack-size 1048576 %t.bdir/release/queue_depth.wasm | %FileCheck %s
+// CHECK: fq = 323752187
+
+// Optimized deep self-recursion should run in constant stack. The package
+// churns a Hood-Melville functional queue for 100k rounds through a
+// tail-recursive driver whose result (`Pop`, a value enum) returns through
+// an sret pointer. On x86-64 and Arm the backends lower the sret self-call
+// as a frame-reusing tail call, so the recursion runs in constant stack
+// (the native suites cover a million rounds). On wasm32 it stays a real
+// `call` — LLVM's WebAssembly lowering does not `return_call` an
+// sret-carrying self-call even with the `tail-call` feature enabled — and
+// 100k frames exhaust the engine's call stack.
+//
+// XFAIL until self-recursion of aggregate-returning functions is lowered
+// to constant stack on wasm32 too (an MLIR-level rewrite to a loop would
+// cover every target at once); the queue itself stays 16 elements long, so
+// stack depth is the only variable, and the run flipping to XPASS is the
+// signal that the guarantee has landed and this marker should come off.
