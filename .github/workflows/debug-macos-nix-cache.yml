@@ -6,6 +6,11 @@ name: Debug macOS Nix S3 cache
 # then repeats without the S3 store for comparison. Delete once resolved.
 on:
   workflow_dispatch:
+  # workflow_dispatch only lists workflows present on the default branch;
+  # until then, a push touching this file on the work branch runs it.
+  push:
+    branches: [ ci/s3-caches ]
+    paths: [ .github/workflows/debug-macos-nix-cache.yml ]
 
 permissions:
   contents: read
