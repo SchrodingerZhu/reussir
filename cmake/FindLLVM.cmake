@@ -81,14 +81,15 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
     "Reussir Wine llvm-config wrapper (cross): ${REUSSIR_WINE_LLVM_PREFIX}")
 
   # conda-forge's LLVM was built with the MSVC DIA SDK, so its exported
-  # LLVMDebugInfoPDB target references diaguids.lib at an absolute Visual
-  # Studio path that exists on no cross host (and that xwin does not ship).
+  # LLVMDebugInfoPDB target references it — as an absolute Visual Studio
+  # diaguids.lib path or as the DIASDK::Diaguids imported target — and
+  # neither exists on a cross host (xwin does not ship the DIA SDK).
   # Drop the reference: linkers only pull DIA-using archive members when
   # something calls the DIA-backed PDB readers, which nothing here does.
   if(TARGET LLVMDebugInfoPDB)
     get_target_property(_reussir_pdb_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
     if(_reussir_pdb_libs)
-      list(FILTER _reussir_pdb_libs EXCLUDE REGEX "diaguids")
+      list(FILTER _reussir_pdb_libs EXCLUDE REGEX "[Dd]iaguids")
       set_target_properties(LLVMDebugInfoPDB PROPERTIES
         INTERFACE_LINK_LIBRARIES "${_reussir_pdb_libs}")
       message(STATUS "Stripped MSVC DIA SDK reference from LLVMDebugInfoPDB (cross)")
