@@ -37,8 +37,25 @@ jobs:
         with:
           extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
+      # cargo's registry/git checkouts and the target dir, keyed on the lock
+      # file and toolchain pin with a prefix fallback (what Swatinem/rust-cache
+      # did through actions/cache), now snapshotted to the S3 bucket.
+      - name: Restore cargo cache
+        id: cache-cargo
+        uses: ./.github/actions/s3-dir-cache
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-vscode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-vscode-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build dev shell
         run: nix develop .#vscode --command true
@@ -81,3 +98,14 @@ jobs:
           name: reussir-vscode
           path: reussir-vscode.vsix
           if-no-files-found: error
+
+      - name: Save cargo cache
+        if: steps.cache-cargo.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-vscode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}

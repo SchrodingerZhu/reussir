@@ -61,6 +61,10 @@ jobs:
         with:
           extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
       - name: Build dev shell
         run: nix develop --command true
 
@@ -189,6 +193,10 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           extra-conf: ${{ env.NIX_EXTRA_CONF }}
+
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
 
       - name: Build dev shell
         run: nix develop --command true
@@ -358,13 +366,31 @@ jobs:
         with:
           extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
+      # cargo's registry/git checkouts and the target dir, keyed on the lock
+      # file and toolchain pin with a prefix fallback (what Swatinem/rust-cache
+      # did through actions/cache), now snapshotted to the S3 bucket.
+      - name: Restore cargo cache
+        id: cache-cargo
+        uses: ./.github/actions/s3-dir-cache
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-
 
       # The MSVC CRT + Windows SDK cargo-xwin unpacks on first use. Bump the
       # suffix when the workspace moves to a new xwin/SDK version.
-      - name: Cache xwin CRT/SDK
-        uses: actions/cache@v4
+      - name: Restore xwin CRT/SDK cache
+        id: cache-xwin-crt-sdk
+        uses: ./.github/actions/s3-dir-cache
         with:
           path: ~/.cache/cargo-xwin
           key: cargo-xwin-sdk-${{ runner.os }}-v2
@@ -372,8 +398,9 @@ jobs:
       # The conda-forge MSVC LLVM/MLIR prefix reussir-bake-msvc-llvm stages.
       # Keyed on the pinned LLVM version; bump the suffix when the bake's
       # package list in flake.nix changes.
-      - name: Cache conda MSVC LLVM
-        uses: actions/cache@v4
+      - name: Restore conda MSVC LLVM cache
+        id: cache-conda-msvc-llvm
+        uses: ./.github/actions/s3-dir-cache
         with:
           path: ~/.cache/reussir-msvc-conda
           key: reussir-msvc-conda-llvm-23.1.0-v1
@@ -445,6 +472,31 @@ jobs:
         with:
           name: reussir-nightly-windows-x64
           path: ${{ env.ARCHIVE_NAME }}
+
+      - name: Save cargo cache
+        if: steps.cache-cargo.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Save xwin CRT/SDK cache
+        if: steps.cache-xwin-crt-sdk.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
+
+      - name: Save conda MSVC LLVM cache
+        if: steps.cache-conda-msvc-llvm.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: ~/.cache/reussir-msvc-conda
+          key: reussir-msvc-conda-llvm-23.1.0-v1
 
       - name: sccache stats
         if: always()

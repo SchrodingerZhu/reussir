@@ -14,6 +14,7 @@ description: >-
 # Layout of the bucket:
 #   sccache/<key-prefix>/…   sccache objects, one namespace per platform
 #   nix/…                    the Nix binary cache (narinfo + zstd NARs)
+#   dir-cache/<key>.tar.zst  directory snapshots (.github/actions/s3-dir-cache)
 
 inputs:
   access-key-id:
@@ -51,7 +52,13 @@ runs:
           echo "AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}"
           echo "AWS_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}"
           echo "NIX_S3_STORE=${NIX_S3_STORE}"
-          echo "NIX_EXTRA_CONF=extra-substituters = ${NIX_S3_STORE}"
+          # connect-timeout defaults to unlimited; a store that stops
+          # answering must fail fast, not stall the build.
+          echo "NIX_EXTRA_CONF<<NIXCONF"
+          echo "extra-substituters = ${NIX_S3_STORE}"
+          echo "connect-timeout = 10"
+          echo "stalled-download-timeout = 60"
+          echo "NIXCONF"
         } >> "$GITHUB_ENV"
 
         # Credentials for the daemon (root): the AWS default credential
@@ -69,5 +76,9 @@ runs:
             echo "SCCACHE_REGION=default"
             echo "SCCACHE_S3_USE_SSL=true"
             echo "SCCACHE_S3_KEY_PREFIX=sccache/${SCCACHE_KEY_PREFIX}/"
+            # The server exits after 10 idle minutes by default; a job's test
+            # phase is longer than that, and a fresh server at the end would
+            # report zero for everything in the stats step.
+            echo "SCCACHE_IDLE_TIMEOUT=0"
           } >> "$GITHUB_ENV"
         fi

@@ -45,6 +45,10 @@ jobs:
         with:
           extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
       # Materialize the dev shell up front so toolchain substitution has its
       # own timing and log section. The shellHook writes CMakeUserPresets.json
       # (the nix-dev preset used below) on every entry.
