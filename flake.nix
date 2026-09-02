@@ -15,26 +15,37 @@
   outputs = { self, nixpkgs, fenix, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-
-        # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
         # On darwin the in-build LLVM test suite trips over the build
         # environment's codesigning restrictions (dsymutil's codesign test) —
-        # one test of 77k, orthogonal to the toolchain — so skip the check
-        # phase there rather than fail the whole closure.
-        llvmPkgs =
-          if pkgs.stdenv.hostPlatform.isDarwin then
-            let
-              scoped = pkgs.llvmPackages_23.overrideScope (final: prev: {
-                libllvm = prev.libllvm.overrideAttrs (old: { doCheck = false; });
-              });
-            in
-            # The set's stdenv is composed outside its fixpoint, so it would
-            # still wrap the unoverridden clang; rebuild it from the scoped
-            # one.
-            scoped // { stdenv = pkgs.overrideCC pkgs.stdenv scoped.clang; }
+        # one test of 77k, orthogonal to the toolchain. A member-level
+        # override cannot fix it: the package set's stdenv and compiler-rt
+        # resolve through nixpkgs' splices to the GLOBAL llvmPackages_23
+        # attribute, so only an overlay reaches every composition path.
+        # Dropping the one test from the monorepo source keeps the check
+        # phase (and the fixpoint) intact everywhere.
+        pkgs =
+          let base = nixpkgs.legacyPackages.${system};
+          in
+          if base.stdenv.hostPlatform.isDarwin then
+            import nixpkgs {
+              inherit system;
+              overlays = [
+                (final: prev: {
+                  llvmPackages_23 = prev.llvmPackages_23.override {
+                    monorepoSrc = final.applyPatches {
+                      name = "llvm-src-23.1.0-no-codesign-test";
+                      src = prev.llvmPackages_23.llvm.src;
+                      postPatch = "rm llvm/test/tools/dsymutil/codesign.test";
+                    };
+                  };
+                })
+              ];
+            }
           else
-            pkgs.llvmPackages_23;
+            base;
+
+        # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
+        llvmPkgs = pkgs.llvmPackages_23;
 
         # Pinned nightly Rust toolchain from rust-toolchain.toml.
         # The sha256 covers the channel manifest downloaded by fenix.
