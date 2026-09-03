@@ -2,7 +2,7 @@ name: Debug macOS rrc trap
 
 # Temporary: rrc traps (SIGTRAP) on aarch64-darwin under -O aggressive.
 # Build rrc from the cached toolchain and run a failing case under lldb
-# for a backtrace. Delete once the crash is fixed. (rerun 2)
+# for a backtrace. Delete once the crash is fixed. (rerun 3)
 on:
   workflow_dispatch:
   push:
@@ -67,16 +67,35 @@ jobs:
             "$RRC" "$T/closure_wpd_devirt.rr" --emit llvm-ir -O default -o /tmp/devirt-default.ll; echo "exit(default)=$?"
             RUST_BACKTRACE=full "$RRC" "$T/array_e2e.rr" -o /tmp/array.o --relocation-mode pic -Oaggressive; echo "exit=$?"
             set +x
-            for case in "$T/closure_wpd_devirt.rr --emit llvm-ir -O aggressive -o /tmp/devirt.ll" \
-                        "$T/array_e2e.rr -o /tmp/array.o --relocation-mode pic -Oaggressive"; do
+            sleep 5
+            echo "::group::macOS crash reports"
+            ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head
+            for r in $(ls -t ~/Library/Logs/DiagnosticReports/rrc* 2>/dev/null | head -2); do
+              echo "== $r"
+              python3 - "$r" <<'"'"'PY'"'"'
+import json, sys
+raw = open(sys.argv[1]).read()
+# .ips files: a JSON header line followed by a JSON body
+body = json.loads(raw.split("\n", 1)[1])
+print("exception:", body.get("exception"))
+print("termination:", body.get("termination"))
+ft = body.get("faultingThread", 0)
+threads = body.get("threads", [])
+imgs = body.get("usedImages", [])
+t = threads[ft] if ft < len(threads) else threads[0]
+for i, fr in enumerate(t.get("frames", [])[:60]):
+    img = imgs[fr.get("imageIndex", 0)] if fr.get("imageIndex", 0) < len(imgs) else {}
+    print(f"  #{i:2d} {img.get('name','?'):28s} {fr.get('symbol','?')} + {fr.get('imageOffset', fr.get('symbolLocation','?'))}")
+PY
+            done
+            echo "::endgroup::"
+            for case in "$T/closure_wpd_devirt.rr --emit llvm-ir -O aggressive -o /tmp/devirt.ll"; do
               echo "::group::lldb backtrace: rrc $case"
-              lldb --batch --no-lldbinit \
+              lldb --batch --no-lldbinit --file "$RRC" \
                 -o "process launch -- $case" \
                 -o "thread backtrace -c 60" \
-                -o "register read" \
-                -o "disassemble --pc --count 8" \
-                -o "thread list" \
-                -- "$RRC" 2>&1 | tail -120
+                -o "register read pc x0 x1 x2 x3" \
+                -o "disassemble --pc --count 6" 2>&1 | tail -100
               echo "::endgroup::"
             done
           '
