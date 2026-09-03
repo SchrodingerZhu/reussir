@@ -29,6 +29,8 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/Transforms/IPO/LowerTypeTests.h>
 #include <llvm/Transforms/IPO/WholeProgramDevirt.h>
+#include <llvm/Transforms/Utils/AssignGUID.h>
+#include <llvm/Transforms/Utils/NameAnonGlobals.h>
 
 #include "Reussir/LLVMPass/AllocationSimplication.h"
 #include "Reussir/LLVMPass/LinearRecurrence.h"
@@ -138,10 +140,24 @@ void reussirRunBackendLLVMPipeline(LLVMModuleRef module, ReussirJitOptLevel opt,
   // carries type tests; modules lowered without `closure-wpd` keep their
   // pipeline unchanged. This entry point serves both backends: the AOT
   // compiler (`rrc`) and the JIT/REPL run their LLVM leg through here.
-  if (llvm::Intrinsic::getDeclarationIfExists(&m, llvm::Intrinsic::type_test))
+  if (llvm::Intrinsic::getDeclarationIfExists(&m, llvm::Intrinsic::type_test)) {
+    // WPD builds a module summary, and since LLVM 23 `GlobalValue::getGUID`
+    // reads a GUID that must have been ASSIGNED (`!unique_id` metadata,
+    // computed from name, linkage and source file) — it no longer hashes the
+    // name on the fly. Upstream schedules `AssignGUIDPass` right before its
+    // own speculative WPD (`buildModuleOptimizationPipeline`) and at the end
+    // of every LTO pre-link pipeline; a hand-built pipeline that runs WPD
+    // early must do the same. Without it, release builds dereference an
+    // empty optional: silent garbage under libstdc++ (Linux), SIGTRAP under
+    // libc++'s hardened mode (macOS, every `-O aggressive` compile). Anonymous
+    // globals are named first, exactly as upstream's pre-link sequence does,
+    // so the GUIDs derive from their final names.
+    mpm.addPass(llvm::NameAnonGlobalPass());
+    mpm.addPass(llvm::AssignGUIDPass());
     mpm.addPass(llvm::WholeProgramDevirtPass(
         /*ExportSummary=*/nullptr, /*ImportSummary=*/nullptr,
         /*DevirtSpeculatively=*/true));
+  }
   // Then consume the artifacts (`llvm.type.test` + `assume`): drop the
   // assumes and fold the dead tests away so no `llvm.type.test` ever reaches
   // instruction selection. A no-op for modules without type tests.
