@@ -89,6 +89,7 @@ runs:
         endpoint = "https://${ENDPOINT_HOST}"
         region = "default"
         use_ssl = true
+        no_credentials = false
         key_prefix = "sccache/${SCCACHE_KEY_PREFIX}/"
         SCCACHE
           {
