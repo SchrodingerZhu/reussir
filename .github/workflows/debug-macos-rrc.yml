@@ -52,7 +52,7 @@ jobs:
           '
 
       - name: Build rrc
-        run: nix develop --command bash -c 'env RUSTC_WRAPPER=sccache cmake --build build --parallel --target rrc'
+        run: nix develop --command bash -c 'env RUSTC_WRAPPER=sccache cmake --build build --parallel'
 
       - name: Reproduce and backtrace
         run: |
