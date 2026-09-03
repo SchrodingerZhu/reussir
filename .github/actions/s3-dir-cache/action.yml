@@ -1,0 +1,64 @@
+name: Restore directory cache from S3
+description: >-
+  actions/cache stand-in backed by the Contabo bucket: restores the newest
+  snapshot for `key` (or the newest one matching a `restore-keys` prefix)
+  into place. Pair with ./.github/actions/s3-dir-cache/save.
+
+# Needs Nix installed (rclone and zstd come from the flake's nixpkgs) and
+# the AWS_* variables .github/actions/s3-cache exports; without them it
+# reports a miss and the job proceeds cold, as on fork pull requests.
+#
+# Snapshots are tarballs rooted at / under dir-cache/<key>.tar.zst, so a
+# key must describe its content (hash of the lock file, a version suffix):
+# a hit never gets rewritten.
+
+inputs:
+  path:
+    description: Directories to restore, one per line (~ and relative paths allowed)
+    required: true
+  key:
+    description: Exact snapshot key
+    required: true
+  restore-keys:
+    description: Key prefixes to fall back to, one per line, newest snapshot wins
+    required: false
+    default: ''
+
+outputs:
+  cache-hit:
+    description: "'true' when the exact key was restored"
+    value: ${{ steps.restore.outputs.cache-hit }}
+  restored-key:
+    description: The key actually restored, empty on a miss
+    value: ${{ steps.restore.outputs.restored-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore
+      id: restore
+      shell: bash
+      env:
+        CACHE_PATHS: ${{ inputs.path }}
+        CACHE_KEY: ${{ inputs.key }}
+        CACHE_RESTORE_KEYS: ${{ inputs.restore-keys }}
+      run: |
+        set -euo pipefail
+        source .github/actions/s3-dir-cache/lib.sh
+        echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+        echo "restored-key=" >> "$GITHUB_OUTPUT"
+        s3_dir_cache_available || exit 0
+
+        found=$(s3_dir_cache_lookup "$CACHE_KEY" "$CACHE_RESTORE_KEYS")
+        if [ -z "$found" ]; then
+          echo "dir-cache miss for $CACHE_KEY"
+          exit 0
+        fi
+        echo "restoring dir-cache/$found.tar.zst"
+        s3_dir_cache_tool rclone cat "$S3_DIR_CACHE_REMOTE/$found.tar.zst" \
+          | s3_dir_cache_tool zstd -d \
+          | tar -xf - -C /
+        echo "restored-key=$found" >> "$GITHUB_OUTPUT"
+        if [ "$found" = "$CACHE_KEY" ]; then
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+        fi

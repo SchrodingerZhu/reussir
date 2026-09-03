@@ -1,0 +1,37 @@
+name: Start sccache
+description: >-
+  Start the sccache server from the flake shell with retries, so a transient
+  refusal from the S3 bucket (rate limiting) does not surface as a compile
+  failure. If the bucket stays unreachable, the S3 backend is dropped from the
+  config and sccache continues on local disk with a warning.
+
+inputs:
+  shell:
+    description: flake devShell to run sccache from (default or windows-cross)
+    required: false
+    default: default
+
+runs:
+  using: composite
+  steps:
+    - name: Start sccache
+      shell: bash
+      env:
+        DEV_SHELL: ${{ inputs.shell }}
+      run: |
+        set -uo pipefail
+        flake=""
+        [ "$DEV_SHELL" = default ] || flake=".#${DEV_SHELL}"
+        for attempt in 1 2 3 4 5; do
+          if nix develop $flake --command sccache --start-server; then
+            nix develop $flake --command sccache --show-stats | grep -E "Cache location" || true
+            exit 0
+          fi
+          nix develop $flake --command sccache --stop-server > /dev/null 2>&1 || true
+          echo "sccache server did not start (attempt $attempt); retrying"
+          sleep $(( attempt * 15 ))
+        done
+        echo "::warning::sccache could not reach the S3 bucket; continuing with the local disk cache"
+        [ -f "${SCCACHE_ERROR_LOG:-}" ] && tail -20 "$SCCACHE_ERROR_LOG" || true
+        if [ -n "${SCCACHE_CONF:-}" ]; then : > "$SCCACHE_CONF"; fi
+        nix develop $flake --command sccache --start-server

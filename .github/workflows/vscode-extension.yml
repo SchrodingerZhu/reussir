@@ -23,11 +23,46 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # The Nix daemon gets the shared S3 bucket as a zstd binary cache for
+      # what cache.nixos.org does not serve (the fenix Rust toolchain). Without
+      # credentials — pull requests from forks — it stays on cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
+      # cargo's registry/git checkouts and the target dir, keyed on the lock
+      # file and toolchain pin with a prefix fallback (what Swatinem/rust-cache
+      # did through actions/cache), now snapshotted to the S3 bucket.
+      - name: Restore cargo cache
+        id: cache-cargo
+        uses: ./.github/actions/s3-dir-cache
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-vscode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-vscode-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build dev shell
+        run: nix develop .#vscode --command true
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh vscode
 
       - name: Install extension dependencies
         run: nix develop .#vscode --command bash -c 'cd editors/vscode && npm ci'
@@ -63,3 +98,14 @@ jobs:
           name: reussir-vscode
           path: reussir-vscode.vsix
           if-no-files-found: error
+
+      - name: Save cargo cache
+        if: steps.cache-cargo.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-vscode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}

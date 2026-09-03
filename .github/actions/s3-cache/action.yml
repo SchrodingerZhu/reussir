@@ -1,0 +1,104 @@
+name: Configure S3 caches
+description: >-
+  Point sccache and the Nix daemon at the shared Contabo S3 bucket. A no-op
+  without credentials (pull requests from forks), so every consumer keeps
+  working with its defaults: sccache on local disk, Nix on cache.nixos.org.
+
+# Run this BEFORE the Nix installer step: it exports NIX_EXTRA_CONF (the
+# substituter line the installer writes to nix.conf) and stages the AWS
+# credentials file the daemon reads when it substitutes from that store.
+# The daemon runs as root and does not see the job environment, hence the
+# file; the runner's own processes (sccache, `nix copy`) take the AWS_*
+# variables exported to the job environment instead.
+#
+# Layout of the bucket:
+#   sccache/<key-prefix>/…   sccache objects, one namespace per platform
+#   nix/…                    the Nix binary cache (narinfo + zstd NARs)
+#   dir-cache/<key>.tar.zst  directory snapshots (.github/actions/s3-dir-cache)
+
+inputs:
+  access-key-id:
+    description: S3 access key (empty disables both caches)
+    required: true
+  secret-access-key:
+    description: S3 secret key
+    required: true
+  sccache-key-prefix:
+    description: sccache namespace inside the bucket; empty leaves sccache unconfigured
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Export cache configuration
+      if: inputs.access-key-id != ''
+      shell: bash
+      env:
+        S3_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        S3_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        SCCACHE_KEY_PREFIX: ${{ inputs.sccache-key-prefix }}
+      run: |
+        set -euo pipefail
+        BUCKET=sccache
+        ENDPOINT_HOST=usc1.contabostorage.com
+        # zstd: xz is far too slow for multi-GB toolchain closures.
+        # priority=50 ranks below cache.nixos.org (40), so upstream paths
+        # keep coming from the CDN and this store only serves what upstream
+        # lacks. trusted=true accepts the unsigned NARs `nix copy` uploads.
+        NIX_S3_STORE="s3://${BUCKET}/nix?endpoint=${ENDPOINT_HOST}&region=default&scheme=https&compression=zstd&parallel-compression=true&want-mass-query=true&priority=50&trusted=true"
+
+        {
+          echo "AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}"
+          echo "AWS_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}"
+          echo "NIX_S3_STORE=${NIX_S3_STORE}"
+          # connect-timeout defaults to unlimited; a store that stops
+          # answering must fail fast, not stall the build.
+          echo "NIX_EXTRA_CONF<<NIXCONF"
+          echo "extra-substituters = ${NIX_S3_STORE}"
+          echo "connect-timeout = 10"
+          echo "stalled-download-timeout = 60"
+          # Contabo answers bursts of narinfo lookups with HTTP 429 (its
+          # documented cap is 250 requests/s); Nix's default 25 parallel
+          # connections cross it and five retries were not enough.
+          echo "http-connections = 8"
+          echo "download-attempts = 12"
+          echo "NIXCONF"
+        } >> "$GITHUB_ENV"
+
+        # Credentials for the daemon (root): the AWS default credential
+        # chain reads ~/.aws/credentials (/root on Linux, /var/root on macOS).
+        sudo sh -c 'umask 077 && mkdir -p ~root/.aws && cat > ~root/.aws/credentials' <<CREDS
+        [default]
+        aws_access_key_id = ${S3_ACCESS_KEY_ID}
+        aws_secret_access_key = ${S3_SECRET_ACCESS_KEY}
+        CREDS
+
+        if [ -n "${SCCACHE_KEY_PREFIX}" ]; then
+          # The S3 backend goes in a config file rather than SCCACHE_* env
+          # vars so .github/actions/sccache-start can fall back to the local
+          # disk cache by blanking the file when the bucket is unreachable
+          # (sccache treats an unusable configured backend as fatal). The
+          # AWS_* credentials above are picked up from the environment.
+          SCCACHE_CONF="${RUNNER_TEMP}/sccache.toml"
+          cat > "${SCCACHE_CONF}" <<SCCACHE
+        server_startup_timeout_ms = 60000
+
+        [cache.s3]
+        bucket = "${BUCKET}"
+        endpoint = "https://${ENDPOINT_HOST}"
+        region = "default"
+        use_ssl = true
+        no_credentials = false
+        key_prefix = "sccache/${SCCACHE_KEY_PREFIX}/"
+        SCCACHE
+          {
+            echo "SCCACHE_CONF=${SCCACHE_CONF}"
+            echo "SCCACHE_ERROR_LOG=${RUNNER_TEMP}/sccache-error.log"
+            echo "SCCACHE_LOG=warn"
+            # The server exits after 10 idle minutes by default; a job's test
+            # phase is longer than that, and a fresh server at the end would
+            # report zero for everything in the stats step.
+            echo "SCCACHE_IDLE_TIMEOUT=0"
+          } >> "$GITHUB_ENV"
+        fi

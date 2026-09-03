@@ -44,17 +44,38 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: ${{ matrix.os }}
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: ${{ matrix.os }}-nix
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
+
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
 
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh default
 
       - name: Configure CMake
         run: |
@@ -144,6 +165,13 @@ jobs:
           name: reussir-nightly-linux-${{ runner.arch }}
           path: ${{ env.ARCHIVE_NAME }}
 
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
+
   build-macos:
     runs-on: macos-15
 
@@ -156,17 +184,38 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: macos-15
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: macos-15-nix
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
+
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
 
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh default
 
       - name: Configure CMake
         run: |
@@ -289,6 +338,13 @@ jobs:
           name: reussir-nightly-macos-arm64
           path: ${{ env.ARCHIVE_NAME }}
 
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
+
 
   # Cross-built from Linux in the flake's windows-cross shell — no Windows
   # runner: GNU-driver clang + the xwin CRT/SDK compile the C++ backend to
@@ -307,22 +363,48 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: windows-cross
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: windows-cross-llvm
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
+      # cargo's registry/git checkouts and the target dir, keyed on the lock
+      # file and toolchain pin with a prefix fallback (what Swatinem/rust-cache
+      # did through actions/cache), now snapshotted to the S3 bucket.
+      - name: Restore cargo cache
+        id: cache-cargo
+        uses: ./.github/actions/s3-dir-cache
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-
 
       # The MSVC CRT + Windows SDK cargo-xwin unpacks on first use. Bump the
       # suffix when the workspace moves to a new xwin/SDK version.
-      - name: Cache xwin CRT/SDK
-        uses: actions/cache@v4
+      - name: Restore xwin CRT/SDK cache
+        id: cache-xwin-crt-sdk
+        uses: ./.github/actions/s3-dir-cache
         with:
           path: ~/.cache/cargo-xwin
           key: cargo-xwin-sdk-${{ runner.os }}-v2
@@ -330,11 +412,24 @@ jobs:
       # The conda-forge MSVC LLVM/MLIR prefix reussir-bake-msvc-llvm stages.
       # Keyed on the pinned LLVM version; bump the suffix when the bake's
       # package list in flake.nix changes.
-      - name: Cache conda MSVC LLVM
-        uses: actions/cache@v4
+      - name: Restore conda MSVC LLVM cache
+        id: cache-conda-msvc-llvm
+        uses: ./.github/actions/s3-dir-cache
         with:
           path: ~/.cache/reussir-msvc-conda
           key: reussir-msvc-conda-llvm-23.1.0-v1
+
+      - name: Build dev shell
+        run: nix develop .#windows-cross --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: windows-cross
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh windows-cross
 
       - name: Bake conda MSVC LLVM/MLIR
         run: nix develop .#windows-cross --command reussir-bake-msvc-llvm
@@ -396,6 +491,38 @@ jobs:
         with:
           name: reussir-nightly-windows-x64
           path: ${{ env.ARCHIVE_NAME }}
+
+      - name: Save cargo cache
+        if: steps.cache-cargo.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-windows-cross-release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Save xwin CRT/SDK cache
+        if: steps.cache-xwin-crt-sdk.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-sdk-${{ runner.os }}-v2
+
+      - name: Save conda MSVC LLVM cache
+        if: steps.cache-conda-msvc-llvm.outputs.cache-hit != 'true'
+        uses: ./.github/actions/s3-dir-cache/save
+        with:
+          path: ~/.cache/reussir-msvc-conda
+          key: reussir-msvc-conda-llvm-23.1.0-v1
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          nix develop .#windows-cross --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
 
   publish-release:
     needs: [build-linux, build-macos, build-windows]

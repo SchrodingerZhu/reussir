@@ -28,20 +28,41 @@ jobs:
       - name: Restore file timestamps
         uses: chetan/git-restore-mtime-action@v2
 
+      # sccache talks to the shared S3 bucket directly (no tarball round trip
+      # through actions/cache), and the Nix daemon gets the same bucket as a
+      # zstd binary cache for what cache.nixos.org does not serve (the fenix
+      # Rust toolchain, the LLVM/MLIR join). Without credentials — pull
+      # requests from forks — both fall back to local disk / cache.nixos.org.
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: macos-15
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: ccache
-        uses: hendrikmuhs/ccache-action@v1.2
         with:
-          variant: sccache
-          key: macos-15-nix
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
+
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
 
       # Materialize the dev shell up front so toolchain substitution has its
       # own timing and log section. The shellHook writes CMakeUserPresets.json
       # (the nix-dev preset used below) on every entry.
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
+      - name: Push dev shell closure to Nix cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-push.sh default
 
       - name: Configure CMake
         run: |
@@ -79,3 +100,10 @@ jobs:
             export DYLD_LIBRARY_PATH="$PWD/build/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
             cmake --build build --target check
           '
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true

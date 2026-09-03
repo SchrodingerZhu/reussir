@@ -29,6 +29,7 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/TargetParser/Triple.h>
+#include <llvm/Transforms/Utils/AssignGUID.h>
 
 #include <string>
 #include <vector>
@@ -106,6 +107,11 @@ char *reussirWriteLtoBitcode(LLVMModuleRef module, const char *path,
     // point (see Jit.cpp), precisely so no artifact — bitcode or native —
     // ever carries an intrinsic that instruction selection cannot handle.
     llvm::ProfileSummaryInfo psi(m);
+    // The summary reads each global's ASSIGNED GUID (LLVM 23: `!unique_id`
+    // metadata, see Jit.cpp). The ThinLTO pre-link pipeline assigns them at
+    // its end, but `-O none` skips that pipeline entirely; assigning here is
+    // idempotent, so the already-assigned case costs nothing.
+    llvm::AssignGUIDPass::runOnModule(m);
     llvm::ModuleSummaryIndex index = llvm::buildModuleSummaryIndex(
         m, /*GetBFICallback=*/nullptr, /*PSI=*/&psi);
     // The hash keys ThinLTO's incremental cache; without it every link

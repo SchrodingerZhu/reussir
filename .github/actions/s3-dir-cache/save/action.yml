@@ -1,0 +1,45 @@
+name: Save directory cache to S3
+description: >-
+  Snapshot directories into the Contabo bucket under `key`. Skip it when the
+  restore step hit; keys describe their content and are never rewritten.
+
+inputs:
+  path:
+    description: Directories to save, one per line (~ and relative paths allowed)
+    required: true
+  key:
+    description: Snapshot key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Save
+      shell: bash
+      env:
+        CACHE_PATHS: ${{ inputs.path }}
+        CACHE_KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        source .github/actions/s3-dir-cache/lib.sh
+        s3_dir_cache_available || exit 0
+
+        # tar members are rooted at / so restore can extract with -C /.
+        members=()
+        while IFS= read -r p; do
+          p=$(s3_dir_cache_abspath "$p") || continue
+          if [ -e "$p" ]; then
+            members+=("${p#/}")
+          else
+            echo "skipping $p: does not exist"
+          fi
+        done <<< "$CACHE_PATHS"
+        if [ "${#members[@]}" -eq 0 ]; then
+          echo "nothing to save for $CACHE_KEY"
+          exit 0
+        fi
+
+        echo "saving ${members[*]} as dir-cache/$CACHE_KEY.tar.zst"
+        tar -C / -cf - "${members[@]}" \
+          | s3_dir_cache_tool zstd -T0 -3 \
+          | s3_dir_cache_tool rclone rcat "$S3_DIR_CACHE_REMOTE/$CACHE_KEY.tar.zst"

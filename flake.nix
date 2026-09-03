@@ -15,20 +15,41 @@
   outputs = { self, nixpkgs, fenix, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
-
-        # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
         # On darwin the in-build LLVM test suite trips over the build
         # environment's codesigning restrictions (dsymutil's codesign test) —
-        # one test of 77k, orthogonal to the toolchain — so skip the check
-        # phase there rather than fail the whole closure.
-        llvmPkgs =
-          if pkgs.stdenv.hostPlatform.isDarwin then
-            pkgs.llvmPackages_23.overrideScope (final: prev: {
-              libllvm = prev.libllvm.overrideAttrs (old: { doCheck = false; });
-            })
+        # one test of 77k, orthogonal to the toolchain. A member-level
+        # override cannot fix it: the package set's stdenv and compiler-rt
+        # resolve through nixpkgs' splices to the GLOBAL llvmPackages_23
+        # attribute, so only an overlay reaches every composition path.
+        # Dropping the one test from the monorepo source keeps the check
+        # phase (and the fixpoint) intact everywhere.
+        pkgs =
+          let base = nixpkgs.legacyPackages.${system};
+          in
+          if base.stdenv.hostPlatform.isDarwin then
+            import nixpkgs {
+              inherit system;
+              overlays = [
+                (final: prev: {
+                  llvmPackages_23 = prev.llvmPackages_23.override {
+                    # The full llvm-project tree (llvm.src is only the llvm/,
+                    # cmake/ and third-party/ subset the libllvm build copies
+                    # out of it; clang, compiler-rt, mlir… copy their own
+                    # subdirectories from this monorepo source).
+                    monorepoSrc = final.applyPatches {
+                      name = "llvm-project-23.1.0-no-codesign-test";
+                      src = prev.llvmPackages_23.llvm.monorepoSrc;
+                      postPatch = "rm llvm/test/tools/dsymutil/codesign.test";
+                    };
+                  };
+                })
+              ];
+            }
           else
-            pkgs.llvmPackages_23;
+            base;
+
+        # LLVM/MLIR 23 — must match FindLLVM.cmake's version check (23.x only).
+        llvmPkgs = pkgs.llvmPackages_23;
 
         # Pinned nightly Rust toolchain from rust-toolchain.toml.
         # The sha256 covers the channel manifest downloaded by fenix.
@@ -282,6 +303,10 @@
             pkgs.ninja
             pkgs.pkg-config
 
+            # Compiler cache for C++ and rustc; CI points it at the shared S3
+            # bucket (.github/actions/s3-cache), locally it caches on disk.
+            pkgs.sccache
+
             # Python (needed by lit and MLIR's Python bindings)
             pkgs.python3
             pkgs.python3Packages.lit
@@ -513,6 +538,8 @@ PRESETS_EOF
             pkgs.ninja
             pkgs.util-linux
             (pkgs.python3.withPackages (ps: [ ps.lit ps.psutil ]))
+            # Compiler cache (same S3-backed setup as the default shell).
+            pkgs.sccache
             # Host tblgen for the dialect's .td generation under cross.
             llvmPkgs.tblgen
 
