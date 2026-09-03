@@ -2,7 +2,7 @@ name: Debug macOS rrc trap
 
 # Temporary: rrc traps (SIGTRAP) on aarch64-darwin under -O aggressive.
 # Build rrc from the cached toolchain and run a failing case under lldb
-# for a backtrace. Delete once the crash is fixed.
+# for a backtrace. Delete once the crash is fixed. (rerun 2)
 on:
   workflow_dispatch:
   push:

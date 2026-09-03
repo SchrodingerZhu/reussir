@@ -58,6 +58,11 @@ runs:
           echo "extra-substituters = ${NIX_S3_STORE}"
           echo "connect-timeout = 10"
           echo "stalled-download-timeout = 60"
+          # Contabo answers bursts of narinfo lookups with HTTP 429 (its
+          # documented cap is 250 requests/s); Nix's default 25 parallel
+          # connections cross it and five retries were not enough.
+          echo "http-connections = 8"
+          echo "download-attempts = 12"
           echo "NIXCONF"
         } >> "$GITHUB_ENV"
 
