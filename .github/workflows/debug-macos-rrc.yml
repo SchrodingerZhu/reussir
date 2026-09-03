@@ -1,0 +1,82 @@
+name: Debug macOS rrc trap
+
+# Temporary: rrc traps (SIGTRAP) on aarch64-darwin under -O aggressive.
+# Build rrc from the cached toolchain and run a failing case under lldb
+# for a backtrace. Delete once the crash is fixed.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ ci/s3-caches ]
+    paths: [ .github/workflows/debug-macos-rrc.yml ]
+
+permissions:
+  contents: read
+
+jobs:
+  backtrace:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure S3 caches
+        uses: ./.github/actions/s3-cache
+        with:
+          access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          sccache-key-prefix: macos-15
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: ${{ env.NIX_EXTRA_CONF }}
+
+      - name: Verify Nix S3 cache
+        if: env.NIX_S3_STORE != ''
+        run: scripts/ci/nix-cache-probe.sh
+
+      - name: Build dev shell
+        run: nix develop --command true
+
+      - name: Configure CMake
+        run: |
+          nix develop --command bash -c '
+            env RUSTC_WRAPPER=sccache \
+            cmake --preset nix-dev -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DREUSSIR_ENABLE_PEDANTIC=ON \
+            -DREUSSIR_ENABLE_TESTS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          '
+
+      - name: Build rrc
+        run: nix develop --command bash -c 'env RUSTC_WRAPPER=sccache cmake --build build --parallel --target rrc'
+
+      - name: Reproduce and backtrace
+        run: |
+          nix develop --command bash -c '
+            set -x
+            uname -a; sw_vers
+            file build/bin/rrc
+            RRC=$PWD/build/bin/rrc
+            T=$PWD/tests/integration/frontend
+            # bare reproduction first (exit code, any stderr)
+            "$RRC" "$T/closure_wpd_devirt.rr" --emit llvm-ir -O aggressive -o /tmp/devirt.ll; echo "exit=$?"
+            "$RRC" "$T/closure_wpd_devirt.rr" --emit llvm-ir -O default -o /tmp/devirt-default.ll; echo "exit(default)=$?"
+            RUST_BACKTRACE=full "$RRC" "$T/array_e2e.rr" -o /tmp/array.o --relocation-mode pic -Oaggressive; echo "exit=$?"
+            set +x
+            for case in "$T/closure_wpd_devirt.rr --emit llvm-ir -O aggressive -o /tmp/devirt.ll" \
+                        "$T/array_e2e.rr -o /tmp/array.o --relocation-mode pic -Oaggressive"; do
+              echo "::group::lldb backtrace: rrc $case"
+              lldb --batch --no-lldbinit \
+                -o "process launch -- $case" \
+                -o "thread backtrace -c 60" \
+                -o "register read" \
+                -o "disassemble --pc --count 8" \
+                -o "thread list" \
+                -- "$RRC" 2>&1 | tail -120
+              echo "::endgroup::"
+            done
+          '
