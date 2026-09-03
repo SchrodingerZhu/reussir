@@ -77,6 +77,11 @@ jobs:
       - name: Build dev shell
         run: nix develop .#windows-cross --command true
 
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: windows-cross
+
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
         run: scripts/ci/nix-cache-push.sh windows-cross
@@ -108,7 +113,9 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop .#windows-cross --command sccache --show-stats
+        run: |
+          nix develop .#windows-cross --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
 
   # The lit integration suite against the cross-built toolchain. The whole
   # dependency graph — C++ dialect libs, rrc, rene, rrepl, the runtime —
@@ -192,6 +199,11 @@ jobs:
 
       - name: Build dev shell
         run: nix develop .#windows-cross --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: windows-cross
 
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
@@ -298,4 +310,6 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop .#windows-cross --command sccache --show-stats
+        run: |
+          nix develop .#windows-cross --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true

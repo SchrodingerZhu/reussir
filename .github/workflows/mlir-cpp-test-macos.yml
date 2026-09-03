@@ -55,6 +55,11 @@ jobs:
       - name: Build dev shell
         run: nix develop --command true
 
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
         run: scripts/ci/nix-cache-push.sh default
@@ -99,4 +104,6 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop --command sccache --show-stats
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true

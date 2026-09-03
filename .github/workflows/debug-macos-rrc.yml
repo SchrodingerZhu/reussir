@@ -39,6 +39,11 @@ jobs:
       - name: Build dev shell
         run: nix develop --command true
 
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
       - name: Configure CMake
         run: |
           nix develop --command bash -c '

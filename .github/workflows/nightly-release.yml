@@ -68,6 +68,11 @@ jobs:
       - name: Build dev shell
         run: nix develop --command true
 
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
+
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
         run: scripts/ci/nix-cache-push.sh default
@@ -163,7 +168,9 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop --command sccache --show-stats
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
 
   build-macos:
     runs-on: macos-15
@@ -200,6 +207,11 @@ jobs:
 
       - name: Build dev shell
         run: nix develop --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: default
 
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
@@ -329,7 +341,9 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop --command sccache --show-stats
+        run: |
+          nix develop --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
 
 
   # Cross-built from Linux in the flake's windows-cross shell — no Windows
@@ -407,6 +421,11 @@ jobs:
 
       - name: Build dev shell
         run: nix develop .#windows-cross --command true
+
+      - name: Start sccache
+        uses: ./.github/actions/sccache-start
+        with:
+          shell: windows-cross
 
       - name: Push dev shell closure to Nix cache
         if: env.NIX_S3_STORE != ''
@@ -501,7 +520,9 @@ jobs:
       - name: sccache stats
         if: always()
         continue-on-error: true
-        run: nix develop .#windows-cross --command sccache --show-stats
+        run: |
+          nix develop .#windows-cross --command sccache --show-stats
+          [ -f "$SCCACHE_ERROR_LOG" ] && cat "$SCCACHE_ERROR_LOG" || true
 
   publish-release:
     needs: [build-linux, build-macos, build-windows]

@@ -75,12 +75,26 @@ runs:
         CREDS
 
         if [ -n "${SCCACHE_KEY_PREFIX}" ]; then
+          # The S3 backend goes in a config file rather than SCCACHE_* env
+          # vars so .github/actions/sccache-start can fall back to the local
+          # disk cache by blanking the file when the bucket is unreachable
+          # (sccache treats an unusable configured backend as fatal). The
+          # AWS_* credentials above are picked up from the environment.
+          SCCACHE_CONF="${RUNNER_TEMP}/sccache.toml"
+          cat > "${SCCACHE_CONF}" <<SCCACHE
+        server_startup_timeout_ms = 60000
+
+        [cache.s3]
+        bucket = "${BUCKET}"
+        endpoint = "https://${ENDPOINT_HOST}"
+        region = "default"
+        use_ssl = true
+        key_prefix = "sccache/${SCCACHE_KEY_PREFIX}/"
+        SCCACHE
           {
-            echo "SCCACHE_BUCKET=${BUCKET}"
-            echo "SCCACHE_ENDPOINT=https://${ENDPOINT_HOST}"
-            echo "SCCACHE_REGION=default"
-            echo "SCCACHE_S3_USE_SSL=true"
-            echo "SCCACHE_S3_KEY_PREFIX=sccache/${SCCACHE_KEY_PREFIX}/"
+            echo "SCCACHE_CONF=${SCCACHE_CONF}"
+            echo "SCCACHE_ERROR_LOG=${RUNNER_TEMP}/sccache-error.log"
+            echo "SCCACHE_LOG=warn"
             # The server exits after 10 idle minutes by default; a job's test
             # phase is longer than that, and a fresh server at the end would
             # report zero for everything in the stats step.
