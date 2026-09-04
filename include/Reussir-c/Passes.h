@@ -34,7 +34,7 @@ extern "C" {
 //===----------------------------------------------------------------------===//
 
 MlirPass reussirCreateUniqueCarryingRecursionAnalysisPass(void);
-MlirPass reussirCreateTokenInstantiationPass(void);
+MlirPass reussirCreateTokenInstantiationPass(bool acceptors, bool producers);
 MlirPass reussirCreateClosureOutliningPass(void);
 MlirPass reussirCreateRegionPatternsPass(void);
 MlirPass reussirCreateIncDecCancellationPass(void);

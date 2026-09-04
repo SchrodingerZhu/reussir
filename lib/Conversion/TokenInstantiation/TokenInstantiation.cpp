@@ -15,6 +15,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "Reussir/Conversion/Passes.h"
 #include "Reussir/IR/ReussirDialect.h"
 #include "Reussir/IR/ReussirInterfaces.h"
 #include "Reussir/IR/ReussirOps.h"
@@ -106,13 +107,17 @@ class ReussirTokenInstantiationPass
     : public impl::ReussirTokenInstantiationPassBase<
           ReussirTokenInstantiationPass> {
 public:
+  using Base::Base;
+
   void runOnOperation() override {
     mlir::func::FuncOp funcOp = getOperation();
 
     // Set up the pattern rewrite infrastructure
     mlir::RewritePatternSet patterns(&getContext());
-    patterns.add<TokenInstantiationPattern, TokenProductionPattern>(
-        &getContext());
+    if (acceptors)
+      patterns.add<TokenInstantiationPattern>(&getContext());
+    if (producers)
+      patterns.add<TokenProductionPattern>(&getContext());
 
     // Apply the patterns using greedy rewrite
     if (mlir::failed(
