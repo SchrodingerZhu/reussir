@@ -75,8 +75,11 @@ MlirPass wrapOwned(std::unique_ptr<mlir::Pass> pass) {
 MlirPass reussirCreateUniqueCarryingRecursionAnalysisPass(void) {
   return wrapOwned(reussir::createReussirUniqueCarryingRecursionAnalysisPass());
 }
-MlirPass reussirCreateTokenInstantiationPass(void) {
-  return wrapOwned(reussir::createReussirTokenInstantiationPass());
+MlirPass reussirCreateTokenInstantiationPass(bool acceptors, bool producers) {
+  reussir::ReussirTokenInstantiationPassOptions options;
+  options.acceptors = acceptors;
+  options.producers = producers;
+  return wrapOwned(reussir::createReussirTokenInstantiationPass(options));
 }
 MlirPass reussirCreateClosureOutliningPass(void) {
   return wrapOwned(reussir::createReussirClosureOutliningPass());

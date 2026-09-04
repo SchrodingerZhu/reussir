@@ -377,8 +377,12 @@ pub fn run_lowering_pipeline(
             }
         }
 
-        // Reussir-level transformation and analysis.
-        func:   sys::reussirCreateTokenInstantiationPass();
+        // Reussir-level transformation and analysis. Only the acceptor side
+        // of token instantiation runs here; producer tokens are typed from
+        // the decrement's destructuring attributes, so they are instantiated
+        // after the passes that pin decrements (dispatch fusion, partial
+        // move) -- see the producer phase below.
+        func:   sys::reussirCreateTokenInstantiationPass(true, false);
         module: sys::reussirCreateClosureOutliningPass();
         module: sys::reussirCreateRegionPatternsPass();
         // Fuse pattern-match consumption into destructuring decrements before
@@ -389,6 +393,11 @@ pub fn run_lowering_pipeline(
         // old combined pass handled in that order.
         func:   sys::reussirCreateRcDispatchFusionPass();
         func:   sys::reussirCreatePartialMovePass();
+        // Producer phase of token instantiation: every decrement is now
+        // pinned or provably not, so its token result gets its final type
+        // (the arm's exact cell for a destructuring decrement instead of the
+        // dynamic `token<align, ?>` an earlier instantiation would freeze).
+        func:   sys::reussirCreateTokenInstantiationPass(false, true);
         func:   sys::reussirCreateIncDecCancellationPass();
         module: sys::reussirCreateRcDecrementExpansionPass();
         func:   sys::reussirCreateInferVariantTagPass();

@@ -202,13 +202,34 @@ def ReussirRcDecrementExpansionPass : Pass<"reussir-rc-decrement-expansion"> {
 //===----------------------------------------------------------------------===//
 def ReussirTokenInstantiationPass
     : Pass<"reussir-token-instantiation", "::mlir::func::FuncOp"> {
-  let summary = "insert token instantiations for TokenAcceptor operations";
+  let summary = "instantiate tokens for TokenAcceptor and TokenProducer operations";
   let description = [{
-    `reussir-token-instantiation` inserts token allocation operations for operations
-    implementing the TokenAcceptor interface that do not have a token assigned.
-    For each such operation, a `reussir.token.alloc` operation is inserted
-    immediately before it, and the token is assigned to the operation.
+    `reussir-token-instantiation` materializes the token side of the rc
+    operations in two independent phases, selected by the options:
+
+    * `acceptors`: every operation implementing the TokenAcceptor interface
+      that has no token assigned gets a `reussir.token.alloc` of its token
+      type immediately before it, and the token is assigned to it.
+    * `producers`: every operation implementing the TokenProducer interface
+      that should produce a token and does not yet is rebuilt with its token
+      result, typed by the producer's `getTokenType()`.
+
+    A producer's token type is a function of the operation's attributes: a
+    destructuring `rc.dec` (stamped by `reussir-rc-dispatch-fusion` /
+    `reussir-partial-move`) yields the pinned arm's exact cell, an unpinned
+    decrement of a non-uniform variant yields the dynamic
+    `token<align, ?>`. The producer phase must therefore run after every pass
+    that pins decrements, or the result type is frozen before the attribute
+    exists; the pipeline runs `acceptors` early and `producers` after the
+    pinning passes. Nothing between the two phases consumes a producer's
+    token: the passes there operate on the untyped decrement, exactly as
+    they do on frontend output.
   }];
+
+  let options = [Option<"acceptors", "acceptors", "bool", /*default=*/"true",
+                        "instantiate `reussir.token.alloc` for TokenAcceptors">,
+                 Option<"producers", "producers", "bool", /*default=*/"true",
+                        "rebuild TokenProducers with their token result">];
 
   let dependentDialects = ["::reussir::ReussirDialect",
                            "::mlir::sync::SyncDialect"];

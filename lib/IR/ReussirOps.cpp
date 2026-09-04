@@ -684,12 +684,16 @@ ReussirRcDecOp::replaceWithProduced(mlir::PatternRewriter &builder) {
   TokenType tokenType = getTokenType();
   NullableType nullableTokenType = NullableType::get(getContext(), tokenType);
 
-  // Create a new RcDecOp with the token result
+  // Rebuild the decrement with the token result, carrying every attribute
+  // over: the producer phase runs after dispatch fusion / partial move, so the
+  // decrement may already be destructuring (`destructureTag`,
+  // `boundMembers`) -- the attributes that determined the token type above
+  // and that the decrement expansion needs to release the box shallowly.
   builder.setInsertionPoint(getOperation());
-  builder.replaceOpWithNewOp<ReussirRcDecOp>(getOperation(),
-                                             nullableTokenType, // result type
-                                             getRcPtr()         // operand
-  );
+  auto produced = ReussirRcDecOp::create(builder, getLoc(), nullableTokenType,
+                                         getRcPtr());
+  produced->setAttrs(getOperation()->getAttrDictionary());
+  builder.replaceOp(getOperation(), produced.getOperation());
 
   return mlir::success();
 }
