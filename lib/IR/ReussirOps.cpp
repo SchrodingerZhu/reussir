@@ -32,6 +32,7 @@
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMAttrs.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/Attributes.h>
 #include <mlir/IR/Builders.h>
@@ -82,11 +83,51 @@ static void printCompiledModule(mlir::OpAsmPrinter &printer,
 #include "Reussir/IR/ReussirOps.cpp.inc"
 
 namespace reussir {
-namespace {
 
-static mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType) {
+// The uniformly dynamic strided layout of a dynamic-extent array view: the
+// offset and every stride are loaded from the box header.
+static mlir::StridedLayoutAttr getDynamicStridedLayout(mlir::MLIRContext *ctx,
+                                                       int64_t rank) {
+  return mlir::StridedLayoutAttr::get(
+      ctx, mlir::ShapedType::kDynamic,
+      llvm::SmallVector<int64_t>(rank, mlir::ShapedType::kDynamic));
+}
+
+mlir::MemRefType getArrayViewMemRefType(ArrayType arrayType) {
+  // A static array views as an identity-layout memref. A dynamic-extent
+  // array views as a strided memref with dynamic offset and strides — the
+  // box header carries the full strided encoding
+  // (docs/design/dynamic-extent-arrays.md), and static dims stay static in
+  // the shape while the layout is uniformly dynamic.
+  if (!arrayType.hasStaticShape())
+    return mlir::MemRefType::get(
+        arrayType.getShape(), arrayType.getElementType(),
+        getDynamicStridedLayout(arrayType.getContext(), arrayType.getRank()));
   return mlir::MemRefType::get(arrayType.getShape(),
                                arrayType.getElementType());
+}
+
+mlir::MemRefType getProjectedArrayViewType(mlir::MemRefType viewType) {
+  llvm::ArrayRef<int64_t> shape = viewType.getShape().drop_front();
+  if (viewType.getLayout().isIdentity())
+    return mlir::MemRefType::get(shape, viewType.getElementType());
+  return mlir::MemRefType::get(
+      shape, viewType.getElementType(),
+      getDynamicStridedLayout(viewType.getContext(), shape.size()));
+}
+
+namespace {
+
+// Whether `type` is a memref an array view or a projection of one can carry:
+// a statically shaped identity-layout memref (static arrays) or a memref of
+// any shape under the uniformly dynamic strided layout (dynamic-extent
+// arrays and their projections — the remaining shape may be static while
+// the strides stay runtime values).
+static bool isArrayViewMemRefType(mlir::MemRefType type) {
+  if (type.getLayout().isIdentity())
+    return type.hasStaticShape();
+  return type.getLayout() ==
+         getDynamicStridedLayout(type.getContext(), type.getRank());
 }
 
 static mlir::RankedTensorType getArrayViewTensorType(ArrayType arrayType) {
@@ -129,7 +170,7 @@ static mlir::LogicalResult verifyArrayViewType(mlir::Operation *op,
   }
 
   return op->emitOpError(valueName)
-         << " must be a statically shaped memref or tensor";
+         << " must be a memref or tensor of the array's shape";
 }
 
 static mlir::FailureOr<CellType> verifySharedCellOperand(mlir::Operation *op,
@@ -313,6 +354,15 @@ mlir::LogicalResult verifyHoleFields(mlir::Operation *op,
 // ReussirTokenReinterpretOp
 //===----------------------------------------------------------------------===//
 // ReinterpretOp verification
+mlir::LogicalResult ReussirTokenAllocOp::verify() {
+  bool dynamicToken = getToken().getType().isDynamicSize();
+  if (dynamicToken != static_cast<bool>(getDynamicSize()))
+    return emitOpError(dynamicToken
+                           ? "a dynamically sized token requires a size operand"
+                           : "a statically sized token takes no size operand");
+  return mlir::success();
+}
+
 mlir::LogicalResult ReussirTokenReinterpretOp::verify() {
   TokenType tokenType = getToken().getType();
   RefType resultType = getReinterpreted().getType();
@@ -382,19 +432,30 @@ mlir::LogicalResult ReussirRcReinterpretOp::verify() {
   // Get the RC box type for the RC pointer
   RcBoxType rcBoxType = rcType.getInnerBoxType();
 
-  // Get the data layout to compute alignment and size
+  // Get the data layout to compute alignment
   auto dataLayout = mlir::DataLayout::closest(getOperation());
   auto alignment = dataLayout.getTypeABIAlignment(rcBoxType);
-  auto size = dataLayout.getTypeSize(rcBoxType);
-
-  if (!size.isFixed())
-    return emitOpError("RC box type must have a fixed size");
 
   // Check that token alignment matches RC box alignment
   if (tokenType.getAlign() != alignment)
     return emitOpError("token alignment must match RC box alignment, ")
            << "token alignment: " << tokenType.getAlign()
            << ", RC box alignment: " << alignment;
+
+  // A dynamic-extent array box has no static size (checked before any size
+  // query — the box's size is not computable); its decrement reinterprets it
+  // as a dynamic token, which the size-recovering allocator frees or
+  // resizes from the pointer alone.
+  if (rcBoxType.hasDynamicArrayPayload())
+    return tokenType.isDynamicSize()
+               ? mlir::success()
+               : emitOpError("a dynamic-extent array box reinterprets as a "
+                             "dynamically sized token");
+
+  auto size = dataLayout.getTypeSize(rcBoxType);
+
+  if (!size.isFixed())
+    return emitOpError("RC box type must have a fixed size");
 
   // Check that token size matches RC box size. Under per-constructor box
   // sizing a fused-header variant box may be any arm's cell: a
@@ -665,6 +726,11 @@ TokenType ReussirRcDecOp::getTokenType() {
     }
     return TokenType::getDynamic(getContext(), alignment);
   }
+  // A dynamic-extent array box has no static size (the strided header
+  // carries the shape); its token is dynamic and the size-recovering
+  // allocator frees/resizes it from the pointer alone.
+  if (rcBoxType.hasDynamicArrayPayload())
+    return TokenType::getDynamic(getContext(), alignment);
   auto size = dataLayout.getTypeSize(rcBoxType);
 
   return TokenType::get(getContext(), alignment, size.getFixedValue());
@@ -701,6 +767,20 @@ ReussirRcDecOp::replaceWithProduced(mlir::PatternRewriter &builder) {
 // RcCreateOp verification
 //===----------------------------------------------------------------------===//
 mlir::LogicalResult ReussirRcCreateOp::verify() {
+  // A dynamic-extent array construction supplies one runtime extent per
+  // dynamic dimension (in dimension order); construction is canonical
+  // (offset 0, row-major suffix strides), written into the strided header.
+  size_t expectedExtents = 0;
+  if (auto arrayType =
+          llvm::dyn_cast<ArrayType>(getRcPtr().getType().getElementType());
+      arrayType && !arrayType.hasStaticShape())
+    expectedExtents = llvm::count_if(arrayType.getShape(), [](int64_t d) {
+      return mlir::ShapedType::isDynamic(d);
+    });
+  if (getExtents().size() != expectedExtents)
+    return emitOpError("expects ")
+           << expectedExtents << " extent operand(s), got "
+           << getExtents().size();
   return verifyRcCreateLikeOp(getOperation(), getRcPtr().getType(),
                               getValue().getType(), getToken(), getRegion());
 }
@@ -730,6 +810,10 @@ TokenType ReussirRcCreateOp::getTokenType() {
       return TokenType::get(getContext(), alignment, armSize.getFixedValue());
     }
   }
+  // A dynamic-extent array box is dynamically sized; the instantiation pass
+  // computes `header + product(sizes) * elemsize` from the extents.
+  if (rcBoxType.hasDynamicArrayPayload())
+    return TokenType::getDynamic(getContext(), alignment);
   auto size = dataLayout.getTypeSize(rcBoxType);
   return TokenType::get(getContext(), alignment, size.getFixedValue());
 }
@@ -1209,11 +1293,13 @@ mlir::LogicalResult ReussirArrayViewOp::verify() {
 mlir::LogicalResult ReussirArrayProjectOp::verify() {
   auto memrefType = llvm::dyn_cast<mlir::MemRefType>(getView().getType());
   if (!memrefType)
-    return emitOpError(
-        "array.project input must be a statically shaped memref");
-  if (!memrefType.hasStaticShape() || !memrefType.getLayout().isIdentity())
-    return emitOpError("array.project input memref must have a static "
-                       "identity-layout type");
+    return emitOpError("array.project input must be an array view memref");
+  if (!isArrayViewMemRefType(memrefType))
+    return emitOpError("array.project input memref must be an array view: a "
+                       "statically shaped identity-layout memref or a memref "
+                       "with the dynamic strided layout of a dynamic-extent "
+                       "array view, got ")
+           << memrefType;
   ArrayType arrayType = ArrayType::get(getContext(), memrefType.getShape(),
                                        memrefType.getElementType());
   if (arrayType.getRank() == 0)
@@ -1240,10 +1326,10 @@ mlir::LogicalResult ReussirArrayProjectOp::verify() {
       llvm::dyn_cast<mlir::MemRefType>(getProjected().getType());
   if (!projectedMemRefType)
     return emitOpError("projecting a non-final array dimension must produce "
-                       "another statically shaped memref");
-  if (projectedMemRefType != getArrayViewMemRefType(arrayType.dropFront()))
+                       "another memref");
+  if (projectedMemRefType != getProjectedArrayViewType(memrefType))
     return emitOpError("projected subview type mismatch: expected ")
-           << getArrayViewMemRefType(arrayType.dropFront()) << ", got "
+           << getProjectedArrayViewType(memrefType) << ", got "
            << projectedMemRefType;
   return mlir::success();
 }
@@ -1880,6 +1966,18 @@ mlir::LogicalResult ReussirRefMemcpyOp::verify() {
                "source and destination element types must be identical, ")
            << "source element type: " << srcType.getElementType()
            << ", destination element type: " << dstType.getElementType();
+
+  // The byte count is static unless the element has no static size — a
+  // dynamic-extent array payload — in which case it is the `size` operand.
+  auto arrayType = llvm::dyn_cast<ArrayType>(srcType.getElementType());
+  bool dynamicallySized = arrayType && !arrayType.hasStaticShape();
+  if (dynamicallySized && !getSize())
+    return emitOpError("copying a dynamic-extent array payload requires the "
+                       "`size` operand");
+  if (!dynamicallySized && getSize())
+    return emitOpError("the `size` operand is only for a dynamic-extent "
+                       "array payload; ")
+           << srcType.getElementType() << " has a static size";
 
   return mlir::success();
 }
@@ -3268,7 +3366,10 @@ mlir::LogicalResult emitArrayElementTraversal(
   ArrayType arrayType = ArrayType::get(
       builder.getContext(), viewType.getShape(), viewType.getElementType());
 
-  if (viewType.getNumElements() <= kArrayOwnershipUnrollThreshold) {
+  // Only a static shape has an element count to unroll by; a dynamic one
+  // always loops, with its extents loaded from the box header.
+  if (viewType.hasStaticShape() &&
+      viewType.getNumElements() <= kArrayOwnershipUnrollThreshold) {
     auto emitDimension =
         [&](auto &&self, mlir::Value currentView, ArrayType currentType,
             mlir::OpBuilder &currentBuilder) -> mlir::LogicalResult {
@@ -3288,7 +3389,9 @@ mlir::LogicalResult emitArrayElementTraversal(
         } else {
           ArrayType nestedType = currentType.dropFront();
           auto nestedView = ReussirArrayProjectOp::create(
-              currentBuilder, loc, getArrayViewMemRefType(nestedType),
+              currentBuilder, loc,
+              getProjectedArrayViewType(
+                  llvm::cast<mlir::MemRefType>(currentView.getType())),
               currentView, indexValue);
           if (mlir::failed(self(self, nestedView.getProjected(), nestedType,
                                 currentBuilder)))
@@ -3306,9 +3409,14 @@ mlir::LogicalResult emitArrayElementTraversal(
   llvm::SmallVector<mlir::Value> upperBounds;
   llvm::SmallVector<mlir::Value> steps(arrayType.getRank(), step);
   upperBounds.reserve(arrayType.getRank());
-  for (int64_t extent : arrayType.getShape())
+  for (auto [dim, extent] : llvm::enumerate(arrayType.getShape()))
     upperBounds.push_back(
-        mlir::arith::ConstantIndexOp::create(builder, loc, extent));
+        mlir::ShapedType::isDynamic(extent)
+            ? mlir::memref::DimOp::create(builder, loc, view,
+                                          static_cast<int64_t>(dim))
+                  .getResult()
+            : mlir::arith::ConstantIndexOp::create(builder, loc, extent)
+                  .getResult());
 
   mlir::LogicalResult bodyResult = mlir::success();
   mlir::scf::buildLoopNest(
@@ -3330,7 +3438,9 @@ mlir::LogicalResult emitArrayElementTraversal(
             currentType = currentType.dropFront();
             currentView =
                 ReussirArrayProjectOp::create(
-                    bodyBuilder, bodyLoc, getArrayViewMemRefType(currentType),
+                    bodyBuilder, bodyLoc,
+                    getProjectedArrayViewType(
+                        llvm::cast<mlir::MemRefType>(currentView.getType())),
                     currentView, index)
                     .getProjected();
           }

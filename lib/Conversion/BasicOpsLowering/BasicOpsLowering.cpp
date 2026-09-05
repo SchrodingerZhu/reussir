@@ -431,6 +431,21 @@ struct ReussirTokenAllocConversionPattern
     auto indexType = converter->getIndexType();
     auto moduleOp = op->getParentOfType<mlir::ModuleOp>();
 
+    // A dynamically sized token (a dynamic-extent array box) carries its
+    // byte size as an operand; it always takes the generic entry point (the
+    // small fast path requires a compile-time-constant size).
+    if (tokenType.isDynamicSize()) {
+      auto alignConst = mlir::arith::ConstantOp::create(
+          rewriter, loc, mlir::IntegerAttr::get(indexType, alignment));
+      auto allocFunc =
+          moduleOp.lookupSymbol<mlir::LLVM::LLVMFuncOp>("__reussir_allocate");
+      auto funcOp = mlir::LLVM::CallOp::create(
+          rewriter, loc, allocFunc,
+          mlir::ValueRange{alignConst, adaptor.getDynamicSize()});
+      rewriter.replaceOp(op, funcOp.getResult());
+      return mlir::success();
+    }
+
     // A statically small, naturally aligned layout takes the sized fast
     // path: `__reussir_allocate_small(size)` is `mi_malloc_small` behind an
     // OOM check — no alignment/divisibility recheck, no size
@@ -1412,13 +1427,20 @@ struct ReussirArrayProjectConversionPattern
     auto converter =
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto viewType = llvm::cast<mlir::MemRefType>(op.getView().getType());
-    auto extent = mlir::arith::ConstantOp::create(
-        rewriter, loc,
-        mlir::IntegerAttr::get(converter->getIndexType(),
-                               viewType.getShape().front()));
-    auto inBounds = mlir::arith::CmpIOp::create(
-        rewriter, loc, mlir::arith::CmpIPredicate::ult, adaptor.getIndex(),
-        extent.getResult());
+    mlir::MemRefDescriptor srcDesc(adaptor.getView());
+    // The leading extent is a constant for a static dim and a descriptor
+    // (box header) load for a dynamic one.
+    mlir::Value extent =
+        viewType.isDynamicDim(0)
+            ? srcDesc.size(rewriter, loc, 0)
+            : mlir::arith::ConstantOp::create(
+                  rewriter, loc,
+                  mlir::IntegerAttr::get(converter->getIndexType(),
+                                         viewType.getShape().front()))
+                  .getResult();
+    auto inBounds = mlir::arith::CmpIOp::create(rewriter, loc,
+                                                mlir::arith::CmpIPredicate::ult,
+                                                adaptor.getIndex(), extent);
     mlir::LLVM::AssumeOp::create(rewriter, loc, inBounds);
 
     if (viewType.getRank() == 1) {
@@ -1442,28 +1464,37 @@ struct ReussirArrayProjectConversionPattern
     auto resultMemRefType =
         llvm::cast<mlir::MemRefType>(op.getProjected().getType());
     mlir::Type resultType = converter->convertType(resultMemRefType);
-    mlir::MemRefDescriptor srcDesc(adaptor.getView());
     auto resultDesc = mlir::MemRefDescriptor::poison(rewriter, loc, resultType);
     resultDesc.setAllocatedPtr(rewriter, loc,
                                srcDesc.allocatedPtr(rewriter, loc));
 
-    // The projected type keeps the static identity layout (offset 0), and
-    // consumers such as `getStridedElementPtr` fold that static offset —
-    // the descriptor's runtime offset field is dead to them. Carry the row
-    // shift in the aligned pointer itself instead.
     auto offset = srcDesc.offset(rewriter, loc);
     auto stride0 = srcDesc.stride(rewriter, loc, 0);
     auto delta =
         mlir::arith::MulIOp::create(rewriter, loc, adaptor.getIndex(), stride0);
     auto shift = mlir::arith::AddIOp::create(rewriter, loc, offset, delta);
-    mlir::Type llvmElemTy =
-        converter->convertType(resultMemRefType.getElementType());
-    auto llvmPtrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
-    auto shifted = mlir::LLVM::GEPOp::create(
-        rewriter, loc, llvmPtrTy, llvmElemTy, srcDesc.alignedPtr(rewriter, loc),
-        mlir::ValueRange{shift.getResult()});
-    resultDesc.setAlignedPtr(rewriter, loc, shifted);
-    resultDesc.setConstantOffset(rewriter, loc, 0);
+    if (resultMemRefType.getLayout().isIdentity()) {
+      // The projected type keeps the static identity layout (offset 0), and
+      // consumers such as `getStridedElementPtr` fold that static offset —
+      // the descriptor's runtime offset field is dead to them. Carry the row
+      // shift in the aligned pointer itself instead.
+      mlir::Type llvmElemTy =
+          converter->convertType(resultMemRefType.getElementType());
+      auto llvmPtrTy = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+      auto shifted =
+          mlir::LLVM::GEPOp::create(rewriter, loc, llvmPtrTy, llvmElemTy,
+                                    srcDesc.alignedPtr(rewriter, loc),
+                                    mlir::ValueRange{shift.getResult()});
+      resultDesc.setAlignedPtr(rewriter, loc, shifted);
+      resultDesc.setConstantOffset(rewriter, loc, 0);
+    } else {
+      // A dynamic strided projection is pure descriptor arithmetic: the
+      // offset field is live to consumers, so the row shift lands there and
+      // the aligned pointer stays the payload.
+      resultDesc.setAlignedPtr(rewriter, loc,
+                               srcDesc.alignedPtr(rewriter, loc));
+      resultDesc.setOffset(rewriter, loc, shift);
+    }
 
     for (int64_t i = 0, e = resultMemRefType.getRank(); i < e; ++i) {
       resultDesc.setSize(rewriter, loc, i, srcDesc.size(rewriter, loc, i + 1));
@@ -1492,8 +1523,45 @@ struct ReussirArrayViewConversionPattern
           "tensor array.view must be bufferized before lowering basic ops");
     ArrayType arrayType = llvm::cast<ArrayType>(
         llvm::cast<RefType>(op.getRef().getType()).getElementType());
-    mlir::Type llvmArrayType = converter->convertType(arrayType);
     auto llvmPtrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    if (!arrayType.hasStaticShape()) {
+      // A dynamic-extent view is a straight header copy: the box stores the
+      // full strided encoding (offset, sizes, strides) right before the
+      // payload, so the descriptor's fields are loads at statically known
+      // offsets and both descriptor pointers are the payload ref itself.
+      auto boxType =
+          RcBoxType::get(rewriter.getContext(), arrayType, /*regional=*/false);
+      mlir::Type llvmBoxType = converter->convertType(boxType);
+      mlir::DataLayout dataLayout = mlir::DataLayout::closest(op);
+      uint64_t payloadOffset = boxType.getDynamicPayloadOffset(dataLayout);
+      auto i8Type = rewriter.getI8Type();
+      auto boxPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, llvmPtrType, i8Type, adaptor.getRef(),
+          {mlir::LLVM::GEPArg(-static_cast<int32_t>(payloadOffset))});
+      mlir::Type indexType = converter->getIndexType();
+      auto loadHeaderField = [&](int32_t fieldIndex) -> mlir::Value {
+        auto fieldPtr = mlir::LLVM::GEPOp::create(
+            rewriter, loc, llvmPtrType, llvmBoxType, boxPtr,
+            {mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(fieldIndex)});
+        return mlir::LLVM::LoadOp::create(rewriter, loc, indexType, fieldPtr);
+      };
+      auto descriptor =
+          mlir::MemRefDescriptor::poison(rewriter, loc,
+                                         converter->convertType(viewType));
+      descriptor.setAllocatedPtr(rewriter, loc, adaptor.getRef());
+      descriptor.setAlignedPtr(rewriter, loc, adaptor.getRef());
+      // Header layout: {i32 count, index offset, index size[r], index
+      // stride[r], payload}; field 0 is the refcount.
+      descriptor.setOffset(rewriter, loc, loadHeaderField(1));
+      int64_t rank = arrayType.getRank();
+      for (int64_t i = 0; i < rank; ++i)
+        descriptor.setSize(rewriter, loc, i, loadHeaderField(2 + i));
+      for (int64_t i = 0; i < rank; ++i)
+        descriptor.setStride(rewriter, loc, i, loadHeaderField(2 + rank + i));
+      rewriter.replaceOp(op, mlir::Value(descriptor));
+      return mlir::success();
+    }
+    mlir::Type llvmArrayType = converter->convertType(arrayType);
     llvm::SmallVector<mlir::LLVM::GEPArg> zeroIndices(arrayType.getRank() + 1,
                                                       0);
     auto elementPtr =
@@ -1791,6 +1859,56 @@ struct ReussirRcCreateOpConversionPattern
         initializeRcCreateStorage(op, adaptor, getTypeConverter(), rewriter);
     if (mlir::failed(storage))
       return mlir::failure();
+    RcBoxType boxType = op.getRcPtr().getType().getInnerBoxType();
+    if (boxType.hasDynamicArrayPayload()) {
+      // Canonical strided-header construction: offset 0, the merged
+      // static/runtime sizes, and row-major suffix-product strides. The
+      // payload itself starts poison (the value operand is the zero-length
+      // tail placeholder — nothing to store).
+      mlir::Location loc = op.getLoc();
+      auto converter =
+          static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
+      auto llvmBoxType = converter->convertType(boxType);
+      auto llvmPtrType =
+          mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+      mlir::Type indexType = converter->getIndexType();
+      auto storeHeaderField = [&](int32_t fieldIndex, mlir::Value value) {
+        auto fieldPtr = mlir::LLVM::GEPOp::create(
+            rewriter, loc, llvmPtrType, llvmBoxType, storage->token,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{0, fieldIndex});
+        mlir::LLVM::StoreOp::create(rewriter, loc, value, fieldPtr);
+      };
+      auto indexConst = [&](int64_t v) -> mlir::Value {
+        return mlir::LLVM::ConstantOp::create(
+            rewriter, loc, indexType,
+            mlir::IntegerAttr::get(indexType, v));
+      };
+      auto arrayType = llvm::cast<ArrayType>(boxType.getElementType());
+      int64_t rank = arrayType.getRank();
+      storeHeaderField(1, indexConst(0)); // offset
+      llvm::SmallVector<mlir::Value> sizes;
+      size_t nextExtent = 0;
+      for (int64_t dim : arrayType.getShape())
+        sizes.push_back(mlir::ShapedType::isDynamic(dim)
+                            ? adaptor.getExtents()[nextExtent++]
+                            : indexConst(dim));
+      for (int64_t i = 0; i < rank; ++i)
+        storeHeaderField(static_cast<int32_t>(2 + i), sizes[i]);
+      mlir::Value stride = indexConst(1);
+      llvm::SmallVector<mlir::Value> strides(rank);
+      for (int64_t i = rank - 1; i >= 0; --i) {
+        strides[i] = stride;
+        if (i > 0)
+          stride =
+              mlir::LLVM::MulOp::create(rewriter, loc, stride, sizes[i]);
+      }
+      for (int64_t i = 0; i < rank; ++i)
+        storeHeaderField(static_cast<int32_t>(2 + rank + i), strides[i]);
+      if (storage->countPtr)
+        storeInitialRcCount(storage->countPtr, op.getLoc(), rewriter);
+      rewriter.replaceOp(op, storage->token);
+      return mlir::success();
+    }
     auto objectStore = mlir::LLVM::StoreOp::create(
         rewriter, op.getLoc(), adaptor.getValue(), storage->elementPtr);
     if (!storage->regional)
@@ -3353,19 +3471,23 @@ struct ReussirRefMemcpyConversionPattern
         static_cast<const mlir::LLVMTypeConverter *>(getTypeConverter());
     auto dataLayout = getDataLayout(*converter, op.getOperation());
 
-    // Get the element type and its size
-    RefType srcType = op.getSrc().getType();
-    mlir::Type elementType = converter->convertType(srcType.getElementType());
-    size_t size = dataLayout.getTypeSize(elementType);
+    // The byte count: the `size` operand for a dynamically sized element (a
+    // dynamic-extent array payload), the element's static size otherwise.
+    mlir::Value sizeVal = adaptor.getSize();
+    if (!sizeVal) {
+      RefType srcType = op.getSrc().getType();
+      mlir::Type elementType = converter->convertType(srcType.getElementType());
+      size_t size = dataLayout.getTypeSize(elementType);
+      sizeVal = mlir::LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), converter->getIndexType(),
+          rewriter.getIntegerAttr(converter->getIndexType(), size));
+    }
 
     // Create LLVM memcpy intrinsic (non-overlapping, so isVolatile = false).
     // The plain form, not memcpy.inline: with a constant length LLVM already
     // expands small copies to loads/stores and picks the best strategy
     // (expansion or libcall) for large ones — forcing inline expansion on a
     // big payload (e.g. a whole array clone) just unrolls it.
-    auto sizeVal = mlir::LLVM::ConstantOp::create(
-        rewriter, op.getLoc(), converter->getIndexType(),
-        rewriter.getIntegerAttr(converter->getIndexType(), size));
     rewriter.replaceOpWithNewOp<mlir::LLVM::MemcpyOp>(op, adaptor.getDst(),
                                                       adaptor.getSrc(), sizeVal,
                                                       /*isVolatile=*/false);

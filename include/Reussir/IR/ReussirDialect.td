@@ -40,6 +40,10 @@ def ReussirDialect : Dialect {
       "mlir::LLVM::LLVMDialect",
       // UB Dialect
       "mlir::ub::UBDialect",
+      // Array views are memrefs; the ownership traversal of a dynamic-extent
+      // array (`emitArrayElementTraversal`) takes its loop bounds from
+      // `memref.dim` on the view.
+      "mlir::memref::MemRefDialect",
       // Lock-guarded cells: their data layout is the layout of the
       // corresponding `!sync.*` primitive, so any DataLayout query on such a
       // cell constructs a sync type — including paths that run before any

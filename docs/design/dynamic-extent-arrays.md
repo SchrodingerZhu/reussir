@@ -39,6 +39,11 @@ Static arrays keep today's headerless box and identity-layout
 `memref<NxT>` view — no regression, and the two forms stay distinct
 types.
 
+Dynamic arrays currently support shared boxes only. Regional (`flex`/`rigid`)
+RC pointers and references, and regional dynamic-array box types, are rejected
+by the type verifiers: the regional state/next/vtable header has no strided
+metadata extension yet.
+
 ## Views and projection
 
 `getArrayViewMemRefType` for a dynamic array returns
@@ -81,6 +86,10 @@ aliased elements would break the drop traversal's exactly-once contract.
   the existing universal fallback donor; `token.alloc` gains an SSA size
   operand (the `__reussir_allocate` entry point already takes a runtime
   size — only the constant-gated `_small` fast path stays static-only).
+  Dynamic arrays can donate tokens to statically sized constructions, but
+  dynamic recipients retain their original allocation: `token.ensure` and
+  `token.realloc` do not yet carry the requested SSA byte count. Equality of
+  two dynamic token types does not establish equal allocation sizes.
   Boxes past `kAllocatorBinModelMax` are excluded from reuse pairing,
   implementing the #344 integration note.
 
@@ -112,6 +121,28 @@ aliased elements would break the drop traversal's exactly-once contract.
   `array::dim` intrinsic; lengths stay `u64` until `usize` lands.
 
 ## Status
+
+Dialect landed: `!reussir.array<? x T>` parses/verifies (`?` extents,
+`ShapedType::kDynamic`); the strided-header box (`RcBoxType`
+`hasDynamicArrayPayload` — `{i32 count | index offset | sizes | strides |
+tail}`, index-typed so the width follows the target); `array.view` builds
+the strided descriptor from header loads (box recovered from the payload
+ref by the static header offset); `token.alloc` takes an SSA byte size
+for `token<align, ?>`; `rc.create … extents(…)` writes the canonical
+header and its instantiated token computes `header + product(sizes) *
+elemsize`; `rc.dec`/`rc.reinterpret` produce dynamic tokens freed
+unsized; `array.project` accepts the dynamic strided view and every
+projection of it keeps that layout (descriptor arithmetic on the live
+offset field); the ownership traversal (`emitArrayElementTraversal`, the
+drop/acquire nest) unrolls only static shapes and takes dynamic bounds from
+`memref.dim`; the `with_unique_view` clone branch reads the source header
+through `memref.extract_strided_metadata`, sizes its token at runtime,
+constructs the clone canonical from the same sizes, and copies flat
+(`ref.memcpy … size(%bytes)`) when the source is canonical or element-wise
+otherwise. Executable e2e: `dynamic_array_e2e.mlir`,
+`dynamic_array_clone_e2e.mlir`, `dynamic_array_managed_e2e.mlir`. Open
+backend halves: restride ops, `expand-strided-metadata` in the shipping
+pipeline, and wiring the frontend codegen off its `err(…)` stubs.
 
 Frontend landed: `?` extents, the `DYNAMIC_EXTENT` sentinel through the
 type system, leading runtime extents on `splat`/`tabulate`, `array::dim`,

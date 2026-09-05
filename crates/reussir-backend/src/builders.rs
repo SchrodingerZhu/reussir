@@ -288,10 +288,11 @@ pub fn record_compound<'c>(
 /// `reussir.rc.create value(<value> : <type>) : <result_type>` — box a value into
 /// a fresh reference-counted pointer with an initial count of 1.
 ///
-/// The op carries `AttrSizedOperandSegments` over its `[value, token, region]`
-/// operand groups, but melior's generated builder leaves the required
-/// `operandSegmentSizes` attribute unset, so it is constructed here with the
-/// single value operand present (`[1, 0, 0]`). The allocation token and any
+/// The op carries `AttrSizedOperandSegments` over its
+/// `[value, token, region, extents]` operand groups, but melior's generated
+/// builder leaves the required `operandSegmentSizes` attribute unset, so it
+/// is constructed here with the
+/// single value operand present (`[1, 0, 0, 0]`). The allocation token and any
 /// region are supplied later by the token-instantiation pass; the rc-create
 /// fusion pass then folds an immediately preceding `record.compound` into this
 /// op (`reussir.rc.create_compound`).
@@ -305,7 +306,7 @@ pub fn rc_create<'c>(
         .add_operands(&[value])
         .add_attributes(&[(
             Identifier::new(context, "operandSegmentSizes"),
-            DenseI32ArrayAttribute::new(context, &[1, 0, 0]).into(),
+            DenseI32ArrayAttribute::new(context, &[1, 0, 0, 0]).into(),
         )])
         .add_results(&[result_type])
         .build()
@@ -317,8 +318,9 @@ pub fn rc_create<'c>(
 /// capability and an initial count of 1.
 ///
 /// Like [`rc_create`] the op carries `AttrSizedOperandSegments` over its
-/// `[value, token, region]` operand groups; here the value and region are
-/// present and the token absent (`[1, 0, 1]`). Supplying the region is what
+/// `[value, token, region, extents]` operand groups; here the value and
+/// region are
+/// present and the token absent (`[1, 0, 1, 0]`). Supplying the region is what
 /// gives the result `flex` (region-local, mutable) capability — the region
 /// patterns pass later attaches the box vtable and freezes the value to `rigid`
 /// where it escapes its region.
@@ -333,9 +335,9 @@ pub fn rc_create_in_region<'c>(
         .add_operands(&[value, region])
         .add_attributes(&[(
             Identifier::new(context, "operandSegmentSizes"),
-            // operandSegmentSizes over [value, token, region]: value and region
-            // present, token absent.
-            DenseI32ArrayAttribute::new(context, &[1, 0, 1]).into(),
+            // operandSegmentSizes over [value, token, region, extents]:
+            // value and region present, token and extents absent.
+            DenseI32ArrayAttribute::new(context, &[1, 0, 1, 0]).into(),
         )])
         .add_results(&[result_type])
         .build()

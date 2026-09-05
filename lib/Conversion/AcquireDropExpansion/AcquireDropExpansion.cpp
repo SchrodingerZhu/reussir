@@ -115,9 +115,7 @@ private:
                                        mlir::PatternRewriter &rewriter) const {
     mlir::Value view = ReussirArrayViewOp::create(
                            rewriter, op.getLoc(),
-                           mlir::MemRefType::get(arrayType.getShape(),
-                                                 arrayType.getElementType()),
-                           op.getRef())
+                           getArrayViewMemRefType(arrayType), op.getRef())
                            .getView();
     if (mlir::failed(emitArrayElementTraversal(
             view, rewriter, op.getLoc(),

@@ -549,6 +549,7 @@ def ReussirRcBoxType
   ]}];
   let parameters = (ins "mlir::Type":$eleTy, "bool":$regional);
   let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
   let skipDefaultBuilders = 1;
   let builders = [TypeBuilder<(ins "mlir::Type":$eleTy, "bool":$regional), [{
       return $_get($_ctxt, eleTy, regional);
@@ -567,6 +568,17 @@ def ReussirRcBoxType
     // LLVM type conversion.
     llvm::SmallVector<mlir::Type> getHeaderTypes() const;
     size_t getElementIndex() const { return getHeaderTypes().size(); }
+    // Whether the payload is a dynamic-extent array
+    // (docs/design/dynamic-extent-arrays.md): the box then carries the full
+    // strided-memref encoding in its header —
+    // `{ i32 count | index offset | index size[r] | index stride[r] | payload }`
+    // (padding per the data layout; the two descriptor pointers are derived
+    // as box + header). The header prefix is static per rank; only the
+    // payload tail size is dynamic.
+    bool hasDynamicArrayPayload() const;
+    // Byte offset of the dynamic payload tail (the aligned end of the
+    // header), and the box alignment. Valid only for a dynamic array payload.
+    uint64_t getDynamicPayloadOffset(const mlir::DataLayout &dataLayout) const;
   }];
 }
 

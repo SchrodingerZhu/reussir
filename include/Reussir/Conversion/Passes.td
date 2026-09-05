@@ -232,6 +232,7 @@ def ReussirTokenInstantiationPass
                         "rebuild TokenProducers with their token result">];
 
   let dependentDialects = ["::reussir::ReussirDialect",
+                           "::mlir::arith::ArithDialect",
                            "::mlir::sync::SyncDialect"];
 }
 
