@@ -304,13 +304,13 @@ fn main() -> ExitCode {
 fn init_tracing(verbose: bool, color: bool) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
-        // pubgrub narrates every solver step at INFO; that is solver
-        // debugging, not build progress, so it stays behind RUST_LOG.
+        // Solver steps and database maintenance are dependency diagnostics;
+        // keep them behind RUST_LOG so normal output shows build progress.
         .unwrap_or_else(|_| {
             EnvFilter::new(if verbose {
-                "debug,pubgrub=warn"
+                "debug,pubgrub=warn,turbokv=warn"
             } else {
-                "info,pubgrub=warn"
+                "info,pubgrub=warn,turbokv=warn"
             })
         });
     let _ = tracing_subscriber::fmt()

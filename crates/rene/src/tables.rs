@@ -1,35 +1,26 @@
-//! Table definitions for the build-status database (`reussir-build/rene.redb`).
+//! Key namespaces for the build-status database (`reussir-build/rene.meta`).
 //!
-//! Every table and key the database holds is declared here, so the on-disk
+//! Every namespace and key the database holds is declared here, so the on-disk
 //! schema can be reviewed in one place. Values are JSON strings — the schema
 //! of each value is owned by the module that writes it (referenced per key
 //! below).
 
-use redb::TableDefinition;
-
 /// Build status: string keys (the `*_KEY` constants) to JSON-encoded values.
-pub const STATUS: TableDefinition<&str, &str> = TableDefinition::new("status");
+/// The prefix separates status keys from source paths in TurboKV's keyspace.
+pub const STATUS: &str = "status/";
 
 /// The package's source graph, as last reported by `rrc --scan-deps`: one
 /// row per file, keyed by its path, holding what staleness is judged from.
-/// The value is a redb tuple, which encodes it natively:
-///
-/// ```text
-/// path -> (module, mtime_ns, size, blake3)
-/// ```
-///
-/// `module` is the file's module path in its written form (`pkg::math`);
-/// segments are identifiers, so joining is unambiguous. `blake3` is the raw
-/// 32-byte digest — hex is for [`crate::deps::SourceFile::to_json`] to
-/// render, not for storage to carry.
+/// Keys are this prefix followed by the UTF-8 path; values are JSON-encoded
+/// [`crate::deps::SourceRecord`]s, including module segments and the digest's
+/// 32 bytes. Hex is for [`crate::deps::SourceFile::to_json`] to render.
 ///
 /// The graph is a *set* of files: nothing in rene depends on the order the
 /// scan walked them in (staleness checks every row, and `rrc` rediscovers
 /// the graph itself), so rows simply come back in path order. Written by
 /// [`crate::deps`], always wholesale — the graph is a single snapshot, so a
 /// rebuild replaces every row rather than updating one.
-pub const SOURCES: TableDefinition<&str, (&str, u64, u64, &[u8; 32])> =
-    TableDefinition::new("sources");
+pub const SOURCES: &str = "sources/";
 
 /// Blake3 hex digest of the evaluated manifest the [`SOURCES`] snapshot was
 /// taken under (a bare hex string). A mismatch invalidates the snapshot: a

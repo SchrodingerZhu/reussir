@@ -108,9 +108,9 @@ mlir-sys = "220"
 # evaluates package manifests (`rene.ncl`) with it.
 nickel-lang = "2.2"
 palc = "0.0.2"
-# `rene`'s build-status store (`reussir-build/rene.redb`); its exclusive file
-# lock doubles as the cross-process build-directory lock.
-redb = "4.1"
+# `rene`'s build-status store (`reussir-build/rene.meta`); its exclusive
+# directory lock doubles as the cross-process build-directory lock.
+turbokv = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 # tar + zstd bundle the `reussir-rt` source tree into the `rene` binary
