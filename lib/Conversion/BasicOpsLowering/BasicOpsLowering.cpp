@@ -1130,13 +1130,13 @@ struct ReussirRecordCompoundConversionPattern
     // Create an opaque pointer type for the alloca and GEP operations
     auto ptrType = mlir::LLVM::LLVMPointerType::get(ctx);
 
-    // Create a constant '1' for the alloca array size
-    mlir::Value one = mlir::LLVM::ConstantOp::create(
-        rewriter, loc, rewriter.getI32Type(), rewriter.getI32IntegerAttr(1));
-
-    // Allocate the struct on the stack
-    mlir::Value alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType,
-                                                      llvmStructType, one);
+    // Keep the slot static even when construction is in a branch or loop.
+    // Padding loads can keep it alive until LLVM's tail-recursion pass,
+    // which rejects functions containing non-entry allocas.
+    auto dataLayout = getDataLayout(*converter, op.getOperation());
+    mlir::Value alloca = createEntryBlockAlloca(
+        rewriter, loc, llvmStructType,
+        dataLayout.getTypePreferredAlignment(llvmStructType), op);
     addLifetimeOrInvariantOp<mlir::LLVM::LifetimeStartOp>(
         rewriter, loc, llvmStructType, alloca, *converter, op.getOperation());
 
@@ -1144,7 +1144,6 @@ struct ReussirRecordCompoundConversionPattern
     auto fieldValues = adaptor.getFields();
 
     // Insert each field using GEP + store
-    auto dataLayout = getDataLayout(*converter, op.getOperation());
     for (size_t i = 0; i < fieldValues.size(); ++i) {
       // GEP indices:
       // 0 -> Dereference the base pointer (step into the allocated element)

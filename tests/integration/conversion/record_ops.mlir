@@ -46,7 +46,7 @@ module {
 // Stack slots are hoisted to the entry block (static allocas); the fills
 // stay at the use sites.
 // CHECK: %[[alloca:[0-9]+]] = alloca %List, i64 1, align 8
-// CHECK: %[[cons_alloca:[0-9]+]] = alloca %"List::Cons", align 8
+// CHECK: %[[cons_alloca:[0-9]+]] = alloca %"List::Cons", i64 1, align 8
 // CHECK: %[[cons_ptr0:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 1
 // CHECK: store i32 %0, ptr %[[cons_ptr0]], align 4
 // CHECK: %[[cons_ptr1:[0-9]+]] = getelementptr %"List::Cons", ptr %[[cons_alloca]], i32 0, i32 0
