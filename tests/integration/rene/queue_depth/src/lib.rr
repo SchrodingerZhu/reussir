@@ -1,0 +1,153 @@
+enum QList {
+    Nil,
+    Cons(i64, QList)
+}
+
+enum Rotation {
+    Idle,
+    Reversing(i64, QList, QList, QList, QList),
+    Appending(i64, QList, QList),
+    Done(QList)
+}
+
+// Keep the queue, lists, and rotation state boxed, as in #618, so updates
+// participate in reuse analysis. Only Pop is returned by value; its padded
+// payload on wasm32 is the part that exposes the tail-recursion failure.
+struct Queue {
+    lenf : i64,
+    front : QList,
+    state : Rotation,
+    lenr : i64,
+    rear : QList
+}
+
+enum [value] Pop {
+    Pop(i64, Queue),
+    Empty
+}
+
+fn exec(state : Rotation) -> Rotation {
+    match state {
+        Rotation::Reversing(ok, QList::Cons(x, f), f1, QList::Cons(y, r), r1) =>
+            Rotation::Reversing{ok + 1, f, QList::Cons{x, f1}, r, QList::Cons{y, r1}},
+        Rotation::Reversing(ok, QList::Nil, f1, QList::Cons(y, QList::Nil), r1) =>
+            Rotation::Appending{ok, f1, QList::Cons{y, r1}},
+        Rotation::Appending(0, _, r1) => Rotation::Done{r1},
+        Rotation::Appending(ok, QList::Cons(x, f1), r1) =>
+            Rotation::Appending{ok - 1, f1, QList::Cons{x, r1}},
+        other => other
+    }
+}
+
+fn invalidate(state : Rotation) -> Rotation {
+    match state {
+        Rotation::Reversing(ok, f, f1, r, r1) => Rotation::Reversing{ok - 1, f, f1, r, r1},
+        Rotation::Appending(0, _, QList::Cons(_, r1)) => Rotation::Done{r1},
+        Rotation::Appending(ok, f1, r1) => Rotation::Appending{ok - 1, f1, r1},
+        other => other
+    }
+}
+
+fn exec2(q : Queue) -> Queue {
+    match exec(exec(q.state)) {
+        Rotation::Done(front1) => Queue {
+            lenf: q.lenf, front: front1, state: Rotation::Idle,
+            lenr: q.lenr, rear: q.rear
+        },
+        state1 => Queue {
+            lenf: q.lenf, front: q.front, state: state1,
+            lenr: q.lenr, rear: q.rear
+        }
+    }
+}
+
+fn check(q : Queue) -> Queue {
+    if q.lenr <= q.lenf {
+        exec2(q)
+    } else {
+        exec2(Queue {
+            lenf: q.lenf + q.lenr,
+            front: q.front,
+            state: Rotation::Reversing{0, q.front, QList::Nil, q.rear, QList::Nil},
+            lenr: 0,
+            rear: QList::Nil
+        })
+    }
+}
+
+fn snoc(q : Queue, value : i64) -> Queue {
+    check(Queue {
+        lenf: q.lenf,
+        front: q.front,
+        state: q.state,
+        lenr: q.lenr + 1,
+        rear: QList::Cons{value, q.rear}
+    })
+}
+
+fn uncons(q : Queue) -> Pop {
+    match q.front {
+        QList::Cons(value, front) =>
+            Pop::Pop{value, check(Queue {
+                lenf: q.lenf - 1,
+                front,
+                state: invalidate(q.state),
+                lenr: q.lenr,
+                rear: q.rear
+            })},
+        QList::Nil => Pop::Empty
+    }
+}
+
+fn build(index : i64, size : i64, q : Queue) -> Queue {
+    if index == size { q } else { build(index + 1, size, snoc(q, index)) }
+}
+
+fn churn(round : i64, remaining : i64, q : Queue, checksum : i64) -> Pop {
+    if remaining == 0 {
+        Pop::Pop{checksum, q}
+    } else {
+        match uncons(q) {
+            Pop::Pop(value, rest) =>
+                churn(round + 1, remaining - 1,
+                      snoc(rest, (value + round + 1) % 1000000007),
+                      (checksum + value) % 1000000007),
+            Pop::Empty => Pop::Empty
+        }
+    }
+}
+
+fn drain(remaining : i64, q : Queue, checksum : i64) -> i64 {
+    if remaining == 0 {
+        checksum
+    } else {
+        match uncons(q) {
+            Pop::Pop(value, rest) => drain(remaining - 1, rest, (checksum + value) % 1000000007),
+            Pop::Empty => 0 - 1
+        }
+    }
+}
+
+fn functional_queue_test(size : i64, rounds : i64) -> i64 {
+    let q = build(0, size, Queue {
+        lenf: 0, front: QList::Nil, state: Rotation::Idle,
+        lenr: 0, rear: QList::Nil
+    });
+    match churn(0, rounds, q, 0) {
+        Pop::Pop(checksum, result) => drain(size, result, checksum),
+        Pop::Empty => 0 - 1
+    }
+}
+
+#[ffi(import)]
+fn print_result(v: i64) -> i64 [{
+    {
+        println!("fq = {v}");
+        v
+    }
+}];
+
+#[main]
+pub fn entry() {
+    let v = print_result(functional_queue_test(16, 100000));
+}
