@@ -1,0 +1,32 @@
+// RUN: %rrc %s --target-triple wasm32-wasip1 --target-features=-tail-call -Odefault -o %t.default.s
+// RUN: %FileCheck %s --implicit-check-not='call{{[ \t]+}}' < %t.default.s
+// RUN: %rrc %s --target-triple wasm32-wasip1 --target-features=-tail-call -Oaggressive -o %t.aggressive.s
+// RUN: %FileCheck %s --implicit-check-not='call{{[ \t]+}}' < %t.aggressive.s
+
+// The mixed-width payload has padding. Its construction must allow LLVM to
+// turn self-recursion into a loop even when wasm tail calls are disabled.
+enum [value] Out {
+    Done(i64, i32),
+    Empty
+}
+
+fn spin(n : i64, acc : i64, count : i32) -> Out {
+    if n <= 0 {
+        if n == 0 { Out::Done{acc, count} } else { Out::Empty }
+    } else {
+        spin(n - 1, (acc + n) % 1000000007, count + 1)
+    }
+}
+
+fn run(n : i64, count : i32) -> i64 {
+    match spin(n, 0, count) {
+        Out::Done(value, count) => value + count as i64,
+        Out::Empty => 0 - 1
+    }
+}
+
+extern "C" trampoline "run_ffi" = run;
+
+// CHECK-LABEL: run_ffi:
+// CHECK: loop
+// CHECK: end_function
