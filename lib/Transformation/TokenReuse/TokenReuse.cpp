@@ -120,8 +120,16 @@ namespace {
 static constexpr int kReallocEnsureCutoff = 2;
 int heuristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
               TokenAcceptor consumer, EquivalenceAnalysis &equivalence) {
+  TokenType consumerType = consumer.getTokenType();
+  // Ensure/realloc encode the requested size in their result type, so they
+  // cannot preserve a dynamic allocation's SSA byte count. In particular,
+  // equal dynamic token types do not imply equal allocation sizes. Keep the
+  // original allocation until those operations support runtime-sized targets.
+  if (consumerType.isDynamicSize())
+    return -1;
+
   // Under perfect match, we measure the locality score.
-  if (producedType == consumer.getTokenType()) {
+  if (producedType == consumerType) {
     ReussirRcCreateOp create =
         dyn_cast<ReussirRcCreateOp>(consumer.getOperation());
     int localityScore = kReallocEnsureCutoff;
@@ -168,12 +176,11 @@ int heuristic(TokenType producedType, mlir::TypedValue<RcType> producerRc,
     return localityScore;
   }
   // A dynamic token (`token<align, ?>`, an unpinned variant decrement) can be
-  // resized to any acceptor at runtime via realloc — a universal *fallback*
+  // resized to a static acceptor at runtime via realloc — a universal *fallback*
   // donor. It scores below both the ensure tier and the fixed-size same-bin
   // realloc tier, so it is chosen only when no statically-sized donor fits.
   if (producedType.isDynamicSize())
     return 0;
-  TokenType consumerType = consumer.getTokenType();
   size_t oldSize = producedType.getSize();
   size_t newSize = consumerType.getSize();
   size_t oldAlign = producedType.getAlign();

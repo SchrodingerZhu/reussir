@@ -71,6 +71,39 @@ TEST_F(ReussirTest, ViewTypeElementTypeTest) {
   EXPECT_EQ(viewType.getElementType(), i8Type);
 }
 
+TEST_F(ReussirTest, DynamicArraysRequireSharedStorage) {
+  auto i32Type = mlir::IntegerType::get(context.get(), 32);
+  mlir::Type dynamicArray = ArrayType::get(
+      context.get(), {mlir::ShapedType::kDynamic, 2}, i32Type);
+  mlir::Type staticArray = ArrayType::get(context.get(), {4, 2}, i32Type);
+  auto loc = mlir::UnknownLoc::get(context.get());
+  mlir::ScopedDiagnosticHandler handler(context.get(), [](mlir::Diagnostic &) {
+    return mlir::success();
+  });
+
+  // Shared dynamic boxes and their payload references remain valid.
+  EXPECT_TRUE(RcType::getChecked(loc, context.get(), dynamicArray,
+                                 Capability::shared, AtomicKind::normal));
+  EXPECT_TRUE(RcBoxType::getChecked(loc, context.get(), dynamicArray, false));
+  EXPECT_TRUE(RefType::getChecked(loc, context.get(), dynamicArray,
+                                  Capability::unspecified, AtomicKind::normal));
+
+  // Both region-local and frozen references would recover the wrong header.
+  // Static arrays retain their existing capability support.
+  for (Capability capability : {Capability::flex, Capability::rigid}) {
+    EXPECT_FALSE(RcType::getChecked(loc, context.get(), dynamicArray,
+                                    capability, AtomicKind::normal));
+    EXPECT_FALSE(RefType::getChecked(loc, context.get(), dynamicArray,
+                                     capability, AtomicKind::normal));
+    EXPECT_TRUE(RcType::getChecked(loc, context.get(), staticArray,
+                                   capability, AtomicKind::normal));
+    EXPECT_TRUE(RefType::getChecked(loc, context.get(), staticArray,
+                                    capability, AtomicKind::normal));
+  }
+  EXPECT_FALSE(RcBoxType::getChecked(loc, context.get(), dynamicArray, true));
+  EXPECT_TRUE(RcBoxType::getChecked(loc, context.get(), staticArray, true));
+}
+
 TEST_F(ReussirTest, RcTypeIsValidMemRefElementType) {
   auto i64Type = mlir::IntegerType::get(context.get(), 64);
   auto rcType = reussir::RcType::get(context.get(), i64Type);

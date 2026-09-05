@@ -1010,6 +1010,14 @@ RcType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     return mlir::failure();
   }
 
+  // The strided array header currently extends only the shared RC header.
+  // Regional boxes use their header words for state, next, and the vtable.
+  if (auto arrayTy = llvm::dyn_cast<ArrayType>(eleTy);
+      arrayTy && !arrayTy.hasStaticShape() && capability != Capability::shared) {
+    emitError() << "dynamic-extent arrays require shared RC capability";
+    return mlir::failure();
+  }
+
   // An atomic scalar or lock-guarded cell only exists to be shared across
   // threads, so the box managing it must itself be shared with an atomic
   // refcount.
@@ -1338,6 +1346,15 @@ RefType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     emitError() << "Capability must not be Value for RefType";
     return mlir::failure();
   }
+  // A dynamic array view recovers the shared strided header from its payload
+  // reference. Regional payloads have a different header and offset.
+  if (auto arrayTy = llvm::dyn_cast<ArrayType>(eleTy);
+      arrayTy && !arrayTy.hasStaticShape() &&
+      (capability == Capability::flex || capability == Capability::rigid ||
+       capability == Capability::regional)) {
+    emitError() << "dynamic-extent arrays do not support regional references";
+    return mlir::failure();
+  }
   return mlir::success();
 }
 
@@ -1362,6 +1379,17 @@ CctxType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
 //===----------------------------------------------------------------------===//
 // Reussir Rc Box Type
 //===----------------------------------------------------------------------===//
+mlir::LogicalResult
+RcBoxType::verify(llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
+                  mlir::Type eleTy, bool regional) {
+  if (auto arrayTy = llvm::dyn_cast<ArrayType>(eleTy);
+      regional && arrayTy && !arrayTy.hasStaticShape()) {
+    emitError() << "dynamic-extent arrays do not support regional boxes";
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
 // RcBoxType Parse/Print
 //===----------------------------------------------------------------------===//
 mlir::Type RcBoxType::parse(mlir::AsmParser &parser) {

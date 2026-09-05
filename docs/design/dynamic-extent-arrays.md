@@ -39,6 +39,11 @@ Static arrays keep today's headerless box and identity-layout
 `memref<NxT>` view — no regression, and the two forms stay distinct
 types.
 
+Dynamic arrays currently support shared boxes only. Regional (`flex`/`rigid`)
+RC pointers and references, and regional dynamic-array box types, are rejected
+by the type verifiers: the regional state/next/vtable header has no strided
+metadata extension yet.
+
 ## Views and projection
 
 `getArrayViewMemRefType` for a dynamic array returns
@@ -81,6 +86,10 @@ aliased elements would break the drop traversal's exactly-once contract.
   the existing universal fallback donor; `token.alloc` gains an SSA size
   operand (the `__reussir_allocate` entry point already takes a runtime
   size — only the constant-gated `_small` fast path stays static-only).
+  Dynamic arrays can donate tokens to statically sized constructions, but
+  dynamic recipients retain their original allocation: `token.ensure` and
+  `token.realloc` do not yet carry the requested SSA byte count. Equality of
+  two dynamic token types does not establish equal allocation sizes.
   Boxes past `kAllocatorBinModelMax` are excluded from reuse pairing,
   implementing the #344 integration note.
 
