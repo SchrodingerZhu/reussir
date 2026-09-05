@@ -29,19 +29,6 @@ use crate::tables;
 /// the crate root, and its `mod` declarations discover the rest.
 pub const SRC_DIR: &str = "src";
 
-/// The separator a module path is stored under (its written form, `pkg::math`
-/// — see [`tables::SOURCES`]).
-pub const MODULE_SEPARATOR: &str = "::";
-
-/// Split a stored module path back into its segments. An empty column is an
-/// empty path, not a single empty segment.
-pub fn split_module(module: &str) -> Vec<String> {
-    if module.is_empty() {
-        return Vec::new();
-    }
-    module.split(MODULE_SEPARATOR).map(str::to_owned).collect()
-}
-
 /// What is recorded for one file of the source graph (see
 /// [`tables::SOURCES`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -603,18 +590,6 @@ mod tests {
             file.to_json()["hash"],
             serde_json::json!(blake3::hash(b"contents").to_hex().to_string())
         );
-    }
-
-    /// Module paths round-trip through their stored `pkg::math` form.
-    #[test]
-    fn module_paths_round_trip_through_the_stored_column() {
-        for module in [
-            vec![],
-            vec!["p".to_owned()],
-            vec!["p".to_owned(), "math".to_owned(), "ops".to_owned()],
-        ] {
-            assert_eq!(split_module(&module.join(MODULE_SEPARATOR)), module);
-        }
     }
 
     /// Every row round-trips through the table, and the graph reads back in

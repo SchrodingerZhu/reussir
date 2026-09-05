@@ -4,7 +4,7 @@
 //! evaluating to the package description (name, dependencies, …) — and
 //! Reussir sources. Targets may name independent crate-root files, falling
 //! back to `src/lib.rr` when no path is given. Builds run in a build directory
-//! (`reussir-build/` by default) whose status lives in a redb
+//! (`reussir-build/` by default) whose status lives in a TurboKV
 //! database: the baked bundled `reussir-rt` runtime ([`rt`]), the package's
 //! source graph as `rrc --scan-deps` reported it ([`deps`]), and the built
 //! products of the manifest's declared targets ([`compile`]). Dependencies

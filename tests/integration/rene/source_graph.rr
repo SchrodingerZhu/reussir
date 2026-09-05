@@ -21,6 +21,8 @@
 // the graph: discovery order (the crate root first), module paths, and a
 // Blake3 digest per file.
 // RUN: %rene inspect --manifest-path %t.pkg/rene.ncl | %FileCheck %s --check-prefix=SCAN
+// RUN: test -d %t.pkg/reussir-build/rene.meta
+// RUN: test ! -e %t.pkg/reussir-build/rene.redb
 
 // SCAN:      "files": [
 // SCAN:          "hash": "{{[0-9a-f]+}}"

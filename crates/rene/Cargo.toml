@@ -32,8 +32,10 @@ palc.workspace = true
 # check over the local path-dependency graph (one available version per
 # package today).
 astral-pubgrub = "0.6"
-# The build-status store; its exclusive file lock is also the build-dir lock.
-redb.workspace = true
+# The build-status store; its exclusive directory lock is also the build-dir lock.
+turbokv.workspace = true
+# TurboKV's I/O and maintenance run on a private runtime in `db`.
+tokio.workspace = true
 serde.workspace = true
 # Re-render the evaluated manifest's JSON export pretty-printed for `build`'s
 # config dump, parse `cargo --message-format=json` output, and encode the

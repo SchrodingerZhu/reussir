@@ -18,9 +18,24 @@ else()
     set(RENE_CARGO_PROFILE_DIR "release")
 endif()
 
+# TurboKV's gxhash dependency requires AES instructions. Select features for
+# the Rust target, including when cargo-xwin builds x86_64 on an ARM host.
+if(REUSSIR_CARGO_BUILD_TARGET)
+    set(RENE_ARCH "${REUSSIR_CARGO_BUILD_TARGET}")
+else()
+    set(RENE_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+string(TOLOWER "${RENE_ARCH}" RENE_ARCH)
+set(RENE_RUSTFLAGS "-Awarnings")
+if(RENE_ARCH MATCHES "^(x86_64|amd64|i[3-6]86|x86)(-|$)")
+    string(APPEND RENE_RUSTFLAGS " -Ctarget-feature=+aes,+sse2")
+elseif(RENE_ARCH MATCHES "^(aarch64|arm64)(-|$)")
+    string(APPEND RENE_RUSTFLAGS " -Ctarget-feature=+aes,+neon")
+endif()
+
 set(RENE_CARGO_ENV
     CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/target
-    RUSTFLAGS=-Awarnings)
+    "RUSTFLAGS=${RENE_RUSTFLAGS}")
 
 set(RENE_BIN rene${CMAKE_EXECUTABLE_SUFFIX})
 

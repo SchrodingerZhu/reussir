@@ -23,3 +23,11 @@ CFLAGS = "-DMI_MAX_ALIGN_SIZE=8"
 # per-package build directories.
 [unstable]
 build-dir-new-layout = false
+
+# TurboKV's persisted Bloom filters use gxhash, which requires hardware AES.
+# CMake supplies the same flags for rene because its RUSTFLAGS override these.
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))']
+rustflags = ["-C", "target-feature=+aes,+sse2"]
+
+[target.'cfg(target_arch = "aarch64")']
+rustflags = ["-C", "target-feature=+aes,+neon"]
